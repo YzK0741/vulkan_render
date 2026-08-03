@@ -1,0 +1,92 @@
+//
+// Created by 小叶 on 2026/7/29.
+//
+
+module;
+
+#include <span>
+#include <vulkan/vulkan.h>
+
+export module vulkan.core.handles;
+
+namespace vulkan {
+    export class vk_command_buffer {
+        VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+        VkDevice* device = nullptr;
+        VkCommandPool* command_pool = nullptr;
+
+    public:
+
+        [[nodiscard]] VkCommandBuffer const& get() const noexcept;
+        [[nodiscard]] VkCommandBuffer const& operator*() const noexcept;
+        void release() noexcept;
+        explicit vk_command_buffer(VkCommandBuffer command_buffer, VkDevice& device, VkCommandPool& pool) noexcept;
+        ~vk_command_buffer() noexcept;
+
+        explicit vk_command_buffer(vk_command_buffer& command_buffer) = delete;
+        vk_command_buffer(vk_command_buffer&& other) noexcept ;
+        vk_command_buffer& operator=(vk_command_buffer& other) = delete;
+        vk_command_buffer& operator=(vk_command_buffer&& other) noexcept;
+    };
+
+    export vk_command_buffer make_command_buffer(VkDevice &device, VkCommandPool &command_pool) noexcept;
+
+    export class vk_descriptor_set {
+        VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
+        VkDevice* device = nullptr;
+        VkDescriptorPool* descriptor_pool = nullptr;
+
+    public:
+
+        [[nodiscard]] VkDescriptorSet const& get() const noexcept;
+        [[nodiscard]] VkDescriptorSet const& operator*() const noexcept;
+        void release() noexcept;
+        explicit vk_descriptor_set(VkDescriptorSet descriptor_set, VkDevice& device, VkDescriptorPool& descriptor_pool) noexcept;
+        ~vk_descriptor_set() noexcept;
+
+        explicit vk_descriptor_set(vk_descriptor_set& descriptor_set) = delete;
+        vk_descriptor_set(vk_descriptor_set&& other) noexcept ;
+        vk_descriptor_set& operator=(vk_descriptor_set& other) = delete;
+        vk_descriptor_set& operator=(vk_descriptor_set&& other) noexcept;
+    };
+
+    export vk_descriptor_set make_descriptor_set(VkDevice &device, VkDescriptorPool &descriptor_pool, VkDescriptorSetLayout const &layout) noexcept;
+
+    export class vk_shader_module {
+        VkShaderModule shader_module = VK_NULL_HANDLE;
+        VkDevice* device = nullptr;
+
+    public:
+        [[nodiscard]] VkShaderModule const& get() const noexcept;
+        [[nodiscard]] VkShaderModule const& operator*() const noexcept;
+        void release();
+        explicit vk_shader_module(const VkShaderModule &shader_module, VkDevice &device) noexcept;
+        ~vk_shader_module() noexcept;
+
+        explicit vk_shader_module(vk_shader_module& shader_module) = delete;
+        vk_shader_module(vk_shader_module&& other) noexcept;
+        vk_shader_module& operator=(vk_shader_module& other) = delete;
+        vk_shader_module& operator=(vk_shader_module&& other) noexcept;
+    };
+
+    export vk_shader_module make_shader_module(std::span<unsigned char> shader, VkDevice& device) noexcept;
+
+    export struct vk_pipeline {
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+        VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
+        VkDevice* device = nullptr;
+
+        explicit vk_pipeline(VkPipeline pipeline, VkPipelineLayout pipeline_layout, VkDescriptorSetLayout descriptor_set_layout, VkDevice& device) noexcept;
+        ~vk_pipeline();
+        [[nodiscard]] VkPipeline get_pipeline() const noexcept;
+        [[nodiscard]] VkPipelineLayout get_pipeline_layout() const noexcept;
+        [[nodiscard]] VkDescriptorSetLayout get_descriptor_set_layout() const noexcept;
+
+        vk_pipeline(vk_pipeline&) = delete;
+        vk_pipeline(vk_pipeline&& other) noexcept;
+        vk_pipeline& operator=(vk_pipeline& other) = delete;
+        vk_pipeline& operator=(vk_pipeline&& other) noexcept;
+        void release() noexcept;
+    };
+}
