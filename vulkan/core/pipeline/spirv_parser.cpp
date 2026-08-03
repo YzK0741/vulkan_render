@@ -6,7 +6,7 @@ module;
 #include <filesystem>
 #include <fstream>
 #include <optional>
-#include "../../../spirv-reflect/spirv_reflect.h"
+#include "../../../third_party/spirv-reflect/spirv_reflect.h"
 
 module vulkan.pipeline.spirv_parser;
 import utility;
