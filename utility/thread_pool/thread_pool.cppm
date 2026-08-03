@@ -1,20 +1,14 @@
 //
 // Created by 小叶 on 2026/8/2.
 //
-
-module;
-
 #include <functional>
 #include <thread>
 #include <queue>
-
-export module utility.thread_pool;
+#include <condition_variable>
 
 namespace utility {
 
-
-
-    export class thread_pool {
+    class thread_pool {
         enum class shutdown_policy {
             discard,
             wait
@@ -32,6 +26,7 @@ namespace utility {
         std::priority_queue<task> tasks;
         std::condition_variable cv;
         std::mutex access_mutex;
+        std::atomic_int active_thread = 0;
         shutdown_policy policy = shutdown_policy::wait;
 
         void thread(const std::stop_token &token);
@@ -41,6 +36,8 @@ namespace utility {
         ~thread_pool();
         void post(std::function<void()> task, int priority = 0);
         void shutdown();
-
+        bool is_free() const;
+        void wait_until_free() const;
+        int get_active_thread() const;
     };
 }

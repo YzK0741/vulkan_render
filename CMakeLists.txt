@@ -16,11 +16,13 @@ target_sources(utility
         FILE_SET CXX_MODULES
         FILES
         utility/utility.cppm
-        utility/thread_pool.cppm
         PRIVATE
         utility/utility.cpp
-        utility/thread_pool.cpp
 )
+
+add_library(thread_pool STATIC)
+
+target_sources(thread_pool PRIVATE utility/thread_pool/thread_pool.cpp)
 
 add_library(vulkan_lib STATIC)
 
@@ -47,7 +49,6 @@ target_sources(vulkan_lib
 )
 
 add_library(gltf_loader STATIC)
-
 target_sources(gltf_loader
     PUBLIC
         FILE_SET CXX_MODULES
@@ -58,16 +59,20 @@ target_sources(gltf_loader
         gltf_loader/gltf_loader.cpp
 )
 
-target_link_libraries(vulkan_lib PRIVATE utility)
+target_link_libraries(vulkan_lib
+        Vulkan::Vulkan
+        glfw
+        utility
+        ${CMAKE_DL_LIBS}
+)
 
 add_executable(vulkan_render main.cpp)
 
 target_link_libraries(${PROJECT_NAME}
-        Vulkan::Vulkan
-        glfw
-        vulkan_lib
         utility
+        vulkan_lib
         OpenSSL::Crypto
+        thread_pool
 )
 
 target_compile_options(vulkan_render PRIVATE
@@ -86,7 +91,6 @@ target_compile_options(vulkan_render PRIVATE
         $<$<CONFIG:Debug>:
         -g
         -fno-omit-frame-pointer
-        -fstandalone-debug
         >
         -Wall
         -Wextra
@@ -105,9 +109,6 @@ target_compile_options(vulkan_lib PRIVATE
         -fno-asynchronous-unwind-tables
         -fmerge-all-constants
         >
-        $<$<CONFIG:Debug>:
-        -g
-        >
         -fno-exceptions
         -Wall
         -Wextra
@@ -118,4 +119,5 @@ target_compile_definitions(vulkan_lib PRIVATE
         $<$<CONFIG:Debug>:
         _DEBUG
         >
+        _GLIBCXX_INCLUDE_NO_TTY
 )
