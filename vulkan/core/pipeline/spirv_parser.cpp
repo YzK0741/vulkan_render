@@ -13,9 +13,6 @@ import utility;
 
 namespace {
 
-    std::vector<vulkan::pipeline::located_variable> parse_variables(std::vector<SpvReflectInterfaceVariable *> const& variables) {
-
-    }
 
 }
 

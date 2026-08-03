@@ -65,7 +65,6 @@ add_executable(vulkan_render main.cpp)
 target_link_libraries(${PROJECT_NAME}
         Vulkan::Vulkan
         glfw
-        mimalloc
         vulkan_lib
         utility
         OpenSSL::Crypto
