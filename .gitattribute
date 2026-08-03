@@ -1,1 +1,3 @@
-./spirv-reflect/** linguist-vendored
+* linguist-vendored
+*.cppm linguist-vendored=false
+*.cpp linguist-vendored=false
