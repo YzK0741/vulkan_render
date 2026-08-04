@@ -4,11 +4,9 @@
 
 module;
 
-#include <span>
 #include <optional>
 #include <vector>
 #include <expected>
-#include <string>
 #include <string_view>
 #include <vulkan/vulkan.h>
 
@@ -54,8 +52,6 @@ namespace vulkan {
     export using shader_input_descriptor = shader_variable_descriptor;
     export using shader_output_descriptor = shader_variable_descriptor;
 
-    std::optional<VkShaderModule> make_shader_module(std::span<unsigned char> shader, VkDevice device);
-
     export struct shader_info {
         std::vector<shader_data_type> in;
         std::vector<shader_data_type> out;
@@ -70,10 +66,17 @@ namespace vulkan {
         shader_info const &vertex_shader,
         shader_info const &fragment_shader, VkSampleCountFlagBits msaa_level);
 
-    std::expected<vk_pipeline, std::string_view> make_pipeline(const VkDevice device, VkRenderPass renderpass,
+    export std::expected<vk_pipeline, std::string_view> make_pipeline(VkDevice device, VkRenderPass renderpass,
                                                                std::vector<unsigned char> const &vertex_shader_code,
-                                                               std::vector<
-                                                                   unsigned char> const &fragment_shader_code,
+                                                               std::vector<unsigned char> const &fragment_shader_code,
                                                                VkSampleCountFlagBits msaa_level);
+
+    export std::expected<vk_pipeline, std::string_view> make_pipeline(
+       VkDevice &device,
+       VkRenderPass render_pass, // NOLINT(*-misplaced-const)
+       std::vector<unsigned char> const &vertex_shader_code,
+       std::vector<unsigned char> const &fragment_shader_code,
+       VkSampleCountFlagBits msaa_level
+   );
 
 }
