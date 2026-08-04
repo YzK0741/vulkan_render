@@ -3,14 +3,17 @@
 //
 module;
 
-#include <functional>
+#include <expected>
 #include <optional>
 #include <span>
 #include <numeric>
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
+#include <shaderc/shaderc.hpp>
 
 module vulkan.core.pipeline;
+import vulkan.pipeline.spirv_parser;
+
 
 namespace {
 
@@ -293,4 +296,50 @@ namespace vulkan {
 
         return vk_pipeline(pipeline, pipeline_layout, descriptor_set_layout, device);
     }
+
+    std::expected<vk_pipeline, std::string_view> make_pipeline(
+        [[maybe_unused]] const VkDevice device, // NOLINT(*-misplaced-const)
+        [[maybe_unused]] const VkRenderPass renderpass, // NOLINT(*-misplaced-const)
+        [[maybe_unused]] std::vector<unsigned char> const &vertex_shader_code,
+        [[maybe_unused]] std::vector<unsigned char> const &fragment_shader_code,
+        [[maybe_unused]] VkSampleCountFlagBits msaa_level
+    ) {
+
+        using fail = std::unexpected<std::string_view>;
+
+        auto vertex_interface_expected = pipeline::parse_shader_stage_interface(vertex_shader_code, VK_SHADER_STAGE_VERTEX_BIT);
+
+        if (!vertex_interface_expected) {
+            return fail(vertex_interface_expected.error());
+        }
+
+        auto vertex_interface = std::move(vertex_interface_expected).value();
+
+        VkVertexInputBindingDescription vertex_input_binding = {};
+        vertex_input_binding.binding = 0;
+        vertex_input_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        vertex_input_binding.stride = std::accumulate(vertex_interface.inputs.begin(), vertex_interface.inputs.end(), 0,
+            [](const uint32_t acc, decltype(*vertex_interface.inputs.begin()) type) {
+            return acc + pipeline::format_size(type.format);
+        });
+
+        std::vector<VkVertexInputAttributeDescription> attribute_descriptions = {};
+        attribute_descriptions.resize(vertex_interface.inputs.size());
+        uint32_t location = 0;
+        uint32_t offset = 0;
+
+        for (uint64_t index = 0; index < vertex_interface.inputs.size(); index++) {
+            auto& attribute = attribute_descriptions[index];
+            const auto& variable = vertex_interface.inputs[index];
+            attribute.format = variable.format;
+            attribute.location = location;
+            attribute.offset = offset;
+            location++;
+            offset += pipeline::format_size(variable.format);
+        }
+
+
+        return fail("function not completed");
+    }
 }
+

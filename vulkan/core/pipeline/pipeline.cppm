@@ -7,6 +7,9 @@ module;
 #include <span>
 #include <optional>
 #include <vector>
+#include <expected>
+#include <string>
+#include <string_view>
 #include <vulkan/vulkan.h>
 
 export module vulkan.core.pipeline;
@@ -66,5 +69,11 @@ namespace vulkan {
         VkRenderPass render_pass,
         shader_info const &vertex_shader,
         shader_info const &fragment_shader, VkSampleCountFlagBits msaa_level);
+
+    std::expected<vk_pipeline, std::string_view> make_pipeline(const VkDevice device, VkRenderPass renderpass,
+                                                               std::vector<unsigned char> const &vertex_shader_code,
+                                                               std::vector<
+                                                                   unsigned char> const &fragment_shader_code,
+                                                               VkSampleCountFlagBits msaa_level);
 
 }
