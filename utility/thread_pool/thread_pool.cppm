@@ -25,6 +25,7 @@ namespace utility {
         std::vector<std::jthread> threads;
         std::priority_queue<task> tasks;
         std::condition_variable cv;
+        std::condition_variable idle;
         std::mutex access_mutex;
         std::atomic_int active_thread = 0;
         shutdown_policy policy = shutdown_policy::wait;
@@ -37,7 +38,7 @@ namespace utility {
         void post(std::function<void()> task, int priority = 0);
         void shutdown();
         bool is_free() const;
-        void wait_until_free() const;
+        void wait_until_free();
         int get_active_thread() const;
     };
 }

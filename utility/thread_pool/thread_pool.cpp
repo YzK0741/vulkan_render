@@ -25,6 +25,9 @@ namespace utility {
             {
                 std::unique_lock lock(this->access_mutex);
                 this->active_thread.fetch_sub(1);
+                if (this->active_thread.load() < 1) {
+                    this->idle.notify_one();
+                }
                 cv.wait(lock, [this, &token]() {
                     return !this->tasks.empty() || token.stop_requested();
                 });
@@ -35,18 +38,25 @@ namespace utility {
                     return;
                 }
 
-                if (token.stop_requested() && this->policy == shutdown_policy::discard) {
-                    this->active_thread.fetch_sub(1);
-                    return;
+                if (token.stop_requested()) {
+                    if (this->tasks.empty()) {
+                        this->active_thread.fetch_sub(1);
+                        if (this->active_thread.load() == 0) {
+                            this->idle.notify_one();
+                        }
+                        return;
+                    }
+                    if (this->policy == shutdown_policy::discard) {
+                        this->active_thread.fetch_sub(1);
+                        if (this->active_thread.load() == 0) {
+                            this->idle.notify_one();
+                        }
+                        return;
+                    }
                 }
 
                 current_task = this->tasks.top().action;
                 this->tasks.pop();
-
-                if (!this->tasks.empty()) {
-                    this->cv.notify_one();
-                }
-
             }
             current_task();
         }
@@ -74,7 +84,7 @@ namespace utility {
         for (auto& thread : this->threads) {
             thread.request_stop();
         }
-        this->cv.notify_one();
+        this->cv.notify_all();
     }
 
     thread_pool::~thread_pool() {
@@ -85,10 +95,9 @@ namespace utility {
         return this->active_thread.load() == 0;
     }
 
-    void thread_pool::wait_until_free() const {
-        while (this->active_thread.load() > 0 || !this->tasks.empty()) {
-            std::this_thread::yield();
-        }
+    void thread_pool::wait_until_free() {
+        std::unique_lock lock(this->access_mutex);
+        this->idle.wait(lock, [this]{return this->tasks.empty();});
     }
 
     int thread_pool::get_active_thread() const {
