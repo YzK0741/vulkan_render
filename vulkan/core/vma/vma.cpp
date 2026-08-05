@@ -4,9 +4,9 @@
 module;
 
 
+#include <vulkan/vulkan.h>
 #define VMA_IMPLEMENTATION
 #include <vma/vk_mem_alloc.h>
-#include <exception>
 #include <map>
 #include <mutex>
 #include <ranges>
@@ -222,19 +222,7 @@ namespace {
         return info;
     }
 
-    VkCommandBuffer create_command_buffer(VkDevice device,const VkCommandPool& command_pool) {
-        VkCommandBuffer command_buffer = VK_NULL_HANDLE;
 
-        VkCommandBufferAllocateInfo command_buffer_allocate_info = {};
-        command_buffer_allocate_info.commandBufferCount = 1;
-        command_buffer_allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        command_buffer_allocate_info.commandPool = command_pool;
-        command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-
-        vkAllocateCommandBuffers(device, &command_buffer_allocate_info, &command_buffer);
-
-        return command_buffer;
-    }
 
     constexpr VkBufferCreateInfo get_create_info_from_type(const vulkan::buffer_type type) {
         VkBufferCreateInfo info = {};
@@ -369,18 +357,10 @@ namespace vulkan {
 
         vmaCreateAllocator(&vma_allocator_create_info, &this->allocator);
 
-        VkCommandPoolCreateInfo command_pool_create_info = {};
-
-        command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        command_pool_create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        command_pool_create_info.queueFamilyIndex = queue_family_index;
-
-        if (vkCreateCommandPool(device, &command_pool_create_info, nullptr, &this->command_pool) != VK_SUCCESS) {
-            utility::panic("Failed to create command pool");
-        }
-
         this->device = device;
         this->queue = queue;
+        this->queue_family_index = queue_family_index;
+        this->command_cache.push_back(this->create_command_pair());
     }
 
     void vma_allocator::destroy() {
@@ -400,9 +380,10 @@ namespace vulkan {
                 vkDestroyFence(this->device, fence, nullptr);
             }
             this->fence_cache.clear();
-
-            vkDestroyCommandPool(this->device, this->command_pool, nullptr);
-            this->command_pool = VK_NULL_HANDLE;
+            for (auto &command_pool: this->command_cache | std::views::keys) {
+                vkDestroyCommandPool(this->device, command_pool, nullptr);
+                command_pool = VK_NULL_HANDLE;
+            }
 
             vmaDestroyAllocator(this->allocator);
             this->allocator = VK_NULL_HANDLE;
@@ -481,13 +462,15 @@ namespace vulkan {
 
         std::unique_lock lock(this->access_mutex);
         // 执行拷贝命令
-        VkCommandBuffer command_buffer = {};
-        if (!this->command_buffer_cache.empty()) {
-            command_buffer = this->command_buffer_cache.back();
-            command_buffer_cache.pop_back();
+        std::pair<VkCommandPool, VkCommandBuffer> command_pair;
+        if (!this->command_cache.empty()) {
+            command_pair = this->command_cache.back();
+            this->command_cache.pop_back();
         } else {
-            command_buffer = create_command_buffer(this->device, this->command_pool);
+            command_pair = this->create_command_pair();
         }
+
+        VkCommandBuffer command_buffer = command_pair.second;
 
         VkFence fence = VK_NULL_HANDLE;
 
@@ -527,7 +510,7 @@ namespace vulkan {
         vkResetFences(this->device, 1, &fence);
         this->fence_cache.push_back(fence);
         vkResetCommandBuffer(command_buffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
-        this->command_buffer_cache.push_back(command_buffer);
+        this->command_cache.push_back(command_pair);
         vmaDestroyBuffer(this->allocator, staging_buffer, staging_allocation);
 
         return true;
@@ -595,14 +578,15 @@ namespace vulkan {
 
         std::unique_lock lock(this->access_mutex);
         // 执行拷贝命令
-        VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+        std::pair<VkCommandPool, VkCommandBuffer> command_pair;
 
-        if (!this->command_buffer_cache.empty()) {
-            command_buffer = this->command_buffer_cache.back();
-            command_buffer_cache.pop_back();
+        if (!this->command_cache.empty()) {
+            command_pair = this->command_cache.back();
+            command_cache.pop_back();
         } else {
-            command_buffer = create_command_buffer(this->device, this->command_pool);
+            command_pair = create_command_pair();
         }
+        VkCommandBuffer command_buffer = command_pair.second;
 
         VkFence fence = VK_NULL_HANDLE;
 
@@ -699,7 +683,7 @@ namespace vulkan {
         vkResetFences(this->device, 1, &fence);
         this->fence_cache.push_back(fence);
         vkResetCommandBuffer(command_buffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
-        this->command_buffer_cache.push_back(command_buffer);
+        this->command_cache.push_back(command_pair);
         vmaDestroyBuffer(this->allocator, staging_buffer, staging_allocation);
 
         return true;
@@ -865,5 +849,28 @@ namespace vulkan {
             vmaDestroyImage(this->allocator, info.image, info.allocation);
             this->images.erase(handle);
         }
+    }
+
+    std::pair<VkCommandPool, VkCommandBuffer> vma_allocator::create_command_pair() const {
+        VkCommandPoolCreateInfo command_pool_create_info = {};
+
+        command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        command_pool_create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        command_pool_create_info.queueFamilyIndex = this->queue_family_index;
+
+        VkCommandPool command_pool;
+        if (vkCreateCommandPool(device, &command_pool_create_info, nullptr, &command_pool) != VK_SUCCESS) {
+            utility::panic("Failed to create command pool");
+        }
+
+        VkCommandBuffer command_buffer;
+        VkCommandBufferAllocateInfo buffer_allocate_info = {};
+        buffer_allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        buffer_allocate_info.commandBufferCount = 1;
+        buffer_allocate_info.commandPool = command_pool;
+        if (vkAllocateCommandBuffers(this->device, &buffer_allocate_info, &command_buffer) != VK_SUCCESS) {
+            utility::panic("Failed to create command buffer");
+        }
+        return {command_pool, command_buffer};
     }
 }

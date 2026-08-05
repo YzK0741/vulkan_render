@@ -5,6 +5,7 @@ module;
 
 #include <vma/vk_mem_alloc.h>
 #include <map>
+#include <vector>
 #include <mutex>
 #include <span>
 
@@ -56,18 +57,19 @@ namespace vulkan {
         VmaAllocator allocator = {};
         VkDevice device = VK_NULL_HANDLE;
         VkQueue queue = VK_NULL_HANDLE;
-        VkCommandPool command_pool = VK_NULL_HANDLE;
-        std::vector<VkCommandBuffer> command_buffer_cache = {};
+        std::vector<std::pair<VkCommandPool, VkCommandBuffer>> command_cache;
         std::vector<VkFence> fence_cache = {};
         std::map<uint64_t, buffer_info> buffers = {};
         std::map<uint64_t, image_info> images = {};
         std::mutex access_mutex = {};
+        uint32_t queue_family_index = 0;
 
         [[nodiscard]] VkFence create_fence() const;
         bool direct_upload(VmaAllocation const &allocation, VmaAllocationInfo &allocation_info, const void *data, uint64_t size) const;
         bool staging_upload(VkBuffer dst_buffer, const void *data, VkDeviceSize size);
         bool direct_image_upload(VmaAllocation allocation, const void* data, VkDeviceSize size) const;
         bool staging_image_upload(VkImage dst_image, const void* data, VkDeviceSize size, const image_create_info& info);
+        std::pair<VkCommandPool, VkCommandBuffer> create_command_pair() const;
 
 
     public:
