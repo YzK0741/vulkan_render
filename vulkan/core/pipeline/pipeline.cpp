@@ -6,6 +6,7 @@ module;
 #include <expected>
 #include <optional>
 #include <span>
+#include <vector>
 #include <numeric>
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
@@ -283,14 +284,16 @@ namespace vulkan {
             return std::nullopt;
         }
 
-        return vk_pipeline(pipeline, pipeline_layout, descriptor_set_layout, device);
+        std::vector layouts{descriptor_set_layout};
+
+        return vk_pipeline(pipeline, pipeline_layout, layouts, device);
     }
 
     std::expected<vk_pipeline, std::string_view> make_pipeline(
         VkDevice &device,
         const VkRenderPass render_pass, // NOLINT(*-misplaced-const)
-        std::vector<unsigned char> const &vertex_shader_code,
-        std::vector<unsigned char> const &fragment_shader_code,
+        std::vector<unsigned char> vertex_shader_code,
+        std::vector<unsigned char> fragment_shader_code,
         VkSampleCountFlagBits msaa_level
     ) {
 
@@ -464,42 +467,69 @@ namespace vulkan {
             return fail("push constant range too big");
         }
 
-        std::vector<VkDescriptorSetLayoutBinding> bindings;
-        bindings.resize(2);
-        // 这里要求两个shader的uniform是相同的,且为2，1为ubo，2为纹理，否则视作违反调用规定
-        bindings[0].binding = 0;
-        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        bindings[0].descriptorCount = 1;
-        bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        bindings[0].pImmutableSamplers = nullptr;
+        auto vertex_descriptor_set_layout_expected
+                        = pipeline::parse_descriptor_set_layouts(vertex_shader_code, VK_SHADER_STAGE_VERTEX_BIT);
 
-        bindings[1].binding = 1;
-        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[1].descriptorCount = 1;
-        bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        bindings[1].pImmutableSamplers = nullptr;
-
-        VkDescriptorSetLayoutCreateInfo layout_create_info = {};
-        layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_create_info.bindingCount = 2;
-        layout_create_info.pBindings = bindings.data();
-
-        VkDescriptorSetLayout descriptor_set_layout = {};
-        if (vkCreateDescriptorSetLayout(device, &layout_create_info, nullptr, &descriptor_set_layout) != VK_SUCCESS) {
-            return fail("failed to create descriptor");
+        if (!vertex_descriptor_set_layout_expected) {
+            return fail(vertex_descriptor_set_layout_expected.error());
         }
+
+        auto vertex_descriptor_layout = std::move(vertex_descriptor_set_layout_expected).value();
+
+        std::vector<std::vector<VkDescriptorSetLayoutBinding>> set_layout_bindings;
+
+        for (auto& descriptor_set_layout_binding : vertex_descriptor_layout) {
+            set_layout_bindings[descriptor_set_layout_binding.set_number] = std::move(descriptor_set_layout_binding.bindings);
+        }
+
+        auto fragment_descriptor_set_layout_expected
+                        = pipeline::parse_descriptor_set_layouts(vertex_shader_code, VK_SHADER_STAGE_VERTEX_BIT);
+
+        if (!fragment_descriptor_set_layout_expected) {
+            return fail(fragment_descriptor_set_layout_expected.error());
+        }
+
+        auto fragment_descriptor_layout = std::move(fragment_descriptor_set_layout_expected).value();
+
+        for (auto& descriptor_set_layout_binding : fragment_descriptor_layout) {
+            set_layout_bindings[descriptor_set_layout_binding.set_number] = std::move(descriptor_set_layout_binding.bindings);
+        }
+
+        std::vector<VkDescriptorSetLayoutCreateInfo> descriptor_layout_create_infos;
+
+        for (auto& set_layout : set_layout_bindings) {
+            VkDescriptorSetLayoutCreateInfo create_info = {};
+            create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+            create_info.bindingCount = set_layout.size();
+            create_info.pBindings = set_layout.data();
+            descriptor_layout_create_infos.emplace_back(create_info);
+        }
+
+        std::vector<VkDescriptorSetLayout> set_layouts;
+
+        for (auto& descriptor_set_layout_create_info : descriptor_layout_create_infos) {
+            VkDescriptorSetLayout descriptor_set_layout = {};
+            if (vkCreateDescriptorSetLayout(device, &descriptor_set_layout_create_info, nullptr, &descriptor_set_layout) != VK_SUCCESS) {
+                return fail("failed to create descriptor");
+            }
+            set_layouts.push_back(descriptor_set_layout);
+        }
+
+
 
         VkPipelineLayoutCreateInfo pipeline_layout_create_info = {};
         pipeline_layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipeline_layout_create_info.pPushConstantRanges = push_constant_range.data();
         pipeline_layout_create_info.pushConstantRangeCount = push_constant_range.size();
-        pipeline_layout_create_info.pSetLayouts = &descriptor_set_layout;
-        pipeline_layout_create_info.setLayoutCount = 1;
+        pipeline_layout_create_info.pSetLayouts = set_layouts.data();
+        pipeline_layout_create_info.setLayoutCount = set_layouts.size();
 
         VkPipelineLayout pipeline_layout;
 
         if (vkCreatePipelineLayout(device, &pipeline_layout_create_info, nullptr, &pipeline_layout) != VK_SUCCESS) {
-            vkDestroyDescriptorSetLayout(device, descriptor_set_layout, nullptr);
+            for (auto& set_layout : set_layouts) {
+                vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
+            }
 
             return fail("failed to create pipeline layout");
         }
@@ -524,11 +554,13 @@ namespace vulkan {
         VkPipeline pipeline;
         if (vkCreateGraphicsPipelines(device, nullptr, 1, &pipeline_create_info, nullptr, &pipeline) != VK_SUCCESS) {
             vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
-            vkDestroyDescriptorSetLayout(device, descriptor_set_layout, nullptr);
+            for (auto& set_layout : set_layouts) {
+                vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
+            }
             return fail("failed to create pipeline");
         }
 
-        return vk_pipeline(pipeline, pipeline_layout, descriptor_set_layout, device);
+        return vk_pipeline(pipeline, pipeline_layout, set_layouts, device);
     }
 }
 

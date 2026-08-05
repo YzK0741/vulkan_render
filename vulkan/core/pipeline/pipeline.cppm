@@ -72,11 +72,12 @@ namespace vulkan {
                                                                VkSampleCountFlagBits msaa_level);
 
     export std::expected<vk_pipeline, std::string_view> make_pipeline(
-       VkDevice &device,
-       VkRenderPass render_pass, // NOLINT(*-misplaced-const)
-       std::vector<unsigned char> const &vertex_shader_code,
-       std::vector<unsigned char> const &fragment_shader_code,
-       VkSampleCountFlagBits msaa_level
-   );
+        VkDevice &device,
+        VkRenderPass render_pass,
+        // NOLINT(*-misplaced-const)
+        std::vector<unsigned char> vertex_shader_code,
+        std::vector<unsigned char> fragment_shader_code,
+        VkSampleCountFlagBits msaa_level
+    );
 
 }
