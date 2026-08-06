@@ -15,15 +15,16 @@ import utility;
 namespace vulkan {
 
     export struct buffer_info {
-        VkBuffer buffer;
-        VmaAllocation allocation;
-        VmaAllocationInfo allocation_info;
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        VmaAllocationInfo allocation_info = {};
     };
 
     export struct image_info {
-        VkImage image;
-        VmaAllocation allocation;
-        VmaAllocationInfo allocation_info;
+        VkImage image = VK_NULL_HANDLE;
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        VmaAllocationInfo allocation_info = {};
+        utility::sha256_digest digest = {};
     };
 
     export enum class buffer_type {
@@ -69,7 +70,7 @@ namespace vulkan {
         bool staging_upload(VkBuffer dst_buffer, const void *data, VkDeviceSize size);
         bool direct_image_upload(VmaAllocation allocation, const void* data, VkDeviceSize size) const;
         bool staging_image_upload(VkImage dst_image, const void* data, VkDeviceSize size, const image_create_info& info);
-        std::pair<VkCommandPool, VkCommandBuffer> create_command_pair() const;
+        [[nodiscard]] std::pair<VkCommandPool, VkCommandBuffer> create_command_pair() const;
 
 
     public:

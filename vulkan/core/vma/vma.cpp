@@ -459,8 +459,6 @@ namespace vulkan {
             vmaDestroyBuffer(this->allocator, staging_buffer, staging_allocation);
             return false;
         }
-
-        std::unique_lock lock(this->access_mutex);
         // 执行拷贝命令
         std::pair<VkCommandPool, VkCommandBuffer> command_pair;
         if (!this->command_cache.empty()) {
@@ -480,7 +478,6 @@ namespace vulkan {
         } else {
             fence = this->create_fence();
         }
-        lock.unlock();
 
 
         VkCommandBufferBeginInfo begin_info = {};
@@ -500,7 +497,6 @@ namespace vulkan {
         submit_info.pCommandBuffers = &command_buffer;
 
 
-        lock.lock();
         vkQueueSubmit(this->queue, 1, &submit_info, fence);
 
 
@@ -575,8 +571,6 @@ namespace vulkan {
             vmaDestroyBuffer(this->allocator, staging_buffer, staging_allocation);
             return false;
         }
-
-        std::unique_lock lock(this->access_mutex);
         // 执行拷贝命令
         std::pair<VkCommandPool, VkCommandBuffer> command_pair;
 
@@ -596,8 +590,6 @@ namespace vulkan {
         } else {
             fence = this->create_fence();
         }
-
-        lock.unlock();
 
         VkCommandBufferBeginInfo begin_info = {};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -674,7 +666,6 @@ namespace vulkan {
         submit_info.commandBufferCount = 1;
         submit_info.pCommandBuffers = &command_buffer;
 
-        lock.lock();
         vkQueueSubmit(this->queue, 1, &submit_info, fence);
 
         vkWaitForFences(this->device, 1, &fence, VK_TRUE, UINT64_MAX);
@@ -690,6 +681,7 @@ namespace vulkan {
     }
 
     uint64_t vma_allocator::create_buffer(const unsigned char *data, const uint64_t size_byte, const buffer_type type) {
+        std::lock_guard guard(this->access_mutex);
         uint64_t handle = 0;
 
         if (const auto result = this->distribute();result) {
@@ -740,15 +732,18 @@ namespace vulkan {
         if (!upload_success) {
             vmaDestroyBuffer(this->allocator, buffer, allocation);
             this->recycle(handle);
-            std::println("Failed to upload buffer");
+            utility::panic("Failed to upload buffer");
             return 0;
         }
+
+
 
         this->buffers[handle] = {.buffer = buffer, .allocation = allocation, .allocation_info = alloc_info};
         return handle;
     }
 
     uint64_t vma_allocator::create_image(const unsigned char *data, const uint64_t size_byte, image_create_info const &create_info, const image_type type) {
+        std::lock_guard guard(this->access_mutex);
         uint64_t handle = 0;
 
         if (const auto result = this->distribute();result) {
@@ -815,7 +810,13 @@ namespace vulkan {
             return 0;
         }
 
-        this->images[handle] = {.image = image, .allocation = allocation, .allocation_info = alloc_detail};
+        auto digest = utility::sha256(std::span(data, size_byte));
+
+        if (!digest) {
+            utility::panic("sha256 failed");
+        }
+
+        this->images[handle] = {.image = image, .allocation = allocation, .allocation_info = alloc_detail, .digest = digest.value()};
         return handle;
     }
 
