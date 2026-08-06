@@ -96,21 +96,9 @@ std::chrono::milliseconds utility::time_test(std::function<void()> const &test) 
     return std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 }
 
-bool utility::md5_digest::operator==(const md5_digest &other) const noexcept {
-    return (this->a == other.a && this->b == other.b);
-}
-
-bool utility::md5_digest::operator!=(md5_digest const &other) const noexcept {
-    return !(*this == other);
-}
-
-std::string utility::md5_digest::to_hex_string() const noexcept {
-    return std::format("{:016x}{:016x}", this->a, this->b);
-}
-
 std::optional<utility::md5_digest> utility::md5(const std::span<const unsigned char> data) {
-    md5_digest result = {};
-    unsigned int size_byte = sizeof(uint64_t) * 2;
+    md5_digest digest = {};
+    unsigned int size_byte = sizeof(md5_digest);
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
 
     if (!ctx) {
@@ -126,9 +114,63 @@ std::optional<utility::md5_digest> utility::md5(const std::span<const unsigned c
         return std::nullopt;
     }
 
-    if (const int code = EVP_DigestFinal_ex(ctx, reinterpret_cast<unsigned char *>(&result), &size_byte); code == 1) {
+    if (const int code = EVP_DigestFinal_ex(ctx, digest.data.data(), &size_byte); code == 1) {
         EVP_MD_CTX_destroy(ctx);
-        return result;
+        return digest;
+    }
+    EVP_MD_CTX_destroy(ctx);
+    return std::nullopt;
+}
+
+std::optional<utility::sha256_digest> utility::sha256(const std::span<const unsigned char> data){
+    sha256_digest digest = {};
+    unsigned int size_byte = sizeof(sha256_digest);
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+
+    if (!ctx) {
+        return std::nullopt;
+    }
+
+    if (!EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr)) {
+        EVP_MD_CTX_destroy(ctx);
+        return std::nullopt;
+    }
+    if (!EVP_DigestUpdate(ctx, data.data(), data.size_bytes())) {
+        EVP_MD_CTX_destroy(ctx);
+        return std::nullopt;
+    }
+
+    if (const int code = EVP_DigestFinal_ex(ctx, digest.data.data(), &size_byte); code == 1) {
+        EVP_MD_CTX_destroy(ctx);
+        return digest;
+    }
+    EVP_MD_CTX_destroy(ctx);
+    return std::nullopt;
+}
+
+std::optional<utility::blake2_digest> utility::blake2(std::span<const unsigned char> data) {
+    blake2_digest digest = {};
+
+    unsigned int size_byte = blake2_digest::size_byte;
+
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+
+    if (!ctx) {
+        return std::nullopt;
+    }
+
+    if (!EVP_DigestInit_ex(ctx, EVP_blake2b512(), nullptr)) {
+        EVP_MD_CTX_destroy(ctx);
+        return std::nullopt;
+    }
+    if (!EVP_DigestUpdate(ctx, data.data(), data.size_bytes())) {
+        EVP_MD_CTX_destroy(ctx);
+        return std::nullopt;
+    }
+
+    if (const int code = EVP_DigestFinal_ex(ctx, digest.data.data(), &size_byte); code == 1) {
+        EVP_MD_CTX_destroy(ctx);
+        return digest;
     }
     EVP_MD_CTX_destroy(ctx);
     return std::nullopt;

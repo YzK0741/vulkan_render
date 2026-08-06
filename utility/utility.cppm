@@ -3,6 +3,7 @@
 //
 module;
 
+#include <algorithm>
 #include <functional>
 #include <mutex>
 #include <print>
@@ -10,6 +11,7 @@ module;
 #include <set>
 #include <source_location>
 #include <stack>
+#include <openssl/evp.h>
 
 export module utility;
 
@@ -50,13 +52,43 @@ namespace utility {
 
     export std::chrono::milliseconds time_test(std::function<void()> const &test) noexcept;
 
-    export struct md5_digest {
-        uint64_t a = 0;
-        uint64_t b = 0;
-        bool operator==(md5_digest const& other) const noexcept;
-        bool operator!=(md5_digest const& other) const noexcept;
-        [[nodiscard]] std::string to_hex_string() const noexcept;
+    export template<size_t S>
+    struct data_block {
+        constexpr static uint32_t size_byte = S;
+        std::array<uint8_t, S> data;
+
+        bool operator==(data_block<S> const& other) const {
+            return std::ranges::equal(data, other.data);
+        }
+
+        bool operator!=(data_block<S> const& other) const {
+            return !(*this == other);
+        }
+
+        bool operator<(const data_block<S>& other) const {
+            return std::lexicographical_compare(
+                data.begin(), data.end(),
+                other.data.begin(), other.data.end()
+            );
+        }
+
+        [[nodiscard]] std::string to_hex_string() const {
+            std::string result;
+            result.reserve(S * 2);
+            std::ranges::for_each(this->data, [&result](auto const& byte){result += std::format("{:02x}", byte);});
+            return result;
+        }
     };
 
+    export using md5_digest = data_block<16>;
+
     export std::optional<md5_digest> md5(std::span<const unsigned char> data);
+
+    export using sha256_digest = data_block<32>;
+
+    export std::optional<sha256_digest> sha256(std::span<const unsigned char> data);
+
+    export using blake2_digest = data_block<64>;
+
+    export std::optional<blake2_digest> blake2(std::span<const unsigned char> data);
 }
