@@ -126,7 +126,7 @@ namespace utility {
         }
 
         auto operator<=>(const data_block<S>& other) const {
-            return std::lexicographical_compare(
+            return std::lexicographical_compare_three_way(
                 data.begin(), data.end(),
                 other.data.begin(), other.data.end()
             );
@@ -141,6 +141,7 @@ namespace utility {
     };
 
     /**
+     * @ingroup utility
      * @brief hash series functions wrapper of openssl
      * @note
      *     - digest supports operator==/!=/<=>, hex formatter (.to_hex_string())
