@@ -3,6 +3,7 @@
 //
 module;
 
+#include <optional>
 #include <string_view>
 #include <vector>
 #include <span>
@@ -10,7 +11,6 @@ module;
 #include <vulkan/vulkan.h>
 
 export module vulkan.core;
-
 import utility;
 export import vulkan.core.handles;
 export import vulkan.vma;
@@ -93,12 +93,37 @@ namespace vulkan {
 
         vma_allocator vma = {};
 
+        // 图像可用信号量（当交换链图像准备好渲染时触发）
+        std::vector<VkSemaphore> image_available_semaphores;
+
+        // 渲染完成信号量（当渲染完成可以呈现时触发）
+        std::vector<VkSemaphore> render_finished_semaphores;
+
+        // 每帧的栅栏（确保同一帧的命令缓冲区不会同时执行）
+        std::vector<VkFence> in_flight_fences;
+
+        // 跟踪哪些帧正在使用中
+        std::vector<VkFence> images_in_flight;
+
+        // 当前帧索引
+        size_t current_frame = 0;
+
+        // 最大并发帧数（通常是交换链图像数量）
+        static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+
+        void create_sync_objects();
+
         core();
         ~core();
 
         vk_command_buffer make_command_buffer();
         vk_descriptor_set make_descriptor_set(VkDescriptorSetLayout layout);
-        vk_shader_module make_shader_module(std::span<unsigned char> shader) noexcept;
 
+        std::optional<vk_shader_module> make_shader_module(std::span<unsigned char> shader) noexcept;
+
+        VkResult get_image_index(uint32_t &image_index) const;
+        void wait_usable_image(uint32_t image_index);
+        void reset_fence(uint32_t frame_index) const;
+        void recreate_swap_chain();
     };
 }

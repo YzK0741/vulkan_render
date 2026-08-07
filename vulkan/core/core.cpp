@@ -321,7 +321,7 @@ namespace vulkan {
             }
         }
         register_cleanup([this] {
-            for (const auto& image_view : swap_chain_image_views) {
+            for (const auto& image_view : this->swap_chain_image_views) {
                 vkDestroyImageView(device, image_view, nullptr);
             }
         });
@@ -701,6 +701,42 @@ namespace vulkan {
         }
     }
 
+    void core::create_sync_objects() {
+        image_available_semaphores.resize(MAX_FRAMES_IN_FLIGHT);
+        render_finished_semaphores.resize(MAX_FRAMES_IN_FLIGHT);
+        in_flight_fences.resize(MAX_FRAMES_IN_FLIGHT);
+        images_in_flight.resize(swap_chain_images.size(), VK_NULL_HANDLE);
+
+        VkSemaphoreCreateInfo semaphore_info{};
+        semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+        VkFenceCreateInfo fence_info{};
+        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;  // 初始为已触发状态
+
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            if (vkCreateSemaphore(device, &semaphore_info, nullptr, &image_available_semaphores[i]) != VK_SUCCESS ||
+                    vkCreateSemaphore(device, &semaphore_info, nullptr, &render_finished_semaphores[i]) != VK_SUCCESS ||
+                    vkCreateFence(device, &fence_info, nullptr, &in_flight_fences[i]) != VK_SUCCESS) {
+                    utility::panic("failed to create synchronization objects for a frame!");
+                }
+        }
+
+        register_cleanup([this] {
+            for (const auto& semaphore : image_available_semaphores) {
+                vkDestroySemaphore(device, semaphore, nullptr);
+            }
+
+            for (const auto& semaphore : render_finished_semaphores) {
+                vkDestroySemaphore(device, semaphore, nullptr);
+            }
+
+            for (const auto& fence : in_flight_fences) {
+                vkDestroyFence(device, fence, nullptr);
+            }
+        });
+    }
+
     vk_command_buffer core::make_command_buffer() {
         return ::vulkan::make_command_buffer(this->device, this->command_pool);
     }
@@ -709,7 +745,104 @@ namespace vulkan {
         return ::vulkan::make_descriptor_set(this->device, this->descriptor_pool, layout);
     }
 
-    vk_shader_module core::make_shader_module(const std::span<unsigned char> shader) noexcept {
+    std::optional<vk_shader_module> core::make_shader_module(const std::span<unsigned char> shader) noexcept {
         return ::vulkan::make_shader_module(shader, this->device);
+    }
+
+    VkResult core::get_image_index(uint32_t &image_index) const {
+        return vkAcquireNextImageKHR(
+            this->device,
+            this->swap_chain,
+            UINT64_MAX,
+            this->image_available_semaphores[this->current_frame],
+            this->in_flight_fences[this->current_frame],
+            &image_index
+        );
+    }
+
+    void core::wait_usable_image(const uint32_t image_index) {
+        if (images_in_flight[image_index] != VK_NULL_HANDLE) {
+            vkWaitForFences(device, 1, &images_in_flight[image_index], VK_TRUE, UINT64_MAX);
+        }
+        images_in_flight[image_index] = in_flight_fences[current_frame];
+    }
+
+    void core::reset_fence(const uint32_t frame_index) const {
+        vkResetFences(device, 1, &in_flight_fences[frame_index]);
+    }
+
+    void core::recreate_swap_chain() {
+        // 1. 等待设备空闲
+        vkDeviceWaitIdle(device);
+
+        // 2. 先销毁所有 Framebuffer
+        for (const auto& frame_buffer : swap_chain_framebuffers) {
+            vkDestroyFramebuffer(device, frame_buffer, nullptr);
+        }
+        swap_chain_framebuffers.clear();
+
+        // 3. 销毁 RenderPass
+        if (this->renderpass != VK_NULL_HANDLE) {
+            vkDestroyRenderPass(device, renderpass, nullptr);
+            renderpass = VK_NULL_HANDLE;
+        }
+
+        // 4. 销毁 MSAA 颜色资源
+        if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
+            for (const auto& view : color_image_views) {
+                vkDestroyImageView(device, view, nullptr);
+            }
+            color_image_views.clear();
+
+            for (const auto& image : color_images) {
+                vkDestroyImage(device, image, nullptr);
+            }
+            color_images.clear();
+
+            for (const auto& memory : color_image_memories) {
+                vkFreeMemory(device, memory, nullptr);
+            }
+            color_image_memories.clear();
+        }
+
+        // 5. 销毁深度资源
+        for (const auto& view : depth_image_views) {
+            vkDestroyImageView(device, view, nullptr);
+        }
+        depth_image_views.clear();
+
+        for (const auto& image : depth_images) {
+            vkDestroyImage(device, image, nullptr);
+        }
+        depth_images.clear();
+
+        for (const auto& memory : depth_image_memories) {
+            vkFreeMemory(device, memory, nullptr);
+        }
+        depth_image_memories.clear();
+
+        // 6. 销毁 SwapChain ImageViews
+        for (const auto& image_view : swap_chain_image_views) {
+            vkDestroyImageView(device, image_view, nullptr);
+        }
+        swap_chain_image_views.clear();
+
+        // 7. 销毁 SwapChain 本身
+        if (swap_chain != VK_NULL_HANDLE) {
+            vkDestroySwapchainKHR(device, swap_chain, nullptr);
+            swap_chain = VK_NULL_HANDLE;
+        }
+
+        // 8. 重新创建所有资源
+        this->init_swap_chain();      // 重建 SwapChain
+        this->init_image_views();     // 重建 ImageViews
+        this->create_depth_resources(); // 重建深度资源
+
+        if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
+            this->create_color_resources(); // 重建 MSAA 颜色资源
+        }
+
+        this->init_renderpass();      // 重建 RenderPass
+        this->create_frame_buffers(); // 重建 Framebuffer
     }
 }
