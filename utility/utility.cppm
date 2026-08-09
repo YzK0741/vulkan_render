@@ -3,7 +3,6 @@
 //
 module;
 
-#include <algorithm>
 #include <functional>
 #include <mutex>
 #include <print>
@@ -11,10 +10,9 @@ module;
 #include <set>
 #include <source_location>
 #include <stack>
-#include <openssl/evp.h>
 
 export module utility;
-
+export import utility.data_block;
 
 /**
  * @file utility.cppm
@@ -30,7 +28,7 @@ namespace utility {
      *     - thread-safe (by using std::mutex)
      *     - consider use it in private as a class feature
      *
-     * @code{.cpp}
+     * @code {.cpp}
      * class derived : enable_handle_distribute {
      *     uint64_t derived::mem() {
      *         uint64_t handle = 0
@@ -60,6 +58,31 @@ namespace utility {
 
     };
 
+    /**
+     * @ingroup utility
+     * @brief a mixin class which enables derived class a stack-style destruct ability
+     * @note
+     *     - LIFO
+     *     - consider use it in private as a class feature
+     *     - thread safe
+     *
+     * @code {.cpp}
+     * class sth : enable_stack_destruct{
+     *     void mem(){
+     *         //...
+     *         this->register_cleanup(
+     *             [this]{
+     *                 // sth cleanup...
+     *             });
+     *     }
+     *     ~sth(){
+     *         this->do_cleanup();
+     *         //sth cleanup without stack-style...
+     *     }
+     *     //...
+     * }
+     * @endcode
+     */
     export class enable_stack_destruct {
     public:
         using destruct_type = std::function<void()>;
@@ -69,11 +92,22 @@ namespace utility {
         std::mutex access_mutex = {};
 
     public:
+        /**
+         * @param destructor callable objects you wants to push in the destruct stack
+         */
         void register_cleanup(std::function<void()> const& destructor) noexcept;
-
-        void cleanup() noexcept;
-
-        void clear() noexcept;
+        /**
+         * @note invoke this function will remove destructor on the stack top
+         */
+        void pop_destructor() noexcept;
+        /**
+         * @note pop and invoke all destructor in the stack
+         */
+        void do_cleanup() noexcept;
+        /**
+         * @note clean the stack without invoke
+         */
+        void clear_stack() noexcept;
     };
 
     /**
@@ -104,41 +138,7 @@ namespace utility {
     export std::chrono::milliseconds time_test(std::function<void()> const &test) noexcept;
 
 
-    /**
-     * @ingroup utility
-     * @brief struct template creates a sized data type provides auto generated operator==/!= (use std::ranges::equal),
-     *     operator<=>(use std::lexicographical_compare) and hex formatter (.to_hex_string())
-     * @tparam S byte size of the struct
-     */
-    export template<size_t S>
-    struct data_block {
-        constexpr static uint32_t size_byte = S;
-        std::array<uint8_t, S> data;
 
-        constexpr static size_t size = S;
-
-        bool operator==(data_block<S> const& other) const {
-            return std::ranges::equal(data, other.data);
-        }
-
-        bool operator!=(data_block<S> const& other) const {
-            return !(*this == other);
-        }
-
-        auto operator<=>(const data_block<S>& other) const {
-            return std::lexicographical_compare_three_way(
-                data.begin(), data.end(),
-                other.data.begin(), other.data.end()
-            );
-        }
-
-        [[nodiscard]] std::string to_hex_string() const {
-            std::string result;
-            result.reserve(S * 2);
-            std::ranges::for_each(this->data, [&result](auto const& byte){result += std::format("{:02x}", byte);});
-            return result;
-        }
-    };
 
     /**
      * @ingroup utility
