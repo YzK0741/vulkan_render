@@ -9,6 +9,29 @@ find_package(glfw3 REQUIRED)
 find_package(glm REQUIRED)
 find_package(OpenSSL REQUIRED)
 
+set(COMPILE_OPTIONS
+        $<$<CONFIG:Release>:
+        -O3
+        -fno-rtti
+        -fno-exceptions
+        -ffunction-sections
+        -fdata-sections
+        -flto
+        -march=native
+        -fno-unwind-tables
+        -fno-asynchronous-unwind-tables
+        -fmerge-all-constants
+        >
+        $<$<CONFIG:Debug>:
+        -g
+        -fno-omit-frame-pointer
+        >
+        -fno-exceptions
+        -Wall
+        -Wextra
+        -Werror
+)
+
 add_library(utility STATIC)
 
 target_sources(utility
@@ -16,8 +39,11 @@ target_sources(utility
         FILE_SET CXX_MODULES
         FILES
         utility/utility.cppm
+        utility/data_block.cppm
+        utility/BVH/bvh.cppm
         PRIVATE
         utility/utility.cpp
+        utility/BVH/bvh.cpp
 )
 
 add_library(thread_pool STATIC)
@@ -47,7 +73,6 @@ target_sources(vulkan_lib
         vulkan/model/model.cpp
         vulkan/core/pipeline/spirv_parser.cpp
 )
-
 add_library(gltf_loader STATIC)
 target_sources(gltf_loader
     PUBLIC
@@ -76,48 +101,19 @@ target_link_libraries(${PROJECT_NAME}
 )
 
 target_compile_options(vulkan_render PRIVATE
-        $<$<CONFIG:Release>:
-        -O3
-        -fno-rtti
-        -fno-exceptions
-        -ffunction-sections
-        -fdata-sections
-        -flto
-        -march=native
-        -fno-unwind-tables
-        -fno-asynchronous-unwind-tables
-        -fmerge-all-constants
-        >
-        $<$<CONFIG:Debug>:
-        -g
-        -fno-omit-frame-pointer
-        >
-        -Wall
-        -Wextra
-        -Werror
+        ${COMPILE_OPTIONS}
 )
 
 target_compile_options(vulkan_lib PRIVATE
-        $<$<CONFIG:Release>:
-        -O3
-        -fno-rtti
-        -ffunction-sections
-        -fdata-sections
-        -flto
-        -march=native
-        -fno-unwind-tables
-        -fno-asynchronous-unwind-tables
-        -fmerge-all-constants
-        >
-        -fno-exceptions
-        -Wall
-        -Wextra
-        -Werror
+        ${COMPILE_OPTIONS}
+)
+
+target_compile_options(utility PRIVATE
+        ${COMPILE_OPTIONS}
 )
 
 target_compile_definitions(vulkan_lib PRIVATE
         $<$<CONFIG:Debug>:
         _DEBUG
         >
-        _GLIBCXX_INCLUDE_NO_TTY
 )
