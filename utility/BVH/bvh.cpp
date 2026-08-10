@@ -16,19 +16,18 @@ namespace
         utility::morton_code code;
         const auto out = code.data.data();
 
-        // 将32位扩展到96位（隔两位插入0）
-        auto spread = [](__uint128_t n) -> __uint128_t {
-            n = (n | (n << 16)) & 0x0000FFFF0000FFFFULL;
-            n = (n | (n << 8))  & 0x00FF00FF00FF00FFULL;
-            n = (n | (n << 4))  & 0x0F0F0F0F0F0F0F0FULL;
-            n = (n | (n << 2))  & 0x3333333333333333ULL;
-            n = (n | (n << 1))  & 0x5555555555555555ULL;
-            return n;
+        auto spread = [](const uint32_t n) -> __uint128_t {
+            __uint128_t output = 0;
+            for (int i = 0; i < 32; i++) {
+                const uint64_t bit = (n >> i) & 1;
+                output |= (bit << (3 * i));
+            }
+            return output;
         };
 
-        const uint64_t x_spread = spread(x);
-        const uint64_t y_spread = spread(y);
-        const uint64_t z_spread = spread(z);
+        const __uint128_t x_spread = spread(x);
+        const __uint128_t y_spread = spread(y);
+        const __uint128_t z_spread = spread(z);
 
 
         __uint128_t result = 0;
@@ -36,7 +35,6 @@ namespace
         result |= static_cast<__uint128_t>(y_spread) << 1;
         result |= static_cast<__uint128_t>(z_spread) << 2;
 
-        // 复制到输出数组（12字节）
         memcpy(out, &result, 12);
         return code;
     }
