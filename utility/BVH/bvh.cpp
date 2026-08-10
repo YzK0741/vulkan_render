@@ -44,20 +44,9 @@ namespace
 
 namespace utility
 {
-    glm::vec3 aabb_box::get_midpoint() const noexcept
-    {
-        glm::vec3 midpoint;
-        midpoint.x = (min.x + max.x) * 0.5f;
-        midpoint.y = (min.y + max.y) * 0.5f;
-        midpoint.z = (min.z + max.z) * 0.5f;
-        return midpoint;
-    }
-
-    std::expected<morton_code, std::string> generate_morton_from_aabb(aabb_box const& box, const float scale)
+    std::expected<morton_code, std::string> generate_morton_from_midpoint(glm::vec3 const& midpoint, const float scale)
     {
         using fail = std::unexpected<std::string>;
-
-        const glm::vec3 midpoint = box.get_midpoint();
 
         if (midpoint.x < 0.0 || midpoint.y < 0.0 || midpoint.z < 0.0 || midpoint.x > 1.0 || midpoint.y > 1.0 || midpoint.z > 1.0)
         {
