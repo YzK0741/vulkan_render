@@ -16,7 +16,7 @@ export import utility.data_block;
 
 namespace
 {
-    bool hit(glm::vec3 const& min, glm::vec3 const& max , glm::vec3 const& start, glm::vec3 const& direction, const float t_min = 0.01f, const float t_max = std::numeric_limits<float>::infinity())
+    [[maybe_unused]] bool hit(glm::vec3 const& min, glm::vec3 const& max , glm::vec3 const& start, glm::vec3 const& direction, const float t_min = 0.01f, const float t_max = std::numeric_limits<float>::infinity())
     {
         float near = t_min;
         float far = t_max;

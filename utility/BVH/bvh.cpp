@@ -65,11 +65,11 @@ namespace utility
     {
         return std::ranges::all_of(this->planes, [&min, &max](glm::vec4 const& p)
         {
-            const glm::vec3 pos = {
-                .x = p.x >= 0? max.x : min.x,
-                .y = p.y >= 0? max.y : min.y,
-                .z = p.z >= 0? max.z : min.z
-            };
+            glm::vec3 pos = {};
+            pos.x = p.x >= 0? max.x : min.x;
+            pos.y = p.y >= 0? max.y : min.y;
+            pos.z = p.z >= 0? max.z : min.z;
+
             if (glm::dot(pos, glm::vec3(p.x, p.y, p.z)) + p.w < 0) return false;
             return true;
         });
