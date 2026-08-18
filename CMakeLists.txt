@@ -41,9 +41,11 @@ target_sources(utility
         utility/utility.cppm
         utility/data_block.cppm
         utility/BVH/bvh.cppm
+        utility/better_pmr/better_pmr.cppm
         PRIVATE
         utility/utility.cpp
         utility/BVH/bvh.cpp
+        utility/better_pmr/better_pmr.cpp
 )
 
 add_library(thread_pool STATIC)
