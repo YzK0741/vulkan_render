@@ -11,6 +11,40 @@ module;
 
 module utility.bvh;
 
+bool hit(glm::vec3 const& min, glm::vec3 const& max , glm::vec3 const& start, glm::vec3 const& direction, const float t_min, const float t_max)
+{
+    float near = t_min;
+    float far = t_max;
+
+    for (int axis = 0; axis < 3; axis++)
+    {
+        if (glm::abs(direction[axis]) < 1e-8)
+        {
+            if (start[axis] < min[axis] || start[axis] > max[axis])
+            {
+                return false;
+            }
+        }
+        else
+        {
+            const float invD = 1.0f / direction[axis];
+            float t1 = (min[axis] - start[axis]) * invD;
+            float t2 = (max[axis] - start[axis]) * invD;
+
+            if (t1 > t2) std::swap(t1, t2);
+
+            near = std::max(near, t1);
+            far = std::min(far, t2);
+
+            if (near > far) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+
 namespace
 {
     utility::morton_code morton_encode(const uint32_t x, const uint32_t y, const uint32_t z) {
@@ -43,6 +77,7 @@ namespace
 
 namespace utility
 {
+
     std::expected<morton_code, std::string> generate_morton_from_midpoint(glm::vec3 const& midpoint, const float scale)
     {
         using fail = std::unexpected<std::string>;

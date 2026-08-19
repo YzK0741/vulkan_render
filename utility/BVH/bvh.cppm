@@ -14,41 +14,8 @@ module;
 export module utility.bvh;
 export import utility.data_block;
 
-namespace
-{
-    [[maybe_unused]] bool hit(glm::vec3 const& min, glm::vec3 const& max , glm::vec3 const& start, glm::vec3 const& direction, const float t_min = 0.01f, const float t_max = std::numeric_limits<float>::infinity())
-    {
-        float near = t_min;
-        float far = t_max;
 
-        for (int axis = 0; axis < 3; axis++)
-        {
-            if (glm::abs(direction[axis]) < 1e-8)
-            {
-                if (start[axis] < min[axis] || start[axis] > max[axis])
-                {
-                    return false;
-                }
-            }
-            else
-            {
-                const float invD = 1.0f / direction[axis];
-                float t1 = (min[axis] - start[axis]) * invD;
-                float t2 = (max[axis] - start[axis]) * invD;
-
-                if (t1 > t2) std::swap(t1, t2);
-
-                near = std::max(near, t1);
-                far = std::min(far, t2);
-
-                if (near > far) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    }
-}
+bool hit(glm::vec3 const& min, glm::vec3 const& max , glm::vec3 const& start, glm::vec3 const& direction, float t_min = 0.01f, float t_max = std::numeric_limits<float>::infinity());
 
 namespace utility
 {
@@ -58,6 +25,11 @@ namespace utility
         glm::vec3 min = {};
         glm::vec3 max = {};
         T* extra_data = nullptr;
+
+        bool is_valid()
+        {
+            return (this->min.x > this->max.x || this->min.y > this->max.y || this->min.z > this->max.z);
+        }
         [[nodiscard]] glm::vec3 get_midpoint() const noexcept
         {
             glm::vec3 midpoint;
@@ -65,6 +37,13 @@ namespace utility
             midpoint.y = (min.y + max.y) * 0.5f;
             midpoint.z = (min.z + max.z) * 0.5f;
             return midpoint;
+        }
+        aabb_box get_intersection(aabb_box const& other) const noexcept
+        {
+            aabb_box intersection;
+            intersection.max = std::min(other.max, this->max);
+            intersection.min = std::max(other.min, other.min);
+            return intersection;
         }
         aabb_box get_common(aabb_box const& other) const noexcept
         {
@@ -82,7 +61,17 @@ namespace utility
             return 2.0f * (w * h + w * l + h * l);
         }
 
+        explicit operator bool()
+        {
+            return this->is_valid();
+        }
+
         aabb_box operator&(aabb_box const& other) const noexcept
+        {
+            return this->get_intersection(other);
+        }
+
+        aabb_box operator|(aabb_box const& other) const noexcept
         {
             return this->get_common(other);
         }
@@ -168,7 +157,7 @@ namespace utility
                     ++leave_it;
                     node->right = &*leave_it;
                     ++leave_it;
-                    node->aabb = node->left->aabb & node->right->aabb;
+                    node->aabb = node->left->aabb | node->right->aabb;
                     auto code = generate_morton_from_midpoint(node->aabb.get_midpoint());
                     if (!code)
                     {
@@ -197,7 +186,7 @@ namespace utility
                         ++layer_it;
                         node->right = &*layer_it;
                         ++layer_it;
-                        node->aabb = node->left->aabb & node->right->aabb;
+                        node->aabb = node->left->aabb | node->right->aabb;
                         auto code = generate_morton_from_midpoint(node->aabb.get_midpoint());
                         if (!code)
                         {
@@ -315,7 +304,6 @@ namespace utility
                 return result;
             }
 
-            // 快速拒绝：根节点都不在视锥体内
             if (!f.in(root->aabb.min, root->aabb.max))
             {
                 return result;
@@ -329,7 +317,6 @@ namespace utility
                 bvh_node<T>* node = nodes_to_process.top();
                 nodes_to_process.pop();
 
-                // 先检查当前节点的AABB
                 if (!f.in(node->aabb.min, node->aabb.max))
                 {
                     continue;
@@ -350,9 +337,7 @@ namespace utility
                     nodes_to_process.push(node->right);
                 }
             }
-
             return result;
         }
     };
-
 }
