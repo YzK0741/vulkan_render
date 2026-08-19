@@ -22,8 +22,11 @@ namespace utility
         std::unique_ptr<mimalloc_memory_resource> memory_resource = nullptr;
         pmr_manager();
     public:
+        pmr_manager(pmr_manager const&) = delete;
+        pmr_manager& operator=(pmr_manager const&) = delete;
         ~pmr_manager();
         friend pmr_manager& init_pmr();
     };
     pmr_manager& init_pmr();
+
 }
