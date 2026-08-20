@@ -41,8 +41,8 @@ namespace utility
         aabb_box get_intersection(aabb_box const& other) const noexcept
         {
             aabb_box intersection;
-            intersection.max = std::min(other.max, this->max);
-            intersection.min = std::max(other.min, other.min);
+            intersection.max = glm::min(other.max, this->max);
+            intersection.min = glm::max(other.min, other.min);
             return intersection;
         }
         aabb_box get_common(aabb_box const& other) const noexcept
@@ -84,9 +84,9 @@ namespace utility
     export template<typename T>
     struct bvh_node
     {
-        bvh_node* left;
-        bvh_node* right;
-        morton_code code;
+        bvh_node* left = nullptr;
+        bvh_node* right = nullptr;
+        morton_code code = {};
         struct
         {
             glm::vec3 min;

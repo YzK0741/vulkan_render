@@ -11,10 +11,11 @@ module;
 export module utility.data_block;
 namespace utility
  {
-     /**
+    /**
+     * @defgroup data_block
      * @ingroup utility
      * @brief struct template creates a sized data type provides auto generated operator==/!= (use std::ranges::equal),
-     *     operator<=>(use std::lexicographical_compare) and hex formatter (.to_hex_string())
+     *     operator<=>(use std::lexicographical_compare_three_way) and hex formatter (.to_hex_string())
      * @tparam S byte size of the struct
      */
      export template<size_t S>

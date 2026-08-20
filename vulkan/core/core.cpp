@@ -42,7 +42,7 @@ namespace vulkan {
 
     core::~core() {
         vkDeviceWaitIdle(this->device);
-        this->cleanup();
+        this->do_cleanup();
     }
 
     void core::init_window(const int width, const int height, const std::string_view window_name) noexcept {
