@@ -1,15 +1,28 @@
 //
 // Created by 小叶 on 2026/7/29.
-//
+//3
 
 module;
 
+#include <optional>
 #include <span>
+#include <vector>
 #include <vulkan/vulkan.h>
 
 export module vulkan.core.handles;
 
+/**
+ * @defgroup vulkan_handles Vulkan Main Handles' RAII Wrapper
+ * @file handles.cppm
+ */
 namespace vulkan {
+    /**
+     * @ingroup vulkan_handles
+     * @brief raii wrapper VkCommandBuffer
+     * @note
+     *     - use operator* or get() to get naked handle
+     *     - sole ownership
+     */
     export class vk_command_buffer {
         VkCommandBuffer command_buffer = VK_NULL_HANDLE;
         VkDevice* device = nullptr;
@@ -29,8 +42,21 @@ namespace vulkan {
         vk_command_buffer& operator=(vk_command_buffer&& other) noexcept;
     };
 
+    /**
+     * @ingroup vulkan_handles
+     * @param device valid VkDevice
+     * @param command_pool valid VkCommandPool
+     * @return raii VkCommandBuffer wrapper
+     */
     export vk_command_buffer make_command_buffer(VkDevice &device, VkCommandPool &command_pool) noexcept;
 
+    /**
+     * @ingroup vulkan_handles
+     * @brief raii wrapper of VkDescriptorSet
+     * @note
+     *     - use operator* or get() to get naked handle
+     *     - sole ownership
+     */
     export class vk_descriptor_set {
         VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
         VkDevice* device = nullptr;
@@ -50,8 +76,22 @@ namespace vulkan {
         vk_descriptor_set& operator=(vk_descriptor_set&& other) noexcept;
     };
 
+    /**
+     * @ingroup vulkan_handles
+     * @param device valid VkDevice
+     * @param descriptor_pool valid VkDescriptorPool
+     * @param layout valid VkDescriptorSetLayout
+     * @return raii wrapper of VkDescriptorSet
+     */
     export vk_descriptor_set make_descriptor_set(VkDevice &device, VkDescriptorPool &descriptor_pool, VkDescriptorSetLayout const &layout) noexcept;
 
+    /**
+     * @ingroup vulkan_handles
+     * @brief raii wrapper of VkShaderModule
+     * @note
+     *     - use operator* or get() to get naked handle
+     *     - sole ownership
+     */
     export class vk_shader_module {
         VkShaderModule shader_module = VK_NULL_HANDLE;
         VkDevice* device = nullptr;
@@ -69,19 +109,35 @@ namespace vulkan {
         vk_shader_module& operator=(vk_shader_module&& other) noexcept;
     };
 
-    export vk_shader_module make_shader_module(std::span<unsigned char> shader, VkDevice& device) noexcept;
+    /**
+     * @ingroup vulkan_handles
+     * @param shader binary shader code
+     * @param device valid VkDevice
+     * @return success: raii wrapper of VkShaderModule
+     *     fail: std::nullopt
+     */
+    export std::optional<vk_shader_module> make_shader_module(std::span<const unsigned char> shader,
+                                                              VkDevice &device) noexcept;
 
+    /**
+     * @ingroup vulkan_handles
+     * @brief raii wrapper of VkPipeline
+     * @note
+     *     - use operator* or get() to get naked handle
+     *     - sole ownership
+     */
     export struct vk_pipeline {
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-        VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
+
+        std::vector<VkDescriptorSetLayout> descriptor_set_layouts;
         VkDevice* device = nullptr;
 
-        explicit vk_pipeline(VkPipeline pipeline, VkPipelineLayout pipeline_layout, VkDescriptorSetLayout descriptor_set_layout, VkDevice& device) noexcept;
+        explicit vk_pipeline(VkPipeline pipeline, VkPipelineLayout pipeline_layout, std::vector<VkDescriptorSetLayout> const& descriptor_set_layouts, VkDevice& device) noexcept; // NOLINT(*-avoid-const-params-in-decls)
         ~vk_pipeline();
         [[nodiscard]] VkPipeline get_pipeline() const noexcept;
         [[nodiscard]] VkPipelineLayout get_pipeline_layout() const noexcept;
-        [[nodiscard]] VkDescriptorSetLayout get_descriptor_set_layout() const noexcept;
+        [[nodiscard]] std::vector<VkDescriptorSetLayout> get_descriptor_set_layouts() const noexcept;
 
         vk_pipeline(vk_pipeline&) = delete;
         vk_pipeline(vk_pipeline&& other) noexcept;
