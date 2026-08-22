@@ -1,14 +1,18 @@
 //
 // Created by 小叶 on 2026/8/2.
 //
+
+#ifndef UTILITY_THREAD_POOL_H
+#define UTILITY_THREAD_POOL_H
+
 #include <functional>
 #include <thread>
 #include <queue>
 #include <condition_variable>
 
 /**
- * @defgroup thread_pool
  * @ingroup utility
+ * @defgroup thread_pool
  * @file thread_pool.cppm
  * @brief a module provides raii thread pool (utility::thread_pool)
  * @note due to a clang bug std::jthread can't be used in module, so use the header-style, and requires link
@@ -34,7 +38,9 @@
 
 
 namespace utility {
-
+    /**
+     * @brief thread pool class
+     */
     class thread_pool { //NOLINT
         enum class shutdown_policy {
             discard,
@@ -94,3 +100,5 @@ namespace utility {
         int get_active_thread() const;
     };
 }
+
+#endif
