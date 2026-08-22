@@ -361,6 +361,7 @@ namespace vulkan {
         this->queue = queue;
         this->queue_family_index = queue_family_index;
         this->command_cache.push_back(this->create_command_pair());
+
     }
 
     void vma_allocator::destroy() {
@@ -820,7 +821,7 @@ namespace vulkan {
         return handle;
     }
 
-    const buffer_info *vma_allocator::get_buffer(const uint64_t handle) {
+    const buffer_detail *vma_allocator::get_buffer_detail(const uint64_t handle) {
         std::lock_guard guard(this->access_mutex);
         if (this->buffers.contains(handle)) {
             return &this->buffers[handle];
@@ -828,7 +829,7 @@ namespace vulkan {
         return nullptr;
     }
 
-    const image_info *vma_allocator::get_image(const uint64_t handle) {
+    const image_detail *vma_allocator::get_image_detail(const uint64_t handle) {
         std::lock_guard guard(this->access_mutex);
         if (this->images.contains(handle)) {
             return &this->images[handle];
