@@ -14,13 +14,13 @@ import utility;
 
 namespace vulkan {
 
-    export struct buffer_info {
+    export struct buffer_detail {
         VkBuffer buffer = VK_NULL_HANDLE;
         VmaAllocation allocation = VK_NULL_HANDLE;
         VmaAllocationInfo allocation_info = {};
     };
 
-    export struct image_info {
+    export struct image_detail {
         VkImage image = VK_NULL_HANDLE;
         VmaAllocation allocation = VK_NULL_HANDLE;
         VmaAllocationInfo allocation_info = {};
@@ -60,8 +60,8 @@ namespace vulkan {
         VkQueue queue = VK_NULL_HANDLE;
         std::vector<std::pair<VkCommandPool, VkCommandBuffer>> command_cache;
         std::vector<VkFence> fence_cache = {};
-        std::map<uint64_t, buffer_info> buffers = {};
-        std::map<uint64_t, image_info> images = {};
+        std::map<uint64_t, buffer_detail> buffers = {};
+        std::map<uint64_t, image_detail> images = {};
         std::mutex access_mutex = {};
         uint32_t queue_family_index = 0;
 
@@ -103,9 +103,9 @@ namespace vulkan {
             return this->create_image(reinterpret_cast<unsigned char*>(data.data()), create_info, data.size_bytes(), type);
         }
 
-        [[nodiscard]] const buffer_info *get_buffer(uint64_t handle);
+        [[nodiscard]] const buffer_detail *get_buffer_detail(uint64_t handle);
 
-        [[nodiscard]] const image_info *get_image(uint64_t handle);
+        [[nodiscard]] const image_detail *get_image_detail(uint64_t handle);
 
         void free_buffer(uint64_t handle);
 
