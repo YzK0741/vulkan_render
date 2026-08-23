@@ -11,7 +11,22 @@ export import std;
 export import vulkan.core.handles;
 export import vulkan.vma;
 
+/**
+ * @file model.cppm
+ * @defgroup vulkan_model Vulkan Model
+ * @brief GPU model management: vertex/index buffers, descriptor set and draw command
+ * @note
+ *      - holds the GPU resources of a single model
+ *      - resources are created externally, release them via destroy()
+ */
 namespace vulkan {
+    /**
+     * @ingroup vulkan_model
+     * @brief model class managing vertex/index buffers and the descriptor set
+     * @note
+     *      - draw() binds the descriptor set and vertex/index buffers, then issues a draw call
+     *      - destroy() frees the buffers and the descriptor set, pass the owning device/pool/vma
+     */
     export class model {
         uint32_t vertex_buffer_handle = 0;
         VkBuffer vertex_buffer = VK_NULL_HANDLE;
