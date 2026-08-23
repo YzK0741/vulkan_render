@@ -1,5 +1,5 @@
 var searchData=
 [
-  ['classes_20sets_0',['utility functions, classes sets',['../group__utility.html',1,'']]],
-  ['core_20objects_20manager_1',['Vulkan Core Objects Manager',['../group__vulkan__core.html',1,'']]]
+  ['better_5fpmr_0',['Better_pmr',['../group__better__pmr.html',1,'']]],
+  ['bounding_20volume_20hierarchy_1',['Bounding Volume Hierarchy',['../group__bvh.html',1,'']]]
 ];

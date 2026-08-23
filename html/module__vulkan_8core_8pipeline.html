@@ -114,16 +114,19 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('module__vulkan
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-exports" class="groupheader"><a id="exports" name="exports"></a>
 Exported Modules</h2></td></tr>
+<tr class="memitem:std" id="r_std"><td class="memItemLeft">module &#160;</td><td class="memItemRight"><b>std</b></td></tr>
 <tr class="memitem:vulkan_2Ecore_2Ehandles" id="r_vulkan_2Ecore_2Ehandles"><td class="memItemLeft">module &#160;</td><td class="memItemRight"><b>vulkan.core.handles</b></td></tr>
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-nested-classes" class="groupheader"><a id="nested-classes" name="nested-classes"></a>
 Classes</h2></td></tr>
 <tr class="memitem:vulkan_3A_3Ashader_5Fvariable_5Fdescriptor" id="r_vulkan_3A_3Ashader_5Fvariable_5Fdescriptor"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1shader__variable__descriptor.html">vulkan::shader_variable_descriptor</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">descriptor of a single shader variable  <a href="structvulkan_1_1shader__variable__descriptor.html#details">More...</a><br /></td></tr>
 <tr class="memitem:vulkan_3A_3Ashader_5Finfo" id="r_vulkan_3A_3Ashader_5Finfo"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1shader__info.html">vulkan::shader_info</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">shader information for pipeline creation  <a href="structvulkan_1_1shader__info.html#details">More...</a><br /></td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-enum-members" class="groupheader"><a id="enum-members" name="enum-members"></a>
 Enumerations</h2></td></tr>
-<tr class="memitem:a66649d834779e1d945b55ab570887811" id="r_a66649d834779e1d945b55ab570887811"><td class="memItemLeft"><a id="a66649d834779e1d945b55ab570887811" name="a66649d834779e1d945b55ab570887811"></a>enum class &#160;</td><td class="memItemRight"><b>shader_data_type</b> { <br />
+<tr class="memitem:ga66649d834779e1d945b55ab570887811" id="r_ga66649d834779e1d945b55ab570887811"><td class="memItemLeft"><a id="ga66649d834779e1d945b55ab570887811" name="ga66649d834779e1d945b55ab570887811"></a>enum class &#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__pipeline.html#ga66649d834779e1d945b55ab570887811">vulkan::shader_data_type</a> { <br />
 &#160;&#160;<b>float_t</b>
 , <b>int_t</b>
 , <b>uint_t</b>
@@ -169,7 +172,8 @@ Enumerations</h2></td></tr>
 , <b>image2DArray</b>
 <br />
  }</td></tr>
-<tr class="memitem:a34c5898b318216db3026b174382792fd" id="r_a34c5898b318216db3026b174382792fd"><td class="memItemLeft"><a id="a34c5898b318216db3026b174382792fd" name="a34c5898b318216db3026b174382792fd"></a>enum class &#160;</td><td class="memItemRight"><b>shader_storage</b> { <br />
+<tr class="memdesc:ga66649d834779e1d945b55ab570887811"><td class="mdescLeft">&#160;</td><td class="mdescRight">shader variable data types <br /></td></tr>
+<tr class="memitem:ga34c5898b318216db3026b174382792fd" id="r_ga34c5898b318216db3026b174382792fd"><td class="memItemLeft"><a id="ga34c5898b318216db3026b174382792fd" name="ga34c5898b318216db3026b174382792fd"></a>enum class &#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__pipeline.html#ga34c5898b318216db3026b174382792fd">vulkan::shader_storage</a> { <br />
 &#160;&#160;<b>uniform</b>
 , <b>in</b>
 , <b>out</b>
@@ -178,30 +182,30 @@ Enumerations</h2></td></tr>
 &#160;&#160;<b>buffer</b>
 <br />
  }</td></tr>
-<tr class="memitem:a2f37abae0eebae96943dd268c0637d63" id="r_a2f37abae0eebae96943dd268c0637d63"><td class="memItemLeft"><a id="a2f37abae0eebae96943dd268c0637d63" name="a2f37abae0eebae96943dd268c0637d63"></a>enum class &#160;</td><td class="memItemRight"><b>pipeline_type</b> { <b>graphics</b>
+<tr class="memdesc:ga34c5898b318216db3026b174382792fd"><td class="mdescLeft">&#160;</td><td class="mdescRight">shader variable storage class <br /></td></tr>
+<tr class="memitem:ga2f37abae0eebae96943dd268c0637d63" id="r_ga2f37abae0eebae96943dd268c0637d63"><td class="memItemLeft"><a id="ga2f37abae0eebae96943dd268c0637d63" name="ga2f37abae0eebae96943dd268c0637d63"></a>enum class &#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__pipeline.html#ga2f37abae0eebae96943dd268c0637d63">vulkan::pipeline_type</a> { <b>graphics</b>
 , <b>compute</b>
  }</td></tr>
+<tr class="memdesc:ga2f37abae0eebae96943dd268c0637d63"><td class="mdescLeft">&#160;</td><td class="mdescRight">pipeline type: graphics or compute <br /></td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-typedef-members" class="groupheader"><a id="typedef-members" name="typedef-members"></a>
 Typedefs</h2></td></tr>
-<tr class="memitem:a44a482c4d47bfdd05a60b3fc0362d9c7" id="r_a44a482c4d47bfdd05a60b3fc0362d9c7"><td class="memItemLeft"><a id="a44a482c4d47bfdd05a60b3fc0362d9c7" name="a44a482c4d47bfdd05a60b3fc0362d9c7"></a>
+<tr class="memitem:ga44a482c4d47bfdd05a60b3fc0362d9c7" id="r_ga44a482c4d47bfdd05a60b3fc0362d9c7"><td class="memItemLeft">
 using&#160;</td><td class="memItemRight"><b>vulkan::shader_input_descriptor</b> = <a class="el" href="structvulkan_1_1shader__variable__descriptor.html">shader_variable_descriptor</a></td></tr>
+<tr class="memdesc:ga44a482c4d47bfdd05a60b3fc0362d9c7"><td class="mdescLeft">&#160;</td><td class="mdescRight">aliases for input/output shader variable descriptors <br /></td></tr>
 <tr class="memitem:a970602394f53e9365ba068f851777768" id="r_a970602394f53e9365ba068f851777768"><td class="memItemLeft"><a id="a970602394f53e9365ba068f851777768" name="a970602394f53e9365ba068f851777768"></a>
 using&#160;</td><td class="memItemRight"><b>vulkan::shader_output_descriptor</b> = <a class="el" href="structvulkan_1_1shader__variable__descriptor.html">shader_variable_descriptor</a></td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-func-members" class="groupheader"><a id="func-members" name="func-members"></a>
 Functions</h2></td></tr>
-<tr class="memitem:a2970c69b7db7a047a3465a0a1d2ce05d" id="r_a2970c69b7db7a047a3465a0a1d2ce05d"><td class="memItemLeft"><a id="a2970c69b7db7a047a3465a0a1d2ce05d" name="a2970c69b7db7a047a3465a0a1d2ce05d"></a>
-std::optional&lt; <a class="el" href="structvulkan_1_1vk__pipeline.html">vk_pipeline</a> &gt;&#160;</td><td class="memItemRight"><b>vulkan::make_pipeline</b> (VkDevice &amp;device, const VkRenderPass render_pass, <a class="el" href="structvulkan_1_1shader__info.html">shader_info</a> const &amp;vertex_shader, <a class="el" href="structvulkan_1_1shader__info.html">shader_info</a> const &amp;fragment_shader, VkSampleCountFlagBits msaa_level)</td></tr>
-<tr class="memitem:ac2793065cd8a11392e2bd2cc053739f5" id="r_ac2793065cd8a11392e2bd2cc053739f5"><td class="memItemLeft"><a id="ac2793065cd8a11392e2bd2cc053739f5" name="ac2793065cd8a11392e2bd2cc053739f5"></a>
-std::expected&lt; <a class="el" href="structvulkan_1_1vk__pipeline.html">vk_pipeline</a>, std::string_view &gt;&#160;</td><td class="memItemRight"><b>vulkan::make_pipeline</b> (VkDevice device, VkRenderPass renderpass, std::vector&lt; unsigned char &gt; const &amp;vertex_shader_code, std::vector&lt; unsigned char &gt; const &amp;fragment_shader_code, VkSampleCountFlagBits msaa_level)</td></tr>
-<tr class="memitem:ad79c89bc8b1e801f8cdf16be2147e1a7" id="r_ad79c89bc8b1e801f8cdf16be2147e1a7"><td class="memItemLeft"><a id="ad79c89bc8b1e801f8cdf16be2147e1a7" name="ad79c89bc8b1e801f8cdf16be2147e1a7"></a>
-std::expected&lt; <a class="el" href="structvulkan_1_1vk__pipeline.html">vk_pipeline</a>, std::string_view &gt;&#160;</td><td class="memItemRight"><b>vulkan::make_pipeline</b> (VkDevice &amp;device, const VkRenderPass render_pass, std::vector&lt; unsigned char &gt; vertex_shader_code, std::vector&lt; unsigned char &gt; fragment_shader_code, VkSampleCountFlagBits msaa_level)</td></tr>
+<tr class="memitem:gab8ba48e0e31e1875d6bfaa8b80374ce5" id="r_gab8ba48e0e31e1875d6bfaa8b80374ce5"><td class="memItemLeft">
+std::expected&lt; <a class="el" href="structvulkan_1_1vk__pipeline.html">vk_pipeline</a>, std::string_view &gt;&#160;</td><td class="memItemRight"><b>vulkan::make_pipeline</b> (VkDevice &amp;device, VkRenderPass render_pass, std::vector&lt; unsigned char &gt; vertex_shader_code, std::vector&lt; unsigned char &gt; fragment_shader_code, VkSampleCountFlagBits msaa_level)</td></tr>
+<tr class="memdesc:gab8ba48e0e31e1875d6bfaa8b80374ce5"><td class="mdescLeft">&#160;</td><td class="mdescRight">create a graphics pipeline directly from raw SPIR-V binary <br /></td></tr>
 </table>
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-files" class="groupheader"><a id="files" name="files"></a>
 Files</h2></td></tr>
-<tr class="memitem:pipeline_2Ecppm" id="r_pipeline_2Ecppm"><td class="memItemLeft">file &#160;</td><td class="memItemRight">vulkan/core/pipeline/<b>pipeline.cppm</b></td></tr>
+<tr class="memitem:pipeline_2Ecppm" id="r_pipeline_2Ecppm"><td class="memItemLeft">file &#160;</td><td class="memItemRight">vulkan/core/pipeline/<a class="el" href="pipeline_8cppm.html">pipeline.cppm</a></td></tr>
 <tr class="memitem:pipeline_2Ecpp" id="r_pipeline_2Ecpp"><td class="memItemLeft">file &#160;</td><td class="memItemRight">vulkan/core/pipeline/<b>pipeline.cpp</b></td></tr>
 </table>
 </div><!-- contents -->

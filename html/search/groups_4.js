@@ -1,5 +1,5 @@
 var searchData=
 [
-  ['handles_20raii_20wrapper_0',['Vulkan Main Handles&apos; RAII Wrapper',['../group__vulkan__handles.html',1,'']]],
-  ['hash_1',['Hash',['../group__hash.html',1,'']]]
+  ['facade_0',['Vulkan Runtime Facade',['../group__vulkan__runtime.html',1,'']]],
+  ['functions_20classes_20sets_1',['utility functions, classes sets',['../group__utility.html',1,'']]]
 ];

@@ -108,28 +108,47 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('classutility_1
 </div>
 
 <div class="header">
-  <div class="headertitle"><div class="title">utility::bvh&lt; T &gt; Class Template Reference<span class="mlabels"><span class="mlabel export">export</span></span><div class="ingroups">module <a class="el" href="module__utility_8bvh.html">utility.bvh</a></div></div></div>
+  <div class="headertitle"><div class="title">utility::bvh&lt; T &gt; Class Template Reference<span class="mlabels"><span class="mlabel export">export</span></span><div class="ingroups"><a class="el" href="group__utility.html">utility functions, classes sets</a> &raquo; <a class="el" href="group__bvh.html">Bounding Volume Hierarchy</a> &#124; module <a class="el" href="module__utility_8bvh.html">utility.bvh</a></div></div></div>
 </div><!--header-->
 <div class="contents">
+
+<p>bounding volume hierarchy built with morton codes  
+ <a href="#details">More...</a></p>
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-pub-methods" class="groupheader"><a id="pub-methods" name="pub-methods"></a>
 Public Member Functions</h2></td></tr>
-<tr class="memitem:a0144da7e393f4011164d198a4bb33278" id="r_a0144da7e393f4011164d198a4bb33278"><td class="memItemLeft"><a id="a0144da7e393f4011164d198a4bb33278" name="a0144da7e393f4011164d198a4bb33278"></a>
+<tr class="memitem:ga0144da7e393f4011164d198a4bb33278" id="r_ga0144da7e393f4011164d198a4bb33278"><td class="memItemLeft">
 void&#160;</td><td class="memItemRight"><b>rebuild</b> ()</td></tr>
-<tr class="memitem:ac597e032700b835b9fe181c896123938" id="r_ac597e032700b835b9fe181c896123938"><td class="memItemLeft"><a id="ac597e032700b835b9fe181c896123938" name="ac597e032700b835b9fe181c896123938"></a>
-void&#160;</td><td class="memItemRight"><b>add</b> (<a class="el" href="structutility_1_1aabb__box.html">aabb_box</a>&lt; T &gt; const &amp;box)</td></tr>
-<tr class="memitem:a8ded9218d47c322d70f06226d669ef5c" id="r_a8ded9218d47c322d70f06226d669ef5c"><td class="memItemLeft"><a id="a8ded9218d47c322d70f06226d669ef5c" name="a8ded9218d47c322d70f06226d669ef5c"></a>
-void&#160;</td><td class="memItemRight"><b>get_hit</b> (glm::vec3 const &amp;start, glm::vec3 const &amp;direction, float t_min=0.01f, float t_max=std::numeric_limits&lt; float &gt;::infinity())</td></tr>
-<tr class="memitem:af91e76d3f3ff45e3fe7fb2938ccf258f" id="r_af91e76d3f3ff45e3fe7fb2938ccf258f"><td class="memItemLeft"><a id="af91e76d3f3ff45e3fe7fb2938ccf258f" name="af91e76d3f3ff45e3fe7fb2938ccf258f"></a>
-std::vector&lt; <a class="el" href="structutility_1_1bvh__node.html">bvh_node</a>&lt; T &gt; * &gt;&#160;</td><td class="memItemRight"><b>frustum_cull</b> (<a class="el" href="structutility_1_1frustum.html">frustum</a> const &amp;f)</td></tr>
+<tr class="memdesc:ga0144da7e393f4011164d198a4bb33278"><td class="mdescLeft">&#160;</td><td class="mdescRight">rebuild the tree from the current leaves <br /></td></tr>
+<tr class="memitem:ga56534c524870d3a7479294b4e072e32d" id="r_ga56534c524870d3a7479294b4e072e32d"><td class="memItemLeft">std::expected&lt; void, std::string &gt;&#160;</td><td class="memItemRight"><a class="el" href="group__bvh.html#ga56534c524870d3a7479294b4e072e32d">add</a> (<a class="el" href="structutility_1_1aabb__box.html">aabb_box</a>&lt; T &gt; const &amp;box)</td></tr>
+<tr class="memdesc:ga56534c524870d3a7479294b4e072e32d"><td class="mdescLeft">&#160;</td><td class="mdescRight">add an AABB as a new leaf  <br /></td></tr>
+<tr class="memitem:ga8ded9218d47c322d70f06226d669ef5c" id="r_ga8ded9218d47c322d70f06226d669ef5c"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="group__bvh.html#ga8ded9218d47c322d70f06226d669ef5c">get_hit</a> (glm::vec3 const &amp;start, glm::vec3 const &amp;direction, float t_min=0.01f, float t_max=std::numeric_limits&lt; float &gt;::infinity())</td></tr>
+<tr class="memdesc:ga8ded9218d47c322d70f06226d669ef5c"><td class="mdescLeft">&#160;</td><td class="mdescRight">collect leaf nodes hit by a ray  <br /></td></tr>
+<tr class="memitem:gaf91e76d3f3ff45e3fe7fb2938ccf258f" id="r_gaf91e76d3f3ff45e3fe7fb2938ccf258f"><td class="memItemLeft">std::vector&lt; <a class="el" href="structutility_1_1bvh__node.html">bvh_node</a>&lt; T &gt; * &gt;&#160;</td><td class="memItemRight"><a class="el" href="group__bvh.html#gaf91e76d3f3ff45e3fe7fb2938ccf258f">frustum_cull</a> (<a class="el" href="structutility_1_1frustum.html">frustum</a> const &amp;f)</td></tr>
+<tr class="memdesc:gaf91e76d3f3ff45e3fe7fb2938ccf258f"><td class="mdescLeft">&#160;</td><td class="mdescRight">return leaf nodes intersecting the frustum  <br /></td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-pub-static-methods" class="groupheader"><a id="pub-static-methods" name="pub-static-methods"></a>
 Static Public Member Functions</h2></td></tr>
-<tr class="memitem:a42d3420a1cb6fdafd8ab68002ce2fae9" id="r_a42d3420a1cb6fdafd8ab68002ce2fae9"><td class="memItemLeft"><a id="a42d3420a1cb6fdafd8ab68002ce2fae9" name="a42d3420a1cb6fdafd8ab68002ce2fae9"></a>
-static std::expected&lt; <a class="el" href="classutility_1_1bvh.html">bvh</a>, std::string &gt;&#160;</td><td class="memItemRight"><b>make</b> (std::vector&lt; <a class="el" href="structutility_1_1aabb__box.html">aabb_box</a>&lt; T &gt; &gt; const &amp;datas)</td></tr>
+<tr class="memitem:ga42d3420a1cb6fdafd8ab68002ce2fae9" id="r_ga42d3420a1cb6fdafd8ab68002ce2fae9"><td class="memItemLeft">static std::expected&lt; <a class="el" href="classutility_1_1bvh.html">bvh</a>, std::string &gt;&#160;</td><td class="memItemRight"><a class="el" href="group__bvh.html#ga42d3420a1cb6fdafd8ab68002ce2fae9">make</a> (std::vector&lt; <a class="el" href="structutility_1_1aabb__box.html">aabb_box</a>&lt; T &gt; &gt; const &amp;datas)</td></tr>
+<tr class="memdesc:ga42d3420a1cb6fdafd8ab68002ce2fae9"><td class="mdescLeft">&#160;</td><td class="mdescRight">build a BVH from the given AABBs  <br /></td></tr>
 </table>
-<hr/>The documentation for this class was generated from the following file:<ul>
-<li>utility/BVH/<b>bvh.cppm</b></li>
+<a name="details" id="details"></a><h2 id="header-details" class="groupheader">Detailed Description</h2>
+<div class="textblock"><div class="compoundTemplParams">template&lt;typename T&gt;<br />
+class utility::bvh&lt; T &gt;</div><dl class="tparams"><dt>Template Parameters</dt><dd>
+  <table class="tparams">
+    <tr><td class="paramname">T</td><td>type of the user data attached to each leaf </td></tr>
+  </table>
+  </dd>
+</dl>
+<dl class="section note"><dt>Note</dt><dd><ul>
+<li><a class="el" href="group__bvh.html#ga42d3420a1cb6fdafd8ab68002ce2fae9" title="build a BVH from the given AABBs">make()</a> builds the tree from AABBs</li>
+<li><a class="el" href="group__bvh.html#ga56534c524870d3a7479294b4e072e32d" title="add an AABB as a new leaf">add()</a> inserts a leaf, call <a class="el" href="group__bvh.html#ga0144da7e393f4011164d198a4bb33278" title="rebuild the tree from the current leaves">rebuild()</a> afterwards</li>
+<li><a class="el" href="group__bvh.html#ga8ded9218d47c322d70f06226d669ef5c" title="collect leaf nodes hit by a ray">get_hit()</a> collects hit leaves along a ray</li>
+<li><a class="el" href="group__bvh.html#gaf91e76d3f3ff45e3fe7fb2938ccf258f" title="return leaf nodes intersecting the frustum">frustum_cull()</a> returns leaves inside a frustum </li>
+</ul>
+</dd></dl>
+</div><hr/>The documentation for this class was generated from the following file:<ul>
+<li>utility/BVH/<a class="el" href="bvh_8cppm.html">bvh.cppm</a></li>
 </ul>
 </div><!-- contents -->
 </div><!-- doc-content -->

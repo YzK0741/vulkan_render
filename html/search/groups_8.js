@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['sets_0',['utility functions, classes sets',['../group__utility.html',1,'']]]
+  ['loader_0',['glTF Loader',['../group__gltf__loader.html',1,'']]]
 ];

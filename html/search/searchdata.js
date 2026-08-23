@@ -2,10 +2,12 @@ var indexSectionsWithContent =
 {
   0: "[abcdefghilmnopqrstuvw",
   1: "[abcdefilmnpqrstv",
-  2: "chtu",
-  3: "abcdgimprstw",
-  4: "i",
-  5: "bcdfhmorstuvw"
+  2: "bcghimprstuv",
+  3: "abcdfghilmpqrstw",
+  4: "ms",
+  5: "bceips",
+  6: "i",
+  7: "abcdfghilmoprstuvw"
 };
 
 var indexSectionNames =
@@ -14,8 +16,10 @@ var indexSectionNames =
   1: "classes",
   2: "files",
   3: "functions",
-  4: "related",
-  5: "groups"
+  4: "typedefs",
+  5: "enums",
+  6: "related",
+  7: "groups"
 };
 
 var indexSectionLabels =
@@ -24,7 +28,9 @@ var indexSectionLabels =
   1: "Classes",
   2: "Files",
   3: "Functions",
-  4: "Friends",
-  5: "Modules"
+  4: "Typedefs",
+  5: "Enumerations",
+  6: "Friends",
+  7: "Modules"
 };
 

@@ -111,49 +111,58 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('module__vulkan
   <div class="headertitle"><div class="title">vulkan.core.init_uitls Module Reference</div></div>
 </div><!--header-->
 <div class="contents">
+</table><table class="memberdecls">
+<tr class="heading"><td colspan="2"><h2 id="header-exports" class="groupheader"><a id="exports" name="exports"></a>
+Exported Modules</h2></td></tr>
+<tr class="memitem:std" id="r_std"><td class="memItemLeft">module &#160;</td><td class="memItemRight"><b>std</b></td></tr>
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-nested-classes" class="groupheader"><a id="nested-classes" name="nested-classes"></a>
 Classes</h2></td></tr>
 <tr class="memitem:logical_5Fdevice" id="r_logical_5Fdevice"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structlogical__device.html">logical_device</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">a created logical device together with its queue handles  <a href="structlogical__device.html#details">More...</a><br /></td></tr>
 <tr class="memitem:swap_5Fchain_5Fsupport_5Fdetails" id="r_swap_5Fchain_5Fsupport_5Fdetails"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structswap__chain__support__details.html">swap_chain_support_details</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">capabilities, formats and present modes supported by a swap chain  <a href="structswap__chain__support__details.html#details">More...</a><br /></td></tr>
 <tr class="memitem:queue_5Ffamily_5Findices" id="r_queue_5Ffamily_5Findices"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structqueue__family__indices.html">queue_family_indices</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">queue family indices found on a physical device  <a href="structqueue__family__indices.html#details">More...</a><br /></td></tr>
 <tr class="memitem:device_5Fcreation_5Finfo" id="r_device_5Fcreation_5Finfo"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structdevice__creation__info.html">device_creation_info</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">input data for creating a logical device  <a href="structdevice__creation__info.html#details">More...</a><br /></td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-func-members" class="groupheader"><a id="func-members" name="func-members"></a>
 Functions</h2></td></tr>
-<tr class="memitem:a924c76032210e3e272b0497f83dd3c7f" id="r_a924c76032210e3e272b0497f83dd3c7f"><td class="memItemLeft"><a id="a924c76032210e3e272b0497f83dd3c7f" name="a924c76032210e3e272b0497f83dd3c7f"></a>
+<tr class="memitem:ga924c76032210e3e272b0497f83dd3c7f" id="r_ga924c76032210e3e272b0497f83dd3c7f"><td class="memItemLeft">
 VKAPI_ATTR VkBool32 VKAPI_CALL&#160;</td><td class="memItemRight"><b>debug_callback</b> (const VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, VkDebugUtilsMessageTypeFlagsEXT message_type, const VkDebugUtilsMessengerCallbackDataEXT *callback_data, void *user_data) noexcept</td></tr>
-<tr class="memitem:aa3a0c254ba1a9a2524a505b8342a4eb5" id="r_aa3a0c254ba1a9a2524a505b8342a4eb5"><td class="memItemLeft"><a id="aa3a0c254ba1a9a2524a505b8342a4eb5" name="aa3a0c254ba1a9a2524a505b8342a4eb5"></a>
-bool&#160;</td><td class="memItemRight"><b>check_validation_layer_support</b> (const std::vector&lt; const char * &gt; &amp;validation_layers) noexcept</td></tr>
-<tr class="memitem:a846e08cfc46dff9b8a2826ad01dbe738" id="r_a846e08cfc46dff9b8a2826ad01dbe738"><td class="memItemLeft"><a id="a846e08cfc46dff9b8a2826ad01dbe738" name="a846e08cfc46dff9b8a2826ad01dbe738"></a>
-bool&#160;</td><td class="memItemRight"><b>check_device_extension_support</b> (VkPhysicalDevice const &amp;physical_device, std::vector&lt; const char * &gt; const &amp;required_extensions) noexcept</td></tr>
-<tr class="memitem:a947761ba2bb1f549974414c7f89f7049" id="r_a947761ba2bb1f549974414c7f89f7049"><td class="memItemLeft"><a id="a947761ba2bb1f549974414c7f89f7049" name="a947761ba2bb1f549974414c7f89f7049"></a>
-<a class="el" href="structlogical__device.html">logical_device</a>&#160;</td><td class="memItemRight"><b>create_logical_device</b> (VkPhysicalDevice physical_device, <a class="el" href="structdevice__creation__info.html">device_creation_info</a> const &amp;create_info) noexcept</td></tr>
-<tr class="memitem:a611ec461229596e5c9a4848825c3d371" id="r_a611ec461229596e5c9a4848825c3d371"><td class="memItemLeft"><a id="a611ec461229596e5c9a4848825c3d371" name="a611ec461229596e5c9a4848825c3d371"></a>
-<a class="el" href="structqueue__family__indices.html">queue_family_indices</a>&#160;</td><td class="memItemRight"><b>find_queue_families</b> (VkPhysicalDevice const &amp;device, VkSurfaceKHR const &amp;surface) noexcept</td></tr>
-<tr class="memitem:a944ab3d17356c4aded4ec4bdb50323b6" id="r_a944ab3d17356c4aded4ec4bdb50323b6"><td class="memItemLeft"><a id="a944ab3d17356c4aded4ec4bdb50323b6" name="a944ab3d17356c4aded4ec4bdb50323b6"></a>
-VkPhysicalDevice&#160;</td><td class="memItemRight"><b>pick_suitable_device</b> (VkInstance const &amp;instance, VkSurfaceKHR surface) noexcept</td></tr>
-<tr class="memitem:ae69c32532b40365034fbc447ecb2cc65" id="r_ae69c32532b40365034fbc447ecb2cc65"><td class="memItemLeft"><a id="ae69c32532b40365034fbc447ecb2cc65" name="ae69c32532b40365034fbc447ecb2cc65"></a>
-<a class="el" href="structswap__chain__support__details.html">swap_chain_support_details</a>&#160;</td><td class="memItemRight"><b>query_swap_chain_support</b> (VkPhysicalDevice const &amp;device, VkSurfaceKHR const &amp;surface) noexcept</td></tr>
-<tr class="memitem:aa1cfa0162557d28eed352fe66aad52eb" id="r_aa1cfa0162557d28eed352fe66aad52eb"><td class="memItemLeft"><a id="aa1cfa0162557d28eed352fe66aad52eb" name="aa1cfa0162557d28eed352fe66aad52eb"></a>
-VkPresentModeKHR&#160;</td><td class="memItemRight"><b>choose_swap_present_mode</b> (std::vector&lt; VkPresentModeKHR &gt; const &amp;available_present_modes) noexcept</td></tr>
-<tr class="memitem:a3d8acdf9761c1cdaea44d7dadfe6b16f" id="r_a3d8acdf9761c1cdaea44d7dadfe6b16f"><td class="memItemLeft"><a id="a3d8acdf9761c1cdaea44d7dadfe6b16f" name="a3d8acdf9761c1cdaea44d7dadfe6b16f"></a>
-VkSurfaceFormatKHR&#160;</td><td class="memItemRight"><b>choose_swap_surface_format</b> (std::vector&lt; VkSurfaceFormatKHR &gt; const &amp;available_formats) noexcept</td></tr>
-<tr class="memitem:a4f56dd330fcf6bd9eb5c7f5349d49b51" id="r_a4f56dd330fcf6bd9eb5c7f5349d49b51"><td class="memItemLeft"><a id="a4f56dd330fcf6bd9eb5c7f5349d49b51" name="a4f56dd330fcf6bd9eb5c7f5349d49b51"></a>
-VkExtent2D&#160;</td><td class="memItemRight"><b>choose_swap_extent</b> (VkSurfaceCapabilitiesKHR const &amp;capabilities, GLFWwindow *window) noexcept</td></tr>
-<tr class="memitem:af530d908f6f2819da910296b7a315fe0" id="r_af530d908f6f2819da910296b7a315fe0"><td class="memItemLeft"><a id="af530d908f6f2819da910296b7a315fe0" name="af530d908f6f2819da910296b7a315fe0"></a>
-uint32_t&#160;</td><td class="memItemRight"><b>find_memory_type</b> (const uint32_t &amp;type_filter, const VkMemoryPropertyFlags &amp;properties, const VkPhysicalDevice &amp;physical_device) noexcept</td></tr>
-<tr class="memitem:a9b98971a6eeaf203f26df5696e059cdf" id="r_a9b98971a6eeaf203f26df5696e059cdf"><td class="memItemLeft"><a id="a9b98971a6eeaf203f26df5696e059cdf" name="a9b98971a6eeaf203f26df5696e059cdf"></a>
-VkFormat&#160;</td><td class="memItemRight"><b>find_depth_format</b> (const VkPhysicalDevice &amp;physical_device) noexcept</td></tr>
-<tr class="memitem:ad4a1377aa21df89eda1b88341a3d79c7" id="r_ad4a1377aa21df89eda1b88341a3d79c7"><td class="memItemLeft"><a id="ad4a1377aa21df89eda1b88341a3d79c7" name="ad4a1377aa21df89eda1b88341a3d79c7"></a>
-VkSampleCountFlagBits&#160;</td><td class="memItemRight"><b>get_max_usable_sample_count</b> (const VkPhysicalDevice &amp;physical_device) noexcept</td></tr>
-<tr class="memitem:a1729eb2c48703c2068b263ee24d7999f" id="r_a1729eb2c48703c2068b263ee24d7999f"><td class="memItemLeft"><a id="a1729eb2c48703c2068b263ee24d7999f" name="a1729eb2c48703c2068b263ee24d7999f"></a>
-VkImageView&#160;</td><td class="memItemRight"><b>create_image_view</b> (const VkImage &amp;image, const VkFormat &amp;format, const VkImageAspectFlags &amp;aspectFlags, const VkDevice &amp;device) noexcept</td></tr>
+<tr class="memdesc:ga924c76032210e3e272b0497f83dd3c7f"><td class="mdescLeft">&#160;</td><td class="mdescRight">Vulkan debug messenger callback, prints validation layer messages. <br /></td></tr>
+<tr class="memitem:gaa3a0c254ba1a9a2524a505b8342a4eb5" id="r_gaa3a0c254ba1a9a2524a505b8342a4eb5"><td class="memItemLeft">bool&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__init__utils.html#gaa3a0c254ba1a9a2524a505b8342a4eb5">check_validation_layer_support</a> (const std::vector&lt; const char * &gt; &amp;validation_layers) noexcept</td></tr>
+<tr class="memdesc:gaa3a0c254ba1a9a2524a505b8342a4eb5"><td class="mdescLeft">&#160;</td><td class="mdescRight">check whether the given validation layers are supported  <br /></td></tr>
+<tr class="memitem:ga846e08cfc46dff9b8a2826ad01dbe738" id="r_ga846e08cfc46dff9b8a2826ad01dbe738"><td class="memItemLeft">bool&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__init__utils.html#ga846e08cfc46dff9b8a2826ad01dbe738">check_device_extension_support</a> (VkPhysicalDevice const &amp;physical_device, std::vector&lt; const char * &gt; const &amp;required_extensions) noexcept</td></tr>
+<tr class="memdesc:ga846e08cfc46dff9b8a2826ad01dbe738"><td class="mdescLeft">&#160;</td><td class="mdescRight">check whether the physical device supports the required device extensions  <br /></td></tr>
+<tr class="memitem:ga947761ba2bb1f549974414c7f89f7049" id="r_ga947761ba2bb1f549974414c7f89f7049"><td class="memItemLeft"><a class="el" href="structlogical__device.html">logical_device</a>&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__init__utils.html#ga947761ba2bb1f549974414c7f89f7049">create_logical_device</a> (VkPhysicalDevice physical_device, <a class="el" href="structdevice__creation__info.html">device_creation_info</a> const &amp;create_info) noexcept</td></tr>
+<tr class="memdesc:ga947761ba2bb1f549974414c7f89f7049"><td class="mdescLeft">&#160;</td><td class="mdescRight">create a logical device and fetch its queues  <br /></td></tr>
+<tr class="memitem:ga611ec461229596e5c9a4848825c3d371" id="r_ga611ec461229596e5c9a4848825c3d371"><td class="memItemLeft"><a class="el" href="structqueue__family__indices.html">queue_family_indices</a>&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__init__utils.html#ga611ec461229596e5c9a4848825c3d371">find_queue_families</a> (VkPhysicalDevice const &amp;device, VkSurfaceKHR const &amp;surface) noexcept</td></tr>
+<tr class="memdesc:ga611ec461229596e5c9a4848825c3d371"><td class="mdescLeft">&#160;</td><td class="mdescRight">find graphics/present/compute/transfer queue family indices of a physical device  <br /></td></tr>
+<tr class="memitem:ga944ab3d17356c4aded4ec4bdb50323b6" id="r_ga944ab3d17356c4aded4ec4bdb50323b6"><td class="memItemLeft">VkPhysicalDevice&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__init__utils.html#ga944ab3d17356c4aded4ec4bdb50323b6">pick_suitable_device</a> (VkInstance const &amp;instance, VkSurfaceKHR surface) noexcept</td></tr>
+<tr class="memdesc:ga944ab3d17356c4aded4ec4bdb50323b6"><td class="mdescLeft">&#160;</td><td class="mdescRight">pick the most suitable physical device for the given surface  <br /></td></tr>
+<tr class="memitem:gae69c32532b40365034fbc447ecb2cc65" id="r_gae69c32532b40365034fbc447ecb2cc65"><td class="memItemLeft"><a class="el" href="structswap__chain__support__details.html">swap_chain_support_details</a>&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__init__utils.html#gae69c32532b40365034fbc447ecb2cc65">query_swap_chain_support</a> (VkPhysicalDevice const &amp;device, VkSurfaceKHR const &amp;surface) noexcept</td></tr>
+<tr class="memdesc:gae69c32532b40365034fbc447ecb2cc65"><td class="mdescLeft">&#160;</td><td class="mdescRight">query swap chain support details of a physical device  <br /></td></tr>
+<tr class="memitem:gaa1cfa0162557d28eed352fe66aad52eb" id="r_gaa1cfa0162557d28eed352fe66aad52eb"><td class="memItemLeft">VkPresentModeKHR&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__init__utils.html#gaa1cfa0162557d28eed352fe66aad52eb">choose_swap_present_mode</a> (std::vector&lt; VkPresentModeKHR &gt; const &amp;available_present_modes) noexcept</td></tr>
+<tr class="memdesc:gaa1cfa0162557d28eed352fe66aad52eb"><td class="mdescLeft">&#160;</td><td class="mdescRight">choose a present mode from the available ones  <br /></td></tr>
+<tr class="memitem:ga3d8acdf9761c1cdaea44d7dadfe6b16f" id="r_ga3d8acdf9761c1cdaea44d7dadfe6b16f"><td class="memItemLeft">VkSurfaceFormatKHR&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__init__utils.html#ga3d8acdf9761c1cdaea44d7dadfe6b16f">choose_swap_surface_format</a> (std::vector&lt; VkSurfaceFormatKHR &gt; const &amp;available_formats) noexcept</td></tr>
+<tr class="memdesc:ga3d8acdf9761c1cdaea44d7dadfe6b16f"><td class="mdescLeft">&#160;</td><td class="mdescRight">choose a surface format from the available ones  <br /></td></tr>
+<tr class="memitem:ga4f56dd330fcf6bd9eb5c7f5349d49b51" id="r_ga4f56dd330fcf6bd9eb5c7f5349d49b51"><td class="memItemLeft">VkExtent2D&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__init__utils.html#ga4f56dd330fcf6bd9eb5c7f5349d49b51">choose_swap_extent</a> (VkSurfaceCapabilitiesKHR const &amp;capabilities, GLFWwindow *window) noexcept</td></tr>
+<tr class="memdesc:ga4f56dd330fcf6bd9eb5c7f5349d49b51"><td class="mdescLeft">&#160;</td><td class="mdescRight">choose the swap chain extent, clamped to the surface capabilities  <br /></td></tr>
+<tr class="memitem:gaf530d908f6f2819da910296b7a315fe0" id="r_gaf530d908f6f2819da910296b7a315fe0"><td class="memItemLeft">uint32_t&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__init__utils.html#gaf530d908f6f2819da910296b7a315fe0">find_memory_type</a> (const uint32_t &amp;type_filter, const VkMemoryPropertyFlags &amp;properties, const VkPhysicalDevice &amp;physical_device) noexcept</td></tr>
+<tr class="memdesc:gaf530d908f6f2819da910296b7a315fe0"><td class="mdescLeft">&#160;</td><td class="mdescRight">find a memory type matching the filter and the required properties  <br /></td></tr>
+<tr class="memitem:ga9b98971a6eeaf203f26df5696e059cdf" id="r_ga9b98971a6eeaf203f26df5696e059cdf"><td class="memItemLeft">VkFormat&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__init__utils.html#ga9b98971a6eeaf203f26df5696e059cdf">find_depth_format</a> (const VkPhysicalDevice &amp;physical_device) noexcept</td></tr>
+<tr class="memdesc:ga9b98971a6eeaf203f26df5696e059cdf"><td class="mdescLeft">&#160;</td><td class="mdescRight">find a supported depth format by preference order  <br /></td></tr>
+<tr class="memitem:gad4a1377aa21df89eda1b88341a3d79c7" id="r_gad4a1377aa21df89eda1b88341a3d79c7"><td class="memItemLeft">VkSampleCountFlagBits&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__init__utils.html#gad4a1377aa21df89eda1b88341a3d79c7">get_max_usable_sample_count</a> (const VkPhysicalDevice &amp;physical_device) noexcept</td></tr>
+<tr class="memdesc:gad4a1377aa21df89eda1b88341a3d79c7"><td class="mdescLeft">&#160;</td><td class="mdescRight">get the maximum usable MSAA sample count of the physical device  <br /></td></tr>
+<tr class="memitem:ga1729eb2c48703c2068b263ee24d7999f" id="r_ga1729eb2c48703c2068b263ee24d7999f"><td class="memItemLeft">VkImageView&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__init__utils.html#ga1729eb2c48703c2068b263ee24d7999f">create_image_view</a> (const VkImage &amp;image, const VkFormat &amp;format, const VkImageAspectFlags &amp;aspectFlags, const VkDevice &amp;device) noexcept</td></tr>
+<tr class="memdesc:ga1729eb2c48703c2068b263ee24d7999f"><td class="mdescLeft">&#160;</td><td class="mdescRight">create an image view for the given image  <br /></td></tr>
 </table>
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-files" class="groupheader"><a id="files" name="files"></a>
 Files</h2></td></tr>
-<tr class="memitem:init_5Futils_2Ecppm" id="r_init_5Futils_2Ecppm"><td class="memItemLeft">file &#160;</td><td class="memItemRight">vulkan/core/init_utils/<b>init_utils.cppm</b></td></tr>
+<tr class="memitem:init_5Futils_2Ecppm" id="r_init_5Futils_2Ecppm"><td class="memItemLeft">file &#160;</td><td class="memItemRight">vulkan/core/init_utils/<a class="el" href="init__utils_8cppm.html">init_utils.cppm</a></td></tr>
 <tr class="memitem:init_5Futil_2Ecpp" id="r_init_5Futil_2Ecpp"><td class="memItemLeft">file &#160;</td><td class="memItemRight">vulkan/core/init_utils/<b>init_util.cpp</b></td></tr>
 </table>
 </div><!-- contents -->

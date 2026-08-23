@@ -11,8 +11,8 @@ var annotated_dup =
     ] ],
     [ "utility", null, [
       [ "aabb_box", "structutility_1_1aabb__box.html", null ],
-      [ "bvh", "classutility_1_1bvh.html", null ],
-      [ "bvh_node", "structutility_1_1bvh__node.html", "structutility_1_1bvh__node" ],
+      [ "bvh", "classutility_1_1bvh.html", "classutility_1_1bvh" ],
+      [ "bvh_node", "structutility_1_1bvh__node.html", null ],
       [ "data_block", "structutility_1_1data__block.html", null ],
       [ "enable_handle_distribute", "classutility_1_1enable__handle__distribute.html", null ],
       [ "enable_stack_destruct", "classutility_1_1enable__stack__destruct.html", "classutility_1_1enable__stack__destruct" ],
@@ -28,10 +28,10 @@ var annotated_dup =
         [ "push_constant_info", "structvulkan_1_1pipeline_1_1push__constant__info.html", null ],
         [ "push_constant_layout", "structvulkan_1_1pipeline_1_1push__constant__layout.html", null ]
       ] ],
-      [ "buffer_info", "structvulkan_1_1buffer__info.html", null ],
+      [ "buffer_detail", "structvulkan_1_1buffer__detail.html", null ],
       [ "core", "structvulkan_1_1core.html", null ],
       [ "image_create_info", "structvulkan_1_1image__create__info.html", null ],
-      [ "image_info", "structvulkan_1_1image__info.html", null ],
+      [ "image_detail", "structvulkan_1_1image__detail.html", null ],
       [ "model", "classvulkan_1_1model.html", null ],
       [ "runtime", "classvulkan_1_1runtime.html", null ],
       [ "shader_info", "structvulkan_1_1shader__info.html", null ],
@@ -40,7 +40,7 @@ var annotated_dup =
       [ "vk_descriptor_set", "classvulkan_1_1vk__descriptor__set.html", null ],
       [ "vk_pipeline", "structvulkan_1_1vk__pipeline.html", null ],
       [ "vk_shader_module", "classvulkan_1_1vk__shader__module.html", null ],
-      [ "vma_allocator", "classvulkan_1_1vma__allocator.html", null ]
+      [ "vma_allocator", "classvulkan_1_1vma__allocator.html", "classvulkan_1_1vma__allocator" ]
     ] ],
     [ "device_creation_info", "structdevice__creation__info.html", null ],
     [ "logical_device", "structlogical__device.html", null ],

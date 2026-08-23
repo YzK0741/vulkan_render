@@ -2,7 +2,7 @@ var hierarchy =
 [
     [ "utility::bvh_node::[struct].aabb", "structutility_1_1bvh__node_1_1_0fstruct_0e_8aabb.html", null ],
     [ "utility::aabb_box&lt; T &gt;", "structutility_1_1aabb__box.html", null ],
-    [ "vulkan::buffer_info", "structvulkan_1_1buffer__info.html", null ],
+    [ "vulkan::buffer_detail", "structvulkan_1_1buffer__detail.html", null ],
     [ "utility::bvh&lt; T &gt;", "classutility_1_1bvh.html", null ],
     [ "utility::bvh_node&lt; T &gt;", "structutility_1_1bvh__node.html", null ],
     [ "utility::data_block&lt; S &gt;", "structutility_1_1data__block.html", null ],
@@ -16,7 +16,7 @@ var hierarchy =
     ] ],
     [ "utility::frustum", "structutility_1_1frustum.html", null ],
     [ "vulkan::image_create_info", "structvulkan_1_1image__create__info.html", null ],
-    [ "vulkan::image_info", "structvulkan_1_1image__info.html", null ],
+    [ "vulkan::image_detail", "structvulkan_1_1image__detail.html", null ],
     [ "vulkan::pipeline::interface_variable_info", "structvulkan_1_1pipeline_1_1interface__variable__info.html", null ],
     [ "logical_device", "structlogical__device.html", null ],
     [ "std::pmr::memory_resource", null, [

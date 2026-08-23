@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['blake2_5fdigest_0',['blake2_digest',['../utility_8cppm.html#a46d6a0416e7b8748d77af98305a3861c',1,'utility']]]
+  ['morton_5fcode_0',['morton_code',['../group__bvh.html#ga8af5f7bb0928291daf7660dfc867845c',1,'utility']]]
 ];

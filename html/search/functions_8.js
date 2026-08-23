@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['register_5fcleanup_0',['register_cleanup',['../classutility_1_1enable__stack__destruct.html#af14a55a6666a6ff0427e68b1734c22bb',1,'utility::enable_stack_destruct']]]
+  ['load_5fmodel_0',['load_model',['../group__gltf__loader.html#gae6a6b28da457d98fed70a1d54cd14bac',1,'gltf']]]
 ];

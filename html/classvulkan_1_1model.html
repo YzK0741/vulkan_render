@@ -108,19 +108,28 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('classvulkan_1_
 </div>
 
 <div class="header">
-  <div class="headertitle"><div class="title">vulkan::model Class Reference<span class="mlabels"><span class="mlabel export">export</span></span><div class="ingroups">module <a class="el" href="module__vulkan_8model.html">vulkan.model</a></div></div></div>
+  <div class="headertitle"><div class="title">vulkan::model Class Reference<span class="mlabels"><span class="mlabel export">export</span></span><div class="ingroups"><a class="el" href="group__vulkan__model.html">Vulkan Model</a> &#124; module <a class="el" href="module__vulkan_8model.html">vulkan.model</a></div></div></div>
 </div><!--header-->
 <div class="contents">
+
+<p>model class managing vertex/index buffers and the descriptor set  
+ <a href="#details">More...</a></p>
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-pub-methods" class="groupheader"><a id="pub-methods" name="pub-methods"></a>
 Public Member Functions</h2></td></tr>
 <tr class="memitem:ab1e8d5af668ee627722dcaaac84ae7c9" id="r_ab1e8d5af668ee627722dcaaac84ae7c9"><td class="memItemLeft"><a id="ab1e8d5af668ee627722dcaaac84ae7c9" name="ab1e8d5af668ee627722dcaaac84ae7c9"></a>
 void&#160;</td><td class="memItemRight"><b>draw</b> (VkCommandBuffer command_buffer, VkPipelineLayout pipeline_layout) const</td></tr>
-<tr class="memitem:ab27944af5ba448f09a3de97d1227d793" id="r_ab27944af5ba448f09a3de97d1227d793"><td class="memItemLeft"><a id="ab27944af5ba448f09a3de97d1227d793" name="ab27944af5ba448f09a3de97d1227d793"></a>
-void&#160;</td><td class="memItemRight"><b>destroy</b> (VkDevice device, VkDescriptorPool descriptor_pool, <a class="el" href="classvulkan_1_1vma__allocator.html">vma_allocator</a> vma)</td></tr>
+<tr class="memitem:adf61065dded8392b0e238783558a3aae" id="r_adf61065dded8392b0e238783558a3aae"><td class="memItemLeft"><a id="adf61065dded8392b0e238783558a3aae" name="adf61065dded8392b0e238783558a3aae"></a>
+void&#160;</td><td class="memItemRight"><b>destroy</b> (VkDevice device, VkDescriptorPool descriptor_pool, <a class="el" href="classvulkan_1_1vma__allocator.html">vma_allocator</a> &amp;vma)</td></tr>
 </table>
-<hr/>The documentation for this class was generated from the following files:<ul>
-<li>vulkan/model/<b>model.cppm</b></li>
+<a name="details" id="details"></a><h2 id="header-details" class="groupheader">Detailed Description</h2>
+<div class="textblock"><dl class="section note"><dt>Note</dt><dd><ul>
+<li>draw() binds the descriptor set and vertex/index buffers, then issues a draw call</li>
+<li>destroy() frees the buffers and the descriptor set, pass the owning device/pool/vma </li>
+</ul>
+</dd></dl>
+</div><hr/>The documentation for this class was generated from the following files:<ul>
+<li>vulkan/model/<a class="el" href="model_8cppm.html">model.cppm</a></li>
 <li>vulkan/model/<b>model.cpp</b></li>
 </ul>
 </div><!-- contents -->

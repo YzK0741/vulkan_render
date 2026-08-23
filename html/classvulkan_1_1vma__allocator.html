@@ -108,9 +108,12 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('classvulkan_1_
 </div>
 
 <div class="header">
-  <div class="headertitle"><div class="title">vulkan::vma_allocator Class Reference<span class="mlabels"><span class="mlabel export">export</span></span><div class="ingroups">module <a class="el" href="module__vulkan_8vma.html">vulkan.vma</a></div></div></div>
+  <div class="headertitle"><div class="title">vulkan::vma_allocator Class Reference<span class="mlabels"><span class="mlabel export">export</span></span><div class="ingroups"><a class="el" href="group__vulkan__vma.html">Vulkan VMA Allocator</a> &#124; module <a class="el" href="module__vulkan_8vma.html">vulkan.vma</a></div></div></div>
 </div><!--header-->
 <div class="contents">
+
+<p>handle-based GPU buffer/image allocator built on VMA  
+ <a href="#details">More...</a></p>
 <div class="dynheader">
 Inheritance diagram for vulkan::vma_allocator:</div>
 <div class="dyncontent">
@@ -123,37 +126,45 @@ Inheritance diagram for vulkan::vma_allocator:</div>
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-pub-methods" class="groupheader"><a id="pub-methods" name="pub-methods"></a>
 Public Member Functions</h2></td></tr>
-<tr class="memitem:a48c970e758cf2867a7272d0c88694fa1" id="r_a48c970e758cf2867a7272d0c88694fa1"><td class="memItemLeft"><a id="a48c970e758cf2867a7272d0c88694fa1" name="a48c970e758cf2867a7272d0c88694fa1"></a>
-void&#160;</td><td class="memItemRight"><b>init</b> (VkInstance instance, VkDevice device, VkPhysicalDevice physical_device, VkQueue queue, uint32_t queue_family_index)</td></tr>
-<tr class="memitem:ab0e9b6efe2050a745c4f6e3c77fb74f6" id="r_ab0e9b6efe2050a745c4f6e3c77fb74f6"><td class="memItemLeft"><a id="ab0e9b6efe2050a745c4f6e3c77fb74f6" name="ab0e9b6efe2050a745c4f6e3c77fb74f6"></a>
+<tr class="memitem:ga48c970e758cf2867a7272d0c88694fa1" id="r_ga48c970e758cf2867a7272d0c88694fa1"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__vma.html#ga48c970e758cf2867a7272d0c88694fa1">init</a> (VkInstance instance, VkDevice device, VkPhysicalDevice physical_device, VkQueue queue, uint32_t queue_family_index)</td></tr>
+<tr class="memdesc:ga48c970e758cf2867a7272d0c88694fa1"><td class="mdescLeft">&#160;</td><td class="mdescRight">initialize the VMA allocator with the given vulkan objects  <br /></td></tr>
+<tr class="memitem:gab0e9b6efe2050a745c4f6e3c77fb74f6" id="r_gab0e9b6efe2050a745c4f6e3c77fb74f6"><td class="memItemLeft">
 void&#160;</td><td class="memItemRight"><b>destroy</b> ()</td></tr>
-<tr class="memitem:a2d27fdb622db3830d626c8de78045d28" id="r_a2d27fdb622db3830d626c8de78045d28"><td class="memItemLeft"><a id="a2d27fdb622db3830d626c8de78045d28" name="a2d27fdb622db3830d626c8de78045d28"></a>
-uint64_t&#160;</td><td class="memItemRight"><b>create_buffer</b> (const unsigned char *data, uint64_t size_byte, buffer_type type)</td></tr>
-<tr class="memitem:af89591cfa6a9d21d557a556c7c34c79f" id="r_af89591cfa6a9d21d557a556c7c34c79f"><td class="memTemplParams" colspan="2"><a id="af89591cfa6a9d21d557a556c7c34c79f" name="af89591cfa6a9d21d557a556c7c34c79f"></a>
-template&lt;typename T&gt; </td></tr>
-<tr class="memitem:af89591cfa6a9d21d557a556c7c34c79f template"><td class="memItemLeft">uint64_t&#160;</td><td class="memItemRight"><b>create_buffer</b> (std::span&lt; T &gt; data, const buffer_type type)</td></tr>
-<tr class="memitem:afb8903d8f4406ad896af7c9477bd6946" id="r_afb8903d8f4406ad896af7c9477bd6946"><td class="memTemplParams" colspan="2"><a id="afb8903d8f4406ad896af7c9477bd6946" name="afb8903d8f4406ad896af7c9477bd6946"></a>
-template&lt;typename T, std::size_t N&gt; </td></tr>
-<tr class="memitem:afb8903d8f4406ad896af7c9477bd6946 template"><td class="memItemLeft">uint64_t&#160;</td><td class="memItemRight"><b>create_buffer</b> (std::span&lt; T, N &gt; data, const buffer_type type)</td></tr>
-<tr class="memitem:a62b46cc4431008daeafde83b1c9a47e6" id="r_a62b46cc4431008daeafde83b1c9a47e6"><td class="memItemLeft"><a id="a62b46cc4431008daeafde83b1c9a47e6" name="a62b46cc4431008daeafde83b1c9a47e6"></a>
-uint64_t&#160;</td><td class="memItemRight"><b>create_image</b> (const unsigned char *data, uint64_t size_byte, <a class="el" href="structvulkan_1_1image__create__info.html">image_create_info</a> const &amp;create_info, image_type type)</td></tr>
-<tr class="memitem:aa57b3b4502ccc503f6cb92054097a9ee" id="r_aa57b3b4502ccc503f6cb92054097a9ee"><td class="memTemplParams" colspan="2"><a id="aa57b3b4502ccc503f6cb92054097a9ee" name="aa57b3b4502ccc503f6cb92054097a9ee"></a>
-template&lt;typename T&gt; </td></tr>
-<tr class="memitem:aa57b3b4502ccc503f6cb92054097a9ee template"><td class="memItemLeft">uint64_t&#160;</td><td class="memItemRight"><b>create_image</b> (std::span&lt; T &gt; data, <a class="el" href="structvulkan_1_1image__create__info.html">image_create_info</a> create_info, const image_type type)</td></tr>
-<tr class="memitem:a50444c3cb0b2d9f9f776a20a0f77e04d" id="r_a50444c3cb0b2d9f9f776a20a0f77e04d"><td class="memTemplParams" colspan="2"><a id="a50444c3cb0b2d9f9f776a20a0f77e04d" name="a50444c3cb0b2d9f9f776a20a0f77e04d"></a>
-template&lt;typename T, size_t N&gt; </td></tr>
-<tr class="memitem:a50444c3cb0b2d9f9f776a20a0f77e04d template"><td class="memItemLeft">uint64_t&#160;</td><td class="memItemRight"><b>create_image</b> (std::span&lt; T, N &gt; data, <a class="el" href="structvulkan_1_1image__create__info.html">image_create_info</a> create_info, const image_type type)</td></tr>
-<tr class="memitem:a94c65670addbbcbd344015048262d7a7" id="r_a94c65670addbbcbd344015048262d7a7"><td class="memItemLeft"><a id="a94c65670addbbcbd344015048262d7a7" name="a94c65670addbbcbd344015048262d7a7"></a>
-const <a class="el" href="structvulkan_1_1buffer__info.html">buffer_info</a> *&#160;</td><td class="memItemRight"><b>get_buffer_detail</b> (uint64_t handle)</td></tr>
-<tr class="memitem:af9cf8c04a395701d341fc9c4b4a2f684" id="r_af9cf8c04a395701d341fc9c4b4a2f684"><td class="memItemLeft"><a id="af9cf8c04a395701d341fc9c4b4a2f684" name="af9cf8c04a395701d341fc9c4b4a2f684"></a>
-const <a class="el" href="structvulkan_1_1image__info.html">image_info</a> *&#160;</td><td class="memItemRight"><b>get_image_detail</b> (uint64_t handle)</td></tr>
-<tr class="memitem:a64983a580277af98f33956510c9ca0aa" id="r_a64983a580277af98f33956510c9ca0aa"><td class="memItemLeft"><a id="a64983a580277af98f33956510c9ca0aa" name="a64983a580277af98f33956510c9ca0aa"></a>
-void&#160;</td><td class="memItemRight"><b>free_buffer</b> (uint64_t handle)</td></tr>
-<tr class="memitem:aa5ba469b58a27a57d67fc898338afe3d" id="r_aa5ba469b58a27a57d67fc898338afe3d"><td class="memItemLeft"><a id="aa5ba469b58a27a57d67fc898338afe3d" name="aa5ba469b58a27a57d67fc898338afe3d"></a>
-void&#160;</td><td class="memItemRight"><b>free_image</b> (uint64_t handle)</td></tr>
+<tr class="memdesc:gab0e9b6efe2050a745c4f6e3c77fb74f6"><td class="mdescLeft">&#160;</td><td class="mdescRight">release the underlying VmaAllocator and cached upload resources <br /></td></tr>
+<tr class="memitem:ga2d27fdb622db3830d626c8de78045d28" id="r_ga2d27fdb622db3830d626c8de78045d28"><td class="memItemLeft">uint64_t&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__vma.html#ga2d27fdb622db3830d626c8de78045d28">create_buffer</a> (const unsigned char *data, uint64_t size_byte, <a class="el" href="group__vulkan__vma.html#ga05a60f7a59997428ebab26fe290abd06">buffer_type</a> type)</td></tr>
+<tr class="memdesc:ga2d27fdb622db3830d626c8de78045d28"><td class="mdescLeft">&#160;</td><td class="mdescRight">create a GPU buffer of the given type and upload the data  <br /></td></tr>
+<tr class="memitem:gaf89591cfa6a9d21d557a556c7c34c79f" id="r_gaf89591cfa6a9d21d557a556c7c34c79f"><td class="memTemplParams" colspan="2">template&lt;typename T&gt; </td></tr>
+<tr class="memitem:gaf89591cfa6a9d21d557a556c7c34c79f template"><td class="memItemLeft">uint64_t&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__vma.html#gaf89591cfa6a9d21d557a556c7c34c79f">create_buffer</a> (std::span&lt; T &gt; data, const <a class="el" href="group__vulkan__vma.html#ga05a60f7a59997428ebab26fe290abd06">buffer_type</a> type)</td></tr>
+<tr class="memdesc:gaf89591cfa6a9d21d557a556c7c34c79f"><td class="mdescLeft">&#160;</td><td class="mdescRight">create a GPU buffer from a typed span  <br /></td></tr>
+<tr class="memitem:gafb8903d8f4406ad896af7c9477bd6946" id="r_gafb8903d8f4406ad896af7c9477bd6946"><td class="memTemplParams" colspan="2">template&lt;typename T, std::size_t N&gt; </td></tr>
+<tr class="memitem:gafb8903d8f4406ad896af7c9477bd6946 template"><td class="memItemLeft">uint64_t&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__vma.html#gafb8903d8f4406ad896af7c9477bd6946">create_buffer</a> (std::span&lt; T, N &gt; data, const <a class="el" href="group__vulkan__vma.html#ga05a60f7a59997428ebab26fe290abd06">buffer_type</a> type)</td></tr>
+<tr class="memdesc:gafb8903d8f4406ad896af7c9477bd6946"><td class="mdescLeft">&#160;</td><td class="mdescRight">create a GPU buffer from a fixed-size typed span  <br /></td></tr>
+<tr class="memitem:ga62b46cc4431008daeafde83b1c9a47e6" id="r_ga62b46cc4431008daeafde83b1c9a47e6"><td class="memItemLeft">uint64_t&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__vma.html#ga62b46cc4431008daeafde83b1c9a47e6">create_image</a> (const unsigned char *data, uint64_t size_byte, <a class="el" href="structvulkan_1_1image__create__info.html">image_create_info</a> const &amp;create_info, <a class="el" href="group__vulkan__vma.html#gae73f0fb4c3a00616a5f8e998ffd75214">image_type</a> type)</td></tr>
+<tr class="memdesc:ga62b46cc4431008daeafde83b1c9a47e6"><td class="mdescLeft">&#160;</td><td class="mdescRight">create a GPU image of the given type and upload the data  <br /></td></tr>
+<tr class="memitem:gaa57b3b4502ccc503f6cb92054097a9ee" id="r_gaa57b3b4502ccc503f6cb92054097a9ee"><td class="memTemplParams" colspan="2">template&lt;typename T&gt; </td></tr>
+<tr class="memitem:gaa57b3b4502ccc503f6cb92054097a9ee template"><td class="memItemLeft">uint64_t&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__vma.html#gaa57b3b4502ccc503f6cb92054097a9ee">create_image</a> (std::span&lt; T &gt; data, <a class="el" href="structvulkan_1_1image__create__info.html">image_create_info</a> create_info, const <a class="el" href="group__vulkan__vma.html#gae73f0fb4c3a00616a5f8e998ffd75214">image_type</a> type)</td></tr>
+<tr class="memdesc:gaa57b3b4502ccc503f6cb92054097a9ee"><td class="mdescLeft">&#160;</td><td class="mdescRight">create a GPU image from a typed span  <br /></td></tr>
+<tr class="memitem:ga50444c3cb0b2d9f9f776a20a0f77e04d" id="r_ga50444c3cb0b2d9f9f776a20a0f77e04d"><td class="memTemplParams" colspan="2">template&lt;typename T, size_t N&gt; </td></tr>
+<tr class="memitem:ga50444c3cb0b2d9f9f776a20a0f77e04d template"><td class="memItemLeft">uint64_t&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__vma.html#ga50444c3cb0b2d9f9f776a20a0f77e04d">create_image</a> (std::span&lt; T, N &gt; data, <a class="el" href="structvulkan_1_1image__create__info.html">image_create_info</a> create_info, const <a class="el" href="group__vulkan__vma.html#gae73f0fb4c3a00616a5f8e998ffd75214">image_type</a> type)</td></tr>
+<tr class="memdesc:ga50444c3cb0b2d9f9f776a20a0f77e04d"><td class="mdescLeft">&#160;</td><td class="mdescRight">create a GPU image from a fixed-size typed span  <br /></td></tr>
+<tr class="memitem:gaf0db03b519b559b2fa78e15210248f4a" id="r_gaf0db03b519b559b2fa78e15210248f4a"><td class="memItemLeft">const <a class="el" href="structvulkan_1_1buffer__detail.html">buffer_detail</a> *&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__vma.html#gaf0db03b519b559b2fa78e15210248f4a">get_buffer_detail</a> (uint64_t handle)</td></tr>
+<tr class="memdesc:gaf0db03b519b559b2fa78e15210248f4a"><td class="mdescLeft">&#160;</td><td class="mdescRight">get the detail of a buffer by its handle  <br /></td></tr>
+<tr class="memitem:gaea42f0dffc2399a1920aff3f550381bb" id="r_gaea42f0dffc2399a1920aff3f550381bb"><td class="memItemLeft">const <a class="el" href="structvulkan_1_1image__detail.html">image_detail</a> *&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__vma.html#gaea42f0dffc2399a1920aff3f550381bb">get_image_detail</a> (uint64_t handle)</td></tr>
+<tr class="memdesc:gaea42f0dffc2399a1920aff3f550381bb"><td class="mdescLeft">&#160;</td><td class="mdescRight">get the detail of an image by its handle  <br /></td></tr>
+<tr class="memitem:ga64983a580277af98f33956510c9ca0aa" id="r_ga64983a580277af98f33956510c9ca0aa"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__vma.html#ga64983a580277af98f33956510c9ca0aa">free_buffer</a> (uint64_t handle)</td></tr>
+<tr class="memdesc:ga64983a580277af98f33956510c9ca0aa"><td class="mdescLeft">&#160;</td><td class="mdescRight">free a buffer by its handle, no-op if the handle is invalid  <br /></td></tr>
+<tr class="memitem:gaa5ba469b58a27a57d67fc898338afe3d" id="r_gaa5ba469b58a27a57d67fc898338afe3d"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__vma.html#gaa5ba469b58a27a57d67fc898338afe3d">free_image</a> (uint64_t handle)</td></tr>
+<tr class="memdesc:gaa5ba469b58a27a57d67fc898338afe3d"><td class="mdescLeft">&#160;</td><td class="mdescRight">free an image by its handle, no-op if the handle is invalid  <br /></td></tr>
 </table>
-<hr/>The documentation for this class was generated from the following files:<ul>
-<li>vulkan/core/vma/<b>vma.cppm</b></li>
+<a name="details" id="details"></a><h2 id="header-details" class="groupheader">Detailed Description</h2>
+<div class="textblock"><dl class="section note"><dt>Note</dt><dd><ul>
+<li>buffers/images are referenced by uint64_t handles</li>
+<li>thread-safe: creation and lookup are protected by an internal mutex</li>
+<li>call <a class="el" href="group__vulkan__vma.html#gab0e9b6efe2050a745c4f6e3c77fb74f6" title="release the underlying VmaAllocator and cached upload resources">destroy()</a> to release the underlying VmaAllocator </li>
+</ul>
+</dd></dl>
+</div><hr/>The documentation for this class was generated from the following files:<ul>
+<li>vulkan/core/vma/<a class="el" href="vma_8cppm.html">vma.cppm</a></li>
 <li>vulkan/core/vma/<b>vma.cpp</b></li>
 </ul>
 </div><!-- contents -->

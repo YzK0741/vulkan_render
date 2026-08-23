@@ -111,17 +111,26 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('module__vulkan
   <div class="headertitle"><div class="title">vulkan.vma Module Reference</div></div>
 </div><!--header-->
 <div class="contents">
+</table><table class="memberdecls">
+<tr class="heading"><td colspan="2"><h2 id="header-exports" class="groupheader"><a id="exports" name="exports"></a>
+Exported Modules</h2></td></tr>
+<tr class="memitem:std" id="r_std"><td class="memItemLeft">module &#160;</td><td class="memItemRight"><b>std</b></td></tr>
+<tr class="memitem:utility" id="r_utility"><td class="memItemLeft">module &#160;</td><td class="memItemRight"><b>utility</b></td></tr>
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-nested-classes" class="groupheader"><a id="nested-classes" name="nested-classes"></a>
 Classes</h2></td></tr>
-<tr class="memitem:vulkan_3A_3Abuffer_5Finfo" id="r_vulkan_3A_3Abuffer_5Finfo"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1buffer__info.html">vulkan::buffer_info</a></td></tr>
-<tr class="memitem:vulkan_3A_3Aimage_5Finfo" id="r_vulkan_3A_3Aimage_5Finfo"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1image__info.html">vulkan::image_info</a></td></tr>
+<tr class="memitem:vulkan_3A_3Abuffer_5Fdetail" id="r_vulkan_3A_3Abuffer_5Fdetail"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1buffer__detail.html">vulkan::buffer_detail</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">detail of a created buffer: the buffer handle, its allocation and allocation info  <a href="structvulkan_1_1buffer__detail.html#details">More...</a><br /></td></tr>
+<tr class="memitem:vulkan_3A_3Aimage_5Fdetail" id="r_vulkan_3A_3Aimage_5Fdetail"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1image__detail.html">vulkan::image_detail</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">detail of a created image: the image handle, its allocation and allocation info  <a href="structvulkan_1_1image__detail.html#details">More...</a><br /></td></tr>
 <tr class="memitem:vulkan_3A_3Aimage_5Fcreate_5Finfo" id="r_vulkan_3A_3Aimage_5Fcreate_5Finfo"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1image__create__info.html">vulkan::image_create_info</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">auxiliary data for image creation  <a href="structvulkan_1_1image__create__info.html#details">More...</a><br /></td></tr>
 <tr class="memitem:vulkan_3A_3Avma_5Fallocator" id="r_vulkan_3A_3Avma_5Fallocator"><td class="memItemLeft">class &#160;</td><td class="memItemRight"><a class="el" href="classvulkan_1_1vma__allocator.html">vulkan::vma_allocator</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">handle-based GPU buffer/image allocator built on VMA  <a href="classvulkan_1_1vma__allocator.html#details">More...</a><br /></td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-enum-members" class="groupheader"><a id="enum-members" name="enum-members"></a>
 Enumerations</h2></td></tr>
-<tr class="memitem:a05a60f7a59997428ebab26fe290abd06" id="r_a05a60f7a59997428ebab26fe290abd06"><td class="memItemLeft"><a id="a05a60f7a59997428ebab26fe290abd06" name="a05a60f7a59997428ebab26fe290abd06"></a>enum class &#160;</td><td class="memItemRight"><b>buffer_type</b> { <br />
+<tr class="memitem:ga05a60f7a59997428ebab26fe290abd06" id="r_ga05a60f7a59997428ebab26fe290abd06"><td class="memItemLeft"><a id="ga05a60f7a59997428ebab26fe290abd06" name="ga05a60f7a59997428ebab26fe290abd06"></a>enum class &#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__vma.html#ga05a60f7a59997428ebab26fe290abd06">vulkan::buffer_type</a> { <br />
 &#160;&#160;<b>vertex</b>
 , <b>index</b>
 , <b>uniform_gpu_only</b>
@@ -130,7 +139,8 @@ Enumerations</h2></td></tr>
 &#160;&#160;<b>uniform_cached</b>
 <br />
  }</td></tr>
-<tr class="memitem:ae73f0fb4c3a00616a5f8e998ffd75214" id="r_ae73f0fb4c3a00616a5f8e998ffd75214"><td class="memItemLeft"><a id="ae73f0fb4c3a00616a5f8e998ffd75214" name="ae73f0fb4c3a00616a5f8e998ffd75214"></a>enum class &#160;</td><td class="memItemRight"><b>image_type</b> { <br />
+<tr class="memdesc:ga05a60f7a59997428ebab26fe290abd06"><td class="mdescLeft">&#160;</td><td class="mdescRight">buffer usage type, decides memory properties and upload strategy <br /></td></tr>
+<tr class="memitem:gae73f0fb4c3a00616a5f8e998ffd75214" id="r_gae73f0fb4c3a00616a5f8e998ffd75214"><td class="memItemLeft"><a id="gae73f0fb4c3a00616a5f8e998ffd75214" name="gae73f0fb4c3a00616a5f8e998ffd75214"></a>enum class &#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__vma.html#gae73f0fb4c3a00616a5f8e998ffd75214">vulkan::image_type</a> { <br />
 &#160;&#160;<b>texture_2d</b>
 , <b>texture_2d_color</b>
 , <b>texture_2d_depth</b>
@@ -140,11 +150,12 @@ Enumerations</h2></td></tr>
 , <b>render_target</b>
 <br />
  }</td></tr>
+<tr class="memdesc:gae73f0fb4c3a00616a5f8e998ffd75214"><td class="mdescLeft">&#160;</td><td class="mdescRight">image usage type, decides memory properties and upload strategy <br /></td></tr>
 </table>
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-files" class="groupheader"><a id="files" name="files"></a>
 Files</h2></td></tr>
-<tr class="memitem:vma_2Ecppm" id="r_vma_2Ecppm"><td class="memItemLeft">file &#160;</td><td class="memItemRight">vulkan/core/vma/<b>vma.cppm</b></td></tr>
+<tr class="memitem:vma_2Ecppm" id="r_vma_2Ecppm"><td class="memItemLeft">file &#160;</td><td class="memItemRight">vulkan/core/vma/<a class="el" href="vma_8cppm.html">vma.cppm</a></td></tr>
 <tr class="memitem:vma_2Ecpp" id="r_vma_2Ecpp"><td class="memItemLeft">file &#160;</td><td class="memItemRight">vulkan/core/vma/<b>vma.cpp</b></td></tr>
 </table>
 </div><!-- contents -->

@@ -4,9 +4,14 @@ var searchData=
   ['scenes_1',['scenes',['../structgltf_1_1scenes.html',1,'gltf']]],
   ['sets_2',['utility functions, classes sets',['../group__utility.html',1,'']]],
   ['sha256_3',['sha256',['../group__hash.html#gac2ffbd3942c763ba54f5bfa9630c1cb6',1,'utility']]],
-  ['shader_5finfo_4',['shader_info',['../structvulkan_1_1shader__info.html',1,'vulkan']]],
-  ['shader_5fstage_5finterface_5',['shader_stage_interface',['../structvulkan_1_1pipeline_1_1shader__stage__interface.html',1,'vulkan::pipeline']]],
-  ['shader_5fvariable_5fdescriptor_6',['shader_variable_descriptor',['../structvulkan_1_1shader__variable__descriptor.html',1,'vulkan']]],
-  ['shutdown_7',['shutdown',['../classutility_1_1thread__pool.html#a7dae176aa124cfb582402bea5c2fb453',1,'utility::thread_pool']]],
-  ['swap_5fchain_5fsupport_5fdetails_8',['swap_chain_support_details',['../structswap__chain__support__details.html',1,'']]]
+  ['shader_5fdata_5ftype_4',['shader_data_type',['../group__vulkan__pipeline.html#ga66649d834779e1d945b55ab570887811',1,'vulkan']]],
+  ['shader_5finfo_5',['shader_info',['../structvulkan_1_1shader__info.html',1,'vulkan']]],
+  ['shader_5finput_5fdescriptor_6',['shader_input_descriptor',['../group__vulkan__pipeline.html#ga44a482c4d47bfdd05a60b3fc0362d9c7',1,'vulkan']]],
+  ['shader_5fstage_5finterface_7',['shader_stage_interface',['../structvulkan_1_1pipeline_1_1shader__stage__interface.html',1,'vulkan::pipeline']]],
+  ['shader_5fstorage_8',['shader_storage',['../group__vulkan__pipeline.html#ga34c5898b318216db3026b174382792fd',1,'vulkan']]],
+  ['shader_5fvariable_5fdescriptor_9',['shader_variable_descriptor',['../structvulkan_1_1shader__variable__descriptor.html',1,'vulkan']]],
+  ['shutdown_10',['shutdown',['../classutility_1_1thread__pool.html#a7dae176aa124cfb582402bea5c2fb453',1,'utility::thread_pool']]],
+  ['spir_20v_20reflection_20parser_11',['SPIR-V Reflection Parser',['../group__vulkan__spirv__parser.html',1,'']]],
+  ['spirv_5fparser_2ecppm_12',['spirv_parser.cppm',['../spirv__parser_8cppm.html',1,'']]],
+  ['swap_5fchain_5fsupport_5fdetails_13',['swap_chain_support_details',['../structswap__chain__support__details.html',1,'']]]
 ];

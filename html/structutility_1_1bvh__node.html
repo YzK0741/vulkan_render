@@ -108,9 +108,12 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('structutility_
 </div>
 
 <div class="header">
-  <div class="headertitle"><div class="title">utility::bvh_node&lt; T &gt; Struct Template Reference<span class="mlabels"><span class="mlabel export">export</span></span><div class="ingroups">module <a class="el" href="module__utility_8bvh.html">utility.bvh</a></div></div></div>
+  <div class="headertitle"><div class="title">utility::bvh_node&lt; T &gt; Struct Template Reference<span class="mlabels"><span class="mlabel export">export</span></span><div class="ingroups"><a class="el" href="group__utility.html">utility functions, classes sets</a> &raquo; <a class="el" href="group__bvh.html">Bounding Volume Hierarchy</a> &#124; module <a class="el" href="module__utility_8bvh.html">utility.bvh</a></div></div></div>
 </div><!--header-->
 <div class="contents">
+
+<p>node of the BVH tree; leaves reference internal storage, internal nodes own heap children  
+ <a href="#details">More...</a></p>
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-nested-classes" class="groupheader"><a id="nested-classes" name="nested-classes"></a>
 Classes</h2></td></tr>
@@ -133,14 +136,22 @@ Public Attributes</h2></td></tr>
 <tr class="memitem:a898b7d5716c0b55091fda787bda4831d" id="r_a898b7d5716c0b55091fda787bda4831d"><td class="memItemLeft"><a id="a898b7d5716c0b55091fda787bda4831d" name="a898b7d5716c0b55091fda787bda4831d"></a>
 <a class="el" href="structutility_1_1bvh__node.html">bvh_node</a> *&#160;</td><td class="memItemRight"><b>right</b> = nullptr</td></tr>
 <tr class="memitem:a6cf4d368f937ffc6fa9fb8e9b9b443e8" id="r_a6cf4d368f937ffc6fa9fb8e9b9b443e8"><td class="memItemLeft"><a id="a6cf4d368f937ffc6fa9fb8e9b9b443e8" name="a6cf4d368f937ffc6fa9fb8e9b9b443e8"></a>
-morton_code&#160;</td><td class="memItemRight"><b>code</b> = {}</td></tr>
+<a class="el" href="group__bvh.html#ga8af5f7bb0928291daf7660dfc867845c">morton_code</a>&#160;</td><td class="memItemRight"><b>code</b> = {}</td></tr>
 <tr class="memitem:"><td class="memItemLeft"><a id="a2133c6c9ca8c4b8e6e538054d9839624" name="a2133c6c9ca8c4b8e6e538054d9839624"></a>
 <a class="el" href="structutility_1_1bvh__node_1_1_0fstruct_0e_8aabb.html">struct </a>&#160;</td><td class="memItemRight"><b>aabb</b></td></tr>
 <tr class="memitem:a53fca632d111a6374430db82bcdcff23" id="r_a53fca632d111a6374430db82bcdcff23"><td class="memItemLeft"><a id="a53fca632d111a6374430db82bcdcff23" name="a53fca632d111a6374430db82bcdcff23"></a>
 data_type *&#160;</td><td class="memItemRight"><b>extra_data</b></td></tr>
 </table>
-<hr/>The documentation for this struct was generated from the following file:<ul>
-<li>utility/BVH/<b>bvh.cppm</b></li>
+<a name="details" id="details"></a><h2 id="header-details" class="groupheader">Detailed Description</h2>
+<div class="textblock"><div class="compoundTemplParams">template&lt;typename T&gt;<br />
+struct utility::bvh_node&lt; T &gt;</div><dl class="tparams"><dt>Template Parameters</dt><dd>
+  <table class="tparams">
+    <tr><td class="paramname">T</td><td>type of the attached user data </td></tr>
+  </table>
+  </dd>
+</dl>
+</div><hr/>The documentation for this struct was generated from the following file:<ul>
+<li>utility/BVH/<a class="el" href="bvh_8cppm.html">bvh.cppm</a></li>
 </ul>
 </div><!-- contents -->
 </div><!-- doc-content -->

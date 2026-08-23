@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['utility_20functions_20classes_20sets_0',['utility functions, classes sets',['../group__utility.html',1,'']]]
+  ['objects_20manager_0',['Vulkan Core Objects Manager',['../group__vulkan__core.html',1,'']]]
 ];
