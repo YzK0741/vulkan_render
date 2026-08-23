@@ -24,7 +24,7 @@ namespace utility
 
         bool is_valid()
         {
-            return (this->min.x > this->max.x || this->min.y > this->max.y || this->min.z > this->max.z);
+            return !(this->min.x > this->max.x || this->min.y > this->max.y || this->min.z > this->max.z);
         }
         [[nodiscard]] glm::vec3 get_midpoint() const noexcept
         {
@@ -38,7 +38,7 @@ namespace utility
         {
             aabb_box intersection;
             intersection.max = glm::min(other.max, this->max);
-            intersection.min = glm::max(other.min, other.min);
+            intersection.min = glm::max(other.min, this->min);
             return intersection;
         }
         aabb_box get_common(aabb_box const& other) const noexcept
@@ -134,8 +134,9 @@ namespace utility
         std::vector<bvh_node<T>> leaves;
         std::unique_ptr<bvh_node<T>> root;
 
-        static std::unique_ptr<bvh_node<T>> build_from_leaves(std::vector<bvh_node<T>> const& leaves)
+        static std::expected<std::unique_ptr<bvh_node<T>>, std::string> build_from_leaves(std::vector<bvh_node<T>> const& leaves)
         {
+            using fail = std::unexpected<std::string>;
             auto leave_it = leaves.begin();
 
             std::vector<std::vector<bvh_node<T>*>> layers(1);
@@ -154,9 +155,17 @@ namespace utility
                     node->right = &*leave_it;
                     ++leave_it;
                     node->aabb = node->left->aabb | node->right->aabb;
-                    auto code = generate_morton_from_midpoint(node->aabb.get_midpoint());
+                    auto code = generate_morton_from_midpoint(node->aabb.get_midpoint(), 1.0f);
                     if (!code)
                     {
+                        delete node;
+                        std::ranges::for_each(layers.back(), [](auto* n)
+                        {
+                            if (n != nullptr && !n->is_leaf())
+                            {
+                                delete n;
+                            }
+                        });
                         return fail(code.error());
                     }
                     node->code = std::move(code).value();
@@ -167,13 +176,13 @@ namespace utility
             while (layers.back().size() != 1)
             {
                 layers.emplace_back();
-                auto layer_it = (layers.back() - 1).begin();
-                auto layer_end = (layers.back() - 1).end();
+                auto layer_it = (layers.end() - 2)->begin();
+                auto layer_end = (layers.end() - 2)->end();
                 while (layer_it != layer_end)
                 {
                     if (layer_it + 1 == layer_end)
                     {
-                        layers.back().push_back(&*layer_it);
+                        layers.back().push_back(*layer_it);
                         ++layer_it;
                     } else
                     {
@@ -183,15 +192,31 @@ namespace utility
                         node->right = &*layer_it;
                         ++layer_it;
                         node->aabb = node->left->aabb | node->right->aabb;
-                        auto code = generate_morton_from_midpoint(node->aabb.get_midpoint());
+                        auto code = generate_morton_from_midpoint(node->aabb.get_midpoint(), 1.0f);
                         if (!code)
                         {
+                            delete node;
+                            std::ranges::for_each(layers.back(), [](auto* n)
+                            {
+                                if (n != nullptr && !n->is_leaf())
+                                {
+                                    delete n;
+                                }
+                            });
                             return fail(code.error());
                         }
                         node->code = std::move(code).value();
                         layers.back().push_back(node);
                     }
                 }
+            }
+
+            if (layers.size() == 1)
+            {
+                // 只有一个元素时，layers[0][0] 指向的是 leaves 的 vector 元素，
+                // 直接交给 unique_ptr 会在析构时 delete 它（不是 new 出来的）→ 双重释放 UB。
+                // 在堆上拷贝一份作为根节点。
+                return {std::make_unique<bvh_node<T>>(*layers.back()[0])};
             }
 
             return {std::move(layers.back()[0])};
@@ -211,7 +236,7 @@ namespace utility
             leaves.reserve(datas.size());
             for (auto const& data : datas)
             {
-                auto morton = generate_morton_from_midpoint(data.get_midpoint());
+                auto morton = generate_morton_from_midpoint(data.get_midpoint(), 1.0f);
                 bvh_node<T> node = {};
                 node.aabb.min = data.min;
                 node.aabb.max = data.max;
@@ -227,7 +252,14 @@ namespace utility
 
             bvh result;
 
-            result.root = build_from_leaves(leaves);
+            auto build_result = build_from_leaves(leaves);
+
+            if (!build_result)
+            {
+                return fail(build_result.error());
+            }
+
+            result.root = std::move(build_result).value();
 
             result.leaves = std::move(leaves);
             return result;
@@ -235,18 +267,35 @@ namespace utility
 
         void rebuild()
         {
-            this->root.release();
             std::ranges::sort(this->leaves, [](auto const& a, auto const& b){return a.code < b.code;});
-            this->root = build_from_leaves(this->leaves);
+            auto build_result = build_from_leaves(this->leaves);
+
+            if (!build_result)
+            {
+                return;
+            }
+
+            this->root = std::move(build_result).value();
         }
 
-        void add(aabb_box<T> const& box)
+        std::expected<void, std::string> add(aabb_box<T> const& box)
         {
-            bvh_node<T> node;
+            using fail = std::unexpected<std::string>;
+
+            bvh_node<T> node = {};
             node.aabb.min = box.min;
             node.aabb.max = box.max;
-            node.code = generate_morton_from_midpoint(box.get_midpoint());
+            node.extra_data = box.extra_data;
+
+            auto morton = generate_morton_from_midpoint(box.get_midpoint(), 1.0f);
+            if (!morton)
+            {
+                return fail(morton.error());
+            }
+            node.code = std::move(morton).value();
+
             this->leaves.push_back(node);
+            return {};
         }
 
         void get_hit(glm::vec3 const& start, glm::vec3 const& direction, float t_min = 0.01f, float t_max = std::numeric_limits<float>::infinity())
@@ -254,6 +303,10 @@ namespace utility
             std::stack<bvh_node<T>*> nodes_to_access;
             std::priority_queue<bvh_node<T>*> hit_list;
             bvh_node<T>* root = this->root.get();
+            if (root == nullptr)
+            {
+                return;
+            }
             if (auto const& aabb = root->aabb; hit(aabb.min, aabb.max, start, direction, t_min, t_max))
             {
                 if (root->left != nullptr)
@@ -274,7 +327,7 @@ namespace utility
                 {
                     if (node->is_leaf())
                     {
-                        hit_list.push_back(node);
+                        hit_list.push(node);
                     }
                     else
                     {

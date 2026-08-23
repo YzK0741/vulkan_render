@@ -50,7 +50,7 @@ namespace
         auto spread = [](const uint32_t n) -> __uint128_t {
             __uint128_t output = 0;
             for (int i = 0; i < 32; i++) {
-                const uint64_t bit = (n >> i) & 1;
+                const __uint128_t bit = (n >> i) & 1u;
                 output |= (bit << (3 * i));
             }
             return output;
