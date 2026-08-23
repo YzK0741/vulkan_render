@@ -10,11 +10,35 @@ export import std;
 
 export import utility.data_block;
 
-
+/**
+ * @file bvh.cppm
+ * @defgroup bvh Bounding Volume Hierarchy
+ * @ingroup utility
+ * @brief BVH acceleration structure: AABB boxes, morton-code building, ray hit test and frustum culling
+ * @note
+ *      - leaf nodes live in an internal std::vector, internal nodes are heap allocated
+ *      - make() builds the tree, rebuild() rebuilds it after leaves change
+ */
+/**
+ * @ingroup bvh
+ * @brief ray vs AABB slab intersection test
+ * @param min AABB min corner
+ * @param max AABB max corner
+ * @param start ray origin
+ * @param direction ray direction
+ * @param t_min minimum hit distance
+ * @param t_max maximum hit distance
+ * @return true if the ray hits the AABB within [t_min, t_max]
+ */
 bool hit(glm::vec3 const& min, glm::vec3 const& max , glm::vec3 const& start, glm::vec3 const& direction, float t_min = 0.01f, float t_max = std::numeric_limits<float>::infinity());
 
 namespace utility
 {
+    /**
+     * @ingroup bvh
+     * @brief axis-aligned bounding box with an optional user data pointer
+     * @tparam T type of the attached user data
+     */
     export template<typename T>
     struct aabb_box
     {
@@ -73,10 +97,26 @@ namespace utility
         }
     };
 
+    /**
+     * @ingroup bvh
+     * @brief 96-bit morton code used to order leaves
+     */
     using morton_code = data_block<12>;
 
+    /**
+     * @ingroup bvh
+     * @brief generate a morton code from a normalized midpoint
+     * @param midpoint point in [0, 1]^3
+     * @param scale quantization scale per axis
+     * @return morton_code on success, error message if midpoint is out of [0, 1]
+     */
     std::expected<morton_code, std::string> generate_morton_from_midpoint(glm::vec3 const& midpoint, float scale);
 
+    /**
+     * @ingroup bvh
+     * @brief node of the BVH tree; leaves reference internal storage, internal nodes own heap children
+     * @tparam T type of the attached user data
+     */
     export template<typename T>
     struct bvh_node
     {
@@ -121,6 +161,10 @@ namespace utility
         }
     };
 
+    /**
+     * @ingroup bvh
+     * @brief view frustum defined by six planes
+     */
     export struct frustum
     {
         glm::vec4 planes[6];
@@ -128,12 +172,28 @@ namespace utility
         bool in(glm::vec3 const& min, glm::vec3 const& max);
     };
 
+    /**
+     * @ingroup bvh
+     * @brief bounding volume hierarchy built with morton codes
+     * @tparam T type of the user data attached to each leaf
+     * @note
+     *      - make() builds the tree from AABBs
+     *      - add() inserts a leaf, call rebuild() afterwards
+     *      - get_hit() collects hit leaves along a ray
+     *      - frustum_cull() returns leaves inside a frustum
+     */
     export template<typename T>
     class bvh
     {
         std::vector<bvh_node<T>> leaves;
         std::unique_ptr<bvh_node<T>> root;
 
+        /**
+         * @ingroup bvh
+         * @brief build the internal tree bottom-up from the given leaves
+         * @param leaves leaf nodes sorted by morton code
+         * @return the root node on success, error message on failure
+         */
         static std::expected<std::unique_ptr<bvh_node<T>>, std::string> build_from_leaves(std::vector<bvh_node<T>> const& leaves)
         {
             using fail = std::unexpected<std::string>;
@@ -223,6 +283,12 @@ namespace utility
         }
 
     public:
+        /**
+         * @ingroup bvh
+         * @brief build a BVH from the given AABBs
+         * @param datas AABBs to build the tree from
+         * @return the built bvh on success, error message on failure
+         */
         static std::expected<bvh, std::string> make(std::vector<aabb_box<T>> const& datas)
         {
             using fail = std::unexpected<std::string>;
@@ -265,6 +331,10 @@ namespace utility
             return result;
         }
 
+        /**
+         * @ingroup bvh
+         * @brief rebuild the tree from the current leaves
+         */
         void rebuild()
         {
             std::ranges::sort(this->leaves, [](auto const& a, auto const& b){return a.code < b.code;});
@@ -278,6 +348,13 @@ namespace utility
             this->root = std::move(build_result).value();
         }
 
+        /**
+         * @ingroup bvh
+         * @brief add an AABB as a new leaf
+         * @param box the AABB to add
+         * @return {} on success, error message on failure
+         * @note the tree is not rebuilt automatically, call rebuild() afterwards
+         */
         std::expected<void, std::string> add(aabb_box<T> const& box)
         {
             using fail = std::unexpected<std::string>;
@@ -298,6 +375,14 @@ namespace utility
             return {};
         }
 
+        /**
+         * @ingroup bvh
+         * @brief collect leaf nodes hit by a ray
+         * @param start ray origin
+         * @param direction ray direction
+         * @param t_min minimum hit distance
+         * @param t_max maximum hit distance
+         */
         void get_hit(glm::vec3 const& start, glm::vec3 const& direction, float t_min = 0.01f, float t_max = std::numeric_limits<float>::infinity())
         {
             std::stack<bvh_node<T>*> nodes_to_access;
@@ -344,6 +429,12 @@ namespace utility
             }
         }
 
+        /**
+         * @ingroup bvh
+         * @brief return leaf nodes intersecting the frustum
+         * @param f the frustum
+         * @return leaf node pointers inside the frustum
+         */
         std::vector<bvh_node<T>*> frustum_cull(frustum const& f)
         {
             std::vector<bvh_node<T>*> result;
