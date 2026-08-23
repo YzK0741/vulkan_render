@@ -1,3 +1,6 @@
 #clion folders
 cmake-build-*/
 .idea/
+
+#doxygen latex output
+latex/
