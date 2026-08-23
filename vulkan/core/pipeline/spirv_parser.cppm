@@ -4,14 +4,10 @@
 
 module;
 
-#include <expected>
-#include <vector>
-#include <string_view>
-#include <string>
-#include <span>
 #include <vulkan/vulkan_core.h>
 
 export module vulkan.pipeline.spirv_parser;
+export import std;
 
 namespace vulkan::pipeline {
     export uint32_t format_size(VkFormat format);

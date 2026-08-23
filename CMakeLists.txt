@@ -30,6 +30,16 @@ set(COMPILE_OPTIONS
         -Wall
         -Wextra
         -Werror
+        -Wno-reserved-module-identifier
+)
+
+add_library(std_lib STATIC)
+
+target_sources(std_lib
+        PUBLIC
+        FILE_SET CXX_MODULES
+        FILES
+        std/std.cppm
 )
 
 add_library(utility STATIC)
@@ -95,11 +105,24 @@ target_link_libraries(vulkan_lib
 
 add_executable(vulkan_render main.cpp)
 
+target_link_libraries(vulkan_lib
+        std_lib
+)
+
+target_link_libraries(utility
+        std_lib
+)
+
 target_link_libraries(${PROJECT_NAME}
         utility
         vulkan_lib
         OpenSSL::Crypto
         thread_pool
+        std_lib
+)
+
+target_compile_options(std_lib PRIVATE
+        ${COMPILE_OPTIONS}
 )
 
 target_compile_options(vulkan_render PRIVATE

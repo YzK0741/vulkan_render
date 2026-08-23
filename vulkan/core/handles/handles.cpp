@@ -4,7 +4,6 @@
 
 module;
 
-#include <span>
 #include <vulkan/vulkan.h>
 
 module vulkan.core.handles;
@@ -189,15 +188,17 @@ namespace vulkan {
         this->device = nullptr;
     }
 
-    vk_shader_module make_shader_module(std::span<unsigned char> shader, VkDevice& device) noexcept {
+    std::optional<vk_shader_module> make_shader_module(const std::span<const unsigned char> shader, VkDevice &device) noexcept {
         VkShaderModule shader_module = {};
 
         VkShaderModuleCreateInfo create_info = {};
         create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         create_info.codeSize = shader.size_bytes();
-        create_info.pCode = reinterpret_cast<uint32_t*>(shader.data());
+        create_info.pCode = reinterpret_cast<const uint32_t*>(shader.data());
 
-        vkCreateShaderModule(device, &create_info, nullptr, &shader_module);
+        if (vkCreateShaderModule(device, &create_info, nullptr, &shader_module) != VK_SUCCESS) {
+            return std::nullopt;
+        }
 
         return vk_shader_module(shader_module, device);
     }
@@ -205,21 +206,21 @@ namespace vulkan {
 
 // vk_pipeline
 namespace vulkan {
-    vk_pipeline::vk_pipeline(const VkPipeline pipeline, const VkPipelineLayout pipeline_layout, const VkDescriptorSetLayout descriptor_set_layout, VkDevice& device) noexcept { // NOLINT(*-misplaced-const)
+    vk_pipeline::vk_pipeline(const VkPipeline pipeline, const VkPipelineLayout pipeline_layout, std::vector<VkDescriptorSetLayout> const& descriptor_set_layouts, VkDevice& device) noexcept { // NOLINT(*-misplaced-const)
         this->pipeline = pipeline;
         this->pipeline_layout = pipeline_layout;
-        this->descriptor_set_layout = descriptor_set_layout;
+        this->descriptor_set_layouts = descriptor_set_layouts;
         this->device = &device;
     }
 
     vk_pipeline::vk_pipeline(vk_pipeline &&other) noexcept {
         this->device = other.device;
         this->pipeline = other.pipeline;
-        this->descriptor_set_layout = other.descriptor_set_layout;
+        this->descriptor_set_layouts = other.descriptor_set_layouts;
         this->pipeline_layout = other.pipeline_layout;
         other.device = nullptr;
         other.pipeline = nullptr;
-        other.descriptor_set_layout = VK_NULL_HANDLE;
+        other.descriptor_set_layouts.clear();
         other.pipeline_layout = VK_NULL_HANDLE;
     }
 
@@ -229,11 +230,11 @@ namespace vulkan {
         }
         this->device = other.device;
         this->pipeline = other.pipeline;
-        this->descriptor_set_layout = other.descriptor_set_layout;
+        this->descriptor_set_layouts = other.descriptor_set_layouts;
         this->pipeline_layout = other.pipeline_layout;
         other.device = nullptr;
         other.pipeline = nullptr;
-        other.descriptor_set_layout = VK_NULL_HANDLE;
+        other.descriptor_set_layouts.clear();
         other.pipeline_layout = VK_NULL_HANDLE;
         return *this;
     }
@@ -250,14 +251,16 @@ namespace vulkan {
         return pipeline_layout;
     }
 
-    VkDescriptorSetLayout vk_pipeline::get_descriptor_set_layout() const noexcept {
-        return this->descriptor_set_layout;
+    std::vector<VkDescriptorSetLayout> vk_pipeline::get_descriptor_set_layouts() const noexcept {
+        return this->descriptor_set_layouts;
     }
 
     void vk_pipeline::release() noexcept {
         if (device) {
-            if (this->descriptor_set_layout != VK_NULL_HANDLE) {
-                vkDestroyDescriptorSetLayout(*this->device, this->descriptor_set_layout, nullptr);
+            if (!this->descriptor_set_layouts.empty()) {
+                for (auto& set_layout : this->descriptor_set_layouts) {
+                    vkDestroyDescriptorSetLayout(*this->device, set_layout, nullptr);
+                }
             }
 
             if (this->pipeline_layout != VK_NULL_HANDLE) {
@@ -269,7 +272,7 @@ namespace vulkan {
             }
         }
         this->device = nullptr;
-        this->descriptor_set_layout = VK_NULL_HANDLE;
+        this->descriptor_set_layouts.clear();
         this->pipeline_layout = VK_NULL_HANDLE;
         this->pipeline = VK_NULL_HANDLE;
     }

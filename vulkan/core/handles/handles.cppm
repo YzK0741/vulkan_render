@@ -4,12 +4,11 @@
 
 module;
 
-#include <optional>
-#include <span>
-#include <vector>
 #include <vulkan/vulkan.h>
 
 export module vulkan.core.handles;
+
+export import std;
 
 /**
  * @defgroup vulkan_handles Vulkan Main Handles' RAII Wrapper

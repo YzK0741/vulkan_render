@@ -4,12 +4,9 @@
 module;
 
 #include <vma/vk_mem_alloc.h>
-#include <map>
-#include <vector>
-#include <mutex>
-#include <span>
 
 export module vulkan.vma;
+export import std;
 import utility;
 
 namespace vulkan {

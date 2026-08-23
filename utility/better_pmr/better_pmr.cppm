@@ -1,13 +1,8 @@
 //
 // Created by 23530 on 2026/8/18.
 //
-module;
-
-#include <memory>
-#include <memory_resource>
-
 export module utility.better_pmr;
-
+export import std;
 /**
  * @defgroup better_pmr
  * @ingroup utility

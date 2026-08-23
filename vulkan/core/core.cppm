@@ -3,22 +3,34 @@
 //
 module;
 
-#include <optional>
-#include <string_view>
-#include <vector>
-#include <span>
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
 
 export module vulkan.core;
 import utility;
+export import std;
 export import vulkan.core.handles;
 export import vulkan.vma;
 
 
+/**
+ * @file core.cppm
+ */
+
 
 namespace vulkan {
-
+    /**
+     * @defgroup vulkan_core Vulkan Core Objects Manager
+     * @ingroup vulkan_core
+     * @brief manages core vulkan objects and windows instance init and destroy.
+     * @note
+     *      - RAII
+     *      - includes VMA decorator, which is defined in ./vma/vma.cppm
+     *
+     * @warning
+     *      - do not call the init or create function, just use the members or other functions
+     *      - no thread-safe
+     */
     export struct core : utility::enable_stack_destruct {
         VkInstance instance = VK_NULL_HANDLE;
         VkDevice device = VK_NULL_HANDLE;
@@ -93,22 +105,16 @@ namespace vulkan {
 
         vma_allocator vma = {};
 
-        // 图像可用信号量（当交换链图像准备好渲染时触发）
         std::vector<VkSemaphore> image_available_semaphores;
 
-        // 渲染完成信号量（当渲染完成可以呈现时触发）
         std::vector<VkSemaphore> render_finished_semaphores;
 
-        // 每帧的栅栏（确保同一帧的命令缓冲区不会同时执行）
         std::vector<VkFence> in_flight_fences;
 
-        // 跟踪哪些帧正在使用中
         std::vector<VkFence> images_in_flight;
 
-        // 当前帧索引
         size_t current_frame = 0;
 
-        // 最大并发帧数（通常是交换链图像数量）
         static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
         void create_sync_objects();

@@ -3,9 +3,6 @@
 //
 module;
 
-#include <algorithm>
-#include <expected>
-#include <span>
 #include <vulkan/vulkan.h>
 #include "../../../third_party/spirv-reflect/spirv_reflect.h"
 

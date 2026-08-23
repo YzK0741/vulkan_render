@@ -3,11 +3,6 @@
 //
 module;
 
-#include <expected>
-#include <optional>
-#include <span>
-#include <vector>
-#include <numeric>
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
 #include <shaderc/shaderc.hpp>

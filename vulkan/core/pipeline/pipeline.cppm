@@ -4,14 +4,10 @@
 
 module;
 
-#include <optional>
-#include <vector>
-#include <expected>
-#include <string_view>
 #include <vulkan/vulkan.h>
 
 export module vulkan.core.pipeline;
-
+export import std;
 export import vulkan.core.handles;
 
 namespace vulkan {

@@ -3,15 +3,11 @@
 //
 module;
 
-#include <algorithm>
-#include <expected>
-#include <queue>
-#include <ranges>
-#include <stack>
-#include <vector>
 #include <glm/glm.hpp>
 
 export module utility.bvh;
+export import std;
+
 export import utility.data_block;
 
 

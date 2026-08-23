@@ -3,8 +3,6 @@
 //
 module;
 
-#include <memory>
-#include <memory_resource>
 #include <mimalloc.h>
 
 module utility.better_pmr;

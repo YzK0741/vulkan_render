@@ -3,16 +3,6 @@
 //
 module;
 
-#include <functional>
-#include <stack>
-#include <cstdint>
-#include <chrono>
-#include <source_location>
-#include <exception>
-#include <mutex>
-#include <span>
-#include <optional>
-#include <print>
 #include <openssl/evp.h>
 
 module utility;
@@ -43,7 +33,7 @@ void utility::enable_stack_destruct::register_cleanup(std::function<void()> cons
     this->destruct_stack.push(destructor);
 }
 
-void utility::enable_stack_destruct::cleanup() noexcept {
+void utility::enable_stack_destruct::do_cleanup() noexcept {
     std::lock_guard guard(this->access_mutex);
     while (!this->destruct_stack.empty()) {
         auto destructor = this->destruct_stack.top();
@@ -52,7 +42,11 @@ void utility::enable_stack_destruct::cleanup() noexcept {
     }
 }
 
-void utility::enable_stack_destruct::clear() noexcept {
+void utility::enable_stack_destruct::pop_destructor() noexcept {
+    this->destruct_stack.pop();
+}
+
+void utility::enable_stack_destruct::clear_stack() noexcept {
     this->destruct_stack = std::stack<destruct_type>();
 }
 
@@ -61,7 +55,7 @@ namespace {
     std::mutex access_mutex = {};
 }
 
-void utility::at_terminate(std::function<void()> const& task) {
+void utility::at_panic(std::function<void()> const& task) {
     std::lock_guard guard(access_mutex);
     tasks.push(task);
 }
@@ -96,7 +90,7 @@ std::chrono::milliseconds utility::time_test(std::function<void()> const &test) 
     return std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 }
 
-std::optional<utility::md5_digest> utility::md5(const std::span<const unsigned char> data) {
+std::optional<utility::md5_digest> utility::md5(const std::span<const unsigned char> data_view) {
     md5_digest digest = {};
     unsigned int size_byte = sizeof(md5_digest);
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
@@ -109,7 +103,7 @@ std::optional<utility::md5_digest> utility::md5(const std::span<const unsigned c
         EVP_MD_CTX_destroy(ctx);
         return std::nullopt;
     }
-    if (!EVP_DigestUpdate(ctx, data.data(), data.size_bytes())) {
+    if (!EVP_DigestUpdate(ctx, data_view.data(), data_view.size_bytes())) {
         EVP_MD_CTX_destroy(ctx);
         return std::nullopt;
     }
@@ -122,7 +116,7 @@ std::optional<utility::md5_digest> utility::md5(const std::span<const unsigned c
     return std::nullopt;
 }
 
-std::optional<utility::sha256_digest> utility::sha256(const std::span<const unsigned char> data){
+std::optional<utility::sha256_digest> utility::sha256(const std::span<const unsigned char> data_view){
     sha256_digest digest = {};
     unsigned int size_byte = sizeof(sha256_digest);
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
@@ -135,7 +129,7 @@ std::optional<utility::sha256_digest> utility::sha256(const std::span<const unsi
         EVP_MD_CTX_destroy(ctx);
         return std::nullopt;
     }
-    if (!EVP_DigestUpdate(ctx, data.data(), data.size_bytes())) {
+    if (!EVP_DigestUpdate(ctx, data_view.data(), data_view.size_bytes())) {
         EVP_MD_CTX_destroy(ctx);
         return std::nullopt;
     }
@@ -148,7 +142,7 @@ std::optional<utility::sha256_digest> utility::sha256(const std::span<const unsi
     return std::nullopt;
 }
 
-std::optional<utility::blake2_digest> utility::blake2(std::span<const unsigned char> data) {
+std::optional<utility::blake2_digest> utility::blake2(std::span<const unsigned char> data_view) {
     blake2_digest digest = {};
 
     unsigned int size_byte = blake2_digest::size_byte;
@@ -163,7 +157,7 @@ std::optional<utility::blake2_digest> utility::blake2(std::span<const unsigned c
         EVP_MD_CTX_destroy(ctx);
         return std::nullopt;
     }
-    if (!EVP_DigestUpdate(ctx, data.data(), data.size_bytes())) {
+    if (!EVP_DigestUpdate(ctx, data_view.data(), data_view.size_bytes())) {
         EVP_MD_CTX_destroy(ctx);
         return std::nullopt;
     }

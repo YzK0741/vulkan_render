@@ -3,20 +3,17 @@
 //
 module;
 
-#include <functional>
-#include <mutex>
-#include <print>
-#include <span>
-#include <set>
-#include <source_location>
-#include <stack>
+#include <cstdint>
 
 export module utility;
+export import std;
 export import utility.data_block;
+export import utility.bvh;
+export import utility.better_pmr;
 
 /**
  * @file utility.cppm
- * @defgroup utility
+ * @defgroup utility utility functions, classes sets
  */
 namespace utility {
     /**
@@ -93,7 +90,7 @@ namespace utility {
 
     public:
         /**
-         * @param destructor callable objects you wants to push in the destruct stack
+         * @param destructor callable objects  wants to push in the destruct stack
          */
         void register_cleanup(std::function<void()> const& destructor) noexcept;
         /**
@@ -112,7 +109,7 @@ namespace utility {
 
     /**
      * @ingroup utility
-     * @brief stack-style safe the argument and invoke it when panic attached
+     * @brief stack-style save the argument and invoke it when panic attached
      * @param task callable object you want invoke at panic
      * @note
      *     - thread safe
@@ -141,6 +138,7 @@ namespace utility {
 
 
     /**
+     * @defgroup hash
      * @ingroup utility
      * @brief hash series functions wrapper of openssl
      * @note
@@ -148,17 +146,49 @@ namespace utility {
      *     - returns std::optional wrappered digest
      *     - returns std::nullopt when failed (virtually impossible)
      */
-    /// @{
+
+    /**
+     * @typedef md5_digest
+     * @relates data_block
+     * @ingroup hash
+     */
     export using md5_digest = data_block<16>;
 
+    /**
+     * @brief md5 hash function
+     * @param data_view
+     * @return md5 digest
+     * @ingroup hash
+     */
     export std::optional<md5_digest> md5(std::span<const unsigned char> data_view);
 
+    /**
+     * @typedef sha256_digest
+     * @relates data_block
+     * @ingroup hash
+     */
     export using sha256_digest = data_block<32>;
 
+    /**
+     * @brief sha256 hash function
+     * @param data_view
+     * @return sha256 digest
+     * @ingroup hash
+     */
     export std::optional<sha256_digest> sha256(std::span<const unsigned char> data_view);
 
+    /**
+     * @typedef blake2_digest
+     * @relates data_block
+     * @ingroup hash
+     */
     export using blake2_digest = data_block<64>;
 
+    /**
+     * @brief blake2 hash function
+     * @param data_view
+     * @return blake2 digest
+     * @ingroup hash
+     */
     export std::optional<blake2_digest> blake2(std::span<const unsigned char> data_view);
-    /// @}
 }

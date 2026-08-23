@@ -4,11 +4,6 @@
 
 module;
 
-#include <optional>
-#include <vector>
-#include <algorithm>
-#include <memory>
-#include <print>
 #include <boost/stacktrace/stacktrace.hpp>
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
