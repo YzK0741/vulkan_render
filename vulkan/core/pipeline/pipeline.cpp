@@ -4,353 +4,141 @@
 module;
 
 #include <vulkan/vulkan.h>
-#include <glm/glm.hpp>
-#include <shaderc/shaderc.hpp>
 
 module vulkan.core.pipeline;
 import vulkan.pipeline.spirv_parser;
 
-
 namespace {
-
     constexpr uint32_t to_multiple_of_4(const uint32_t value) noexcept {
         return ((value + 3) / 4) * 4;
     }
 
-    using vulkan::shader_data_type;
-    constexpr uint32_t get_size(const shader_data_type type) {
-        switch (type) {
-            case shader_data_type::float_t: return sizeof(glm::float32_t);
-            case shader_data_type::int_t: return sizeof(glm::int32_t);
-            case shader_data_type::uint_t: return sizeof(glm::uint32_t);
-            case shader_data_type::bool_t: return sizeof(glm::float32_t);
-            case shader_data_type::vec2: return sizeof(glm::vec2);
-            case shader_data_type::vec3: return sizeof(glm::vec3);
-            case shader_data_type::vec4: return sizeof(glm::vec4);
-            case shader_data_type::ivec2: return sizeof(glm::ivec2);
-            case shader_data_type::ivec3: return sizeof(glm::ivec3);
-            case shader_data_type::ivec4: return sizeof(glm::ivec4);
-            case shader_data_type::bvec2: return sizeof(glm::bvec2);
-            case shader_data_type::bvec3: return sizeof(glm::bvec3);
-            case shader_data_type::bvec4: return sizeof(glm::bvec4);
-            case shader_data_type::mat2: return sizeof(glm::mat2);
-            case shader_data_type::mat3: return sizeof(glm::mat3);
-            case shader_data_type::mat4: return sizeof(glm::mat4);
-            case shader_data_type::mat2x2: return sizeof(glm::mat2x2);
-            case shader_data_type::mat2x3: return sizeof(glm::mat2x3);
-            case shader_data_type::mat3x2: return sizeof(glm::mat3x2);
-            case shader_data_type::mat2x4: return sizeof(glm::mat2x4);
-            case shader_data_type::mat3x4: return sizeof(glm::mat3x4);
-            case shader_data_type::mat4x2: return sizeof(glm::mat4x2);
-            case shader_data_type::mat4x3: return sizeof(glm::mat4x3);
-            default: return 1;
-        }
-    }
+    // 收集 pipeline 创建过程中产生的 Vulkan 对象，任意一步失败时由析构统一释放；
+    // 全部成功后调用 release() 放弃所有权（转交给 vk_pipeline）。
+    struct resource_guard {
+        VkDevice device = VK_NULL_HANDLE;
+        std::vector<VkDescriptorSetLayout> set_layouts = {};
+        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+        VkPipeline pipeline = VK_NULL_HANDLE;
 
-    constexpr VkFormat to_vertex_format(const shader_data_type type) {
-        switch (type) {
-            case shader_data_type::float_t: return VK_FORMAT_R32_SFLOAT;
-            case shader_data_type::int_t: return VK_FORMAT_R32_SINT;
-            case shader_data_type::uint_t: return VK_FORMAT_R32_UINT;
-            case shader_data_type::bool_t: return VK_FORMAT_R32_SFLOAT;
-            case shader_data_type::vec2: return VK_FORMAT_R32G32_SFLOAT;
-            case shader_data_type::vec3: return VK_FORMAT_R32G32B32_SFLOAT;
-            case shader_data_type::vec4: return VK_FORMAT_R32G32B32A32_SFLOAT;
-            case shader_data_type::ivec2: return VK_FORMAT_R32G32_SINT;
-            case shader_data_type::ivec3: return VK_FORMAT_R32G32B32_SINT;
-            case shader_data_type::ivec4: return VK_FORMAT_R32G32B32A32_SINT;
-            case shader_data_type::uvec2: return VK_FORMAT_R32G32_UINT;
-            case shader_data_type::uvec3: return VK_FORMAT_R32G32B32_UINT;
-            case shader_data_type::uvec4: return VK_FORMAT_R32G32B32A32_UINT;
-            default: return VK_FORMAT_UNDEFINED;
+        void add_set_layout(const VkDescriptorSetLayout layout) noexcept {
+            this->set_layouts.push_back(layout);
         }
 
+        void release() noexcept {
+            this->device = VK_NULL_HANDLE;
+            this->set_layouts.clear();
+            this->pipeline_layout = VK_NULL_HANDLE;
+            this->pipeline = VK_NULL_HANDLE;
+        }
+
+        ~resource_guard() {
+            if (this->device == VK_NULL_HANDLE) {
+                return;
+            }
+            if (this->pipeline != VK_NULL_HANDLE) {
+                vkDestroyPipeline(this->device, this->pipeline, nullptr);
+            }
+            if (this->pipeline_layout != VK_NULL_HANDLE) {
+                vkDestroyPipelineLayout(this->device, this->pipeline_layout, nullptr);
+            }
+            for (const auto& layout : this->set_layouts) {
+                if (layout != VK_NULL_HANDLE) {
+                    vkDestroyDescriptorSetLayout(this->device, layout, nullptr);
+                }
+            }
+        }
+    };
+
+    // 把 vertex/fragment 两个 stage 各自解析出的描述符布局按 set/binding 合并，
+    // 两个 stage 共用同一 binding 时 stageFlags 取并集。
+    std::map<uint32_t, std::map<uint32_t, VkDescriptorSetLayoutBinding>> merge_descriptor_layouts(
+        const std::vector<vulkan::pipeline::descriptor_set_layout_data>& vertex_layouts,
+        const std::vector<vulkan::pipeline::descriptor_set_layout_data>& fragment_layouts
+    ) {
+        std::map<uint32_t, std::map<uint32_t, VkDescriptorSetLayoutBinding>> merged;
+
+        const auto merge_one = [&merged](const std::vector<vulkan::pipeline::descriptor_set_layout_data>& layouts) {
+            for (const auto& set_data : layouts) {
+                auto& bindings_map = merged[set_data.set_number];
+                for (const auto& binding : set_data.bindings) {
+                    auto [it, inserted] = bindings_map.try_emplace(binding.binding, binding);
+                    if (!inserted) {
+                        it->second.stageFlags |= binding.stageFlags;
+                    }
+                }
+            }
+        };
+
+        merge_one(vertex_layouts);
+        merge_one(fragment_layouts);
+        return merged;
     }
-
-
 }
 
 namespace vulkan {
-
-
-    std::optional<vk_pipeline> make_pipeline(
-        VkDevice &device, const VkRenderPass render_pass, // NOLINT(*-misplaced-const)
-        shader_info const &vertex_shader,
-        shader_info const &fragment_shader, VkSampleCountFlagBits msaa_level) {
-
-        VkVertexInputBindingDescription vertex_input_binding = {};
-        vertex_input_binding.binding = 0;
-        vertex_input_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-        vertex_input_binding.stride = std::accumulate(vertex_shader.in.begin(), vertex_shader.in.end(), 0,
-            [](const uint32_t acc, const shader_data_type type) {
-            return acc + get_size(type);
-        });
-
-        std::vector<VkVertexInputAttributeDescription> attribute_descriptions = {};
-        attribute_descriptions.resize(vertex_shader.in.size());
-        uint32_t location = 0;
-        uint32_t offset = 0;
-
-        for (auto const& attribute : vertex_shader.in) {
-            attribute_descriptions[location].location = location;
-            attribute_descriptions[location].offset = offset;
-            attribute_descriptions[location].format = to_vertex_format(attribute);
-            attribute_descriptions[location].binding = 0;
-            location++;
-            offset += get_size(attribute);
-        }
-
-        VkPipelineVertexInputStateCreateInfo vertex_input_state_create_info = {};
-        vertex_input_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        vertex_input_state_create_info.vertexBindingDescriptionCount = 1;
-        vertex_input_state_create_info.pVertexBindingDescriptions = &vertex_input_binding;
-        vertex_input_state_create_info.vertexAttributeDescriptionCount = attribute_descriptions.size();
-        vertex_input_state_create_info.pVertexAttributeDescriptions = attribute_descriptions.data();
-
-        VkPipelineShaderStageCreateInfo vertex_stage = {};
-        vertex_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        vertex_stage.module = *vertex_shader.shader_module;
-        vertex_stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-        vertex_stage.pName = "main";
-        vertex_stage.pSpecializationInfo = nullptr;
-
-        VkPipelineShaderStageCreateInfo fragment_stage = {};
-        fragment_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        fragment_stage.module = *fragment_shader.shader_module;
-        fragment_stage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        fragment_stage.pName = "main";
-        fragment_stage.pSpecializationInfo = nullptr;
-
-        std::array<VkPipelineShaderStageCreateInfo, 2> shader_stage_create_infos = {vertex_stage, fragment_stage};
-
-        VkPipelineInputAssemblyStateCreateInfo input_assembly_state_create_info = {};
-        input_assembly_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-        input_assembly_state_create_info.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        input_assembly_state_create_info.primitiveRestartEnable = VK_FALSE;
-
-        VkPipelineViewportStateCreateInfo viewport_state_create_info = {};
-        viewport_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-        viewport_state_create_info.viewportCount = 1;
-        viewport_state_create_info.scissorCount = 1;
-        viewport_state_create_info.pScissors = nullptr;
-        viewport_state_create_info.pViewports = nullptr;
-
-        std::array<VkDynamicState, 2> dynamic_states = {};
-        dynamic_states[0] = VK_DYNAMIC_STATE_VIEWPORT;
-        dynamic_states[1] = VK_DYNAMIC_STATE_SCISSOR;
-
-        VkPipelineDynamicStateCreateInfo dynamic_state_create_info = {};
-        dynamic_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-        dynamic_state_create_info.dynamicStateCount = dynamic_states.size();
-        dynamic_state_create_info.pDynamicStates = dynamic_states.data();
-
-        VkPipelineRasterizationStateCreateInfo rasterization_state_create_info = {};
-        rasterization_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-        rasterization_state_create_info.depthClampEnable = VK_FALSE;
-        rasterization_state_create_info.rasterizerDiscardEnable = VK_FALSE;
-        rasterization_state_create_info.polygonMode = VK_POLYGON_MODE_FILL;
-        rasterization_state_create_info.lineWidth = 1.0f;
-        rasterization_state_create_info.cullMode = VK_CULL_MODE_BACK_BIT;
-        rasterization_state_create_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        rasterization_state_create_info.depthBiasEnable = VK_FALSE;
-
-        VkPipelineDepthStencilStateCreateInfo depth_stencil_state_create_info = {};
-        depth_stencil_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        depth_stencil_state_create_info.depthTestEnable = VK_TRUE;
-        depth_stencil_state_create_info.depthWriteEnable = VK_TRUE;
-        depth_stencil_state_create_info.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-
-        VkPipelineColorBlendAttachmentState color_blend_attachment_state = {};
-        color_blend_attachment_state.colorWriteMask =
-            VK_COLOR_COMPONENT_R_BIT |
-                VK_COLOR_COMPONENT_G_BIT |
-                    VK_COLOR_COMPONENT_B_BIT |
-                        VK_COLOR_COMPONENT_A_BIT;
-        color_blend_attachment_state.blendEnable = VK_FALSE;
-
-        VkPipelineColorBlendStateCreateInfo color_blend_state_create_info = {};
-        color_blend_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        color_blend_state_create_info.logicOpEnable = VK_FALSE;
-        color_blend_state_create_info.logicOp = VK_LOGIC_OP_COPY;
-        color_blend_state_create_info.attachmentCount = 1;
-        color_blend_state_create_info.blendConstants[0] = 1.0f;
-        color_blend_state_create_info.blendConstants[1] = 1.0f;
-        color_blend_state_create_info.blendConstants[2] = 1.0f;
-        color_blend_state_create_info.blendConstants[3] = 1.0f;
-        color_blend_state_create_info.pAttachments = &color_blend_attachment_state;
-
-        VkPipelineMultisampleStateCreateInfo multisample_state_create_info = {};
-        multisample_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-        multisample_state_create_info.sampleShadingEnable = VK_FALSE;
-        multisample_state_create_info.rasterizationSamples = msaa_level;
-        multisample_state_create_info.pSampleMask = nullptr;
-        multisample_state_create_info.alphaToCoverageEnable = VK_FALSE;
-        multisample_state_create_info.alphaToOneEnable = VK_FALSE;
-
-        std::vector<VkPushConstantRange> push_constant_range = {};
-        if (!vertex_shader.push_constant.empty()) {
-            push_constant_range.emplace_back();
-            push_constant_range.back().stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-            push_constant_range.back().offset = 0;
-            push_constant_range.back().size = to_multiple_of_4(std::accumulate(vertex_shader.push_constant.begin(), vertex_shader.push_constant.end(), 0u,
-                [](const uint32_t acc, const shader_data_type type) {
-                    return acc + get_size(type);
-                }
-            ));
-        }
-
-        if (!fragment_shader.push_constant.empty()) {
-            push_constant_range.emplace_back();
-            push_constant_range.back().stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-            push_constant_range.back().offset = push_constant_range.size() == 2? push_constant_range[0].size : 0;
-            push_constant_range.back().size = to_multiple_of_4(std::accumulate(fragment_shader.push_constant.begin(), fragment_shader.push_constant.end(), 0u,
-                [](const uint32_t acc, const shader_data_type type) {
-                    return acc + get_size(type);
-                }
-            ));
-        }
-
-        if (!push_constant_range.empty() && push_constant_range.back().offset + push_constant_range.back().size > 256) {
-            return std::nullopt;
-        }
-
-        std::vector<VkDescriptorSetLayoutBinding> bindings;
-        bindings.resize(2);
-        // 这里要求两个shader的uniform是相同的,且为2，1为ubo，2为纹理，否则视作违反调用规定
-        bindings[0].binding = 0;
-        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        bindings[0].descriptorCount = 1;
-        bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        bindings[0].pImmutableSamplers = nullptr;
-
-        bindings[1].binding = 1;
-        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[1].descriptorCount = 1;
-        bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        bindings[1].pImmutableSamplers = nullptr;
-
-        VkDescriptorSetLayoutCreateInfo layout_create_info = {};
-        layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_create_info.bindingCount = 2;
-        layout_create_info.pBindings = bindings.data();
-
-        VkDescriptorSetLayout descriptor_set_layout = {};
-        if (vkCreateDescriptorSetLayout(device, &layout_create_info, nullptr, &descriptor_set_layout) != VK_SUCCESS) {
-            return std::nullopt;
-        }
-
-
-        VkPipelineLayoutCreateInfo pipeline_layout_create_info = {};
-        pipeline_layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_create_info.pPushConstantRanges = push_constant_range.data();
-        pipeline_layout_create_info.pushConstantRangeCount = push_constant_range.size();
-        pipeline_layout_create_info.pSetLayouts = &descriptor_set_layout;
-        pipeline_layout_create_info.setLayoutCount = 1;
-
-        VkPipelineLayout pipeline_layout;
-
-        if (vkCreatePipelineLayout(device, &pipeline_layout_create_info, nullptr, &pipeline_layout) != VK_SUCCESS) {
-            vkDestroyDescriptorSetLayout(device, descriptor_set_layout, nullptr);
-
-            return std::nullopt;
-        }
-
-        VkGraphicsPipelineCreateInfo pipeline_create_info = {};
-        pipeline_create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-        pipeline_create_info.renderPass = render_pass;
-        pipeline_create_info.pInputAssemblyState = &input_assembly_state_create_info;
-        pipeline_create_info.pViewportState = &viewport_state_create_info;
-        pipeline_create_info.pDepthStencilState = &depth_stencil_state_create_info;
-        pipeline_create_info.pColorBlendState = &color_blend_state_create_info;
-        pipeline_create_info.pVertexInputState = &vertex_input_state_create_info;
-        pipeline_create_info.layout = pipeline_layout;
-        pipeline_create_info.pRasterizationState = &rasterization_state_create_info;
-        pipeline_create_info.pMultisampleState = &multisample_state_create_info;
-        pipeline_create_info.pDynamicState = &dynamic_state_create_info;
-        pipeline_create_info.stageCount = 2;
-        pipeline_create_info.pStages = shader_stage_create_infos.data();
-        pipeline_create_info.subpass = 0;
-        pipeline_create_info.basePipelineHandle = VK_NULL_HANDLE;
-
-        VkPipeline pipeline;
-        if (vkCreateGraphicsPipelines(device, nullptr, 1, &pipeline_create_info, nullptr, &pipeline) != VK_SUCCESS) {
-            vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
-            vkDestroyDescriptorSetLayout(device, descriptor_set_layout, nullptr);
-            return std::nullopt;
-        }
-
-        std::vector layouts{descriptor_set_layout};
-
-        return vk_pipeline(pipeline, pipeline_layout, layouts, device);
-    }
-
     std::expected<vk_pipeline, std::string_view> make_pipeline(
         VkDevice &device,
         const VkRenderPass render_pass, // NOLINT(*-misplaced-const)
-        std::vector<unsigned char> vertex_shader_code,
-        std::vector<unsigned char> fragment_shader_code,
-        VkSampleCountFlagBits msaa_level
+        const std::span<const unsigned char> vertex_shader_code,
+        const std::span<const unsigned char> fragment_shader_code,
+        const VkSampleCountFlagBits msaa_level
     ) {
-
         using fail = std::unexpected<std::string_view>;
 
+        // ---- 1. 解析 vertex stage 接口，过滤 builtin 变量，构建顶点输入 ----
         auto vertex_interface_expected = pipeline::parse_shader_stage_interface(vertex_shader_code, VK_SHADER_STAGE_VERTEX_BIT);
-
         if (!vertex_interface_expected) {
             return fail(vertex_interface_expected.error());
         }
+        const auto vertex_interface = std::move(vertex_interface_expected).value();
 
-        auto vertex_interface = std::move(vertex_interface_expected).value();
+        std::vector<VkVertexInputAttributeDescription> attribute_descriptions;
+        attribute_descriptions.reserve(vertex_interface.inputs.size());
+        uint32_t stride = 0;
+        for (const auto& variable : vertex_interface.inputs) {
+            if (variable.is_builtin || variable.format == VK_FORMAT_UNDEFINED) {
+                continue;
+            }
+            attribute_descriptions.push_back(VkVertexInputAttributeDescription{
+                .location = variable.location,
+                .binding = 0,
+                .format = variable.format,
+                .offset = stride,
+            });
+            stride += pipeline::format_size(variable.format);
+        }
 
         VkVertexInputBindingDescription vertex_input_binding = {};
         vertex_input_binding.binding = 0;
         vertex_input_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-        vertex_input_binding.stride = std::accumulate(vertex_interface.inputs.begin(), vertex_interface.inputs.end(), 0,
-            [](const uint32_t acc, decltype(*vertex_interface.inputs.begin()) type) {
-            return acc + pipeline::format_size(type.format);
-        });
-
-        std::vector<VkVertexInputAttributeDescription> attribute_descriptions = {};
-        attribute_descriptions.resize(vertex_interface.inputs.size());
-        uint32_t location = 0;
-        uint32_t offset = 0;
-
-        for (uint64_t index = 0; index < vertex_interface.inputs.size(); index++) {
-            auto& attribute = attribute_descriptions[index];
-            const auto& variable = vertex_interface.inputs[index];
-            attribute.format = variable.format;
-            attribute.location = location;
-            attribute.offset = offset;
-            location++;
-            offset += pipeline::format_size(variable.format);
-        }
+        vertex_input_binding.stride = stride;
 
         VkPipelineVertexInputStateCreateInfo vertex_input_state_create_info = {};
         vertex_input_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        vertex_input_state_create_info.vertexBindingDescriptionCount = 1;
-        vertex_input_state_create_info.pVertexBindingDescriptions = &vertex_input_binding;
-        vertex_input_state_create_info.vertexAttributeDescriptionCount = attribute_descriptions.size();
-        vertex_input_state_create_info.pVertexAttributeDescriptions = attribute_descriptions.data();
+        vertex_input_state_create_info.vertexBindingDescriptionCount = attribute_descriptions.empty() ? 0u : 1u;
+        vertex_input_state_create_info.pVertexBindingDescriptions = attribute_descriptions.empty() ? nullptr : &vertex_input_binding;
+        vertex_input_state_create_info.vertexAttributeDescriptionCount = static_cast<uint32_t>(attribute_descriptions.size());
+        vertex_input_state_create_info.pVertexAttributeDescriptions = attribute_descriptions.empty() ? nullptr : attribute_descriptions.data();
 
-        auto vertex_shader_module = make_shader_module(std::span<const unsigned char>(vertex_shader_code.data(), vertex_shader_code.size()), device);
-
-        if (vertex_shader_module) {
+        // ---- 2. 创建 shader module（失败才返回错误） ----
+        auto vertex_shader_module = make_shader_module(vertex_shader_code, device);
+        if (!vertex_shader_module) {
             return fail("failed to create vertex shader module");
         }
 
+        auto fragment_shader_module = make_shader_module(fragment_shader_code, device);
+        if (!fragment_shader_module) {
+            return fail("failed to create fragment shader module");
+        }
 
+        // ---- 3. 固定管线状态 ----
         VkPipelineShaderStageCreateInfo vertex_stage = {};
         vertex_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         vertex_stage.module = **vertex_shader_module;
         vertex_stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
         vertex_stage.pName = "main";
         vertex_stage.pSpecializationInfo = nullptr;
-
-        auto fragment_shader_module = make_shader_module(std::span(fragment_shader_code.data(), fragment_shader_code.size()), device);
-
-        if (fragment_shader_module) {
-            return fail("failed to create fragment shader module");
-        }
 
         VkPipelineShaderStageCreateInfo fragment_stage = {};
         fragment_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -425,110 +213,92 @@ namespace vulkan {
         multisample_state_create_info.alphaToCoverageEnable = VK_FALSE;
         multisample_state_create_info.alphaToOneEnable = VK_FALSE;
 
-        std::vector<VkPushConstantRange> push_constant_range = {};
-
+        // ---- 4. push constant：vertex/fragment 各一段，4 字节对齐，总长 ≤ 256 ----
         auto vertex_push_constant_expected = pipeline::parse_push_constant_layout(vertex_shader_code);
-
         if (!vertex_push_constant_expected) {
             return fail("can't parse vertex push constant");
         }
-
         const auto vertex_push_constant = std::move(vertex_push_constant_expected).value();
 
-
-        if (!vertex_push_constant.constants.empty()) {
-            push_constant_range.emplace_back();
-            push_constant_range.back().stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-            push_constant_range.back().offset = 0;
-            push_constant_range.back().size = to_multiple_of_4(vertex_push_constant.total_size);
-        }
-
         auto fragment_push_constant_expected = pipeline::parse_push_constant_layout(fragment_shader_code);
-
         if (!fragment_push_constant_expected) {
-            return fail("can't parse vertex push constant");
+            return fail("can't parse fragment push constant");
         }
-
         const auto fragment_push_constant = std::move(fragment_push_constant_expected).value();
 
-        if (!fragment_push_constant.constants.empty()) {
-            push_constant_range.emplace_back();
-            push_constant_range.back().stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-            push_constant_range.back().offset = push_constant_range.size() == 2? push_constant_range[0].size : 0;
-            push_constant_range.back().size = to_multiple_of_4(fragment_push_constant.total_size);
-        }
+        std::vector<VkPushConstantRange> push_constant_ranges;
+        push_constant_ranges.reserve(2);
 
-        if (!push_constant_range.empty() && push_constant_range.back().offset + push_constant_range.back().size > 256) {
+        const auto add_push_constant_range = [&push_constant_ranges](const VkShaderStageFlags stage_flags, const uint32_t total_size) -> bool {
+            if (total_size == 0) {
+                return true;
+            }
+            const uint32_t size = to_multiple_of_4(total_size);
+            const uint32_t offset = push_constant_ranges.empty()
+                ? 0
+                : push_constant_ranges.back().offset + push_constant_ranges.back().size;
+            if (offset + size > 256) {
+                return false;
+            }
+            push_constant_ranges.push_back({stage_flags, offset, size});
+            return true;
+        };
+
+        if (!add_push_constant_range(VK_SHADER_STAGE_VERTEX_BIT, vertex_push_constant.total_size)
+            || !add_push_constant_range(VK_SHADER_STAGE_FRAGMENT_BIT, fragment_push_constant.total_size)) {
             return fail("push constant range too big");
         }
 
-        auto vertex_descriptor_set_layout_expected
-                        = pipeline::parse_descriptor_set_layouts(vertex_shader_code, VK_SHADER_STAGE_VERTEX_BIT);
-
-        if (!vertex_descriptor_set_layout_expected) {
-            return fail(vertex_descriptor_set_layout_expected.error());
+        // ---- 5. 描述符集布局：分别解析 vertex/fragment，再按 set/binding 合并 ----
+        auto vertex_descriptor_layout_expected = pipeline::parse_descriptor_set_layouts(vertex_shader_code, VK_SHADER_STAGE_VERTEX_BIT);
+        if (!vertex_descriptor_layout_expected) {
+            return fail(vertex_descriptor_layout_expected.error());
         }
+        const auto vertex_descriptor_layout = std::move(vertex_descriptor_layout_expected).value();
 
-        auto vertex_descriptor_layout = std::move(vertex_descriptor_set_layout_expected).value();
-
-        std::vector<std::vector<VkDescriptorSetLayoutBinding>> set_layout_bindings;
-
-        for (auto& descriptor_set_layout_binding : vertex_descriptor_layout) {
-            set_layout_bindings[descriptor_set_layout_binding.set_number] = std::move(descriptor_set_layout_binding.bindings);
+        auto fragment_descriptor_layout_expected = pipeline::parse_descriptor_set_layouts(fragment_shader_code, VK_SHADER_STAGE_FRAGMENT_BIT);
+        if (!fragment_descriptor_layout_expected) {
+            return fail(fragment_descriptor_layout_expected.error());
         }
+        const auto fragment_descriptor_layout = std::move(fragment_descriptor_layout_expected).value();
 
-        auto fragment_descriptor_set_layout_expected
-                        = pipeline::parse_descriptor_set_layouts(vertex_shader_code, VK_SHADER_STAGE_VERTEX_BIT);
+        const auto merged_layouts = merge_descriptor_layouts(vertex_descriptor_layout, fragment_descriptor_layout);
 
-        if (!fragment_descriptor_set_layout_expected) {
-            return fail(fragment_descriptor_set_layout_expected.error());
-        }
+        resource_guard guard;
+        guard.device = device;
 
-        auto fragment_descriptor_layout = std::move(fragment_descriptor_set_layout_expected).value();
-
-        for (auto& descriptor_set_layout_binding : fragment_descriptor_layout) {
-            set_layout_bindings[descriptor_set_layout_binding.set_number] = std::move(descriptor_set_layout_binding.bindings);
-        }
-
-        std::vector<VkDescriptorSetLayoutCreateInfo> descriptor_layout_create_infos;
-
-        for (auto& set_layout : set_layout_bindings) {
-            VkDescriptorSetLayoutCreateInfo create_info = {};
-            create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-            create_info.bindingCount = set_layout.size();
-            create_info.pBindings = set_layout.data();
-            descriptor_layout_create_infos.emplace_back(create_info);
-        }
-
-        std::vector<VkDescriptorSetLayout> set_layouts;
-
-        for (auto& descriptor_set_layout_create_info : descriptor_layout_create_infos) {
-            VkDescriptorSetLayout descriptor_set_layout = {};
-            if (vkCreateDescriptorSetLayout(device, &descriptor_set_layout_create_info, nullptr, &descriptor_set_layout) != VK_SUCCESS) {
-                return fail("failed to create descriptor");
+        for (const auto& bindings_map : merged_layouts | std::views::values) {
+            std::vector<VkDescriptorSetLayoutBinding> bindings;
+            bindings.reserve(bindings_map.size());
+            for (const auto& binding : bindings_map | std::views::values) {
+                bindings.push_back(binding);
             }
-            set_layouts.push_back(descriptor_set_layout);
+
+            VkDescriptorSetLayoutCreateInfo layout_create_info = {};
+            layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+            layout_create_info.bindingCount = static_cast<uint32_t>(bindings.size());
+            layout_create_info.pBindings = bindings.data();
+
+            VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
+            if (vkCreateDescriptorSetLayout(device, &layout_create_info, nullptr, &descriptor_set_layout) != VK_SUCCESS) {
+                return fail("failed to create descriptor set layout");
+            }
+            guard.add_set_layout(descriptor_set_layout);
         }
 
-
-
+        // ---- 6. pipeline layout ----
         VkPipelineLayoutCreateInfo pipeline_layout_create_info = {};
         pipeline_layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_create_info.pPushConstantRanges = push_constant_range.data();
-        pipeline_layout_create_info.pushConstantRangeCount = push_constant_range.size();
-        pipeline_layout_create_info.pSetLayouts = set_layouts.data();
-        pipeline_layout_create_info.setLayoutCount = set_layouts.size();
+        pipeline_layout_create_info.pPushConstantRanges = push_constant_ranges.data();
+        pipeline_layout_create_info.pushConstantRangeCount = static_cast<uint32_t>(push_constant_ranges.size());
+        pipeline_layout_create_info.pSetLayouts = guard.set_layouts.data();
+        pipeline_layout_create_info.setLayoutCount = static_cast<uint32_t>(guard.set_layouts.size());
 
-        VkPipelineLayout pipeline_layout;
-
-        if (vkCreatePipelineLayout(device, &pipeline_layout_create_info, nullptr, &pipeline_layout) != VK_SUCCESS) {
-            for (auto& set_layout : set_layouts) {
-                vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
-            }
-
+        if (vkCreatePipelineLayout(device, &pipeline_layout_create_info, nullptr, &guard.pipeline_layout) != VK_SUCCESS) {
             return fail("failed to create pipeline layout");
         }
 
+        // ---- 7. graphics pipeline ----
         VkGraphicsPipelineCreateInfo pipeline_create_info = {};
         pipeline_create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
         pipeline_create_info.renderPass = render_pass;
@@ -537,7 +307,7 @@ namespace vulkan {
         pipeline_create_info.pDepthStencilState = &depth_stencil_state_create_info;
         pipeline_create_info.pColorBlendState = &color_blend_state_create_info;
         pipeline_create_info.pVertexInputState = &vertex_input_state_create_info;
-        pipeline_create_info.layout = pipeline_layout;
+        pipeline_create_info.layout = guard.pipeline_layout;
         pipeline_create_info.pRasterizationState = &rasterization_state_create_info;
         pipeline_create_info.pMultisampleState = &multisample_state_create_info;
         pipeline_create_info.pDynamicState = &dynamic_state_create_info;
@@ -546,16 +316,13 @@ namespace vulkan {
         pipeline_create_info.subpass = 0;
         pipeline_create_info.basePipelineHandle = VK_NULL_HANDLE;
 
-        VkPipeline pipeline;
-        if (vkCreateGraphicsPipelines(device, nullptr, 1, &pipeline_create_info, nullptr, &pipeline) != VK_SUCCESS) {
-            vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
-            for (auto& set_layout : set_layouts) {
-                vkDestroyDescriptorSetLayout(device, set_layout, nullptr);
-            }
-            return fail("failed to create pipeline");
+        if (vkCreateGraphicsPipelines(device, nullptr, 1, &pipeline_create_info, nullptr, &guard.pipeline) != VK_SUCCESS) {
+            return fail("failed to create graphics pipeline");
         }
 
-        return vk_pipeline(pipeline, pipeline_layout, set_layouts, device);
+        // ---- 8. 成功：所有权转交 vk_pipeline，guard 不再清理 ----
+        vk_pipeline result(guard.pipeline, guard.pipeline_layout, guard.set_layouts, device);
+        guard.release();
+        return result;
     }
 }
-

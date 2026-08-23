@@ -206,7 +206,7 @@ uint32_t vulkan::pipeline::format_size(const VkFormat format) {
 
 std::expected<vulkan::pipeline::shader_stage_interface, std::string_view>
 vulkan::pipeline::parse_shader_stage_interface(
-    const std::span<unsigned char> spirv_code,
+    const std::span<const unsigned char> spirv_code,
     const VkShaderStageFlagBits stage){
      using fail = std::unexpected<std::string_view>;
 
@@ -218,7 +218,7 @@ vulkan::pipeline::parse_shader_stage_interface(
 
       SpvReflectShaderModule module = {};
       SpvReflectResult result = spvReflectCreateShaderModule(
-          spirv_code.size() * sizeof(uint32_t),
+          spirv_code.size(),
           spirv_code.data(),
           &module
       );
@@ -309,7 +309,7 @@ bool vulkan::pipeline::validate_interface_match(
 
 std::expected<std::vector<vulkan::pipeline::descriptor_set_layout_data>, std::string_view>
 vulkan::pipeline::parse_descriptor_set_layouts(
-    const std::span<unsigned char> spirv_code,
+    const std::span<const unsigned char> spirv_code,
     const VkShaderStageFlagBits shader_stage
 ){
 
@@ -320,7 +320,7 @@ vulkan::pipeline::parse_descriptor_set_layouts(
       // 1. 创建并加载 Shader Module
       SpvReflectShaderModule module = {};
       SpvReflectResult result = spvReflectCreateShaderModule(
-          spirv_code.size() * sizeof(uint32_t),
+          spirv_code.size(),
           spirv_code.data(),
           &module
       );
@@ -382,7 +382,7 @@ vulkan::pipeline::parse_descriptor_set_layouts(
   }
 
 std::expected<vulkan::pipeline::push_constant_layout, std::string_view> vulkan::pipeline::parse_push_constant_layout(
-    const std::span<unsigned char> spirv_code){
+    std::span<const unsigned char> spirv_code){
 
     using fail = std::unexpected<std::string_view>;
     push_constant_layout out_layout;
@@ -391,7 +391,7 @@ std::expected<vulkan::pipeline::push_constant_layout, std::string_view> vulkan::
 
     SpvReflectShaderModule module = {};
     SpvReflectResult result = spvReflectCreateShaderModule(
-        spirv_code.size() * sizeof(uint32_t),
+        spirv_code.size(),
         spirv_code.data(),
         &module
     );
