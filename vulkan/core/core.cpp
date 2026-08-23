@@ -28,6 +28,8 @@ namespace vulkan {
         init_renderpass();
         create_frame_buffers();
         create_command_pool();
+        create_descriptor_pool();
+        create_sync_objects();
 
         vma.init(this->instance, this->device, this->physical_device, this->graphics_queue, this->graphics_family_index);
         this->register_cleanup([this] {
@@ -131,7 +133,7 @@ namespace vulkan {
                 case VK_ERROR_INCOMPATIBLE_DRIVER: error_msg += "VK_ERROR_INCOMPATIBLE_DRIVER"; break;
                 default: error_msg += std::to_string(static_cast<int>(result)); break;
             }
-            std::println("{}", error_msg);
+            utility::panic(error_msg);
         }
         std::println("instance init succeeded");
         std::println("instance handler is 0x{:x}", reinterpret_cast<uint64_t>(this->instance));
@@ -289,6 +291,7 @@ namespace vulkan {
         register_cleanup([this] {
             if (swap_chain != VK_NULL_HANDLE) {
                 vkDestroySwapchainKHR(device, swap_chain, nullptr);
+                swap_chain = VK_NULL_HANDLE;
             }
         });
     }
@@ -319,6 +322,7 @@ namespace vulkan {
             for (const auto& image_view : this->swap_chain_image_views) {
                 vkDestroyImageView(device, image_view, nullptr);
             }
+            this->swap_chain_image_views.clear();
         });
     }
 
@@ -407,6 +411,9 @@ namespace vulkan {
             for (const auto& memory : depth_image_memories) {
                 vkFreeMemory(device, memory, nullptr);
             }
+            depth_image_views.clear();
+            depth_images.clear();
+            depth_image_memories.clear();
         });
     }
 
@@ -447,6 +454,9 @@ namespace vulkan {
             for (const auto& image : color_images) {
                 vkDestroyImage(device, image, nullptr);
             }
+            color_image_views.clear();
+            color_image_memories.clear();
+            color_images.clear();
         });
     }
 
@@ -561,7 +571,10 @@ namespace vulkan {
         }
         register_cleanup(
             [this] {
-            vkDestroyRenderPass(device, renderpass, nullptr);
+            if (renderpass != VK_NULL_HANDLE) {
+                vkDestroyRenderPass(device, renderpass, nullptr);
+                renderpass = VK_NULL_HANDLE;
+            }
             }
         );
     }
@@ -605,6 +618,7 @@ namespace vulkan {
             for (const auto& frame_buffer : swap_chain_framebuffers) {
                 vkDestroyFramebuffer(device, frame_buffer, nullptr);
             }
+            swap_chain_framebuffers.clear();
         });
     }
 
@@ -694,6 +708,11 @@ namespace vulkan {
         if (vkCreateDescriptorPool(this->device, &info, nullptr, &this->descriptor_pool)) {
             utility::panic("failed in creating descriptor pool");
         }
+        register_cleanup([this] {
+            if (descriptor_pool != VK_NULL_HANDLE) {
+                vkDestroyDescriptorPool(this->device, this->descriptor_pool, nullptr);
+            }
+        });
     }
 
     void core::create_sync_objects() {
@@ -764,6 +783,10 @@ namespace vulkan {
 
     void core::reset_fence(const uint32_t frame_index) const {
         vkResetFences(device, 1, &in_flight_fences[frame_index]);
+    }
+
+    void core::to_next_frame() noexcept {
+        current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
     void core::recreate_swap_chain() {
@@ -839,5 +862,8 @@ namespace vulkan {
 
         this->init_renderpass();      // 重建 RenderPass
         this->create_frame_buffers(); // 重建 Framebuffer
+
+        // 按新图像数重建 per-image 追踪表，避免 wait_usable_image 越界
+        images_in_flight.resize(swap_chain_images.size(), VK_NULL_HANDLE);
     }
 }

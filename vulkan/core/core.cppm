@@ -115,6 +115,8 @@ namespace vulkan {
 
         size_t current_frame = 0;
 
+        void to_next_frame() noexcept;
+
         static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
         void create_sync_objects();

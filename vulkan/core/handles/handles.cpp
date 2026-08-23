@@ -8,6 +8,8 @@ module;
 
 module vulkan.core.handles;
 
+import utility;
+
 // vk_command_buffer
 namespace vulkan {
     vk_command_buffer::vk_command_buffer(const VkCommandBuffer command_buffer, VkDevice& device, VkCommandPool& pool) noexcept { // NOLINT(*-misplaced-const)
@@ -63,14 +65,18 @@ namespace vulkan {
     }
 
     vk_command_buffer make_command_buffer(VkDevice &device, VkCommandPool &command_pool) noexcept {
-        VkCommandBuffer buffer;
+        VkCommandBuffer buffer = VK_NULL_HANDLE;
 
-        VkCommandBufferAllocateInfo allocate_info;
-        allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocate_info.commandPool = command_pool;
-        allocate_info.commandBufferCount = 1;
+        VkCommandBufferAllocateInfo allocate_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = command_pool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
 
-        vkAllocateCommandBuffers(device, &allocate_info, &buffer);
+        if (vkAllocateCommandBuffers(device, &allocate_info, &buffer) != VK_SUCCESS) {
+            utility::panic("failed to allocate command buffer");
+        }
 
         return vk_command_buffer(buffer, device, command_pool);
     }
@@ -173,6 +179,7 @@ namespace vulkan {
         if (this == &other) {
             return *this;
         }
+        this->release();
         this->shader_module = other.shader_module;
         this->device = other.device;
         other.shader_module = VK_NULL_HANDLE;
@@ -228,6 +235,7 @@ namespace vulkan {
         if (this == &other) {
             return *this;
         }
+        this->release();
         this->device = other.device;
         this->pipeline = other.pipeline;
         this->descriptor_set_layouts = other.descriptor_set_layouts;
