@@ -120,7 +120,10 @@ logical_device create_logical_device(
         device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         device_create_info.queueCreateInfoCount = static_cast<uint32_t>(queue_create_infos.size());
         device_create_info.pQueueCreateInfos = queue_create_infos.data();
-        device_create_info.pEnabledFeatures = &create_info.device_features;
+        // 特性统一走 pNext 链（VkPhysicalDeviceFeatures2 打头）。
+        // pEnabledFeatures 必须为 NULL：pNext 链含 VkPhysicalDeviceFeatures2 / VkPhysicalDeviceVulkan11Features 时
+        // 设置它会违反 VUID-VkDeviceCreateInfo-pNext-04748 / -02829。
+        device_create_info.pEnabledFeatures = nullptr;
 
         // 扩展 - 必须正确处理空向量
         device_create_info.enabledExtensionCount = static_cast<uint32_t>(create_info.extensions.size());
@@ -132,14 +135,15 @@ logical_device create_logical_device(
         device_create_info.ppEnabledLayerNames =
             create_info.validation_layers.empty() ? nullptr : create_info.validation_layers.data();
 
-        // 复制pNext链 - 注意：这里只是浅拷贝
-        device_create_info.pNext = create_info.pNext;
-
-       if (fifo_latest_ready_features.presentModeFifoLatestReady == VK_TRUE) {
-           fifo_latest_ready_features.pNext = const_cast<void*>(device_create_info.pNext);
-           fifo_latest_ready_features.presentModeFifoLatestReady = VK_TRUE;
-           device_create_info.pNext = &fifo_latest_ready_features;
-       }
+        // 组装 pNext 链：VkPhysicalDeviceFeatures2（头部，承载 device_features）→ [FifoLatestReady] → create_info.pNext（Vulkan11Features 等）
+        physical_device_features.features = create_info.device_features;
+        if (fifo_latest_ready_features.presentModeFifoLatestReady == VK_TRUE) {
+            fifo_latest_ready_features.pNext = const_cast<void*>(create_info.pNext);
+            physical_device_features.pNext = &fifo_latest_ready_features;
+        } else {
+            physical_device_features.pNext = const_cast<void*>(create_info.pNext);
+        }
+        device_create_info.pNext = &physical_device_features;
 
         VkDevice device = {};
         const VkResult result = vkCreateDevice(physical_device, &device_create_info, nullptr, &device);

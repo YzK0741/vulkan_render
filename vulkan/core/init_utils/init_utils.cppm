@@ -19,9 +19,9 @@ export struct logical_device {
 };
 
 export struct swap_chain_support_details {
-    VkSurfaceCapabilitiesKHR capabilities;
-    std::vector<VkSurfaceFormatKHR> formats;
-    std::vector<VkPresentModeKHR> present_modes;
+    VkSurfaceCapabilitiesKHR capabilities = {};
+    std::vector<VkSurfaceFormatKHR> formats = {};
+    std::vector<VkPresentModeKHR> present_modes = {};
 };
 
 export struct queue_family_indices {
@@ -36,10 +36,10 @@ export struct queue_family_indices {
 };
 
 export struct device_creation_info {
-    queue_family_indices queue_families;
-    std::vector<const char*> extensions;
-    std::vector<const char*> validation_layers;
-    VkPhysicalDeviceFeatures device_features{};
+    queue_family_indices queue_families {};
+    std::vector<const char*> extensions = {};
+    std::vector<const char*> validation_layers = {};
+    VkPhysicalDeviceFeatures device_features = {};
     const void* pNext = nullptr;  // 用于Vulkan 1.1+的特性链
 };
 
