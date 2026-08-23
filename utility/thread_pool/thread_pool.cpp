@@ -9,9 +9,8 @@
 #include "thread_pool.cppm"
 
 namespace utility {
-    thread_pool::task &thread_pool::task::operator()() const noexcept {
+    void thread_pool::task::operator()() const noexcept {
         this->action();
-        return const_cast<task &>(*this);
     }
 
     bool thread_pool::task::operator<(const task &other) const noexcept {

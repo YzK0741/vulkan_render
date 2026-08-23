@@ -51,7 +51,7 @@ namespace utility {
             int priority = 0;
             std::function<void()> action;
 
-            task& operator()() const noexcept;
+            void operator()() const noexcept;
             bool operator<(const task& other) const noexcept;
         };
 
