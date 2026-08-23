@@ -96,6 +96,11 @@ target_sources(gltf_loader
         gltf_loader/gltf_loader.cpp
 )
 
+target_link_libraries(gltf_loader
+        PRIVATE
+        fastgltf
+)
+
 target_link_libraries(vulkan_lib
         Vulkan::Vulkan
         glfw
@@ -116,6 +121,7 @@ target_link_libraries(utility
 target_link_libraries(${PROJECT_NAME}
         utility
         vulkan_lib
+        gltf_loader
         OpenSSL::Crypto
         thread_pool
         std_lib

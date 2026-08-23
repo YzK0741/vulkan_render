@@ -6,9 +6,11 @@ module;
 #include <string_view>
 #include <expected>
 #include <map>
+#include <string>
+#include <utility>
 #include <vector>
+#include <cstdint>
 #include <glm/glm.hpp>
-#include <tinygltf/tiny_gltf.h>
 
 export module gltf_loader;
 
@@ -17,43 +19,43 @@ export module gltf_loader;
  * @defgroup gltf_loader glTF Loader
  * @brief load glTF/GLB files into pure CPU-side data structures, no Vulkan dependency
  * @note
- *      - built on tinygltf
+ *      - built on fastgltf
  *      - load_model() returns std::expected, failures are reported via error_code
  */
 namespace gltf {
 
     /**
      * @ingroup gltf_loader
-     * @brief component type of an accessor element, mapped from tinygltf macros
+     * @brief component type of an accessor element, values are the glTF OpenGL constants
      */
     export enum class component_type : int {
-        byte_t = TINYGLTF_COMPONENT_TYPE_BYTE,
-        unsigned_byte_t = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE,
-        short_t = TINYGLTF_COMPONENT_TYPE_SHORT,
-        unsigned_short_t = TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT,
-        int_t = TINYGLTF_COMPONENT_TYPE_INT,
-        unsigned_int_t = TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT,
-        float_t = TINYGLTF_COMPONENT_TYPE_FLOAT,
-        double_t = TINYGLTF_COMPONENT_TYPE_DOUBLE,
-        unknown
+        byte_t = 5120,
+        unsigned_byte_t = 5121,
+        short_t = 5122,
+        unsigned_short_t = 5123,
+        int_t = 5124,
+        unsigned_int_t = 5125,
+        float_t = 5126,
+        double_t = 5130,
+        unknown = 0
     };
 
     /**
      * @ingroup gltf_loader
-     * @brief convert a tinygltf component type macro to component_type
-     * @param tinygltf_type the tinygltf macro value
+     * @brief convert a glTF component type constant to component_type
+     * @param gltf_constant the OpenGL constant (5120..5130)
      * @return the mapped component_type, unknown for unrecognized values
      */
-    export constexpr component_type to_component_type(const int tinygltf_type) {
-        switch (tinygltf_type) {
-            case TINYGLTF_COMPONENT_TYPE_BYTE: return component_type::byte_t;
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE: return component_type::unsigned_byte_t;
-            case TINYGLTF_COMPONENT_TYPE_SHORT: return component_type::short_t;
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: return component_type::unsigned_short_t;
-            case TINYGLTF_COMPONENT_TYPE_INT: return component_type::int_t;
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT: return component_type::unsigned_int_t;
-            case TINYGLTF_COMPONENT_TYPE_FLOAT: return component_type::float_t;
-            case TINYGLTF_COMPONENT_TYPE_DOUBLE: return component_type::double_t;
+    export constexpr component_type to_component_type(const int gltf_constant) {
+        switch (gltf_constant) {
+            case 5120: return component_type::byte_t;
+            case 5121: return component_type::unsigned_byte_t;
+            case 5122: return component_type::short_t;
+            case 5123: return component_type::unsigned_short_t;
+            case 5124: return component_type::int_t;
+            case 5125: return component_type::unsigned_int_t;
+            case 5126: return component_type::float_t;
+            case 5130: return component_type::double_t;
             default: return component_type::unknown;
         }
     }
@@ -81,9 +83,9 @@ namespace gltf {
 
     /**
      * @ingroup gltf_loader
-     * @brief convert component_type back to the tinygltf macro value
+     * @brief convert component_type back to the glTF OpenGL constant
      * @param type the component type
-     * @return the tinygltf macro value, -1 for unknown
+     * @return the glTF OpenGL constant, -1 for unknown
      */
     export constexpr int to_gltf_macro_type(const component_type type) {
         if (type == component_type::unknown) {
@@ -109,19 +111,19 @@ namespace gltf {
 
     /**
      * @ingroup gltf_loader
-     * @brief convert a tinygltf type macro to element_type
-     * @param type the tinygltf macro value
+     * @brief convert a glTF type constant to element_type
+     * @param type the glTF type constant (0..6)
      * @return the mapped element_type
      */
     export constexpr element_type to_element_type(const int type) {
         switch (type) {
-            case TINYGLTF_TYPE_SCALAR: return element_type::scale;
-            case TINYGLTF_TYPE_VEC2: return element_type::vec2;
-            case TINYGLTF_TYPE_VEC3: return element_type::vec3;
-            case TINYGLTF_TYPE_VEC4: return element_type::vec4;
-            case TINYGLTF_TYPE_MAT2: return element_type::mat2;
-            case TINYGLTF_TYPE_MAT3: return element_type::mat3;
-            case TINYGLTF_TYPE_MAT4: return element_type::mat4;
+            case 0: return element_type::scale;
+            case 1: return element_type::vec2;
+            case 2: return element_type::vec3;
+            case 3: return element_type::vec4;
+            case 4: return element_type::mat2;
+            case 5: return element_type::mat3;
+            case 6: return element_type::mat4;
             default: break;
         }
         std::unreachable();
@@ -199,6 +201,8 @@ namespace gltf {
     /**
      * @ingroup gltf_loader
      * @brief a scene node: meshes plus its world transform matrix
+     * @note the scene hierarchy is expanded recursively, so every node reachable
+     *       from a scene root (including intermediate transform-only nodes) appears here
      */
     export struct node {
         std::vector<mesh> meshes;
@@ -217,6 +221,8 @@ namespace gltf {
     /**
      * @ingroup gltf_loader
      * @brief loaded result of a glTF file: textures and scenes
+     * @note textures holds one entry per glTF texture (in texture order); primitive
+     *       texture_indices values index into this array
      */
     export struct scenes {
         std::vector<texture_data> textures;

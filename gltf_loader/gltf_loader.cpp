@@ -3,184 +3,336 @@
 //
 module;
 
+#include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <map>
 #include <print>
-#include <ranges>
+#include <span>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <variant>
+#include <vector>
+
 #include <glm/glm.hpp>
-#include <tinygltf/tiny_gltf.h>
+
+#include <fastgltf/core.hpp>
+#include <fastgltf/tools.hpp>
+#include <fastgltf/types.hpp>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb/stb_image.h>
 
 module gltf_loader;
 
 namespace {
+    using fastgltf::Asset;
+
     struct parsed_data {
         std::vector<unsigned char> data;
         gltf::component_type component_type = gltf::component_type::unknown;
         gltf::element_type element_type = gltf::element_type::unknown;
         uint64_t count = 0;
         uint64_t byte_size = 0;
-
-        [[nodiscard]] [[maybe_unused]] bool is_legal() const noexcept {
-            return gltf::get_element_size(this->element_type) * gltf::get_component_size(this->component_type) * this->count == this->byte_size;
-        }
     };
 
-    std::expected<tinygltf::Model, gltf::error_code> load_gltf(const std::string_view file) noexcept {
-        if (const std::filesystem::path path(file); !std::filesystem::is_regular_file(path)) {
-            return std::unexpected(gltf::error_code::file_not_found);
+    gltf::component_type to_component_type(const fastgltf::ComponentType type) {
+        switch (type) {
+            case fastgltf::ComponentType::Byte: return gltf::component_type::byte_t;
+            case fastgltf::ComponentType::UnsignedByte: return gltf::component_type::unsigned_byte_t;
+            case fastgltf::ComponentType::Short: return gltf::component_type::short_t;
+            case fastgltf::ComponentType::UnsignedShort: return gltf::component_type::unsigned_short_t;
+            case fastgltf::ComponentType::Int: return gltf::component_type::int_t;
+            case fastgltf::ComponentType::UnsignedInt: return gltf::component_type::unsigned_int_t;
+            case fastgltf::ComponentType::Float: return gltf::component_type::float_t;
+            case fastgltf::ComponentType::Double: return gltf::component_type::double_t;
+            default: return gltf::component_type::unknown;
         }
-
-        std::string file_name(file);
-
-        tinygltf::TinyGLTF loader = {};
-        tinygltf::Model model;
-        std::string err;
-        std::string warn;
-        bool success = false;
-
-        if (file_name.ends_with(".glb") || file_name.ends_with(".GLB")) {
-            success = loader.LoadBinaryFromFile(&model, &err, &warn, file_name);
-        } else if (file_name.ends_with(".gltf") || file_name.ends_with(".GLTF")) {
-            success = loader.LoadASCIIFromFile(&model, &err, &warn, file_name);
-        } else {
-            std::println(stderr, "file type error");
-            return std::unexpected(gltf::error_code::file_type_error);
-        }
-
-        if (!success && !err.empty()) {
-            std::println(stderr, "gltf load err: {}", err.empty()? "unknown error" : err);
-            return std::unexpected(gltf::error_code::file_load_failed);
-        }
-        if (!warn.empty()) {
-            std::println(stderr, "gltf load warning: {}", warn);
-        }
-        return model;
     }
 
-    parsed_data get_data_from_accessor(tinygltf::Accessor const& accessor, tinygltf::Model const& model) {
-        std::vector<unsigned char> vertex_data;
-        auto const& buffer_view = model.bufferViews[accessor.bufferView];
-        auto const& buffer = model.buffers[buffer_view.buffer];
-        const unsigned char* source = buffer.data.data() + buffer_view.byteOffset + accessor.byteOffset;
-        const gltf::element_type element = gltf::to_element_type(accessor.type);
-        const gltf::component_type component = gltf::to_component_type(accessor.componentType);
-        const uint64_t element_size = gltf::get_element_size(element);
-        const uint64_t component_size = gltf::get_component_size(component);
-        const uint64_t byte_size = element_size * component_size * accessor.count;
-        vertex_data.resize(byte_size);
-        std::memcpy(vertex_data.data(), source, byte_size);
-
-        return {.data = std::move(vertex_data), .component_type = component, .element_type = element, .count = accessor.count, .byte_size = byte_size};
+    gltf::element_type to_element_type(const fastgltf::AccessorType type) {
+        switch (type) {
+            case fastgltf::AccessorType::Scalar: return gltf::element_type::scale;
+            case fastgltf::AccessorType::Vec2: return gltf::element_type::vec2;
+            case fastgltf::AccessorType::Vec3: return gltf::element_type::vec3;
+            case fastgltf::AccessorType::Vec4: return gltf::element_type::vec4;
+            case fastgltf::AccessorType::Mat2: return gltf::element_type::mat2;
+            case fastgltf::AccessorType::Mat3: return gltf::element_type::mat3;
+            case fastgltf::AccessorType::Mat4: return gltf::element_type::mat4;
+            default: return gltf::element_type::unknown;
+        }
     }
 
-    std::map<std::string, uint16_t> get_texture_indices(tinygltf::Material const &material,
-                                                        tinygltf::Model const &model) {
+    gltf::error_code to_error_code(const fastgltf::Error error) {
+        switch (error) {
+            case fastgltf::Error::InvalidFileData:
+            case fastgltf::Error::InvalidGLB:
+            case fastgltf::Error::InvalidJson:
+            case fastgltf::Error::InvalidGltf:
+            case fastgltf::Error::InvalidOrMissingAssetField:
+            case fastgltf::Error::UnsupportedVersion:
+                return gltf::error_code::file_type_error;
+            default:
+                return gltf::error_code::file_load_failed;
+        }
+    }
+
+    // fastgltf does not define bitwise operators for Options, combine flags via the underlying type.
+    constexpr fastgltf::Options load_options() {
+        const auto flags = static_cast<std::uint64_t>(fastgltf::Options::LoadExternalBuffers)
+                         | static_cast<std::uint64_t>(fastgltf::Options::LoadExternalImages);
+        return static_cast<fastgltf::Options>(flags);
+    }
+
+    template <typename T>
+    std::vector<unsigned char> copy_accessor(const Asset& asset, const fastgltf::Accessor& accessor) {
+        std::vector<unsigned char> data(accessor.count * sizeof(T));
+        fastgltf::copyFromAccessor<T>(asset, accessor, data.data());
+        return data;
+    }
+
+    // copyFromAccessor handles byteStride de-interleaving, sparse accessors and
+    // normalized component conversion for every (AccessorType, ComponentType) pair
+    // that fastgltf's ElementTraits provides.
+    parsed_data get_data_from_accessor(const Asset& asset, const fastgltf::Accessor& accessor) {
+        using namespace fastgltf;
+        using namespace fastgltf::math;
+
+        parsed_data result;
+        result.component_type = to_component_type(accessor.componentType);
+        result.element_type = to_element_type(accessor.type);
+        result.count = accessor.count;
+
+        switch (accessor.type) {
+            case AccessorType::Scalar:
+                switch (accessor.componentType) {
+                    case ComponentType::Byte: result.data = copy_accessor<std::int8_t>(asset, accessor); break;
+                    case ComponentType::UnsignedByte: result.data = copy_accessor<std::uint8_t>(asset, accessor); break;
+                    case ComponentType::Short: result.data = copy_accessor<std::int16_t>(asset, accessor); break;
+                    case ComponentType::UnsignedShort: result.data = copy_accessor<std::uint16_t>(asset, accessor); break;
+                    case ComponentType::Int: result.data = copy_accessor<std::int32_t>(asset, accessor); break;
+                    case ComponentType::UnsignedInt: result.data = copy_accessor<std::uint32_t>(asset, accessor); break;
+                    case ComponentType::Float: result.data = copy_accessor<float>(asset, accessor); break;
+                    case ComponentType::Double: result.data = copy_accessor<double>(asset, accessor); break;
+                    default: break;
+                }
+                break;
+            case AccessorType::Vec2:
+                switch (accessor.componentType) {
+                    case ComponentType::Byte: result.data = copy_accessor<s8vec2>(asset, accessor); break;
+                    case ComponentType::UnsignedByte: result.data = copy_accessor<u8vec2>(asset, accessor); break;
+                    case ComponentType::Short: result.data = copy_accessor<s16vec2>(asset, accessor); break;
+                    case ComponentType::UnsignedShort: result.data = copy_accessor<u16vec2>(asset, accessor); break;
+                    case ComponentType::Int: result.data = copy_accessor<s32vec2>(asset, accessor); break;
+                    case ComponentType::UnsignedInt: result.data = copy_accessor<u32vec2>(asset, accessor); break;
+                    case ComponentType::Float: result.data = copy_accessor<fvec2>(asset, accessor); break;
+                    case ComponentType::Double: result.data = copy_accessor<dvec2>(asset, accessor); break;
+                    default: break;
+                }
+                break;
+            case AccessorType::Vec3:
+                switch (accessor.componentType) {
+                    case ComponentType::Byte: result.data = copy_accessor<s8vec3>(asset, accessor); break;
+                    case ComponentType::UnsignedByte: result.data = copy_accessor<u8vec3>(asset, accessor); break;
+                    case ComponentType::Short: result.data = copy_accessor<s16vec3>(asset, accessor); break;
+                    case ComponentType::UnsignedShort: result.data = copy_accessor<u16vec3>(asset, accessor); break;
+                    case ComponentType::Int: result.data = copy_accessor<s32vec3>(asset, accessor); break;
+                    case ComponentType::UnsignedInt: result.data = copy_accessor<u32vec3>(asset, accessor); break;
+                    case ComponentType::Float: result.data = copy_accessor<fvec3>(asset, accessor); break;
+                    case ComponentType::Double: result.data = copy_accessor<dvec3>(asset, accessor); break;
+                    default: break;
+                }
+                break;
+            case AccessorType::Vec4:
+                switch (accessor.componentType) {
+                    case ComponentType::Byte: result.data = copy_accessor<s8vec4>(asset, accessor); break;
+                    case ComponentType::UnsignedByte: result.data = copy_accessor<u8vec4>(asset, accessor); break;
+                    case ComponentType::Short: result.data = copy_accessor<s16vec4>(asset, accessor); break;
+                    case ComponentType::UnsignedShort: result.data = copy_accessor<u16vec4>(asset, accessor); break;
+                    case ComponentType::Int: result.data = copy_accessor<s32vec4>(asset, accessor); break;
+                    case ComponentType::UnsignedInt: result.data = copy_accessor<u32vec4>(asset, accessor); break;
+                    case ComponentType::Float: result.data = copy_accessor<fvec4>(asset, accessor); break;
+                    case ComponentType::Double: result.data = copy_accessor<dvec4>(asset, accessor); break;
+                    default: break;
+                }
+                break;
+            case AccessorType::Mat2: result.data = copy_accessor<fmat2x2>(asset, accessor); break;
+            case AccessorType::Mat3: result.data = copy_accessor<fmat3x3>(asset, accessor); break;
+            case AccessorType::Mat4: result.data = copy_accessor<fmat4x4>(asset, accessor); break;
+            default: break;
+        }
+
+        result.byte_size = result.data.size();
+        return result;
+    }
+
+    // Extract raw bytes from a fastgltf data source (loaded buffers/images are sources::Array).
+    std::span<const std::byte> get_source_bytes(const Asset& asset, const fastgltf::DataSource& source) {
+        using namespace fastgltf;
+        if (const auto* array = std::get_if<sources::Array>(&source)) {
+            return {array->bytes.data(), array->bytes.size_bytes()};
+        }
+        if (const auto* vector = std::get_if<sources::Vector>(&source)) {
+            return {vector->bytes.data(), vector->bytes.size()};
+        }
+        if (const auto* byte_view = std::get_if<sources::ByteView>(&source)) {
+            return byte_view->bytes;
+        }
+        if (const auto* buffer_view = std::get_if<sources::BufferView>(&source)) {
+            const auto& view = asset.bufferViews[buffer_view->bufferViewIndex];
+            const auto& buffer = asset.buffers[view.bufferIndex];
+            auto bytes = get_source_bytes(asset, buffer.data);
+            return bytes.subspan(view.byteOffset, view.byteLength);
+        }
+        return {};
+    }
+
+    gltf::texture_data load_texture(const Asset& asset, const std::size_t texture_index) {
+        gltf::texture_data out;
+        if (texture_index >= asset.textures.size()) {
+            return out;
+        }
+        const auto& texture = asset.textures[texture_index];
+        if (!texture.imageIndex) {
+            return out;
+        }
+        const auto& image = asset.images[*texture.imageIndex];
+        const auto bytes = get_source_bytes(asset, image.data);
+        if (bytes.empty()) {
+            return out;
+        }
+
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        unsigned char* pixels = stbi_load_from_memory(
+                reinterpret_cast<const unsigned char*>(bytes.data()),
+                static_cast<int>(bytes.size()),
+                &width, &height, &channels, 0);
+        if (pixels == nullptr) {
+            return out;
+        }
+
+        out.data.assign(pixels, pixels + static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * static_cast<std::size_t>(channels));
+        out.width = static_cast<uint32_t>(width);
+        out.height = static_cast<uint32_t>(height);
+        out.component = static_cast<uint8_t>(channels);
+        stbi_image_free(pixels);
+        return out;
+    }
+
+    std::map<std::string, uint16_t> get_texture_indices(const fastgltf::Material& material) {
         std::map<std::string, uint16_t> texture_indices;
-
-        if (const int texture_index = material.pbrMetallicRoughness.baseColorTexture.index; texture_index >=0) {
-            texture_indices["albedo"] = texture_index;
+        if (material.pbrData.baseColorTexture) {
+            texture_indices["albedo"] = static_cast<uint16_t>(material.pbrData.baseColorTexture->textureIndex);
         }
-        if (const int texture_index = material.pbrMetallicRoughness.metallicRoughnessTexture.index; texture_index >=0) {
-            texture_indices["metallic_roughness"] = texture_index;
+        if (material.pbrData.metallicRoughnessTexture) {
+            texture_indices["metallic_roughness"] = static_cast<uint16_t>(material.pbrData.metallicRoughnessTexture->textureIndex);
         }
-        if (const int texture_index = material.occlusionTexture.index; texture_index >=0) {
-            texture_indices["occlusion"] = texture_index;
+        if (material.occlusionTexture) {
+            texture_indices["occlusion"] = static_cast<uint16_t>(material.occlusionTexture->textureIndex);
         }
-        if (const int texture_index = material.normalTexture.index; texture_index >=0) {
-            texture_indices["normal"] = texture_index;
+        if (material.normalTexture) {
+            texture_indices["normal"] = static_cast<uint16_t>(material.normalTexture->textureIndex);
         }
-        if (const int texture_index = material.emissiveTexture.index; texture_index >=0) {
-            texture_indices["emissive"] = texture_index;
+        if (material.emissiveTexture) {
+            texture_indices["emissive"] = static_cast<uint16_t>(material.emissiveTexture->textureIndex);
         }
         return texture_indices;
     }
 
-
-    gltf::primitive load_primitive(tinygltf::Primitive const& primitive, tinygltf::Model const& model) noexcept {
+    gltf::primitive load_primitive(const fastgltf::Primitive& primitive, const Asset& asset) {
         std::map<std::string, gltf::vertex_portion> vertex;
-
-        for (auto const& [name, index] : primitive.attributes) {
-            auto data = get_data_from_accessor(model.accessors[index], model);
+        for (const auto& attribute : primitive.attributes) {
+            auto data = get_data_from_accessor(asset, asset.accessors[attribute.accessorIndex]);
+            const std::string name(attribute.name);
             vertex[name].component = data.component_type;
             vertex[name].data = std::move(data.data);
         }
 
         parsed_data index_data;
-
-        if (primitive.indices >= 0) {
-            auto const& accessor = model.accessors[primitive.indices];
-            index_data = get_data_from_accessor(accessor, model);
+        if (primitive.indicesAccessor) {
+            index_data = get_data_from_accessor(asset, asset.accessors[*primitive.indicesAccessor]);
         }
 
-        auto& material = model.materials[primitive.material];
-
-        const std::map<std::string, uint16_t> texture_indices = get_texture_indices(material, model);
+        std::map<std::string, uint16_t> texture_indices;
+        if (primitive.materialIndex) {
+            texture_indices = get_texture_indices(asset.materials[*primitive.materialIndex]);
+        }
 
         return {
             .vertex = std::move(vertex),
             .index = std::move(index_data.data),
             .index_component_type = index_data.component_type,
-            .texture_indices = texture_indices
+            .texture_indices = std::move(texture_indices)
         };
     }
 
-    glm::mat4 double_array_to_mat4(const std::vector<double>& src) {
+    glm::mat4 to_glm_mat4(const fastgltf::math::fmat4x4& matrix) {
         glm::mat4 result;
-        for (int i = 0; i < 16; ++i) {
-            result[i / 4][i % 4] = static_cast<float>(src[i]);
+        for (std::size_t column = 0; column < 4; ++column) {
+            for (std::size_t row = 0; row < 4; ++row) {
+                result[column][row] = matrix[column][row];
+            }
         }
+        return result;
+    }
+
+    gltf::scene load_scene(const Asset& asset, const std::size_t scene_index) {
+        gltf::scene result;
+        result.name = asset.scenes[scene_index].name;
+
+        // Recursively walk the scene graph, computing world-space transforms.
+        fastgltf::iterateSceneNodes(asset, scene_index, fastgltf::math::fmat4x4{},
+                [&](const fastgltf::Node& node, const fastgltf::math::fmat4x4& matrix) {
+                    gltf::node current_node{};
+                    current_node.transform_matrix = to_glm_mat4(matrix);
+                    if (node.meshIndex) {
+                        gltf::mesh current_mesh{};
+                        for (const auto& primitive : asset.meshes[*node.meshIndex].primitives) {
+                            current_mesh.primitives.push_back(load_primitive(primitive, asset));
+                        }
+                        current_node.meshes.push_back(std::move(current_mesh));
+                    }
+                    result.nodes.push_back(std::move(current_node));
+                });
         return result;
     }
 }
 
 namespace gltf {
     std::expected<scenes, error_code> load_model(std::string_view file_name) {
-        auto model_exp = load_gltf(file_name);
-
-        if (!model_exp) {
-            return std::unexpected(model_exp.error());
+        const std::filesystem::path path(file_name);
+        if (!std::filesystem::is_regular_file(path)) {
+            return std::unexpected(error_code::file_not_found);
         }
 
-        const auto model = std::move(model_exp).value();
+        auto buffer_exp = fastgltf::GltfDataBuffer::FromPath(path);
+        if (!buffer_exp) {
+            std::println(stderr, "gltf load err: failed to read file: {}", fastgltf::getErrorMessage(buffer_exp.error()));
+            return std::unexpected(error_code::file_load_failed);
+        }
+
+        fastgltf::Parser parser;
+        auto asset_exp = parser.loadGltf(buffer_exp.get(), path.parent_path(), load_options());
+        if (!asset_exp) {
+            std::println(stderr, "gltf load err: {}", fastgltf::getErrorMessage(asset_exp.error()));
+            return std::unexpected(to_error_code(asset_exp.error()));
+        }
+
+        Asset asset = std::move(asset_exp.get());
 
         scenes result;
-        const auto scene_size = model.scenes.size();
-
-        result.scene.reserve(scene_size);
-
-        for (int current_scene_index = 0; current_scene_index < scene_size; current_scene_index++) {
-            scene current_scene = {};
-            current_scene.name = model.scenes[current_scene_index].name;
-            auto node_size = model.scenes[current_scene_index].nodes.size();
-            current_scene.nodes.reserve(node_size);
-            for (auto node_index : model.scenes[current_scene_index].nodes) {
-
-                if (node_index < 0) {
-                    break;
-                }
-
-                node current_node = {};
-                current_node.transform_matrix = double_array_to_mat4(model.nodes[node_index].matrix);
-                if (model.nodes[node_index].mesh != -1) {
-                    mesh current_mesh = {};
-                    for (auto& primitive : model.meshes[model.nodes[node_index].mesh].primitives) {
-                        current_mesh.primitives.push_back(load_primitive(primitive, model));
-                    }
-
-                    current_node.meshes.push_back(std::move(current_mesh));
-
-                }
-
-                current_scene.nodes.push_back(std::move(current_node));
-            }
-
-            result.scene.push_back(std::move(current_scene));
+        result.scene.reserve(asset.scenes.size());
+        for (std::size_t i = 0; i < asset.scenes.size(); ++i) {
+            result.scene.push_back(load_scene(asset, i));
         }
 
-        result.textures = model.images | std::views::transform(
-                [](auto& a){
-            return texture_data(std::move(a.image), a.width, a.height, a.component);
-        }) | std::ranges::to<std::vector>();
+        result.textures.reserve(asset.textures.size());
+        for (std::size_t i = 0; i < asset.textures.size(); ++i) {
+            result.textures.push_back(load_texture(asset, i));
+        }
 
         return result;
     }
