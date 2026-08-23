@@ -62,11 +62,6 @@ namespace vulkan {
         shader_info const &vertex_shader,
         shader_info const &fragment_shader, VkSampleCountFlagBits msaa_level);
 
-    export std::expected<vk_pipeline, std::string_view> make_pipeline(VkDevice device, VkRenderPass renderpass,
-                                                               std::vector<unsigned char> const &vertex_shader_code,
-                                                               std::vector<unsigned char> const &fragment_shader_code,
-                                                               VkSampleCountFlagBits msaa_level);
-
     export std::expected<vk_pipeline, std::string_view> make_pipeline(
         VkDevice &device,
         VkRenderPass render_pass,
