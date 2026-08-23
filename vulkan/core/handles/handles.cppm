@@ -129,7 +129,7 @@ namespace vulkan {
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
 
-        std::vector<VkDescriptorSetLayout> descriptor_set_layouts;
+        std::vector<VkDescriptorSetLayout> descriptor_set_layouts = {};
         VkDevice* device = nullptr;
 
         explicit vk_pipeline(VkPipeline pipeline, VkPipelineLayout pipeline_layout, std::vector<VkDescriptorSetLayout> const& descriptor_set_layouts, VkDevice& device) noexcept; // NOLINT(*-avoid-const-params-in-decls)

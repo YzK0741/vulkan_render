@@ -69,9 +69,10 @@ namespace vulkan {
 
         VkCommandBufferAllocateInfo allocate_info = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .pNext = nullptr,
             .commandPool = command_pool,
             .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1,
+            .commandBufferCount = 1
         };
 
         if (vkAllocateCommandBuffers(device, &allocate_info, &buffer) != VK_SUCCESS) {
