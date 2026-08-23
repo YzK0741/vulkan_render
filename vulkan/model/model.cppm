@@ -9,7 +9,7 @@ module;
 export module vulkan.model;
 export import std;
 export import vulkan.core.handles;
-import vulkan.vma;
+export import vulkan.vma;
 
 namespace vulkan {
     export class model {
@@ -23,6 +23,6 @@ namespace vulkan {
 
     public:
         void draw(VkCommandBuffer command_buffer, VkPipelineLayout pipeline_layout) const;
-        void destroy(VkDevice device, VkDescriptorPool descriptor_pool, vma_allocator vma);
+        void destroy(VkDevice device, VkDescriptorPool descriptor_pool, vma_allocator& vma);
     };
 }
