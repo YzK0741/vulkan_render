@@ -9,7 +9,6 @@ module vulkan.core;
 import vulkan.core.pipeline;
 import vulkan.core.init_utils;
 
-
 // core
 namespace vulkan {
     core::core() {
@@ -48,10 +47,9 @@ namespace vulkan {
         window = glfwCreateWindow(
             width,
             height,
-            window_name.data()? window_name.data() : "vulkan",
+            window_name.data() ? window_name.data() : "vulkan",
             nullptr,
-            nullptr
-            );
+            nullptr);
 
         register_cleanup([this] {
             if (window) {
@@ -61,7 +59,7 @@ namespace vulkan {
     }
 
     void core::init_instance() noexcept {
-        VkApplicationInfo app_info {};
+        VkApplicationInfo app_info{};
         app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
         app_info.pApplicationName = "Hello Triangle";
         app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
@@ -85,7 +83,7 @@ namespace vulkan {
 #endif
 
         // print all extensions
-        std::println("required instance extension ({}):",extensions.size());
+        std::println("required instance extension ({}):", extensions.size());
         for (const auto& ext : extensions) {
             std::println("  - {}", ext);
         }
@@ -98,8 +96,7 @@ namespace vulkan {
 
 #ifdef _DEBUG
         validation_layers = {
-            "VK_LAYER_KHRONOS_validation"
-        };
+            "VK_LAYER_KHRONOS_validation"};
 
         // 检查验证层支持
         if (check_validation_layer_support(validation_layers)) {
@@ -122,13 +119,27 @@ namespace vulkan {
             // 提供更详细的错误信息
             std::string error_msg = "can not create vulkan instance，error code is: ";
             switch (result) {
-                case VK_ERROR_OUT_OF_HOST_MEMORY: error_msg += "VK_ERROR_OUT_OF_HOST_MEMORY"; break;
-                case VK_ERROR_OUT_OF_DEVICE_MEMORY: error_msg += "VK_ERROR_OUT_OF_DEVICE_MEMORY"; break;
-                case VK_ERROR_INITIALIZATION_FAILED: error_msg += "VK_ERROR_INITIALIZATION_FAILED"; break;
-                case VK_ERROR_LAYER_NOT_PRESENT: error_msg += "VK_ERROR_LAYER_NOT_PRESENT"; break;
-                case VK_ERROR_EXTENSION_NOT_PRESENT: error_msg += "VK_ERROR_EXTENSION_NOT_PRESENT"; break;
-                case VK_ERROR_INCOMPATIBLE_DRIVER: error_msg += "VK_ERROR_INCOMPATIBLE_DRIVER"; break;
-                default: error_msg += std::to_string(static_cast<int>(result)); break;
+            case VK_ERROR_OUT_OF_HOST_MEMORY:
+                error_msg += "VK_ERROR_OUT_OF_HOST_MEMORY";
+                break;
+            case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+                error_msg += "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+                break;
+            case VK_ERROR_INITIALIZATION_FAILED:
+                error_msg += "VK_ERROR_INITIALIZATION_FAILED";
+                break;
+            case VK_ERROR_LAYER_NOT_PRESENT:
+                error_msg += "VK_ERROR_LAYER_NOT_PRESENT";
+                break;
+            case VK_ERROR_EXTENSION_NOT_PRESENT:
+                error_msg += "VK_ERROR_EXTENSION_NOT_PRESENT";
+                break;
+            case VK_ERROR_INCOMPATIBLE_DRIVER:
+                error_msg += "VK_ERROR_INCOMPATIBLE_DRIVER";
+                break;
+            default:
+                error_msg += std::to_string(static_cast<int>(result));
+                break;
             }
             utility::panic(error_msg);
         }
@@ -136,44 +147,43 @@ namespace vulkan {
         std::println("instance handler is 0x{:x}", reinterpret_cast<uint64_t>(this->instance));
 
 #ifdef _DEBUG
-            // get function pointer
-            auto vkCreateDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(
-                instance, "vkCreateDebugUtilsMessengerEXT"));
-            auto vkDestroyDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(
-                instance, "vkDestroyDebugUtilsMessengerEXT"));
+        // get function pointer
+        auto vkCreateDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(
+            instance, "vkCreateDebugUtilsMessengerEXT"));
+        auto vkDestroyDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(
+            instance, "vkDestroyDebugUtilsMessengerEXT"));
 
-            // 检查函数指针是否获取成功
-            if (!vkCreateDebugUtilsMessengerEXT || !vkDestroyDebugUtilsMessengerEXT) {
-                utility::panic("Failed to get debug utils function pointers");
-            }
-            VkDebugUtilsMessengerCreateInfoEXT debug_info{};
-            debug_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-            debug_info.messageSeverity =
-                VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-                    VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
-                        VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                            VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-            debug_info.messageType =
-                VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                    VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-            debug_info.pfnUserCallback = debug_callback;  // 需要实现这个回调函数
-            debug_info.pUserData = nullptr;
+        // 检查函数指针是否获取成功
+        if (!vkCreateDebugUtilsMessengerEXT || !vkDestroyDebugUtilsMessengerEXT) {
+            utility::panic("Failed to get debug utils function pointers");
+        }
+        VkDebugUtilsMessengerCreateInfoEXT debug_info{};
+        debug_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        debug_info.messageSeverity =
+            VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+            VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+            VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+            VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        debug_info.messageType =
+            VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+            VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+            VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        debug_info.pfnUserCallback = debug_callback; // 需要实现这个回调函数
+        debug_info.pUserData = nullptr;
 
-            if (vkCreateDebugUtilsMessengerEXT(instance, &debug_info, nullptr, &debug_messenger) != VK_SUCCESS) {
-                std::println(stderr, "create debug messanger failed");
-            } else {
-                std::println(stderr, "create debug messanger succeeded");
-
-            }
+        if (vkCreateDebugUtilsMessengerEXT(instance, &debug_info, nullptr, &debug_messenger) != VK_SUCCESS) {
+            std::println(stderr, "create debug messanger failed");
+        } else {
+            std::println(stderr, "create debug messanger succeeded");
+        }
 #endif
         this->register_cleanup([this] {
-           vkDestroyInstance(this->instance, nullptr);
+            vkDestroyInstance(this->instance, nullptr);
         });
 
 #ifdef _DEBUG
         this->register_cleanup([vkDestroyDebugUtilsMessengerEXT, this] {
-           vkDestroyDebugUtilsMessengerEXT(this->instance,this->debug_messenger, nullptr);
+            vkDestroyDebugUtilsMessengerEXT(this->instance, this->debug_messenger, nullptr);
         });
 #endif
     }
@@ -184,7 +194,7 @@ namespace vulkan {
         }
 
         this->register_cleanup([this] {
-           vkDestroySurfaceKHR(this->instance, this->surface, nullptr);
+            vkDestroySurfaceKHR(this->instance, this->surface, nullptr);
         });
     }
 
@@ -263,7 +273,7 @@ namespace vulkan {
             create_info.pQueueFamilyIndices = queueFamilyIndices;
         } else {
             create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            create_info.queueFamilyIndexCount = 0; // Optional
+            create_info.queueFamilyIndexCount = 0;     // Optional
             create_info.pQueueFamilyIndices = nullptr; // Optional
         }
 
@@ -276,7 +286,6 @@ namespace vulkan {
         if (vkCreateSwapchainKHR(device, &create_info, nullptr, &this->swap_chain) != VK_SUCCESS) {
             utility::panic("failed to create swap chain!");
         }
-
 
         vkGetSwapchainImagesKHR(device, this->swap_chain, &image_count, nullptr);
         this->swap_chain_images.resize(image_count);
@@ -323,61 +332,61 @@ namespace vulkan {
         });
     }
 
-    void core::create_depth_image(VkImage &image, VkDeviceMemory &imageMemory, VkImageView &image_view) const noexcept {
-            // 使用类内的交换链尺寸
-            const auto&[width, height] = this->swap_chain_extent;
+    void core::create_depth_image(VkImage& image, VkDeviceMemory& imageMemory, VkImageView& image_view) const noexcept {
+        // 使用类内的交换链尺寸
+        const auto& [width, height] = this->swap_chain_extent;
 
-            // 1. 创建图像
-            VkImageCreateInfo image_info{};
-            image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-            image_info.imageType = VK_IMAGE_TYPE_2D;
-            image_info.extent = { width, height, 1 };
-            image_info.mipLevels = 1;
-            image_info.arrayLayers = 1;
-            image_info.format = this->depth_format;
-            image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-            image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-            image_info.samples = this->msaa_samples;
-            image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        // 1. 创建图像
+        VkImageCreateInfo image_info{};
+        image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image_info.imageType = VK_IMAGE_TYPE_2D;
+        image_info.extent = {width, height, 1};
+        image_info.mipLevels = 1;
+        image_info.arrayLayers = 1;
+        image_info.format = this->depth_format;
+        image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+        image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        image_info.samples = this->msaa_samples;
+        image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-            if (vkCreateImage(device, &image_info, nullptr, &image) != VK_SUCCESS) {
-                vkDestroyImage(device, image, nullptr);
-                utility::panic("failed to create depth image!");
-            }
-
-            // 2. 分配内存
-            VkMemoryRequirements memRequirements;
-            vkGetImageMemoryRequirements(device, image, &memRequirements);
-
-            VkMemoryAllocateInfo allocInfo{};
-            allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            allocInfo.allocationSize = memRequirements.size;
-            allocInfo.memoryTypeIndex = find_memory_type(memRequirements.memoryTypeBits,
-                                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, this->physical_device);
-
-            if (vkAllocateMemory(device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS) {
-                utility::panic("failed to allocate depth image memory!");
-            }
-
-            vkBindImageMemory(device, image, imageMemory, 0);
-
-            // 3. 创建图像视图
-            VkImageViewCreateInfo view_info{};
-            view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            view_info.image = image;
-            view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            view_info.format = this->depth_format;
-            view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-            view_info.subresourceRange.baseMipLevel = 0;
-            view_info.subresourceRange.levelCount = 1;
-            view_info.subresourceRange.baseArrayLayer = 0;
-            view_info.subresourceRange.layerCount = 1;
-
-            if (vkCreateImageView(device, &view_info, nullptr, &image_view) != VK_SUCCESS) {
-                utility::panic("failed to create depth image view!");
-            }
+        if (vkCreateImage(device, &image_info, nullptr, &image) != VK_SUCCESS) {
+            vkDestroyImage(device, image, nullptr);
+            utility::panic("failed to create depth image!");
         }
+
+        // 2. 分配内存
+        VkMemoryRequirements memRequirements;
+        vkGetImageMemoryRequirements(device, image, &memRequirements);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = find_memory_type(memRequirements.memoryTypeBits,
+                                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, this->physical_device);
+
+        if (vkAllocateMemory(device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS) {
+            utility::panic("failed to allocate depth image memory!");
+        }
+
+        vkBindImageMemory(device, image, imageMemory, 0);
+
+        // 3. 创建图像视图
+        VkImageViewCreateInfo view_info{};
+        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.image = image;
+        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_info.format = this->depth_format;
+        view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        view_info.subresourceRange.baseMipLevel = 0;
+        view_info.subresourceRange.levelCount = 1;
+        view_info.subresourceRange.baseArrayLayer = 0;
+        view_info.subresourceRange.layerCount = 1;
+
+        if (vkCreateImageView(device, &view_info, nullptr, &image_view) != VK_SUCCESS) {
+            utility::panic("failed to create depth image view!");
+        }
+    }
 
     void core::create_depth_resources() noexcept {
 
@@ -391,7 +400,7 @@ namespace vulkan {
 
         depth_images.resize(swap_chain_image_views.size());
         depth_image_views.resize(swap_chain_image_views.size());
-        depth_image_memories.resize(swap_chain_image_views.size());  // 确保分配内存
+        depth_image_memories.resize(swap_chain_image_views.size()); // 确保分配内存
 
         for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
             // 直接调用 create_depth_image，但确保参数正确
@@ -399,7 +408,7 @@ namespace vulkan {
         }
 
         register_cleanup([this] {
-            for (const auto& view: depth_image_views) {
+            for (const auto& view : depth_image_views) {
                 vkDestroyImageView(device, view, nullptr);
             }
             for (const auto& image : depth_images) {
@@ -430,15 +439,13 @@ namespace vulkan {
                 VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                 color_images[i],
-                color_image_memories[i]
-            );
+                color_image_memories[i]);
 
             color_image_views[i] = create_image_view(
                 color_images[i],
                 color_format,
                 VK_IMAGE_ASPECT_COLOR_BIT,
-                device
-            );
+                device);
         }
 
         register_cleanup([this] {
@@ -461,7 +468,7 @@ namespace vulkan {
         // 1. 颜色附件（现在是MSAA的）
         VkAttachmentDescription color_attachment = {};
         color_attachment.format = swap_chain_image_format;
-        color_attachment.samples = msaa_samples;  // 使用MSAA采样
+        color_attachment.samples = msaa_samples; // 使用MSAA采样
         color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -478,7 +485,7 @@ namespace vulkan {
         // 2. 深度附件（也需要MSAA）
         VkAttachmentDescription depth_attachment = {};
         depth_attachment.format = depth_format;
-        depth_attachment.samples = msaa_samples;  // 深度也要MSAA
+        depth_attachment.samples = msaa_samples; // 深度也要MSAA
         depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         depth_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -568,12 +575,11 @@ namespace vulkan {
         }
         register_cleanup(
             [this] {
-            if (renderpass != VK_NULL_HANDLE) {
-                vkDestroyRenderPass(device, renderpass, nullptr);
-                renderpass = VK_NULL_HANDLE;
-            }
-            }
-        );
+                if (renderpass != VK_NULL_HANDLE) {
+                    vkDestroyRenderPass(device, renderpass, nullptr);
+                    renderpass = VK_NULL_HANDLE;
+                }
+            });
     }
 
     void core::create_frame_buffers() noexcept {
@@ -585,16 +591,16 @@ namespace vulkan {
 
             // 如果有MSAA，第一个是MSAA颜色附件
             if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-                attachments.push_back(color_image_views[i]);  // MSAA颜色附件
+                attachments.push_back(color_image_views[i]); // MSAA颜色附件
             } else {
-                attachments.push_back(swap_chain_image_views[i]);  // 普通颜色附件
+                attachments.push_back(swap_chain_image_views[i]); // 普通颜色附件
             }
 
-            attachments.push_back(depth_image_views[i]);  // 深度附件
+            attachments.push_back(depth_image_views[i]); // 深度附件
 
             // 如果有MSAA，添加解析附件
             if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-                attachments.push_back(swap_chain_image_views[i]);  // 解析到交换链图像
+                attachments.push_back(swap_chain_image_views[i]); // 解析到交换链图像
             }
 
             VkFramebufferCreateInfo framebuffer_create_info{};
@@ -637,16 +643,15 @@ namespace vulkan {
     }
 
     void core::create_msaa_image(
-        const uint32_t &width,
-        const uint32_t &height,
-        const VkFormat &format,
-        const VkSampleCountFlagBits &num_samples,
-        const VkImageTiling &tiling,
-        const VkImageUsageFlags &usage,
-        const VkMemoryPropertyFlags &properties,
-        VkImage &image,
-        VkDeviceMemory &imageMemory
-        ) const noexcept {
+        const uint32_t& width,
+        const uint32_t& height,
+        const VkFormat& format,
+        const VkSampleCountFlagBits& num_samples,
+        const VkImageTiling& tiling,
+        const VkImageUsageFlags& usage,
+        const VkMemoryPropertyFlags& properties,
+        VkImage& image,
+        VkDeviceMemory& imageMemory) const noexcept {
         VkImageCreateInfo imageInfo{};
         imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -659,10 +664,10 @@ namespace vulkan {
         imageInfo.tiling = tiling;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         imageInfo.usage = usage;
-        imageInfo.samples = num_samples;  // 关键：设置采样数
+        imageInfo.samples = num_samples; // 关键：设置采样数
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        if (vkCreateImage(device, &imageInfo, nullptr,  &image) != VK_SUCCESS) {
+        if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
             utility::panic("can't create msaa image");
         }
 
@@ -675,8 +680,7 @@ namespace vulkan {
         allocInfo.memoryTypeIndex = find_memory_type(
             memRequirements.memoryTypeBits,
             properties,
-            physical_device
-        );
+            physical_device);
 
         if (vkAllocateMemory(device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS) {
             utility::panic("can't allocate msaa image memory");
@@ -688,13 +692,9 @@ namespace vulkan {
     void core::create_descriptor_pool() noexcept {
         std::vector<VkDescriptorPoolSize> pool_sizes;
         constexpr int max_size = 1024;
-        pool_sizes.push_back({
-            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, max_size
-        });
+        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, max_size});
 
-        pool_sizes.push_back({
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, max_size
-        });
+        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, max_size});
 
         VkDescriptorPoolCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -723,14 +723,14 @@ namespace vulkan {
 
         VkFenceCreateInfo fence_info{};
         fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;  // 初始为已触发状态
+        fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT; // 初始为已触发状态
 
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
             if (vkCreateSemaphore(device, &semaphore_info, nullptr, &image_available_semaphores[i]) != VK_SUCCESS ||
-                    vkCreateSemaphore(device, &semaphore_info, nullptr, &render_finished_semaphores[i]) != VK_SUCCESS ||
-                    vkCreateFence(device, &fence_info, nullptr, &in_flight_fences[i]) != VK_SUCCESS) {
-                    utility::panic("failed to create synchronization objects for a frame!");
-                }
+                vkCreateSemaphore(device, &semaphore_info, nullptr, &render_finished_semaphores[i]) != VK_SUCCESS ||
+                vkCreateFence(device, &fence_info, nullptr, &in_flight_fences[i]) != VK_SUCCESS) {
+                utility::panic("failed to create synchronization objects for a frame!");
+            }
         }
 
         register_cleanup([this] {
@@ -760,15 +760,14 @@ namespace vulkan {
         return ::vulkan::make_shader_module(shader, this->device);
     }
 
-    VkResult core::get_image_index(uint32_t &image_index) const {
+    VkResult core::get_image_index(uint32_t& image_index) const {
         return vkAcquireNextImageKHR(
             this->device,
             this->swap_chain,
             UINT64_MAX,
             this->image_available_semaphores[this->current_frame],
             this->in_flight_fences[this->current_frame],
-            &image_index
-        );
+            &image_index);
     }
 
     void core::wait_usable_image(const uint32_t image_index) {
@@ -849,8 +848,8 @@ namespace vulkan {
         }
 
         // 8. 重新创建所有资源
-        this->init_swap_chain();      // 重建 SwapChain
-        this->init_image_views();     // 重建 ImageViews
+        this->init_swap_chain();        // 重建 SwapChain
+        this->init_image_views();       // 重建 ImageViews
         this->create_depth_resources(); // 重建深度资源
 
         if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
@@ -866,14 +865,12 @@ namespace vulkan {
 
     std::expected<vk_pipeline, std::string_view> core::make_pipeline(
         std::span<const unsigned char> vertex_shader_code,
-        const std::span<const unsigned char> fragment_shader_code)
-    {
+        const std::span<const unsigned char> fragment_shader_code) {
         return vulkan::make_pipeline(
             this->device,
             this->renderpass,
             vertex_shader_code,
             fragment_shader_code,
-            this->msaa_samples
-        );
+            this->msaa_samples);
     }
-}
+} // namespace vulkan

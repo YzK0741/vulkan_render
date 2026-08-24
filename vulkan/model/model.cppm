@@ -36,4 +36,4 @@ namespace vulkan {
         void destroy(VkDevice device, VkDescriptorPool descriptor_pool, vma_allocator& vma);
         [[nodiscard]] bool is_valid() const noexcept;
     };
-}
+} // namespace vulkan

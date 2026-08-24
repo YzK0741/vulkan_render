@@ -25,7 +25,7 @@ void utility::enable_handle_distribute::recycle(const uint64_t handle) noexcept 
     }
 }
 
-void utility::enable_stack_destruct::register_cleanup(std::function<void()> const &destructor) noexcept {
+void utility::enable_stack_destruct::register_cleanup(std::function<void()> const& destructor) noexcept {
     std::lock_guard guard(this->access_mutex);
     this->destruct_stack.push(destructor);
 }
@@ -50,7 +50,7 @@ void utility::enable_stack_destruct::clear_stack() noexcept {
 namespace {
     std::stack<std::function<void()>> tasks = {};
     std::mutex access_mutex = {};
-}
+} // namespace
 
 void utility::at_panic(std::function<void()> const& task) {
     std::lock_guard guard(access_mutex);
@@ -77,7 +77,7 @@ void utility::at_panic(std::function<void()> const& task) {
     std::terminate();
 }
 
-std::chrono::milliseconds utility::time_test(std::function<void()> const &test) noexcept {
+std::chrono::milliseconds utility::time_test(std::function<void()> const& test) noexcept {
     const auto start = std::chrono::steady_clock::now();
 
     test();
@@ -113,7 +113,7 @@ std::optional<utility::md5_digest> utility::md5(const std::span<const unsigned c
     return std::nullopt;
 }
 
-std::optional<utility::sha256_digest> utility::sha256(const std::span<const unsigned char> data_view){
+std::optional<utility::sha256_digest> utility::sha256(const std::span<const unsigned char> data_view) {
     sha256_digest digest = {};
     unsigned int size_byte = sizeof(sha256_digest);
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();

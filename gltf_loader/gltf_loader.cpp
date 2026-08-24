@@ -2,7 +2,11 @@ module;
 
 #include <cstdint>
 #include <expected>
+#include <fastgltf/core.hpp>
+#include <fastgltf/tools.hpp>
+#include <fastgltf/types.hpp>
 #include <filesystem>
+#include <glm/glm.hpp>
 #include <map>
 #include <print>
 #include <span>
@@ -11,12 +15,6 @@ module;
 #include <utility>
 #include <variant>
 #include <vector>
-
-#include <glm/glm.hpp>
-
-#include <fastgltf/core.hpp>
-#include <fastgltf/tools.hpp>
-#include <fastgltf/types.hpp>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
@@ -36,49 +34,65 @@ namespace {
 
     gltf::component_type to_component_type(const fastgltf::ComponentType type) {
         switch (type) {
-            case fastgltf::ComponentType::Byte: return gltf::component_type::byte_t;
-            case fastgltf::ComponentType::UnsignedByte: return gltf::component_type::unsigned_byte_t;
-            case fastgltf::ComponentType::Short: return gltf::component_type::short_t;
-            case fastgltf::ComponentType::UnsignedShort: return gltf::component_type::unsigned_short_t;
-            case fastgltf::ComponentType::Int: return gltf::component_type::int_t;
-            case fastgltf::ComponentType::UnsignedInt: return gltf::component_type::unsigned_int_t;
-            case fastgltf::ComponentType::Float: return gltf::component_type::float_t;
-            case fastgltf::ComponentType::Double: return gltf::component_type::double_t;
-            default: return gltf::component_type::unknown;
+        case fastgltf::ComponentType::Byte:
+            return gltf::component_type::byte_t;
+        case fastgltf::ComponentType::UnsignedByte:
+            return gltf::component_type::unsigned_byte_t;
+        case fastgltf::ComponentType::Short:
+            return gltf::component_type::short_t;
+        case fastgltf::ComponentType::UnsignedShort:
+            return gltf::component_type::unsigned_short_t;
+        case fastgltf::ComponentType::Int:
+            return gltf::component_type::int_t;
+        case fastgltf::ComponentType::UnsignedInt:
+            return gltf::component_type::unsigned_int_t;
+        case fastgltf::ComponentType::Float:
+            return gltf::component_type::float_t;
+        case fastgltf::ComponentType::Double:
+            return gltf::component_type::double_t;
+        default:
+            return gltf::component_type::unknown;
         }
     }
 
     gltf::element_type to_element_type(const fastgltf::AccessorType type) {
         switch (type) {
-            case fastgltf::AccessorType::Scalar: return gltf::element_type::scale;
-            case fastgltf::AccessorType::Vec2: return gltf::element_type::vec2;
-            case fastgltf::AccessorType::Vec3: return gltf::element_type::vec3;
-            case fastgltf::AccessorType::Vec4: return gltf::element_type::vec4;
-            case fastgltf::AccessorType::Mat2: return gltf::element_type::mat2;
-            case fastgltf::AccessorType::Mat3: return gltf::element_type::mat3;
-            case fastgltf::AccessorType::Mat4: return gltf::element_type::mat4;
-            default: return gltf::element_type::unknown;
+        case fastgltf::AccessorType::Scalar:
+            return gltf::element_type::scale;
+        case fastgltf::AccessorType::Vec2:
+            return gltf::element_type::vec2;
+        case fastgltf::AccessorType::Vec3:
+            return gltf::element_type::vec3;
+        case fastgltf::AccessorType::Vec4:
+            return gltf::element_type::vec4;
+        case fastgltf::AccessorType::Mat2:
+            return gltf::element_type::mat2;
+        case fastgltf::AccessorType::Mat3:
+            return gltf::element_type::mat3;
+        case fastgltf::AccessorType::Mat4:
+            return gltf::element_type::mat4;
+        default:
+            return gltf::element_type::unknown;
         }
     }
 
     gltf::error_code to_error_code(const fastgltf::Error error) {
         switch (error) {
-            case fastgltf::Error::InvalidFileData:
-            case fastgltf::Error::InvalidGLB:
-            case fastgltf::Error::InvalidJson:
-            case fastgltf::Error::InvalidGltf:
-            case fastgltf::Error::InvalidOrMissingAssetField:
-            case fastgltf::Error::UnsupportedVersion:
-                return gltf::error_code::file_type_error;
-            default:
-                return gltf::error_code::file_load_failed;
+        case fastgltf::Error::InvalidFileData:
+        case fastgltf::Error::InvalidGLB:
+        case fastgltf::Error::InvalidJson:
+        case fastgltf::Error::InvalidGltf:
+        case fastgltf::Error::InvalidOrMissingAssetField:
+        case fastgltf::Error::UnsupportedVersion:
+            return gltf::error_code::file_type_error;
+        default:
+            return gltf::error_code::file_load_failed;
         }
     }
 
     // fastgltf does not define bitwise operators for Options, combine flags via the underlying type.
     constexpr fastgltf::Options load_options() {
-        const auto flags = static_cast<std::uint64_t>(fastgltf::Options::LoadExternalBuffers)
-                         | static_cast<std::uint64_t>(fastgltf::Options::LoadExternalImages);
+        const auto flags = static_cast<std::uint64_t>(fastgltf::Options::LoadExternalBuffers) | static_cast<std::uint64_t>(fastgltf::Options::LoadExternalImages);
         return static_cast<fastgltf::Options>(flags);
     }
 
@@ -102,62 +116,137 @@ namespace {
         result.count = accessor.count;
 
         switch (accessor.type) {
-            case AccessorType::Scalar:
-                switch (accessor.componentType) {
-                    case ComponentType::Byte: result.data = copy_accessor<std::int8_t>(asset, accessor); break;
-                    case ComponentType::UnsignedByte: result.data = copy_accessor<std::uint8_t>(asset, accessor); break;
-                    case ComponentType::Short: result.data = copy_accessor<std::int16_t>(asset, accessor); break;
-                    case ComponentType::UnsignedShort: result.data = copy_accessor<std::uint16_t>(asset, accessor); break;
-                    case ComponentType::Int: result.data = copy_accessor<std::int32_t>(asset, accessor); break;
-                    case ComponentType::UnsignedInt: result.data = copy_accessor<std::uint32_t>(asset, accessor); break;
-                    case ComponentType::Float: result.data = copy_accessor<float>(asset, accessor); break;
-                    case ComponentType::Double: result.data = copy_accessor<double>(asset, accessor); break;
-                    default: break;
-                }
+        case AccessorType::Scalar:
+            switch (accessor.componentType) {
+            case ComponentType::Byte:
+                result.data = copy_accessor<std::int8_t>(asset, accessor);
                 break;
-            case AccessorType::Vec2:
-                switch (accessor.componentType) {
-                    case ComponentType::Byte: result.data = copy_accessor<s8vec2>(asset, accessor); break;
-                    case ComponentType::UnsignedByte: result.data = copy_accessor<u8vec2>(asset, accessor); break;
-                    case ComponentType::Short: result.data = copy_accessor<s16vec2>(asset, accessor); break;
-                    case ComponentType::UnsignedShort: result.data = copy_accessor<u16vec2>(asset, accessor); break;
-                    case ComponentType::Int: result.data = copy_accessor<s32vec2>(asset, accessor); break;
-                    case ComponentType::UnsignedInt: result.data = copy_accessor<u32vec2>(asset, accessor); break;
-                    case ComponentType::Float: result.data = copy_accessor<fvec2>(asset, accessor); break;
-                    case ComponentType::Double: result.data = copy_accessor<dvec2>(asset, accessor); break;
-                    default: break;
-                }
+            case ComponentType::UnsignedByte:
+                result.data = copy_accessor<std::uint8_t>(asset, accessor);
                 break;
-            case AccessorType::Vec3:
-                switch (accessor.componentType) {
-                    case ComponentType::Byte: result.data = copy_accessor<s8vec3>(asset, accessor); break;
-                    case ComponentType::UnsignedByte: result.data = copy_accessor<u8vec3>(asset, accessor); break;
-                    case ComponentType::Short: result.data = copy_accessor<s16vec3>(asset, accessor); break;
-                    case ComponentType::UnsignedShort: result.data = copy_accessor<u16vec3>(asset, accessor); break;
-                    case ComponentType::Int: result.data = copy_accessor<s32vec3>(asset, accessor); break;
-                    case ComponentType::UnsignedInt: result.data = copy_accessor<u32vec3>(asset, accessor); break;
-                    case ComponentType::Float: result.data = copy_accessor<fvec3>(asset, accessor); break;
-                    case ComponentType::Double: result.data = copy_accessor<dvec3>(asset, accessor); break;
-                    default: break;
-                }
+            case ComponentType::Short:
+                result.data = copy_accessor<std::int16_t>(asset, accessor);
                 break;
-            case AccessorType::Vec4:
-                switch (accessor.componentType) {
-                    case ComponentType::Byte: result.data = copy_accessor<s8vec4>(asset, accessor); break;
-                    case ComponentType::UnsignedByte: result.data = copy_accessor<u8vec4>(asset, accessor); break;
-                    case ComponentType::Short: result.data = copy_accessor<s16vec4>(asset, accessor); break;
-                    case ComponentType::UnsignedShort: result.data = copy_accessor<u16vec4>(asset, accessor); break;
-                    case ComponentType::Int: result.data = copy_accessor<s32vec4>(asset, accessor); break;
-                    case ComponentType::UnsignedInt: result.data = copy_accessor<u32vec4>(asset, accessor); break;
-                    case ComponentType::Float: result.data = copy_accessor<fvec4>(asset, accessor); break;
-                    case ComponentType::Double: result.data = copy_accessor<dvec4>(asset, accessor); break;
-                    default: break;
-                }
+            case ComponentType::UnsignedShort:
+                result.data = copy_accessor<std::uint16_t>(asset, accessor);
                 break;
-            case AccessorType::Mat2: result.data = copy_accessor<fmat2x2>(asset, accessor); break;
-            case AccessorType::Mat3: result.data = copy_accessor<fmat3x3>(asset, accessor); break;
-            case AccessorType::Mat4: result.data = copy_accessor<fmat4x4>(asset, accessor); break;
-            default: break;
+            case ComponentType::Int:
+                result.data = copy_accessor<std::int32_t>(asset, accessor);
+                break;
+            case ComponentType::UnsignedInt:
+                result.data = copy_accessor<std::uint32_t>(asset, accessor);
+                break;
+            case ComponentType::Float:
+                result.data = copy_accessor<float>(asset, accessor);
+                break;
+            case ComponentType::Double:
+                result.data = copy_accessor<double>(asset, accessor);
+                break;
+            default:
+                break;
+            }
+            break;
+        case AccessorType::Vec2:
+            switch (accessor.componentType) {
+            case ComponentType::Byte:
+                result.data = copy_accessor<s8vec2>(asset, accessor);
+                break;
+            case ComponentType::UnsignedByte:
+                result.data = copy_accessor<u8vec2>(asset, accessor);
+                break;
+            case ComponentType::Short:
+                result.data = copy_accessor<s16vec2>(asset, accessor);
+                break;
+            case ComponentType::UnsignedShort:
+                result.data = copy_accessor<u16vec2>(asset, accessor);
+                break;
+            case ComponentType::Int:
+                result.data = copy_accessor<s32vec2>(asset, accessor);
+                break;
+            case ComponentType::UnsignedInt:
+                result.data = copy_accessor<u32vec2>(asset, accessor);
+                break;
+            case ComponentType::Float:
+                result.data = copy_accessor<fvec2>(asset, accessor);
+                break;
+            case ComponentType::Double:
+                result.data = copy_accessor<dvec2>(asset, accessor);
+                break;
+            default:
+                break;
+            }
+            break;
+        case AccessorType::Vec3:
+            switch (accessor.componentType) {
+            case ComponentType::Byte:
+                result.data = copy_accessor<s8vec3>(asset, accessor);
+                break;
+            case ComponentType::UnsignedByte:
+                result.data = copy_accessor<u8vec3>(asset, accessor);
+                break;
+            case ComponentType::Short:
+                result.data = copy_accessor<s16vec3>(asset, accessor);
+                break;
+            case ComponentType::UnsignedShort:
+                result.data = copy_accessor<u16vec3>(asset, accessor);
+                break;
+            case ComponentType::Int:
+                result.data = copy_accessor<s32vec3>(asset, accessor);
+                break;
+            case ComponentType::UnsignedInt:
+                result.data = copy_accessor<u32vec3>(asset, accessor);
+                break;
+            case ComponentType::Float:
+                result.data = copy_accessor<fvec3>(asset, accessor);
+                break;
+            case ComponentType::Double:
+                result.data = copy_accessor<dvec3>(asset, accessor);
+                break;
+            default:
+                break;
+            }
+            break;
+        case AccessorType::Vec4:
+            switch (accessor.componentType) {
+            case ComponentType::Byte:
+                result.data = copy_accessor<s8vec4>(asset, accessor);
+                break;
+            case ComponentType::UnsignedByte:
+                result.data = copy_accessor<u8vec4>(asset, accessor);
+                break;
+            case ComponentType::Short:
+                result.data = copy_accessor<s16vec4>(asset, accessor);
+                break;
+            case ComponentType::UnsignedShort:
+                result.data = copy_accessor<u16vec4>(asset, accessor);
+                break;
+            case ComponentType::Int:
+                result.data = copy_accessor<s32vec4>(asset, accessor);
+                break;
+            case ComponentType::UnsignedInt:
+                result.data = copy_accessor<u32vec4>(asset, accessor);
+                break;
+            case ComponentType::Float:
+                result.data = copy_accessor<fvec4>(asset, accessor);
+                break;
+            case ComponentType::Double:
+                result.data = copy_accessor<dvec4>(asset, accessor);
+                break;
+            default:
+                break;
+            }
+            break;
+        case AccessorType::Mat2:
+            result.data = copy_accessor<fmat2x2>(asset, accessor);
+            break;
+        case AccessorType::Mat3:
+            result.data = copy_accessor<fmat3x3>(asset, accessor);
+            break;
+        case AccessorType::Mat4:
+            result.data = copy_accessor<fmat4x4>(asset, accessor);
+            break;
+        default:
+            break;
         }
 
         result.byte_size = result.data.size();
@@ -204,9 +293,9 @@ namespace {
         int height = 0;
         int channels = 0;
         unsigned char* pixels = stbi_load_from_memory(
-                reinterpret_cast<const unsigned char*>(bytes.data()),
-                static_cast<int>(bytes.size()),
-                &width, &height, &channels, 0);
+            reinterpret_cast<const unsigned char*>(bytes.data()),
+            static_cast<int>(bytes.size()),
+            &width, &height, &channels, 0);
         if (pixels == nullptr) {
             return out;
         }
@@ -262,8 +351,7 @@ namespace {
             .vertex = std::move(vertex),
             .index = std::move(index_data.data),
             .index_component_type = index_data.component_type,
-            .texture_indices = std::move(texture_indices)
-        };
+            .texture_indices = std::move(texture_indices)};
     }
 
     glm::mat4 to_glm_mat4(const fastgltf::math::fmat4x4& matrix) {
@@ -282,21 +370,21 @@ namespace {
 
         // Recursively walk the scene graph, computing world-space transforms.
         fastgltf::iterateSceneNodes(asset, scene_index, fastgltf::math::fmat4x4{},
-                [&](const fastgltf::Node& node, const fastgltf::math::fmat4x4& matrix) {
-                    gltf::node current_node{};
-                    current_node.transform_matrix = to_glm_mat4(matrix);
-                    if (node.meshIndex) {
-                        gltf::mesh current_mesh{};
-                        for (const auto& primitive : asset.meshes[*node.meshIndex].primitives) {
-                            current_mesh.primitives.push_back(load_primitive(primitive, asset));
-                        }
-                        current_node.meshes.push_back(std::move(current_mesh));
-                    }
-                    result.nodes.push_back(std::move(current_node));
-                });
+                                    [&](const fastgltf::Node& node, const fastgltf::math::fmat4x4& matrix) {
+                                        gltf::node current_node{};
+                                        current_node.transform_matrix = to_glm_mat4(matrix);
+                                        if (node.meshIndex) {
+                                            gltf::mesh current_mesh{};
+                                            for (const auto& primitive : asset.meshes[*node.meshIndex].primitives) {
+                                                current_mesh.primitives.push_back(load_primitive(primitive, asset));
+                                            }
+                                            current_node.meshes.push_back(std::move(current_mesh));
+                                        }
+                                        result.nodes.push_back(std::move(current_node));
+                                    });
         return result;
     }
-}
+} // namespace
 
 namespace gltf {
     std::expected<scenes, error_code> load_model(std::string_view file_name) {
@@ -333,4 +421,4 @@ namespace gltf {
 
         return result;
     }
-}
+} // namespace gltf

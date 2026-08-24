@@ -24,7 +24,6 @@ namespace vulkan {
         VkCommandPool* command_pool = nullptr;
 
     public:
-
         [[nodiscard]] VkCommandBuffer const& get() const noexcept;
         [[nodiscard]] VkCommandBuffer const& operator*() const noexcept;
         void release() noexcept;
@@ -32,7 +31,7 @@ namespace vulkan {
         ~vk_command_buffer() noexcept;
 
         explicit vk_command_buffer(vk_command_buffer& command_buffer) = delete;
-        vk_command_buffer(vk_command_buffer&& other) noexcept ;
+        vk_command_buffer(vk_command_buffer&& other) noexcept;
         vk_command_buffer& operator=(vk_command_buffer& other) = delete;
         vk_command_buffer& operator=(vk_command_buffer&& other) noexcept;
     };
@@ -43,7 +42,7 @@ namespace vulkan {
      * @param command_pool valid VkCommandPool
      * @return raii VkCommandBuffer wrapper
      */
-    export vk_command_buffer make_command_buffer(VkDevice &device, VkCommandPool &command_pool) noexcept;
+    export vk_command_buffer make_command_buffer(VkDevice& device, VkCommandPool& command_pool) noexcept;
 
     /**
      * @ingroup vulkan_handles
@@ -58,7 +57,6 @@ namespace vulkan {
         VkDescriptorPool* descriptor_pool = nullptr;
 
     public:
-
         [[nodiscard]] VkDescriptorSet const& get() const noexcept;
         [[nodiscard]] VkDescriptorSet const& operator*() const noexcept;
         void release() noexcept;
@@ -66,7 +64,7 @@ namespace vulkan {
         ~vk_descriptor_set() noexcept;
 
         explicit vk_descriptor_set(vk_descriptor_set& descriptor_set) = delete;
-        vk_descriptor_set(vk_descriptor_set&& other) noexcept ;
+        vk_descriptor_set(vk_descriptor_set&& other) noexcept;
         vk_descriptor_set& operator=(vk_descriptor_set& other) = delete;
         vk_descriptor_set& operator=(vk_descriptor_set&& other) noexcept;
     };
@@ -78,7 +76,7 @@ namespace vulkan {
      * @param layout valid VkDescriptorSetLayout
      * @return raii wrapper of VkDescriptorSet
      */
-    export vk_descriptor_set make_descriptor_set(VkDevice &device, VkDescriptorPool &descriptor_pool, VkDescriptorSetLayout const &layout) noexcept;
+    export vk_descriptor_set make_descriptor_set(VkDevice& device, VkDescriptorPool& descriptor_pool, VkDescriptorSetLayout const& layout) noexcept;
 
     /**
      * @ingroup vulkan_handles
@@ -95,7 +93,7 @@ namespace vulkan {
         [[nodiscard]] VkShaderModule const& get() const noexcept;
         [[nodiscard]] VkShaderModule const& operator*() const noexcept;
         void release();
-        explicit vk_shader_module(const VkShaderModule &shader_module, VkDevice &device) noexcept;
+        explicit vk_shader_module(const VkShaderModule& shader_module, VkDevice& device) noexcept;
         ~vk_shader_module() noexcept;
 
         explicit vk_shader_module(vk_shader_module& shader_module) = delete;
@@ -112,7 +110,7 @@ namespace vulkan {
      *     fail: std::nullopt
      */
     export std::optional<vk_shader_module> make_shader_module(std::span<const unsigned char> shader,
-                                                              VkDevice &device) noexcept;
+                                                              VkDevice& device) noexcept;
 
     /**
      * @ingroup vulkan_handles
@@ -140,4 +138,4 @@ namespace vulkan {
         vk_pipeline& operator=(vk_pipeline&& other) noexcept;
         void release() noexcept;
     };
-}
+} // namespace vulkan

@@ -42,24 +42,24 @@ namespace vulkan {
      * @brief buffer usage type, decides memory properties and upload strategy
      */
     export enum class buffer_type {
-        vertex,              // GPU_ONLY, 需要 staging buffer
-        index,               // GPU_ONLY, 需要 staging buffer
-        uniform_gpu_only,    // GPU_ONLY, 适合不需要频繁更新的 uniform
-        uniform_coherent,    // HOST_VISIBLE | HOST_COHERENT, 适合每帧更新的 uniform
-        uniform_cached       // HOST_VISIBLE | HOST_CACHED, 适合 read-back
-        };
+        vertex,           // GPU_ONLY, 需要 staging buffer
+        index,            // GPU_ONLY, 需要 staging buffer
+        uniform_gpu_only, // GPU_ONLY, 适合不需要频繁更新的 uniform
+        uniform_coherent, // HOST_VISIBLE | HOST_COHERENT, 适合每帧更新的 uniform
+        uniform_cached    // HOST_VISIBLE | HOST_CACHED, 适合 read-back
+    };
 
     /**
      * @ingroup vulkan_vma
      * @brief image usage type, decides memory properties and upload strategy
      */
     export enum class image_type {
-        texture_2d,           // GPU_ONLY, 普通纹理，需要 staging
-        texture_2d_color,     // GPU_ONLY, 带颜色格式的纹理
-        texture_2d_depth,     // GPU_ONLY, 深度纹理
-        texture_2d_staging,   // HOST_VISIBLE, 用于动态更新的纹理
-        texture_cubemap,      // GPU_ONLY, 立方体贴图
-        render_target         // GPU_ONLY, 渲染目标 (可读写)
+        texture_2d,         // GPU_ONLY, 普通纹理，需要 staging
+        texture_2d_color,   // GPU_ONLY, 带颜色格式的纹理
+        texture_2d_depth,   // GPU_ONLY, 深度纹理
+        texture_2d_staging, // HOST_VISIBLE, 用于动态更新的纹理
+        texture_cubemap,    // GPU_ONLY, 立方体贴图
+        render_target       // GPU_ONLY, 渲染目标 (可读写)
     };
 
     /**
@@ -96,15 +96,13 @@ namespace vulkan {
         uint32_t queue_family_index = 0;
 
         [[nodiscard]] VkFence create_fence() const;
-        bool direct_upload(VmaAllocation const &allocation, VmaAllocationInfo &allocation_info, const void *data, uint64_t size) const;
-        bool staging_upload(VkBuffer dst_buffer, const void *data, VkDeviceSize size);
+        bool direct_upload(VmaAllocation const& allocation, VmaAllocationInfo& allocation_info, const void* data, uint64_t size) const;
+        bool staging_upload(VkBuffer dst_buffer, const void* data, VkDeviceSize size);
         bool direct_image_upload(VmaAllocation allocation, const void* data, VkDeviceSize size) const;
         bool staging_image_upload(VkImage dst_image, const void* data, VkDeviceSize size, const image_create_info& info);
         [[nodiscard]] std::pair<VkCommandPool, VkCommandBuffer> create_command_pair() const;
 
-
     public:
-
         /**
          * @ingroup vulkan_vma
          * @brief initialize the VMA allocator with the given vulkan objects
@@ -130,7 +128,7 @@ namespace vulkan {
          * @param type buffer usage type
          * @return the buffer handle
          */
-        uint64_t create_buffer(const unsigned char *data, uint64_t size_byte, buffer_type type);
+        uint64_t create_buffer(const unsigned char* data, uint64_t size_byte, buffer_type type);
 
         /**
          * @ingroup vulkan_vma
@@ -168,7 +166,7 @@ namespace vulkan {
          * @param type image usage type
          * @return the image handle
          */
-        uint64_t create_image(const unsigned char *data, uint64_t size_byte, image_create_info const &create_info, image_type type);
+        uint64_t create_image(const unsigned char* data, uint64_t size_byte, image_create_info const& create_info, image_type type);
 
         /**
          * @ingroup vulkan_vma
@@ -205,7 +203,7 @@ namespace vulkan {
          * @param handle the buffer handle
          * @return pointer to the buffer detail, or nullptr if the handle is invalid
          */
-        [[nodiscard]] const buffer_detail *get_buffer_detail(uint64_t handle);
+        [[nodiscard]] const buffer_detail* get_buffer_detail(uint64_t handle);
 
         /**
          * @ingroup vulkan_vma
@@ -213,7 +211,7 @@ namespace vulkan {
          * @param handle the image handle
          * @return pointer to the image detail, or nullptr if the handle is invalid
          */
-        [[nodiscard]] const image_detail *get_image_detail(uint64_t handle);
+        [[nodiscard]] const image_detail* get_image_detail(uint64_t handle);
 
         /**
          * @ingroup vulkan_vma
@@ -229,5 +227,4 @@ namespace vulkan {
          */
         void free_image(uint64_t handle);
     };
-}
-
+} // namespace vulkan

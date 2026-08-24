@@ -1,13 +1,13 @@
 module;
 
-#include <string_view>
+#include <cstdint>
 #include <expected>
+#include <glm/glm.hpp>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
-#include <cstdint>
-#include <glm/glm.hpp>
 
 export module gltf_loader;
 
@@ -45,15 +45,24 @@ namespace gltf {
      */
     export constexpr component_type to_component_type(const int gltf_constant) {
         switch (gltf_constant) {
-            case 5120: return component_type::byte_t;
-            case 5121: return component_type::unsigned_byte_t;
-            case 5122: return component_type::short_t;
-            case 5123: return component_type::unsigned_short_t;
-            case 5124: return component_type::int_t;
-            case 5125: return component_type::unsigned_int_t;
-            case 5126: return component_type::float_t;
-            case 5130: return component_type::double_t;
-            default: return component_type::unknown;
+        case 5120:
+            return component_type::byte_t;
+        case 5121:
+            return component_type::unsigned_byte_t;
+        case 5122:
+            return component_type::short_t;
+        case 5123:
+            return component_type::unsigned_short_t;
+        case 5124:
+            return component_type::int_t;
+        case 5125:
+            return component_type::unsigned_int_t;
+        case 5126:
+            return component_type::float_t;
+        case 5130:
+            return component_type::double_t;
+        default:
+            return component_type::unknown;
         }
     }
 
@@ -65,15 +74,24 @@ namespace gltf {
      */
     export constexpr uint8_t get_component_size(const component_type type) {
         switch (type) {
-            case component_type::byte_t: [[fallthrough]];
-            case component_type::unsigned_byte_t: return 1;
-            case component_type::short_t: [[fallthrough]];
-            case component_type::unsigned_short_t: return 2;
-            case component_type::int_t: [[fallthrough]];
-            case component_type::unsigned_int_t: [[fallthrough]];
-            case component_type::float_t: return 4;
-            case component_type::double_t: return 8;
-            case component_type::unknown: return 0;
+        case component_type::byte_t:
+            [[fallthrough]];
+        case component_type::unsigned_byte_t:
+            return 1;
+        case component_type::short_t:
+            [[fallthrough]];
+        case component_type::unsigned_short_t:
+            return 2;
+        case component_type::int_t:
+            [[fallthrough]];
+        case component_type::unsigned_int_t:
+            [[fallthrough]];
+        case component_type::float_t:
+            return 4;
+        case component_type::double_t:
+            return 8;
+        case component_type::unknown:
+            return 0;
         }
         std::unreachable();
     }
@@ -114,14 +132,22 @@ namespace gltf {
      */
     export constexpr element_type to_element_type(const int type) {
         switch (type) {
-            case 0: return element_type::scale;
-            case 1: return element_type::vec2;
-            case 2: return element_type::vec3;
-            case 3: return element_type::vec4;
-            case 4: return element_type::mat2;
-            case 5: return element_type::mat3;
-            case 6: return element_type::mat4;
-            default: break;
+        case 0:
+            return element_type::scale;
+        case 1:
+            return element_type::vec2;
+        case 2:
+            return element_type::vec3;
+        case 3:
+            return element_type::vec4;
+        case 4:
+            return element_type::mat2;
+        case 5:
+            return element_type::mat3;
+        case 6:
+            return element_type::mat4;
+        default:
+            break;
         }
         std::unreachable();
     }
@@ -134,14 +160,22 @@ namespace gltf {
      */
     export constexpr uint8_t get_element_size(const element_type type) {
         switch (type) {
-            case element_type::scale: return 1;
-            case element_type::vec2: return 2;
-            case element_type::vec3: return 3;
-            case element_type::vec4: [[fallthrough]];
-            case element_type::mat2: return 4;
-            case element_type::mat3: return 9;
-            case element_type::mat4: return 16;
-            case element_type::unknown: return 0;
+        case element_type::scale:
+            return 1;
+        case element_type::vec2:
+            return 2;
+        case element_type::vec3:
+            return 3;
+        case element_type::vec4:
+            [[fallthrough]];
+        case element_type::mat2:
+            return 4;
+        case element_type::mat3:
+            return 9;
+        case element_type::mat4:
+            return 16;
+        case element_type::unknown:
+            return 0;
         }
         std::unreachable();
     }
@@ -233,4 +267,4 @@ namespace gltf {
      * @return scenes on success, error_code on failure (file_not_found/file_type_error/file_load_failed)
      */
     export std::expected<scenes, error_code> load_model(std::string_view file_name);
-}
+} // namespace gltf

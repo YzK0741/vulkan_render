@@ -1,0 +1,21 @@
+---
+# clang-tidy 配置（与 .clang-format 配合使用）
+# 需要 compile_commands.json（CMake 生成）：
+#   cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ...
+#   clang-tidy -p build <file>...
+# 启用一组保守的检查；运行时可用 -checks=... 临时覆盖。
+Checks: >
+  -*,
+  bugprone-*,
+  clang-analyzer-*,
+  performance-*,
+  readability-*,
+
+# 把所有警告视为错误会阻碍迭代，这里先保持警告
+WarningsAsErrors: ''
+
+# 只检查项目自身代码，不深入第三方头文件
+HeaderFilterRegex: '.*'
+
+# 让 clang-tidy 使用仓库内的 .clang-format 作为格式基准
+FormatStyle: file

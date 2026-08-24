@@ -45,11 +45,9 @@ namespace utility {
         uint64_t handle_upper_bound = 1;
 
     public:
-
         std::optional<uint64_t> distribute() noexcept;
 
         void recycle(uint64_t handle) noexcept;
-
     };
 
     /**
@@ -129,10 +127,7 @@ namespace utility {
      * @param test callable objects wants to get the invoke time cost
      * @return used time in invoking the argument
      */
-    export std::chrono::milliseconds time_test(std::function<void()> const &test) noexcept;
-
-
-
+    export std::chrono::milliseconds time_test(std::function<void()> const& test) noexcept;
 
     /**
      * @defgroup hash
@@ -188,4 +183,4 @@ namespace utility {
      * @ingroup hash
      */
     export std::optional<blake2_digest> blake2(std::span<const unsigned char> data_view);
-}
+} // namespace utility

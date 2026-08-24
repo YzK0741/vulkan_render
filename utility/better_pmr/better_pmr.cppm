@@ -7,19 +7,19 @@ export import std;
  * @note the entry is utility::init_pmr()
  */
 
-class mimalloc_memory_resource : public std::pmr::memory_resource //NOLINT
+class mimalloc_memory_resource : public std::pmr::memory_resource // NOLINT
 {
     void* do_allocate(std::size_t, std::size_t) override;
     void do_deallocate(void*, std::size_t, std::size_t) override;
     [[nodiscard]] bool do_is_equal(memory_resource const&) const noexcept override;
 };
 
-namespace utility
-{
-    class pmr_manager //NOLINT
+namespace utility {
+    class pmr_manager // NOLINT
     {
         std::unique_ptr<mimalloc_memory_resource> memory_resource = nullptr;
         pmr_manager();
+
     public:
         pmr_manager(pmr_manager const&) = delete;
         pmr_manager& operator=(pmr_manager const&) = delete;
@@ -33,4 +33,4 @@ namespace utility
      * @warning DO NOT use any pmr container (including static) before init_pmr(), it will lead memory fault
      */
     export pmr_manager& init_pmr();
-}
+} // namespace utility

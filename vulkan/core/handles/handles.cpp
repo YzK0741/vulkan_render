@@ -14,11 +14,11 @@ namespace vulkan {
         this->command_pool = &pool;
     }
 
-    VkCommandBuffer const &vk_command_buffer::get() const noexcept {
+    VkCommandBuffer const& vk_command_buffer::get() const noexcept {
         return this->command_buffer;
     }
 
-    VkCommandBuffer const &vk_command_buffer::operator*() const noexcept {
+    VkCommandBuffer const& vk_command_buffer::operator*() const noexcept {
         return this->get();
     }
 
@@ -36,7 +36,7 @@ namespace vulkan {
         this->release();
     }
 
-    vk_command_buffer::vk_command_buffer(vk_command_buffer &&other) noexcept {
+    vk_command_buffer::vk_command_buffer(vk_command_buffer&& other) noexcept {
         this->command_buffer = other.command_buffer;
         this->device = other.device;
         this->command_pool = other.command_pool;
@@ -45,7 +45,7 @@ namespace vulkan {
         other.command_buffer = VK_NULL_HANDLE;
     }
 
-    vk_command_buffer &vk_command_buffer::operator=(vk_command_buffer &&other) noexcept {
+    vk_command_buffer& vk_command_buffer::operator=(vk_command_buffer&& other) noexcept {
         if (this == &other) {
             return *this;
         }
@@ -60,7 +60,7 @@ namespace vulkan {
         return *this;
     }
 
-    vk_command_buffer make_command_buffer(VkDevice &device, VkCommandPool &command_pool) noexcept {
+    vk_command_buffer make_command_buffer(VkDevice& device, VkCommandPool& command_pool) noexcept {
         VkCommandBuffer buffer = VK_NULL_HANDLE;
 
         VkCommandBufferAllocateInfo allocate_info = {
@@ -68,8 +68,7 @@ namespace vulkan {
             .pNext = nullptr,
             .commandPool = command_pool,
             .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1
-        };
+            .commandBufferCount = 1};
 
         if (vkAllocateCommandBuffers(device, &allocate_info, &buffer) != VK_SUCCESS) {
             utility::panic("failed to allocate command buffer");
@@ -77,12 +76,11 @@ namespace vulkan {
 
         return vk_command_buffer(buffer, device, command_pool);
     }
-}
-
+} // namespace vulkan
 
 // vk_descriptor_set
 namespace vulkan {
-    vk_descriptor_set::vk_descriptor_set(const VkDescriptorSet descriptor_set, VkDevice &device, VkDescriptorPool &descriptor_pool) noexcept { // NOLINT(*-misplaced-const)
+    vk_descriptor_set::vk_descriptor_set(const VkDescriptorSet descriptor_set, VkDevice& device, VkDescriptorPool& descriptor_pool) noexcept { // NOLINT(*-misplaced-const)
         this->descriptor_set = descriptor_set;
         this->device = &device;
         this->descriptor_pool = &descriptor_pool;
@@ -97,7 +95,7 @@ namespace vulkan {
         other.descriptor_pool = nullptr;
     }
 
-    vk_descriptor_set &vk_descriptor_set::operator=(vk_descriptor_set &&other) noexcept {
+    vk_descriptor_set& vk_descriptor_set::operator=(vk_descriptor_set&& other) noexcept {
         if (this == &other) {
             return *this;
         }
@@ -115,11 +113,11 @@ namespace vulkan {
         this->release();
     }
 
-    VkDescriptorSet const &vk_descriptor_set::get() const noexcept {
+    VkDescriptorSet const& vk_descriptor_set::get() const noexcept {
         return this->descriptor_set;
     }
 
-    VkDescriptorSet const &vk_descriptor_set::operator*() const noexcept {
+    VkDescriptorSet const& vk_descriptor_set::operator*() const noexcept {
         return this->descriptor_set;
     }
 
@@ -132,7 +130,7 @@ namespace vulkan {
         this->descriptor_pool = nullptr;
     }
 
-    vk_descriptor_set make_descriptor_set(VkDevice &device, VkDescriptorPool &descriptor_pool, VkDescriptorSetLayout const &layout) noexcept {
+    vk_descriptor_set make_descriptor_set(VkDevice& device, VkDescriptorPool& descriptor_pool, VkDescriptorSetLayout const& layout) noexcept {
         VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSetAllocateInfo allocate_info = {};
         allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -143,11 +141,11 @@ namespace vulkan {
 
         return vk_descriptor_set(descriptor_set, device, descriptor_pool);
     }
-}
+} // namespace vulkan
 
 // vk_shader_module
 namespace vulkan {
-    vk_shader_module::vk_shader_module(const VkShaderModule &shader_module, VkDevice &device) noexcept {
+    vk_shader_module::vk_shader_module(const VkShaderModule& shader_module, VkDevice& device) noexcept {
         this->shader_module = shader_module;
         this->device = &device;
     }
@@ -156,22 +154,22 @@ namespace vulkan {
         this->release();
     }
 
-    VkShaderModule const &vk_shader_module::get() const noexcept {
+    VkShaderModule const& vk_shader_module::get() const noexcept {
         return this->shader_module;
     }
 
-    VkShaderModule const &vk_shader_module::operator*() const noexcept {
+    VkShaderModule const& vk_shader_module::operator*() const noexcept {
         return this->shader_module;
     }
 
-    vk_shader_module::vk_shader_module(vk_shader_module &&other) noexcept {
+    vk_shader_module::vk_shader_module(vk_shader_module&& other) noexcept {
         this->shader_module = other.shader_module;
         this->device = other.device;
         other.shader_module = VK_NULL_HANDLE;
         other.device = nullptr;
     }
 
-    vk_shader_module &vk_shader_module::operator=(vk_shader_module &&other) noexcept {
+    vk_shader_module& vk_shader_module::operator=(vk_shader_module&& other) noexcept {
         if (this == &other) {
             return *this;
         }
@@ -191,7 +189,7 @@ namespace vulkan {
         this->device = nullptr;
     }
 
-    std::optional<vk_shader_module> make_shader_module(const std::span<const unsigned char> shader, VkDevice &device) noexcept {
+    std::optional<vk_shader_module> make_shader_module(const std::span<const unsigned char> shader, VkDevice& device) noexcept {
         VkShaderModule shader_module = {};
 
         VkShaderModuleCreateInfo create_info = {};
@@ -205,7 +203,7 @@ namespace vulkan {
 
         return vk_shader_module(shader_module, device);
     }
-}
+} // namespace vulkan
 
 // vk_pipeline
 namespace vulkan {
@@ -216,7 +214,7 @@ namespace vulkan {
         this->device = &device;
     }
 
-    vk_pipeline::vk_pipeline(vk_pipeline &&other) noexcept {
+    vk_pipeline::vk_pipeline(vk_pipeline&& other) noexcept {
         this->device = other.device;
         this->pipeline = other.pipeline;
         this->descriptor_set_layouts = other.descriptor_set_layouts;
@@ -227,7 +225,7 @@ namespace vulkan {
         other.pipeline_layout = VK_NULL_HANDLE;
     }
 
-    vk_pipeline &vk_pipeline::operator=(vk_pipeline &&other) noexcept {
+    vk_pipeline& vk_pipeline::operator=(vk_pipeline&& other) noexcept {
         if (this == &other) {
             return *this;
         }
@@ -280,4 +278,4 @@ namespace vulkan {
         this->pipeline_layout = VK_NULL_HANDLE;
         this->pipeline = VK_NULL_HANDLE;
     }
-}
+} // namespace vulkan

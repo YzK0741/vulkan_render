@@ -34,7 +34,6 @@ namespace vulkan {
         std::expected<void, std::string> make_pipeline(
             std::string_view pipeline_name,
             std::span<const unsigned char> vertex_shader_code,
-            std::span<const unsigned char> fragment_shader_code
-        );
+            std::span<const unsigned char> fragment_shader_code);
     };
-}
+} // namespace vulkan

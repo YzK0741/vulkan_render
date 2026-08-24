@@ -4,6 +4,5 @@ import vulkan.core.pipeline;
 
 import std;
 
-
 int main() {
 }

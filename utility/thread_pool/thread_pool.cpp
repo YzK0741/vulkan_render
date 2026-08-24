@@ -1,16 +1,17 @@
-#include <thread>
+#include "thread_pool.cppm"
+
 #include <functional>
 #include <mutex>
 #include <stop_token>
+#include <thread>
 #include <vector>
-#include "thread_pool.cppm"
 
 namespace utility {
-    bool thread_pool::task::operator<(const task &other) const noexcept {
+    bool thread_pool::task::operator<(const task& other) const noexcept {
         return this->priority < other.priority;
     }
 
-    void thread_pool::worker_loop(const std::stop_token &token) {
+    void thread_pool::worker_loop(const std::stop_token& token) {
         this->active_thread.fetch_add(1);
         std::function<void()> current_task;
         while (true) {
@@ -54,7 +55,6 @@ namespace utility {
         }
     }
 
-
     thread_pool::thread_pool(const int threads, const shutdown_policy policy) {
         this->threads.resize(threads);
         this->policy = policy;
@@ -89,10 +89,10 @@ namespace utility {
 
     void thread_pool::wait_until_free() {
         std::unique_lock lock(this->access_mutex);
-        this->idle.wait(lock, [this]{return this->tasks.empty() && this->active_thread.load() == 0;});
+        this->idle.wait(lock, [this] { return this->tasks.empty() && this->active_thread.load() == 0; });
     }
 
     int thread_pool::get_active_thread() const {
         return this->active_thread.load();
     }
-}
+} // namespace utility

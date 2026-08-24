@@ -51,8 +51,7 @@ namespace {
     // 两个 stage 共用同一 binding 时 stageFlags 取并集。
     std::map<uint32_t, std::map<uint32_t, VkDescriptorSetLayoutBinding>> merge_descriptor_layouts(
         const std::vector<vulkan::pipeline::descriptor_set_layout_data>& vertex_layouts,
-        const std::vector<vulkan::pipeline::descriptor_set_layout_data>& fragment_layouts
-    ) {
+        const std::vector<vulkan::pipeline::descriptor_set_layout_data>& fragment_layouts) {
         std::map<uint32_t, std::map<uint32_t, VkDescriptorSetLayoutBinding>> merged;
 
         const auto merge_one = [&merged](const std::vector<vulkan::pipeline::descriptor_set_layout_data>& layouts) {
@@ -71,16 +70,15 @@ namespace {
         merge_one(fragment_layouts);
         return merged;
     }
-}
+} // namespace
 
 namespace vulkan {
     std::expected<vk_pipeline, std::string_view> make_pipeline(
-        VkDevice &device,
+        VkDevice& device,
         const VkRenderPass render_pass, // NOLINT(*-misplaced-const)
         const std::span<const unsigned char> vertex_shader_code,
         const std::span<const unsigned char> fragment_shader_code,
-        const VkSampleCountFlagBits msaa_level
-    ) {
+        const VkSampleCountFlagBits msaa_level) {
         using fail = std::unexpected<std::string_view>;
 
         // ---- 1. 解析 vertex stage 接口，过滤 builtin 变量，构建顶点输入 ----
@@ -186,9 +184,9 @@ namespace vulkan {
         VkPipelineColorBlendAttachmentState color_blend_attachment_state = {};
         color_blend_attachment_state.colorWriteMask =
             VK_COLOR_COMPONENT_R_BIT |
-                VK_COLOR_COMPONENT_G_BIT |
-                    VK_COLOR_COMPONENT_B_BIT |
-                        VK_COLOR_COMPONENT_A_BIT;
+            VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT |
+            VK_COLOR_COMPONENT_A_BIT;
         color_blend_attachment_state.blendEnable = VK_FALSE;
 
         VkPipelineColorBlendStateCreateInfo color_blend_state_create_info = {};
@@ -232,8 +230,8 @@ namespace vulkan {
             }
             const uint32_t size = to_multiple_of_4(total_size);
             const uint32_t offset = push_constant_ranges.empty()
-                ? 0
-                : push_constant_ranges.back().offset + push_constant_ranges.back().size;
+                                        ? 0
+                                        : push_constant_ranges.back().offset + push_constant_ranges.back().size;
             if (offset + size > 256) {
                 return false;
             }
@@ -241,8 +239,7 @@ namespace vulkan {
             return true;
         };
 
-        if (!add_push_constant_range(VK_SHADER_STAGE_VERTEX_BIT, vertex_push_constant.total_size)
-            || !add_push_constant_range(VK_SHADER_STAGE_FRAGMENT_BIT, fragment_push_constant.total_size)) {
+        if (!add_push_constant_range(VK_SHADER_STAGE_VERTEX_BIT, vertex_push_constant.total_size) || !add_push_constant_range(VK_SHADER_STAGE_FRAGMENT_BIT, fragment_push_constant.total_size)) {
             return fail("push constant range too big");
         }
 
@@ -322,4 +319,4 @@ namespace vulkan {
         guard.release();
         return result;
     }
-}
+} // namespace vulkan

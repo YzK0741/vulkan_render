@@ -9,11 +9,9 @@ export import std;
 export import vulkan.core.handles;
 export import vulkan.vma;
 
-
 /**
  * @file core.cppm
  */
-
 
 namespace vulkan {
     /**
@@ -59,24 +57,22 @@ namespace vulkan {
 
         void init_image_views() noexcept;
 
-
         // MSAA相关
-        VkSampleCountFlagBits msaa_samples = VK_SAMPLE_COUNT_1_BIT;  // 默认为无MSAA
-        std::vector<VkImage> color_images = {};       // MSAA颜色缓冲图像
+        VkSampleCountFlagBits msaa_samples = VK_SAMPLE_COUNT_1_BIT; // 默认为无MSAA
+        std::vector<VkImage> color_images = {};                     // MSAA颜色缓冲图像
         std::vector<VkDeviceMemory> color_image_memories = {};
-        std::vector<VkImageView> color_image_views = {};  // MSAA图像视图
+        std::vector<VkImageView> color_image_views = {}; // MSAA图像视图
         VkFormat color_format = VK_FORMAT_UNDEFINED;
         void create_msaa_image(
             const uint32_t& width,
-            const uint32_t &height,
-            const VkFormat &format,
-            const VkSampleCountFlagBits &num_samples,
-            const VkImageTiling &tiling,
-            const VkImageUsageFlags &usage,
-            const VkMemoryPropertyFlags &properties,
+            const uint32_t& height,
+            const VkFormat& format,
+            const VkSampleCountFlagBits& num_samples,
+            const VkImageTiling& tiling,
+            const VkImageUsageFlags& usage,
+            const VkMemoryPropertyFlags& properties,
             VkImage& image,
-            VkDeviceMemory& imageMemory
-            ) const noexcept;
+            VkDeviceMemory& imageMemory) const noexcept;
 
         VkFormat depth_format = {};
         std::vector<VkImage> depth_images = {};
@@ -126,13 +122,12 @@ namespace vulkan {
 
         std::optional<vk_shader_module> make_shader_module(std::span<unsigned char> shader) noexcept;
 
-        VkResult get_image_index(uint32_t &image_index) const;
+        VkResult get_image_index(uint32_t& image_index) const;
         void wait_usable_image(uint32_t image_index);
         void reset_fence(uint32_t frame_index) const;
         void recreate_swap_chain();
         std::expected<vk_pipeline, std::string_view> make_pipeline(
             std::span<const unsigned char> vertex_shader_code,
-            std::span<const unsigned char> fragment_shader_code
-            );
+            std::span<const unsigned char> fragment_shader_code);
     };
-}
+} // namespace vulkan

@@ -1,6 +1,5 @@
 module;
 
-
 #include <vulkan/vulkan.h>
 #define VMA_IMPLEMENTATION
 #include <vma/vk_mem_alloc.h>
@@ -8,240 +7,236 @@ module;
 module vulkan.vma;
 
 namespace {
-    constexpr uint32_t sizeof_vk_format(const VkFormat format)
-    {
-        switch (format)
-        {
-            // 8-bit 单通道
-            case VK_FORMAT_R8_UNORM:
-            case VK_FORMAT_R8_SNORM:
-            case VK_FORMAT_R8_USCALED:
-            case VK_FORMAT_R8_SSCALED:
-            case VK_FORMAT_R8_UINT:
-            case VK_FORMAT_R8_SINT:
-            case VK_FORMAT_R8_SRGB:
-                return 1;
+    constexpr uint32_t sizeof_vk_format(const VkFormat format) {
+        switch (format) {
+        // 8-bit 单通道
+        case VK_FORMAT_R8_UNORM:
+        case VK_FORMAT_R8_SNORM:
+        case VK_FORMAT_R8_USCALED:
+        case VK_FORMAT_R8_SSCALED:
+        case VK_FORMAT_R8_UINT:
+        case VK_FORMAT_R8_SINT:
+        case VK_FORMAT_R8_SRGB:
+            return 1;
 
-            // 16-bit 单通道 / 8-bit 双通道
-            case VK_FORMAT_R16_UNORM:
-            case VK_FORMAT_R16_SNORM:
-            case VK_FORMAT_R16_USCALED:
-            case VK_FORMAT_R16_SSCALED:
-            case VK_FORMAT_R16_UINT:
-            case VK_FORMAT_R16_SINT:
-            case VK_FORMAT_R16_SFLOAT:
-            case VK_FORMAT_R8G8_UNORM:
-            case VK_FORMAT_R8G8_SNORM:
-            case VK_FORMAT_R8G8_USCALED:
-            case VK_FORMAT_R8G8_SSCALED:
-            case VK_FORMAT_R8G8_UINT:
-            case VK_FORMAT_R8G8_SINT:
-            case VK_FORMAT_R8G8_SRGB:
-                return 2;
+        // 16-bit 单通道 / 8-bit 双通道
+        case VK_FORMAT_R16_UNORM:
+        case VK_FORMAT_R16_SNORM:
+        case VK_FORMAT_R16_USCALED:
+        case VK_FORMAT_R16_SSCALED:
+        case VK_FORMAT_R16_UINT:
+        case VK_FORMAT_R16_SINT:
+        case VK_FORMAT_R16_SFLOAT:
+        case VK_FORMAT_R8G8_UNORM:
+        case VK_FORMAT_R8G8_SNORM:
+        case VK_FORMAT_R8G8_USCALED:
+        case VK_FORMAT_R8G8_SSCALED:
+        case VK_FORMAT_R8G8_UINT:
+        case VK_FORMAT_R8G8_SINT:
+        case VK_FORMAT_R8G8_SRGB:
+            return 2;
 
-            // 24-bit
-            case VK_FORMAT_R8G8B8_UNORM:
-            case VK_FORMAT_R8G8B8_SNORM:
-            case VK_FORMAT_R8G8B8_USCALED:
-            case VK_FORMAT_R8G8B8_SSCALED:
-            case VK_FORMAT_R8G8B8_UINT:
-            case VK_FORMAT_R8G8B8_SINT:
-            case VK_FORMAT_R8G8B8_SRGB:
-                return 3;
+        // 24-bit
+        case VK_FORMAT_R8G8B8_UNORM:
+        case VK_FORMAT_R8G8B8_SNORM:
+        case VK_FORMAT_R8G8B8_USCALED:
+        case VK_FORMAT_R8G8B8_SSCALED:
+        case VK_FORMAT_R8G8B8_UINT:
+        case VK_FORMAT_R8G8B8_SINT:
+        case VK_FORMAT_R8G8B8_SRGB:
+            return 3;
 
-            // 32-bit
-            case VK_FORMAT_R32_UINT:
-            case VK_FORMAT_R32_SINT:
-            case VK_FORMAT_R32_SFLOAT:
-            case VK_FORMAT_R16G16_UNORM:
-            case VK_FORMAT_R16G16_SNORM:
-            case VK_FORMAT_R16G16_USCALED:
-            case VK_FORMAT_R16G16_SSCALED:
-            case VK_FORMAT_R16G16_UINT:
-            case VK_FORMAT_R16G16_SINT:
-            case VK_FORMAT_R16G16_SFLOAT:
-            case VK_FORMAT_R8G8B8A8_UNORM:
-            case VK_FORMAT_R8G8B8A8_SNORM:
-            case VK_FORMAT_R8G8B8A8_USCALED:
-            case VK_FORMAT_R8G8B8A8_SSCALED:
-            case VK_FORMAT_R8G8B8A8_UINT:
-            case VK_FORMAT_R8G8B8A8_SINT:
-            case VK_FORMAT_R8G8B8A8_SRGB:
-            case VK_FORMAT_B8G8R8A8_UNORM:
-            case VK_FORMAT_B8G8R8A8_SNORM:
-            case VK_FORMAT_B8G8R8A8_USCALED:
-            case VK_FORMAT_B8G8R8A8_SSCALED:
-            case VK_FORMAT_B8G8R8A8_UINT:
-            case VK_FORMAT_B8G8R8A8_SINT:
-            case VK_FORMAT_B8G8R8A8_SRGB:
-            case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
-            case VK_FORMAT_A2B10G10R10_UINT_PACK32:
-            case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
-            case VK_FORMAT_A2R10G10B10_UINT_PACK32:
-                return 4;
+        // 32-bit
+        case VK_FORMAT_R32_UINT:
+        case VK_FORMAT_R32_SINT:
+        case VK_FORMAT_R32_SFLOAT:
+        case VK_FORMAT_R16G16_UNORM:
+        case VK_FORMAT_R16G16_SNORM:
+        case VK_FORMAT_R16G16_USCALED:
+        case VK_FORMAT_R16G16_SSCALED:
+        case VK_FORMAT_R16G16_UINT:
+        case VK_FORMAT_R16G16_SINT:
+        case VK_FORMAT_R16G16_SFLOAT:
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SNORM:
+        case VK_FORMAT_R8G8B8A8_USCALED:
+        case VK_FORMAT_R8G8B8A8_SSCALED:
+        case VK_FORMAT_R8G8B8A8_UINT:
+        case VK_FORMAT_R8G8B8A8_SINT:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_B8G8R8A8_SNORM:
+        case VK_FORMAT_B8G8R8A8_USCALED:
+        case VK_FORMAT_B8G8R8A8_SSCALED:
+        case VK_FORMAT_B8G8R8A8_UINT:
+        case VK_FORMAT_B8G8R8A8_SINT:
+        case VK_FORMAT_B8G8R8A8_SRGB:
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+        case VK_FORMAT_A2B10G10R10_UINT_PACK32:
+        case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
+        case VK_FORMAT_A2R10G10B10_UINT_PACK32:
+            return 4;
 
-            // 64-bit
-            case VK_FORMAT_R64_UINT:
-            case VK_FORMAT_R64_SINT:
-            case VK_FORMAT_R64_SFLOAT:
-            case VK_FORMAT_R32G32_UINT:
-            case VK_FORMAT_R32G32_SINT:
-            case VK_FORMAT_R32G32_SFLOAT:
-            case VK_FORMAT_R16G16B16A16_UNORM:
-            case VK_FORMAT_R16G16B16A16_SNORM:
-            case VK_FORMAT_R16G16B16A16_USCALED:
-            case VK_FORMAT_R16G16B16A16_SSCALED:
-            case VK_FORMAT_R16G16B16A16_UINT:
-            case VK_FORMAT_R16G16B16A16_SINT:
-            case VK_FORMAT_R16G16B16A16_SFLOAT:
-                return 8;
+        // 64-bit
+        case VK_FORMAT_R64_UINT:
+        case VK_FORMAT_R64_SINT:
+        case VK_FORMAT_R64_SFLOAT:
+        case VK_FORMAT_R32G32_UINT:
+        case VK_FORMAT_R32G32_SINT:
+        case VK_FORMAT_R32G32_SFLOAT:
+        case VK_FORMAT_R16G16B16A16_UNORM:
+        case VK_FORMAT_R16G16B16A16_SNORM:
+        case VK_FORMAT_R16G16B16A16_USCALED:
+        case VK_FORMAT_R16G16B16A16_SSCALED:
+        case VK_FORMAT_R16G16B16A16_UINT:
+        case VK_FORMAT_R16G16B16A16_SINT:
+        case VK_FORMAT_R16G16B16A16_SFLOAT:
+            return 8;
 
-            // 96-bit
-            case VK_FORMAT_R32G32B32_UINT:
-            case VK_FORMAT_R32G32B32_SINT:
-            case VK_FORMAT_R32G32B32_SFLOAT:
-                return 12;
+        // 96-bit
+        case VK_FORMAT_R32G32B32_UINT:
+        case VK_FORMAT_R32G32B32_SINT:
+        case VK_FORMAT_R32G32B32_SFLOAT:
+            return 12;
 
-            // 128-bit
-            case VK_FORMAT_R64G64_UINT:
-            case VK_FORMAT_R64G64_SINT:
-            case VK_FORMAT_R64G64_SFLOAT:
-            case VK_FORMAT_R32G32B32A32_UINT:
-            case VK_FORMAT_R32G32B32A32_SINT:
-            case VK_FORMAT_R32G32B32A32_SFLOAT:
-                return 16;
+        // 128-bit
+        case VK_FORMAT_R64G64_UINT:
+        case VK_FORMAT_R64G64_SINT:
+        case VK_FORMAT_R64G64_SFLOAT:
+        case VK_FORMAT_R32G32B32A32_UINT:
+        case VK_FORMAT_R32G32B32A32_SINT:
+        case VK_FORMAT_R32G32B32A32_SFLOAT:
+            return 16;
 
-            // 深度/模板
-            case VK_FORMAT_D16_UNORM:
-                return 2;
-            case VK_FORMAT_X8_D24_UNORM_PACK32:
-            case VK_FORMAT_D24_UNORM_S8_UINT:
-            case VK_FORMAT_D32_SFLOAT:
-                return 4;
-            case VK_FORMAT_D32_SFLOAT_S8_UINT:
-            case VK_FORMAT_S8_UINT:
-            // BC 压缩格式
-            case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
-            case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
-            case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
-            case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
-                return 8;
+        // 深度/模板
+        case VK_FORMAT_D16_UNORM:
+            return 2;
+        case VK_FORMAT_X8_D24_UNORM_PACK32:
+        case VK_FORMAT_D24_UNORM_S8_UINT:
+        case VK_FORMAT_D32_SFLOAT:
+            return 4;
+        case VK_FORMAT_D32_SFLOAT_S8_UINT:
+        case VK_FORMAT_S8_UINT:
+        // BC 压缩格式
+        case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
+        case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
+        case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+        case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+            return 8;
 
-            case VK_FORMAT_BC2_UNORM_BLOCK:
-            case VK_FORMAT_BC2_SRGB_BLOCK:
-            case VK_FORMAT_BC3_UNORM_BLOCK:
-            case VK_FORMAT_BC3_SRGB_BLOCK:
-            case VK_FORMAT_BC4_UNORM_BLOCK:
-            case VK_FORMAT_BC4_SNORM_BLOCK:
-            case VK_FORMAT_BC5_UNORM_BLOCK:
-            case VK_FORMAT_BC5_SNORM_BLOCK:
-            case VK_FORMAT_BC6H_UFLOAT_BLOCK:
-            case VK_FORMAT_BC6H_SFLOAT_BLOCK:
-            case VK_FORMAT_BC7_UNORM_BLOCK:
-            case VK_FORMAT_BC7_SRGB_BLOCK:
-            // ASTC 压缩格式（所有格式都是16字节/块）
-            case VK_FORMAT_ASTC_4x4_UNORM_BLOCK:
-            case VK_FORMAT_ASTC_4x4_SRGB_BLOCK:
-            case VK_FORMAT_ASTC_5x4_UNORM_BLOCK:
-            case VK_FORMAT_ASTC_5x4_SRGB_BLOCK:
-            case VK_FORMAT_ASTC_5x5_UNORM_BLOCK:
-            case VK_FORMAT_ASTC_5x5_SRGB_BLOCK:
-            case VK_FORMAT_ASTC_6x5_UNORM_BLOCK:
-            case VK_FORMAT_ASTC_6x5_SRGB_BLOCK:
-            case VK_FORMAT_ASTC_6x6_UNORM_BLOCK:
-            case VK_FORMAT_ASTC_6x6_SRGB_BLOCK:
-            case VK_FORMAT_ASTC_8x5_UNORM_BLOCK:
-            case VK_FORMAT_ASTC_8x5_SRGB_BLOCK:
-            case VK_FORMAT_ASTC_8x6_UNORM_BLOCK:
-            case VK_FORMAT_ASTC_8x6_SRGB_BLOCK:
-            case VK_FORMAT_ASTC_8x8_UNORM_BLOCK:
-            case VK_FORMAT_ASTC_8x8_SRGB_BLOCK:
-            case VK_FORMAT_ASTC_10x5_UNORM_BLOCK:
-            case VK_FORMAT_ASTC_10x5_SRGB_BLOCK:
-            case VK_FORMAT_ASTC_10x6_UNORM_BLOCK:
-            case VK_FORMAT_ASTC_10x6_SRGB_BLOCK:
-            case VK_FORMAT_ASTC_10x8_UNORM_BLOCK:
-            case VK_FORMAT_ASTC_10x8_SRGB_BLOCK:
-            case VK_FORMAT_ASTC_10x10_UNORM_BLOCK:
-            case VK_FORMAT_ASTC_10x10_SRGB_BLOCK:
-            case VK_FORMAT_ASTC_12x10_UNORM_BLOCK:
-            case VK_FORMAT_ASTC_12x10_SRGB_BLOCK:
-            case VK_FORMAT_ASTC_12x12_UNORM_BLOCK:
-            case VK_FORMAT_ASTC_12x12_SRGB_BLOCK:
-                return 16;
+        case VK_FORMAT_BC2_UNORM_BLOCK:
+        case VK_FORMAT_BC2_SRGB_BLOCK:
+        case VK_FORMAT_BC3_UNORM_BLOCK:
+        case VK_FORMAT_BC3_SRGB_BLOCK:
+        case VK_FORMAT_BC4_UNORM_BLOCK:
+        case VK_FORMAT_BC4_SNORM_BLOCK:
+        case VK_FORMAT_BC5_UNORM_BLOCK:
+        case VK_FORMAT_BC5_SNORM_BLOCK:
+        case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+        case VK_FORMAT_BC6H_SFLOAT_BLOCK:
+        case VK_FORMAT_BC7_UNORM_BLOCK:
+        case VK_FORMAT_BC7_SRGB_BLOCK:
+        // ASTC 压缩格式（所有格式都是16字节/块）
+        case VK_FORMAT_ASTC_4x4_UNORM_BLOCK:
+        case VK_FORMAT_ASTC_4x4_SRGB_BLOCK:
+        case VK_FORMAT_ASTC_5x4_UNORM_BLOCK:
+        case VK_FORMAT_ASTC_5x4_SRGB_BLOCK:
+        case VK_FORMAT_ASTC_5x5_UNORM_BLOCK:
+        case VK_FORMAT_ASTC_5x5_SRGB_BLOCK:
+        case VK_FORMAT_ASTC_6x5_UNORM_BLOCK:
+        case VK_FORMAT_ASTC_6x5_SRGB_BLOCK:
+        case VK_FORMAT_ASTC_6x6_UNORM_BLOCK:
+        case VK_FORMAT_ASTC_6x6_SRGB_BLOCK:
+        case VK_FORMAT_ASTC_8x5_UNORM_BLOCK:
+        case VK_FORMAT_ASTC_8x5_SRGB_BLOCK:
+        case VK_FORMAT_ASTC_8x6_UNORM_BLOCK:
+        case VK_FORMAT_ASTC_8x6_SRGB_BLOCK:
+        case VK_FORMAT_ASTC_8x8_UNORM_BLOCK:
+        case VK_FORMAT_ASTC_8x8_SRGB_BLOCK:
+        case VK_FORMAT_ASTC_10x5_UNORM_BLOCK:
+        case VK_FORMAT_ASTC_10x5_SRGB_BLOCK:
+        case VK_FORMAT_ASTC_10x6_UNORM_BLOCK:
+        case VK_FORMAT_ASTC_10x6_SRGB_BLOCK:
+        case VK_FORMAT_ASTC_10x8_UNORM_BLOCK:
+        case VK_FORMAT_ASTC_10x8_SRGB_BLOCK:
+        case VK_FORMAT_ASTC_10x10_UNORM_BLOCK:
+        case VK_FORMAT_ASTC_10x10_SRGB_BLOCK:
+        case VK_FORMAT_ASTC_12x10_UNORM_BLOCK:
+        case VK_FORMAT_ASTC_12x10_SRGB_BLOCK:
+        case VK_FORMAT_ASTC_12x12_UNORM_BLOCK:
+        case VK_FORMAT_ASTC_12x12_SRGB_BLOCK:
+            return 16;
 
-            // ETC2 / EAC 压缩格式（8字节/块）
-            case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
-            case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
-            case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:
-            case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
-            case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
-            case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
-            case VK_FORMAT_EAC_R11_UNORM_BLOCK:
-            case VK_FORMAT_EAC_R11_SNORM_BLOCK:
-            case VK_FORMAT_EAC_R11G11_UNORM_BLOCK:
-            case VK_FORMAT_EAC_R11G11_SNORM_BLOCK:
-                return 8;
+        // ETC2 / EAC 压缩格式（8字节/块）
+        case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
+        case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
+        case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:
+        case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
+        case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
+        case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
+        case VK_FORMAT_EAC_R11_UNORM_BLOCK:
+        case VK_FORMAT_EAC_R11_SNORM_BLOCK:
+        case VK_FORMAT_EAC_R11G11_UNORM_BLOCK:
+        case VK_FORMAT_EAC_R11G11_SNORM_BLOCK:
+            return 8;
 
-            default:
-                return 0;
+        default:
+            return 0;
         }
     }
 
     constexpr VmaAllocationCreateInfo get_allocation_info_from_type(const vulkan::buffer_type type) {
         VmaAllocationCreateInfo info = {};
         switch (type) {
-            case vulkan::buffer_type::vertex:
-                [[fallthrough]];
-            case vulkan::buffer_type::index:
-                [[fallthrough]];
-            case vulkan::buffer_type::uniform_gpu_only: {
-                info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-                break;
-            }
-            case vulkan::buffer_type::uniform_coherent: {
-                info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
-                info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
-                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-                break;
-            }
-            case vulkan::buffer_type::uniform_cached: {
-                info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
-                info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
-                             VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
-                break;
-            }
+        case vulkan::buffer_type::vertex:
+            [[fallthrough]];
+        case vulkan::buffer_type::index:
+            [[fallthrough]];
+        case vulkan::buffer_type::uniform_gpu_only: {
+            info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+            break;
+        }
+        case vulkan::buffer_type::uniform_coherent: {
+            info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+            info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+            break;
+        }
+        case vulkan::buffer_type::uniform_cached: {
+            info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+            info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                         VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+            break;
+        }
         }
         return info;
     }
-
-
 
     constexpr VkBufferCreateInfo get_create_info_from_type(const vulkan::buffer_type type) {
         VkBufferCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 
         switch (type) {
-            case vulkan::buffer_type::vertex: {
-                info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                             VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-                break;
-            }
-            case vulkan::buffer_type::index: {
-                info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                             VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-                break;
-            }
-            case vulkan::buffer_type::uniform_gpu_only: {
-                info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                             VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-                break;
-            }
-            case vulkan::buffer_type::uniform_coherent:
-            case vulkan::buffer_type::uniform_cached: {
-                info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-                break;
-            }
+        case vulkan::buffer_type::vertex: {
+            info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                         VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            break;
+        }
+        case vulkan::buffer_type::index: {
+            info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                         VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            break;
+        }
+        case vulkan::buffer_type::uniform_gpu_only: {
+            info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                         VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            break;
+        }
+        case vulkan::buffer_type::uniform_coherent:
+        case vulkan::buffer_type::uniform_cached: {
+            info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            break;
+        }
         }
         return info;
     }
@@ -250,28 +245,27 @@ namespace {
         VmaAllocationCreateInfo info = {};
 
         switch (type) {
-            case vulkan::image_type::texture_2d:
-            case vulkan::image_type::texture_2d_color:
-            case vulkan::image_type::texture_2d_depth:
-            case vulkan::image_type::texture_cubemap:
-            case vulkan::image_type::render_target: {
-                info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-                break;
-            }
-            case vulkan::image_type::texture_2d_staging: {
-                info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
-                info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
-                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-                break;
-            }
+        case vulkan::image_type::texture_2d:
+        case vulkan::image_type::texture_2d_color:
+        case vulkan::image_type::texture_2d_depth:
+        case vulkan::image_type::texture_cubemap:
+        case vulkan::image_type::render_target: {
+            info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+            break;
+        }
+        case vulkan::image_type::texture_2d_staging: {
+            info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+            info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+            break;
+        }
         }
         return info;
     }
 
     constexpr VkImageCreateInfo get_image_create_info_from_type(
         const vulkan::image_type type,
-        const vulkan::image_create_info& info
-    ) {
+        const vulkan::image_create_info& info) {
         VkImageCreateInfo image_info = {};
         image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         image_info.extent.width = info.width;
@@ -285,56 +279,56 @@ namespace {
         image_info.format = info.format;
 
         switch (type) {
-            case vulkan::image_type::texture_2d:
-            case vulkan::image_type::texture_2d_staging:
-                image_info.imageType = VK_IMAGE_TYPE_2D;
-                image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                   VK_IMAGE_USAGE_SAMPLED_BIT |
-                                   info.extra_usage;
-                break;
+        case vulkan::image_type::texture_2d:
+        case vulkan::image_type::texture_2d_staging:
+            image_info.imageType = VK_IMAGE_TYPE_2D;
+            image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                               VK_IMAGE_USAGE_SAMPLED_BIT |
+                               info.extra_usage;
+            break;
 
-            case vulkan::image_type::texture_2d_color:
-                image_info.imageType = VK_IMAGE_TYPE_2D;
-                image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                   VK_IMAGE_USAGE_SAMPLED_BIT |
-                                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                   info.extra_usage;
-                break;
+        case vulkan::image_type::texture_2d_color:
+            image_info.imageType = VK_IMAGE_TYPE_2D;
+            image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                               VK_IMAGE_USAGE_SAMPLED_BIT |
+                               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                               info.extra_usage;
+            break;
 
-            case vulkan::image_type::texture_2d_depth:
-                image_info.imageType = VK_IMAGE_TYPE_2D;
-                image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                                   info.extra_usage;
-                break;
+        case vulkan::image_type::texture_2d_depth:
+            image_info.imageType = VK_IMAGE_TYPE_2D;
+            image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                               info.extra_usage;
+            break;
 
-            case vulkan::image_type::texture_cubemap:
-                image_info.imageType = VK_IMAGE_TYPE_2D;
-                image_info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-                image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                   VK_IMAGE_USAGE_SAMPLED_BIT |
-                                   info.extra_usage;
-                break;
+        case vulkan::image_type::texture_cubemap:
+            image_info.imageType = VK_IMAGE_TYPE_2D;
+            image_info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+            image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                               VK_IMAGE_USAGE_SAMPLED_BIT |
+                               info.extra_usage;
+            break;
 
-            case vulkan::image_type::render_target:
-                image_info.imageType = VK_IMAGE_TYPE_2D;
-                image_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                                   VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                   VK_IMAGE_USAGE_SAMPLED_BIT |
-                                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                   info.extra_usage;
-                break;
+        case vulkan::image_type::render_target:
+            image_info.imageType = VK_IMAGE_TYPE_2D;
+            image_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                               VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                               VK_IMAGE_USAGE_SAMPLED_BIT |
+                               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                               info.extra_usage;
+            break;
         }
 
         return image_info;
     }
-}
+} // namespace
 
 namespace vulkan {
     void vma_allocator::init(
-        const VkInstance instance, // NOLINT(*-misplaced-const)
-        const VkDevice device, // NOLINT(*-misplaced-const)
+        const VkInstance instance,              // NOLINT(*-misplaced-const)
+        const VkDevice device,                  // NOLINT(*-misplaced-const)
         const VkPhysicalDevice physical_device, // NOLINT(*-misplaced-const)
-        const VkQueue queue, // NOLINT(*-misplaced-const)
+        const VkQueue queue,                    // NOLINT(*-misplaced-const)
         const uint32_t queue_family_index) {
 
         std::lock_guard guard(this->access_mutex);
@@ -354,7 +348,6 @@ namespace vulkan {
         this->queue = queue;
         this->queue_family_index = queue_family_index;
         this->command_cache.push_back(this->create_command_pair());
-
     }
 
     void vma_allocator::destroy() {
@@ -374,7 +367,7 @@ namespace vulkan {
                 vkDestroyFence(this->device, fence, nullptr);
             }
             this->fence_cache.clear();
-            for (auto &command_pool: this->command_cache | std::views::keys) {
+            for (auto& command_pool : this->command_cache | std::views::keys) {
                 vkDestroyCommandPool(this->device, command_pool, nullptr);
                 command_pool = VK_NULL_HANDLE;
             }
@@ -395,7 +388,7 @@ namespace vulkan {
         return fence;
     }
 
-    bool vma_allocator::direct_upload(VmaAllocation const &allocation, VmaAllocationInfo &allocation_info, const void *data, const VkDeviceSize size) const {
+    bool vma_allocator::direct_upload(VmaAllocation const& allocation, VmaAllocationInfo& allocation_info, const void* data, const VkDeviceSize size) const {
         void* mapped_data = nullptr;
         if (const VkResult result = vmaMapMemory(this->allocator, allocation, &mapped_data); result != VK_SUCCESS) {
             std::println("Failed to map memory: {}", static_cast<int>(result));
@@ -413,7 +406,7 @@ namespace vulkan {
         return true;
     }
 
-    bool vma_allocator::staging_upload(const VkBuffer dst_buffer, const void *data, const VkDeviceSize size) { // NOLINT(*-misplaced-const)
+    bool vma_allocator::staging_upload(const VkBuffer dst_buffer, const void* data, const VkDeviceSize size) { // NOLINT(*-misplaced-const)
         // 创建 staging buffer
         VkBufferCreateInfo staging_create_info = {};
         staging_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -435,8 +428,7 @@ namespace vulkan {
             &staging_alloc_info,
             &staging_buffer,
             &staging_allocation,
-            &staging_info
-        );
+            &staging_info);
 
         if (result != VK_SUCCESS) {
             std::println(stderr, "Failed to create staging buffer: {}", static_cast<int>(result));
@@ -473,7 +465,6 @@ namespace vulkan {
             fence = this->create_fence();
         }
 
-
         VkCommandBufferBeginInfo begin_info = {};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -490,9 +481,7 @@ namespace vulkan {
         submit_info.commandBufferCount = 1;
         submit_info.pCommandBuffers = &command_buffer;
 
-
         vkQueueSubmit(this->queue, 1, &submit_info, fence);
-
 
         vkWaitForFences(this->device, 1, &fence, VK_TRUE, UINT64_MAX);
 
@@ -506,7 +495,7 @@ namespace vulkan {
         return true;
     }
 
-    bool vma_allocator::direct_image_upload(const VmaAllocation allocation, const void *data, const VkDeviceSize size) const { // NOLINT(*-misplaced-const)
+    bool vma_allocator::direct_image_upload(const VmaAllocation allocation, const void* data, const VkDeviceSize size) const { // NOLINT(*-misplaced-const)
         void* mapped_data = nullptr;
         if (const VkResult result = vmaMapMemory(this->allocator, allocation, &mapped_data); result != VK_SUCCESS) {
             std::println("Failed to map image memory: {}", static_cast<int>(result));
@@ -525,7 +514,7 @@ namespace vulkan {
         return true;
     }
 
-    bool vma_allocator::staging_image_upload(VkImage dst_image, const void *data, VkDeviceSize size, const image_create_info &info) {
+    bool vma_allocator::staging_image_upload(VkImage dst_image, const void* data, VkDeviceSize size, const image_create_info& info) {
         // 创建 staging buffer（保持不变）
         VkBufferCreateInfo buffer_create_info = {};
         buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -547,8 +536,7 @@ namespace vulkan {
             &alloc_info,
             &staging_buffer,
             &staging_allocation,
-            &staging_info
-        );
+            &staging_info);
 
         if (result != VK_SUCCESS) {
             std::println("Failed to create staging buffer for image: {}", static_cast<int>(result));
@@ -612,13 +600,12 @@ namespace vulkan {
             0,
             0, nullptr,
             0, nullptr,
-            1, &barrier
-        );
+            1, &barrier);
 
         // 第二步：拷贝数据
         VkBufferImageCopy region = {};
         region.bufferOffset = 0;
-        region.bufferRowLength = 0;  // 0 表示紧密排列
+        region.bufferRowLength = 0; // 0 表示紧密排列
         region.bufferImageHeight = 0;
         region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         region.imageSubresource.mipLevel = 0;
@@ -633,8 +620,7 @@ namespace vulkan {
             dst_image,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             1,
-            &region
-        );
+            &region);
 
         // 第三步：TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
         barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -649,8 +635,7 @@ namespace vulkan {
             0,
             0, nullptr,
             0, nullptr,
-            1, &barrier
-        );
+            1, &barrier);
 
         vkEndCommandBuffer(command_buffer);
 
@@ -674,11 +659,11 @@ namespace vulkan {
         return true;
     }
 
-    uint64_t vma_allocator::create_buffer(const unsigned char *data, const uint64_t size_byte, const buffer_type type) {
+    uint64_t vma_allocator::create_buffer(const unsigned char* data, const uint64_t size_byte, const buffer_type type) {
         std::lock_guard guard(this->access_mutex);
         uint64_t handle = 0;
 
-        if (const auto result = this->distribute();result) {
+        if (const auto result = this->distribute(); result) {
             handle = result.value();
         } else {
             return handle;
@@ -693,13 +678,12 @@ namespace vulkan {
         VmaAllocationInfo alloc_info = {};
 
         const VkResult result = vmaCreateBuffer(
-                this->allocator,
-                &buffer_create_info,
-                &allocation_create_info,
-                &buffer,
-                &allocation,
-                &alloc_info
-            );
+            this->allocator,
+            &buffer_create_info,
+            &allocation_create_info,
+            &buffer,
+            &allocation,
+            &alloc_info);
 
         if (result != VK_SUCCESS) {
             std::println("Failed to create buffer: {}", static_cast<int>(result));
@@ -709,18 +693,18 @@ namespace vulkan {
 
         bool upload_success = false;
         switch (type) {
-            case buffer_type::uniform_coherent:
-            case buffer_type::uniform_cached:
-                // 直接映射上传
-                upload_success = direct_upload(allocation, alloc_info, data, size_byte);
-                break;
+        case buffer_type::uniform_coherent:
+        case buffer_type::uniform_cached:
+            // 直接映射上传
+            upload_success = direct_upload(allocation, alloc_info, data, size_byte);
+            break;
 
-            case buffer_type::vertex:
-            case buffer_type::index:
-            case buffer_type::uniform_gpu_only:
-                // 使用 staging buffer
-                upload_success = staging_upload(buffer, data, size_byte);
-                break;
+        case buffer_type::vertex:
+        case buffer_type::index:
+        case buffer_type::uniform_gpu_only:
+            // 使用 staging buffer
+            upload_success = staging_upload(buffer, data, size_byte);
+            break;
         }
 
         if (!upload_success) {
@@ -729,24 +713,22 @@ namespace vulkan {
             utility::panic("Failed to upload buffer");
         }
 
-
-
         this->buffers[handle] = {.buffer = buffer, .allocation = allocation, .allocation_info = alloc_info};
         return handle;
     }
 
-    uint64_t vma_allocator::create_image(const unsigned char *data, const uint64_t size_byte, image_create_info const &create_info, const image_type type) {
+    uint64_t vma_allocator::create_image(const unsigned char* data, const uint64_t size_byte, image_create_info const& create_info, const image_type type) {
         std::lock_guard guard(this->access_mutex);
         uint64_t handle = 0;
 
-        if (const auto result = this->distribute();result) {
+        if (const auto result = this->distribute(); result) {
             handle = result.value();
         } else {
             return handle;
         }
         const VkDeviceSize image_size = size_byte;
 
-        if (const VkDeviceSize expected_size = create_info.height * create_info.width  * sizeof_vk_format(create_info.format); expected_size != image_size) {
+        if (const VkDeviceSize expected_size = create_info.height * create_info.width * sizeof_vk_format(create_info.format); expected_size != image_size) {
             std::println(stderr, "incorrect image size [{}], expected [{}]", image_size, expected_size);
         }
 
@@ -758,19 +740,17 @@ namespace vulkan {
         image_create_info.extent.depth = 1;
         image_create_info.arrayLayers = create_info.array_layers;
 
-
         VmaAllocation allocation = VK_NULL_HANDLE;
         VkImage image = VK_NULL_HANDLE;
         VmaAllocationInfo alloc_detail = {};
 
         const VkResult vk_result = vmaCreateImage(
-                this->allocator,
-                &image_create_info,
-                &alloc_info,
-                &image,
-                &allocation,
-                &alloc_detail
-            );
+            this->allocator,
+            &image_create_info,
+            &alloc_info,
+            &image,
+            &allocation,
+            &alloc_detail);
 
         if (vk_result != VK_SUCCESS) {
             std::println("Failed to create image: {}", static_cast<int>(vk_result));
@@ -781,20 +761,20 @@ namespace vulkan {
         // 根据类型选择上传方式
         bool upload_success = false;
         switch (type) {
-            case image_type::texture_2d_staging:
-                upload_success = direct_image_upload(allocation, data, image_size);
-                break;
+        case image_type::texture_2d_staging:
+            upload_success = direct_image_upload(allocation, data, image_size);
+            break;
 
-            case image_type::texture_2d:
-            case image_type::texture_2d_color:
-            case image_type::texture_cubemap:
-            case image_type::render_target:
-                upload_success = staging_image_upload(image, data, image_size, create_info);
-                break;
+        case image_type::texture_2d:
+        case image_type::texture_2d_color:
+        case image_type::texture_cubemap:
+        case image_type::render_target:
+            upload_success = staging_image_upload(image, data, image_size, create_info);
+            break;
 
-            case image_type::texture_2d_depth:
-                upload_success = true;
-                break;
+        case image_type::texture_2d_depth:
+            upload_success = true;
+            break;
         }
 
         if (!upload_success) {
@@ -813,7 +793,7 @@ namespace vulkan {
         return handle;
     }
 
-    const buffer_detail *vma_allocator::get_buffer_detail(const uint64_t handle) {
+    const buffer_detail* vma_allocator::get_buffer_detail(const uint64_t handle) {
         std::lock_guard guard(this->access_mutex);
         if (this->buffers.contains(handle)) {
             return &this->buffers[handle];
@@ -821,7 +801,7 @@ namespace vulkan {
         return nullptr;
     }
 
-    const image_detail *vma_allocator::get_image_detail(const uint64_t handle) {
+    const image_detail* vma_allocator::get_image_detail(const uint64_t handle) {
         std::lock_guard guard(this->access_mutex);
         if (this->images.contains(handle)) {
             return &this->images[handle];
@@ -867,4 +847,4 @@ namespace vulkan {
         }
         return {command_pool, command_buffer};
     }
-}
+} // namespace vulkan

@@ -1,7 +1,7 @@
 module;
 
-#include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
+#include <vulkan/vulkan.h>
 
 export module vulkan.core.init_utils;
 export import std;
@@ -57,11 +57,11 @@ export struct queue_family_indices {
  * @brief input data for creating a logical device
  */
 export struct device_creation_info {
-    queue_family_indices queue_families {};
+    queue_family_indices queue_families{};
     std::vector<const char*> extensions = {};
     std::vector<const char*> validation_layers = {};
     VkPhysicalDeviceFeatures device_features = {};
-    const void* pNext = nullptr;  // 用于Vulkan 1.1+的特性链
+    const void* pNext = nullptr; // 用于Vulkan 1.1+的特性链
 };
 
 /**
@@ -69,12 +69,11 @@ export struct device_creation_info {
  * @brief Vulkan debug messenger callback, prints validation layer messages
  */
 export [[maybe_unused]] VKAPI_ATTR VkBool32 VKAPI_CALL
-    debug_callback(
+debug_callback(
     const VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
     [[maybe_unused]] VkDebugUtilsMessageTypeFlagsEXT message_type,
-    const VkDebugUtilsMessengerCallbackDataEXT *callback_data,
-    [[maybe_unused]] void* user_data
-    ) noexcept;
+    const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
+    [[maybe_unused]] void* user_data) noexcept;
 
 /**
  * @ingroup vulkan_init_utils
@@ -92,9 +91,8 @@ export bool check_validation_layer_support(const std::vector<const char*>& valid
  * @return true if all extensions are supported
  */
 export bool check_device_extension_support(
-        VkPhysicalDevice const& physical_device,
-        std::vector<const char*> const& required_extensions
-        ) noexcept;
+    VkPhysicalDevice const& physical_device,
+    std::vector<const char*> const& required_extensions) noexcept;
 
 /**
  * @ingroup vulkan_init_utils
@@ -104,9 +102,8 @@ export bool check_device_extension_support(
  * @return logical_device holding the device and queue handles on success; panics on failure
  */
 export logical_device create_logical_device(
-        VkPhysicalDevice physical_device,
-        device_creation_info const& create_info
-        ) noexcept;
+    VkPhysicalDevice physical_device,
+    device_creation_info const& create_info) noexcept;
 
 /**
  * @ingroup vulkan_init_utils
@@ -176,7 +173,7 @@ export uint32_t find_memory_type(const uint32_t& type_filter, const VkMemoryProp
  * @param physical_device the physical device to query
  * @return the chosen depth format; panics if none is supported
  */
-export VkFormat find_depth_format(const VkPhysicalDevice &physical_device) noexcept;
+export VkFormat find_depth_format(const VkPhysicalDevice& physical_device) noexcept;
 
 /**
  * @ingroup vulkan_init_utils

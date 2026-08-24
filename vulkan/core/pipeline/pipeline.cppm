@@ -28,10 +28,9 @@ namespace vulkan {
      * @return vk_pipeline on success, error message on failure
      */
     export std::expected<vk_pipeline, std::string_view> make_pipeline(
-        VkDevice &device,
+        VkDevice& device,
         VkRenderPass render_pass,
         std::span<const unsigned char> vertex_shader_code,
         std::span<const unsigned char> fragment_shader_code,
-        VkSampleCountFlagBits msaa_level
-    );
-}
+        VkSampleCountFlagBits msaa_level);
+} // namespace vulkan

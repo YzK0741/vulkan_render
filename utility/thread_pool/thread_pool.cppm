@@ -1,10 +1,10 @@
 #ifndef UTILITY_THREAD_POOL_H
 #define UTILITY_THREAD_POOL_H
 
-#include <functional>
-#include <thread>
-#include <queue>
 #include <condition_variable>
+#include <functional>
+#include <queue>
+#include <thread>
 
 /**
  * @ingroup utility
@@ -32,12 +32,11 @@
  * @endcode
  */
 
-
 namespace utility {
     /**
      * @brief thread pool class
      */
-    class thread_pool { //NOLINT
+    class thread_pool { // NOLINT
         enum class shutdown_policy {
             discard,
             wait
@@ -57,7 +56,7 @@ namespace utility {
         std::atomic_int active_thread = 0;
         shutdown_policy policy = shutdown_policy::wait;
 
-        void worker_loop(const std::stop_token &token);
+        void worker_loop(const std::stop_token& token);
 
     public:
         /**
@@ -93,6 +92,6 @@ namespace utility {
          */
         int get_active_thread() const;
     };
-}
+} // namespace utility
 
 #endif
