@@ -730,7 +730,6 @@ namespace vulkan {
             vmaDestroyBuffer(this->allocator, buffer, allocation);
             this->recycle(handle);
             utility::panic("Failed to upload buffer");
-            return 0;
         }
 
 
@@ -807,7 +806,7 @@ namespace vulkan {
             return 0;
         }
 
-        auto digest = utility::sha256(std::span(data, size_byte));
+        const auto digest = utility::sha256(std::span(data, size_byte));
 
         if (!digest) {
             utility::panic("sha256 failed");
