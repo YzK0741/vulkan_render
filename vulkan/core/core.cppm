@@ -133,5 +133,9 @@ namespace vulkan {
         void wait_usable_image(uint32_t image_index);
         void reset_fence(uint32_t frame_index) const;
         void recreate_swap_chain();
+        std::expected<vk_pipeline, std::string_view> make_pipeline(
+            std::span<const unsigned char> vertex_shader_code,
+            std::span<const unsigned char> fragment_shader_code
+            );
     };
 }

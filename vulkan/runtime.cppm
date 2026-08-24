@@ -4,10 +4,8 @@
 
 module;
 
-#include <vulkan/vulkan.h>
-
 export module vulkan.runtime;
-
+export import std;
 export import vulkan.core;
 
 /**
@@ -29,9 +27,18 @@ namespace vulkan {
     export class runtime {
         core vulkan_core = {};
 
+        std::mutex access_mutex = {};
+        std::map<std::string_view, vk_pipeline> pipelines = {};
+
     public:
         core* operator->() {
             return &this->vulkan_core;
         }
+
+        std::expected<void, std::string> make_pipeline(
+            std::string_view pipeline_name,
+            std::span<const unsigned char> vertex_shader_code,
+            std::span<const unsigned char> fragment_shader_code
+        );
     };
 }

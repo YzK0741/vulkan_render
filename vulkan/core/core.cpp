@@ -10,6 +10,7 @@ module;
 #include <vulkan/vulkan.h>
 
 module vulkan.core;
+import vulkan.core.pipeline;
 import vulkan.core.init_uitls;
 
 
@@ -865,5 +866,18 @@ namespace vulkan {
 
         // 按新图像数重建 per-image 追踪表，避免 wait_usable_image 越界
         images_in_flight.resize(swap_chain_images.size(), VK_NULL_HANDLE);
+    }
+
+    std::expected<vk_pipeline, std::string_view> core::make_pipeline(
+        std::span<const unsigned char> vertex_shader_code,
+        const std::span<const unsigned char> fragment_shader_code)
+    {
+        return vulkan::make_pipeline(
+            this->device,
+            this->renderpass,
+            vertex_shader_code,
+            fragment_shader_code,
+            this->msaa_samples
+        );
     }
 }

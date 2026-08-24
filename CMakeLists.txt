@@ -84,6 +84,7 @@ target_sources(vulkan_lib
         vulkan/core/pipeline/pipeline.cpp
         vulkan/model/model.cpp
         vulkan/core/pipeline/spirv_parser.cpp
+        vulkan/runtime.cpp
 )
 add_library(gltf_loader STATIC)
 target_sources(gltf_loader
