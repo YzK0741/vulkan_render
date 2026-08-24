@@ -27,7 +27,7 @@ namespace vulkan {
      *      - draw() binds the descriptor set and vertex/index buffers, then issues a draw call
      *      - destroy() frees the buffers and the descriptor set, pass the owning device/pool/vma
      */
-    export class model {
+    export struct model {
         uint32_t vertex_buffer_handle = 0;
         VkBuffer vertex_buffer = VK_NULL_HANDLE;
         uint32_t index_buffer_handle = 0;
@@ -36,8 +36,8 @@ namespace vulkan {
 
         VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
 
-    public:
         void draw(VkCommandBuffer command_buffer, VkPipelineLayout pipeline_layout) const;
         void destroy(VkDevice device, VkDescriptorPool descriptor_pool, vma_allocator& vma);
+        [[nodiscard]] bool is_valid() const noexcept;
     };
 }

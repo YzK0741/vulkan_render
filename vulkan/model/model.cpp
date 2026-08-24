@@ -26,4 +26,10 @@ namespace vulkan {
         this->vertex_buffer_handle = 0;
         this->index_buffer_handle = 0;
     }
+
+    bool model::is_valid() const noexcept
+    {
+        return this->vertex_buffer != VK_NULL_HANDLE && this->index_buffer != VK_NULL_HANDLE &&
+            this->index_count != 0 && this->descriptor_set != VK_NULL_HANDLE;
+    }
 }
