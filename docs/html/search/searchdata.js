@@ -4,8 +4,8 @@ var indexSectionsWithContent =
   1: "[abcdefilmnpqrstv",
   2: "bcghimprstuv",
   3: "abcdfghilmpqrstw",
-  4: "ms",
-  5: "bceips",
+  4: "m",
+  5: "bcei",
   6: "i",
   7: "abcdfghilmoprstuvw"
 };

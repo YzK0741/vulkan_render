@@ -135,20 +135,20 @@ Classes</h2></td></tr>
 <tr class="heading"><td colspan="2"><h2 id="header-enum-members" class="groupheader"><a id="enum-members" name="enum-members"></a>
 Enumerations</h2></td></tr>
 <tr class="memitem:ga21540803d1295d8e50407a15f0d5d838" id="r_ga21540803d1295d8e50407a15f0d5d838"><td class="memItemLeft"><a id="ga21540803d1295d8e50407a15f0d5d838" name="ga21540803d1295d8e50407a15f0d5d838"></a>enum class &#160;</td><td class="memItemRight"><a class="el" href="#ga21540803d1295d8e50407a15f0d5d838">gltf::component_type</a> : int { <br />
-&#160;&#160;<b>byte_t</b> = TINYGLTF_COMPONENT_TYPE_BYTE
-, <b>unsigned_byte_t</b> = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE
-, <b>short_t</b> = TINYGLTF_COMPONENT_TYPE_SHORT
-, <b>unsigned_short_t</b> = TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT
+&#160;&#160;<b>byte_t</b> = 5120
+, <b>unsigned_byte_t</b> = 5121
+, <b>short_t</b> = 5122
+, <b>unsigned_short_t</b> = 5123
 , <br />
-&#160;&#160;<b>int_t</b> = TINYGLTF_COMPONENT_TYPE_INT
-, <b>unsigned_int_t</b> = TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT
-, <b>float_t</b> = TINYGLTF_COMPONENT_TYPE_FLOAT
-, <b>double_t</b> = TINYGLTF_COMPONENT_TYPE_DOUBLE
+&#160;&#160;<b>int_t</b> = 5124
+, <b>unsigned_int_t</b> = 5125
+, <b>float_t</b> = 5126
+, <b>double_t</b> = 5130
 , <br />
-&#160;&#160;<b>unknown</b>
+&#160;&#160;<b>unknown</b> = 0
 <br />
  }</td></tr>
-<tr class="memdesc:ga21540803d1295d8e50407a15f0d5d838"><td class="mdescLeft">&#160;</td><td class="mdescRight">component type of an accessor element, mapped from tinygltf macros <br /></td></tr>
+<tr class="memdesc:ga21540803d1295d8e50407a15f0d5d838"><td class="mdescLeft">&#160;</td><td class="mdescRight">component type of an accessor element, values are the glTF OpenGL constants <br /></td></tr>
 <tr class="memitem:gab8f20ac122838f891092d60ffcfa86e5" id="r_gab8f20ac122838f891092d60ffcfa86e5"><td class="memItemLeft"><a id="gab8f20ac122838f891092d60ffcfa86e5" name="gab8f20ac122838f891092d60ffcfa86e5"></a>enum class &#160;</td><td class="memItemRight"><a class="el" href="#gab8f20ac122838f891092d60ffcfa86e5">gltf::element_type</a> { <br />
 &#160;&#160;<b>scale</b>
 , <b>vec2</b>
@@ -170,14 +170,14 @@ Enumerations</h2></td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-func-members" class="groupheader"><a id="func-members" name="func-members"></a>
 Functions</h2></td></tr>
-<tr class="memitem:ga4236f76ba59746c446e22208570e9d6a" id="r_ga4236f76ba59746c446e22208570e9d6a"><td class="memItemLeft">constexpr <a class="el" href="#ga21540803d1295d8e50407a15f0d5d838">component_type</a>&#160;</td><td class="memItemRight"><a class="el" href="#ga4236f76ba59746c446e22208570e9d6a">gltf::to_component_type</a> (const int tinygltf_type)</td></tr>
-<tr class="memdesc:ga4236f76ba59746c446e22208570e9d6a"><td class="mdescLeft">&#160;</td><td class="mdescRight">convert a tinygltf component type macro to <a class="el" href="#ga21540803d1295d8e50407a15f0d5d838" title="component type of an accessor element, mapped from tinygltf macros">component_type</a>  <br /></td></tr>
+<tr class="memitem:ga139d34e799f366e1bac6ec34eb54ae4c" id="r_ga139d34e799f366e1bac6ec34eb54ae4c"><td class="memItemLeft">constexpr <a class="el" href="#ga21540803d1295d8e50407a15f0d5d838">component_type</a>&#160;</td><td class="memItemRight"><a class="el" href="#ga139d34e799f366e1bac6ec34eb54ae4c">gltf::to_component_type</a> (const int gltf_constant)</td></tr>
+<tr class="memdesc:ga139d34e799f366e1bac6ec34eb54ae4c"><td class="mdescLeft">&#160;</td><td class="mdescRight">convert a glTF component type constant to <a class="el" href="#ga21540803d1295d8e50407a15f0d5d838" title="component type of an accessor element, values are the glTF OpenGL constants">component_type</a>  <br /></td></tr>
 <tr class="memitem:ga2627d11be3269842552a57c8e0466172" id="r_ga2627d11be3269842552a57c8e0466172"><td class="memItemLeft">constexpr uint8_t&#160;</td><td class="memItemRight"><a class="el" href="#ga2627d11be3269842552a57c8e0466172">gltf::get_component_size</a> (const <a class="el" href="#ga21540803d1295d8e50407a15f0d5d838">component_type</a> type)</td></tr>
 <tr class="memdesc:ga2627d11be3269842552a57c8e0466172"><td class="mdescLeft">&#160;</td><td class="mdescRight">byte size of a single component of the given component type  <br /></td></tr>
 <tr class="memitem:ga2841fba332c722e8178fe405f59e05c2" id="r_ga2841fba332c722e8178fe405f59e05c2"><td class="memItemLeft">constexpr int&#160;</td><td class="memItemRight"><a class="el" href="#ga2841fba332c722e8178fe405f59e05c2">gltf::to_gltf_macro_type</a> (const <a class="el" href="#ga21540803d1295d8e50407a15f0d5d838">component_type</a> type)</td></tr>
-<tr class="memdesc:ga2841fba332c722e8178fe405f59e05c2"><td class="mdescLeft">&#160;</td><td class="mdescRight">convert <a class="el" href="#ga21540803d1295d8e50407a15f0d5d838" title="component type of an accessor element, mapped from tinygltf macros">component_type</a> back to the tinygltf macro value  <br /></td></tr>
+<tr class="memdesc:ga2841fba332c722e8178fe405f59e05c2"><td class="mdescLeft">&#160;</td><td class="mdescRight">convert <a class="el" href="#ga21540803d1295d8e50407a15f0d5d838" title="component type of an accessor element, values are the glTF OpenGL constants">component_type</a> back to the glTF OpenGL constant  <br /></td></tr>
 <tr class="memitem:ga6c6684f3e050383482b4878df41272c1" id="r_ga6c6684f3e050383482b4878df41272c1"><td class="memItemLeft">constexpr <a class="el" href="#gab8f20ac122838f891092d60ffcfa86e5">element_type</a>&#160;</td><td class="memItemRight"><a class="el" href="#ga6c6684f3e050383482b4878df41272c1">gltf::to_element_type</a> (const int type)</td></tr>
-<tr class="memdesc:ga6c6684f3e050383482b4878df41272c1"><td class="mdescLeft">&#160;</td><td class="mdescRight">convert a tinygltf type macro to <a class="el" href="#gab8f20ac122838f891092d60ffcfa86e5" title="element type of an accessor (scalar/vector/matrix)">element_type</a>  <br /></td></tr>
+<tr class="memdesc:ga6c6684f3e050383482b4878df41272c1"><td class="mdescLeft">&#160;</td><td class="mdescRight">convert a glTF type constant to <a class="el" href="#gab8f20ac122838f891092d60ffcfa86e5" title="element type of an accessor (scalar/vector/matrix)">element_type</a>  <br /></td></tr>
 <tr class="memitem:ga05425ea7659a3b58f44135a48a612d37" id="r_ga05425ea7659a3b58f44135a48a612d37"><td class="memItemLeft">constexpr uint8_t&#160;</td><td class="memItemRight"><a class="el" href="#ga05425ea7659a3b58f44135a48a612d37">gltf::get_element_size</a> (const <a class="el" href="#gab8f20ac122838f891092d60ffcfa86e5">element_type</a> type)</td></tr>
 <tr class="memdesc:ga05425ea7659a3b58f44135a48a612d37"><td class="mdescLeft">&#160;</td><td class="mdescRight">element count of the given element type  <br /></td></tr>
 <tr class="memitem:gae6a6b28da457d98fed70a1d54cd14bac" id="r_gae6a6b28da457d98fed70a1d54cd14bac"><td class="memItemLeft"><a id="gae6a6b28da457d98fed70a1d54cd14bac" name="gae6a6b28da457d98fed70a1d54cd14bac"></a>
@@ -186,7 +186,7 @@ std::expected&lt; <a class="el" href="structgltf_1_1scenes.html">scenes</a>, <a 
 </table>
 <a name="details" id="details"></a><h2 id="header-details" class="groupheader">Detailed Description</h2>
 <div class="textblock"><dl class="section note"><dt>Note</dt><dd><ul>
-<li>built on tinygltf</li>
+<li>built on fastgltf</li>
 <li>load_model() returns std::expected, failures are reported via error_code </li>
 </ul>
 </dd></dl>
@@ -255,8 +255,8 @@ std::expected&lt; <a class="el" href="structgltf_1_1scenes.html">scenes</a>, <a 
 
 </div>
 </div>
-<a id="ga4236f76ba59746c446e22208570e9d6a" name="ga4236f76ba59746c446e22208570e9d6a"></a>
-<h2 class="memtitle"><span class="permalink"><a href="#ga4236f76ba59746c446e22208570e9d6a">&#9670;&#160;</a></span>to_component_type()</h2>
+<a id="ga139d34e799f366e1bac6ec34eb54ae4c" name="ga139d34e799f366e1bac6ec34eb54ae4c"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga139d34e799f366e1bac6ec34eb54ae4c">&#9670;&#160;</a></span>to_component_type()</h2>
 
 <div class="memitem">
 <div class="memproto">
@@ -267,7 +267,7 @@ std::expected&lt; <a class="el" href="structgltf_1_1scenes.html">scenes</a>, <a 
         <tr>
           <td class="memname"><a class="el" href="#ga21540803d1295d8e50407a15f0d5d838">component_type</a> gltf::to_component_type </td>
           <td>(</td>
-          <td class="paramtype">const int</td>          <td class="paramname"><span class="paramname"><em>tinygltf_type</em></span></td><td>)</td>
+          <td class="paramtype">const int</td>          <td class="paramname"><span class="paramname"><em>gltf_constant</em></span></td><td>)</td>
           <td></td>
         </tr>
       </table>
@@ -279,11 +279,11 @@ std::expected&lt; <a class="el" href="structgltf_1_1scenes.html">scenes</a>, <a 
 </div><div class="memdoc">
 <dl class="params"><dt>Parameters</dt><dd>
   <table class="params">
-    <tr><td class="paramname">tinygltf_type</td><td>the tinygltf macro value </td></tr>
+    <tr><td class="paramname">gltf_constant</td><td>the OpenGL constant (5120..5130) </td></tr>
   </table>
   </dd>
 </dl>
-<dl class="section return"><dt>Returns</dt><dd>the mapped <a class="el" href="#ga21540803d1295d8e50407a15f0d5d838" title="component type of an accessor element, mapped from tinygltf macros">component_type</a>, unknown for unrecognized values </dd></dl>
+<dl class="section return"><dt>Returns</dt><dd>the mapped <a class="el" href="#ga21540803d1295d8e50407a15f0d5d838" title="component type of an accessor element, values are the glTF OpenGL constants">component_type</a>, unknown for unrecognized values </dd></dl>
 
 </div>
 </div>
@@ -311,7 +311,7 @@ std::expected&lt; <a class="el" href="structgltf_1_1scenes.html">scenes</a>, <a 
 </div><div class="memdoc">
 <dl class="params"><dt>Parameters</dt><dd>
   <table class="params">
-    <tr><td class="paramname">type</td><td>the tinygltf macro value </td></tr>
+    <tr><td class="paramname">type</td><td>the glTF type constant (0..6) </td></tr>
   </table>
   </dd>
 </dl>
@@ -347,7 +347,7 @@ std::expected&lt; <a class="el" href="structgltf_1_1scenes.html">scenes</a>, <a 
   </table>
   </dd>
 </dl>
-<dl class="section return"><dt>Returns</dt><dd>the tinygltf macro value, -1 for unknown </dd></dl>
+<dl class="section return"><dt>Returns</dt><dd>the glTF OpenGL constant, -1 for unknown </dd></dl>
 
 </div>
 </div>

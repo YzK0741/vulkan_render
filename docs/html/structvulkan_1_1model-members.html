@@ -5,7 +5,7 @@
 <meta http-equiv="X-UA-Compatible" content="IE=11"/>
 <meta name="generator" content="Doxygen 1.18.0"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>vulkan render: utility/thread_pool/thread_pool.cppm File Reference</title>
+<title>vulkan render: Member List</title>
 <link href="tabs.css" rel="stylesheet" type="text/css"/>
 <script type="text/javascript" src="codefolding.js"></script>
 <script type="text/javascript" src="clipboard.js"></script>
@@ -85,7 +85,7 @@ document.addEventListener('DOMContentLoaded', codefold.init);
   </div>
 </div>
 <script type="text/javascript">
-document.addEventListener('DOMContentLoaded',() => { initNavTree('thread__pool_8cppm.html','',''); });
+document.addEventListener('DOMContentLoaded',() => { initNavTree('structvulkan_1_1model.html','',''); });
 </script>
 <div id="container">
 <div id="doc-content">
@@ -108,54 +108,27 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('thread__pool_8
 </div>
 
 <div class="header">
-  <div class="headertitle"><div class="title">thread_pool.cppm File Reference</div></div>
+  <div class="headertitle"><div class="title">vulkan::model Member List</div></div>
 </div><!--header-->
 <div class="contents">
 
-<p>a module provides raii thread pool (<a class="el" href="classutility_1_1thread__pool.html" title="thread pool class">utility::thread_pool</a>)  
-<a href="#details">More...</a></p>
-<div class="textblock"><code>#include &lt;condition_variable&gt;</code><br />
-<code>#include &lt;functional&gt;</code><br />
-<code>#include &lt;queue&gt;</code><br />
-<code>#include &lt;thread&gt;</code><br />
-</div>
-<p><a href="thread__pool_8cppm_source.html">Go to the source code of this file.</a></p>
-<table class="memberdecls">
-<tr class="heading"><td colspan="2"><h2 id="header-nested-classes" class="groupheader"><a id="nested-classes" name="nested-classes"></a>
-Classes</h2></td></tr>
-<tr class="memitem:utility_3A_3Athread_5Fpool" id="r_utility_3A_3Athread_5Fpool"><td class="memItemLeft">class &#160;</td><td class="memItemRight"><a class="el" href="classutility_1_1thread__pool.html">utility::thread_pool</a></td></tr>
-<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">thread pool class  <a href="classutility_1_1thread__pool.html#details">More...</a><br /></td></tr>
-</table>
-<a name="details" id="details"></a><h2 id="header-details" class="groupheader">Detailed Description</h2>
-<div class="textblock"><dl class="section note"><dt>Note</dt><dd>due to a clang bug std::jthread can't be used in module, so use the header-style, and requires link thread_pool separately</dd></dl>
-<div class="fragment"><div class="line"><span class="preprocessor">#include &quot;<a class="code" href="thread__pool_8cppm.html">utility/thread_pool/thread_pool.cppm</a>&quot;</span></div>
-<div class="line"> </div>
-<div class="line"><span class="keywordtype">int</span> main{</div>
-<div class="line">    <a class="code hl_class" href="classutility_1_1thread__pool.html">utility::thread_pool</a> pool(4);</div>
-<div class="line"> </div>
-<div class="line">    <span class="keyword">auto</span> task = []{...};</div>
-<div class="line">    pool.post(task);</div>
-<div class="line">    pool.post(task);</div>
-<div class="line">    pool.post(task);</div>
-<div class="line">    <span class="comment">//...</span></div>
-<div class="line">    pool.wait_until_free();</div>
-<div class="line">}</div>
-<div class="ttc" id="aclassutility_1_1thread__pool_html"><div class="ttname"><a href="classutility_1_1thread__pool.html">utility::thread_pool</a></div><div class="ttdoc">thread pool class</div><div class="ttdef"><b>Definition</b> thread_pool.cppm:39</div></div>
-<div class="ttc" id="athread__pool_8cppm_html"><div class="ttname"><a href="thread__pool_8cppm.html">thread_pool.cppm</a></div><div class="ttdoc">a module provides raii thread pool (utility::thread_pool)</div></div>
-</div><!-- fragment --> </div></div><!-- contents -->
+<p>This is the complete list of members for <a class="el" href="structvulkan_1_1model.html">vulkan::model</a>, including all inherited members.</p>
+<table class="directory">
+  <tr bgcolor="#f0f0f0" class="even"><td class="entry"><b>descriptor_set</b> (defined in <a class="el" href="structvulkan_1_1model.html">vulkan::model</a>)</td><td class="entry"><a class="el" href="structvulkan_1_1model.html">vulkan::model</a></td><td class="entry"></td></tr>
+  <tr bgcolor="#f0f0f0" class="odd"><td class="entry"><b>destroy</b>(VkDevice device, VkDescriptorPool descriptor_pool, vma_allocator &amp;vma) (defined in <a class="el" href="structvulkan_1_1model.html">vulkan::model</a>)</td><td class="entry"><a class="el" href="structvulkan_1_1model.html">vulkan::model</a></td><td class="entry"></td></tr>
+  <tr bgcolor="#f0f0f0" class="even"><td class="entry"><b>draw</b>(VkCommandBuffer command_buffer, VkPipelineLayout pipeline_layout) const (defined in <a class="el" href="structvulkan_1_1model.html">vulkan::model</a>)</td><td class="entry"><a class="el" href="structvulkan_1_1model.html">vulkan::model</a></td><td class="entry"></td></tr>
+  <tr bgcolor="#f0f0f0" class="odd"><td class="entry"><b>index_buffer</b> (defined in <a class="el" href="structvulkan_1_1model.html">vulkan::model</a>)</td><td class="entry"><a class="el" href="structvulkan_1_1model.html">vulkan::model</a></td><td class="entry"></td></tr>
+  <tr bgcolor="#f0f0f0" class="even"><td class="entry"><b>index_buffer_handle</b> (defined in <a class="el" href="structvulkan_1_1model.html">vulkan::model</a>)</td><td class="entry"><a class="el" href="structvulkan_1_1model.html">vulkan::model</a></td><td class="entry"></td></tr>
+  <tr bgcolor="#f0f0f0" class="odd"><td class="entry"><b>index_count</b> (defined in <a class="el" href="structvulkan_1_1model.html">vulkan::model</a>)</td><td class="entry"><a class="el" href="structvulkan_1_1model.html">vulkan::model</a></td><td class="entry"></td></tr>
+  <tr bgcolor="#f0f0f0" class="even"><td class="entry"><b>is_valid</b>() const noexcept (defined in <a class="el" href="structvulkan_1_1model.html">vulkan::model</a>)</td><td class="entry"><a class="el" href="structvulkan_1_1model.html">vulkan::model</a></td><td class="entry"></td></tr>
+  <tr bgcolor="#f0f0f0" class="odd"><td class="entry"><b>vertex_buffer</b> (defined in <a class="el" href="structvulkan_1_1model.html">vulkan::model</a>)</td><td class="entry"><a class="el" href="structvulkan_1_1model.html">vulkan::model</a></td><td class="entry"></td></tr>
+  <tr bgcolor="#f0f0f0" class="even"><td class="entry"><b>vertex_buffer_handle</b> (defined in <a class="el" href="structvulkan_1_1model.html">vulkan::model</a>)</td><td class="entry"><a class="el" href="structvulkan_1_1model.html">vulkan::model</a></td><td class="entry"></td></tr>
+</table></div><!-- contents -->
 </div><!-- doc-content -->
-<div id="page-nav" class="page-nav-panel">
-<div id="page-nav-resize-handle"></div>
-<div id="page-nav-tree">
-<div id="page-nav-contents">
-</div><!-- page-nav-contents -->
-</div><!-- page-nav-tree -->
-</div><!-- page-nav -->
 </div><!-- container -->
 <!-- start footer part -->
 <div id="nav-path" class="navpath"><!-- id is needed for treeview function! -->
   <ul>
-    <li class="navelem"><b>utility</b></li><li class="navelem"><b>thread_pool</b></li><li class="navelem"><a href="thread__pool_8cppm.html">thread_pool.cppm</a></li>
     <li class="footer">Generated by <a href="https://www.doxygen.org/index.html"><img class="footer" src="doxygen.svg" width="104" height="31" alt="doxygen"/></a> 1.18.0 </li>
   </ul>
 </div>

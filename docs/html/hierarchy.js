@@ -23,7 +23,7 @@ var hierarchy =
       [ "mimalloc_memory_resource", "classmimalloc__memory__resource.html", null ]
     ] ],
     [ "gltf::mesh", "structgltf_1_1mesh.html", null ],
-    [ "vulkan::model", "classvulkan_1_1model.html", null ],
+    [ "vulkan::model", "structvulkan_1_1model.html", null ],
     [ "gltf::node", "structgltf_1_1node.html", null ],
     [ "utility::pmr_manager", "classutility_1_1pmr__manager.html", null ],
     [ "gltf::primitive", "structgltf_1_1primitive.html", null ],
@@ -33,9 +33,7 @@ var hierarchy =
     [ "vulkan::runtime", "classvulkan_1_1runtime.html", null ],
     [ "gltf::scene", "structgltf_1_1scene.html", null ],
     [ "gltf::scenes", "structgltf_1_1scenes.html", null ],
-    [ "vulkan::shader_info", "structvulkan_1_1shader__info.html", null ],
     [ "vulkan::pipeline::shader_stage_interface", "structvulkan_1_1pipeline_1_1shader__stage__interface.html", null ],
-    [ "vulkan::shader_variable_descriptor", "structvulkan_1_1shader__variable__descriptor.html", null ],
     [ "swap_chain_support_details", "structswap__chain__support__details.html", null ],
     [ "gltf::texture_data", "structgltf_1_1texture__data.html", null ],
     [ "utility::thread_pool", "classutility_1_1thread__pool.html", null ],

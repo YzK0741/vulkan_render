@@ -1,4 +1,4 @@
-var module__vulkan_8core_8init__uitls =
+var module__vulkan_8core_8init__utils =
 [
     [ "logical_device", "structlogical__device.html", null ],
     [ "swap_chain_support_details", "structswap__chain__support__details.html", null ],
