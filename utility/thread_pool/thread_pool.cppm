@@ -50,8 +50,6 @@ namespace utility {
         struct task {
             int priority = 0;
             std::function<void()> action;
-
-            void operator()() const noexcept;
             bool operator<(const task& other) const noexcept;
         };
 

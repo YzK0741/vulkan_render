@@ -9,10 +9,6 @@
 #include "thread_pool.cppm"
 
 namespace utility {
-    void thread_pool::task::operator()() const noexcept {
-        this->action();
-    }
-
     bool thread_pool::task::operator<(const task &other) const noexcept {
         return this->priority < other.priority;
     }
@@ -62,7 +58,7 @@ namespace utility {
     }
 
 
-    thread_pool::thread_pool(const int threads,[[maybe_unused]] shutdown_policy policy) {
+    thread_pool::thread_pool(const int threads, const shutdown_policy policy) {
         this->threads.resize(threads);
         this->policy = policy;
 
@@ -96,7 +92,7 @@ namespace utility {
 
     void thread_pool::wait_until_free() {
         std::unique_lock lock(this->access_mutex);
-        this->idle.wait(lock, [this]{return this->tasks.empty();});
+        this->idle.wait(lock, [this]{return this->tasks.empty() && this->active_thread.load() == 0;});
     }
 
     int thread_pool::get_active_thread() const {
