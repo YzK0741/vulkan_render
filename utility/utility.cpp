@@ -1,6 +1,3 @@
-//
-// Created by 小叶 on 2026/7/31.
-//
 module;
 
 #include <openssl/evp.h>
@@ -9,10 +6,10 @@ module utility;
 
 std::optional<uint64_t> utility::enable_handle_distribute::distribute() noexcept {
     std::lock_guard guard(this->access_mutex);
-    if (!this->recycled_handlers.empty()) {
-        const auto it = recycled_handlers.begin();
+    if (!this->recycled_handles.empty()) {
+        const auto it = recycled_handles.begin();
         uint64_t handle = *it;
-        recycled_handlers.erase(it);
+        recycled_handles.erase(it);
         return handle;
     }
     if (this->handle_upper_bound < UINT64_MAX) {
@@ -23,8 +20,8 @@ std::optional<uint64_t> utility::enable_handle_distribute::distribute() noexcept
 
 void utility::enable_handle_distribute::recycle(const uint64_t handle) noexcept {
     std::lock_guard guard(this->access_mutex);
-    if (handle < this->handle_upper_bound && !this->recycled_handlers.contains(handle)) {
-        this->recycled_handlers.insert(handle);
+    if (handle < this->handle_upper_bound && !this->recycled_handles.contains(handle)) {
+        this->recycled_handles.insert(handle);
     }
 }
 

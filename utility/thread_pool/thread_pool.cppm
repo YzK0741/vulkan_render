@@ -1,7 +1,3 @@
-//
-// Created by 小叶 on 2026/8/2.
-//
-
 #ifndef UTILITY_THREAD_POOL_H
 #define UTILITY_THREAD_POOL_H
 
@@ -61,7 +57,7 @@ namespace utility {
         std::atomic_int active_thread = 0;
         shutdown_policy policy = shutdown_policy::wait;
 
-        void thread(const std::stop_token &token);
+        void worker_loop(const std::stop_token &token);
 
     public:
         /**

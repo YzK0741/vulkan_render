@@ -1,7 +1,3 @@
-//
-// Created by 小叶 on 2026/7/29.
-//
-
 module;
 
 #include <vulkan/vulkan.h>
@@ -143,7 +139,6 @@ namespace vulkan {
         allocate_info.descriptorPool = descriptor_pool;
         allocate_info.descriptorSetCount = 1;
         allocate_info.pSetLayouts = &layout;
-        allocate_info.descriptorSetCount = 1;
         vkAllocateDescriptorSets(device, &allocate_info, &descriptor_set);
 
         return vk_descriptor_set(descriptor_set, device, descriptor_pool);

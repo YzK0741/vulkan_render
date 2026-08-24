@@ -1,7 +1,3 @@
-//
-// Created by 小叶 on 2026/7/27.
-//
-
 module;
 
 #include <boost/stacktrace/stacktrace.hpp>
@@ -11,7 +7,7 @@ module;
 
 module vulkan.core;
 import vulkan.core.pipeline;
-import vulkan.core.init_uitls;
+import vulkan.core.init_utils;
 
 
 // core
@@ -611,7 +607,7 @@ namespace vulkan {
             framebuffer_create_info.layers = 1;
 
             if (vkCreateFramebuffer(this->device, &framebuffer_create_info, nullptr, &this->swap_chain_framebuffers[i]) != VK_SUCCESS) {
-                std::println("can't create frame buffer");
+                utility::panic("can't create frame buffer");
             }
         }
 

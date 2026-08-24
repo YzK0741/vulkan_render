@@ -1,13 +1,9 @@
-//
-// Created by 小叶 on 2026/7/29.
-//
-
 module;
 
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
 
-export module vulkan.core.init_uitls;
+export module vulkan.core.init_utils;
 export import std;
 
 /**

@@ -1,13 +1,10 @@
-//
-// Created by 小叶 on 2026/7/29.
-//
 module;
 
 #include <boost/stacktrace/stacktrace.hpp>
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
 
-module vulkan.core.init_uitls;
+module vulkan.core.init_utils;
 
 import utility;
 
@@ -300,8 +297,10 @@ swap_chain_support_details query_swap_chain_support(VkPhysicalDevice const& devi
 }
 
 VkPresentModeKHR choose_swap_present_mode(std::vector<VkPresentModeKHR> const& available_present_modes) noexcept {
-    if (std::ranges::find(available_present_modes, VK_PRESENT_MODE_FIFO_KHR) != available_present_modes.end())
-        return VK_PRESENT_MODE_FIFO_KHR;
+    // 优先选择 MAILBOX（低延迟），否则回退到 FIFO（Vulkan 规范强制支持）
+    if (std::ranges::find(available_present_modes, VK_PRESENT_MODE_MAILBOX_KHR) != available_present_modes.end()) {
+        return VK_PRESENT_MODE_MAILBOX_KHR;
+    }
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 

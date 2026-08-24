@@ -1,6 +1,3 @@
-//
-// Created by 23530 on 2026/8/18.
-//
 export module utility.better_pmr;
 export import std;
 /**

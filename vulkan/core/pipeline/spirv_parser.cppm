@@ -1,7 +1,3 @@
-//
-// Created by 小叶 on 2026/8/2.
-//
-
 module;
 
 #include <vulkan/vulkan_core.h>

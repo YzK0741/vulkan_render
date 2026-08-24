@@ -1,6 +1,3 @@
-//
-// Created by 23530 on 2026/8/8.
-//
 module;
 
 #include <glm/glm.hpp>

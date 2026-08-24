@@ -1,6 +1,3 @@
-//
-// Created by 小叶 on 2026/8/2.
-//
 #include <thread>
 #include <functional>
 #include <mutex>
@@ -13,7 +10,7 @@ namespace utility {
         return this->priority < other.priority;
     }
 
-    void thread_pool::thread(const std::stop_token &token) {
+    void thread_pool::worker_loop(const std::stop_token &token) {
         this->active_thread.fetch_add(1);
         std::function<void()> current_task;
         while (true) {
@@ -64,7 +61,7 @@ namespace utility {
 
         for (auto& thread : this->threads) {
             thread = std::jthread([this](const std::stop_token& stop_token) {
-                thread_pool::thread(stop_token);
+                thread_pool::worker_loop(stop_token);
             });
         }
     }

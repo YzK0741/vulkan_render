@@ -1,6 +1,3 @@
-//
-// Created by 23530 on 2026/8/24.
-//
 module vulkan.runtime;
 
 namespace vulkan

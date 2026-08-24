@@ -1,6 +1,3 @@
-//
-// Created by 小叶 on 2026/7/28.
-//
 module;
 
 #include <cstdint>
@@ -43,7 +40,7 @@ namespace utility {
      */
     export class enable_handle_distribute {
 
-        std::set<uint64_t> recycled_handlers = {};
+        std::set<uint64_t> recycled_handles = {};
         std::mutex access_mutex = {};
         uint64_t handle_upper_bound = 1;
 
