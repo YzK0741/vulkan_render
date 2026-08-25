@@ -21,10 +21,10 @@ namespace vulkan {
      *      - default construction performs the whole core initialization (window/instance/device/swap chain etc.)
      */
     export class runtime {
-        core vulkan_core = {};
+        core vulkan_core;
 
-        std::mutex access_mutex = {};
-        std::map<std::string_view, vk_pipeline> pipelines = {};
+        std::mutex access_mutex;
+        std::map<std::string_view, vk_pipeline> pipelines;
 
     public:
         core* operator->() {

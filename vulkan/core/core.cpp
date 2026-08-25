@@ -47,7 +47,7 @@ namespace vulkan {
         window = glfwCreateWindow(
             width,
             height,
-            window_name.data() ? window_name.data() : "vulkan",
+            (window_name.data() != nullptr) ? window_name.data() : "vulkan",
             nullptr,
             nullptr);
 
@@ -154,7 +154,7 @@ namespace vulkan {
             instance, "vkDestroyDebugUtilsMessengerEXT"));
 
         // 检查函数指针是否获取成功
-        if (!vkCreateDebugUtilsMessengerEXT || !vkDestroyDebugUtilsMessengerEXT) {
+        if ((vkCreateDebugUtilsMessengerEXT == nullptr) || (vkDestroyDebugUtilsMessengerEXT == nullptr)) {
             utility::panic("Failed to get debug utils function pointers");
         }
         VkDebugUtilsMessengerCreateInfoEXT debug_info{};
@@ -253,7 +253,7 @@ namespace vulkan {
 
         image_count = std::max(image_count, capabilities.minImageCount);
 
-        VkSwapchainCreateInfoKHR create_info{};
+        VkSwapchainCreateInfoKHR create_info = {};
         create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
         create_info.surface = surface;
 
@@ -652,7 +652,7 @@ namespace vulkan {
         const VkMemoryPropertyFlags& properties,
         VkImage& image,
         VkDeviceMemory& imageMemory) const noexcept {
-        VkImageCreateInfo imageInfo{};
+        VkImageCreateInfo imageInfo = {};
         imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imageInfo.imageType = VK_IMAGE_TYPE_2D;
         imageInfo.extent.width = width;
@@ -702,7 +702,7 @@ namespace vulkan {
         info.maxSets = max_size;
         info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
         info.pPoolSizes = pool_sizes.data();
-        if (vkCreateDescriptorPool(this->device, &info, nullptr, &this->descriptor_pool)) {
+        if (vkCreateDescriptorPool(this->device, &info, nullptr, &this->descriptor_pool) != 0) {
             utility::panic("failed in creating descriptor pool");
         }
         register_cleanup([this] {
