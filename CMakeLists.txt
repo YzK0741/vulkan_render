@@ -103,6 +103,7 @@ target_sources(gltf_loader
 target_link_libraries(gltf_loader
         PRIVATE
         fastgltf
+        std_lib
 )
 
 target_link_libraries(vulkan_lib
@@ -152,6 +153,10 @@ target_compile_options(utility PRIVATE
 )
 
 target_compile_options(thread_pool PRIVATE
+        ${COMPILE_OPTIONS}
+)
+
+target_compile_options(gltf_loader PRIVATE
         ${COMPILE_OPTIONS}
 )
 
