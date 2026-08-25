@@ -93,6 +93,10 @@ namespace vulkan {
         std::map<uint64_t, buffer_detail> buffers = {};
         std::map<uint64_t, image_detail> images = {};
         std::mutex access_mutex = {};
+        // 保护 command_cache / fence_cache，上传在 access_mutex 之外时仍可安全复用
+        std::mutex cache_mutex = {};
+        // VkQueue 是外部同步对象，vkQueueSubmit 必须串行化
+        std::mutex queue_mutex = {};
         uint32_t queue_family_index = 0;
 
         [[nodiscard]] VkFence create_fence() const;

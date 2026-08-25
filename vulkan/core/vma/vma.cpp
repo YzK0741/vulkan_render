@@ -445,25 +445,27 @@ namespace vulkan {
             vmaDestroyBuffer(this->allocator, staging_buffer, staging_allocation);
             return false;
         }
-        // 执行拷贝命令
+        // 执行拷贝命令（缓存访问由 cache_mutex 保护）
         std::pair<VkCommandPool, VkCommandBuffer> command_pair;
-        if (!this->command_cache.empty()) {
-            command_pair = this->command_cache.back();
-            this->command_cache.pop_back();
-        } else {
-            command_pair = this->create_command_pair();
+        VkFence fence = VK_NULL_HANDLE;
+        {
+            std::lock_guard guard(this->cache_mutex);
+            if (!this->command_cache.empty()) {
+                command_pair = this->command_cache.back();
+                this->command_cache.pop_back();
+            } else {
+                command_pair = this->create_command_pair();
+            }
+
+            if (!this->fence_cache.empty()) {
+                fence = this->fence_cache.back();
+                this->fence_cache.pop_back();
+            } else {
+                fence = this->create_fence();
+            }
         }
 
         VkCommandBuffer command_buffer = command_pair.second;
-
-        VkFence fence = VK_NULL_HANDLE;
-
-        if (!this->fence_cache.empty()) {
-            fence = this->fence_cache.back();
-            this->fence_cache.pop_back();
-        } else {
-            fence = this->create_fence();
-        }
 
         VkCommandBufferBeginInfo begin_info = {};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -481,15 +483,22 @@ namespace vulkan {
         submit_info.commandBufferCount = 1;
         submit_info.pCommandBuffers = &command_buffer;
 
-        vkQueueSubmit(this->queue, 1, &submit_info, fence);
+        {
+            // VkQueue 是外部同步对象，submit 必须串行化
+            std::lock_guard guard(this->queue_mutex);
+            vkQueueSubmit(this->queue, 1, &submit_info, fence);
+        }
 
         vkWaitForFences(this->device, 1, &fence, VK_TRUE, UINT64_MAX);
 
         // 清理
         vkResetFences(this->device, 1, &fence);
-        this->fence_cache.push_back(fence);
         vkResetCommandBuffer(command_buffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
-        this->command_cache.push_back(command_pair);
+        {
+            std::lock_guard guard(this->cache_mutex);
+            this->fence_cache.push_back(fence);
+            this->command_cache.push_back(command_pair);
+        }
         vmaDestroyBuffer(this->allocator, staging_buffer, staging_allocation);
 
         return true;
@@ -553,25 +562,26 @@ namespace vulkan {
             vmaDestroyBuffer(this->allocator, staging_buffer, staging_allocation);
             return false;
         }
-        // 执行拷贝命令
+        // 执行拷贝命令（缓存访问由 cache_mutex 保护）
         std::pair<VkCommandPool, VkCommandBuffer> command_pair;
+        VkFence fence = VK_NULL_HANDLE;
+        {
+            std::lock_guard guard(this->cache_mutex);
+            if (!this->command_cache.empty()) {
+                command_pair = this->command_cache.back();
+                this->command_cache.pop_back();
+            } else {
+                command_pair = this->create_command_pair();
+            }
 
-        if (!this->command_cache.empty()) {
-            command_pair = this->command_cache.back();
-            command_cache.pop_back();
-        } else {
-            command_pair = create_command_pair();
+            if (!this->fence_cache.empty()) {
+                fence = this->fence_cache.back();
+                this->fence_cache.pop_back();
+            } else {
+                fence = this->create_fence();
+            }
         }
         VkCommandBuffer command_buffer = command_pair.second;
-
-        VkFence fence = VK_NULL_HANDLE;
-
-        if (!this->fence_cache.empty()) {
-            fence = this->fence_cache.back();
-            this->fence_cache.pop_back();
-        } else {
-            fence = this->create_fence();
-        }
 
         VkCommandBufferBeginInfo begin_info = {};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -645,28 +655,36 @@ namespace vulkan {
         submit_info.commandBufferCount = 1;
         submit_info.pCommandBuffers = &command_buffer;
 
-        vkQueueSubmit(this->queue, 1, &submit_info, fence);
+        {
+            // VkQueue 是外部同步对象，submit 必须串行化
+            std::lock_guard guard(this->queue_mutex);
+            vkQueueSubmit(this->queue, 1, &submit_info, fence);
+        }
 
         vkWaitForFences(this->device, 1, &fence, VK_TRUE, UINT64_MAX);
 
         // 清理
         vkResetFences(this->device, 1, &fence);
-        this->fence_cache.push_back(fence);
         vkResetCommandBuffer(command_buffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
-        this->command_cache.push_back(command_pair);
+        {
+            std::lock_guard guard(this->cache_mutex);
+            this->fence_cache.push_back(fence);
+            this->command_cache.push_back(command_pair);
+        }
         vmaDestroyBuffer(this->allocator, staging_buffer, staging_allocation);
 
         return true;
     }
 
     uint64_t vma_allocator::create_buffer(const unsigned char* data, const uint64_t size_byte, const buffer_type type) {
-        std::lock_guard guard(this->access_mutex);
         uint64_t handle = 0;
-
-        if (const auto result = this->distribute(); result) {
-            handle = result.value();
-        } else {
-            return handle;
+        {
+            std::lock_guard guard(this->access_mutex);
+            if (const auto result = this->distribute(); result) {
+                handle = result.value();
+            } else {
+                return handle;
+            }
         }
 
         const auto allocation_create_info = get_allocation_info_from_type(type);
@@ -677,6 +695,7 @@ namespace vulkan {
         VkBuffer buffer = VK_NULL_HANDLE;
         VmaAllocationInfo alloc_info = {};
 
+        // VMA 内部线程安全，分配与上传都无需持有 access_mutex
         const VkResult result = vmaCreateBuffer(
             this->allocator,
             &buffer_create_info,
@@ -713,19 +732,24 @@ namespace vulkan {
             utility::panic("Failed to upload buffer");
         }
 
-        this->buffers[handle] = {.buffer = buffer, .allocation = allocation, .allocation_info = alloc_info};
+        {
+            std::lock_guard guard(this->access_mutex);
+            this->buffers[handle] = {.buffer = buffer, .allocation = allocation, .allocation_info = alloc_info};
+        }
         return handle;
     }
 
     uint64_t vma_allocator::create_image(const unsigned char* data, const uint64_t size_byte, image_create_info const& create_info, const image_type type) {
-        std::lock_guard guard(this->access_mutex);
         uint64_t handle = 0;
-
-        if (const auto result = this->distribute(); result) {
-            handle = result.value();
-        } else {
-            return handle;
+        {
+            std::lock_guard guard(this->access_mutex);
+            if (const auto result = this->distribute(); result) {
+                handle = result.value();
+            } else {
+                return handle;
+            }
         }
+
         const VkDeviceSize image_size = size_byte;
 
         if (const VkDeviceSize expected_size = create_info.height * create_info.width * sizeof_vk_format(create_info.format); expected_size != image_size) {
@@ -783,13 +807,17 @@ namespace vulkan {
             return 0;
         }
 
+        // sha256 是纯 CPU 计算，放在临界区之外
         const auto digest = utility::sha256(std::span(data, size_byte));
 
         if (!digest) {
             utility::panic("sha256 failed");
         }
 
-        this->images[handle] = {.image = image, .allocation = allocation, .allocation_info = alloc_detail, .digest = digest.value()};
+        {
+            std::lock_guard guard(this->access_mutex);
+            this->images[handle] = {.image = image, .allocation = allocation, .allocation_info = alloc_detail, .digest = digest.value()};
+        }
         return handle;
     }
 
@@ -810,6 +838,7 @@ namespace vulkan {
     }
 
     void vma_allocator::free_buffer(const uint64_t handle) {
+        std::lock_guard guard(this->access_mutex);
         if (this->buffers.contains(handle)) {
             const auto& info = this->buffers[handle];
             vmaDestroyBuffer(this->allocator, info.buffer, info.allocation);
@@ -818,6 +847,7 @@ namespace vulkan {
     }
 
     void vma_allocator::free_image(const uint64_t handle) {
+        std::lock_guard guard(this->access_mutex);
         if (this->images.contains(handle)) {
             const auto& info = this->images[handle];
             vmaDestroyImage(this->allocator, info.image, info.allocation);
