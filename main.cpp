@@ -9,12 +9,18 @@ int main() {
     constexpr int rounds = 4;
     utility::thread_pool pool(2);
     vulkan::runtime runtime;
-    std::vector<uint8_t> data(1024 * 1024 * 512);
+    std::vector<uint8_t> data(1024ull * 1024ull * 512ull);
 
     // 预分配 + 原子索引，避免并发 push_back
-    std::vector<uint64_t> v_buffer(rounds), i_buffer(rounds), u_buffer(rounds);
-    std::atomic<int> v_idx{0}, i_idx{0}, u_idx{0};
-    std::atomic<int64_t> v_ns{0}, i_ns{0}, u_ns{0};
+    std::vector<uint64_t> v_buffer(rounds);
+    std::vector<uint64_t> i_buffer(rounds);
+    std::vector<uint64_t> u_buffer(rounds);
+    std::atomic<int> v_idx{0};
+    std::atomic<int> i_idx{0};
+    std::atomic<int> u_idx{0};
+    std::atomic<int64_t> v_ns{0};
+    std::atomic<int64_t> i_ns{0};
+    std::atomic<int64_t> u_ns{0};
 
     auto task_vertex = [&] {
         auto t0 = std::chrono::steady_clock::now();
@@ -56,9 +62,9 @@ int main() {
 
     std::println("{}b total size sent", 12 * data.size());
     std::println("total time cost {}", end - start);
-    std::println("vertex  avg: {:.1f} ms/call (staging: memcpy + gpu copy)", v_ns.load() / 1e6 / rounds);
-    std::println("index   avg: {:.1f} ms/call (staging: memcpy + gpu copy)", i_ns.load() / 1e6 / rounds);
-    std::println("uniform avg: {:.1f} ms/call (direct : memcpy only)     ", u_ns.load() / 1e6 / rounds);
+    std::println("vertex  avg: {:.1f} ms/call (staging: memcpy + gpu copy)", static_cast<double>(v_ns.load()) / 1e6 / rounds);
+    std::println("index   avg: {:.1f} ms/call (staging: memcpy + gpu copy)", static_cast<double>(i_ns.load()) / 1e6 / rounds);
+    std::println("uniform avg: {:.1f} ms/call (direct : memcpy only)     ", static_cast<double>(u_ns.load()) / 1e6 / rounds);
 
     for (auto const& v : v_buffer) {
         runtime->vma.free_buffer(v);
