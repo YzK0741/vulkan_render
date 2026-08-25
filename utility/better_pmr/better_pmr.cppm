@@ -11,7 +11,7 @@ class mimalloc_memory_resource : public std::pmr::memory_resource // NOLINT
 {
     void* do_allocate(std::size_t size, std::size_t alignment) override;
     void do_deallocate(void* p, std::size_t size, std::size_t alignment) override;
-    [[nodiscard]] bool do_is_equal(memory_resource const& resource) const noexcept override;
+    [[nodiscard]] bool do_is_equal(memory_resource const& other) const noexcept override;
 };
 
 namespace utility {
