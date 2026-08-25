@@ -38,8 +38,8 @@ Checks: >
 # 把所有警告视为错误会阻碍迭代，这里先保持警告
 WarningsAsErrors: ''
 
-# 只检查项目自身代码，不深入第三方头文件
-HeaderFilterRegex: '.*'
+# 只检查项目自身代码，不深入第三方头文件（third_party 下的第三方库不检查）
+HeaderFilterRegex: '^(?!.*third_party).*$'
 
 # 让 clang-tidy 使用仓库内的 .clang-format 作为格式基准
 FormatStyle: file
