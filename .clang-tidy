@@ -4,12 +4,32 @@
 #   cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ...
 #   clang-tidy -p build <file>...
 # 启用一组保守的检查；运行时可用 -checks=... 临时覆盖。
+#
+# 已禁用的噪音/误报检查（图形代码 + 自研 std 模块场景）：
+#   - bugprone-std-namespace-modification     : std/ 自研 std 模块向 std 添加扩展是有意设计（2000+ 误报）
+#   - bugprone-invalid-enum-default-initialization : Vulkan 结构体全 0 初始化是标准做法
+#   - performance-enum-size                   : 对每个无底层类型枚举都报，收益微小
+#   - readability-magic-numbers               : Vulkan 调用充满常量/0/1，噪音为主
+#   - readability-redundant-member-init       : 成员默认初始化冗余提示，风格噪音
+#   - readability-identifier-length           : 图形代码常见短变量名
+#   - readability-uppercase-literal-suffix    : 字面量后缀大小写纯风格偏好
+#   - readability-implicit-bool-conversion    : Vulkan 代码习惯（指针/句柄判空）
+#   - readability-math-missing-parentheses    : 数学表达式括号风格
 Checks: >
   -*,
   bugprone-*,
+  -bugprone-std-namespace-modification,
+  -bugprone-invalid-enum-default-initialization,
   clang-analyzer-*,
   performance-*,
+  -performance-enum-size,
   readability-*,
+  -readability-magic-numbers,
+  -readability-redundant-member-init,
+  -readability-identifier-length,
+  -readability-uppercase-literal-suffix,
+  -readability-implicit-bool-conversion,
+  -readability-math-missing-parentheses,
 
 # 把所有警告视为错误会阻碍迭代，这里先保持警告
 WarningsAsErrors: ''
