@@ -4,6 +4,8 @@ module;
 
 #include <vulkan/vulkan.h>
 
+#include <algorithm>
+
 module vulkan.pipeline.spirv_parser;
 import utility;
 
@@ -21,8 +23,9 @@ namespace {
     void sort_interface_variables(std::vector<vulkan::pipeline::interface_variable_info>& vars) {
         std::ranges::sort(vars,
                           [](const vulkan::pipeline::interface_variable_info& a, const vulkan::pipeline::interface_variable_info& b) {
-                              if (a.location != b.location)
+                              if (a.location != b.location) {
                                   return a.location < b.location;
+                              }
                               return a.component < b.component;
                           });
     }
@@ -267,12 +270,14 @@ bool vulkan::pipeline::validate_interface_match(
     std::vector<const interface_variable_info*> consumer_inputs;
 
     for (const auto& out : producer.outputs) {
-        if (!out.is_builtin)
+        if (!out.is_builtin) {
             producer_outputs.push_back(&out);
+        }
     }
     for (const auto& in : consumer.inputs) {
-        if (!in.is_builtin)
+        if (!in.is_builtin) {
             consumer_inputs.push_back(&in);
+        }
     }
 
     // 数量必须一致
@@ -341,7 +346,7 @@ vulkan::pipeline::parse_descriptor_set_layouts(
     // 4. 遍历并转换数据
     set_layouts.resize(sets.size());
     for (size_t i = 0; i < sets.size(); ++i) {
-        const SpvReflectDescriptorSet& refl_set = *(sets[i]);
+        const SpvReflectDescriptorSet& refl_set = *sets[i];
         vulkan::pipeline::descriptor_set_layout_data& layout_data = set_layouts[i];
 
         layout_data.set_number = refl_set.set;
@@ -424,9 +429,7 @@ std::expected<vulkan::pipeline::push_constant_layout, std::string_view> vulkan::
             out_layout.constants.push_back(info);
 
             const uint32_t end = member.offset + member.size;
-            if (end > max_offset) {
-                max_offset = end;
-            }
+            max_offset = std::max(end, max_offset);
         }
     }
 

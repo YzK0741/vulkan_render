@@ -46,7 +46,7 @@ namespace vulkan {
         index,            // GPU_ONLY, 需要 staging buffer
         uniform_gpu_only, // GPU_ONLY, 适合不需要频繁更新的 uniform
         uniform_coherent, // HOST_VISIBLE | HOST_COHERENT, 适合每帧更新的 uniform
-        uniform_cached    // HOST_VISIBLE | HOST_CACHED, 适合 read-back
+        uniform_cached,    // HOST_VISIBLE | HOST_CACHED, 适合 read-back
     };
 
     /**
@@ -59,7 +59,7 @@ namespace vulkan {
         texture_2d_depth,   // GPU_ONLY, 深度纹理
         texture_2d_staging, // HOST_VISIBLE, 用于动态更新的纹理
         texture_cubemap,    // GPU_ONLY, 立方体贴图
-        render_target       // GPU_ONLY, 渲染目标 (可读写)
+        render_target,       // GPU_ONLY, 渲染目标 (可读写)
     };
 
     /**

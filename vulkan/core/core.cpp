@@ -96,7 +96,7 @@ namespace vulkan {
 
 #ifdef _DEBUG
         validation_layers = {
-            "VK_LAYER_KHRONOS_validation"};
+            "VK_LAYER_KHRONOS_validation",};
 
         // 检查验证层支持
         if (check_validation_layer_support(validation_layers)) {
@@ -153,7 +153,6 @@ namespace vulkan {
         auto vkDestroyDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(
             instance, "vkDestroyDebugUtilsMessengerEXT"));
 
-        // 检查函数指针是否获取成功
         if ((vkCreateDebugUtilsMessengerEXT == nullptr) || (vkDestroyDebugUtilsMessengerEXT == nullptr)) {
             utility::panic("Failed to get debug utils function pointers");
         }
@@ -168,7 +167,7 @@ namespace vulkan {
             VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-        debug_info.pfnUserCallback = debug_callback; // 需要实现这个回调函数
+        debug_info.pfnUserCallback = debug_callback;
         debug_info.pUserData = nullptr;
 
         if (vkCreateDebugUtilsMessengerEXT(instance, &debug_info, nullptr, &debug_messenger) != VK_SUCCESS) {

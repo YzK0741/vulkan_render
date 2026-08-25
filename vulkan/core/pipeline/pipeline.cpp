@@ -73,7 +73,7 @@ namespace {
 } // namespace
 
 namespace vulkan {
-    std::expected<vk_pipeline, std::string_view> make_pipeline(
+    std::expected<vk_pipeline, std::string_view> make_pipeline( // NOLINT(*-function-cognitive-complexity)
         VkDevice& device,
         const VkRenderPass render_pass, // NOLINT(*-misplaced-const)
         const std::span<const unsigned char> vertex_shader_code,
