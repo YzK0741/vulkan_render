@@ -1,10 +1,8 @@
 #ifndef UTILITY_THREAD_POOL_H
 #define UTILITY_THREAD_POOL_H
 
-#include <condition_variable>
-#include <functional>
-#include <queue>
-#include <thread>
+#include <cstdint>
+import std;
 
 /**
  * @ingroup utility
@@ -37,9 +35,9 @@ namespace utility {
      * @brief thread pool class
      */
     class thread_pool { // NOLINT
-        enum class shutdown_policy {
+        enum class shutdown_policy : uint8_t {
             discard,
-            wait
+            wait,
         };
 
         struct task {
