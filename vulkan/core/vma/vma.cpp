@@ -371,6 +371,12 @@ namespace vulkan {
                 vkDestroyCommandPool(this->device, command_pool, nullptr);
                 command_pool = VK_NULL_HANDLE;
             }
+            // 释放缓存的 staging buffer
+            if (this->staging_cache.buffer != VK_NULL_HANDLE) {
+                vmaDestroyBuffer(this->allocator, this->staging_cache.buffer, this->staging_cache.allocation);
+                this->staging_cache = {};
+                this->buffer_size = 0;
+            }
 
             vmaDestroyAllocator(this->allocator);
             this->allocator = VK_NULL_HANDLE;
@@ -386,6 +392,50 @@ namespace vulkan {
         vkCreateFence(this->device, &fence_create_info, nullptr, &fence);
 
         return fence;
+    }
+
+    bool vma_allocator::ensure_staging_buffer(const VkDeviceSize size, VkBuffer& buffer, VmaAllocation& allocation, VmaAllocationInfo& info) {
+        // 缓存容量足够则复用
+        if (this->staging_cache.buffer != VK_NULL_HANDLE && this->buffer_size >= size) {
+            buffer = this->staging_cache.buffer;
+            allocation = this->staging_cache.allocation;
+            info = this->staging_cache.allocation_info;
+            return true;
+        }
+
+        // 容量不足：销毁当前缓存并重新创建
+        if (this->staging_cache.buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(this->allocator, this->staging_cache.buffer, this->staging_cache.allocation);
+            this->staging_cache = {};
+            this->buffer_size = 0;
+        }
+
+        VkBufferCreateInfo staging_create_info = {};
+        staging_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        staging_create_info.size = size;
+        staging_create_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+        VmaAllocationCreateInfo staging_alloc_info = {};
+        staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+        staging_alloc_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                                   VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
+        const VkResult result = vmaCreateBuffer(
+            this->allocator,
+            &staging_create_info,
+            &staging_alloc_info,
+            &buffer,
+            &allocation,
+            &info);
+
+        if (result != VK_SUCCESS) {
+            std::println(stderr, "Failed to create staging buffer: {}", static_cast<int>(result));
+            return false;
+        }
+
+        this->staging_cache = {buffer, allocation, info};
+        this->buffer_size = size;
+        return true;
     }
 
     bool vma_allocator::direct_upload(VmaAllocation const& allocation, VmaAllocationInfo& allocation_info, const void* data, const VkDeviceSize size) const {
@@ -407,31 +457,15 @@ namespace vulkan {
     }
 
     bool vma_allocator::staging_upload(const VkBuffer dst_buffer, const void* data, const VkDeviceSize size) { // NOLINT(*-misplaced-const)
-        // 创建 staging buffer
-        VkBufferCreateInfo staging_create_info = {};
-        staging_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        staging_create_info.size = size;
-        staging_create_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-
-        VmaAllocationCreateInfo staging_alloc_info = {};
-        staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
-        staging_alloc_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
-                                   VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-
         VkBuffer staging_buffer = VK_NULL_HANDLE;
         VmaAllocation staging_allocation = VK_NULL_HANDLE;
         VmaAllocationInfo staging_info = {};
 
-        const VkResult result = vmaCreateBuffer(
-            this->allocator,
-            &staging_create_info,
-            &staging_alloc_info,
-            &staging_buffer,
-            &staging_allocation,
-            &staging_info);
+        // staging buffer 是共享资源，写入 + GPU 拷贝完成期间必须互斥占用
+        std::lock_guard staging_guard(this->staging_mutex);
 
-        if (result != VK_SUCCESS) {
-            std::println(stderr, "Failed to create staging buffer: {}", static_cast<int>(result));
+        // 复用缓存中的 staging buffer，容量不足时自动重建
+        if (!this->ensure_staging_buffer(size, staging_buffer, staging_allocation, staging_info)) {
             return false;
         }
 
@@ -442,7 +476,6 @@ namespace vulkan {
                 vmaFlushAllocation(this->allocator, staging_allocation, 0, size);
             }
         } else {
-            vmaDestroyBuffer(this->allocator, staging_buffer, staging_allocation);
             return false;
         }
         // 执行拷贝命令（缓存访问由 cache_mutex 保护）
@@ -499,7 +532,6 @@ namespace vulkan {
             this->fence_cache.push_back(fence);
             this->command_cache.push_back(command_pair);
         }
-        vmaDestroyBuffer(this->allocator, staging_buffer, staging_allocation);
 
         return true;
     }
@@ -524,31 +556,15 @@ namespace vulkan {
     }
 
     bool vma_allocator::staging_image_upload(VkImage dst_image, const void* data, VkDeviceSize size, const image_create_info& info) {
-        // 创建 staging buffer（保持不变）
-        VkBufferCreateInfo buffer_create_info = {};
-        buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        buffer_create_info.size = size;
-        buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-
-        VmaAllocationCreateInfo alloc_info = {};
-        alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
-        alloc_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
-                           VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-
         VkBuffer staging_buffer = VK_NULL_HANDLE;
         VmaAllocation staging_allocation = VK_NULL_HANDLE;
         VmaAllocationInfo staging_info = {};
 
-        VkResult result = vmaCreateBuffer(
-            this->allocator,
-            &buffer_create_info,
-            &alloc_info,
-            &staging_buffer,
-            &staging_allocation,
-            &staging_info);
+        // staging buffer 是共享资源，写入 + GPU 拷贝完成期间必须互斥占用
+        std::lock_guard staging_guard(this->staging_mutex);
 
-        if (result != VK_SUCCESS) {
-            std::println("Failed to create staging buffer for image: {}", static_cast<int>(result));
+        // 复用缓存中的 staging buffer，容量不足时自动重建
+        if (!this->ensure_staging_buffer(size, staging_buffer, staging_allocation, staging_info)) {
             return false;
         }
 
@@ -559,7 +575,6 @@ namespace vulkan {
                 vmaFlushAllocation(this->allocator, staging_allocation, 0, size);
             }
         } else {
-            vmaDestroyBuffer(this->allocator, staging_buffer, staging_allocation);
             return false;
         }
         // 执行拷贝命令（缓存访问由 cache_mutex 保护）
@@ -671,7 +686,6 @@ namespace vulkan {
             this->fence_cache.push_back(fence);
             this->command_cache.push_back(command_pair);
         }
-        vmaDestroyBuffer(this->allocator, staging_buffer, staging_allocation);
 
         return true;
     }

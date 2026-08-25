@@ -97,9 +97,22 @@ namespace vulkan {
         std::mutex cache_mutex = {};
         // VkQueue 是外部同步对象，vkQueueSubmit 必须串行化
         std::mutex queue_mutex = {};
+        // staging buffer 缓存，避免每次上传都创建/销毁大块 staging 内存
+        struct staging_buffer_cache {
+            VkBuffer buffer = VK_NULL_HANDLE;
+            VmaAllocation allocation = VK_NULL_HANDLE;
+            VmaAllocationInfo allocation_info = {};
+        };
+        staging_buffer_cache staging_cache = {};
+        // 当前缓存的 staging buffer 容量（字节）
+        VkDeviceSize buffer_size = 0;
+        // staging buffer 是共享资源，写入与 GPU 拷贝期间必须互斥占用
+        std::mutex staging_mutex = {};
         uint32_t queue_family_index = 0;
 
         [[nodiscard]] VkFence create_fence() const;
+        // 在 staging_mutex 持有时调用：缓存容量足够则复用，否则销毁并重建
+        bool ensure_staging_buffer(VkDeviceSize size, VkBuffer& buffer, VmaAllocation& allocation, VmaAllocationInfo& info);
         bool direct_upload(VmaAllocation const& allocation, VmaAllocationInfo& allocation_info, const void* data, uint64_t size) const;
         bool staging_upload(VkBuffer dst_buffer, const void* data, VkDeviceSize size);
         bool direct_image_upload(VmaAllocation allocation, const void* data, VkDeviceSize size) const;
