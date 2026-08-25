@@ -6,34 +6,45 @@ import vulkan.core.pipeline;
 #include "utility/thread_pool/thread_pool.cppm"
 
 int main() {
+    constexpr int rounds = 4;
     utility::thread_pool pool(2);
     vulkan::runtime runtime;
     std::vector<uint8_t> data(1024 * 1024 * 512);
-    std::vector<uint64_t> v_buffer;
+
+    // 预分配 + 原子索引，避免并发 push_back
+    std::vector<uint64_t> v_buffer(rounds), i_buffer(rounds), u_buffer(rounds);
+    std::atomic<int> v_idx{0}, i_idx{0}, u_idx{0};
+    std::atomic<int64_t> v_ns{0}, i_ns{0}, u_ns{0};
+
     auto task_vertex = [&] {
+        auto t0 = std::chrono::steady_clock::now();
         auto handle = runtime->vma.create_buffer(std::span(data), vulkan::buffer_type::vertex);
-        v_buffer.push_back(handle);
+        auto t1 = std::chrono::steady_clock::now();
+        v_buffer[v_idx.fetch_add(1)] = handle;
+        v_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
         std::println("{}b vertex data sent", data.size());
     };
 
-    std::vector<uint64_t> i_buffer;
-
     auto task_index = [&] {
+        auto t0 = std::chrono::steady_clock::now();
         auto handle = runtime->vma.create_buffer(std::span(data), vulkan::buffer_type::index);
-        i_buffer.push_back(handle);
+        auto t1 = std::chrono::steady_clock::now();
+        i_buffer[i_idx.fetch_add(1)] = handle;
+        i_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
         std::println("{}b index data sent", data.size());
     };
 
-    std::vector<uint64_t> u_buffer;
-
     auto task_uniform = [&] {
+        auto t0 = std::chrono::steady_clock::now();
         auto handle = runtime->vma.create_buffer(std::span(data), vulkan::buffer_type::uniform_coherent);
-        u_buffer.push_back(handle);
+        auto t1 = std::chrono::steady_clock::now();
+        u_buffer[u_idx.fetch_add(1)] = handle;
+        u_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
         std::println("{}b uniform data sent", data.size());
     };
 
     auto start = std::chrono::steady_clock::now();
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < rounds; i++) {
         pool.post(task_vertex);
         pool.post(task_index);
         pool.post(task_uniform);
@@ -45,6 +56,9 @@ int main() {
 
     std::println("{}b total size sent", 12 * data.size());
     std::println("total time cost {}", end - start);
+    std::println("vertex  avg: {:.1f} ms/call (staging: memcpy + gpu copy)", v_ns.load() / 1e6 / rounds);
+    std::println("index   avg: {:.1f} ms/call (staging: memcpy + gpu copy)", i_ns.load() / 1e6 / rounds);
+    std::println("uniform avg: {:.1f} ms/call (direct : memcpy only)     ", u_ns.load() / 1e6 / rounds);
 
     for (auto const& v : v_buffer) {
         runtime->vma.free_buffer(v);
