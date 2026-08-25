@@ -8,6 +8,7 @@
 # 已禁用的噪音/误报检查（图形代码 + 自研 std 模块场景）：
 #   - bugprone-std-namespace-modification     : std/ 自研 std 模块向 std 添加扩展是有意设计（2000+ 误报）
 #   - bugprone-invalid-enum-default-initialization : Vulkan 结构体全 0 初始化是标准做法
+#   - bugprone-easily-swappable-parameters         : 同类型相邻参数在图形 API 中常见，误报为主
 #   - performance-enum-size                   : 对每个无底层类型枚举都报，收益微小
 #   - readability-magic-numbers               : Vulkan 调用充满常量/0/1，噪音为主
 #   - readability-redundant-member-init       : 成员默认初始化冗余提示，风格噪音
@@ -20,6 +21,7 @@ Checks: >
   bugprone-*,
   -bugprone-std-namespace-modification,
   -bugprone-invalid-enum-default-initialization,
+  -bugprone-easily-swappable-parameters,
   clang-analyzer-*,
   performance-*,
   -performance-enum-size,
