@@ -3,6 +3,8 @@ project(vulkan_render)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
+set(CMAKE_CXX_FLAGS "-std=c++23")
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Vulkan REQUIRED)
 find_package(glfw3 REQUIRED)
@@ -85,6 +87,7 @@ target_sources(vulkan_lib
         vulkan/model/model.cpp
         vulkan/core/pipeline/spirv_parser.cpp
         vulkan/runtime.cpp
+        third_party/spirv-reflect/spirv_reflect.c
 )
 add_library(gltf_loader STATIC)
 target_sources(gltf_loader
@@ -119,6 +122,10 @@ target_link_libraries(utility
         std_lib
 )
 
+target_link_libraries(thread_pool
+        std_lib
+)
+
 target_link_libraries(${PROJECT_NAME}
         utility
         vulkan_lib
@@ -141,6 +148,10 @@ target_compile_options(vulkan_lib PRIVATE
 )
 
 target_compile_options(utility PRIVATE
+        ${COMPILE_OPTIONS}
+)
+
+target_compile_options(thread_pool PRIVATE
         ${COMPILE_OPTIONS}
 )
 
