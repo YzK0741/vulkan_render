@@ -96,7 +96,8 @@ namespace vulkan {
 
 #ifdef _DEBUG
         validation_layers = {
-            "VK_LAYER_KHRONOS_validation",};
+            "VK_LAYER_KHRONOS_validation",
+        };
 
         // 检查验证层支持
         if (check_validation_layer_support(validation_layers)) {
@@ -264,6 +265,10 @@ namespace vulkan {
         create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
         const queue_family_indices indices = find_queue_families(this->physical_device, this->surface);
+        if (!indices.compute_family || !indices.graphics_family || !indices.present_family) {
+            utility::panic("find queue family index failed");
+        }
+
         const uint32_t queueFamilyIndices[] = {indices.graphics_family.value(), indices.present_family.value()};
 
         if (indices.graphics_family != indices.present_family) {

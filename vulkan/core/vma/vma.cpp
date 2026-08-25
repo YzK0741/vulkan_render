@@ -766,7 +766,7 @@ namespace vulkan {
 
         const VkDeviceSize image_size = size_byte;
 
-        if (const VkDeviceSize expected_size = create_info.height * create_info.width * sizeof_vk_format(create_info.format); expected_size != image_size) {
+        if (const VkDeviceSize expected_size = static_cast<VkDeviceSize>(create_info.height) * create_info.width * sizeof_vk_format(create_info.format); expected_size != image_size) {
             std::println(stderr, "incorrect image size [{}], expected [{}]", image_size, expected_size);
         }
 

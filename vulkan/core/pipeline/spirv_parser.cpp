@@ -2,9 +2,8 @@ module;
 
 #include "../../../third_party/spirv-reflect/spirv_reflect.h"
 
-#include <vulkan/vulkan.h>
-
 #include <algorithm>
+#include <vulkan/vulkan.h>
 
 module vulkan.pipeline.spirv_parser;
 import utility;

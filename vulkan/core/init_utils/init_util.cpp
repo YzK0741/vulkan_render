@@ -73,10 +73,15 @@ logical_device create_logical_device(
         utility::panic("Queue families not complete");
     }
 
+    if (!create_info.queue_families.compute_family || !create_info.queue_families.graphics_family || !create_info.queue_families.present_family) {
+        utility::panic("queue family is empty");
+    }
+
     // 使用set收集唯一的队列族索引
     std::set<uint32_t> unique_queue_families = {
         create_info.queue_families.graphics_family.value(),
-        create_info.queue_families.present_family.value()};
+        create_info.queue_families.present_family.value(),
+    };
 
     // 可选：添加其他队列族
     if (create_info.queue_families.compute_family) {
@@ -156,7 +161,7 @@ logical_device create_logical_device(
     return logical_device;
 }
 
-queue_family_indices find_queue_families(VkPhysicalDevice const& device, VkSurfaceKHR const& surface) noexcept {
+queue_family_indices find_queue_families(VkPhysicalDevice const& device, VkSurfaceKHR const& surface) noexcept { // NOLINT(*-function-cognitive-complexity)
     queue_family_indices indices;
 
     // 获取队列族属性
@@ -221,9 +226,15 @@ queue_family_indices find_queue_families(VkPhysicalDevice const& device, VkSurfa
 
     if (!indices.transfer_family.has_value()) {
         // 优先使用图形队列，如果没有图形队列则使用第一个可用的队列
-        indices.transfer_family = indices.graphics_family.has_value()
-                                      ? indices.graphics_family
-                                      : (queue_family_count > 0 ? std::optional<uint32_t>(0) : std::nullopt);
+        if (indices.graphics_family.has_value()) {
+            indices.transfer_family = indices.graphics_family;
+        } else {
+            if (queue_family_count > 0) {
+                indices.transfer_family = {0};
+            } else {
+                indices.transfer_family = std::nullopt;
+            }
+        }
     }
 
     return indices;
@@ -251,7 +262,8 @@ VkPhysicalDevice pick_suitable_device(VkInstance const& instance, VkSurfaceKHR s
 
         // 检查扩展支持
         const std::vector<const char*> requiredExtensions = {
-            VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+            VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        };
         if (!check_device_extension_support(device, requiredExtensions)) {
             continue;
         }
@@ -310,7 +322,8 @@ VkExtent2D choose_swap_extent(VkSurfaceCapabilitiesKHR const& capabilities, GLFW
     if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
         return capabilities.currentExtent;
     }
-    int width, height;
+    int width;
+    int height;
     glfwGetFramebufferSize(window, &width, &height);
 
     // 确保宽度和高度不为0
@@ -319,7 +332,8 @@ VkExtent2D choose_swap_extent(VkSurfaceCapabilitiesKHR const& capabilities, GLFW
 
     VkExtent2D actual_extent = {
         .width = static_cast<uint32_t>(width),
-        .height = static_cast<uint32_t>(height)};
+        .height = static_cast<uint32_t>(height),
+    };
 
     actual_extent.width = std::clamp(actual_extent.width,
                                      capabilities.minImageExtent.width,
@@ -356,7 +370,8 @@ VkFormat find_depth_format(const VkPhysicalDevice& physical_device) noexcept {
         VK_FORMAT_D32_SFLOAT,
         VK_FORMAT_D24_UNORM_S8_UINT,
         VK_FORMAT_D16_UNORM_S8_UINT,
-        VK_FORMAT_D16_UNORM};
+        VK_FORMAT_D16_UNORM,
+    };
 
     for (VkFormat format : candidates) {
         VkFormatProperties props;
