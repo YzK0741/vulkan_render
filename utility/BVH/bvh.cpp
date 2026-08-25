@@ -18,8 +18,9 @@ bool hit(glm::vec3 const& min, glm::vec3 const& max, glm::vec3 const& start, glm
             float t1 = (min[axis] - start[axis]) * invD;
             float t2 = (max[axis] - start[axis]) * invD;
 
-            if (t1 > t2)
+            if (t1 > t2) {
                 std::swap(t1, t2);
+            }
 
             near = std::max(near, t1);
             far = std::min(far, t2);
@@ -35,13 +36,13 @@ bool hit(glm::vec3 const& min, glm::vec3 const& max, glm::vec3 const& start, glm
 namespace {
     utility::morton_code morton_encode(const uint32_t x, const uint32_t y, const uint32_t z) {
         utility::morton_code code;
-        const auto out = code.data.data();
+        auto *const out = code.data.data();
 
         auto spread = [](const uint32_t n) -> __uint128_t {
             __uint128_t output = 0;
             for (int i = 0; i < 32; i++) {
-                const __uint128_t bit = (n >> i) & 1u;
-                output |= (bit << (3 * i));
+                const __uint128_t bit = (n >> i) & 1u; // NOLINT(*-signed-bitwise)
+                output |= (bit << (3 * i)); // NOLINT(*-signed-bitwise)
             }
             return output;
         };
@@ -85,9 +86,7 @@ namespace utility {
             pos.y = p.y >= 0 ? max.y : min.y;
             pos.z = p.z >= 0 ? max.z : min.z;
 
-            if (glm::dot(pos, glm::vec3(p.x, p.y, p.z)) + p.w < 0)
-                return false;
-            return true;
+            return glm::dot(pos, glm::vec3(p.x, p.y, p.z)) + p.w >= 0;
         });
     }
 } // namespace utility

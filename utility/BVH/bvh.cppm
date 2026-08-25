@@ -42,7 +42,7 @@ namespace utility {
         T* extra_data = nullptr;
 
         bool is_valid() {
-            return !(this->min.x > this->max.x || this->min.y > this->max.y || this->min.z > this->max.z);
+            return this->min.x <= this->max.x && this->min.y <= this->max.y && this->min.z <= this->max.z;
         }
         [[nodiscard]] glm::vec3 get_midpoint() const noexcept {
             glm::vec3 midpoint;
@@ -175,7 +175,7 @@ namespace utility {
          * @param leaves leaf nodes sorted by morton code
          * @return the root node on success, error message on failure
          */
-        static std::expected<std::unique_ptr<bvh_node<T>>, std::string> build_from_leaves(std::vector<bvh_node<T>> const& leaves) {
+        static std::expected<std::unique_ptr<bvh_node<T>>, std::string> build_from_leaves(std::vector<bvh_node<T>> const& leaves) { // NOLINT(*-function-cognitive-complexity)
             using fail = std::unexpected<std::string>;
             auto leave_it = leaves.begin();
 

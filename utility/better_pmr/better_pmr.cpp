@@ -4,12 +4,12 @@ module;
 
 module utility.better_pmr;
 
-void* mimalloc_memory_resource::do_allocate(std::size_t bytes, std::size_t align) {
-    return mi_aligned_alloc(align, bytes);
+void* mimalloc_memory_resource::do_allocate(const std::size_t size, std::size_t alignment) {
+    return mi_aligned_alloc(alignment, size);
 }
 
-void mimalloc_memory_resource::do_deallocate(void* p, [[maybe_unused]] std::size_t bytes, const std::size_t align) {
-    mi_free_aligned(p, align);
+void mimalloc_memory_resource::do_deallocate(void* p, [[maybe_unused]] std::size_t size, const std::size_t alignment) {
+    mi_free_aligned(p, alignment);
 }
 
 bool mimalloc_memory_resource::do_is_equal(memory_resource const& other) const noexcept {

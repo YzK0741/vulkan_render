@@ -9,9 +9,9 @@ export import std;
 
 class mimalloc_memory_resource : public std::pmr::memory_resource // NOLINT
 {
-    void* do_allocate(std::size_t, std::size_t) override;
-    void do_deallocate(void*, std::size_t, std::size_t) override;
-    [[nodiscard]] bool do_is_equal(memory_resource const&) const noexcept override;
+    void* do_allocate(std::size_t size, std::size_t alignment) override;
+    void do_deallocate(void* p, std::size_t size, std::size_t alignment) override;
+    [[nodiscard]] bool do_is_equal(memory_resource const& resource) const noexcept override;
 };
 
 namespace utility {
