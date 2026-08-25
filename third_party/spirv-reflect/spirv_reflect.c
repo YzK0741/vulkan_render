@@ -21,7 +21,7 @@
 #include <string.h>
 
 #if defined(WIN32)
-#define _CRTDBG_MAP_ALLOC
+//#define _CRTDBG_MAP_ALLOC
 #include <crtdbg.h>
 #include <stdlib.h>
 #else
