@@ -1,20 +1,9 @@
 module;
 
-#include <cstdint>
-#include <expected>
 #include <fastgltf/core.hpp>
 #include <fastgltf/tools.hpp>
 #include <fastgltf/types.hpp>
-#include <filesystem>
 #include <glm/glm.hpp>
-#include <map>
-#include <print>
-#include <span>
-#include <string>
-#include <string_view>
-#include <utility>
-#include <variant>
-#include <vector>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
@@ -92,7 +81,7 @@ namespace {
 
     // fastgltf does not define bitwise operators for Options, combine flags via the underlying type.
     constexpr fastgltf::Options load_options() {
-        const auto flags = static_cast<std::uint64_t>(fastgltf::Options::LoadExternalBuffers) | static_cast<std::uint64_t>(fastgltf::Options::LoadExternalImages);
+        constexpr auto flags = static_cast<std::uint64_t>(fastgltf::Options::LoadExternalBuffers) | static_cast<std::uint64_t>(fastgltf::Options::LoadExternalImages);
         return static_cast<fastgltf::Options>(flags);
     }
 
@@ -351,13 +340,14 @@ namespace {
             .vertex = std::move(vertex),
             .index = std::move(index_data.data),
             .index_component_type = index_data.component_type,
-            .texture_indices = std::move(texture_indices)};
+            .texture_indices = std::move(texture_indices),
+        };
     }
 
     glm::mat4 to_glm_mat4(const fastgltf::math::fmat4x4& matrix) {
         glm::mat4 result;
-        for (std::size_t column = 0; column < 4; ++column) {
-            for (std::size_t row = 0; row < 4; ++row) {
+        for (int column = 0; column < 4; ++column) {
+            for (int row = 0; row < 4; ++row) {
                 result[column][row] = matrix[column][row];
             }
         }
