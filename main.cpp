@@ -64,6 +64,23 @@ namespace {
         return std::nullopt;
     }
 
+    // 从当前工作目录向上逐级查找 gltf_model/ 目录下的默认模型文件
+    std::optional<std::filesystem::path> locate_model_file() {
+        std::filesystem::path current = std::filesystem::current_path();
+        for (int depth = 0; depth < 4; ++depth) {
+            const std::filesystem::path candidate = current / "gltf_model" / "DamagedHelmet.gltf";
+            if (std::filesystem::is_regular_file(candidate)) {
+                return candidate;
+            }
+            const std::filesystem::path parent = current.parent_path();
+            if (parent == current) {
+                break;
+            }
+            current = parent;
+        }
+        return std::nullopt;
+    }
+
     // 读取单个着色器 SPIR-V 文件并打印信息；失败直接 panic
     void load_shader(const std::filesystem::path& dir, std::string_view file_name, std::vector<unsigned char>& out) {
         const std::filesystem::path path = dir / file_name;
@@ -240,10 +257,14 @@ int main(int argc, char** argv) {
     load_and_create_pipeline(runtime, *shaders_dir, "triangle", "triangle.vert.spv", "triangle.frag.spv");
     load_and_create_pipeline(runtime, *shaders_dir, "pbr", "pbr.vert.spv", "pbr.frag.spv");
 
-    // 4. 加载 glTF 模型（默认 DamagedHelmet，可用命令行参数指定其它 .gltf/.glb）
-    std::string model_path = "C:/Users/23530/Desktop/yzk/glTF-Sample-Assets/Models/DamagedHelmet/glTF/DamagedHelmet.gltf";
+    // 4. 加载 glTF 模型（默认 gltf_model/ 下的 DamagedHelmet，可用命令行参数指定其它 .gltf/.glb）
+    std::string model_path;
     if (argc > 1) {
         model_path = argv[1];
+    } else if (const std::optional<std::filesystem::path> located = locate_model_file()) {
+        model_path = located->string();
+    } else {
+        utility::panic("cannot find gltf_model/DamagedHelmet.gltf. run the program from the project root or pass a model path as argv[1]");
     }
     std::println("loading model: {}", model_path);
     auto scenes = gltf::load_model(model_path);
