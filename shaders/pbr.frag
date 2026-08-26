@@ -58,6 +58,25 @@ vec3 fresnel_schlick(float cos_theta, vec3 f0) {
     return f0 + (1.0 - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
 }
 
+// 菲涅尔：粗糙度变体（IBL 环境反射用，粗糙度越高反射越弱）
+vec3 fresnel_schlick_roughness(float cos_theta, vec3 f0, float roughness) {
+    return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
+}
+
+// 程序化环境光：按方向采样渐变天空/地面 + 太阳亮斑，低成本模拟 IBL
+vec3 environment_color(vec3 dir) {
+    float t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0); // 0 朝下，1 朝上
+    const vec3 ground = vec3(0.03, 0.03, 0.05) * 0.75;
+    const vec3 horizon = vec3(0.16, 0.19, 0.26) * 0.75;
+    const vec3 sky = vec3(0.28, 0.45, 0.75) * 0.75;
+    vec3 env = t < 0.5 ? mix(ground, horizon, t * 2.0) : mix(horizon, sky, (t - 0.5) * 2.0);
+    // 太阳亮斑：方向与主光对齐时最亮，金属表面的"光泽"主要来自这里
+    const vec3 sun_dir = normalize(vec3(0.3, 1.0, 0.5));
+    float sun = pow(max(dot(dir, sun_dir), 0.0), 64.0);
+    env += vec3(1.0, 0.95, 0.85) * sun * 1.35;
+    return env;
+}
+
 // ACES 电影级色调映射
 vec3 aces_tone_mapping(vec3 color) {
     return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);
@@ -102,11 +121,23 @@ void main() {
 
     vec3 kd = (1.0 - f) * (1.0 - metallic);
     float ndotl = max(dot(n, l), 0.0);
-    vec3 radiance = vec3(10.0) * ndotl;
+    vec3 radiance = vec3(7.5) * ndotl;
 
-    vec3 ambient = vec3(0.03) * base_color.rgb * ao;
     vec3 diffuse = kd * base_color.rgb / PI;
-    vec3 color = ambient + (diffuse + specular) * radiance + emissive;
+
+    // ---- 模拟 IBL 环境光：增强金属/光滑表面的光泽 ----
+    // 漫反射按法线方向采样环境；镜面反射按粗糙度模糊后的反射方向采样，
+    // 再用菲涅尔（粗糙度变体）控制反射强度：金属反射最强、粗糙表面最弱
+    vec3 r = reflect(-v, n);
+    r = normalize(mix(r, n, roughness * 0.7));
+    vec3 ibl_diffuse = environment_color(n);
+    vec3 ibl_specular = environment_color(r) * ao;
+    vec3 fresnel_ibl = fresnel_schlick_roughness(max(dot(n, v), 0.0), f0, roughness);
+
+    vec3 ambient = ibl_diffuse * base_color.rgb * ao;
+    vec3 specular_ibl = ibl_specular * fresnel_ibl;
+
+    vec3 color = ambient + (diffuse + specular) * radiance + specular_ibl + emissive;
 
     // ---- 色调映射 + Gamma 校正 ----
     color = aces_tone_mapping(color);
