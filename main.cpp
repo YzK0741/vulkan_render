@@ -133,7 +133,7 @@ namespace {
             return bundle;
         }
 
-        vulkan::image_create_info create_info{};
+        vulkan::image_create_info create_info = {};
         create_info.width = texture.width;
         create_info.height = texture.height;
         create_info.mip_levels = 1;
@@ -145,7 +145,7 @@ namespace {
             return bundle;
         }
 
-        VkImageViewCreateInfo view_info{};
+        VkImageViewCreateInfo view_info = {};
         view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         view_info.image = detail->image;
         view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -156,7 +156,7 @@ namespace {
     }
 
     VkSampler create_texture_sampler(const VkDevice device) {
-        VkSamplerCreateInfo info{};
+        VkSamplerCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
         info.magFilter = VK_FILTER_LINEAR;
         info.minFilter = VK_FILTER_LINEAR;
@@ -409,8 +409,8 @@ int main(int argc, char** argv) {
     std::array<VkDescriptorImageInfo, 5> image_infos{};
     std::array<VkWriteDescriptorSet, 5> texture_writes{};
     for (int binding = 0; binding < 5; ++binding) {
-        const texture_bundle& bundle = material_textures[binding].view != VK_NULL_HANDLE ? material_textures[binding] : white_texture;
-        image_infos[binding] = {sampler, bundle.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        const auto& [image, view] = material_textures[binding].view != VK_NULL_HANDLE ? material_textures[binding] : white_texture;
+        image_infos[binding] = {.sampler = sampler, .imageView = view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         texture_writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         texture_writes[binding].dstSet = *texture_set;
         texture_writes[binding].dstBinding = static_cast<uint32_t>(binding);
@@ -449,13 +449,13 @@ int main(int argc, char** argv) {
 
     // 14. 每帧槽位一条命令缓冲
     std::vector<vulkan::vk_command_buffer> command_buffers;
-    command_buffers.reserve(runtime->MAX_FRAMES_IN_FLIGHT);
-    for (int slot = 0; slot < runtime->MAX_FRAMES_IN_FLIGHT; ++slot) {
+    command_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+    for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
         command_buffers.push_back(runtime->make_command_buffer());
     }
 
     // 15. 材质 push constants
-    pbr_push_constants push{};
+    pbr_push_constants push = {};
     push.flags = 0;
     if (texture_indices.contains("normal")) {
         push.flags |= 1u;
@@ -548,7 +548,7 @@ int main(int argc, char** argv) {
         vkCmdSetScissor(*command_buffer, 0, 1, &scissor);
 
         const VkBuffer vertex_handle = vertex_detail->buffer;
-        const VkDeviceSize vertex_offset = 0;
+        constexpr VkDeviceSize vertex_offset = 0;
         vkCmdBindVertexBuffers(*command_buffer, 0, 1, &vertex_handle, &vertex_offset);
         vkCmdBindIndexBuffer(*command_buffer, index_detail->buffer, 0, index_type);
 
