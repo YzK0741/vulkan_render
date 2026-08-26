@@ -134,6 +134,7 @@ target_link_libraries(${PROJECT_NAME}
         OpenSSL::Crypto
         thread_pool
         std_lib
+        glm::glm
 )
 
 target_compile_options(std_lib PRIVATE
