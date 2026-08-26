@@ -224,22 +224,39 @@ namespace vulkan {
         std::vector<VkPushConstantRange> push_constant_ranges;
         push_constant_ranges.reserve(2);
 
-        const auto add_push_constant_range = [&push_constant_ranges](const VkShaderStageFlags stage_flags, const uint32_t total_size) -> bool {
-            if (total_size == 0) {
+        // 每个 stage 的 push constant 块都以偏移 0 为基准（shader 视角），
+        // 多个 stage 声明同一 offset 范围的块时必须合并为一个 range（stageFlags 取并集），
+        // 否则会出现 shader 块不在对应 stage range 内的非法布局（VUID-VkGraphicsPipelineCreateInfo-layout-10069）。
+        const auto add_push_constant_range = [&push_constant_ranges](const VkShaderStageFlags stage_flags, const uint32_t block_offset, const uint32_t block_size) -> bool {
+            if (block_size == 0) {
                 return true;
             }
-            const uint32_t size = to_multiple_of_4(total_size);
-            const uint32_t offset = push_constant_ranges.empty()
-                                        ? 0
-                                        : push_constant_ranges.back().offset + push_constant_ranges.back().size;
-            if (offset + size > 256) {
+            const uint32_t size = to_multiple_of_4(block_size);
+            const uint32_t end = block_offset + size;
+
+            for (auto& range : push_constant_ranges) {
+                const uint32_t range_end = range.offset + range.size;
+                if (block_offset < range_end && range.offset < end) {
+                    const uint32_t merged_offset = std::min(range.offset, block_offset);
+                    const uint32_t merged_end = std::max(range_end, end);
+                    if (merged_end - merged_offset > 256) {
+                        return false;
+                    }
+                    range.offset = merged_offset;
+                    range.size = merged_end - merged_offset;
+                    range.stageFlags |= stage_flags;
+                    return true;
+                }
+            }
+
+            if (end > 256) {
                 return false;
             }
-            push_constant_ranges.push_back({stage_flags, offset, size});
+            push_constant_ranges.push_back({stage_flags, block_offset, size});
             return true;
         };
 
-        if (!add_push_constant_range(VK_SHADER_STAGE_VERTEX_BIT, vertex_push_constant.total_size) || !add_push_constant_range(VK_SHADER_STAGE_FRAGMENT_BIT, fragment_push_constant.total_size)) {
+        if (!add_push_constant_range(VK_SHADER_STAGE_VERTEX_BIT, 0, vertex_push_constant.total_size) || !add_push_constant_range(VK_SHADER_STAGE_FRAGMENT_BIT, 0, fragment_push_constant.total_size)) {
             return fail("push constant range too big");
         }
 
