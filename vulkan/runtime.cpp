@@ -10,4 +10,8 @@ namespace vulkan {
         this->pipelines.emplace(pipeline_name, std::move(make_result).value());
         return {};
     }
+    const vk_pipeline* runtime::get_pipeline(const std::string_view pipeline_name) const noexcept {
+        const auto it = this->pipelines.find(pipeline_name);
+        return it == this->pipelines.end() ? nullptr : &it->second;
+    }
 } // namespace vulkan

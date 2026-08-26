@@ -35,5 +35,13 @@ namespace vulkan {
             std::string_view pipeline_name,
             std::span<const unsigned char> vertex_shader_code,
             std::span<const unsigned char> fragment_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief get a cached pipeline by its name
+         * @param pipeline_name the name passed to make_pipeline()
+         * @return pointer to the cached pipeline, or nullptr if no pipeline with that name exists
+         */
+        [[nodiscard]] const vk_pipeline* get_pipeline(std::string_view pipeline_name) const noexcept;
     };
 } // namespace vulkan
