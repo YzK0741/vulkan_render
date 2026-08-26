@@ -1,11 +1,11 @@
-import std;
-import gltf_loader;
-import vulkan.runtime;
-
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <vulkan/vulkan.h>
+import std;
+import gltf_loader;
+import utility;
+import vulkan.runtime;
 
 namespace {
     // 与 pbr.vert 的顶点输入一致：position(0) normal(1) uv(2) tangent(3)，stride 44
@@ -64,37 +64,31 @@ namespace {
         return std::nullopt;
     }
 
-    // 读取单个着色器 SPIR-V 文件并打印信息；失败返回 false
-    bool load_shader(const std::filesystem::path& dir, std::string_view file_name, std::vector<unsigned char>& out) {
+    // 读取单个着色器 SPIR-V 文件并打印信息；失败直接 panic
+    void load_shader(const std::filesystem::path& dir, std::string_view file_name, std::vector<unsigned char>& out) {
         const std::filesystem::path path = dir / file_name;
         if (!read_binary_file(path, out)) {
-            std::println("ERROR: cannot open shader file '{}'", path.string());
-            return false;
+            utility::panic(std::format("cannot open shader file '{}'", path.string()));
         }
         std::println("loaded shader: {} ({} bytes)", path.string(), out.size());
-        return true;
     }
 
-    // 加载一对 vertex/fragment SPIR-V，并通过 runtime 创建管线
-    bool load_and_create_pipeline(vulkan::runtime& runtime,
+    // 加载一对 vertex/fragment SPIR-V，并通过 runtime 创建管线；失败直接 panic
+    void load_and_create_pipeline(vulkan::runtime& runtime,
                                   const std::filesystem::path& shaders_dir,
                                   std::string_view pipeline_name,
                                   std::string_view vertex_file,
                                   std::string_view fragment_file) {
         std::vector<unsigned char> vertex_code;
         std::vector<unsigned char> fragment_code;
-        if (!load_shader(shaders_dir, vertex_file, vertex_code) ||
-            !load_shader(shaders_dir, fragment_file, fragment_code)) {
-            return false;
-        }
+        load_shader(shaders_dir, vertex_file, vertex_code);
+        load_shader(shaders_dir, fragment_file, fragment_code);
 
         const std::expected<void, std::string> result = runtime.make_pipeline(pipeline_name, vertex_code, fragment_code);
         if (!result) {
-            std::println("FAILED to create pipeline '{}': {}", pipeline_name, result.error());
-            return false;
+            utility::panic(std::format("failed to create pipeline '{}': {}", pipeline_name, result.error()));
         }
         std::println("SUCCESS: pipeline '{}' created and cached in the runtime", pipeline_name);
-        return true;
     }
 
     // 把 stb 解码的纹理数据转成 RGBA（3 通道补 alpha，1 通道灰度扩展）
@@ -207,13 +201,11 @@ int main(int argc, char** argv) {
     std::println("loading model: {}", model_path);
     auto scenes = gltf::load_model(model_path);
     if (!scenes) {
-        std::println("ERROR: failed to load model: {}", static_cast<int>(scenes.error()));
-        return 1;
+        utility::panic(std::format("failed to load model '{}': error code {}", model_path, static_cast<int>(scenes.error())));
     }
     if (scenes->scene.empty() || scenes->scene[0].nodes.empty() ||
         scenes->scene[0].nodes[0].meshes.empty() || scenes->scene[0].nodes[0].meshes[0].primitives.empty()) {
-        std::println("ERROR: model has no drawable primitive");
-        return 1;
+        utility::panic(std::format("model '{}' has no drawable primitive", model_path));
     }
     const auto& prim = scenes->scene[0].nodes[0].meshes[0].primitives[0];
     std::println("model loaded: {} textures, {} primitives", scenes->textures.size(), scenes->scene[0].nodes[0].meshes[0].primitives.size());
@@ -228,8 +220,7 @@ int main(int argc, char** argv) {
     const auto* uv_portion = get_portion("TEXCOORD_0");
     const auto* tangent_portion = get_portion("TANGENT");
     if (position_portion == nullptr) {
-        std::println("ERROR: model has no POSITION attribute");
-        return 1;
+        utility::panic("model has no POSITION attribute");
     }
 
     const glm::vec3 default_normal(0.0f, 1.0f, 0.0f);
@@ -253,15 +244,13 @@ int main(int argc, char** argv) {
 
     // 6. 索引数据与类型
     if (prim.index.empty()) {
-        std::println("ERROR: model has no index data");
-        return 1;
+        utility::panic("model has no index data");
     }
     VkIndexType index_type = VK_INDEX_TYPE_UINT16;
     if (prim.index_component_type == gltf::component_type::unsigned_int_t) {
         index_type = VK_INDEX_TYPE_UINT32;
     } else if (prim.index_component_type != gltf::component_type::unsigned_short_t) {
-        std::println("ERROR: unsupported index component type: {}", static_cast<int>(prim.index_component_type));
-        return 1;
+        utility::panic(std::format("unsupported index component type: {}", static_cast<int>(prim.index_component_type)));
     }
     const uint32_t index_count = static_cast<uint32_t>(prim.index.size() / (index_type == VK_INDEX_TYPE_UINT32 ? 4 : 2));
     const auto read_index = [&prim, index_type](const size_t i) -> uint32_t {
@@ -332,15 +321,13 @@ int main(int argc, char** argv) {
     const auto* vertex_detail = runtime->vma.get_buffer_detail(vertex_buffer);
     const auto* index_detail = runtime->vma.get_buffer_detail(index_buffer);
     if (vertex_detail == nullptr || index_detail == nullptr) {
-        std::println("ERROR: failed to create mesh buffers");
-        return 1;
+        utility::panic("failed to create mesh buffers");
     }
 
     // 11. 取 PBR 管线
     const auto* pipeline = runtime.get_pipeline("pbr");
     if (pipeline == nullptr) {
-        std::println("ERROR: pipeline 'pbr' not found in runtime");
-        return 1;
+        utility::panic("pipeline 'pbr' not found in runtime");
     }
 
     // 12. 材质纹理：albedo 用 sRGB（PBR 线性空间），其余数据贴图用 UNORM
@@ -390,15 +377,14 @@ int main(int argc, char** argv) {
     constexpr size_t ubo_size = sizeof(camera_ubo);
     std::vector<uint64_t> ubo_buffers;
     std::vector<vulkan::vk_descriptor_set> ubo_sets;
-    ubo_buffers.reserve(runtime->MAX_FRAMES_IN_FLIGHT);
-    ubo_sets.reserve(runtime->MAX_FRAMES_IN_FLIGHT);
-    for (int slot = 0; slot < runtime->MAX_FRAMES_IN_FLIGHT; ++slot) {
+    ubo_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+    ubo_sets.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+    for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
         camera_ubo initial{};
         ubo_buffers.push_back(runtime->vma.create_buffer(std::span(&initial, 1), vulkan::buffer_type::uniform_coherent));
         const auto* ubo_detail = runtime->vma.get_buffer_detail(ubo_buffers.back());
         if (ubo_detail == nullptr) {
-            std::println("ERROR: failed to create ubo buffer");
-            return 1;
+            utility::panic("failed to create ubo buffer");
         }
 
         auto ubo_set = runtime->make_descriptor_set(pipeline->get_descriptor_set_layouts()[0]);
