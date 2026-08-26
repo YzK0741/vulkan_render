@@ -692,13 +692,11 @@ namespace vulkan {
 
     uint64_t vma_allocator::create_buffer(const unsigned char* data, const uint64_t size_byte, const buffer_type type) {
         uint64_t handle = 0;
-        {
-            std::lock_guard guard(this->access_mutex);
-            if (const auto result = this->distribute(); result) {
-                handle = result.value();
-            } else {
-                return handle;
-            }
+        // distribute() 内部自带锁（enable_handle_distribute::access_mutex），无需外层持锁
+        if (const auto result = this->distribute(); result) {
+            handle = result.value();
+        } else {
+            return handle;
         }
 
         const auto allocation_create_info = get_allocation_info_from_type(type);
@@ -755,13 +753,11 @@ namespace vulkan {
 
     uint64_t vma_allocator::create_image(const unsigned char* data, const uint64_t size_byte, image_create_info const& create_info, const image_type type) {
         uint64_t handle = 0;
-        {
-            std::lock_guard guard(this->access_mutex);
-            if (const auto result = this->distribute(); result) {
-                handle = result.value();
-            } else {
-                return handle;
-            }
+        // distribute() 内部自带锁（enable_handle_distribute::access_mutex），无需外层持锁
+        if (const auto result = this->distribute(); result) {
+            handle = result.value();
+        } else {
+            return handle;
         }
 
         const VkDeviceSize image_size = size_byte;
