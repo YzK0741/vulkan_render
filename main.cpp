@@ -172,26 +172,73 @@ namespace {
         vkCreateSampler(device, &info, nullptr, &sampler);
         return sampler;
     }
+
+    // 轨道相机：左键拖拽旋转、滚轮缩放（观察模型用）
+    struct orbit_camera {
+        double last_x = 0.0;
+        double last_y = 0.0;
+        bool dragging = false;
+        float yaw = 0.0f;
+        float pitch = 0.35f; // 略俯视
+        float distance = 2.2f;
+    };
+
+    void mouse_button_callback(GLFWwindow* window, const int button, const int action, const int) {
+        auto* camera = static_cast<orbit_camera*>(glfwGetWindowUserPointer(window));
+        if (button != GLFW_MOUSE_BUTTON_LEFT) {
+            return;
+        }
+        if (action == GLFW_PRESS) {
+            camera->dragging = true;
+            glfwGetCursorPos(window, &camera->last_x, &camera->last_y);
+        } else if (action == GLFW_RELEASE) {
+            camera->dragging = false;
+        }
+    }
+
+    void cursor_pos_callback(GLFWwindow* window, const double x, const double y) {
+        auto* camera = static_cast<orbit_camera*>(glfwGetWindowUserPointer(window));
+        if (!camera->dragging) {
+            return;
+        }
+        constexpr float sensitivity = 0.005f;
+        const float dx = static_cast<float>(x - camera->last_x);
+        const float dy = static_cast<float>(y - camera->last_y);
+        camera->last_x = x;
+        camera->last_y = y;
+        camera->yaw += dx * sensitivity; // 拖拽方向与模型旋转方向一致
+        camera->pitch -= dy * sensitivity;
+        camera->pitch = std::clamp(camera->pitch, -1.5f, 1.5f); // 避免翻转
+    }
+
+    void scroll_callback(GLFWwindow* window, const double, const double yoffset) {
+        auto* camera = static_cast<orbit_camera*>(glfwGetWindowUserPointer(window));
+        camera->distance *= std::pow(0.9f, static_cast<float>(yoffset));
+        camera->distance = std::clamp(camera->distance, 0.5f, 20.0f);
+    }
+
+    // 轨道相机位置：模型已平移到原点，相机绕原点球面运动
+    glm::vec3 orbit_eye(const orbit_camera& camera) {
+        const float cp = std::cos(camera.pitch);
+        return glm::vec3(camera.distance * cp * std::sin(camera.yaw),
+                         camera.distance * std::sin(camera.pitch),
+                         camera.distance * cp * std::cos(camera.yaw));
+    }
 } // namespace
 
 int main(int argc, char** argv) {
     // 1. 定位 shaders 目录（保存 GLSL 源码与编译好的 SPIR-V）
     const std::optional<std::filesystem::path> shaders_dir = locate_shaders_dir();
     if (!shaders_dir) {
-        std::println("ERROR: cannot find shaders/ directory. run the program from the project root or a cmake-build-* directory.");
-        return 1;
+        utility::panic("cannot find shaders/ directory. run the program from the project root or a cmake-build-* directory.");
     }
 
     // 2. 构造 vulkan::runtime：默认构造会完成 window/instance/device/swapchain 等全部初始化
     vulkan::runtime runtime;
 
     // 3. 管线加载测试：简单三角形 + 标准 PBR
-    if (!load_and_create_pipeline(runtime, *shaders_dir, "triangle", "triangle.vert.spv", "triangle.frag.spv")) {
-        return 1;
-    }
-    if (!load_and_create_pipeline(runtime, *shaders_dir, "pbr", "pbr.vert.spv", "pbr.frag.spv")) {
-        return 1;
-    }
+    load_and_create_pipeline(runtime, *shaders_dir, "triangle", "triangle.vert.spv", "triangle.frag.spv");
+    load_and_create_pipeline(runtime, *shaders_dir, "pbr", "pbr.vert.spv", "pbr.frag.spv");
 
     // 4. 加载 glTF 模型（默认 DamagedHelmet，可用命令行参数指定其它 .gltf/.glb）
     std::string model_path = "C:/Users/23530/Desktop/yzk/glTF-Sample-Assets/Models/DamagedHelmet/glTF/DamagedHelmet.gltf";
@@ -420,7 +467,7 @@ int main(int argc, char** argv) {
         push.flags |= 4u;
     }
 
-    // 16. 相机（模型绕 Y 轴缓慢旋转展示 PBR 效果）
+    // 16. 相机：轨道观察（左键拖拽旋转，滚轮缩放）
     const float aspect = static_cast<float>(runtime->swap_chain_extent.width) / static_cast<float>(runtime->swap_chain_extent.height);
     // RH_ZO：右手系 + 深度 [0,1]（Vulkan 约定）
     glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(45.0f), aspect, 0.1f, 100.0f);
@@ -428,12 +475,15 @@ int main(int argc, char** argv) {
     // 翻转投影 Y 分量，否则 glTF 的 CCW 正面绕序在帧缓冲里变成 CW，
     // 被管线的 CULL_BACK 裁掉，只会看到模型内壁。
     proj[1][1] *= -1.0f;
-    const glm::vec3 eye(0.0f, 0.0f, 2.2f);
-    const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    orbit_camera camera{};
+    glfwSetWindowUserPointer(runtime->window, &camera);
+    glfwSetMouseButtonCallback(runtime->window, mouse_button_callback);
+    glfwSetCursorPosCallback(runtime->window, cursor_pos_callback);
+    glfwSetScrollCallback(runtime->window, scroll_callback);
 
     // 17. 渲染主循环：直到关闭窗口或按 ESC
-    const auto start_time = std::chrono::steady_clock::now();
-    std::println("rendering '{}' with PBR... close the window or press ESC to exit", model_path);
+    std::println("rendering '{}' with PBR... left-drag to orbit, wheel to zoom, ESC to exit", model_path);
     while (!glfwWindowShouldClose(runtime->window)) {
         glfwPollEvents();
         if (glfwGetKey(runtime->window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
@@ -445,13 +495,11 @@ int main(int argc, char** argv) {
         vkWaitForFences(runtime->device, 1, &runtime->in_flight_fences[frame_slot], VK_TRUE, UINT64_MAX);
         vkResetFences(runtime->device, 1, &runtime->in_flight_fences[frame_slot]);
 
-        // 更新本槽位的 UBO（模型绕 Y 轴旋转）
-        const float elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() - start_time).count();
+        // 更新本槽位的 UBO（轨道相机）
+        const glm::vec3 eye = orbit_eye(camera);
         camera_ubo ubo{};
-        ubo.model = glm::rotate(glm::mat4(1.0f), elapsed * 0.4f, glm::vec3(0.0f, 1.0f, 0.0f)) *
-                    glm::scale(glm::mat4(1.0f), glm::vec3(fit_scale)) *
-                    glm::translate(glm::mat4(1.0f), -center);
-        ubo.view = view;
+        ubo.model = glm::scale(glm::mat4(1.0f), glm::vec3(fit_scale)) * glm::translate(glm::mat4(1.0f), -center);
+        ubo.view = glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
         ubo.proj = proj;
         ubo.camera_pos = eye;
         const auto* ubo_detail = runtime->vma.get_buffer_detail(ubo_buffers[frame_slot]);
