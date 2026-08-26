@@ -718,9 +718,14 @@ namespace vulkan {
 
     void core::create_sync_objects() {
         image_available_semaphores.resize(MAX_FRAMES_IN_FLIGHT);
-        render_finished_semaphores.resize(MAX_FRAMES_IN_FLIGHT);
         in_flight_fences.resize(MAX_FRAMES_IN_FLIGHT);
         images_in_flight.resize(swap_chain_images.size(), VK_NULL_HANDLE);
+
+        // 呈现信号量必须按交换链图像索引分配，而不是按帧槽位：
+        // present 会一直占用该信号量直到对应图像被重新 acquire，
+        // 交换链图像数可能大于帧在飞数，按槽位复用会在图像尚未重新获取时
+        // 再次触发同一信号量（VUID-vkQueueSubmit-pSignalSemaphores-00067）。
+        render_finished_semaphores.resize(swap_chain_images.size());
 
         VkSemaphoreCreateInfo semaphore_info{};
         semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -731,9 +736,14 @@ namespace vulkan {
 
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
             if (vkCreateSemaphore(device, &semaphore_info, nullptr, &image_available_semaphores[i]) != VK_SUCCESS ||
-                vkCreateSemaphore(device, &semaphore_info, nullptr, &render_finished_semaphores[i]) != VK_SUCCESS ||
                 vkCreateFence(device, &fence_info, nullptr, &in_flight_fences[i]) != VK_SUCCESS) {
                 utility::panic("failed to create synchronization objects for a frame!");
+            }
+        }
+
+        for (size_t i = 0; i < render_finished_semaphores.size(); i++) {
+            if (vkCreateSemaphore(device, &semaphore_info, nullptr, &render_finished_semaphores[i]) != VK_SUCCESS) {
+                utility::panic("failed to create render finished semaphore!");
             }
         }
 
@@ -865,6 +875,19 @@ namespace vulkan {
 
         // 按新图像数重建 per-image 追踪表，避免 wait_usable_image 越界
         images_in_flight.resize(swap_chain_images.size(), VK_NULL_HANDLE);
+
+        // 呈现信号量按图像索引分配，图像数变化时销毁重建（此时设备已空闲）
+        for (const auto& semaphore : render_finished_semaphores) {
+            vkDestroySemaphore(device, semaphore, nullptr);
+        }
+        render_finished_semaphores.resize(swap_chain_images.size());
+        for (auto& semaphore : render_finished_semaphores) {
+            VkSemaphoreCreateInfo semaphore_info{};
+            semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            if (vkCreateSemaphore(device, &semaphore_info, nullptr, &semaphore) != VK_SUCCESS) {
+                utility::panic("failed to recreate render finished semaphore!");
+            }
+        }
     }
 
     std::expected<vk_pipeline, std::string_view> core::make_pipeline(
