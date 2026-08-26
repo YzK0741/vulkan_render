@@ -1,18 +1,40 @@
 import std;
+import gltf_loader;
 import vulkan.runtime;
 
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
 #include <vulkan/vulkan.h>
 
 namespace {
-    // 顶点：position (location 0) + color (location 1)，与 triangle.vert 的输入布局一致
+    // 与 pbr.vert 的顶点输入一致：position(0) normal(1) uv(2) tangent(3)，stride 44
     struct vertex {
         glm::vec3 position;
-        glm::vec3 color;
+        glm::vec3 normal;
+        glm::vec2 uv;
+        glm::vec3 tangent;
     };
+
+    // 与 pbr.frag 的 CameraUBO 一致
+    struct camera_ubo {
+        glm::mat4 model;
+        glm::mat4 view;
+        glm::mat4 proj;
+        glm::vec3 camera_pos;
+        float padding = 0.0f;
+    };
+
+    // 与 pbr.frag 的 PushConstants 一致（48 字节）
+    struct pbr_push_constants {
+        glm::vec4 base_color_factor = glm::vec4(1.0f);
+        glm::vec4 emissive_factor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        float metallic_factor = 1.0f;
+        float roughness_factor = 1.0f;
+        float normal_scale = 1.0f;
+        uint32_t flags = 0; // bit0: normal map, bit1: occlusion map, bit2: emissive map
+    };
+    static_assert(sizeof(pbr_push_constants) == 48);
 
     // 以二进制方式读取整个文件；失败返回 false
     bool read_binary_file(const std::filesystem::path& path, std::vector<unsigned char>& out) {
@@ -29,7 +51,8 @@ namespace {
     std::optional<std::filesystem::path> locate_shaders_dir() {
         std::filesystem::path current = std::filesystem::current_path();
         for (int depth = 0; depth < 4; ++depth) {
-            if (std::filesystem::path candidate = current / "shaders"; std::filesystem::is_directory(candidate)) {
+            const std::filesystem::path candidate = current / "shaders";
+            if (std::filesystem::is_directory(candidate)) {
                 return candidate;
             }
             const std::filesystem::path parent = current.parent_path();
@@ -73,9 +96,91 @@ namespace {
         std::println("SUCCESS: pipeline '{}' created and cached in the runtime", pipeline_name);
         return true;
     }
+
+    // 把 stb 解码的纹理数据转成 RGBA（3 通道补 alpha，1 通道灰度扩展）
+    std::vector<unsigned char> to_rgba(const gltf::texture_data& texture) {
+        const size_t pixel_count = static_cast<size_t>(texture.width) * texture.height;
+        std::vector<unsigned char> rgba(pixel_count * 4, 255);
+        switch (texture.component) {
+        case 4:
+            rgba = texture.data;
+            break;
+        case 3:
+            for (size_t i = 0; i < pixel_count; ++i) {
+                rgba[i * 4 + 0] = texture.data[i * 3 + 0];
+                rgba[i * 4 + 1] = texture.data[i * 3 + 1];
+                rgba[i * 4 + 2] = texture.data[i * 3 + 2];
+            }
+            break;
+        case 1:
+            for (size_t i = 0; i < pixel_count; ++i) {
+                rgba[i * 4 + 0] = texture.data[i];
+                rgba[i * 4 + 1] = texture.data[i];
+                rgba[i * 4 + 2] = texture.data[i];
+            }
+            break;
+        default:
+            rgba.clear();
+            break;
+        }
+        return rgba;
+    }
+
+    // VMA 上传贴图 + 创建 image view
+    struct texture_bundle {
+        uint64_t image = 0;
+        VkImageView view = VK_NULL_HANDLE;
+    };
+
+    texture_bundle create_texture(vulkan::runtime& runtime, const gltf::texture_data& texture, const VkFormat format) {
+        texture_bundle bundle;
+        const std::vector<unsigned char> rgba = to_rgba(texture);
+        if (rgba.empty()) {
+            return bundle;
+        }
+
+        vulkan::image_create_info create_info{};
+        create_info.width = texture.width;
+        create_info.height = texture.height;
+        create_info.mip_levels = 1;
+        create_info.array_layers = 1;
+        create_info.format = format;
+        bundle.image = runtime->vma.create_image(rgba.data(), rgba.size(), create_info, vulkan::image_type::texture_2d);
+        const auto* detail = runtime->vma.get_image_detail(bundle.image);
+        if (detail == nullptr) {
+            return bundle;
+        }
+
+        VkImageViewCreateInfo view_info{};
+        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.image = detail->image;
+        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_info.format = format;
+        view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCreateImageView(runtime->device, &view_info, nullptr, &bundle.view);
+        return bundle;
+    }
+
+    VkSampler create_texture_sampler(const VkDevice device) {
+        VkSamplerCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        info.magFilter = VK_FILTER_LINEAR;
+        info.minFilter = VK_FILTER_LINEAR;
+        info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        info.maxAnisotropy = 1.0f;
+        info.minLod = 0.0f;
+        info.maxLod = 0.25f; // 只有 mip 0，避免采样到未生成的层级
+
+        VkSampler sampler = VK_NULL_HANDLE;
+        vkCreateSampler(device, &info, nullptr, &sampler);
+        return sampler;
+    }
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     // 1. 定位 shaders 目录（保存 GLSL 源码与编译好的 SPIR-V）
     const std::optional<std::filesystem::path> shaders_dir = locate_shaders_dir();
     if (!shaders_dir) {
@@ -94,68 +199,255 @@ int main() {
         return 1;
     }
 
-    // 4. 取回 triangle 管线，准备渲染
-    const auto* pipeline = runtime.get_pipeline("triangle");
-    if (pipeline == nullptr) {
-        std::println("ERROR: pipeline 'triangle' not found in runtime");
+    // 4. 加载 glTF 模型（默认 DamagedHelmet，可用命令行参数指定其它 .gltf/.glb）
+    std::string model_path = "C:/Users/23530/Desktop/yzk/glTF-Sample-Assets/Models/DamagedHelmet/glTF/DamagedHelmet.gltf";
+    if (argc > 1) {
+        model_path = argv[1];
+    }
+    std::println("loading model: {}", model_path);
+    auto scenes = gltf::load_model(model_path);
+    if (!scenes) {
+        std::println("ERROR: failed to load model: {}", static_cast<int>(scenes.error()));
         return 1;
     }
+    if (scenes->scene.empty() || scenes->scene[0].nodes.empty() ||
+        scenes->scene[0].nodes[0].meshes.empty() || scenes->scene[0].nodes[0].meshes[0].primitives.empty()) {
+        std::println("ERROR: model has no drawable primitive");
+        return 1;
+    }
+    const auto& prim = scenes->scene[0].nodes[0].meshes[0].primitives[0];
+    std::println("model loaded: {} textures, {} primitives", scenes->textures.size(), scenes->scene[0].nodes[0].meshes[0].primitives.size());
 
-    // 5. 顶点缓冲：三个彩色顶点。
-    //    注意绕序：管线的 FRONT_FACE_COUNTER_CLOCKWISE 按 framebuffer 坐标（y 向下）判定，
-    //    因此 NDC 里必须是 底→左→右 的顺序（即屏幕上的逆时针），否则会被 CULL_BACK 剔除。
-    std::array<vertex, 3> vertices = {
-        {
-            {{0.0f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}}, // 底，红
-            {{-0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}}, // 左，蓝
-            {{0.5f, 0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}},  // 右，绿
-        },
+    // 5. 取顶点属性（分离存储），缺少的属性用默认值
+    const auto get_portion = [&prim](const std::string_view name) -> const gltf::vertex_portion* {
+        const auto it = prim.vertex.find(std::string(name));
+        return it == prim.vertex.end() ? nullptr : &it->second;
     };
-    const uint64_t vertex_buffer = runtime->vma.create_buffer(std::span(vertices), vulkan::buffer_type::vertex);
-    const auto* vertex_detail = runtime->vma.get_buffer_detail(vertex_buffer);
-    if (vertex_detail == nullptr) {
-        std::println("ERROR: failed to create vertex buffer");
+    const auto* position_portion = get_portion("POSITION");
+    const auto* normal_portion = get_portion("NORMAL");
+    const auto* uv_portion = get_portion("TEXCOORD_0");
+    const auto* tangent_portion = get_portion("TANGENT");
+    if (position_portion == nullptr) {
+        std::println("ERROR: model has no POSITION attribute");
         return 1;
     }
 
-    // 6. 每个帧槽位一个 UBO（mvp 矩阵），避免读写与上一帧 GPU 读取竞争
-    constexpr size_t ubo_size = sizeof(glm::mat4); // 64 字节
+    const glm::vec3 default_normal(0.0f, 1.0f, 0.0f);
+    const glm::vec2 default_uv(0.0f, 0.0f);
+    const size_t vertex_count = position_portion->data.size() / sizeof(glm::vec3);
+
+    std::vector<glm::vec3> positions;
+    std::vector<glm::vec3> normals;
+    std::vector<glm::vec2> uvs;
+    positions.reserve(vertex_count);
+    normals.reserve(vertex_count);
+    uvs.reserve(vertex_count);
+    for (size_t i = 0; i < vertex_count; ++i) {
+        const auto* p = reinterpret_cast<const glm::vec3*>(position_portion->data.data()) + i;
+        const auto* n = normal_portion == nullptr ? &default_normal : reinterpret_cast<const glm::vec3*>(normal_portion->data.data()) + i;
+        const auto* uv = uv_portion == nullptr ? &default_uv : reinterpret_cast<const glm::vec2*>(uv_portion->data.data()) + i;
+        positions.push_back(*p);
+        normals.push_back(*n);
+        uvs.push_back(*uv);
+    }
+
+    // 6. 索引数据与类型
+    if (prim.index.empty()) {
+        std::println("ERROR: model has no index data");
+        return 1;
+    }
+    VkIndexType index_type = VK_INDEX_TYPE_UINT16;
+    if (prim.index_component_type == gltf::component_type::unsigned_int_t) {
+        index_type = VK_INDEX_TYPE_UINT32;
+    } else if (prim.index_component_type != gltf::component_type::unsigned_short_t) {
+        std::println("ERROR: unsupported index component type: {}", static_cast<int>(prim.index_component_type));
+        return 1;
+    }
+    const uint32_t index_count = static_cast<uint32_t>(prim.index.size() / (index_type == VK_INDEX_TYPE_UINT32 ? 4 : 2));
+    const auto read_index = [&prim, index_type](const size_t i) -> uint32_t {
+        if (index_type == VK_INDEX_TYPE_UINT32) {
+            return reinterpret_cast<const uint32_t*>(prim.index.data())[i];
+        }
+        return reinterpret_cast<const uint16_t*>(prim.index.data())[i];
+    };
+
+    // 7. 切线：模型自带 TANGENT 则直接使用，否则按 position/uv 逐三角形计算
+    //    （经典算法：按三角形累加切线，再用 Gram-Schmidt 正交化）
+    std::vector<glm::vec3> tangents(vertex_count, glm::vec3(1.0f, 0.0f, 0.0f));
+    if (tangent_portion != nullptr) {
+        for (size_t i = 0; i < vertex_count; ++i) {
+            const auto* t = reinterpret_cast<const glm::vec4*>(tangent_portion->data.data()) + i;
+            tangents[i] = glm::vec3(t->x, t->y, t->z);
+        }
+    } else {
+        std::vector<glm::vec3> tangent_accumulator(vertex_count, glm::vec3(0.0f));
+        for (uint32_t i = 0; i + 2 < index_count; i += 3) {
+            const uint32_t i0 = read_index(i);
+            const uint32_t i1 = read_index(i + 1);
+            const uint32_t i2 = read_index(i + 2);
+            const glm::vec3 e1 = positions[i1] - positions[i0];
+            const glm::vec3 e2 = positions[i2] - positions[i0];
+            const glm::vec2 duv1 = uvs[i1] - uvs[i0];
+            const glm::vec2 duv2 = uvs[i2] - uvs[i0];
+            const float denom = duv1.x * duv2.y - duv2.x * duv1.y;
+            if (std::abs(denom) < 1e-8f) {
+                continue; // 退化的 UV 三角形
+            }
+            const float f = 1.0f / denom;
+            const glm::vec3 tangent = f * (duv2.y * e1 - duv1.y * e2);
+            tangent_accumulator[i0] += tangent;
+            tangent_accumulator[i1] += tangent;
+            tangent_accumulator[i2] += tangent;
+        }
+        for (size_t i = 0; i < vertex_count; ++i) {
+            const glm::vec3 t = tangent_accumulator[i] - normals[i] * glm::dot(normals[i], tangent_accumulator[i]);
+            tangents[i] = glm::length(t) > 1e-8f ? glm::normalize(t) : glm::vec3(1.0f, 0.0f, 0.0f);
+        }
+        std::println("TANGENT not in model, computed from position/uv");
+    }
+
+    // 8. 交错成管线要求的单绑定布局（stride 44）
+    std::vector<vertex> vertices;
+    vertices.reserve(vertex_count);
+    for (size_t i = 0; i < vertex_count; ++i) {
+        vertices.push_back(vertex{positions[i], normals[i], uvs[i], tangents[i]});
+    }
+
+    // 9. 包围盒自动适配相机
+    glm::vec3 bmin = glm::vec3(std::numeric_limits<float>::infinity());
+    glm::vec3 bmax = glm::vec3(-std::numeric_limits<float>::infinity());
+    for (const auto& v : vertices) {
+        bmin = glm::min(bmin, v.position);
+        bmax = glm::max(bmax, v.position);
+    }
+    const glm::vec3 center = (bmin + bmax) * 0.5f;
+    const glm::vec3 extent = bmax - bmin;
+    const float max_extent = glm::max(extent.x, glm::max(extent.y, extent.z));
+    const float fit_scale = max_extent > 0.0f ? 1.6f / max_extent : 1.0f;
+    std::println("mesh: {} vertices, {} indices, center ({:.3f}, {:.3f}, {:.3f}), extent {:.3f}", vertices.size(), index_count, center.x, center.y, center.z, max_extent);
+
+    // 10. GPU 缓冲：顶点 + 索引
+    const uint64_t vertex_buffer = runtime->vma.create_buffer(std::span(vertices), vulkan::buffer_type::vertex);
+    const uint64_t index_buffer = runtime->vma.create_buffer(prim.index.data(), prim.index.size(), vulkan::buffer_type::index);
+    const auto* vertex_detail = runtime->vma.get_buffer_detail(vertex_buffer);
+    const auto* index_detail = runtime->vma.get_buffer_detail(index_buffer);
+    if (vertex_detail == nullptr || index_detail == nullptr) {
+        std::println("ERROR: failed to create mesh buffers");
+        return 1;
+    }
+
+    // 11. 取 PBR 管线
+    const auto* pipeline = runtime.get_pipeline("pbr");
+    if (pipeline == nullptr) {
+        std::println("ERROR: pipeline 'pbr' not found in runtime");
+        return 1;
+    }
+
+    // 12. 材质纹理：albedo 用 sRGB（PBR 线性空间），其余数据贴图用 UNORM
+    const auto& texture_indices = prim.texture_indices;
+    const auto load_material_texture = [&runtime, &scenes, &texture_indices](const std::string_view semantic, const VkFormat format) -> texture_bundle {
+        const auto it = texture_indices.find(std::string(semantic));
+        if (it != texture_indices.end() && it->second < scenes->textures.size()) {
+            return create_texture(runtime, scenes->textures[it->second], format);
+        }
+        return {};
+    };
+    const std::array<texture_bundle, 5> material_textures = {
+        load_material_texture("albedo", VK_FORMAT_R8G8B8A8_SRGB),
+        load_material_texture("metallic_roughness", VK_FORMAT_R8G8B8A8_UNORM),
+        load_material_texture("normal", VK_FORMAT_R8G8B8A8_UNORM),
+        load_material_texture("occlusion", VK_FORMAT_R8G8B8A8_UNORM),
+        load_material_texture("emissive", VK_FORMAT_R8G8B8A8_UNORM),
+    };
+
+    // 缺失贴图时的 1x1 白色占位
+    gltf::texture_data white_texture_data{};
+    white_texture_data.data = {255, 255, 255, 255};
+    white_texture_data.width = 1;
+    white_texture_data.height = 1;
+    white_texture_data.component = 4;
+    const texture_bundle white_texture = create_texture(runtime, white_texture_data, VK_FORMAT_R8G8B8A8_UNORM);
+
+    const VkSampler sampler = create_texture_sampler(runtime->device);
+
+    // set 1：5 个 combined image sampler 绑定（base_color, metallic_roughness, normal, occlusion, emissive）
+    auto texture_set = runtime->make_descriptor_set(pipeline->get_descriptor_set_layouts()[1]);
+    std::array<VkDescriptorImageInfo, 5> image_infos{};
+    std::array<VkWriteDescriptorSet, 5> texture_writes{};
+    for (int binding = 0; binding < 5; ++binding) {
+        const texture_bundle& bundle = material_textures[binding].view != VK_NULL_HANDLE ? material_textures[binding] : white_texture;
+        image_infos[binding] = {sampler, bundle.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        texture_writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        texture_writes[binding].dstSet = *texture_set;
+        texture_writes[binding].dstBinding = static_cast<uint32_t>(binding);
+        texture_writes[binding].descriptorCount = 1;
+        texture_writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        texture_writes[binding].pImageInfo = &image_infos[binding];
+    }
+    vkUpdateDescriptorSets(runtime->device, static_cast<uint32_t>(texture_writes.size()), texture_writes.data(), 0, nullptr);
+
+    // 13. 每帧槽位一个 CameraUBO + set 0 描述符集
+    constexpr size_t ubo_size = sizeof(camera_ubo);
     std::vector<uint64_t> ubo_buffers;
-    std::vector<vulkan::vk_descriptor_set> descriptor_sets;
-    ubo_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-    descriptor_sets.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-    for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-        glm::mat4 identity = glm::mat4(1.0f); // 非 const：vma.create_buffer 的 span 模板会 reinterpret_cast
-        ubo_buffers.push_back(runtime->vma.create_buffer(std::span(&identity, 1), vulkan::buffer_type::uniform_coherent));
+    std::vector<vulkan::vk_descriptor_set> ubo_sets;
+    ubo_buffers.reserve(runtime->MAX_FRAMES_IN_FLIGHT);
+    ubo_sets.reserve(runtime->MAX_FRAMES_IN_FLIGHT);
+    for (int slot = 0; slot < runtime->MAX_FRAMES_IN_FLIGHT; ++slot) {
+        camera_ubo initial{};
+        ubo_buffers.push_back(runtime->vma.create_buffer(std::span(&initial, 1), vulkan::buffer_type::uniform_coherent));
         const auto* ubo_detail = runtime->vma.get_buffer_detail(ubo_buffers.back());
         if (ubo_detail == nullptr) {
             std::println("ERROR: failed to create ubo buffer");
             return 1;
         }
 
-        auto descriptor_set = runtime->make_descriptor_set(pipeline->get_descriptor_set_layouts()[0]);
+        auto ubo_set = runtime->make_descriptor_set(pipeline->get_descriptor_set_layouts()[0]);
         const VkDescriptorBufferInfo ubo_info{ubo_detail->buffer, 0, ubo_size};
         VkWriteDescriptorSet write_info{};
         write_info.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write_info.dstSet = *descriptor_set;
+        write_info.dstSet = *ubo_set;
         write_info.dstBinding = 0;
         write_info.descriptorCount = 1;
         write_info.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         write_info.pBufferInfo = &ubo_info;
         vkUpdateDescriptorSets(runtime->device, 1, &write_info, 0, nullptr);
-        descriptor_sets.push_back(std::move(descriptor_set));
+        ubo_sets.push_back(std::move(ubo_set));
     }
 
-    // 7. 每个帧槽位一条命令缓冲（复用，begin 时自动重置）
+    // 14. 每帧槽位一条命令缓冲
     std::vector<vulkan::vk_command_buffer> command_buffers;
-    command_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-    for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+    command_buffers.reserve(runtime->MAX_FRAMES_IN_FLIGHT);
+    for (int slot = 0; slot < runtime->MAX_FRAMES_IN_FLIGHT; ++slot) {
         command_buffers.push_back(runtime->make_command_buffer());
     }
 
-    // 8. 渲染主循环：直到关闭窗口或按 ESC
+    // 15. 材质 push constants
+    pbr_push_constants push{};
+    push.flags = 0;
+    if (texture_indices.contains("normal")) {
+        push.flags |= 1u;
+    }
+    if (texture_indices.contains("occlusion")) {
+        push.flags |= 2u;
+    }
+    if (texture_indices.contains("emissive")) {
+        push.flags |= 4u;
+    }
+
+    // 16. 相机（模型绕 Y 轴缓慢旋转展示 PBR 效果）
+    const float aspect = static_cast<float>(runtime->swap_chain_extent.width) / static_cast<float>(runtime->swap_chain_extent.height);
+    // RH_ZO：右手系 + 深度 [0,1]（Vulkan 约定）
+    glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(45.0f), aspect, 0.1f, 100.0f);
+    // glm 的投影按 OpenGL 约定（NDC y 向上），而 Vulkan framebuffer 的 y 向下：
+    // 翻转投影 Y 分量，否则 glTF 的 CCW 正面绕序在帧缓冲里变成 CW，
+    // 被管线的 CULL_BACK 裁掉，只会看到模型内壁。
+    proj[1][1] *= -1.0f;
+    const glm::vec3 eye(0.0f, 0.0f, 2.2f);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    // 17. 渲染主循环：直到关闭窗口或按 ESC
     const auto start_time = std::chrono::steady_clock::now();
-    std::println("rendering... close the window or press ESC to exit");
+    std::println("rendering '{}' with PBR... close the window or press ESC to exit", model_path);
     while (!glfwWindowShouldClose(runtime->window)) {
         glfwPollEvents();
         if (glfwGetKey(runtime->window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
@@ -164,20 +456,21 @@ int main() {
 
         const size_t frame_slot = runtime->current_frame;
 
-        // 等待上一帧该槽位完成并重置 fence；
-        // 这里不用 core::wait_usable_image()：它会等待按图像索引记录的 fence，
-        // 而该 fence 刚被重置为未触发状态，会造成死等；槽位 fence 已覆盖同样的保证。
         vkWaitForFences(runtime->device, 1, &runtime->in_flight_fences[frame_slot], VK_TRUE, UINT64_MAX);
         vkResetFences(runtime->device, 1, &runtime->in_flight_fences[frame_slot]);
 
-        // 更新本槽位的 mvp（绕 Z 轴旋转动画）并写入 UBO
+        // 更新本槽位的 UBO（模型绕 Y 轴旋转）
         const float elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() - start_time).count();
-        const glm::mat4 mvp = glm::rotate(glm::mat4(1.0f), elapsed * 0.5f, glm::vec3(0.0f, 0.0f, 1.0f));
+        camera_ubo ubo{};
+        ubo.model = glm::rotate(glm::mat4(1.0f), elapsed * 0.4f, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                    glm::scale(glm::mat4(1.0f), glm::vec3(fit_scale)) *
+                    glm::translate(glm::mat4(1.0f), -center);
+        ubo.view = view;
+        ubo.proj = proj;
+        ubo.camera_pos = eye;
         const auto* ubo_detail = runtime->vma.get_buffer_detail(ubo_buffers[frame_slot]);
-        std::memcpy(ubo_detail->allocation_info.pMappedData, glm::value_ptr(mvp), sizeof(glm::mat4));
+        std::memcpy(ubo_detail->allocation_info.pMappedData, &ubo, ubo_size);
 
-        // 获取可用的交换链图像（fence 传空：acquire 的 fence 必须处于未触发状态，
-        // 槽位 fence 已在上面等待并重置，这里用信号量同步即可）
         uint32_t image_index = 0;
         if (vkAcquireNextImageKHR(runtime->device,
                                   runtime->swap_chain,
@@ -188,7 +481,6 @@ int main() {
             break;
         }
 
-        // 录制命令缓冲
         auto& command_buffer = command_buffers[frame_slot];
         VkCommandBufferBeginInfo begin_info{};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -211,40 +503,43 @@ int main() {
 
         vkCmdBindPipeline(*command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->get_pipeline());
 
-        const VkViewport viewport{
-            0.0f,
-            0.0f,
-            static_cast<float>(runtime->swap_chain_extent.width),
-            static_cast<float>(runtime->swap_chain_extent.height),
-            0.0f,
-            1.0f,
-        };
+        const VkViewport viewport{0.0f,
+                                  0.0f,
+                                  static_cast<float>(runtime->swap_chain_extent.width),
+                                  static_cast<float>(runtime->swap_chain_extent.height),
+                                  0.0f,
+                                  1.0f};
         const VkRect2D scissor{{0, 0}, runtime->swap_chain_extent};
         vkCmdSetViewport(*command_buffer, 0, 1, &viewport);
         vkCmdSetScissor(*command_buffer, 0, 1, &scissor);
 
         const VkBuffer vertex_handle = vertex_detail->buffer;
-        constexpr VkDeviceSize vertex_offset = 0;
+        const VkDeviceSize vertex_offset = 0;
         vkCmdBindVertexBuffers(*command_buffer, 0, 1, &vertex_handle, &vertex_offset);
+        vkCmdBindIndexBuffer(*command_buffer, index_detail->buffer, 0, index_type);
 
+        const std::array<VkDescriptorSet, 2> bound_sets = {*ubo_sets[frame_slot], *texture_set};
         vkCmdBindDescriptorSets(*command_buffer,
                                 VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 pipeline->get_pipeline_layout(),
                                 0,
-                                1,
-                                &*descriptor_sets[frame_slot],
+                                static_cast<uint32_t>(bound_sets.size()),
+                                bound_sets.data(),
                                 0,
                                 nullptr);
-        constexpr glm::mat4 model = glm::mat4(1.0f); // push constant: mat4 model
-        vkCmdPushConstants(*command_buffer, pipeline->get_pipeline_layout(), VK_SHADER_STAGE_VERTEX_BIT, 0, ubo_size, glm::value_ptr(model));
-        vkCmdDraw(*command_buffer, 3, 1, 0, 0);
+        vkCmdPushConstants(*command_buffer,
+                           pipeline->get_pipeline_layout(),
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0,
+                           sizeof(pbr_push_constants),
+                           &push);
+        vkCmdDrawIndexed(*command_buffer, index_count, 1, 0, 0, 0);
 
         vkCmdEndRenderPass(*command_buffer);
         if (vkEndCommandBuffer(*command_buffer) != VK_SUCCESS) {
             break;
         }
 
-        // 提交（呈现信号量按图像索引分配，由 core 创建，见 core::create_sync_objects）
         constexpr VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submit_info = {};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -259,7 +554,6 @@ int main() {
             break;
         }
 
-        // 呈现
         VkPresentInfoKHR present_info{};
         present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         present_info.waitSemaphoreCount = 1;
@@ -274,11 +568,27 @@ int main() {
         runtime->to_next_frame();
     }
 
-    // 9. 等待 GPU 完成后再释放资源（呈现信号量由 core 负责销毁）
+    // 18. 等待 GPU 完成后再释放资源
     vkDeviceWaitIdle(runtime->device);
+    vkDestroySampler(runtime->device, sampler, nullptr);
+    for (const auto& bundle : material_textures) {
+        if (bundle.view != VK_NULL_HANDLE) {
+            vkDestroyImageView(runtime->device, bundle.view, nullptr);
+        }
+        if (bundle.image != 0) {
+            runtime->vma.free_image(bundle.image);
+        }
+    }
+    if (white_texture.view != VK_NULL_HANDLE) {
+        vkDestroyImageView(runtime->device, white_texture.view, nullptr);
+    }
+    if (white_texture.image != 0) {
+        runtime->vma.free_image(white_texture.image);
+    }
     for (const uint64_t ubo : ubo_buffers) {
         runtime->vma.free_buffer(ubo);
     }
+    runtime->vma.free_buffer(index_buffer);
     runtime->vma.free_buffer(vertex_buffer);
     std::println("render loop finished");
     return 0;
