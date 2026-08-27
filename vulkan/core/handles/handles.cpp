@@ -219,6 +219,8 @@ namespace vulkan {
         this->pipeline = other.pipeline;
         this->descriptor_set_layouts = other.descriptor_set_layouts;
         this->pipeline_layout = other.pipeline_layout;
+        this->viewport = other.viewport;
+        this->scissor = other.scissor;
         other.device = nullptr;
         other.pipeline = nullptr;
         other.descriptor_set_layouts.clear();
@@ -234,6 +236,8 @@ namespace vulkan {
         this->pipeline = other.pipeline;
         this->descriptor_set_layouts = other.descriptor_set_layouts;
         this->pipeline_layout = other.pipeline_layout;
+        this->viewport = other.viewport;
+        this->scissor = other.scissor;
         other.device = nullptr;
         other.pipeline = nullptr;
         other.descriptor_set_layouts.clear();
@@ -255,6 +259,12 @@ namespace vulkan {
 
     std::vector<VkDescriptorSetLayout> vk_pipeline::get_descriptor_set_layouts() const noexcept {
         return this->descriptor_set_layouts;
+    }
+
+    void vk_pipeline::begin_pipeline(const VkCommandBuffer command_buffer) const {
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pipeline);
+        vkCmdSetViewport(command_buffer, 0, 1, &this->viewport);
+        vkCmdSetScissor(command_buffer, 0, 1, &this->scissor);
     }
 
     void vk_pipeline::release() noexcept {

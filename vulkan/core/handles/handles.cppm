@@ -118,6 +118,8 @@ namespace vulkan {
      * @note
      *     - use operator* or get() to get naked handle
      *     - sole ownership
+     *     - viewport/scissor hold the full-screen viewport for this pipeline;
+     *       set at creation by core::make_pipeline, use them with vkCmdSetViewport/Scissor
      */
     export struct vk_pipeline {
         VkPipeline pipeline = VK_NULL_HANDLE;
@@ -126,11 +128,22 @@ namespace vulkan {
         std::vector<VkDescriptorSetLayout> descriptor_set_layouts = {};
         VkDevice* device = nullptr;
 
+        // 管线自带的视口/裁剪区（动态状态，draw 前需要 vkCmdSetViewport/Scissor）
+        VkViewport viewport = {};
+        VkRect2D scissor = {};
+
         explicit vk_pipeline(VkPipeline pipeline, VkPipelineLayout pipeline_layout, std::vector<VkDescriptorSetLayout> const& descriptor_set_layouts, VkDevice& device) noexcept; // NOLINT(*-avoid-const-params-in-decls)
         ~vk_pipeline();
         [[nodiscard]] VkPipeline get_pipeline() const noexcept;
         [[nodiscard]] VkPipelineLayout get_pipeline_layout() const noexcept;
         [[nodiscard]] std::vector<VkDescriptorSetLayout> get_descriptor_set_layouts() const noexcept;
+
+        /**
+         * @ingroup vulkan_handles
+         * @brief bind the pipeline and set the stored viewport/scissor (dynamic states)
+         * @param command_buffer the command buffer being recorded
+         */
+        void begin_pipeline(VkCommandBuffer command_buffer) const;
 
         vk_pipeline(vk_pipeline&) = delete;
         vk_pipeline(vk_pipeline&& other) noexcept;
