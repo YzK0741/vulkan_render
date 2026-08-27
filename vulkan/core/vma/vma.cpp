@@ -627,25 +627,39 @@ namespace vulkan {
             0, nullptr,
             1, &barrier);
 
-        // 第二步：拷贝数据
-        VkBufferImageCopy region = {};
-        region.bufferOffset = 0;
-        region.bufferRowLength = 0; // 0 表示紧密排列
-        region.bufferImageHeight = 0;
-        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        region.imageSubresource.mipLevel = 0;
-        region.imageSubresource.baseArrayLayer = 0;
-        region.imageSubresource.layerCount = info.array_layers;
-        region.imageOffset = {0, 0, 0};
-        region.imageExtent = {info.width, info.height, 1};
+        // 第二步：逐 mip 拷贝。
+        // 数据按 mip 主序排列（mip0 全部 layer → mip1 全部 layer → ...），
+        // 每个 mip 内各 layer 连续（face0, face1, ...），由 bufferOffset 定位。
+        const uint32_t bytes_per_pixel = sizeof_vk_format(info.format);
+        std::vector<VkBufferImageCopy> regions;
+        regions.reserve(info.mip_levels);
+        VkDeviceSize buffer_offset = 0;
+        for (uint32_t mip = 0; mip < info.mip_levels; ++mip) {
+            const uint32_t mip_width = std::max(1u, info.width >> mip);
+            const uint32_t mip_height = std::max(1u, info.height >> mip);
+
+            VkBufferImageCopy region = {};
+            region.bufferOffset = buffer_offset;
+            region.bufferRowLength = 0; // 0 表示紧密排列
+            region.bufferImageHeight = 0;
+            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.mipLevel = mip;
+            region.imageSubresource.baseArrayLayer = 0;
+            region.imageSubresource.layerCount = info.array_layers;
+            region.imageOffset = {0, 0, 0};
+            region.imageExtent = {mip_width, mip_height, 1};
+            regions.push_back(region);
+
+            buffer_offset += static_cast<VkDeviceSize>(mip_width) * mip_height * info.array_layers * bytes_per_pixel;
+        }
 
         vkCmdCopyBufferToImage(
             command_buffer,
             staging_buffer,
             dst_image,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1,
-            &region);
+            static_cast<uint32_t>(regions.size()),
+            regions.data());
 
         // 第三步：TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
         barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -762,7 +776,15 @@ namespace vulkan {
 
         const VkDeviceSize image_size = size_byte;
 
-        if (const VkDeviceSize expected_size = static_cast<VkDeviceSize>(create_info.height) * create_info.width * sizeof_vk_format(create_info.format); expected_size != image_size) {
+        // 期望大小 = array_layers × 所有 mip 尺寸之和 × 每像素字节数
+        VkDeviceSize expected_size = 0;
+        for (uint32_t mip = 0; mip < create_info.mip_levels; ++mip) {
+            expected_size += static_cast<VkDeviceSize>(std::max(1u, create_info.width >> mip)) *
+                             std::max(1u, create_info.height >> mip) *
+                             sizeof_vk_format(create_info.format);
+        }
+        expected_size *= create_info.array_layers;
+        if (expected_size != image_size) {
             std::println(stderr, "incorrect image size [{}], expected [{}]", image_size, expected_size);
         }
 
