@@ -5,6 +5,7 @@
 import std;
 import gltf_loader;
 import utility;
+import vulkan.model;
 import vulkan.runtime;
 
 namespace {
@@ -14,15 +15,6 @@ namespace {
         glm::vec3 normal;
         glm::vec2 uv;
         glm::vec3 tangent;
-    };
-
-    // 与 pbr.frag 的 CameraUBO 一致
-    struct camera_ubo {
-        glm::mat4 model;
-        glm::mat4 view;
-        glm::mat4 proj;
-        glm::vec3 camera_pos;
-        float padding = 0.0f;
     };
 
     // 与 pbr.frag 的 PushConstants 一致（48 字节）
@@ -190,56 +182,35 @@ namespace {
         return sampler;
     }
 
-    // 轨道相机：左键拖拽旋转、滚轮缩放（观察模型用）
-    struct orbit_camera {
-        double last_x = 0.0;
-        double last_y = 0.0;
-        bool dragging = false;
-        float yaw = 0.0f;
-        float pitch = 0.35f; // 略俯视
-        float distance = 2.2f;
-    };
-
-    void mouse_button_callback(GLFWwindow* window, const int button, const int action, const int) {
-        auto* camera = static_cast<orbit_camera*>(glfwGetWindowUserPointer(window));
-        if (button != GLFW_MOUSE_BUTTON_LEFT) {
-            return;
-        }
-        if (action == GLFW_PRESS) {
-            camera->dragging = true;
-            glfwGetCursorPos(window, &camera->last_x, &camera->last_y);
-        } else if (action == GLFW_RELEASE) {
-            camera->dragging = false;
-        }
+    // 创建 image view（支持 cube）
+    VkImageView create_image_view(const VkDevice device, const VkImage image, const VkFormat format, const VkImageViewType type) {
+        VkImageViewCreateInfo view_info{};
+        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.image = image;
+        view_info.viewType = type;
+        view_info.format = format;
+        view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+        VkImageView view = VK_NULL_HANDLE;
+        vkCreateImageView(device, &view_info, nullptr, &view);
+        return view;
     }
 
-    void cursor_pos_callback(GLFWwindow* window, const double x, const double y) {
-        auto* camera = static_cast<orbit_camera*>(glfwGetWindowUserPointer(window));
-        if (!camera->dragging) {
-            return;
-        }
-        constexpr float sensitivity = 0.005f;
-        const float dx = static_cast<float>(x - camera->last_x);
-        const float dy = static_cast<float>(y - camera->last_y);
-        camera->last_x = x;
-        camera->last_y = y;
-        camera->yaw += dx * sensitivity; // 拖拽方向与模型旋转方向一致
-        camera->pitch -= dy * sensitivity;
-        camera->pitch = std::clamp(camera->pitch, -1.5f, 1.5f); // 避免翻转
-    }
-
-    void scroll_callback(GLFWwindow* window, const double, const double yoffset) {
-        auto* camera = static_cast<orbit_camera*>(glfwGetWindowUserPointer(window));
-        camera->distance *= std::pow(0.9f, static_cast<float>(yoffset));
-        camera->distance = std::clamp(camera->distance, 0.5f, 20.0f);
-    }
-
-    // 轨道相机位置：模型已平移到原点，相机绕原点球面运动
-    glm::vec3 orbit_eye(const orbit_camera& camera) {
-        const float cp = std::cos(camera.pitch);
-        return glm::vec3(camera.distance * cp * std::sin(camera.yaw),
-                         camera.distance * std::sin(camera.pitch),
-                         camera.distance * cp * std::cos(camera.yaw));
+    // 环境/LUT 采样器：CLAMP_TO_EDGE + 线性 + mipmap 线性（cubemap 必须 clamp）
+    VkSampler create_clamped_sampler(const VkDevice device, const float max_lod) {
+        VkSamplerCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        info.magFilter = VK_FILTER_LINEAR;
+        info.minFilter = VK_FILTER_LINEAR;
+        info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.maxAnisotropy = 1.0f;
+        info.minLod = 0.0f;
+        info.maxLod = max_lod;
+        VkSampler sampler = VK_NULL_HANDLE;
+        vkCreateSampler(device, &info, nullptr, &sampler);
+        return sampler;
     }
 } // namespace
 
@@ -425,10 +396,69 @@ int main(int argc, char** argv) {
 
     const VkSampler sampler = create_texture_sampler(runtime->device);
 
-    // set 1：5 个 combined image sampler 绑定（base_color, metallic_roughness, normal, occlusion, emissive）
+    // 12.1 生成并上传 IBL 资源（split-sum：预过滤环境 + 辐照度 + BRDF LUT）
+    constexpr int env_size = 128;
+    constexpr int env_mip_count = 5;
+    std::println("generating IBL environment (CPU)...");
+    const auto ibl_start = std::chrono::steady_clock::now();
+    const std::vector<float> env = vulkan::generate_environment_cubemap(env_size);
+    const auto env_done = std::chrono::steady_clock::now();
+    std::println("  environment cubemap: {:.1f} ms", std::chrono::duration<double, std::milli>(env_done - ibl_start).count());
+    const std::vector<float> prefiltered = vulkan::prefilter_environment(env, env_size, env_mip_count);
+    const auto prefilter_done = std::chrono::steady_clock::now();
+    std::println("  prefilter (GGX importance sampling): {:.1f} ms", std::chrono::duration<double, std::milli>(prefilter_done - env_done).count());
+    const std::vector<float> irradiance = vulkan::generate_irradiance_map(env, env_size, 32);
+    const auto irradiance_done = std::chrono::steady_clock::now();
+    std::println("  irradiance map: {:.1f} ms", std::chrono::duration<double, std::milli>(irradiance_done - prefilter_done).count());
+    const std::vector<float> brdf_lut = vulkan::generate_brdf_lut(256);
+    const auto lut_done = std::chrono::steady_clock::now();
+    std::println("  BRDF LUT: {:.1f} ms", std::chrono::duration<double, std::milli>(lut_done - irradiance_done).count());
+    std::println("  IBL total: {:.1f} ms", std::chrono::duration<double, std::milli>(lut_done - ibl_start).count());
+
+    const std::vector<unsigned char> env_bytes = vulkan::to_half_rgba(prefiltered);
+    const std::vector<unsigned char> irr_bytes = vulkan::to_half_rgba(irradiance);
+    const std::vector<unsigned char> lut_bytes = vulkan::to_half_rg(brdf_lut);
+
+    vulkan::image_create_info env_create_info{};
+    env_create_info.width = env_size;
+    env_create_info.height = env_size;
+    env_create_info.mip_levels = env_mip_count;
+    env_create_info.array_layers = 6;
+    env_create_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    const uint64_t env_image = runtime->vma.create_image(env_bytes.data(), env_bytes.size(), env_create_info, vulkan::image_type::texture_cubemap);
+
+    vulkan::image_create_info irr_create_info{};
+    irr_create_info.width = 32;
+    irr_create_info.height = 32;
+    irr_create_info.mip_levels = 1;
+    irr_create_info.array_layers = 6;
+    irr_create_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    const uint64_t irr_image = runtime->vma.create_image(irr_bytes.data(), irr_bytes.size(), irr_create_info, vulkan::image_type::texture_cubemap);
+
+    vulkan::image_create_info lut_create_info{};
+    lut_create_info.width = 256;
+    lut_create_info.height = 256;
+    lut_create_info.mip_levels = 1;
+    lut_create_info.array_layers = 1;
+    lut_create_info.format = VK_FORMAT_R16G16_SFLOAT;
+    const uint64_t lut_image = runtime->vma.create_image(lut_bytes.data(), lut_bytes.size(), lut_create_info, vulkan::image_type::texture_2d);
+
+    const auto* env_detail = runtime->vma.get_image_detail(env_image);
+    const auto* irr_detail = runtime->vma.get_image_detail(irr_image);
+    const auto* lut_detail = runtime->vma.get_image_detail(lut_image);
+    if (env_detail == nullptr || irr_detail == nullptr || lut_detail == nullptr) {
+        utility::panic("failed to create IBL images");
+    }
+    const VkImageView env_view = create_image_view(runtime->device, env_detail->image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE);
+    const VkImageView irr_view = create_image_view(runtime->device, irr_detail->image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE);
+    const VkImageView lut_view = create_image_view(runtime->device, lut_detail->image, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_VIEW_TYPE_2D);
+    const VkSampler env_sampler = create_clamped_sampler(runtime->device, static_cast<float>(env_mip_count - 1));
+    std::println("IBL ready: {} mips, irradiance 32x32, LUT 256x256", env_mip_count);
+
+    // set 1：5 张贴图（binding 0-4）+ 3 个 IBL 资源（binding 5-7）
     auto texture_set = runtime->make_descriptor_set(pipeline->get_descriptor_set_layouts()[1]);
-    std::array<VkDescriptorImageInfo, 5> image_infos{};
-    std::array<VkWriteDescriptorSet, 5> texture_writes{};
+    std::array<VkDescriptorImageInfo, 8> image_infos{};
+    std::array<VkWriteDescriptorSet, 8> texture_writes{};
     for (int binding = 0; binding < 5; ++binding) {
         const auto& [image, view] = material_textures[binding].view != VK_NULL_HANDLE ? material_textures[binding] : white_texture;
         image_infos[binding] = {.sampler = sampler, .imageView = view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -439,16 +469,27 @@ int main(int argc, char** argv) {
         texture_writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         texture_writes[binding].pImageInfo = &image_infos[binding];
     }
+    image_infos[5] = {.sampler = env_sampler, .imageView = env_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    image_infos[6] = {.sampler = env_sampler, .imageView = irr_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    image_infos[7] = {.sampler = env_sampler, .imageView = lut_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    for (int binding = 5; binding < 8; ++binding) {
+        texture_writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        texture_writes[binding].dstSet = *texture_set;
+        texture_writes[binding].dstBinding = static_cast<uint32_t>(binding);
+        texture_writes[binding].descriptorCount = 1;
+        texture_writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        texture_writes[binding].pImageInfo = &image_infos[binding];
+    }
     vkUpdateDescriptorSets(runtime->device, static_cast<uint32_t>(texture_writes.size()), texture_writes.data(), 0, nullptr);
 
     // 13. 每帧槽位一个 CameraUBO + set 0 描述符集
-    constexpr size_t ubo_size = sizeof(camera_ubo);
+    constexpr size_t ubo_size = sizeof(vulkan::camera_ubo);
     std::vector<uint64_t> ubo_buffers;
     std::vector<vulkan::vk_descriptor_set> ubo_sets;
     ubo_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
     ubo_sets.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
     for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-        camera_ubo initial{};
+        vulkan::camera_ubo initial{};
         ubo_buffers.push_back(runtime->vma.create_buffer(std::span(&initial, 1), vulkan::buffer_type::uniform_coherent));
         const auto* ubo_detail = runtime->vma.get_buffer_detail(ubo_buffers.back());
         if (ubo_detail == nullptr) {
@@ -488,20 +529,12 @@ int main(int argc, char** argv) {
         push.flags |= 4u;
     }
 
-    // 16. 相机：轨道观察（左键拖拽旋转，滚轮缩放）
+    // 16. 相机：轨道观察（左键拖拽旋转，滚轮缩放）。
+    //    相机状态在 runtime 中（构造时已注册鼠标回调），矩阵计算在 vulkan::model
     const float aspect = static_cast<float>(runtime->swap_chain_extent.width) / static_cast<float>(runtime->swap_chain_extent.height);
-    // RH_ZO：右手系 + 深度 [0,1]（Vulkan 约定）
-    glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(45.0f), aspect, 0.1f, 100.0f);
-    // glm 的投影按 OpenGL 约定（NDC y 向上），而 Vulkan framebuffer 的 y 向下：
-    // 翻转投影 Y 分量，否则 glTF 的 CCW 正面绕序在帧缓冲里变成 CW，
-    // 被管线的 CULL_BACK 裁掉，只会看到模型内壁。
-    proj[1][1] *= -1.0f;
 
-    orbit_camera camera{};
-    glfwSetWindowUserPointer(runtime->window, &camera);
-    glfwSetMouseButtonCallback(runtime->window, mouse_button_callback);
-    glfwSetCursorPosCallback(runtime->window, cursor_pos_callback);
-    glfwSetScrollCallback(runtime->window, scroll_callback);
+    // 模型矩阵（适配缩放 + 居中到原点）
+    const glm::mat4 model_matrix = glm::scale(glm::mat4(1.0f), glm::vec3(fit_scale)) * glm::translate(glm::mat4(1.0f), -center);
 
     // 17. 渲染主循环：直到关闭窗口或按 ESC
     std::println("rendering '{}' with PBR... left-drag to orbit, wheel to zoom, ESC to exit", model_path);
@@ -517,12 +550,8 @@ int main(int argc, char** argv) {
         vkResetFences(runtime->device, 1, &runtime->in_flight_fences[frame_slot]);
 
         // 更新本槽位的 UBO（轨道相机）
-        const glm::vec3 eye = orbit_eye(camera);
-        camera_ubo ubo{};
-        ubo.model = glm::scale(glm::mat4(1.0f), glm::vec3(fit_scale)) * glm::translate(glm::mat4(1.0f), -center);
-        ubo.view = glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-        ubo.proj = proj;
-        ubo.camera_pos = eye;
+        const vulkan::camera_ubo ubo = vulkan::make_orbit_camera_ubo(
+            runtime.camera.yaw, runtime.camera.pitch, runtime.camera.distance, model_matrix, aspect);
         const auto* ubo_detail = runtime->vma.get_buffer_detail(ubo_buffers[frame_slot]);
         std::memcpy(ubo_detail->allocation_info.pMappedData, &ubo, ubo_size);
 
@@ -543,30 +572,11 @@ int main(int argc, char** argv) {
             break;
         }
 
-        std::array<VkClearValue, 2> clear_values = {};
-        clear_values[0].color = {{0.02f, 0.02f, 0.03f, 1.0f}};
-        clear_values[1].depthStencil = {1.0f, 0};
+        // 开始 render pass（清屏 + framebuffer/渲染区域，封装在 runtime 中）
+        runtime.begin_render_pass(*command_buffer, image_index);
 
-        VkRenderPassBeginInfo render_pass_info{};
-        render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        render_pass_info.renderPass = runtime->renderpass;
-        render_pass_info.framebuffer = runtime->swap_chain_framebuffers[image_index];
-        render_pass_info.renderArea = {{0, 0}, runtime->swap_chain_extent};
-        render_pass_info.clearValueCount = static_cast<uint32_t>(clear_values.size());
-        render_pass_info.pClearValues = clear_values.data();
-        vkCmdBeginRenderPass(*command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
-
-        vkCmdBindPipeline(*command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->get_pipeline());
-
-        const VkViewport viewport{0.0f,
-                                  0.0f,
-                                  static_cast<float>(runtime->swap_chain_extent.width),
-                                  static_cast<float>(runtime->swap_chain_extent.height),
-                                  0.0f,
-                                  1.0f};
-        const VkRect2D scissor{{0, 0}, runtime->swap_chain_extent};
-        vkCmdSetViewport(*command_buffer, 0, 1, &viewport);
-        vkCmdSetScissor(*command_buffer, 0, 1, &scissor);
+        // 绑定管线 + 设置视口/裁剪（封装在 vk_pipeline 中）
+        pipeline->begin_pipeline(*command_buffer);
 
         const VkBuffer vertex_handle = vertex_detail->buffer;
         constexpr VkDeviceSize vertex_offset = 0;
@@ -595,28 +605,11 @@ int main(int argc, char** argv) {
             break;
         }
 
-        constexpr VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        VkSubmitInfo submit_info = {};
-        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit_info.waitSemaphoreCount = 1;
-        submit_info.pWaitSemaphores = &runtime->image_available_semaphores[frame_slot];
-        submit_info.pWaitDstStageMask = &wait_stage;
-        submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &*command_buffer;
-        submit_info.signalSemaphoreCount = 1;
-        submit_info.pSignalSemaphores = &runtime->render_finished_semaphores[image_index];
-        if (vkQueueSubmit(runtime->graphics_queue, 1, &submit_info, runtime->in_flight_fences[frame_slot]) != VK_SUCCESS) {
+        // 提交 + 呈现（封装在 core 中，含信号量/栅栏/队列选择）
+        if (runtime->submit(*command_buffer, image_index) != VK_SUCCESS) {
             break;
         }
-
-        VkPresentInfoKHR present_info{};
-        present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        present_info.waitSemaphoreCount = 1;
-        present_info.pWaitSemaphores = &runtime->render_finished_semaphores[image_index];
-        present_info.swapchainCount = 1;
-        present_info.pSwapchains = &runtime->swap_chain;
-        present_info.pImageIndices = &image_index;
-        if (vkQueuePresentKHR(runtime->present_queue, &present_info) != VK_SUCCESS) {
+        if (runtime->present(image_index) != VK_SUCCESS) {
             break;
         }
 
@@ -625,7 +618,14 @@ int main(int argc, char** argv) {
 
     // 18. 等待 GPU 完成后再释放资源
     vkDeviceWaitIdle(runtime->device);
+    vkDestroySampler(runtime->device, env_sampler, nullptr);
     vkDestroySampler(runtime->device, sampler, nullptr);
+    vkDestroyImageView(runtime->device, lut_view, nullptr);
+    vkDestroyImageView(runtime->device, irr_view, nullptr);
+    vkDestroyImageView(runtime->device, env_view, nullptr);
+    runtime->vma.free_image(lut_image);
+    runtime->vma.free_image(irr_image);
+    runtime->vma.free_image(env_image);
     for (const auto& bundle : material_textures) {
         if (bundle.view != VK_NULL_HANDLE) {
             vkDestroyImageView(runtime->device, bundle.view, nullptr);
