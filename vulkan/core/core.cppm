@@ -126,6 +126,24 @@ namespace vulkan {
         void wait_usable_image(uint32_t image_index);
         void reset_fence(uint32_t frame_index) const;
         void recreate_swap_chain();
+
+        /**
+         * @ingroup vulkan_core
+         * @brief submit the recorded command buffer for the current frame
+         * @param command_buffer the command buffer to submit
+         * @param image_index the acquired swapchain image index (selects the render finished semaphore)
+         * @return the result of vkQueueSubmit
+         */
+        VkResult submit(VkCommandBuffer command_buffer, uint32_t image_index);
+
+        /**
+         * @ingroup vulkan_core
+         * @brief present the rendered swapchain image
+         * @param image_index the swapchain image index to present
+         * @return the result of vkQueuePresentKHR
+         */
+        VkResult present(uint32_t image_index);
+
         std::expected<vk_pipeline, std::string_view> make_pipeline(
             std::span<const unsigned char> vertex_shader_code,
             std::span<const unsigned char> fragment_shader_code);

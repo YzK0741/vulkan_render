@@ -799,6 +799,31 @@ namespace vulkan {
         current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
+    VkResult core::submit(const VkCommandBuffer command_buffer, const uint32_t image_index) {
+        const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        VkSubmitInfo submit_info = {};
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.waitSemaphoreCount = 1;
+        submit_info.pWaitSemaphores = &this->image_available_semaphores[this->current_frame];
+        submit_info.pWaitDstStageMask = &wait_stage;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &command_buffer;
+        submit_info.signalSemaphoreCount = 1;
+        submit_info.pSignalSemaphores = &this->render_finished_semaphores[image_index];
+        return vkQueueSubmit(this->graphics_queue, 1, &submit_info, this->in_flight_fences[this->current_frame]);
+    }
+
+    VkResult core::present(const uint32_t image_index) {
+        VkPresentInfoKHR present_info = {};
+        present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        present_info.waitSemaphoreCount = 1;
+        present_info.pWaitSemaphores = &this->render_finished_semaphores[image_index];
+        present_info.swapchainCount = 1;
+        present_info.pSwapchains = &this->swap_chain;
+        present_info.pImageIndices = &image_index;
+        return vkQueuePresentKHR(this->present_queue, &present_info);
+    }
+
     void core::recreate_swap_chain() {
         // 1. 等待设备空闲
         vkDeviceWaitIdle(device);
@@ -893,11 +918,22 @@ namespace vulkan {
     std::expected<vk_pipeline, std::string_view> core::make_pipeline(
         std::span<const unsigned char> vertex_shader_code,
         const std::span<const unsigned char> fragment_shader_code) {
-        return vulkan::make_pipeline(
+        auto result = vulkan::make_pipeline(
             this->device,
             this->renderpass,
             vertex_shader_code,
             fragment_shader_code,
             this->msaa_samples);
+        if (result) {
+            // 按当前交换链尺寸保存全屏视口/裁剪区，draw 前直接取用
+            result->viewport = {0.0f,
+                                0.0f,
+                                static_cast<float>(this->swap_chain_extent.width),
+                                static_cast<float>(this->swap_chain_extent.height),
+                                0.0f,
+                                1.0f};
+            result->scissor = {{0, 0}, this->swap_chain_extent};
+        }
+        return result;
     }
 } // namespace vulkan
