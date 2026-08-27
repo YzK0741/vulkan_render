@@ -110,6 +110,7 @@ target_link_libraries(vulkan_lib
         Vulkan::Vulkan
         glfw
         utility
+        glm::glm
         ${CMAKE_DL_LIBS}
 )
 
