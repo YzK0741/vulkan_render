@@ -19,6 +19,9 @@ layout(set = 1, binding = 1) uniform sampler2D metallic_roughness_texture;
 layout(set = 1, binding = 2) uniform sampler2D normal_texture;
 layout(set = 1, binding = 3) uniform sampler2D occlusion_texture;
 layout(set = 1, binding = 4) uniform sampler2D emissive_texture;
+layout(set = 1, binding = 5) uniform samplerCube env_sampler;        // 预过滤环境（粗糙度 mip 链）
+layout(set = 1, binding = 6) uniform samplerCube irradiance_sampler; // 辐照度图（漫反射 IBL）
+layout(set = 1, binding = 7) uniform sampler2D brdf_lut_sampler;     // BRDF 积分 LUT
 
 layout(push_constant) uniform PushConstants {
     vec4 base_color_factor;
@@ -30,6 +33,7 @@ layout(push_constant) uniform PushConstants {
 } push;
 
 const float PI = 3.14159265359;
+const float ENV_MIP_COUNT = 5.0; // 与 CPU 端生成的预过滤环境 mip 数一致
 
 // 法线分布函数：GGX / Trowbridge-Reitz
 float distribution_ggx(vec3 n, vec3 h, float roughness) {
@@ -58,23 +62,38 @@ vec3 fresnel_schlick(float cos_theta, vec3 f0) {
     return f0 + (1.0 - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
 }
 
-// 菲涅尔：粗糙度变体（IBL 环境反射用，粗糙度越高反射越弱）
-vec3 fresnel_schlick_roughness(float cos_theta, vec3 f0, float roughness) {
-    return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
+// ---- IBL：split-sum 近似（移植自 glTF-Sample-Renderer 的 ibl.glsl） ----
+
+// 漫反射环境：辐照度图
+vec3 get_diffuse_light(vec3 n) {
+    return texture(irradiance_sampler, n).rgb;
 }
 
-// 程序化环境光：按方向采样渐变天空/地面 + 太阳亮斑，低成本模拟 IBL
-vec3 environment_color(vec3 dir) {
-    float t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0); // 0 朝下，1 朝上
-    const vec3 ground = vec3(0.03, 0.03, 0.05) * 0.75;
-    const vec3 horizon = vec3(0.16, 0.19, 0.26) * 0.75;
-    const vec3 sky = vec3(0.28, 0.45, 0.75) * 0.75;
-    vec3 env = t < 0.5 ? mix(ground, horizon, t * 2.0) : mix(horizon, sky, (t - 0.5) * 2.0);
-    // 太阳亮斑：方向与主光对齐时最亮，金属表面的"光泽"主要来自这里
-    const vec3 sun_dir = normalize(vec3(0.3, 1.0, 0.5));
-    float sun = pow(max(dot(dir, sun_dir), 0.0), 64.0);
-    env += vec3(1.0, 0.95, 0.85) * sun * 1.35;
-    return env;
+// 镜面环境：按 lod 采样预过滤环境
+vec3 get_specular_sample(vec3 reflection, float lod) {
+    return textureLod(env_sampler, reflection, lod).rgb;
+}
+
+// 单次散射 + 多次散射补偿的 Fresnel 权重（BRDF LUT），来自 Fdez-Aguera
+vec3 get_ibl_ggx_fresnel(vec3 n, vec3 v, float roughness, vec3 f0, float specular_weight) {
+    float ndotv = clamp(dot(n, v), 0.0, 1.0);
+    vec2 brdf_sample_point = clamp(vec2(ndotv, roughness), vec2(0.0), vec2(1.0));
+    vec2 f_ab = texture(brdf_lut_sampler, brdf_sample_point).rg;
+    vec3 fr = max(vec3(1.0 - roughness), f0) - f0;
+    vec3 k_s = f0 + fr * pow(1.0 - ndotv, 5.0);
+    vec3 fssess = specular_weight * (k_s * f_ab.x + f_ab.y);
+
+    float ems = 1.0 - (f_ab.x + f_ab.y);
+    vec3 f_avg = specular_weight * (f0 + (1.0 - f0) / 21.0);
+    vec3 fmsems = ems * fssess * f_avg / (1.0 - f_avg * ems);
+
+    return fssess + fmsems;
+}
+
+vec3 get_ibl_radiance_ggx(vec3 n, vec3 v, float roughness) {
+    float lod = roughness * (ENV_MIP_COUNT - 1.0);
+    vec3 reflection = normalize(reflect(-v, n));
+    return get_specular_sample(reflection, lod);
 }
 
 // ACES 电影级色调映射
@@ -125,17 +144,15 @@ void main() {
 
     vec3 diffuse = kd * base_color.rgb / PI;
 
-    // ---- 模拟 IBL 环境光：增强金属/光滑表面的光泽 ----
-    // 漫反射按法线方向采样环境；镜面反射按粗糙度模糊后的反射方向采样，
-    // 再用菲涅尔（粗糙度变体）控制反射强度：金属反射最强、粗糙表面最弱
-    vec3 r = reflect(-v, n);
-    r = normalize(mix(r, n, roughness * 0.7));
-    vec3 ibl_diffuse = environment_color(n);
-    vec3 ibl_specular = environment_color(r) * ao;
-    vec3 fresnel_ibl = fresnel_schlick_roughness(max(dot(n, v), 0.0), f0, roughness);
+    // ---- IBL（split-sum）：漫反射辐照度 + 预过滤镜面反射 ----
+    vec3 ibl_diffuse = get_diffuse_light(n);
+    vec3 ibl_specular = get_ibl_radiance_ggx(n, v, roughness);
+    vec3 fresnel_ibl = get_ibl_ggx_fresnel(n, v, roughness, f0, 1.0);
 
-    vec3 ambient = ibl_diffuse * base_color.rgb * ao;
-    vec3 specular_ibl = ibl_specular * fresnel_ibl;
+    // 金属没有漫反射项：漫反射环境光按 (1 - metallic) 衰减，
+    // 金属的颜色完全来自镜面反射环境（与官方 mix(dielectric, metal, metallic) 行为一致）
+    vec3 ambient = ibl_diffuse * base_color.rgb * ao * (1.0 - metallic);
+    vec3 specular_ibl = ibl_specular * fresnel_ibl * ao;
 
     vec3 color = ambient + (diffuse + specular) * radiance + specular_ibl + emissive;
 
