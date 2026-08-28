@@ -87,6 +87,46 @@ std::chrono::milliseconds utility::time_test(std::function<void()> const& test) 
     return std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 }
 
+std::optional<std::vector<unsigned char>> utility::read_binary_to_vector(const std::filesystem::path& path) {
+    std::error_code error;
+    const uintmax_t file_size = std::filesystem::file_size(path, error);
+    if (error) {
+        return std::nullopt;
+    }
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return std::nullopt;
+    }
+    // 按文件大小预分配，避免读取过程中反复扩容
+    std::vector<unsigned char> data;
+    data.reserve(static_cast<size_t>(file_size));
+    data.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    if (file.bad()) {
+        return std::nullopt;
+    }
+    return data;
+}
+
+std::optional<std::string> utility::read_binary_to_string(const std::filesystem::path& path) {
+    std::error_code error;
+    const uintmax_t file_size = std::filesystem::file_size(path, error);
+    if (error) {
+        return std::nullopt;
+    }
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return std::nullopt;
+    }
+    // 按文件大小预分配，避免读取过程中反复扩容
+    std::string data;
+    data.reserve(static_cast<size_t>(file_size));
+    data.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    if (file.bad()) {
+        return std::nullopt;
+    }
+    return data;
+}
+
 std::optional<utility::md5_digest> utility::md5(const std::span<const unsigned char> data_view) {
     md5_digest digest = {};
     unsigned int size_byte = sizeof(md5_digest);

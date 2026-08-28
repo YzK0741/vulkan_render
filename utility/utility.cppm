@@ -130,6 +130,22 @@ namespace utility {
     export std::chrono::milliseconds time_test(std::function<void()> const& test) noexcept;
 
     /**
+     * @ingroup utility
+     * @brief read the whole file in binary mode into a byte vector
+     * @param path the file path
+     * @return the file contents, or std::nullopt if the file cannot be read
+     */
+    export std::optional<std::vector<unsigned char>> read_binary_to_vector(const std::filesystem::path& path);
+
+    /**
+     * @ingroup utility
+     * @brief read the whole file in binary mode into a string
+     * @param path the file path
+     * @return the file contents, or std::nullopt if the file cannot be read
+     */
+    export std::optional<std::string> read_binary_to_string(const std::filesystem::path& path);
+
+    /**
      * @defgroup hash
      * @ingroup utility
      * @brief hash series functions wrapper of openssl
