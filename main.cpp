@@ -28,14 +28,15 @@ namespace {
     };
     static_assert(sizeof(pbr_push_constants) == 48);
 
-    // 以二进制方式读取整个文件；失败返回 false
-    bool read_binary_file(const std::filesystem::path& path, std::vector<unsigned char>& out) {
-        std::ifstream file(path, std::ios::binary);
-        if (!file) {
-            return false;
+    // 读取单个着色器 SPIR-V 文件并打印信息；失败直接 panic
+    void load_shader(const std::filesystem::path& dir, std::string_view file_name, std::vector<unsigned char>& out) {
+        const std::filesystem::path path = dir / file_name;
+        const std::optional<std::vector<unsigned char>> data = utility::read_binary_to_vector(path);
+        if (!data) {
+            utility::panic(std::format("cannot open shader file '{}'", path.string()));
         }
-        out.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-        return !file.bad();
+        out = *data;
+        std::println("loaded shader: {} ({} bytes)", path.string(), out.size());
     }
 
     // 从当前工作目录向上逐级查找 shaders/ 目录，
@@ -71,15 +72,6 @@ namespace {
             current = parent;
         }
         return std::nullopt;
-    }
-
-    // 读取单个着色器 SPIR-V 文件并打印信息；失败直接 panic
-    void load_shader(const std::filesystem::path& dir, std::string_view file_name, std::vector<unsigned char>& out) {
-        const std::filesystem::path path = dir / file_name;
-        if (!read_binary_file(path, out)) {
-            utility::panic(std::format("cannot open shader file '{}'", path.string()));
-        }
-        std::println("loaded shader: {} ({} bytes)", path.string(), out.size());
     }
 
     // 加载一对 vertex/fragment SPIR-V，并通过 runtime 创建管线；失败直接 panic
