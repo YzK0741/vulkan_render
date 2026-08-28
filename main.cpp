@@ -43,7 +43,7 @@ namespace {
     std::optional<std::filesystem::path> locate_shaders_dir() {
         std::filesystem::path current = std::filesystem::current_path();
         for (int depth = 0; depth < 4; ++depth) {
-            const std::filesystem::path candidate = current / "shaders";
+            std::filesystem::path candidate = current / "shaders";
             if (std::filesystem::is_directory(candidate)) {
                 return candidate;
             }
@@ -60,7 +60,7 @@ namespace {
     std::optional<std::filesystem::path> locate_model_file() {
         std::filesystem::path current = std::filesystem::current_path();
         for (int depth = 0; depth < 4; ++depth) {
-            const std::filesystem::path candidate = current / "gltf_model" / "DamagedHelmet.gltf";
+            std::filesystem::path candidate = current / "gltf_model" / "DamagedHelmet.gltf";
             if (std::filesystem::is_regular_file(candidate)) {
                 return candidate;
             }
@@ -132,7 +132,7 @@ namespace {
     // VMA 上传贴图 + 创建 image view
     struct texture_bundle {
         uint64_t image = 0;
-        VkImageView view = VK_NULL_HANDLE;
+        vulkan::vk_image_view view; // RAII，析构时自动销毁
     };
 
     texture_bundle create_texture(vulkan::runtime& runtime, const gltf::texture_data& texture, const VkFormat format) {
@@ -154,63 +154,8 @@ namespace {
             return bundle;
         }
 
-        VkImageViewCreateInfo view_info = {};
-        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view_info.image = detail->image;
-        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view_info.format = format;
-        view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCreateImageView(runtime->device, &view_info, nullptr, &bundle.view);
+        bundle.view = runtime->make_image_view(detail->image, format, VK_IMAGE_VIEW_TYPE_2D);
         return bundle;
-    }
-
-    VkSampler create_texture_sampler(const VkDevice device) {
-        VkSamplerCreateInfo info = {};
-        info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        info.magFilter = VK_FILTER_LINEAR;
-        info.minFilter = VK_FILTER_LINEAR;
-        info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        info.maxAnisotropy = 1.0f;
-        info.minLod = 0.0f;
-        info.maxLod = 0.25f; // 只有 mip 0，避免采样到未生成的层级
-
-        VkSampler sampler = VK_NULL_HANDLE;
-        vkCreateSampler(device, &info, nullptr, &sampler);
-        return sampler;
-    }
-
-    // 创建 image view（支持 cube）
-    VkImageView create_image_view(const VkDevice device, const VkImage image, const VkFormat format, const VkImageViewType type) {
-        VkImageViewCreateInfo view_info{};
-        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view_info.image = image;
-        view_info.viewType = type;
-        view_info.format = format;
-        view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
-        VkImageView view = VK_NULL_HANDLE;
-        vkCreateImageView(device, &view_info, nullptr, &view);
-        return view;
-    }
-
-    // 环境/LUT 采样器：CLAMP_TO_EDGE + 线性 + mipmap 线性（cubemap 必须 clamp）
-    VkSampler create_clamped_sampler(const VkDevice device, const float max_lod) {
-        VkSamplerCreateInfo info{};
-        info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        info.magFilter = VK_FILTER_LINEAR;
-        info.minFilter = VK_FILTER_LINEAR;
-        info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        info.maxAnisotropy = 1.0f;
-        info.minLod = 0.0f;
-        info.maxLod = max_lod;
-        VkSampler sampler = VK_NULL_HANDLE;
-        vkCreateSampler(device, &info, nullptr, &sampler);
-        return sampler;
     }
 } // namespace
 
@@ -262,8 +207,8 @@ int main(int argc, char** argv) {
         utility::panic("model has no POSITION attribute");
     }
 
-    const glm::vec3 default_normal(0.0f, 1.0f, 0.0f);
-    const glm::vec2 default_uv(0.0f, 0.0f);
+    constexpr glm::vec3 default_normal(0.0f, 1.0f, 0.0f);
+    constexpr glm::vec2 default_uv(0.0f, 0.0f);
     const size_t vertex_count = position_portion->data.size() / sizeof(glm::vec3);
 
     std::vector<glm::vec3> positions;
@@ -322,7 +267,7 @@ int main(int argc, char** argv) {
                 continue; // 退化的 UV 三角形
             }
             const float f = 1.0f / denom;
-            const glm::vec3 tangent = f * (duv2.y * e1 - duv1.y * e2);
+            const glm::vec3 tangent = f * duv2.y * e1 - f * duv1.y * e2;
             tangent_accumulator[i0] += tangent;
             tangent_accumulator[i1] += tangent;
             tangent_accumulator[i2] += tangent;
@@ -338,18 +283,18 @@ int main(int argc, char** argv) {
     std::vector<vertex> vertices;
     vertices.reserve(vertex_count);
     for (size_t i = 0; i < vertex_count; ++i) {
-        vertices.push_back(vertex{positions[i], normals[i], uvs[i], tangents[i]});
+        vertices.push_back(vertex{.position = positions[i], .normal = normals[i], .uv = uvs[i], .tangent = tangents[i]});
     }
 
     // 9. 包围盒自动适配相机
-    glm::vec3 bmin = glm::vec3(std::numeric_limits<float>::infinity());
-    glm::vec3 bmax = glm::vec3(-std::numeric_limits<float>::infinity());
+    auto b_min = glm::vec3(std::numeric_limits<float>::infinity());
+    auto b_max = glm::vec3(-std::numeric_limits<float>::infinity());
     for (const auto& v : vertices) {
-        bmin = glm::min(bmin, v.position);
-        bmax = glm::max(bmax, v.position);
+        b_min = glm::min(b_min, v.position);
+        b_max = glm::max(b_max, v.position);
     }
-    const glm::vec3 center = (bmin + bmax) * 0.5f;
-    const glm::vec3 extent = bmax - bmin;
+    const glm::vec3 center = b_min * 0.5f + b_max * 0.5f;
+    const glm::vec3 extent = b_max - b_min;
     const float max_extent = glm::max(extent.x, glm::max(extent.y, extent.z));
     const float fit_scale = max_extent > 0.0f ? 1.6f / max_extent : 1.0f;
     std::println("mesh: {} vertices, {} indices, center ({:.3f}, {:.3f}, {:.3f}), extent {:.3f}", vertices.size(), index_count, center.x, center.y, center.z, max_extent);
@@ -394,7 +339,7 @@ int main(int argc, char** argv) {
     white_texture_data.component = 4;
     const texture_bundle white_texture = create_texture(runtime, white_texture_data, VK_FORMAT_R8G8B8A8_UNORM);
 
-    const VkSampler sampler = create_texture_sampler(runtime->device);
+    const vulkan::vk_sampler sampler = runtime->make_sampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 0.25f);
 
     // 12.1 生成并上传 IBL 资源（split-sum：预过滤环境 + 辐照度 + BRDF LUT）
     constexpr int env_size = 128;
@@ -449,10 +394,10 @@ int main(int argc, char** argv) {
     if (env_detail == nullptr || irr_detail == nullptr || lut_detail == nullptr) {
         utility::panic("failed to create IBL images");
     }
-    const VkImageView env_view = create_image_view(runtime->device, env_detail->image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE);
-    const VkImageView irr_view = create_image_view(runtime->device, irr_detail->image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE);
-    const VkImageView lut_view = create_image_view(runtime->device, lut_detail->image, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_VIEW_TYPE_2D);
-    const VkSampler env_sampler = create_clamped_sampler(runtime->device, static_cast<float>(env_mip_count - 1));
+    const vulkan::vk_image_view env_view = runtime->make_image_view(env_detail->image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE);
+    const vulkan::vk_image_view irr_view = runtime->make_image_view(irr_detail->image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE);
+    const vulkan::vk_image_view lut_view = runtime->make_image_view(lut_detail->image, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_VIEW_TYPE_2D);
+    const vulkan::vk_sampler env_sampler = runtime->make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, static_cast<float>(env_mip_count - 1));
     std::println("IBL ready: {} mips, irradiance 32x32, LUT 256x256", env_mip_count);
 
     // set 1：5 张贴图（binding 0-4）+ 3 个 IBL 资源（binding 5-7）
@@ -460,8 +405,8 @@ int main(int argc, char** argv) {
     std::array<VkDescriptorImageInfo, 8> image_infos{};
     std::array<VkWriteDescriptorSet, 8> texture_writes{};
     for (int binding = 0; binding < 5; ++binding) {
-        const auto& [image, view] = material_textures[binding].view != VK_NULL_HANDLE ? material_textures[binding] : white_texture;
-        image_infos[binding] = {.sampler = sampler, .imageView = view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        const auto& [image, view] = material_textures[binding].view.get() != VK_NULL_HANDLE ? material_textures[binding] : white_texture;
+        image_infos[binding] = {.sampler = *sampler, .imageView = *view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         texture_writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         texture_writes[binding].dstSet = *texture_set;
         texture_writes[binding].dstBinding = static_cast<uint32_t>(binding);
@@ -469,9 +414,9 @@ int main(int argc, char** argv) {
         texture_writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         texture_writes[binding].pImageInfo = &image_infos[binding];
     }
-    image_infos[5] = {.sampler = env_sampler, .imageView = env_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    image_infos[6] = {.sampler = env_sampler, .imageView = irr_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    image_infos[7] = {.sampler = env_sampler, .imageView = lut_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    image_infos[5] = {.sampler = *env_sampler, .imageView = *env_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    image_infos[6] = {.sampler = *env_sampler, .imageView = *irr_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    image_infos[7] = {.sampler = *env_sampler, .imageView = *lut_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     for (int binding = 5; binding < 8; ++binding) {
         texture_writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         texture_writes[binding].dstSet = *texture_set;
@@ -588,7 +533,7 @@ int main(int argc, char** argv) {
                                 VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 pipeline->get_pipeline_layout(),
                                 0,
-                                static_cast<uint32_t>(bound_sets.size()),
+                                bound_sets.size(),
                                 bound_sets.data(),
                                 0,
                                 nullptr);
@@ -616,26 +561,15 @@ int main(int argc, char** argv) {
         runtime->to_next_frame();
     }
 
-    // 18. 等待 GPU 完成后再释放资源
+    // 18. 等待 GPU 完成后再释放资源（image view / sampler 由 RAII 句柄自动销毁）
     vkDeviceWaitIdle(runtime->device);
-    vkDestroySampler(runtime->device, env_sampler, nullptr);
-    vkDestroySampler(runtime->device, sampler, nullptr);
-    vkDestroyImageView(runtime->device, lut_view, nullptr);
-    vkDestroyImageView(runtime->device, irr_view, nullptr);
-    vkDestroyImageView(runtime->device, env_view, nullptr);
     runtime->vma.free_image(lut_image);
     runtime->vma.free_image(irr_image);
     runtime->vma.free_image(env_image);
     for (const auto& bundle : material_textures) {
-        if (bundle.view != VK_NULL_HANDLE) {
-            vkDestroyImageView(runtime->device, bundle.view, nullptr);
-        }
         if (bundle.image != 0) {
             runtime->vma.free_image(bundle.image);
         }
-    }
-    if (white_texture.view != VK_NULL_HANDLE) {
-        vkDestroyImageView(runtime->device, white_texture.view, nullptr);
     }
     if (white_texture.image != 0) {
         runtime->vma.free_image(white_texture.image);
