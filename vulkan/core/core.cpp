@@ -770,6 +770,35 @@ namespace vulkan {
         return ::vulkan::make_descriptor_set(this->device, this->descriptor_pool, layout);
     }
 
+    vk_image_view core::make_image_view(const VkImage image, const VkFormat format, const VkImageViewType type) {
+        VkImageViewCreateInfo view_info = {};
+        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.image = image;
+        view_info.viewType = type;
+        view_info.format = format;
+        view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+        VkImageView view = VK_NULL_HANDLE;
+        vkCreateImageView(this->device, &view_info, nullptr, &view);
+        return vk_image_view(view, this->device);
+    }
+
+    vk_sampler core::make_sampler(const VkSamplerAddressMode address_mode, const float max_lod) {
+        VkSamplerCreateInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        info.magFilter = VK_FILTER_LINEAR;
+        info.minFilter = VK_FILTER_LINEAR;
+        info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        info.addressModeU = address_mode;
+        info.addressModeV = address_mode;
+        info.addressModeW = address_mode;
+        info.maxAnisotropy = 1.0f;
+        info.minLod = 0.0f;
+        info.maxLod = max_lod;
+        VkSampler sampler = VK_NULL_HANDLE;
+        vkCreateSampler(this->device, &info, nullptr, &sampler);
+        return vk_sampler(sampler, this->device);
+    }
+
     std::optional<vk_shader_module> core::make_shader_module(const std::span<unsigned char> shader) noexcept {
         return ::vulkan::make_shader_module(shader, this->device);
     }

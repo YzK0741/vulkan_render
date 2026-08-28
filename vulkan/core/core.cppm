@@ -122,6 +122,25 @@ namespace vulkan {
 
         std::optional<vk_shader_module> make_shader_module(std::span<unsigned char> shader) noexcept;
 
+        /**
+         * @ingroup vulkan_core
+         * @brief create an image view covering the whole image (all mip levels and layers)
+         * @param image the image to view
+         * @param format the view format
+         * @param type view type (VK_IMAGE_VIEW_TYPE_2D / VK_IMAGE_VIEW_TYPE_CUBE ...)
+         * @return raii vk_image_view owning the created view
+         */
+        vk_image_view make_image_view(VkImage image, VkFormat format, VkImageViewType type);
+
+        /**
+         * @ingroup vulkan_core
+         * @brief create a linear/min-linear sampler with the given wrap mode
+         * @param address_mode wrap mode applied to all three axes
+         * @param max_lod maximum mip level the sampler may access
+         * @return raii vk_sampler owning the created sampler
+         */
+        vk_sampler make_sampler(VkSamplerAddressMode address_mode, float max_lod);
+
         VkResult get_image_index(uint32_t& image_index) const;
         void wait_usable_image(uint32_t image_index);
         void reset_fence(uint32_t frame_index) const;
