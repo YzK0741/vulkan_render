@@ -20,14 +20,14 @@ namespace vulkan {
      */
     export class vk_command_buffer {
         VkCommandBuffer command_buffer = VK_NULL_HANDLE;
-        VkDevice* device = nullptr;
-        VkCommandPool* command_pool = nullptr;
+        VkDevice device = VK_NULL_HANDLE;
+        VkCommandPool command_pool = VK_NULL_HANDLE;
 
     public:
         [[nodiscard]] VkCommandBuffer const& get() const noexcept;
         [[nodiscard]] VkCommandBuffer const& operator*() const noexcept;
         void release() noexcept;
-        explicit vk_command_buffer(VkCommandBuffer command_buffer, VkDevice& device, VkCommandPool& pool) noexcept;
+        explicit vk_command_buffer(VkCommandBuffer command_buffer, VkDevice device, VkCommandPool pool) noexcept;
         ~vk_command_buffer() noexcept;
 
         explicit vk_command_buffer(vk_command_buffer& command_buffer) = delete;
@@ -42,7 +42,7 @@ namespace vulkan {
      * @param command_pool valid VkCommandPool
      * @return raii VkCommandBuffer wrapper
      */
-    export vk_command_buffer make_command_buffer(VkDevice& device, VkCommandPool& command_pool) noexcept;
+    export vk_command_buffer make_command_buffer(VkDevice device, VkCommandPool command_pool) noexcept;
 
     /**
      * @ingroup vulkan_handles
@@ -53,14 +53,14 @@ namespace vulkan {
      */
     export class vk_descriptor_set {
         VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
-        VkDevice* device = nullptr;
-        VkDescriptorPool* descriptor_pool = nullptr;
+        VkDevice device = VK_NULL_HANDLE;
+        VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
 
     public:
         [[nodiscard]] VkDescriptorSet const& get() const noexcept;
         [[nodiscard]] VkDescriptorSet const& operator*() const noexcept;
         void release() noexcept;
-        explicit vk_descriptor_set(VkDescriptorSet descriptor_set, VkDevice& device, VkDescriptorPool& descriptor_pool) noexcept;
+        explicit vk_descriptor_set(VkDescriptorSet descriptor_set, VkDevice device, VkDescriptorPool descriptor_pool) noexcept;
         ~vk_descriptor_set() noexcept;
 
         explicit vk_descriptor_set(vk_descriptor_set& descriptor_set) = delete;
@@ -76,7 +76,7 @@ namespace vulkan {
      * @param layout valid VkDescriptorSetLayout
      * @return raii wrapper of VkDescriptorSet
      */
-    export vk_descriptor_set make_descriptor_set(VkDevice& device, VkDescriptorPool& descriptor_pool, VkDescriptorSetLayout const& layout) noexcept;
+    export vk_descriptor_set make_descriptor_set(VkDevice device, VkDescriptorPool descriptor_pool, VkDescriptorSetLayout const& layout) noexcept;
 
     /**
      * @ingroup vulkan_handles
@@ -87,13 +87,13 @@ namespace vulkan {
      */
     export class vk_shader_module {
         VkShaderModule shader_module = VK_NULL_HANDLE;
-        VkDevice* device = nullptr;
+        VkDevice device = VK_NULL_HANDLE;
 
     public:
         [[nodiscard]] VkShaderModule const& get() const noexcept;
         [[nodiscard]] VkShaderModule const& operator*() const noexcept;
         void release();
-        explicit vk_shader_module(const VkShaderModule& shader_module, VkDevice& device) noexcept;
+        explicit vk_shader_module(const VkShaderModule& shader_module, VkDevice device) noexcept;
         ~vk_shader_module() noexcept;
 
         explicit vk_shader_module(vk_shader_module& shader_module) = delete;
@@ -110,7 +110,7 @@ namespace vulkan {
      *     fail: std::nullopt
      */
     export std::optional<vk_shader_module> make_shader_module(std::span<const unsigned char> shader,
-                                                              VkDevice& device) noexcept;
+                                                              VkDevice device) noexcept;
 
     /**
      * @ingroup vulkan_handles
@@ -126,13 +126,13 @@ namespace vulkan {
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
 
         std::vector<VkDescriptorSetLayout> descriptor_set_layouts = {};
-        VkDevice* device = nullptr;
+        VkDevice device = VK_NULL_HANDLE;
 
         // 管线自带的视口/裁剪区（动态状态，draw 前需要 vkCmdSetViewport/Scissor）
         VkViewport viewport = {};
         VkRect2D scissor = {};
 
-        explicit vk_pipeline(VkPipeline pipeline, VkPipelineLayout pipeline_layout, std::vector<VkDescriptorSetLayout> const& descriptor_set_layouts, VkDevice& device) noexcept; // NOLINT(*-avoid-const-params-in-decls)
+        explicit vk_pipeline(VkPipeline pipeline, VkPipelineLayout pipeline_layout, std::vector<VkDescriptorSetLayout> const& descriptor_set_layouts, VkDevice device) noexcept; // NOLINT(*-avoid-const-params-in-decls)
         ~vk_pipeline();
         [[nodiscard]] VkPipeline get_pipeline() const noexcept;
         [[nodiscard]] VkPipelineLayout get_pipeline_layout() const noexcept;
@@ -150,5 +150,55 @@ namespace vulkan {
         vk_pipeline& operator=(vk_pipeline& other) = delete;
         vk_pipeline& operator=(vk_pipeline&& other) noexcept;
         void release() noexcept;
+    };
+
+    /**
+     * @ingroup vulkan_handles
+     * @brief raii wrapper of VkImageView
+     * @note
+     *     - use operator* or get() to get naked handle
+     *     - sole ownership
+     */
+    export class vk_image_view {
+        VkImageView image_view = VK_NULL_HANDLE;
+        VkDevice device = VK_NULL_HANDLE;
+
+    public:
+        vk_image_view() noexcept = default;
+        [[nodiscard]] VkImageView const& get() const noexcept;
+        [[nodiscard]] VkImageView const& operator*() const noexcept;
+        void release() noexcept;
+        explicit vk_image_view(VkImageView image_view, VkDevice device) noexcept;
+        ~vk_image_view() noexcept;
+
+        explicit vk_image_view(vk_image_view&) = delete;
+        vk_image_view(vk_image_view&& other) noexcept;
+        vk_image_view& operator=(vk_image_view&) = delete;
+        vk_image_view& operator=(vk_image_view&& other) noexcept;
+    };
+
+    /**
+     * @ingroup vulkan_handles
+     * @brief raii wrapper of VkSampler
+     * @note
+     *     - use operator* or get() to get naked handle
+     *     - sole ownership
+     */
+    export class vk_sampler {
+        VkSampler sampler = VK_NULL_HANDLE;
+        VkDevice device = VK_NULL_HANDLE;
+
+    public:
+        vk_sampler() noexcept = default;
+        [[nodiscard]] VkSampler const& get() const noexcept;
+        [[nodiscard]] VkSampler const& operator*() const noexcept;
+        void release() noexcept;
+        explicit vk_sampler(VkSampler sampler, VkDevice device) noexcept;
+        ~vk_sampler() noexcept;
+
+        explicit vk_sampler(vk_sampler&) = delete;
+        vk_sampler(vk_sampler&& other) noexcept;
+        vk_sampler& operator=(vk_sampler&) = delete;
+        vk_sampler& operator=(vk_sampler&& other) noexcept;
     };
 } // namespace vulkan

@@ -8,10 +8,10 @@ import utility;
 
 // vk_command_buffer
 namespace vulkan {
-    vk_command_buffer::vk_command_buffer(const VkCommandBuffer command_buffer, VkDevice& device, VkCommandPool& pool) noexcept { // NOLINT(*-misplaced-const)
+    vk_command_buffer::vk_command_buffer(const VkCommandBuffer command_buffer, const VkDevice device, const VkCommandPool pool) noexcept { // NOLINT(*-misplaced-const)
         this->command_buffer = command_buffer;
-        this->device = &device;
-        this->command_pool = &pool;
+        this->device = device;
+        this->command_pool = pool;
     }
 
     VkCommandBuffer const& vk_command_buffer::get() const noexcept {
@@ -23,12 +23,12 @@ namespace vulkan {
     }
 
     void vk_command_buffer::release() noexcept {
-        if (this->command_buffer != VK_NULL_HANDLE && this->command_pool != nullptr) {
-            vkFreeCommandBuffers(*this->device, *this->command_pool, 1, &this->command_buffer);
+        if (this->command_buffer != VK_NULL_HANDLE && this->device != VK_NULL_HANDLE && this->command_pool != VK_NULL_HANDLE) {
+            vkFreeCommandBuffers(this->device, this->command_pool, 1, &this->command_buffer);
         }
 
-        this->device = nullptr;
-        this->command_pool = nullptr;
+        this->device = VK_NULL_HANDLE;
+        this->command_pool = VK_NULL_HANDLE;
         this->command_buffer = VK_NULL_HANDLE;
     }
 
@@ -40,8 +40,8 @@ namespace vulkan {
         this->command_buffer = other.command_buffer;
         this->device = other.device;
         this->command_pool = other.command_pool;
-        other.device = nullptr;
-        other.command_pool = nullptr;
+        other.device = VK_NULL_HANDLE;
+        other.command_pool = VK_NULL_HANDLE;
         other.command_buffer = VK_NULL_HANDLE;
     }
 
@@ -54,13 +54,13 @@ namespace vulkan {
         this->command_buffer = other.command_buffer;
         this->device = other.device;
         this->command_pool = other.command_pool;
-        other.device = nullptr;
-        other.command_pool = nullptr;
+        other.device = VK_NULL_HANDLE;
+        other.command_pool = VK_NULL_HANDLE;
         other.command_buffer = VK_NULL_HANDLE;
         return *this;
     }
 
-    vk_command_buffer make_command_buffer(VkDevice& device, VkCommandPool& command_pool) noexcept {
+    vk_command_buffer make_command_buffer(const VkDevice device, const VkCommandPool command_pool) noexcept {
         VkCommandBuffer buffer = VK_NULL_HANDLE;
 
         VkCommandBufferAllocateInfo allocate_info = {
@@ -80,10 +80,10 @@ namespace vulkan {
 
 // vk_descriptor_set
 namespace vulkan {
-    vk_descriptor_set::vk_descriptor_set(const VkDescriptorSet descriptor_set, VkDevice& device, VkDescriptorPool& descriptor_pool) noexcept { // NOLINT(*-misplaced-const)
+    vk_descriptor_set::vk_descriptor_set(const VkDescriptorSet descriptor_set, const VkDevice device, const VkDescriptorPool descriptor_pool) noexcept { // NOLINT(*-misplaced-const)
         this->descriptor_set = descriptor_set;
-        this->device = &device;
-        this->descriptor_pool = &descriptor_pool;
+        this->device = device;
+        this->descriptor_pool = descriptor_pool;
     }
 
     vk_descriptor_set::vk_descriptor_set(vk_descriptor_set&& other) noexcept {
@@ -91,8 +91,8 @@ namespace vulkan {
         this->device = other.device;
         this->descriptor_pool = other.descriptor_pool;
         other.descriptor_set = VK_NULL_HANDLE;
-        other.device = nullptr;
-        other.descriptor_pool = nullptr;
+        other.device = VK_NULL_HANDLE;
+        other.descriptor_pool = VK_NULL_HANDLE;
     }
 
     vk_descriptor_set& vk_descriptor_set::operator=(vk_descriptor_set&& other) noexcept {
@@ -104,8 +104,8 @@ namespace vulkan {
         this->device = other.device;
         this->descriptor_pool = other.descriptor_pool;
         other.descriptor_set = VK_NULL_HANDLE;
-        other.device = nullptr;
-        other.descriptor_pool = nullptr;
+        other.device = VK_NULL_HANDLE;
+        other.descriptor_pool = VK_NULL_HANDLE;
         return *this;
     }
 
@@ -122,15 +122,15 @@ namespace vulkan {
     }
 
     void vk_descriptor_set::release() noexcept {
-        if (this->descriptor_set != VK_NULL_HANDLE && this->device && this->descriptor_pool) {
-            vkFreeDescriptorSets(*this->device, *this->descriptor_pool, 1, &this->descriptor_set);
+        if (this->descriptor_set != VK_NULL_HANDLE && this->device != VK_NULL_HANDLE && this->descriptor_pool != VK_NULL_HANDLE) {
+            vkFreeDescriptorSets(this->device, this->descriptor_pool, 1, &this->descriptor_set);
         }
         this->descriptor_set = VK_NULL_HANDLE;
-        this->device = nullptr;
-        this->descriptor_pool = nullptr;
+        this->device = VK_NULL_HANDLE;
+        this->descriptor_pool = VK_NULL_HANDLE;
     }
 
-    vk_descriptor_set make_descriptor_set(VkDevice& device, VkDescriptorPool& descriptor_pool, VkDescriptorSetLayout const& layout) noexcept {
+    vk_descriptor_set make_descriptor_set(const VkDevice device, const VkDescriptorPool descriptor_pool, VkDescriptorSetLayout const& layout) noexcept {
         VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSetAllocateInfo allocate_info = {};
         allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -145,9 +145,9 @@ namespace vulkan {
 
 // vk_shader_module
 namespace vulkan {
-    vk_shader_module::vk_shader_module(const VkShaderModule& shader_module, VkDevice& device) noexcept {
+    vk_shader_module::vk_shader_module(const VkShaderModule& shader_module, const VkDevice device) noexcept {
         this->shader_module = shader_module;
-        this->device = &device;
+        this->device = device;
     }
 
     vk_shader_module::~vk_shader_module() noexcept {
@@ -166,7 +166,7 @@ namespace vulkan {
         this->shader_module = other.shader_module;
         this->device = other.device;
         other.shader_module = VK_NULL_HANDLE;
-        other.device = nullptr;
+        other.device = VK_NULL_HANDLE;
     }
 
     vk_shader_module& vk_shader_module::operator=(vk_shader_module&& other) noexcept {
@@ -177,19 +177,19 @@ namespace vulkan {
         this->shader_module = other.shader_module;
         this->device = other.device;
         other.shader_module = VK_NULL_HANDLE;
-        other.device = nullptr;
+        other.device = VK_NULL_HANDLE;
         return *this;
     }
 
     void vk_shader_module::release() {
-        if (this->shader_module != VK_NULL_HANDLE && this->device != nullptr) {
-            vkDestroyShaderModule(*this->device, this->shader_module, nullptr);
+        if (this->shader_module != VK_NULL_HANDLE && this->device != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(this->device, this->shader_module, nullptr);
         }
         this->shader_module = VK_NULL_HANDLE;
-        this->device = nullptr;
+        this->device = VK_NULL_HANDLE;
     }
 
-    std::optional<vk_shader_module> make_shader_module(const std::span<const unsigned char> shader, VkDevice& device) noexcept {
+    std::optional<vk_shader_module> make_shader_module(const std::span<const unsigned char> shader, const VkDevice device) noexcept {
         VkShaderModule shader_module = {};
 
         VkShaderModuleCreateInfo create_info = {};
@@ -207,11 +207,11 @@ namespace vulkan {
 
 // vk_pipeline
 namespace vulkan {
-    vk_pipeline::vk_pipeline(const VkPipeline pipeline, const VkPipelineLayout pipeline_layout, std::vector<VkDescriptorSetLayout> const& descriptor_set_layouts, VkDevice& device) noexcept { // NOLINT(*-misplaced-const)
+    vk_pipeline::vk_pipeline(const VkPipeline pipeline, const VkPipelineLayout pipeline_layout, std::vector<VkDescriptorSetLayout> const& descriptor_set_layouts, const VkDevice device) noexcept { // NOLINT(*-misplaced-const)
         this->pipeline = pipeline;
         this->pipeline_layout = pipeline_layout;
         this->descriptor_set_layouts = descriptor_set_layouts;
-        this->device = &device;
+        this->device = device;
     }
 
     vk_pipeline::vk_pipeline(vk_pipeline&& other) noexcept {
@@ -221,8 +221,8 @@ namespace vulkan {
         this->pipeline_layout = other.pipeline_layout;
         this->viewport = other.viewport;
         this->scissor = other.scissor;
-        other.device = nullptr;
-        other.pipeline = nullptr;
+        other.device = VK_NULL_HANDLE;
+        other.pipeline = VK_NULL_HANDLE;
         other.descriptor_set_layouts.clear();
         other.pipeline_layout = VK_NULL_HANDLE;
     }
@@ -238,8 +238,8 @@ namespace vulkan {
         this->pipeline_layout = other.pipeline_layout;
         this->viewport = other.viewport;
         this->scissor = other.scissor;
-        other.device = nullptr;
-        other.pipeline = nullptr;
+        other.device = VK_NULL_HANDLE;
+        other.pipeline = VK_NULL_HANDLE;
         other.descriptor_set_layouts.clear();
         other.pipeline_layout = VK_NULL_HANDLE;
         return *this;
@@ -268,24 +268,114 @@ namespace vulkan {
     }
 
     void vk_pipeline::release() noexcept {
-        if (device) {
+        if (this->device != VK_NULL_HANDLE) {
             if (!this->descriptor_set_layouts.empty()) {
                 for (auto& set_layout : this->descriptor_set_layouts) {
-                    vkDestroyDescriptorSetLayout(*this->device, set_layout, nullptr);
+                    vkDestroyDescriptorSetLayout(this->device, set_layout, nullptr);
                 }
             }
 
             if (this->pipeline_layout != VK_NULL_HANDLE) {
-                vkDestroyPipelineLayout(*this->device, this->pipeline_layout, nullptr);
+                vkDestroyPipelineLayout(this->device, this->pipeline_layout, nullptr);
             }
 
             if (this->pipeline != VK_NULL_HANDLE) {
-                vkDestroyPipeline(*this->device, this->pipeline, nullptr);
+                vkDestroyPipeline(this->device, this->pipeline, nullptr);
             }
         }
-        this->device = nullptr;
+        this->device = VK_NULL_HANDLE;
         this->descriptor_set_layouts.clear();
         this->pipeline_layout = VK_NULL_HANDLE;
         this->pipeline = VK_NULL_HANDLE;
+    }
+
+    // vk_image_view
+    vk_image_view::vk_image_view(const VkImageView image_view, const VkDevice device) noexcept {
+        this->image_view = image_view;
+        this->device = device;
+    }
+
+    vk_image_view::~vk_image_view() noexcept {
+        this->release();
+    }
+
+    VkImageView const& vk_image_view::get() const noexcept {
+        return this->image_view;
+    }
+
+    VkImageView const& vk_image_view::operator*() const noexcept {
+        return this->image_view;
+    }
+
+    void vk_image_view::release() noexcept {
+        if (this->device != VK_NULL_HANDLE && this->image_view != VK_NULL_HANDLE) {
+            vkDestroyImageView(this->device, this->image_view, nullptr);
+        }
+        this->image_view = VK_NULL_HANDLE;
+        this->device = VK_NULL_HANDLE;
+    }
+
+    vk_image_view::vk_image_view(vk_image_view&& other) noexcept {
+        this->image_view = other.image_view;
+        this->device = other.device;
+        other.image_view = VK_NULL_HANDLE;
+        other.device = VK_NULL_HANDLE;
+    }
+
+    vk_image_view& vk_image_view::operator=(vk_image_view&& other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
+        this->release();
+        this->image_view = other.image_view;
+        this->device = other.device;
+        other.image_view = VK_NULL_HANDLE;
+        other.device = VK_NULL_HANDLE;
+        return *this;
+    }
+
+    // vk_sampler
+    vk_sampler::vk_sampler(const VkSampler sampler, const VkDevice device) noexcept {
+        this->sampler = sampler;
+        this->device = device;
+    }
+
+    vk_sampler::~vk_sampler() noexcept {
+        this->release();
+    }
+
+    VkSampler const& vk_sampler::get() const noexcept {
+        return this->sampler;
+    }
+
+    VkSampler const& vk_sampler::operator*() const noexcept {
+        return this->sampler;
+    }
+
+    void vk_sampler::release() noexcept {
+        if (this->device != VK_NULL_HANDLE && this->sampler != VK_NULL_HANDLE) {
+            vkDestroySampler(this->device, this->sampler, nullptr);
+        }
+        this->sampler = VK_NULL_HANDLE;
+        this->device = VK_NULL_HANDLE;
+    }
+
+    vk_sampler::vk_sampler(vk_sampler&& other) noexcept {
+        this->sampler = other.sampler;
+        this->device = other.device;
+        other.sampler = VK_NULL_HANDLE;
+        other.device = VK_NULL_HANDLE;
+    }
+
+    vk_sampler& vk_sampler::operator=(vk_sampler&& other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
+        this->release();
+        this->sampler = other.sampler;
+        this->device = other.device;
+        other.sampler = VK_NULL_HANDLE;
+        other.device = VK_NULL_HANDLE;
+        return *this;
     }
 } // namespace vulkan
