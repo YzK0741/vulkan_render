@@ -14,21 +14,18 @@ debug_callback(
     [[maybe_unused]] VkDebugUtilsMessageTypeFlagsEXT message_type,
     const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
     [[maybe_unused]] void* user_data) noexcept {
-    // add prefix
-    std::string_view prefix;
     if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-        std::print("\nthis is the stacktrace \n{}",
-                   boost::stacktrace::to_string(boost::stacktrace::stacktrace()));
-        prefix = "[ERROR]";
+        // 错误走 error()：Debug 直接红色 stderr（含调用栈），Release 进日志文件
+        utility::error("stacktrace:\n{}\n{}",
+                       boost::stacktrace::to_string(boost::stacktrace::stacktrace()),
+                       callback_data->pMessage);
     } else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
-        prefix = "[WARNING]";
+        utility::log("[WARNING] {}", callback_data->pMessage);
     } else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT) {
-        prefix = "[INFO]";
+        utility::log("[INFO] {}", callback_data->pMessage);
     } else {
-        prefix = "[VERBOSE]";
+        utility::log("[VERBOSE] {}", callback_data->pMessage);
     }
-
-    std::println("\n{} {}", prefix, callback_data->pMessage);
 
     return VK_FALSE; // VK_FALSE means not terminate this function call
 }
@@ -65,11 +62,211 @@ bool check_device_extension_support(
     return requiredSet.empty();
 }
 
+void device_capabilities::query(const VkPhysicalDevice physical_device, const uint32_t api_version) noexcept {
+    // ---- 特性 pNext 链：features2 → 1_1 → 1_2 → 1_3 → 1_4（按 api_version 截断） ----
+    features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features_1_1.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+    features_1_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    features_1_3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    features_1_4.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
+
+    features2.pNext = api_version >= VK_API_VERSION_1_1 ? &features_1_1 : nullptr;
+    features_1_1.pNext = api_version >= VK_API_VERSION_1_2 ? &features_1_2 : nullptr;
+    features_1_2.pNext = api_version >= VK_API_VERSION_1_3 ? &features_1_3 : nullptr;
+    features_1_3.pNext = api_version >= VK_API_VERSION_1_4 ? &features_1_4 : nullptr;
+    vkGetPhysicalDeviceFeatures2(physical_device, &features2);
+
+    // ---- 属性 pNext 链：properties2 → driver → subgroup → descriptor indexing → maintenance4 ----
+    properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    driver_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+    subgroup_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+    descriptor_indexing_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES;
+    maintenance4_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES;
+
+    properties2.pNext = &driver_properties;
+    driver_properties.pNext = &subgroup_properties;
+    subgroup_properties.pNext = &descriptor_indexing_properties;
+    descriptor_indexing_properties.pNext = &maintenance4_properties;
+    vkGetPhysicalDeviceProperties2(physical_device, &properties2);
+
+    // ---- 特性策略：除显式关闭的外，全部透传驱动支持状态（拿全除光追外的大部分特性） ----
+    features_1_1.protectedMemory = VK_FALSE; // 受保护内存暂不需要
+}
+
+const void* device_capabilities::device_pnext() const noexcept {
+    return &this->features_1_1;
+}
+
+namespace {
+    // 把结构体中已启用（VK_TRUE）的成员名追加到输出串，返回启用数量
+    template <typename T>
+    size_t append_enabled_features(std::string& out, const T& features,
+                                   const std::initializer_list<std::pair<const char*, VkBool32 T::*>>& entries) {
+        size_t count = 0;
+        for (const auto& [name, member] : entries) {
+            if (features.*member == VK_TRUE) {
+                if (!out.empty()) {
+                    out += ", ";
+                }
+                out += name;
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    // 按宽度换行打印，续行带缩进
+    void print_wrapped(const std::string& text, const int width, const std::string_view indent) {
+        std::string current(indent);
+        size_t start = 0;
+        while (start < text.size()) {
+            const size_t comma = text.find(", ", start);
+            const size_t token_end = comma == std::string::npos ? text.size() : comma;
+            const std::string_view token(text.data() + start, token_end - start);
+            if (current.size() > indent.size() && current.size() + token.size() + 2 > static_cast<size_t>(width)) {
+                utility::log("{}", current);
+                current = std::string(indent);
+            }
+            if (current.size() > indent.size()) {
+                current += ", ";
+            }
+            current += token;
+            if (comma == std::string::npos) {
+                break;
+            }
+            start = comma + 2;
+        }
+        if (!text.empty()) {
+            utility::log("{}", current);
+        }
+    }
+} // namespace
+
+void print_device_capabilities(const device_capabilities& capabilities) {
+    constexpr std::string_view box_line = "================================================";
+    constexpr std::string_view sep_line = "------------------------------------------------";
+
+    utility::log("{}", box_line);
+    utility::log(" Vulkan device capabilities");
+    utility::log("{}", box_line);
+
+    static constexpr std::array<const char*, 5> device_type_names = {
+        "other", "integrated gpu", "discrete gpu", "virtual gpu", "cpu"};
+    const uint32_t device_type = static_cast<uint32_t>(capabilities.properties2.properties.deviceType);
+    const char* type_name = device_type < device_type_names.size() ? device_type_names[device_type] : "unknown";
+
+    utility::log(" driver        : {} {}", capabilities.driver_properties.driverName, capabilities.driver_properties.driverInfo);
+    utility::log(" api version   : {}.{}.{}",
+                 VK_API_VERSION_MAJOR(capabilities.properties2.properties.apiVersion),
+                 VK_API_VERSION_MINOR(capabilities.properties2.properties.apiVersion),
+                 VK_API_VERSION_PATCH(capabilities.properties2.properties.apiVersion));
+    utility::log(" device        : {} ({})", capabilities.properties2.properties.deviceName, type_name);
+    utility::log("{}", sep_line);
+
+    using feature_1_1 = VkPhysicalDeviceVulkan11Features;
+    using feature_1_2 = VkPhysicalDeviceVulkan12Features;
+    using feature_1_3 = VkPhysicalDeviceVulkan13Features;
+
+    std::string enabled_1_1;
+    const size_t count_1_1 = append_enabled_features(enabled_1_1, capabilities.features_1_1, {
+                                                                                                 {"storageBuffer16BitAccess", &feature_1_1::storageBuffer16BitAccess},
+                                                                                                 {"uniformAndStorageBuffer16BitAccess", &feature_1_1::uniformAndStorageBuffer16BitAccess},
+                                                                                                 {"storagePushConstant16", &feature_1_1::storagePushConstant16},
+                                                                                                 {"storageInputOutput16", &feature_1_1::storageInputOutput16},
+                                                                                                 {"multiview", &feature_1_1::multiview},
+                                                                                                 {"multiviewGeometryShader", &feature_1_1::multiviewGeometryShader},
+                                                                                                 {"multiviewTessellationShader", &feature_1_1::multiviewTessellationShader},
+                                                                                                 {"variablePointersStorageBuffer", &feature_1_1::variablePointersStorageBuffer},
+                                                                                                 {"variablePointers", &feature_1_1::variablePointers},
+                                                                                                 {"protectedMemory", &feature_1_1::protectedMemory},
+                                                                                                 {"samplerYcbcrConversion", &feature_1_1::samplerYcbcrConversion},
+                                                                                                 {"shaderDrawParameters", &feature_1_1::shaderDrawParameters},
+                                                                                             });
+    utility::log(" vulkan 1.1 features ({})", count_1_1);
+    print_wrapped(enabled_1_1, 100, "   ");
+
+    std::string enabled_1_2;
+    const size_t count_1_2 = append_enabled_features(enabled_1_2, capabilities.features_1_2, {
+                                                                                                 {"samplerMirrorClampToEdge", &feature_1_2::samplerMirrorClampToEdge},
+                                                                                                 {"drawIndirectCount", &feature_1_2::drawIndirectCount},
+                                                                                                 {"storageBuffer8BitAccess", &feature_1_2::storageBuffer8BitAccess},
+                                                                                                 {"uniformAndStorageBuffer8BitAccess", &feature_1_2::uniformAndStorageBuffer8BitAccess},
+                                                                                                 {"storagePushConstant8", &feature_1_2::storagePushConstant8},
+                                                                                                 {"shaderBufferInt64Atomics", &feature_1_2::shaderBufferInt64Atomics},
+                                                                                                 {"shaderSharedInt64Atomics", &feature_1_2::shaderSharedInt64Atomics},
+                                                                                                 {"shaderFloat16", &feature_1_2::shaderFloat16},
+                                                                                                 {"shaderInt8", &feature_1_2::shaderInt8},
+                                                                                                 {"descriptorIndexing", &feature_1_2::descriptorIndexing},
+                                                                                                 {"shaderInputAttachmentArrayDynamicIndexing", &feature_1_2::shaderInputAttachmentArrayDynamicIndexing},
+                                                                                                 {"shaderUniformTexelBufferArrayDynamicIndexing", &feature_1_2::shaderUniformTexelBufferArrayDynamicIndexing},
+                                                                                                 {"shaderStorageTexelBufferArrayDynamicIndexing", &feature_1_2::shaderStorageTexelBufferArrayDynamicIndexing},
+                                                                                                 {"shaderUniformBufferArrayNonUniformIndexing", &feature_1_2::shaderUniformBufferArrayNonUniformIndexing},
+                                                                                                 {"shaderSampledImageArrayNonUniformIndexing", &feature_1_2::shaderSampledImageArrayNonUniformIndexing},
+                                                                                                 {"shaderStorageBufferArrayNonUniformIndexing", &feature_1_2::shaderStorageBufferArrayNonUniformIndexing},
+                                                                                                 {"shaderStorageImageArrayNonUniformIndexing", &feature_1_2::shaderStorageImageArrayNonUniformIndexing},
+                                                                                                 {"shaderInputAttachmentArrayNonUniformIndexing", &feature_1_2::shaderInputAttachmentArrayNonUniformIndexing},
+                                                                                                 {"shaderUniformTexelBufferArrayNonUniformIndexing", &feature_1_2::shaderUniformTexelBufferArrayNonUniformIndexing},
+                                                                                                 {"shaderStorageTexelBufferArrayNonUniformIndexing", &feature_1_2::shaderStorageTexelBufferArrayNonUniformIndexing},
+                                                                                                 {"descriptorBindingUniformBufferUpdateAfterBind", &feature_1_2::descriptorBindingUniformBufferUpdateAfterBind},
+                                                                                                 {"descriptorBindingSampledImageUpdateAfterBind", &feature_1_2::descriptorBindingSampledImageUpdateAfterBind},
+                                                                                                 {"descriptorBindingStorageImageUpdateAfterBind", &feature_1_2::descriptorBindingStorageImageUpdateAfterBind},
+                                                                                                 {"descriptorBindingStorageBufferUpdateAfterBind", &feature_1_2::descriptorBindingStorageBufferUpdateAfterBind},
+                                                                                                 {"descriptorBindingUniformTexelBufferUpdateAfterBind", &feature_1_2::descriptorBindingUniformTexelBufferUpdateAfterBind},
+                                                                                                 {"descriptorBindingStorageTexelBufferUpdateAfterBind", &feature_1_2::descriptorBindingStorageTexelBufferUpdateAfterBind},
+                                                                                                 {"descriptorBindingUpdateUnusedWhilePending", &feature_1_2::descriptorBindingUpdateUnusedWhilePending},
+                                                                                                 {"descriptorBindingPartiallyBound", &feature_1_2::descriptorBindingPartiallyBound},
+                                                                                                 {"descriptorBindingVariableDescriptorCount", &feature_1_2::descriptorBindingVariableDescriptorCount},
+                                                                                                 {"runtimeDescriptorArray", &feature_1_2::runtimeDescriptorArray},
+                                                                                                 {"samplerFilterMinmax", &feature_1_2::samplerFilterMinmax},
+                                                                                                 {"scalarBlockLayout", &feature_1_2::scalarBlockLayout},
+                                                                                                 {"imagelessFramebuffer", &feature_1_2::imagelessFramebuffer},
+                                                                                                 {"uniformBufferStandardLayout", &feature_1_2::uniformBufferStandardLayout},
+                                                                                                 {"shaderSubgroupExtendedTypes", &feature_1_2::shaderSubgroupExtendedTypes},
+                                                                                                 {"separateDepthStencilLayouts", &feature_1_2::separateDepthStencilLayouts},
+                                                                                                 {"hostQueryReset", &feature_1_2::hostQueryReset},
+                                                                                                 {"timelineSemaphore", &feature_1_2::timelineSemaphore},
+                                                                                                 {"bufferDeviceAddress", &feature_1_2::bufferDeviceAddress},
+                                                                                                 {"bufferDeviceAddressCaptureReplay", &feature_1_2::bufferDeviceAddressCaptureReplay},
+                                                                                                 {"bufferDeviceAddressMultiDevice", &feature_1_2::bufferDeviceAddressMultiDevice},
+                                                                                                 {"vulkanMemoryModel", &feature_1_2::vulkanMemoryModel},
+                                                                                                 {"vulkanMemoryModelDeviceScope", &feature_1_2::vulkanMemoryModelDeviceScope},
+                                                                                                 {"vulkanMemoryModelAvailabilityVisibilityChains", &feature_1_2::vulkanMemoryModelAvailabilityVisibilityChains},
+                                                                                                 {"shaderOutputViewportIndex", &feature_1_2::shaderOutputViewportIndex},
+                                                                                                 {"shaderOutputLayer", &feature_1_2::shaderOutputLayer},
+                                                                                                 {"subgroupBroadcastDynamicId", &feature_1_2::subgroupBroadcastDynamicId},
+                                                                                             });
+    utility::log(" vulkan 1.2 features ({})", count_1_2);
+    print_wrapped(enabled_1_2, 100, "   ");
+
+    std::string enabled_1_3;
+    const size_t count_1_3 = append_enabled_features(enabled_1_3, capabilities.features_1_3, {
+                                                                                                 {"robustImageAccess", &feature_1_3::robustImageAccess},
+                                                                                                 {"inlineUniformBlock", &feature_1_3::inlineUniformBlock},
+                                                                                                 {"descriptorBindingInlineUniformBlockUpdateAfterBind", &feature_1_3::descriptorBindingInlineUniformBlockUpdateAfterBind},
+                                                                                                 {"pipelineCreationCacheControl", &feature_1_3::pipelineCreationCacheControl},
+                                                                                                 {"privateData", &feature_1_3::privateData},
+                                                                                                 {"shaderDemoteToHelperInvocation", &feature_1_3::shaderDemoteToHelperInvocation},
+                                                                                                 {"shaderTerminateInvocation", &feature_1_3::shaderTerminateInvocation},
+                                                                                                 {"subgroupSizeControl", &feature_1_3::subgroupSizeControl},
+                                                                                                 {"computeFullSubgroups", &feature_1_3::computeFullSubgroups},
+                                                                                                 {"synchronization2", &feature_1_3::synchronization2},
+                                                                                                 {"textureCompressionASTC_HDR", &feature_1_3::textureCompressionASTC_HDR},
+                                                                                                 {"shaderZeroInitializeWorkgroupMemory", &feature_1_3::shaderZeroInitializeWorkgroupMemory},
+                                                                                                 {"dynamicRendering", &feature_1_3::dynamicRendering},
+                                                                                                 {"shaderIntegerDotProduct", &feature_1_3::shaderIntegerDotProduct},
+                                                                                                 {"maintenance4", &feature_1_3::maintenance4},
+                                                                                             });
+    utility::log(" vulkan 1.3 features ({})", count_1_3);
+    print_wrapped(enabled_1_3, 100, "   ");
+
+    utility::log("{}", box_line);
+}
+
 logical_device create_logical_device(
     const VkPhysicalDevice physical_device, // NOLINT(*-misplaced-const)
     device_creation_info const& create_info) noexcept {
     if (!create_info.queue_families.is_complete()) {
-        std::println("Queue families not complete");
+        utility::error("Queue families not complete");
         utility::panic("Queue families not complete");
     }
 
@@ -296,7 +493,7 @@ swap_chain_support_details query_swap_chain_support(VkPhysicalDevice const& devi
         vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &present_mode_count, details.present_modes.data());
     }
 
-    std::print("present modes count: {} \n", details.present_modes.size());
+    utility::log("present modes count: {}", details.present_modes.size());
 
     return details;
 }

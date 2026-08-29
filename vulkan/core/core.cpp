@@ -79,13 +79,13 @@ namespace vulkan {
 
 #ifdef _DEBUG
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-        std::println("add debug extension: {}", VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        utility::log("add debug extension: {}", VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 #endif
 
         // print all extensions
-        std::println("required instance extension ({}):", extensions.size());
+        utility::log("required instance extension ({}):", extensions.size());
         for (const auto& ext : extensions) {
-            std::println("  - {}", ext);
+            utility::log("  - {}", ext);
         }
 
         create_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
@@ -103,16 +103,16 @@ namespace vulkan {
         if (check_validation_layer_support(validation_layers)) {
             create_info.enabledLayerCount = static_cast<uint32_t>(validation_layers.size());
             create_info.ppEnabledLayerNames = validation_layers.data();
-            std::println("验证层已启用 ( {} )", validation_layers.size());
+            utility::log("验证层已启用 ( {} )", validation_layers.size());
             for (const auto& layer : validation_layers) {
-                std::println("  - {}", layer);
+                utility::log("  - {}", layer);
             }
         } else {
-            std::println(stderr, "warning：VK_LAYER_KHRONOS_validation disabled");
+            utility::log("warning: VK_LAYER_KHRONOS_validation disabled");
             create_info.enabledLayerCount = 0;
         }
 #else
-        std::println("in release, validation layers disabled");
+        utility::log("in release, validation layers disabled");
         create_info.enabledLayerCount = 0;
 #endif
 
@@ -144,8 +144,8 @@ namespace vulkan {
             }
             utility::panic(error_msg);
         }
-        std::println("instance init succeeded");
-        std::println("instance handler is 0x{:x}", reinterpret_cast<uint64_t>(this->instance));
+        utility::log("instance init succeeded");
+        utility::log("instance handler is 0x{:x}", reinterpret_cast<uint64_t>(this->instance));
 
 #ifdef _DEBUG
         // get function pointer
@@ -172,9 +172,9 @@ namespace vulkan {
         debug_info.pUserData = nullptr;
 
         if (vkCreateDebugUtilsMessengerEXT(instance, &debug_info, nullptr, &debug_messenger) != VK_SUCCESS) {
-            std::println(stderr, "create debug messanger failed");
+            utility::error("create debug messenger failed");
         } else {
-            std::println(stderr, "create debug messanger succeeded");
+            utility::log("create debug messenger succeeded");
         }
 #endif
         this->register_cleanup([this] {
@@ -201,6 +201,11 @@ namespace vulkan {
     void core::init_device_and_queue() noexcept {
         this->physical_device = pick_suitable_device(this->instance, this->surface);
 
+        // 收集设备能力：特性/属性 pNext 链一次查询（见 device_capabilities）
+        device_capabilities capabilities;
+        capabilities.query(this->physical_device);
+        print_device_capabilities(capabilities);
+
         device_creation_info creation_info;
 
         creation_info.queue_families = find_queue_families(this->physical_device, this->surface);
@@ -211,10 +216,8 @@ namespace vulkan {
             utility::panic("Required device extensions not supported");
         }
 
-        VkPhysicalDeviceVulkan11Features vulkan11_features{};
-        vulkan11_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
-        vulkan11_features.storageBuffer16BitAccess = VK_TRUE;
-        creation_info.pNext = &vulkan11_features;
+        // 特性统一走 pNext 链（device_capabilities 查询结果，含 1.1/1.2/1.3 全部支持特性）
+        creation_info.pNext = capabilities.device_pnext();
 
         const auto [device, graphics_family_index, present_family_index, graphics_queue, present_queue] = create_logical_device(physical_device, creation_info); // NOLINT(*-misplaced-const)
 
@@ -224,7 +227,7 @@ namespace vulkan {
         this->graphics_family_index = graphics_family_index;
         this->present_family_index = present_family_index;
 
-        std::println("device and queue init succeeded");
+        utility::log("device and queue init succeeded");
 
         register_cleanup([this] {
             if (this->device != VK_NULL_HANDLE) {

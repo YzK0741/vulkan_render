@@ -54,6 +54,52 @@ export struct queue_family_indices {
 
 /**
  * @ingroup vulkan_init_utils
+ * @brief collected physical device capabilities: core 1.x features and properties
+ * @note
+ *      - query() builds the pNext chains from the requested api_version and issues
+ *        vkGetPhysicalDeviceFeatures2 + vkGetPhysicalDeviceProperties2 in one pass
+ *      - after query(), features stay enabled where the driver supports them (except the
+ *        deliberately disabled ones), so the struct is directly usable for vkCreateDevice
+ *      - device_pnext() returns the feature chain head to pass via device_creation_info::pNext
+ */
+export struct device_capabilities {
+    // ---- 特性链（查询与设备创建共用） ----
+    VkPhysicalDeviceFeatures2 features2 = {};
+    VkPhysicalDeviceVulkan11Features features_1_1 = {};
+    VkPhysicalDeviceVulkan12Features features_1_2 = {};
+    VkPhysicalDeviceVulkan13Features features_1_3 = {};
+    VkPhysicalDeviceVulkan14Features features_1_4 = {};
+
+    // ---- 属性链（只查询，供渲染器决策/诊断） ----
+    VkPhysicalDeviceProperties2 properties2 = {};
+    VkPhysicalDeviceDriverProperties driver_properties = {};
+    VkPhysicalDeviceSubgroupProperties subgroup_properties = {};
+    VkPhysicalDeviceDescriptorIndexingProperties descriptor_indexing_properties = {};
+    VkPhysicalDeviceMaintenance4Properties maintenance4_properties = {};
+
+    /**
+     * @brief query all features and properties of the physical device
+     * @param physical_device the device to query
+     * @param api_version the API version to target, decides which 1.x structs are chained
+     */
+    void query(VkPhysicalDevice physical_device, uint32_t api_version = VK_API_VERSION_1_3) noexcept;
+
+    /**
+     * @brief pNext chain head for vkCreateDevice (enables the queried features)
+     */
+    [[nodiscard]] const void* device_pnext() const noexcept;
+};
+
+/**
+ * @ingroup vulkan_init_utils
+ * @brief print a startup summary of the collected device capabilities
+ * @param capabilities the queried capabilities
+ * @note prints driver/api version/device name and all enabled 1.1/1.2/1.3 features
+ */
+export void print_device_capabilities(device_capabilities const& capabilities);
+
+/**
+ * @ingroup vulkan_init_utils
  * @brief input data for creating a logical device
  */
 export struct device_creation_info {
