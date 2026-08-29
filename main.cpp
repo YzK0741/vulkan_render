@@ -36,7 +36,7 @@ namespace {
             utility::panic(std::format("cannot open shader file '{}'", path.string()));
         }
         out = *data;
-        std::println("loaded shader: {} ({} bytes)", path.string(), out.size());
+        utility::log("loaded shader: {} ({} bytes)", path.string(), out.size());
     }
 
     // 从当前工作目录向上逐级查找 shaders/ 目录，
@@ -89,7 +89,7 @@ namespace {
         if (!result) {
             utility::panic(std::format("failed to create pipeline '{}': {}", pipeline_name, result.error()));
         }
-        std::println("SUCCESS: pipeline '{}' created and cached in the runtime", pipeline_name);
+        utility::log("SUCCESS: pipeline '{}' created and cached in the runtime", pipeline_name);
     }
 
     // 把 stb 解码的纹理数据转成 RGBA（3 通道补 alpha，1 通道灰度扩展）
@@ -174,7 +174,7 @@ int main(int argc, char** argv) {
     } else {
         utility::panic("cannot find gltf_model/DamagedHelmet.gltf. run the program from the project root or pass a model path as argv[1]");
     }
-    std::println("loading model: {}", model_path);
+    utility::log("loading model: {}", model_path);
     auto scenes = gltf::load_model(model_path);
     if (!scenes) {
         utility::panic(std::format("failed to load model '{}': error code {}", model_path, static_cast<int>(scenes.error())));
@@ -184,7 +184,7 @@ int main(int argc, char** argv) {
         utility::panic(std::format("model '{}' has no drawable primitive", model_path));
     }
     const auto& prim = scenes->scene[0].nodes[0].meshes[0].primitives[0];
-    std::println("model loaded: {} textures, {} primitives", scenes->textures.size(), scenes->scene[0].nodes[0].meshes[0].primitives.size());
+    utility::log("model loaded: {} textures, {} primitives", scenes->textures.size(), scenes->scene[0].nodes[0].meshes[0].primitives.size());
 
     // 5. 取顶点属性（分离存储），缺少的属性用默认值
     const auto get_portion = [&prim](const std::string_view name) -> const gltf::vertex_portion* {
@@ -268,7 +268,7 @@ int main(int argc, char** argv) {
             const glm::vec3 t = tangent_accumulator[i] - normals[i] * glm::dot(normals[i], tangent_accumulator[i]);
             tangents[i] = glm::length(t) > 1e-8f ? glm::normalize(t) : glm::vec3(1.0f, 0.0f, 0.0f);
         }
-        std::println("TANGENT not in model, computed from position/uv");
+        utility::log("TANGENT not in model, computed from position/uv");
     }
 
     // 8. 交错成管线要求的单绑定布局（stride 44）
@@ -289,7 +289,7 @@ int main(int argc, char** argv) {
     const glm::vec3 extent = b_max - b_min;
     const float max_extent = glm::max(extent.x, glm::max(extent.y, extent.z));
     const float fit_scale = max_extent > 0.0f ? 1.6f / max_extent : 1.0f;
-    std::println("mesh: {} vertices, {} indices, center ({:.3f}, {:.3f}, {:.3f}), extent {:.3f}", vertices.size(), index_count, center.x, center.y, center.z, max_extent);
+    utility::log("mesh: {} vertices, {} indices, center ({:.3f}, {:.3f}, {:.3f}), extent {:.3f}", vertices.size(), index_count, center.x, center.y, center.z, max_extent);
 
     // 10. GPU 缓冲：顶点 + 索引
     const uint64_t vertex_buffer = runtime->vma.create_buffer(std::span(vertices), vulkan::buffer_type::vertex);
@@ -336,21 +336,21 @@ int main(int argc, char** argv) {
     // 12.1 生成并上传 IBL 资源（split-sum：预过滤环境 + 辐照度 + BRDF LUT）
     constexpr int env_size = 128;
     constexpr int env_mip_count = 5;
-    std::println("generating IBL environment (CPU)...");
+    utility::log("generating IBL environment (CPU)...");
     const auto ibl_start = std::chrono::steady_clock::now();
     const std::vector<float> env = vulkan::generate_environment_cubemap(env_size);
     const auto env_done = std::chrono::steady_clock::now();
-    std::println("  environment cubemap: {:.1f} ms", std::chrono::duration<double, std::milli>(env_done - ibl_start).count());
+    utility::log("  environment cubemap: {:.1f} ms", std::chrono::duration<double, std::milli>(env_done - ibl_start).count());
     const std::vector<float> prefiltered = vulkan::prefilter_environment(env, env_size, env_mip_count);
     const auto prefilter_done = std::chrono::steady_clock::now();
-    std::println("  prefilter (GGX importance sampling): {:.1f} ms", std::chrono::duration<double, std::milli>(prefilter_done - env_done).count());
+    utility::log("  prefilter (GGX importance sampling): {:.1f} ms", std::chrono::duration<double, std::milli>(prefilter_done - env_done).count());
     const std::vector<float> irradiance = vulkan::generate_irradiance_map(env, env_size, 32);
     const auto irradiance_done = std::chrono::steady_clock::now();
-    std::println("  irradiance map: {:.1f} ms", std::chrono::duration<double, std::milli>(irradiance_done - prefilter_done).count());
+    utility::log("  irradiance map: {:.1f} ms", std::chrono::duration<double, std::milli>(irradiance_done - prefilter_done).count());
     const std::vector<float> brdf_lut = vulkan::generate_brdf_lut(256);
     const auto lut_done = std::chrono::steady_clock::now();
-    std::println("  BRDF LUT: {:.1f} ms", std::chrono::duration<double, std::milli>(lut_done - irradiance_done).count());
-    std::println("  IBL total: {:.1f} ms", std::chrono::duration<double, std::milli>(lut_done - ibl_start).count());
+    utility::log("  BRDF LUT: {:.1f} ms", std::chrono::duration<double, std::milli>(lut_done - irradiance_done).count());
+    utility::log("  IBL total: {:.1f} ms", std::chrono::duration<double, std::milli>(lut_done - ibl_start).count());
 
     const std::vector<unsigned char> env_bytes = vulkan::to_half_rgba(prefiltered);
     const std::vector<unsigned char> irr_bytes = vulkan::to_half_rgba(irradiance);
@@ -390,7 +390,7 @@ int main(int argc, char** argv) {
     const vulkan::vk_image_view irr_view = runtime->make_image_view(irr_detail->image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE);
     const vulkan::vk_image_view lut_view = runtime->make_image_view(lut_detail->image, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_VIEW_TYPE_2D);
     const vulkan::vk_sampler env_sampler = runtime->make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, static_cast<float>(env_mip_count - 1));
-    std::println("IBL ready: {} mips, irradiance 32x32, LUT 256x256", env_mip_count);
+    utility::log("IBL ready: {} mips, irradiance 32x32, LUT 256x256", env_mip_count);
 
     // set 1：5 张贴图（binding 0-4）+ 3 个 IBL 资源（binding 5-7）
     auto texture_set = runtime->make_descriptor_set(pipeline->get_descriptor_set_layouts()[1]);
@@ -474,7 +474,7 @@ int main(int argc, char** argv) {
     const glm::mat4 model_matrix = glm::scale(glm::mat4(1.0f), glm::vec3(fit_scale)) * glm::translate(glm::mat4(1.0f), -center);
 
     // 17. 渲染主循环：直到关闭窗口或按 ESC
-    std::println("rendering '{}' with PBR... left-drag to orbit, wheel to zoom, ESC to exit", model_path);
+    utility::log("rendering '{}' with PBR... left-drag to orbit, wheel to zoom, ESC to exit", model_path);
     while (!glfwWindowShouldClose(runtime->window)) {
         glfwPollEvents();
         if (glfwGetKey(runtime->window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
@@ -571,6 +571,6 @@ int main(int argc, char** argv) {
     }
     runtime->vma.free_buffer(index_buffer);
     runtime->vma.free_buffer(vertex_buffer);
-    std::println("render loop finished");
+    utility::log("render loop finished");
     return 0;
 }

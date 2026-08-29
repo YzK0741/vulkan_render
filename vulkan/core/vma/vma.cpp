@@ -429,7 +429,7 @@ namespace vulkan {
             &info);
 
         if (result != VK_SUCCESS) {
-            std::println(stderr, "Failed to create staging buffer: {}", static_cast<int>(result));
+            utility::error("Failed to create staging buffer: {}", static_cast<int>(result));
             return false;
         }
 
@@ -441,7 +441,7 @@ namespace vulkan {
     bool vma_allocator::direct_upload(VmaAllocation const& allocation, VmaAllocationInfo& allocation_info, const void* data, const VkDeviceSize size) const {
         void* mapped_data = nullptr;
         if (const VkResult result = vmaMapMemory(this->allocator, allocation, &mapped_data); result != VK_SUCCESS) {
-            std::println("Failed to map memory: {}", static_cast<int>(result));
+            utility::error("Failed to map memory: {}", static_cast<int>(result));
             return false;
         }
 
@@ -539,7 +539,7 @@ namespace vulkan {
     bool vma_allocator::direct_image_upload(const VmaAllocation allocation, const void* data, const VkDeviceSize size) const { // NOLINT(*-misplaced-const)
         void* mapped_data = nullptr;
         if (const VkResult result = vmaMapMemory(this->allocator, allocation, &mapped_data); result != VK_SUCCESS) {
-            std::println("Failed to map image memory: {}", static_cast<int>(result));
+            utility::error("Failed to map image memory: {}", static_cast<int>(result));
             return false;
         }
 
@@ -731,7 +731,7 @@ namespace vulkan {
             &alloc_info);
 
         if (result != VK_SUCCESS) {
-            std::println("Failed to create buffer: {}", static_cast<int>(result));
+            utility::error("Failed to create buffer: {}", static_cast<int>(result));
             this->recycle(handle);
             return 0;
         }
@@ -785,7 +785,7 @@ namespace vulkan {
         }
         expected_size *= create_info.array_layers;
         if (expected_size != image_size) {
-            std::println(stderr, "incorrect image size [{}], expected [{}]", image_size, expected_size);
+            utility::log("incorrect image size [{}], expected [{}]", image_size, expected_size);
         }
 
         const auto alloc_info = get_image_allocation_info_from_type(type);
@@ -809,7 +809,7 @@ namespace vulkan {
             &alloc_detail);
 
         if (vk_result != VK_SUCCESS) {
-            std::println("Failed to create image: {}", static_cast<int>(vk_result));
+            utility::error("Failed to create image: {}", static_cast<int>(vk_result));
             this->recycle(handle);
             return 0;
         }

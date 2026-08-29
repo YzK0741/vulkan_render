@@ -10,6 +10,8 @@ module;
 
 module gltf_loader;
 
+import utility;
+
 namespace {
     using fastgltf::Asset;
 
@@ -385,14 +387,14 @@ namespace gltf {
 
         auto buffer_exp = fastgltf::GltfDataBuffer::FromPath(path);
         if (!buffer_exp) {
-            std::println(stderr, "gltf load err: failed to read file: {}", fastgltf::getErrorMessage(buffer_exp.error()));
+            utility::error("gltf load err: failed to read file: {}", fastgltf::getErrorMessage(buffer_exp.error()));
             return std::unexpected(error_code::file_load_failed);
         }
 
         fastgltf::Parser parser;
         auto asset_exp = parser.loadGltf(buffer_exp.get(), path.parent_path(), load_options());
         if (!asset_exp) {
-            std::println(stderr, "gltf load err: {}", fastgltf::getErrorMessage(asset_exp.error()));
+            utility::error("gltf load err: {}", fastgltf::getErrorMessage(asset_exp.error()));
             return std::unexpected(to_error_code(asset_exp.error()));
         }
 

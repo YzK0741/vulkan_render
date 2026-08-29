@@ -104,6 +104,7 @@ target_link_libraries(gltf_loader
         PRIVATE
         fastgltf
         std_lib
+        utility
 )
 
 target_link_libraries(vulkan_lib
@@ -168,11 +169,11 @@ target_compile_definitions(vulkan_lib PRIVATE
         >
 )
 
-# ---------------------------------------------------------------------------
-# clang-format: run automatically before compiling
-# 仅在源码比 stamp 新（源码有改动）时才执行格式化，避免每次构建都重排、
-# 导致源码 mtime 变化从而无限触发重编译
-# ---------------------------------------------------------------------------
+#-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
+#clang - format : run automatically before compiling
+#仅在源码比 stamp 新（源码有改动）时才执行格式化，避免每次构建都重排、
+#导致源码 mtime 变化从而无限触发重编译
+#-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 find_program(CLANG_FORMAT_EXECUTABLE clang-format)
 
 if(CLANG_FORMAT_EXECUTABLE)
