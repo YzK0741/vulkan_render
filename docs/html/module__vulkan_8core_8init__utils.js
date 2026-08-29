@@ -3,7 +3,9 @@ var module__vulkan_8core_8init__utils =
     [ "logical_device", "structlogical__device.html", null ],
     [ "swap_chain_support_details", "structswap__chain__support__details.html", null ],
     [ "queue_family_indices", "structqueue__family__indices.html", null ],
+    [ "device_capabilities", "structdevice__capabilities.html", "structdevice__capabilities" ],
     [ "device_creation_info", "structdevice__creation__info.html", null ],
+    [ "print_device_capabilities", "group__vulkan__init__utils.html#ga5e99848a88393f53205a29c1a1cf20dd", null ],
     [ "debug_callback", "group__vulkan__init__utils.html#ga924c76032210e3e272b0497f83dd3c7f", null ],
     [ "check_validation_layer_support", "group__vulkan__init__utils.html#gaa3a0c254ba1a9a2524a505b8342a4eb5", null ],
     [ "check_device_extension_support", "group__vulkan__init__utils.html#ga846e08cfc46dff9b8a2826ad01dbe738", null ],
@@ -17,5 +19,5 @@ var module__vulkan_8core_8init__utils =
     [ "find_memory_type", "group__vulkan__init__utils.html#gaf530d908f6f2819da910296b7a315fe0", null ],
     [ "find_depth_format", "group__vulkan__init__utils.html#ga9b98971a6eeaf203f26df5696e059cdf", null ],
     [ "get_max_usable_sample_count", "group__vulkan__init__utils.html#gad4a1377aa21df89eda1b88341a3d79c7", null ],
-    [ "create_image_view", "group__vulkan__init__utils.html#ga1729eb2c48703c2068b263ee24d7999f", null ]
+    [ "create_image_view", "group__vulkan__init__utils.html#ga7e58dc8609324732b8e2c66d7bb61d67", null ]
 ];

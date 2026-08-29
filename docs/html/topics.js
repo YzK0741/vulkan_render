@@ -1,6 +1,6 @@
 var topics =
 [
-    [ "Vulkan Core Objects Manager", "group__vulkan__core.html", null ],
+    [ "Vulkan Core Objects Manager", "group__vulkan__core.html", "group__vulkan__core" ],
     [ "Vulkan Main Handles' RAII Wrapper", "group__vulkan__handles.html", "group__vulkan__handles" ],
     [ "Vulkan Init Utils", "group__vulkan__init__utils.html", "group__vulkan__init__utils" ],
     [ "Vulkan Pipeline", "group__vulkan__pipeline.html", "group__vulkan__pipeline" ],

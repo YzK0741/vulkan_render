@@ -1,5 +1,7 @@
 var searchData=
 [
-  ['texture_5fdata_0',['texture_data',['../structgltf_1_1texture__data.html',1,'gltf']]],
-  ['thread_5fpool_1',['thread_pool',['../classutility_1_1thread__pool.html',1,'utility']]]
+  ['scene_0',['scene',['../structgltf_1_1scene.html',1,'gltf']]],
+  ['scenes_1',['scenes',['../structgltf_1_1scenes.html',1,'gltf']]],
+  ['shader_5fstage_5finterface_2',['shader_stage_interface',['../structvulkan_1_1pipeline_1_1shader__stage__interface.html',1,'vulkan::pipeline']]],
+  ['swap_5fchain_5fsupport_5fdetails_3',['swap_chain_support_details',['../structswap__chain__support__details.html',1,'']]]
 ];

@@ -12,7 +12,7 @@ A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), implementin
 - **glTF loading (`gltf_loader` module)**: standalone CPU module built on [fastgltf](https://github.com/spnda/fastgltf), supporting `.gltf` / `.glb` / data URIs and exporting a world-space flattened node hierarchy with raw de-interleaved vertex/index data.
 - **Orbit camera**: left-drag to rotate, wheel to zoom, per-frame camera UBO updates, with `MAX_FRAMES_IN_FLIGHT` frames in flight.
 - **Utility library (`utility` module)**: handle distribution, stack-style destructor mixin, `pmr` manager, thread pool, BVH, data block, and more.
-- **Engineering practices**: automatic `clang-format` before every build, `-Wall -Wextra -Werror`, and `-flto -march=native -fno-rtti -fno-exceptions` in Release builds.
+- **Engineering practices**: automatic `clang-format` before every build, `-Wall -Wextra -Werror`, and **exceptions disabled in all build configurations** (`-fno-exceptions`; the vendored `std` module makes this work), plus `-flto -march=native -fno-rtti` in Release builds.
 
 ## Documentation
 
@@ -53,11 +53,12 @@ doxygen Doxyfile
 ├── vulkan/                  # vulkan module (core / vma / handles / init_utils / pipeline / spirv_parser / model / runtime)
 ├── utility/                 # utility module (better_pmr / BVH / thread_pool / data_block)
 ├── gltf_loader/             # gltf_loader module (CPU-side glTF/GLB loading)
-├── std/                     # std / std.compat modules (for -fno-exceptions builds)
+├── std/                     # std / std.compat modules (vendored libc++ module; required by the -fno-exceptions builds,
+│                            #   avoids configuring CMake's experimental C++ modules flags)
 ├── shaders/                 # GLSL sources + precompiled SPIR-V (recompile via compile_shaders.ps1)
 ├── gltf_model/              # Sample model (DamagedHelmet)
 ├── snapshot/                # Screenshots
-├── docs/                    # Doxygen output (html/) + usage guides
+├── docs/                    # Doxygen output (html/ is tracked because this README links to it) + usage guides
 └── third_party/             # Vendored dependencies (spirv-reflect)
 ```
 
@@ -67,7 +68,7 @@ doxygen Doxyfile
 
 - CMake ≥ 4.3 and a compiler with C++23 / C++20 modules support (this project uses MSYS2 clang64's clang)
 - [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) (includes `glslc`)
-- System packages: `glfw3`, `glm`, `OpenSSL`, `fastgltf` (MSYS2 package; `libfastgltf.dll` + `libsimdjson.dll` must be on PATH), Vulkan Memory Allocator (VMA, `vma/vk_mem_alloc.h`)
+- System packages: `glfw3`, `glm`, `OpenSSL`, `boost` (for `boost/stacktrace` in the debug callback), `fastgltf` (MSYS2 package; `libfastgltf.dll` + `libsimdjson.dll` must be on PATH), Vulkan Memory Allocator (VMA, `vma/vk_mem_alloc.h`)
 - `spirv-reflect` is vendored under `third_party/`
 
 ### Build

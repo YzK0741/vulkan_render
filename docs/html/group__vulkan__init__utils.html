@@ -123,11 +123,15 @@ Classes</h2></td></tr>
 <tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">capabilities, formats and present modes supported by a swap chain  <a href="structswap__chain__support__details.html#details">More...</a><br /></td></tr>
 <tr class="memitem:queue_5Ffamily_5Findices" id="r_queue_5Ffamily_5Findices"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structqueue__family__indices.html">queue_family_indices</a></td></tr>
 <tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">queue family indices found on a physical device  <a href="structqueue__family__indices.html#details">More...</a><br /></td></tr>
+<tr class="memitem:device_5Fcapabilities" id="r_device_5Fcapabilities"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structdevice__capabilities.html">device_capabilities</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">collected physical device capabilities: core 1.x features and properties  <a href="structdevice__capabilities.html#details">More...</a><br /></td></tr>
 <tr class="memitem:device_5Fcreation_5Finfo" id="r_device_5Fcreation_5Finfo"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structdevice__creation__info.html">device_creation_info</a></td></tr>
 <tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">input data for creating a logical device  <a href="structdevice__creation__info.html#details">More...</a><br /></td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-func-members" class="groupheader"><a id="func-members" name="func-members"></a>
 Functions</h2></td></tr>
+<tr class="memitem:ga5e99848a88393f53205a29c1a1cf20dd" id="r_ga5e99848a88393f53205a29c1a1cf20dd"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="#ga5e99848a88393f53205a29c1a1cf20dd">print_device_capabilities</a> (<a class="el" href="structdevice__capabilities.html">device_capabilities</a> const &amp;capabilities)</td></tr>
+<tr class="memdesc:ga5e99848a88393f53205a29c1a1cf20dd"><td class="mdescLeft">&#160;</td><td class="mdescRight">print a startup summary of the collected device capabilities  <br /></td></tr>
 <tr class="memitem:ga924c76032210e3e272b0497f83dd3c7f" id="r_ga924c76032210e3e272b0497f83dd3c7f"><td class="memItemLeft"><a id="ga924c76032210e3e272b0497f83dd3c7f" name="ga924c76032210e3e272b0497f83dd3c7f"></a>
 VKAPI_ATTR VkBool32 VKAPI_CALL&#160;</td><td class="memItemRight"><b>debug_callback</b> (const VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, VkDebugUtilsMessageTypeFlagsEXT message_type, const VkDebugUtilsMessengerCallbackDataEXT *callback_data, void *user_data) noexcept</td></tr>
 <tr class="memdesc:ga924c76032210e3e272b0497f83dd3c7f"><td class="mdescLeft">&#160;</td><td class="mdescRight">Vulkan debug messenger callback, prints validation layer messages. <br /></td></tr>
@@ -155,8 +159,8 @@ VKAPI_ATTR VkBool32 VKAPI_CALL&#160;</td><td class="memItemRight"><b>debug_callb
 <tr class="memdesc:ga9b98971a6eeaf203f26df5696e059cdf"><td class="mdescLeft">&#160;</td><td class="mdescRight">find a supported depth format by preference order  <br /></td></tr>
 <tr class="memitem:gad4a1377aa21df89eda1b88341a3d79c7" id="r_gad4a1377aa21df89eda1b88341a3d79c7"><td class="memItemLeft">VkSampleCountFlagBits&#160;</td><td class="memItemRight"><a class="el" href="#gad4a1377aa21df89eda1b88341a3d79c7">get_max_usable_sample_count</a> (const VkPhysicalDevice &amp;physical_device) noexcept</td></tr>
 <tr class="memdesc:gad4a1377aa21df89eda1b88341a3d79c7"><td class="mdescLeft">&#160;</td><td class="mdescRight">get the maximum usable MSAA sample count of the physical device  <br /></td></tr>
-<tr class="memitem:ga1729eb2c48703c2068b263ee24d7999f" id="r_ga1729eb2c48703c2068b263ee24d7999f"><td class="memItemLeft">VkImageView&#160;</td><td class="memItemRight"><a class="el" href="#ga1729eb2c48703c2068b263ee24d7999f">create_image_view</a> (const VkImage &amp;image, const VkFormat &amp;format, const VkImageAspectFlags &amp;aspectFlags, const VkDevice &amp;device) noexcept</td></tr>
-<tr class="memdesc:ga1729eb2c48703c2068b263ee24d7999f"><td class="mdescLeft">&#160;</td><td class="mdescRight">create an image view for the given image  <br /></td></tr>
+<tr class="memitem:ga7e58dc8609324732b8e2c66d7bb61d67" id="r_ga7e58dc8609324732b8e2c66d7bb61d67"><td class="memItemLeft">VkImageView&#160;</td><td class="memItemRight"><a class="el" href="#ga7e58dc8609324732b8e2c66d7bb61d67">create_image_view</a> (const VkImage &amp;image, const VkFormat &amp;format, const VkImageAspectFlags &amp;aspect_flags, const VkDevice &amp;device) noexcept</td></tr>
+<tr class="memdesc:ga7e58dc8609324732b8e2c66d7bb61d67"><td class="mdescLeft">&#160;</td><td class="mdescRight">create an image view for the given image  <br /></td></tr>
 </table>
 <a name="details" id="details"></a><h2 id="header-details" class="groupheader">Detailed Description</h2>
 <div class="textblock"><dl class="section note"><dt>Note</dt><dd><ul>
@@ -335,8 +339,8 @@ VKAPI_ATTR VkBool32 VKAPI_CALL&#160;</td><td class="memItemRight"><b>debug_callb
 
 </div>
 </div>
-<a id="ga1729eb2c48703c2068b263ee24d7999f" name="ga1729eb2c48703c2068b263ee24d7999f"></a>
-<h2 class="memtitle"><span class="permalink"><a href="#ga1729eb2c48703c2068b263ee24d7999f">&#9670;&#160;</a></span>create_image_view()</h2>
+<a id="ga7e58dc8609324732b8e2c66d7bb61d67" name="ga7e58dc8609324732b8e2c66d7bb61d67"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga7e58dc8609324732b8e2c66d7bb61d67">&#9670;&#160;</a></span>create_image_view()</h2>
 
 <div class="memitem">
 <div class="memproto">
@@ -357,7 +361,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL&#160;</td><td class="memItemRight"><b>debug_callb
         <tr>
           <td class="paramkey"></td>
           <td></td>
-          <td class="paramtype">const VkImageAspectFlags &amp;</td>          <td class="paramname"><span class="paramname"><em>aspectFlags</em></span>, </td>
+          <td class="paramtype">const VkImageAspectFlags &amp;</td>          <td class="paramname"><span class="paramname"><em>aspect_flags</em></span>, </td>
         </tr>
         <tr>
           <td class="paramkey"></td>
@@ -375,7 +379,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL&#160;</td><td class="memItemRight"><b>debug_callb
   <table class="params">
     <tr><td class="paramname">image</td><td>the source image </td></tr>
     <tr><td class="paramname">format</td><td>the image format </td></tr>
-    <tr><td class="paramname">aspectFlags</td><td>the image aspect mask </td></tr>
+    <tr><td class="paramname">aspect_flags</td><td>the image aspect mask </td></tr>
     <tr><td class="paramname">device</td><td>the logical device </td></tr>
   </table>
   </dd>
@@ -599,6 +603,38 @@ VKAPI_ATTR VkBool32 VKAPI_CALL&#160;</td><td class="memItemRight"><b>debug_callb
   </dd>
 </dl>
 <dl class="section return"><dt>Returns</dt><dd>the chosen physical device; panics if none is suitable </dd></dl>
+
+</div>
+</div>
+<a id="ga5e99848a88393f53205a29c1a1cf20dd" name="ga5e99848a88393f53205a29c1a1cf20dd"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga5e99848a88393f53205a29c1a1cf20dd">&#9670;&#160;</a></span>print_device_capabilities()</h2>
+
+<div class="memitem">
+<div class="memproto">
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
+      <table class="memname">
+        <tr>
+          <td class="memname">void print_device_capabilities </td>
+          <td>(</td>
+          <td class="paramtype"><a class="el" href="structdevice__capabilities.html">device_capabilities</a> const &amp;</td>          <td class="paramname"><span class="paramname"><em>capabilities</em></span></td><td>)</td>
+          <td></td>
+        </tr>
+      </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel export">export</span></span>  </td>
+  </tr>
+</table>
+</div><div class="memdoc">
+<dl class="params"><dt>Parameters</dt><dd>
+  <table class="params">
+    <tr><td class="paramname">capabilities</td><td>the queried capabilities </td></tr>
+  </table>
+  </dd>
+</dl>
+<dl class="section note"><dt>Note</dt><dd>prints driver/api version/device name and all enabled 1.1/1.2/1.3 features </dd></dl>
 
 </div>
 </div>

@@ -5,8 +5,10 @@ var hierarchy =
     [ "vulkan::buffer_detail", "structvulkan_1_1buffer__detail.html", null ],
     [ "utility::bvh&lt; T &gt;", "classutility_1_1bvh.html", null ],
     [ "utility::bvh_node&lt; T &gt;", "structutility_1_1bvh__node.html", null ],
+    [ "vulkan::camera_ubo", "structvulkan_1_1camera__ubo.html", null ],
     [ "utility::data_block&lt; S &gt;", "structutility_1_1data__block.html", null ],
     [ "vulkan::pipeline::descriptor_set_layout_data", "structvulkan_1_1pipeline_1_1descriptor__set__layout__data.html", null ],
+    [ "device_capabilities", "structdevice__capabilities.html", null ],
     [ "device_creation_info", "structdevice__creation__info.html", null ],
     [ "utility::enable_handle_distribute", "classutility_1_1enable__handle__distribute.html", [
       [ "vulkan::vma_allocator", "classvulkan_1_1vma__allocator.html", null ]
@@ -18,6 +20,7 @@ var hierarchy =
     [ "vulkan::image_create_info", "structvulkan_1_1image__create__info.html", null ],
     [ "vulkan::image_detail", "structvulkan_1_1image__detail.html", null ],
     [ "vulkan::pipeline::interface_variable_info", "structvulkan_1_1pipeline_1_1interface__variable__info.html", null ],
+    [ "utility::log_sink", "classutility_1_1log__sink.html", null ],
     [ "logical_device", "structlogical__device.html", null ],
     [ "std::pmr::memory_resource", null, [
       [ "mimalloc_memory_resource", "classmimalloc__memory__resource.html", null ]
@@ -25,6 +28,7 @@ var hierarchy =
     [ "gltf::mesh", "structgltf_1_1mesh.html", null ],
     [ "vulkan::model", "structvulkan_1_1model.html", null ],
     [ "gltf::node", "structgltf_1_1node.html", null ],
+    [ "vulkan::orbit_camera", "structvulkan_1_1orbit__camera.html", null ],
     [ "utility::pmr_manager", "classutility_1_1pmr__manager.html", null ],
     [ "gltf::primitive", "structgltf_1_1primitive.html", null ],
     [ "vulkan::pipeline::push_constant_info", "structvulkan_1_1pipeline_1_1push__constant__info.html", null ],
@@ -40,6 +44,8 @@ var hierarchy =
     [ "gltf::vertex_portion", "structgltf_1_1vertex__portion.html", null ],
     [ "vulkan::vk_command_buffer", "classvulkan_1_1vk__command__buffer.html", null ],
     [ "vulkan::vk_descriptor_set", "classvulkan_1_1vk__descriptor__set.html", null ],
+    [ "vulkan::vk_image_view", "classvulkan_1_1vk__image__view.html", null ],
     [ "vulkan::vk_pipeline", "structvulkan_1_1vk__pipeline.html", null ],
+    [ "vulkan::vk_sampler", "classvulkan_1_1vk__sampler.html", null ],
     [ "vulkan::vk_shader_module", "classvulkan_1_1vk__shader__module.html", null ]
 ];

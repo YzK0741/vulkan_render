@@ -130,6 +130,8 @@ Classes</h2></td></tr>
 <tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">a mixin-class to enable derived class distribute unique handles  <a href="classutility_1_1enable__handle__distribute.html#details">More...</a><br /></td></tr>
 <tr class="memitem:utility_3A_3Aenable_5Fstack_5Fdestruct" id="r_utility_3A_3Aenable_5Fstack_5Fdestruct"><td class="memItemLeft">class &#160;</td><td class="memItemRight"><a class="el" href="classutility_1_1enable__stack__destruct.html">utility::enable_stack_destruct</a></td></tr>
 <tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">a mixin class which enables derived class a stack-style destruct ability  <a href="classutility_1_1enable__stack__destruct.html#details">More...</a><br /></td></tr>
+<tr class="memitem:utility_3A_3Alog_5Fsink" id="r_utility_3A_3Alog_5Fsink"><td class="memItemLeft">class &#160;</td><td class="memItemRight"><a class="el" href="classutility_1_1log__sink.html">utility::log_sink</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">asynchronous logging sink (Meyer's singleton), internal implementation  <a href="classutility_1_1log__sink.html#details">More...</a><br /></td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-func-members" class="groupheader"><a id="func-members" name="func-members"></a>
 Functions</h2></td></tr>
@@ -139,6 +141,22 @@ Functions</h2></td></tr>
 <tr class="memdesc:ga9262e2d4ee15e47c9e03e600f75c9fb8"><td class="mdescLeft">&#160;</td><td class="mdescRight">use when program cause a terminating error, will invoke functions assigned by at_panic()  <br /></td></tr>
 <tr class="memitem:gada249d78450c0dee389d3743b8ac2276" id="r_gada249d78450c0dee389d3743b8ac2276"><td class="memItemLeft">std::chrono::milliseconds&#160;</td><td class="memItemRight"><a class="el" href="#gada249d78450c0dee389d3743b8ac2276">utility::time_test</a> (std::function&lt; void()&gt; const &amp;test) noexcept</td></tr>
 <tr class="memdesc:gada249d78450c0dee389d3743b8ac2276"><td class="mdescLeft">&#160;</td><td class="mdescRight">a simple time test function  <br /></td></tr>
+<tr class="memitem:ga4c7ed10e171cf5c2e94fcb06119615ef" id="r_ga4c7ed10e171cf5c2e94fcb06119615ef"><td class="memItemLeft">std::optional&lt; std::vector&lt; unsigned char &gt; &gt;&#160;</td><td class="memItemRight"><a class="el" href="#ga4c7ed10e171cf5c2e94fcb06119615ef">utility::read_binary_to_vector</a> (const std::filesystem::path &amp;path)</td></tr>
+<tr class="memdesc:ga4c7ed10e171cf5c2e94fcb06119615ef"><td class="mdescLeft">&#160;</td><td class="mdescRight">read the whole file in binary mode into a byte vector  <br /></td></tr>
+<tr class="memitem:gade57c8c8f375e42404a4f95252bd0e2b" id="r_gade57c8c8f375e42404a4f95252bd0e2b"><td class="memItemLeft">std::optional&lt; std::string &gt;&#160;</td><td class="memItemRight"><a class="el" href="#gade57c8c8f375e42404a4f95252bd0e2b">utility::read_binary_to_string</a> (const std::filesystem::path &amp;path)</td></tr>
+<tr class="memdesc:gade57c8c8f375e42404a4f95252bd0e2b"><td class="mdescLeft">&#160;</td><td class="mdescRight">read the whole file in binary mode into a string  <br /></td></tr>
+<tr class="memitem:ga12b382664ab54893f4c3905deb81021f" id="r_ga12b382664ab54893f4c3905deb81021f"><td class="memTemplParams" colspan="2">template&lt;typename... Args&gt; </td></tr>
+<tr class="memitem:ga12b382664ab54893f4c3905deb81021f template"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="#ga12b382664ab54893f4c3905deb81021f">utility::log</a> (std::format_string&lt; Args... &gt; fmt, Args &amp;&amp;... args)</td></tr>
+<tr class="memdesc:ga12b382664ab54893f4c3905deb81021f"><td class="mdescLeft">&#160;</td><td class="mdescRight">asynchronous log: formats the message like std::format and pushes it to the log singleton  <br /></td></tr>
+<tr class="memitem:ga29d70d51736007898f64372550663da6" id="r_ga29d70d51736007898f64372550663da6"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="#ga29d70d51736007898f64372550663da6">utility::log</a> (std::string_view message)</td></tr>
+<tr class="memdesc:ga29d70d51736007898f64372550663da6"><td class="mdescLeft">&#160;</td><td class="mdescRight">asynchronous log: writes a single pre-formatted string as-is  <br /></td></tr>
+<tr class="memitem:ga6fb22714ed18c4d72dfef64867140f74" id="r_ga6fb22714ed18c4d72dfef64867140f74"><td class="memTemplParams" colspan="2">template&lt;typename... Args&gt; </td></tr>
+<tr class="memitem:ga6fb22714ed18c4d72dfef64867140f74 template"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="#ga6fb22714ed18c4d72dfef64867140f74">utility::error</a> (std::format_string&lt; Args... &gt; fmt, Args &amp;&amp;... args)</td></tr>
+<tr class="memdesc:ga6fb22714ed18c4d72dfef64867140f74"><td class="mdescLeft">&#160;</td><td class="mdescRight">error log: in Debug builds prints directly to stderr in red (not queued); in Release builds hands the message to the log singleton with an [ERROR] prefix  <br /></td></tr>
+<tr class="memitem:ga15476f13f88a52452fc9368e2040e665" id="r_ga15476f13f88a52452fc9368e2040e665"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="#ga15476f13f88a52452fc9368e2040e665">utility::error</a> (std::string_view message)</td></tr>
+<tr class="memdesc:ga15476f13f88a52452fc9368e2040e665"><td class="mdescLeft">&#160;</td><td class="mdescRight">error log: in Debug builds prints directly to stderr in red (not queued); in Release builds hands the message to the log singleton with an [ERROR] prefix  <br /></td></tr>
+<tr class="memitem:gac389c39ef73acc52d26bb926dc394094" id="r_gac389c39ef73acc52d26bb926dc394094"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="#gac389c39ef73acc52d26bb926dc394094">utility::wait_log_all</a> ()</td></tr>
+<tr class="memdesc:gac389c39ef73acc52d26bb926dc394094"><td class="mdescLeft">&#160;</td><td class="mdescRight">block until all log messages queued so far have been written by the log thread  <br /></td></tr>
 </table>
 <a name="details" id="details"></a><h2 id="header-details" class="groupheader">Detailed Description</h2>
 <div class="textblock"></div><a name="doc-func-members" id="doc-func-members"></a><h2 id="header-doc-func-members" class="groupheader">Function Documentation</h2>
@@ -173,6 +191,162 @@ Functions</h2></td></tr>
 <dl class="section note"><dt>Note</dt><dd><ul>
 <li>thread safe</li>
 <li>LIFO </li>
+</ul>
+</dd></dl>
+
+</div>
+</div>
+<a id="ga6fb22714ed18c4d72dfef64867140f74" name="ga6fb22714ed18c4d72dfef64867140f74"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga6fb22714ed18c4d72dfef64867140f74">&#9670;&#160;</a></span>error() <span class="overload">[1/2]</span></h2>
+
+<div class="memitem">
+<div class="memproto">
+<div class="memtemplate">
+template&lt;typename... Args&gt; </div>
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
+      <table class="memname">
+        <tr>
+          <td class="memname">void utility::error </td>
+          <td>(</td>
+          <td class="paramtype">std::format_string&lt; Args... &gt;</td>          <td class="paramname"><span class="paramname"><em>fmt</em></span>, </td>
+        </tr>
+        <tr>
+          <td class="paramkey"></td>
+          <td></td>
+          <td class="paramtype">Args &amp;&amp;...</td>          <td class="paramname"><span class="paramname"><em>args</em></span>&#160;)</td>
+        </tr>
+      </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel export">export</span></span>  </td>
+  </tr>
+</table>
+</div><div class="memdoc">
+<dl class="tparams"><dt>Template Parameters</dt><dd>
+  <table class="tparams">
+    <tr><td class="paramname">Args</td><td>argument types </td></tr>
+  </table>
+  </dd>
+</dl>
+<dl class="params"><dt>Parameters</dt><dd>
+  <table class="params">
+    <tr><td class="paramname">fmt</td><td>the format string (compile-time checked) </td></tr>
+    <tr><td class="paramname">args</td><td>arguments to format </td></tr>
+  </table>
+  </dd>
+</dl>
+
+</div>
+</div>
+<a id="ga15476f13f88a52452fc9368e2040e665" name="ga15476f13f88a52452fc9368e2040e665"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga15476f13f88a52452fc9368e2040e665">&#9670;&#160;</a></span>error() <span class="overload">[2/2]</span></h2>
+
+<div class="memitem">
+<div class="memproto">
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
+      <table class="memname">
+        <tr>
+          <td class="memname">void utility::error </td>
+          <td>(</td>
+          <td class="paramtype">std::string_view</td>          <td class="paramname"><span class="paramname"><em>message</em></span></td><td>)</td>
+          <td></td>
+        </tr>
+      </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel export">export</span></span>  </td>
+  </tr>
+</table>
+</div><div class="memdoc">
+<dl class="params"><dt>Parameters</dt><dd>
+  <table class="params">
+    <tr><td class="paramname">message</td><td>the message (string literal, const char*, std::string or std::string_view) </td></tr>
+  </table>
+  </dd>
+</dl>
+
+</div>
+</div>
+<a id="ga12b382664ab54893f4c3905deb81021f" name="ga12b382664ab54893f4c3905deb81021f"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga12b382664ab54893f4c3905deb81021f">&#9670;&#160;</a></span>log() <span class="overload">[1/2]</span></h2>
+
+<div class="memitem">
+<div class="memproto">
+<div class="memtemplate">
+template&lt;typename... Args&gt; </div>
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
+      <table class="memname">
+        <tr>
+          <td class="memname">void utility::log </td>
+          <td>(</td>
+          <td class="paramtype">std::format_string&lt; Args... &gt;</td>          <td class="paramname"><span class="paramname"><em>fmt</em></span>, </td>
+        </tr>
+        <tr>
+          <td class="paramkey"></td>
+          <td></td>
+          <td class="paramtype">Args &amp;&amp;...</td>          <td class="paramname"><span class="paramname"><em>args</em></span>&#160;)</td>
+        </tr>
+      </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel export">export</span></span>  </td>
+  </tr>
+</table>
+</div><div class="memdoc">
+<dl class="tparams"><dt>Template Parameters</dt><dd>
+  <table class="tparams">
+    <tr><td class="paramname">Args</td><td>argument types </td></tr>
+  </table>
+  </dd>
+</dl>
+<dl class="params"><dt>Parameters</dt><dd>
+  <table class="params">
+    <tr><td class="paramname">fmt</td><td>the format string (compile-time checked) </td></tr>
+    <tr><td class="paramname">args</td><td>arguments to format </td></tr>
+  </table>
+  </dd>
+</dl>
+<dl class="section note"><dt>Note</dt><dd>output goes to the terminal in Debug builds, to a debug.log file in Release builds </dd></dl>
+
+</div>
+</div>
+<a id="ga29d70d51736007898f64372550663da6" name="ga29d70d51736007898f64372550663da6"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga29d70d51736007898f64372550663da6">&#9670;&#160;</a></span>log() <span class="overload">[2/2]</span></h2>
+
+<div class="memitem">
+<div class="memproto">
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
+      <table class="memname">
+        <tr>
+          <td class="memname">void utility::log </td>
+          <td>(</td>
+          <td class="paramtype">std::string_view</td>          <td class="paramname"><span class="paramname"><em>message</em></span></td><td>)</td>
+          <td></td>
+        </tr>
+      </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel export">export</span></span>  </td>
+  </tr>
+</table>
+</div><div class="memdoc">
+<dl class="params"><dt>Parameters</dt><dd>
+  <table class="params">
+    <tr><td class="paramname">message</td><td>the message (string literal, const char*, std::string or std::string_view) </td></tr>
+  </table>
+  </dd>
+</dl>
+<dl class="section note"><dt>Note</dt><dd><ul>
+<li>for runtime strings, which cannot construct the consteval std::format_string</li>
+<li>for format-string usage prefer the template overload </li>
 </ul>
 </dd></dl>
 
@@ -215,6 +389,70 @@ Functions</h2></td></tr>
 
 </div>
 </div>
+<a id="gade57c8c8f375e42404a4f95252bd0e2b" name="gade57c8c8f375e42404a4f95252bd0e2b"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#gade57c8c8f375e42404a4f95252bd0e2b">&#9670;&#160;</a></span>read_binary_to_string()</h2>
+
+<div class="memitem">
+<div class="memproto">
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
+      <table class="memname">
+        <tr>
+          <td class="memname">std::optional&lt; std::string &gt; utility::read_binary_to_string </td>
+          <td>(</td>
+          <td class="paramtype">const std::filesystem::path &amp;</td>          <td class="paramname"><span class="paramname"><em>path</em></span></td><td>)</td>
+          <td></td>
+        </tr>
+      </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel export">export</span></span>  </td>
+  </tr>
+</table>
+</div><div class="memdoc">
+<dl class="params"><dt>Parameters</dt><dd>
+  <table class="params">
+    <tr><td class="paramname">path</td><td>the file path </td></tr>
+  </table>
+  </dd>
+</dl>
+<dl class="section return"><dt>Returns</dt><dd>the file contents, or std::nullopt if the file cannot be read </dd></dl>
+
+</div>
+</div>
+<a id="ga4c7ed10e171cf5c2e94fcb06119615ef" name="ga4c7ed10e171cf5c2e94fcb06119615ef"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga4c7ed10e171cf5c2e94fcb06119615ef">&#9670;&#160;</a></span>read_binary_to_vector()</h2>
+
+<div class="memitem">
+<div class="memproto">
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
+      <table class="memname">
+        <tr>
+          <td class="memname">std::optional&lt; std::vector&lt; unsigned char &gt; &gt; utility::read_binary_to_vector </td>
+          <td>(</td>
+          <td class="paramtype">const std::filesystem::path &amp;</td>          <td class="paramname"><span class="paramname"><em>path</em></span></td><td>)</td>
+          <td></td>
+        </tr>
+      </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel export">export</span></span>  </td>
+  </tr>
+</table>
+</div><div class="memdoc">
+<dl class="params"><dt>Parameters</dt><dd>
+  <table class="params">
+    <tr><td class="paramname">path</td><td>the file path </td></tr>
+  </table>
+  </dd>
+</dl>
+<dl class="section return"><dt>Returns</dt><dd>the file contents, or std::nullopt if the file cannot be read </dd></dl>
+
+</div>
+</div>
 <a id="gada249d78450c0dee389d3743b8ac2276" name="gada249d78450c0dee389d3743b8ac2276"></a>
 <h2 class="memtitle"><span class="permalink"><a href="#gada249d78450c0dee389d3743b8ac2276">&#9670;&#160;</a></span>time_test()</h2>
 
@@ -244,6 +482,32 @@ Functions</h2></td></tr>
   </dd>
 </dl>
 <dl class="section return"><dt>Returns</dt><dd>used time in invoking the argument </dd></dl>
+
+</div>
+</div>
+<a id="gac389c39ef73acc52d26bb926dc394094" name="gac389c39ef73acc52d26bb926dc394094"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#gac389c39ef73acc52d26bb926dc394094">&#9670;&#160;</a></span>wait_log_all()</h2>
+
+<div class="memitem">
+<div class="memproto">
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
+      <table class="memname">
+        <tr>
+          <td class="memname">void utility::wait_log_all </td>
+          <td>(</td>
+          <td class="paramname"><span class="paramname"><em></em></span></td><td>)</td>
+          <td></td>
+        </tr>
+      </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel export">export</span></span>  </td>
+  </tr>
+</table>
+</div><div class="memdoc">
+<dl class="section note"><dt>Note</dt><dd>useful before shutdown or before reading output that must be complete </dd></dl>
 
 </div>
 </div>

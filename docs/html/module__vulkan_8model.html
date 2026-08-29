@@ -122,6 +122,32 @@ Exported Modules</h2></td></tr>
 Classes</h2></td></tr>
 <tr class="memitem:vulkan_3A_3Amodel" id="r_vulkan_3A_3Amodel"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1model.html">vulkan::model</a></td></tr>
 <tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">model class managing vertex/index buffers and the descriptor set  <a href="structvulkan_1_1model.html#details">More...</a><br /></td></tr>
+<tr class="memitem:vulkan_3A_3Acamera_5Fubo" id="r_vulkan_3A_3Acamera_5Fubo"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1camera__ubo.html">vulkan::camera_ubo</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">camera UBO content, layout matches the CameraUBO block in pbr.frag  <a href="structvulkan_1_1camera__ubo.html#details">More...</a><br /></td></tr>
+</table><table class="memberdecls">
+<tr class="heading"><td colspan="2"><h2 id="header-func-members" class="groupheader"><a id="func-members" name="func-members"></a>
+Functions</h2></td></tr>
+<tr class="memitem:gabe6e1053ef7a74b6335df6048a6d952a" id="r_gabe6e1053ef7a74b6335df6048a6d952a"><td class="memItemLeft">
+<a class="el" href="structvulkan_1_1camera__ubo.html">camera_ubo</a>&#160;</td><td class="memItemRight"><b>vulkan::make_orbit_camera_ubo</b> (float yaw, float pitch, float distance, const glm::mat4 &amp;model, float aspect)</td></tr>
+<tr class="memdesc:gabe6e1053ef7a74b6335df6048a6d952a"><td class="mdescLeft">&#160;</td><td class="mdescRight">build the camera UBO from orbit camera state (the model is assumed centered at the origin) <br /></td></tr>
+<tr class="memitem:gaf77ab565adbf537d2f3dc94648658dde" id="r_gaf77ab565adbf537d2f3dc94648658dde"><td class="memItemLeft">
+std::vector&lt; float &gt;&#160;</td><td class="memItemRight"><b>vulkan::generate_environment_cubemap</b> (int size)</td></tr>
+<tr class="memdesc:gaf77ab565adbf537d2f3dc94648658dde"><td class="mdescLeft">&#160;</td><td class="mdescRight">generate a procedural HDR environment cubemap (RGBA32F, 6 faces packed) <br /></td></tr>
+<tr class="memitem:ga11005edd07e20d801e37745b6de70669" id="r_ga11005edd07e20d801e37745b6de70669"><td class="memItemLeft">
+std::vector&lt; float &gt;&#160;</td><td class="memItemRight"><b>vulkan::prefilter_environment</b> (const std::vector&lt; float &gt; &amp;env, int env_size, int mip_count)</td></tr>
+<tr class="memdesc:ga11005edd07e20d801e37745b6de70669"><td class="mdescLeft">&#160;</td><td class="mdescRight">GGX importance-sampled prefilter of the environment into a mip chain. <br /></td></tr>
+<tr class="memitem:ga89ae99802aa9037addae848b8c33f0ef" id="r_ga89ae99802aa9037addae848b8c33f0ef"><td class="memItemLeft">
+std::vector&lt; float &gt;&#160;</td><td class="memItemRight"><b>vulkan::generate_irradiance_map</b> (const std::vector&lt; float &gt; &amp;env, int env_size, int irr_size)</td></tr>
+<tr class="memdesc:ga89ae99802aa9037addae848b8c33f0ef"><td class="mdescLeft">&#160;</td><td class="mdescRight">cosine-weighted hemisphere convolution for the diffuse irradiance cubemap <br /></td></tr>
+<tr class="memitem:gab1670f156209d4b6b5a11cdd77a31c70" id="r_gab1670f156209d4b6b5a11cdd77a31c70"><td class="memItemLeft">
+std::vector&lt; float &gt;&#160;</td><td class="memItemRight"><b>vulkan::generate_brdf_lut</b> (int size)</td></tr>
+<tr class="memdesc:gab1670f156209d4b6b5a11cdd77a31c70"><td class="mdescLeft">&#160;</td><td class="mdescRight">BRDF integration LUT filled with the Frostbite analytic approximation (RG32F: scale, bias). <br /></td></tr>
+<tr class="memitem:ga8e9c09c82e8f58148a4245ec6fde35bf" id="r_ga8e9c09c82e8f58148a4245ec6fde35bf"><td class="memItemLeft">
+std::vector&lt; unsigned char &gt;&#160;</td><td class="memItemRight"><b>vulkan::to_half_rgba</b> (const std::vector&lt; float &gt; &amp;data)</td></tr>
+<tr class="memdesc:ga8e9c09c82e8f58148a4245ec6fde35bf"><td class="mdescLeft">&#160;</td><td class="mdescRight">convert 4-channel float data to a packed RGBA16F byte stream <br /></td></tr>
+<tr class="memitem:ga087b95eed37d31e79c54b94c075a8415" id="r_ga087b95eed37d31e79c54b94c075a8415"><td class="memItemLeft">
+std::vector&lt; unsigned char &gt;&#160;</td><td class="memItemRight"><b>vulkan::to_half_rg</b> (const std::vector&lt; float &gt; &amp;data)</td></tr>
+<tr class="memdesc:ga087b95eed37d31e79c54b94c075a8415"><td class="mdescLeft">&#160;</td><td class="mdescRight">convert 2-channel float data to a packed RG16F byte stream <br /></td></tr>
 </table>
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-files" class="groupheader"><a id="files" name="files"></a>

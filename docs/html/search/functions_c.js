@@ -1,5 +1,5 @@
 var searchData=
 [
-  ['rebuild_0',['rebuild',['../group__bvh.html#ga0144da7e393f4011164d198a4bb33278',1,'utility::bvh']]],
-  ['register_5fcleanup_1',['register_cleanup',['../classutility_1_1enable__stack__destruct.html#af14a55a6666a6ff0427e68b1734c22bb',1,'utility::enable_stack_destruct']]]
+  ['query_0',['query',['../structdevice__capabilities.html#ae80bf235ac732803de14fa8370ee4985',1,'device_capabilities']]],
+  ['query_5fswap_5fchain_5fsupport_1',['query_swap_chain_support',['../group__vulkan__init__utils.html#gae69c32532b40365034fbc447ecb2cc65',1,'query_swap_chain_support(VkPhysicalDevice const &amp;device, VkSurfaceKHR const &amp;surface) noexcept:&#160;init_util.cpp'],['../group__vulkan__init__utils.html#gae69c32532b40365034fbc447ecb2cc65',1,'query_swap_chain_support(VkPhysicalDevice const &amp;device, VkSurfaceKHR const &amp;surface) noexcept:&#160;init_util.cpp']]]
 ];

@@ -8,5 +8,6 @@ var searchData=
   ['shutdown_5',['shutdown',['../classutility_1_1thread__pool.html#a7dae176aa124cfb582402bea5c2fb453',1,'utility::thread_pool']]],
   ['spir_20v_20reflection_20parser_6',['SPIR-V Reflection Parser',['../group__vulkan__spirv__parser.html',1,'']]],
   ['spirv_5fparser_2ecppm_7',['spirv_parser.cppm',['../spirv__parser_8cppm.html',1,'']]],
-  ['swap_5fchain_5fsupport_5fdetails_8',['swap_chain_support_details',['../structswap__chain__support__details.html',1,'']]]
+  ['submit_8',['submit',['../group__vulkan__core.html#ga98fccc376f5793a56bca2a3c3dc8b2e8',1,'vulkan::core']]],
+  ['swap_5fchain_5fsupport_5fdetails_9',['swap_chain_support_details',['../structswap__chain__support__details.html',1,'']]]
 ];

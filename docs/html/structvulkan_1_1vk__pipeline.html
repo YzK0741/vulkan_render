@@ -117,14 +117,16 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('structvulkan_1
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-pub-methods" class="groupheader"><a id="pub-methods" name="pub-methods"></a>
 Public Member Functions</h2></td></tr>
-<tr class="memitem:a2b5740a1ac4abff0a9307561d0024b75" id="r_a2b5740a1ac4abff0a9307561d0024b75"><td class="memItemLeft"><a id="a2b5740a1ac4abff0a9307561d0024b75" name="a2b5740a1ac4abff0a9307561d0024b75"></a>
-&#160;</td><td class="memItemRight"><b>vk_pipeline</b> (VkPipeline pipeline, VkPipelineLayout pipeline_layout, std::vector&lt; VkDescriptorSetLayout &gt; const &amp;descriptor_set_layouts, VkDevice &amp;device) noexcept</td></tr>
+<tr class="memitem:ac98a5af3d008ec9e2f738f6b4c914758" id="r_ac98a5af3d008ec9e2f738f6b4c914758"><td class="memItemLeft"><a id="ac98a5af3d008ec9e2f738f6b4c914758" name="ac98a5af3d008ec9e2f738f6b4c914758"></a>
+&#160;</td><td class="memItemRight"><b>vk_pipeline</b> (VkPipeline pipeline, VkPipelineLayout pipeline_layout, std::vector&lt; VkDescriptorSetLayout &gt; const &amp;descriptor_set_layouts, VkDevice device) noexcept</td></tr>
 <tr class="memitem:abaf278fd6762ceb38538a334cc6fe239" id="r_abaf278fd6762ceb38538a334cc6fe239"><td class="memItemLeft"><a id="abaf278fd6762ceb38538a334cc6fe239" name="abaf278fd6762ceb38538a334cc6fe239"></a>
 VkPipeline&#160;</td><td class="memItemRight"><b>get_pipeline</b> () const noexcept</td></tr>
 <tr class="memitem:a98607b799a5456348896c2d524b19dc6" id="r_a98607b799a5456348896c2d524b19dc6"><td class="memItemLeft"><a id="a98607b799a5456348896c2d524b19dc6" name="a98607b799a5456348896c2d524b19dc6"></a>
 VkPipelineLayout&#160;</td><td class="memItemRight"><b>get_pipeline_layout</b> () const noexcept</td></tr>
 <tr class="memitem:a3e81e3246200ffad9bcbe0b45daf1285" id="r_a3e81e3246200ffad9bcbe0b45daf1285"><td class="memItemLeft"><a id="a3e81e3246200ffad9bcbe0b45daf1285" name="a3e81e3246200ffad9bcbe0b45daf1285"></a>
 std::vector&lt; VkDescriptorSetLayout &gt;&#160;</td><td class="memItemRight"><b>get_descriptor_set_layouts</b> () const noexcept</td></tr>
+<tr class="memitem:gad9850b2a2c85f8b26c7d73371cb12d00" id="r_gad9850b2a2c85f8b26c7d73371cb12d00"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__handles.html#gad9850b2a2c85f8b26c7d73371cb12d00">begin_pipeline</a> (VkCommandBuffer command_buffer) const</td></tr>
+<tr class="memdesc:gad9850b2a2c85f8b26c7d73371cb12d00"><td class="mdescLeft">&#160;</td><td class="mdescRight">bind the pipeline and set the stored viewport/scissor (dynamic states)  <br /></td></tr>
 <tr class="memitem:a98135769a2397919c2c6ebfdb9954e06" id="r_a98135769a2397919c2c6ebfdb9954e06"><td class="memItemLeft"><a id="a98135769a2397919c2c6ebfdb9954e06" name="a98135769a2397919c2c6ebfdb9954e06"></a>
 &#160;</td><td class="memItemRight"><b>vk_pipeline</b> (vk_pipeline &amp;)=delete</td></tr>
 <tr class="memitem:a8e8644999bb05dfce0f73047a32a6a5f" id="r_a8e8644999bb05dfce0f73047a32a6a5f"><td class="memItemLeft"><a id="a8e8644999bb05dfce0f73047a32a6a5f" name="a8e8644999bb05dfce0f73047a32a6a5f"></a>
@@ -144,13 +146,18 @@ VkPipeline&#160;</td><td class="memItemRight"><b>pipeline</b> = VK_NULL_HANDLE</
 VkPipelineLayout&#160;</td><td class="memItemRight"><b>pipeline_layout</b> = VK_NULL_HANDLE</td></tr>
 <tr class="memitem:a46b01c4a683fe08f9422dea22533536b" id="r_a46b01c4a683fe08f9422dea22533536b"><td class="memItemLeft"><a id="a46b01c4a683fe08f9422dea22533536b" name="a46b01c4a683fe08f9422dea22533536b"></a>
 std::vector&lt; VkDescriptorSetLayout &gt;&#160;</td><td class="memItemRight"><b>descriptor_set_layouts</b> = {}</td></tr>
-<tr class="memitem:acf8860609cb896468912d47e92a1b06a" id="r_acf8860609cb896468912d47e92a1b06a"><td class="memItemLeft"><a id="acf8860609cb896468912d47e92a1b06a" name="acf8860609cb896468912d47e92a1b06a"></a>
-VkDevice *&#160;</td><td class="memItemRight"><b>device</b> = nullptr</td></tr>
+<tr class="memitem:a0cf79076eff6dd67afd9125d3b8a731a" id="r_a0cf79076eff6dd67afd9125d3b8a731a"><td class="memItemLeft"><a id="a0cf79076eff6dd67afd9125d3b8a731a" name="a0cf79076eff6dd67afd9125d3b8a731a"></a>
+VkDevice&#160;</td><td class="memItemRight"><b>device</b> = VK_NULL_HANDLE</td></tr>
+<tr class="memitem:a20c1c658f70e94012a7af07039349ee8" id="r_a20c1c658f70e94012a7af07039349ee8"><td class="memItemLeft"><a id="a20c1c658f70e94012a7af07039349ee8" name="a20c1c658f70e94012a7af07039349ee8"></a>
+VkViewport&#160;</td><td class="memItemRight"><b>viewport</b> = {}</td></tr>
+<tr class="memitem:a76f7feff08cea5c3162e966301f15f8f" id="r_a76f7feff08cea5c3162e966301f15f8f"><td class="memItemLeft"><a id="a76f7feff08cea5c3162e966301f15f8f" name="a76f7feff08cea5c3162e966301f15f8f"></a>
+VkRect2D&#160;</td><td class="memItemRight"><b>scissor</b> = {}</td></tr>
 </table>
 <a name="details" id="details"></a><h2 id="header-details" class="groupheader">Detailed Description</h2>
 <div class="textblock"><dl class="section note"><dt>Note</dt><dd><ul>
 <li>use operator* or get() to get naked handle</li>
-<li>sole ownership </li>
+<li>sole ownership</li>
+<li>viewport/scissor hold the full-screen viewport for this pipeline; set at creation by core::make_pipeline, use them with vkCmdSetViewport/Scissor </li>
 </ul>
 </dd></dl>
 </div><hr/>The documentation for this struct was generated from the following files:<ul>

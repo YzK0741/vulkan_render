@@ -124,15 +124,19 @@ Classes</h2></td></tr>
 <tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">raii wrapper of VkShaderModule  <a href="classvulkan_1_1vk__shader__module.html#details">More...</a><br /></td></tr>
 <tr class="memitem:vulkan_3A_3Avk_5Fpipeline" id="r_vulkan_3A_3Avk_5Fpipeline"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1vk__pipeline.html">vulkan::vk_pipeline</a></td></tr>
 <tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">raii wrapper of VkPipeline  <a href="structvulkan_1_1vk__pipeline.html#details">More...</a><br /></td></tr>
+<tr class="memitem:vulkan_3A_3Avk_5Fimage_5Fview" id="r_vulkan_3A_3Avk_5Fimage_5Fview"><td class="memItemLeft">class &#160;</td><td class="memItemRight"><a class="el" href="classvulkan_1_1vk__image__view.html">vulkan::vk_image_view</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">raii wrapper of VkImageView  <a href="classvulkan_1_1vk__image__view.html#details">More...</a><br /></td></tr>
+<tr class="memitem:vulkan_3A_3Avk_5Fsampler" id="r_vulkan_3A_3Avk_5Fsampler"><td class="memItemLeft">class &#160;</td><td class="memItemRight"><a class="el" href="classvulkan_1_1vk__sampler.html">vulkan::vk_sampler</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">raii wrapper of VkSampler  <a href="classvulkan_1_1vk__sampler.html#details">More...</a><br /></td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-func-members" class="groupheader"><a id="func-members" name="func-members"></a>
 Functions</h2></td></tr>
-<tr class="memitem:gac023b2fcf3e80728f72ad01131b95253" id="r_gac023b2fcf3e80728f72ad01131b95253"><td class="memItemLeft">
-<a class="el" href="classvulkan_1_1vk__command__buffer.html">vk_command_buffer</a>&#160;</td><td class="memItemRight"><b>vulkan::make_command_buffer</b> (VkDevice &amp;device, VkCommandPool &amp;command_pool) noexcept</td></tr>
-<tr class="memitem:gaa1ea6bde8daef5e998c6bb837e87523e" id="r_gaa1ea6bde8daef5e998c6bb837e87523e"><td class="memItemLeft">
-<a class="el" href="classvulkan_1_1vk__descriptor__set.html">vk_descriptor_set</a>&#160;</td><td class="memItemRight"><b>vulkan::make_descriptor_set</b> (VkDevice &amp;device, VkDescriptorPool &amp;descriptor_pool, VkDescriptorSetLayout const &amp;layout) noexcept</td></tr>
-<tr class="memitem:ga0a1af5a183a76b993c44e7bac25d7193" id="r_ga0a1af5a183a76b993c44e7bac25d7193"><td class="memItemLeft">
-std::optional&lt; <a class="el" href="classvulkan_1_1vk__shader__module.html">vk_shader_module</a> &gt;&#160;</td><td class="memItemRight"><b>vulkan::make_shader_module</b> (const std::span&lt; const unsigned char &gt; shader, VkDevice &amp;device) noexcept</td></tr>
+<tr class="memitem:ga1aa3ad28167a4edc253f5bccaa88d7b0" id="r_ga1aa3ad28167a4edc253f5bccaa88d7b0"><td class="memItemLeft">
+<a class="el" href="classvulkan_1_1vk__command__buffer.html">vk_command_buffer</a>&#160;</td><td class="memItemRight"><b>vulkan::make_command_buffer</b> (const VkDevice device, const VkCommandPool command_pool) noexcept</td></tr>
+<tr class="memitem:gad34b3f4cd5a8c13e11aefccb456f66e6" id="r_gad34b3f4cd5a8c13e11aefccb456f66e6"><td class="memItemLeft">
+<a class="el" href="classvulkan_1_1vk__descriptor__set.html">vk_descriptor_set</a>&#160;</td><td class="memItemRight"><b>vulkan::make_descriptor_set</b> (const VkDevice device, const VkDescriptorPool descriptor_pool, VkDescriptorSetLayout const &amp;layout) noexcept</td></tr>
+<tr class="memitem:gac8ee285e261b747747695d315e03edaa" id="r_gac8ee285e261b747747695d315e03edaa"><td class="memItemLeft">
+std::optional&lt; <a class="el" href="classvulkan_1_1vk__shader__module.html">vk_shader_module</a> &gt;&#160;</td><td class="memItemRight"><b>vulkan::make_shader_module</b> (const std::span&lt; const unsigned char &gt; shader, const VkDevice device) noexcept</td></tr>
 </table>
 </div><!-- contents -->
 </div><!-- doc-content -->

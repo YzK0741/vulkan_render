@@ -1,10 +1,12 @@
 var searchData=
 [
-  ['panic_0',['panic',['../group__utility.html#ga9262e2d4ee15e47c9e03e600f75c9fb8',1,'utility']]],
-  ['parse_5fdescriptor_5fset_5flayouts_1',['parse_descriptor_set_layouts',['../group__vulkan__spirv__parser.html#gaa58a52dd21e380e426a992708dec9b40',1,'vulkan::pipeline']]],
-  ['parse_5fpush_5fconstant_5flayout_2',['parse_push_constant_layout',['../group__vulkan__spirv__parser.html#gacc4de5e6090850080d3e2acdf5577c57',1,'vulkan::pipeline']]],
-  ['parse_5fshader_5fstage_5finterface_3',['parse_shader_stage_interface',['../group__vulkan__spirv__parser.html#ga7368f1105bf317615a81bc6c29c2af89',1,'vulkan::pipeline']]],
-  ['pick_5fsuitable_5fdevice_4',['pick_suitable_device',['../group__vulkan__init__utils.html#ga944ab3d17356c4aded4ec4bdb50323b6',1,'pick_suitable_device(VkInstance const &amp;instance, VkSurfaceKHR surface) noexcept:&#160;init_util.cpp'],['../group__vulkan__init__utils.html#ga944ab3d17356c4aded4ec4bdb50323b6',1,'pick_suitable_device(VkInstance const &amp;instance, VkSurfaceKHR surface) noexcept:&#160;init_util.cpp']]],
-  ['pop_5fdestructor_5',['pop_destructor',['../classutility_1_1enable__stack__destruct.html#a7eb62b9e26a4d0a4d1db50cbd1f19b4c',1,'utility::enable_stack_destruct']]],
-  ['post_6',['post',['../classutility_1_1thread__pool.html#a26d89d4b25a8dfea8daf2d2fffc6579b',1,'utility::thread_pool']]]
+  ['make_0',['make',['../group__bvh.html#ga42d3420a1cb6fdafd8ab68002ce2fae9',1,'utility::bvh']]],
+  ['make_5fcommand_5fbuffer_1',['make_command_buffer',['../group__vulkan__handles.html#ga1aa3ad28167a4edc253f5bccaa88d7b0',1,'vulkan']]],
+  ['make_5fdescriptor_5fset_2',['make_descriptor_set',['../group__vulkan__handles.html#gad34b3f4cd5a8c13e11aefccb456f66e6',1,'vulkan']]],
+  ['make_5fimage_5fview_3',['make_image_view',['../group__vulkan__core.html#gad706b9bf949fac1ef4962fbe02765185',1,'vulkan::core']]],
+  ['make_5forbit_5fcamera_5fubo_4',['make_orbit_camera_ubo',['../group__vulkan__model.html#gabe6e1053ef7a74b6335df6048a6d952a',1,'vulkan']]],
+  ['make_5fpipeline_5',['make_pipeline',['../group__vulkan__pipeline.html#ga88c26b027e12ab668ace81c758de2e08',1,'vulkan']]],
+  ['make_5fsampler_6',['make_sampler',['../group__vulkan__core.html#gaef9e697bd65aa9d424a22cfc221e1f85',1,'vulkan::core']]],
+  ['make_5fshader_5fmodule_7',['make_shader_module',['../group__vulkan__handles.html#gac8ee285e261b747747695d315e03edaa',1,'vulkan']]],
+  ['md5_8',['md5',['../group__hash.html#ga4417dbd64be76eff47b5c1cd4c12e10c',1,'utility']]]
 ];

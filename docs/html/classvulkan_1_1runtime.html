@@ -119,13 +119,23 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('classvulkan_1_
 Public Member Functions</h2></td></tr>
 <tr class="memitem:a86f22a16b21fe992d2fb71b2ea85554f" id="r_a86f22a16b21fe992d2fb71b2ea85554f"><td class="memItemLeft"><a id="a86f22a16b21fe992d2fb71b2ea85554f" name="a86f22a16b21fe992d2fb71b2ea85554f"></a>
 <a class="el" href="structvulkan_1_1core.html">core</a> *&#160;</td><td class="memItemRight"><b>operator-&gt;</b> ()</td></tr>
+<tr class="memitem:ga7b5a6419f776e7e79cd91b3dff6dac53" id="r_ga7b5a6419f776e7e79cd91b3dff6dac53"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__runtime.html#ga7b5a6419f776e7e79cd91b3dff6dac53">begin_render_pass</a> (VkCommandBuffer command_buffer, uint32_t image_index)</td></tr>
+<tr class="memdesc:ga7b5a6419f776e7e79cd91b3dff6dac53"><td class="mdescLeft">&#160;</td><td class="mdescRight">begin the swapchain render pass on the given command buffer  <br /></td></tr>
 <tr class="memitem:afe1b6c5217e2b588623acf5b8ad30f79" id="r_afe1b6c5217e2b588623acf5b8ad30f79"><td class="memItemLeft"><a id="afe1b6c5217e2b588623acf5b8ad30f79" name="afe1b6c5217e2b588623acf5b8ad30f79"></a>
 std::expected&lt; void, std::string &gt;&#160;</td><td class="memItemRight"><b>make_pipeline</b> (std::string_view pipeline_name, std::span&lt; const unsigned char &gt; vertex_shader_code, std::span&lt; const unsigned char &gt; fragment_shader_code)</td></tr>
+<tr class="memitem:ga46d36b4e0ca40800c8e6df8f61606d8f" id="r_ga46d36b4e0ca40800c8e6df8f61606d8f"><td class="memItemLeft">const <a class="el" href="structvulkan_1_1vk__pipeline.html">vk_pipeline</a> *&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__runtime.html#ga46d36b4e0ca40800c8e6df8f61606d8f">get_pipeline</a> (std::string_view pipeline_name) const noexcept</td></tr>
+<tr class="memdesc:ga46d36b4e0ca40800c8e6df8f61606d8f"><td class="mdescLeft">&#160;</td><td class="mdescRight">get a cached pipeline by its name  <br /></td></tr>
+</table><table class="memberdecls">
+<tr class="heading"><td colspan="2"><h2 id="header-pub-attribs" class="groupheader"><a id="pub-attribs" name="pub-attribs"></a>
+Public Attributes</h2></td></tr>
+<tr class="memitem:gac2113d6365fefdbcec891de305d4be5f" id="r_gac2113d6365fefdbcec891de305d4be5f"><td class="memItemLeft">
+<a class="el" href="structvulkan_1_1orbit__camera.html">orbit_camera</a>&#160;</td><td class="memItemRight"><b>camera</b></td></tr>
+<tr class="memdesc:gac2113d6365fefdbcec891de305d4be5f"><td class="mdescLeft">&#160;</td><td class="mdescRight">orbit camera state; left-drag rotates, wheel zooms <br /></td></tr>
 </table>
 <a name="details" id="details"></a><h2 id="header-details" class="groupheader">Detailed Description</h2>
 <div class="textblock"><dl class="section note"><dt>Note</dt><dd><ul>
 <li>use operator-&gt; to access the inner core (e.g. runtime-&gt;vma.create_buffer(...))</li>
-<li>default construction performs the whole core initialization (window/instance/device/swap chain etc.) </li>
+<li>default construction performs the whole core initialization (window/instance/device/swap chain etc.) and registers the orbit camera mouse callbacks on the window </li>
 </ul>
 </dd></dl>
 </div><hr/>The documentation for this class was generated from the following files:<ul>

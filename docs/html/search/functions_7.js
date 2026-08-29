@@ -1,6 +1,4 @@
 var searchData=
 [
-  ['init_0',['init',['../group__vulkan__vma.html#ga48c970e758cf2867a7272d0c88694fa1',1,'vulkan::vma_allocator']]],
-  ['init_5fpmr_1',['init_pmr',['../group__better__pmr.html#gae022791ff7598ac475a86629e9120447',1,'utility']]],
-  ['is_5ffree_2',['is_free',['../classutility_1_1thread__pool.html#a17406c814951db882f805070953604b9',1,'utility::thread_pool']]]
+  ['hit_0',['hit',['../group__bvh.html#ga4d323b4a036d23bdf3bcae6e2fb59e59',1,'hit(glm::vec3 const &amp;min, glm::vec3 const &amp;max, glm::vec3 const &amp;start, glm::vec3 const &amp;direction, const float t_min, const float t_max):&#160;bvh.cpp'],['../group__bvh.html#ga4d323b4a036d23bdf3bcae6e2fb59e59',1,'hit(glm::vec3 const &amp;min, glm::vec3 const &amp;max, glm::vec3 const &amp;start, glm::vec3 const &amp;direction, float t_min=0.01f, float t_max=std::numeric_limits&lt; float &gt;::infinity()):&#160;bvh.cpp']]]
 ];
