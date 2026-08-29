@@ -171,8 +171,8 @@ target_compile_definitions(vulkan_lib PRIVATE
 
 #-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 #clang - format : run automatically before compiling
-#仅在源码比 stamp 新（源码有改动）时才执行格式化，避免每次构建都重排、
-#导致源码 mtime 变化从而无限触发重编译
+#Only format when a source is newer than the stamp (i.e. changed), avoiding reformatting on every build,
+#which would touch source mtimes and trigger endless recompiles
 #-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 find_program(CLANG_FORMAT_EXECUTABLE clang-format)
 
@@ -196,12 +196,12 @@ if(CLANG_FORMAT_EXECUTABLE)
 
     add_custom_target(clang-format DEPENDS "${CLANG_FORMAT_STAMP}")
 
-    # 所有项目目标在编译前先完成格式化
+    # Format all project targets before compiling
     foreach(_tgt utility thread_pool vulkan_lib gltf_loader vulkan_render)
         add_dependencies(${_tgt} clang-format)
     endforeach()
 
-    # 只检查不修改（可用于 CI）
+    # Check only, do not modify (useful for CI)
     add_custom_target(clang-format-check
             COMMAND ${CLANG_FORMAT_EXECUTABLE} --dry-run -Werror --style=file ${PROJECT_FORMAT_SOURCES}
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
