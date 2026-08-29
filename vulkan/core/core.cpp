@@ -103,7 +103,7 @@ namespace vulkan {
         if (check_validation_layer_support(validation_layers)) {
             create_info.enabledLayerCount = static_cast<uint32_t>(validation_layers.size());
             create_info.ppEnabledLayerNames = validation_layers.data();
-            utility::log("验证层已启用 ( {} )", validation_layers.size());
+            utility::log("validation layers enabled ( {} )", validation_layers.size());
             for (const auto& layer : validation_layers) {
                 utility::log("  - {}", layer);
             }
