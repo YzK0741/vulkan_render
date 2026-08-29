@@ -47,7 +47,7 @@ namespace vulkan {
         void init_device_and_queue() noexcept;
 
         VkSwapchainKHR swap_chain = {};
-        std::vector<VkImage> swap_chain_images{};
+        std::vector<VkImage> swap_chain_images = {};
         VkFormat swap_chain_image_format = {};
         VkExtent2D swap_chain_extent = {};
 
@@ -72,13 +72,13 @@ namespace vulkan {
             const VkImageUsageFlags& usage,
             const VkMemoryPropertyFlags& properties,
             VkImage& image,
-            VkDeviceMemory& imageMemory) const noexcept;
+            VkDeviceMemory& image_memory) const noexcept;
 
         VkFormat depth_format = {};
         std::vector<VkImage> depth_images = {};
         std::vector<VkDeviceMemory> depth_image_memories = {};
         std::vector<VkImageView> depth_image_views = {};
-        void create_depth_image(VkImage& image, VkDeviceMemory& imageMemory, VkImageView& image_view) const noexcept;
+        void create_depth_image(VkImage& image, VkDeviceMemory& image_memory, VkImageView& image_view) const noexcept;
         void create_depth_resources() noexcept;
 
         void create_color_resources();

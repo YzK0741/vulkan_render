@@ -14,9 +14,9 @@ bool hit(glm::vec3 const& min, glm::vec3 const& max, glm::vec3 const& start, glm
                 return false;
             }
         } else {
-            const float invD = 1.0f / direction[axis];
-            float t1 = (min[axis] - start[axis]) * invD;
-            float t2 = (max[axis] - start[axis]) * invD;
+            const float inv_d = 1.0f / direction[axis];
+            float t1 = (min[axis] - start[axis]) * inv_d;
+            float t2 = (max[axis] - start[axis]) * inv_d;
 
             if (t1 > t2) {
                 std::swap(t1, t2);

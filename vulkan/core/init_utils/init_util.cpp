@@ -50,44 +50,44 @@ bool check_device_extension_support(
     std::vector<const char*> const& required_extensions) noexcept {
     uint32_t extension_count;
     vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count, nullptr);
-    std::vector<VkExtensionProperties> availableExtensions(extension_count);
+    std::vector<VkExtensionProperties> available_extensions(extension_count);
     vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count,
-                                         availableExtensions.data());
+                                         available_extensions.data());
 
-    std::set<std::string> requiredSet(required_extensions.begin(), required_extensions.end());
-    for (const auto& [extensionName, specVersion] : availableExtensions) {
-        requiredSet.erase(extensionName);
+    std::set<std::string> required_set(required_extensions.begin(), required_extensions.end());
+    for (const auto& [extension_name, spec_version] : available_extensions) {
+        required_set.erase(extension_name);
     }
 
-    return requiredSet.empty();
+    return required_set.empty();
 }
 
 void device_capabilities::query(const VkPhysicalDevice physical_device, const uint32_t api_version) noexcept {
-    // ---- Feature pNext chain: features2 -> 1_1 -> 1_2 -> 1_3 -> 1_4 (truncated by api_version) ----
-    features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    // ---- Feature pNext chain: features_2 -> 1_1 -> 1_2 -> 1_3 -> 1_4 (truncated by api_version) ----
+    features_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features_1_1.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
     features_1_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     features_1_3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     features_1_4.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
 
-    features2.pNext = api_version >= VK_API_VERSION_1_1 ? &features_1_1 : nullptr;
+    features_2.pNext = api_version >= VK_API_VERSION_1_1 ? &features_1_1 : nullptr;
     features_1_1.pNext = api_version >= VK_API_VERSION_1_2 ? &features_1_2 : nullptr;
     features_1_2.pNext = api_version >= VK_API_VERSION_1_3 ? &features_1_3 : nullptr;
     features_1_3.pNext = api_version >= VK_API_VERSION_1_4 ? &features_1_4 : nullptr;
-    vkGetPhysicalDeviceFeatures2(physical_device, &features2);
+    vkGetPhysicalDeviceFeatures2(physical_device, &features_2);
 
-    // ---- Property pNext chain: properties2 -> driver -> subgroup -> descriptor indexing -> maintenance4 ----
-    properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    // ---- Property pNext chain: properties_2 -> driver -> subgroup -> descriptor indexing -> maintenance4 ----
+    properties_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
     driver_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
     subgroup_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
     descriptor_indexing_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES;
     maintenance4_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES;
 
-    properties2.pNext = &driver_properties;
+    properties_2.pNext = &driver_properties;
     driver_properties.pNext = &subgroup_properties;
     subgroup_properties.pNext = &descriptor_indexing_properties;
     descriptor_indexing_properties.pNext = &maintenance4_properties;
-    vkGetPhysicalDeviceProperties2(physical_device, &properties2);
+    vkGetPhysicalDeviceProperties2(physical_device, &properties_2);
 
     // ---- Feature policy: pass through driver support except explicitly disabled ones (take most features except ray tracing) ----
     features_1_1.protectedMemory = VK_FALSE; // protected memory not needed for now
@@ -152,15 +152,15 @@ void print_device_capabilities(const device_capabilities& capabilities) {
 
     static constexpr std::array<const char*, 5> device_type_names = {
         "other", "integrated gpu", "discrete gpu", "virtual gpu", "cpu"};
-    const uint32_t device_type = static_cast<uint32_t>(capabilities.properties2.properties.deviceType);
+    const uint32_t device_type = static_cast<uint32_t>(capabilities.properties_2.properties.deviceType);
     const char* type_name = device_type < device_type_names.size() ? device_type_names[device_type] : "unknown";
 
     utility::log(" driver        : {} {}", capabilities.driver_properties.driverName, capabilities.driver_properties.driverInfo);
     utility::log(" api version   : {}.{}.{}",
-                 VK_API_VERSION_MAJOR(capabilities.properties2.properties.apiVersion),
-                 VK_API_VERSION_MINOR(capabilities.properties2.properties.apiVersion),
-                 VK_API_VERSION_PATCH(capabilities.properties2.properties.apiVersion));
-    utility::log(" device        : {} ({})", capabilities.properties2.properties.deviceName, type_name);
+                 VK_API_VERSION_MAJOR(capabilities.properties_2.properties.apiVersion),
+                 VK_API_VERSION_MINOR(capabilities.properties_2.properties.apiVersion),
+                 VK_API_VERSION_PATCH(capabilities.properties_2.properties.apiVersion));
+    utility::log(" device        : {} ({})", capabilities.properties_2.properties.deviceName, type_name);
     utility::log("{}", sep_line);
 
     using feature_1_1 = VkPhysicalDeviceVulkan11Features;
@@ -438,30 +438,30 @@ queue_family_indices find_queue_families(VkPhysicalDevice const& device, VkSurfa
 }
 
 VkPhysicalDevice pick_suitable_device(VkInstance const& instance, VkSurfaceKHR surface) noexcept {
-    uint32_t deviceCount = 0;
-    vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
-    if (deviceCount == 0) {
+    uint32_t device_count = 0;
+    vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
+    if (device_count == 0) {
         utility::panic("Failed to find GPUs with Vulkan support");
     }
 
-    std::vector<VkPhysicalDevice> devices(deviceCount);
-    vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+    std::vector<VkPhysicalDevice> devices(device_count);
+    vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
 
     for (const auto& device : devices) {
-        VkPhysicalDeviceProperties deviceProperties;
-        VkPhysicalDeviceFeatures deviceFeatures;
-        vkGetPhysicalDeviceProperties(device, &deviceProperties);
-        vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
+        VkPhysicalDeviceProperties device_properties;
+        VkPhysicalDeviceFeatures device_features;
+        vkGetPhysicalDeviceProperties(device, &device_properties);
+        vkGetPhysicalDeviceFeatures(device, &device_features);
 
         if (queue_family_indices indices = find_queue_families(device, surface); !indices.is_complete()) {
             continue;
         }
 
         // Check extension support
-        const std::vector<const char*> requiredExtensions = {
+        const std::vector<const char*> required_extensions = {
             VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         };
-        if (!check_device_extension_support(device, requiredExtensions)) {
+        if (!check_device_extension_support(device, required_extensions)) {
             continue;
         }
 
@@ -612,30 +612,30 @@ VkSampleCountFlagBits get_max_usable_sample_count(const VkPhysicalDevice& physic
     return VK_SAMPLE_COUNT_1_BIT;
 }
 
-VkImageView create_image_view(const VkImage& image, const VkFormat& format, const VkImageAspectFlags& aspectFlags, const VkDevice& device) noexcept {
-    VkImageViewCreateInfo viewInfo{};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = image;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = format;
+VkImageView create_image_view(const VkImage& image, const VkFormat& format, const VkImageAspectFlags& aspect_flags, const VkDevice& device) noexcept {
+    VkImageViewCreateInfo view_info{};
+    view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view_info.image = image;
+    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_info.format = format;
 
     // Component mapping (keep defaults)
-    viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-    viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-    viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-    viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+    view_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+    view_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+    view_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+    view_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
 
     // Subresource range (describes which part of the image is accessible)
-    viewInfo.subresourceRange.aspectMask = aspectFlags;
-    viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount = 1;
+    view_info.subresourceRange.aspectMask = aspect_flags;
+    view_info.subresourceRange.baseMipLevel = 0;
+    view_info.subresourceRange.levelCount = 1;
+    view_info.subresourceRange.baseArrayLayer = 0;
+    view_info.subresourceRange.layerCount = 1;
 
-    VkImageView imageView;
-    if (vkCreateImageView(device, &viewInfo, nullptr, &imageView) != VK_SUCCESS) {
+    VkImageView image_view;
+    if (vkCreateImageView(device, &view_info, nullptr, &image_view) != VK_SUCCESS) {
         utility::panic("failed to create image view!");
     }
 
-    return imageView;
+    return image_view;
 }

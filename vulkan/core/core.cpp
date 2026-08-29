@@ -118,7 +118,7 @@ namespace vulkan {
 
         if (VkResult result = vkCreateInstance(&create_info, nullptr, &this->instance); result != VK_SUCCESS) {
             // Provide more detailed error info
-            std::string error_msg = "can not create vulkan instance，error code is: ";
+            std::string error_msg = "can not create vulkan instance, error code is: ";
             switch (result) {
             case VK_ERROR_OUT_OF_HOST_MEMORY:
                 error_msg += "VK_ERROR_OUT_OF_HOST_MEMORY";
@@ -244,7 +244,7 @@ namespace vulkan {
             utility::panic("Swap chain not adequately supported");
         }
 
-        const auto [format, colorSpace] = choose_swap_surface_format(formats);
+        const auto [format, color_space] = choose_swap_surface_format(formats);
         const VkPresentModeKHR present_mode = choose_swap_present_mode(present_modes);
         const VkExtent2D extent = choose_swap_extent(capabilities, this->window);
 
@@ -262,7 +262,7 @@ namespace vulkan {
 
         create_info.minImageCount = image_count;
         create_info.imageFormat = format;
-        create_info.imageColorSpace = colorSpace;
+        create_info.imageColorSpace = color_space;
         create_info.imageExtent = extent;
         create_info.imageArrayLayers = 1;
         create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
@@ -272,12 +272,12 @@ namespace vulkan {
             utility::panic("find queue family index failed");
         }
 
-        const uint32_t queueFamilyIndices[] = {indices.graphics_family.value(), indices.present_family.value()};
+        const uint32_t queue_family_indices[] = {indices.graphics_family.value(), indices.present_family.value()};
 
         if (indices.graphics_family != indices.present_family) {
             create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
             create_info.queueFamilyIndexCount = 2;
-            create_info.pQueueFamilyIndices = queueFamilyIndices;
+            create_info.pQueueFamilyIndices = queue_family_indices;
         } else {
             create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
             create_info.queueFamilyIndexCount = 0;     // Optional
@@ -313,21 +313,21 @@ namespace vulkan {
 
         this->swap_chain_image_views.resize(this->swap_chain_images.size());
         for (size_t i = 0; i < this->swap_chain_images.size(); i++) {
-            VkImageViewCreateInfo createInfo = {};
-            createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            createInfo.image = this->swap_chain_images[i];
-            createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            createInfo.format = swap_chain_image_format;
-            createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-            createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-            createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-            createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-            createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            createInfo.subresourceRange.baseMipLevel = 0;
-            createInfo.subresourceRange.levelCount = 1;
-            createInfo.subresourceRange.baseArrayLayer = 0;
-            createInfo.subresourceRange.layerCount = 1;
-            if (vkCreateImageView(device, &createInfo, nullptr, &this->swap_chain_image_views[i]) != VK_SUCCESS) {
+            VkImageViewCreateInfo create_info = {};
+            create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            create_info.image = this->swap_chain_images[i];
+            create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            create_info.format = swap_chain_image_format;
+            create_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+            create_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+            create_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+            create_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+            create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            create_info.subresourceRange.baseMipLevel = 0;
+            create_info.subresourceRange.levelCount = 1;
+            create_info.subresourceRange.baseArrayLayer = 0;
+            create_info.subresourceRange.layerCount = 1;
+            if (vkCreateImageView(device, &create_info, nullptr, &this->swap_chain_image_views[i]) != VK_SUCCESS) {
                 utility::panic("failed to create image views!");
             }
         }
@@ -339,7 +339,7 @@ namespace vulkan {
         });
     }
 
-    void core::create_depth_image(VkImage& image, VkDeviceMemory& imageMemory, VkImageView& image_view) const noexcept {
+    void core::create_depth_image(VkImage& image, VkDeviceMemory& image_memory, VkImageView& image_view) const noexcept {
         // Use the swapchain size stored in the class
         const auto& [width, height] = this->swap_chain_extent;
 
@@ -363,20 +363,20 @@ namespace vulkan {
         }
 
         // 2. Allocate memory
-        VkMemoryRequirements memRequirements;
-        vkGetImageMemoryRequirements(device, image, &memRequirements);
+        VkMemoryRequirements mem_requirements;
+        vkGetImageMemoryRequirements(device, image, &mem_requirements);
 
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = find_memory_type(memRequirements.memoryTypeBits,
-                                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, this->physical_device);
+        VkMemoryAllocateInfo alloc_info{};
+        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc_info.allocationSize = mem_requirements.size;
+        alloc_info.memoryTypeIndex = find_memory_type(mem_requirements.memoryTypeBits,
+                                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, this->physical_device);
 
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS) {
+        if (vkAllocateMemory(device, &alloc_info, nullptr, &image_memory) != VK_SUCCESS) {
             utility::panic("failed to allocate depth image memory!");
         }
 
-        vkBindImageMemory(device, image, imageMemory, 0);
+        vkBindImageMemory(device, image, image_memory, 0);
 
         // 3. Create image views
         VkImageViewCreateInfo view_info{};
@@ -633,12 +633,12 @@ namespace vulkan {
     }
 
     void core::create_command_pool() noexcept {
-        VkCommandPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        poolInfo.queueFamilyIndex = graphics_family_index;
+        VkCommandPoolCreateInfo pool_info{};
+        pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pool_info.queueFamilyIndex = graphics_family_index;
 
-        if (vkCreateCommandPool(device, &poolInfo, nullptr, &command_pool) != VK_SUCCESS) {
+        if (vkCreateCommandPool(device, &pool_info, nullptr, &command_pool) != VK_SUCCESS) {
             utility::panic("failed to create command pool");
         }
 
@@ -658,42 +658,42 @@ namespace vulkan {
         const VkImageUsageFlags& usage,
         const VkMemoryPropertyFlags& properties,
         VkImage& image,
-        VkDeviceMemory& imageMemory) const noexcept {
-        VkImageCreateInfo imageInfo = {};
-        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imageInfo.imageType = VK_IMAGE_TYPE_2D;
-        imageInfo.extent.width = width;
-        imageInfo.extent.height = height;
-        imageInfo.extent.depth = 1;
-        imageInfo.mipLevels = 1;
-        imageInfo.arrayLayers = 1;
-        imageInfo.format = format;
-        imageInfo.tiling = tiling;
-        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imageInfo.usage = usage;
-        imageInfo.samples = num_samples; // key: set the sample count
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VkDeviceMemory& image_memory) const noexcept {
+        VkImageCreateInfo image_info = {};
+        image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image_info.imageType = VK_IMAGE_TYPE_2D;
+        image_info.extent.width = width;
+        image_info.extent.height = height;
+        image_info.extent.depth = 1;
+        image_info.mipLevels = 1;
+        image_info.arrayLayers = 1;
+        image_info.format = format;
+        image_info.tiling = tiling;
+        image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        image_info.usage = usage;
+        image_info.samples = num_samples; // key: set the sample count
+        image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
+        if (vkCreateImage(device, &image_info, nullptr, &image) != VK_SUCCESS) {
             utility::panic("can't create msaa image");
         }
 
-        VkMemoryRequirements memRequirements;
-        vkGetImageMemoryRequirements(device, image, &memRequirements);
+        VkMemoryRequirements mem_requirements;
+        vkGetImageMemoryRequirements(device, image, &mem_requirements);
 
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = find_memory_type(
-            memRequirements.memoryTypeBits,
+        VkMemoryAllocateInfo alloc_info{};
+        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc_info.allocationSize = mem_requirements.size;
+        alloc_info.memoryTypeIndex = find_memory_type(
+            mem_requirements.memoryTypeBits,
             properties,
             physical_device);
 
-        if (vkAllocateMemory(device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS) {
+        if (vkAllocateMemory(device, &alloc_info, nullptr, &image_memory) != VK_SUCCESS) {
             utility::panic("can't allocate msaa image memory");
         }
 
-        vkBindImageMemory(device, image, imageMemory, 0);
+        vkBindImageMemory(device, image, image_memory, 0);
     }
 
     void core::create_descriptor_pool() noexcept {

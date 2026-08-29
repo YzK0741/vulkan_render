@@ -64,14 +64,14 @@ export struct queue_family_indices {
  */
 export struct device_capabilities {
     // ---- Feature chain (shared by query and device creation) ----
-    VkPhysicalDeviceFeatures2 features2 = {};
+    VkPhysicalDeviceFeatures2 features_2 = {};
     VkPhysicalDeviceVulkan11Features features_1_1 = {};
     VkPhysicalDeviceVulkan12Features features_1_2 = {};
     VkPhysicalDeviceVulkan13Features features_1_3 = {};
     VkPhysicalDeviceVulkan14Features features_1_4 = {};
 
     // ---- Property chain (query only, for renderer decisions/diagnostics) ----
-    VkPhysicalDeviceProperties2 properties2 = {};
+    VkPhysicalDeviceProperties2 properties_2 = {};
     VkPhysicalDeviceDriverProperties driver_properties = {};
     VkPhysicalDeviceSubgroupProperties subgroup_properties = {};
     VkPhysicalDeviceDescriptorIndexingProperties descriptor_indexing_properties = {};
@@ -234,8 +234,8 @@ export VkSampleCountFlagBits get_max_usable_sample_count(const VkPhysicalDevice&
  * @brief create an image view for the given image
  * @param image the source image
  * @param format the image format
- * @param aspectFlags the image aspect mask
+ * @param aspect_flags the image aspect mask
  * @param device the logical device
  * @return the created image view
  */
-export VkImageView create_image_view(const VkImage& image, const VkFormat& format, const VkImageAspectFlags& aspectFlags, const VkDevice& device) noexcept;
+export VkImageView create_image_view(const VkImage& image, const VkFormat& format, const VkImageAspectFlags& aspect_flags, const VkDevice& device) noexcept;
