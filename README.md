@@ -94,6 +94,8 @@ Run from the project root or any build directory (the program walks upward to lo
 
 By default it loads `gltf_model/DamagedHelmet.gltf` and renders it with PBR + IBL. Controls: **left-drag** to orbit, **wheel** to zoom, **ESC** to quit.
 
+> Release builds are Windows GUI-subsystem executables: no console window appears when running, and the log output goes to `debug.log` in the working directory. Debug builds keep the terminal.
+
 ### Recompile shaders
 
 ```powershell

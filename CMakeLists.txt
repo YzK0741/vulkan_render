@@ -117,6 +117,11 @@ target_link_libraries(vulkan_lib
 
 add_executable(vulkan_render main.cpp)
 
+# Release builds link as a Windows GUI-subsystem executable: no console window appears when
+# running. On the MSYS2 clang64 / MinGW-w64 toolchain WIN32_EXECUTABLE maps to -mwindows; the CRT
+# still calls main(), only the subsystem changes. Debug keeps the console for terminal log output.
+set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE $<$<CONFIG:Release>:ON>)
+
 target_link_libraries(vulkan_lib
         std_lib
 )
