@@ -128,7 +128,7 @@ namespace vulkan {
         std::vector<VkDescriptorSetLayout> descriptor_set_layouts = {};
         VkDevice device = VK_NULL_HANDLE;
 
-        // 管线自带的视口/裁剪区（动态状态，draw 前需要 vkCmdSetViewport/Scissor）
+        // Per-pipeline viewport/scissor (dynamic state; vkCmdSetViewport/Scissor required before drawing)
         VkViewport viewport = {};
         VkRect2D scissor = {};
 

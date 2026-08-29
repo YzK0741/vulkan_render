@@ -99,7 +99,7 @@ namespace vulkan {
             "VK_LAYER_KHRONOS_validation",
         };
 
-        // 检查验证层支持
+        // Check validation layer support
         if (check_validation_layer_support(validation_layers)) {
             create_info.enabledLayerCount = static_cast<uint32_t>(validation_layers.size());
             create_info.ppEnabledLayerNames = validation_layers.data();
@@ -117,7 +117,7 @@ namespace vulkan {
 #endif
 
         if (VkResult result = vkCreateInstance(&create_info, nullptr, &this->instance); result != VK_SUCCESS) {
-            // 提供更详细的错误信息
+            // Provide more detailed error info
             std::string error_msg = "can not create vulkan instance，error code is: ";
             switch (result) {
             case VK_ERROR_OUT_OF_HOST_MEMORY:
@@ -201,7 +201,7 @@ namespace vulkan {
     void core::init_device_and_queue() noexcept {
         this->physical_device = pick_suitable_device(this->instance, this->surface);
 
-        // 收集设备能力：特性/属性 pNext 链一次查询（见 device_capabilities）
+        // Collect device capabilities: one query through the feature/property pNext chains (see device_capabilities)
         device_capabilities capabilities;
         capabilities.query(this->physical_device);
         print_device_capabilities(capabilities);
@@ -216,7 +216,7 @@ namespace vulkan {
             utility::panic("Required device extensions not supported");
         }
 
-        // 特性统一走 pNext 链（device_capabilities 查询结果，含 1.1/1.2/1.3 全部支持特性）
+        // Features go through the pNext chain (device_capabilities query result, incl. all 1.1/1.2/1.3 supported features)
         creation_info.pNext = capabilities.device_pnext();
 
         const auto [device, graphics_family_index, present_family_index, graphics_queue, present_queue] = create_logical_device(physical_device, creation_info); // NOLINT(*-misplaced-const)
@@ -239,7 +239,7 @@ namespace vulkan {
     void core::init_swap_chain() noexcept {
         const auto [capabilities, formats, present_modes] = query_swap_chain_support(this->physical_device, this->surface);
 
-        // 添加检查：
+        // Add checks:
         if (formats.empty() || present_modes.empty()) {
             utility::panic("Swap chain not adequately supported");
         }
@@ -340,10 +340,10 @@ namespace vulkan {
     }
 
     void core::create_depth_image(VkImage& image, VkDeviceMemory& imageMemory, VkImageView& image_view) const noexcept {
-        // 使用类内的交换链尺寸
+        // Use the swapchain size stored in the class
         const auto& [width, height] = this->swap_chain_extent;
 
-        // 1. 创建图像
+        // 1. Create images
         VkImageCreateInfo image_info{};
         image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         image_info.imageType = VK_IMAGE_TYPE_2D;
@@ -362,7 +362,7 @@ namespace vulkan {
             utility::panic("failed to create depth image!");
         }
 
-        // 2. 分配内存
+        // 2. Allocate memory
         VkMemoryRequirements memRequirements;
         vkGetImageMemoryRequirements(device, image, &memRequirements);
 
@@ -378,7 +378,7 @@ namespace vulkan {
 
         vkBindImageMemory(device, image, imageMemory, 0);
 
-        // 3. 创建图像视图
+        // 3. Create image views
         VkImageViewCreateInfo view_info{};
         view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         view_info.image = image;
@@ -400,17 +400,17 @@ namespace vulkan {
         depth_format = find_depth_format(this->physical_device);
         msaa_samples = get_max_usable_sample_count(this->physical_device);
 
-        // 先测试深度格式是否有效
+        // First test whether the depth format is valid
         if (depth_format == VK_FORMAT_UNDEFINED) {
             utility::panic("can't find supported depth format");
         }
 
         depth_images.resize(swap_chain_image_views.size());
         depth_image_views.resize(swap_chain_image_views.size());
-        depth_image_memories.resize(swap_chain_image_views.size()); // 确保分配内存
+        depth_image_memories.resize(swap_chain_image_views.size()); // make sure memory is allocated
 
         for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            // 直接调用 create_depth_image，但确保参数正确
+            // Call create_depth_image directly, but make sure the arguments are correct
             create_depth_image(depth_images[i], depth_image_memories[i], depth_image_views[i]);
         }
 
@@ -472,27 +472,27 @@ namespace vulkan {
     }
 
     void core::init_renderpass() noexcept {
-        // 1. 颜色附件（现在是MSAA的）
+        // 1. Color attachment (now MSAA)
         VkAttachmentDescription color_attachment = {};
         color_attachment.format = swap_chain_image_format;
-        color_attachment.samples = msaa_samples; // 使用MSAA采样
+        color_attachment.samples = msaa_samples; // use MSAA samples
         color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-        // 关键：如果有MSAA，最终布局需要解析到呈现图像
+        // Key: with MSAA, the final layout must resolve to the present image
         if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
             color_attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         } else {
             color_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         }
 
-        // 2. 深度附件（也需要MSAA）
+        // 2. Depth attachment (also MSAA)
         VkAttachmentDescription depth_attachment = {};
         depth_attachment.format = depth_format;
-        depth_attachment.samples = msaa_samples; // 深度也要MSAA
+        depth_attachment.samples = msaa_samples; // depth must be MSAA too
         depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         depth_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -500,7 +500,7 @@ namespace vulkan {
         depth_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         depth_attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-        // 3. 颜色解析附件（只在有MSAA时需要）
+        // 3. Color resolve attachment (only needed with MSAA)
         VkAttachmentDescription color_resolve_attachment = {};
         if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
             color_resolve_attachment.format = swap_chain_image_format;
@@ -533,14 +533,14 @@ namespace vulkan {
         subpass.pColorAttachments = &color_attachment_ref;
         subpass.pDepthStencilAttachment = &depth_attachment_ref;
 
-        // 关键：设置解析附件
+        // Key: set up the resolve attachment
         if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
             subpass.pResolveAttachments = &color_resolve_ref;
         } else {
             subpass.pResolveAttachments = nullptr;
         }
 
-        // 构建附件数组
+        // Build the attachment array
         std::vector<VkAttachmentDescription> attachments;
         attachments.push_back(color_attachment);
         attachments.push_back(depth_attachment);
@@ -556,7 +556,7 @@ namespace vulkan {
         render_pass_info.subpassCount = 1;
         render_pass_info.pSubpasses = &subpass;
 
-        // 添加子流程依赖
+        // Add subpass dependencies
         std::array<VkSubpassDependency, 2> dependencies = {};
         dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
         dependencies[0].dstSubpass = 0;
@@ -596,18 +596,18 @@ namespace vulkan {
         for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
             std::vector<VkImageView> attachments;
 
-            // 如果有MSAA，第一个是MSAA颜色附件
+            // With MSAA, the first attachment is the MSAA color attachment
             if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-                attachments.push_back(color_image_views[i]); // MSAA颜色附件
+                attachments.push_back(color_image_views[i]); // MSAA color attachment
             } else {
-                attachments.push_back(swap_chain_image_views[i]); // 普通颜色附件
+                attachments.push_back(swap_chain_image_views[i]); // regular color attachment
             }
 
-            attachments.push_back(depth_image_views[i]); // 深度附件
+            attachments.push_back(depth_image_views[i]); // depth attachment
 
-            // 如果有MSAA，添加解析附件
+            // With MSAA, add the resolve attachment
             if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-                attachments.push_back(swap_chain_image_views[i]); // 解析到交换链图像
+                attachments.push_back(swap_chain_image_views[i]); // resolve to the swapchain image
             }
 
             VkFramebufferCreateInfo framebuffer_create_info{};
@@ -671,7 +671,7 @@ namespace vulkan {
         imageInfo.tiling = tiling;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         imageInfo.usage = usage;
-        imageInfo.samples = num_samples; // 关键：设置采样数
+        imageInfo.samples = num_samples; // key: set the sample count
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
@@ -724,10 +724,10 @@ namespace vulkan {
         in_flight_fences.resize(MAX_FRAMES_IN_FLIGHT);
         images_in_flight.resize(swap_chain_images.size(), VK_NULL_HANDLE);
 
-        // 呈现信号量必须按交换链图像索引分配，而不是按帧槽位：
-        // present 会一直占用该信号量直到对应图像被重新 acquire，
-        // 交换链图像数可能大于帧在飞数，按槽位复用会在图像尚未重新获取时
-        // 再次触发同一信号量（VUID-vkQueueSubmit-pSignalSemaphores-00067）。
+        // Present semaphores must be allocated per swapchain image index, not per frame slot:
+        // present keeps the semaphore busy until the corresponding image is re-acquired,
+        // and the swapchain image count can exceed the frames in flight, so reusing per slot
+        // would signal the same semaphore again before the image is re-acquired (VUID-vkQueueSubmit-pSignalSemaphores-00067).
         render_finished_semaphores.resize(swap_chain_images.size());
 
         VkSemaphoreCreateInfo semaphore_info{};
@@ -735,7 +735,7 @@ namespace vulkan {
 
         VkFenceCreateInfo fence_info{};
         fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT; // 初始为已触发状态
+        fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT; // initially signaled
 
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
             if (vkCreateSemaphore(device, &semaphore_info, nullptr, &image_available_semaphores[i]) != VK_SUCCESS ||
@@ -857,22 +857,22 @@ namespace vulkan {
     }
 
     void core::recreate_swap_chain() {
-        // 1. 等待设备空闲
+        // 1. Wait for the device to be idle
         vkDeviceWaitIdle(device);
 
-        // 2. 先销毁所有 Framebuffer
+        // 2. Destroy all framebuffers first
         for (const auto& frame_buffer : swap_chain_framebuffers) {
             vkDestroyFramebuffer(device, frame_buffer, nullptr);
         }
         swap_chain_framebuffers.clear();
 
-        // 3. 销毁 RenderPass
+        // 3. Destroy the render pass
         if (this->renderpass != VK_NULL_HANDLE) {
             vkDestroyRenderPass(device, renderpass, nullptr);
             renderpass = VK_NULL_HANDLE;
         }
 
-        // 4. 销毁 MSAA 颜色资源
+        // 4. Destroy MSAA color resources
         if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
             for (const auto& view : color_image_views) {
                 vkDestroyImageView(device, view, nullptr);
@@ -890,7 +890,7 @@ namespace vulkan {
             color_image_memories.clear();
         }
 
-        // 5. 销毁深度资源
+        // 5. Destroy depth resources
         for (const auto& view : depth_image_views) {
             vkDestroyImageView(device, view, nullptr);
         }
@@ -906,34 +906,34 @@ namespace vulkan {
         }
         depth_image_memories.clear();
 
-        // 6. 销毁 SwapChain ImageViews
+        // 6. Destroy swapchain image views
         for (const auto& image_view : swap_chain_image_views) {
             vkDestroyImageView(device, image_view, nullptr);
         }
         swap_chain_image_views.clear();
 
-        // 7. 销毁 SwapChain 本身
+        // 7. Destroy the swapchain itself
         if (swap_chain != VK_NULL_HANDLE) {
             vkDestroySwapchainKHR(device, swap_chain, nullptr);
             swap_chain = VK_NULL_HANDLE;
         }
 
-        // 8. 重新创建所有资源
-        this->init_swap_chain();        // 重建 SwapChain
-        this->init_image_views();       // 重建 ImageViews
-        this->create_depth_resources(); // 重建深度资源
+        // 8. Recreate all resources
+        this->init_swap_chain();        // rebuild swapchain
+        this->init_image_views();       // rebuild image views
+        this->create_depth_resources(); // rebuild depth resources
 
         if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-            this->create_color_resources(); // 重建 MSAA 颜色资源
+            this->create_color_resources(); // rebuild MSAA color resources
         }
 
-        this->init_renderpass();      // 重建 RenderPass
-        this->create_frame_buffers(); // 重建 Framebuffer
+        this->init_renderpass();      // rebuild render pass
+        this->create_frame_buffers(); // rebuild framebuffers
 
-        // 按新图像数重建 per-image 追踪表，避免 wait_usable_image 越界
+        // Rebuild the per-image tracking table for the new image count to keep wait_usable_image in bounds
         images_in_flight.resize(swap_chain_images.size(), VK_NULL_HANDLE);
 
-        // 呈现信号量按图像索引分配，图像数变化时销毁重建（此时设备已空闲）
+        // Present semaphores are allocated per image index; destroy and rebuild when the count changes (device is idle here)
         for (const auto& semaphore : render_finished_semaphores) {
             vkDestroySemaphore(device, semaphore, nullptr);
         }
@@ -957,7 +957,7 @@ namespace vulkan {
             fragment_shader_code,
             this->msaa_samples);
         if (result) {
-            // 按当前交换链尺寸保存全屏视口/裁剪区，draw 前直接取用
+            // Save the fullscreen viewport/scissor for the current swapchain size, used directly before draw
             result->viewport = {0.0f,
                                 0.0f,
                                 static_cast<float>(this->swap_chain_extent.width),

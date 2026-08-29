@@ -42,11 +42,11 @@ namespace vulkan {
      * @brief buffer usage type, decides memory properties and upload strategy
      */
     export enum class buffer_type {
-        vertex,           // GPU_ONLY, 需要 staging buffer
-        index,            // GPU_ONLY, 需要 staging buffer
-        uniform_gpu_only, // GPU_ONLY, 适合不需要频繁更新的 uniform
-        uniform_coherent, // HOST_VISIBLE | HOST_COHERENT, 适合每帧更新的 uniform
-        uniform_cached,   // HOST_VISIBLE | HOST_CACHED, 适合 read-back
+        vertex,           // GPU_ONLY, requires a staging buffer
+        index,            // GPU_ONLY, requires a staging buffer
+        uniform_gpu_only, // GPU_ONLY, suited for uniforms updated infrequently
+        uniform_coherent, // HOST_VISIBLE | HOST_COHERENT, suited for per-frame uniforms
+        uniform_cached,   // HOST_VISIBLE | HOST_CACHED, suited for read-back
     };
 
     /**
@@ -54,19 +54,19 @@ namespace vulkan {
      * @brief image usage type, decides memory properties and upload strategy
      */
     export enum class image_type {
-        texture_2d,         // GPU_ONLY, 普通纹理，需要 staging
-        texture_2d_color,   // GPU_ONLY, 带颜色格式的纹理
-        texture_2d_depth,   // GPU_ONLY, 深度纹理
-        texture_2d_staging, // HOST_VISIBLE, 用于动态更新的纹理
-        texture_cubemap,    // GPU_ONLY, 立方体贴图
-        render_target,      // GPU_ONLY, 渲染目标 (可读写)
+        texture_2d,         // GPU_ONLY, regular texture, needs staging
+        texture_2d_color,   // GPU_ONLY, texture with a color format
+        texture_2d_depth,   // GPU_ONLY, depth texture
+        texture_2d_staging, // HOST_VISIBLE, for dynamically updated textures
+        texture_cubemap,    // GPU_ONLY, cubemap
+        render_target,      // GPU_ONLY, render target (readable/writable)
     };
 
     /**
      * @ingroup vulkan_vma
      * @brief auxiliary data for image creation
      */
-    // Image 的辅助结构
+    // Helper structure for Image
     export struct image_create_info {
         uint32_t width = 0;
         uint32_t height = 0;
@@ -93,25 +93,25 @@ namespace vulkan {
         std::map<uint64_t, buffer_detail> buffers = {};
         std::map<uint64_t, image_detail> images = {};
         std::mutex access_mutex = {};
-        // 保护 command_cache / fence_cache，上传在 access_mutex 之外时仍可安全复用
+        // Guards command_cache / fence_cache so uploads can safely reuse them outside access_mutex
         std::mutex cache_mutex = {};
-        // VkQueue 是外部同步对象，vkQueueSubmit 必须串行化
+        // VkQueue is an externally synchronized object; vkQueueSubmit must be serialized
         std::mutex queue_mutex = {};
-        // staging buffer 缓存，避免每次上传都创建/销毁大块 staging 内存
+        // Staging buffer cache: avoids creating/destroying large staging memory on every upload
         struct staging_buffer_cache {
             VkBuffer buffer = VK_NULL_HANDLE;
             VmaAllocation allocation = VK_NULL_HANDLE;
             VmaAllocationInfo allocation_info = {};
         };
         staging_buffer_cache staging_cache = {};
-        // 当前缓存的 staging buffer 容量（字节）
+        // Capacity (bytes) of the currently cached staging buffer
         VkDeviceSize buffer_size = 0;
-        // staging buffer 是共享资源，写入与 GPU 拷贝期间必须互斥占用
+        // The staging buffer is shared; writes and GPU copies must hold it exclusively
         std::mutex staging_mutex = {};
         uint32_t queue_family_index = 0;
 
         [[nodiscard]] VkFence create_fence() const;
-        // 在 staging_mutex 持有时调用：缓存容量足够则复用，否则销毁并重建
+        // Called while holding staging_mutex: reuse the cached buffer if large enough, else destroy and rebuild
         bool ensure_staging_buffer(VkDeviceSize size, VkBuffer& buffer, VmaAllocation& allocation, VmaAllocationInfo& info);
         bool direct_upload(VmaAllocation const& allocation, VmaAllocationInfo& allocation_info, const void* data, uint64_t size) const;
         bool staging_upload(VkBuffer dst_buffer, const void* data, VkDeviceSize size);

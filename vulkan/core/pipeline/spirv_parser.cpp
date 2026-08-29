@@ -224,7 +224,7 @@ vulkan::pipeline::parse_shader_stage_interface(
         return fail("spv reflect failed");
     }
 
-    // 2. 解析输入变量
+    // 2. Parse input variables
     uint32_t input_count = 0;
     result = spvReflectEnumerateInputVariables(&module, &input_count, nullptr);
     if (result == SPV_REFLECT_RESULT_SUCCESS && input_count > 0) {
@@ -238,7 +238,7 @@ vulkan::pipeline::parse_shader_stage_interface(
         }
     }
 
-    // 3. 解析输出变量
+    // 3. Parse output variables
     uint32_t output_count = 0;
     result = spvReflectEnumerateOutputVariables(&module, &output_count, nullptr);
     if (result == SPV_REFLECT_RESULT_SUCCESS && output_count > 0) {
@@ -252,11 +252,11 @@ vulkan::pipeline::parse_shader_stage_interface(
         }
     }
 
-    // 4. 排序
+    // 4. Sort
     sort_interface_variables(out_interface.inputs);
     sort_interface_variables(out_interface.outputs);
 
-    // 5. 清理
+    // 5. Cleanup
     spvReflectDestroyShaderModule(&module);
     return out_interface;
 }
@@ -264,7 +264,7 @@ vulkan::pipeline::parse_shader_stage_interface(
 bool vulkan::pipeline::validate_interface_match(
     const shader_stage_interface& producer,
     const shader_stage_interface& consumer) {
-    // 获取非内置变量的输出和输入
+    // Get the non-builtin outputs and inputs
     std::vector<const interface_variable_info*> producer_outputs;
     std::vector<const interface_variable_info*> consumer_inputs;
 
@@ -279,27 +279,27 @@ bool vulkan::pipeline::validate_interface_match(
         }
     }
 
-    // 数量必须一致
+    // The counts must match
     if (producer_outputs.size() != consumer_inputs.size()) {
-        // 错误：输出/输入变量数量不匹配
+        // error: output/input variable count mismatch
         return false;
     }
 
-    // 逐一比对
+    // Compare one by one
     for (size_t i = 0; i < producer_outputs.size(); ++i) {
         const vulkan::pipeline::interface_variable_info* p_out = producer_outputs[i];
         const vulkan::pipeline::interface_variable_info* p_in = consumer_inputs[i];
 
         if (p_out->location != p_in->location) {
-            // 错误：location 不匹配
+            // error: location mismatch
             return false;
         }
         if (p_out->component != p_in->component) {
-            // 错误：component 不匹配
+            // error: component mismatch
             return false;
         }
         if (p_out->format != p_in->format) {
-            // 错误：format 不匹配
+            // error: format mismatch
             return false;
         }
     }
@@ -316,17 +316,17 @@ vulkan::pipeline::parse_descriptor_set_layouts(
 
     std::vector<descriptor_set_layout_data> set_layouts;
 
-    // 1. 创建并加载 Shader Module
+    // 1. Create and load the shader module
     SpvReflectShaderModule module = {};
     SpvReflectResult result = spvReflectCreateShaderModule(
         spirv_code.size(),
         spirv_code.data(),
         &module);
     if (result != SPV_REFLECT_RESULT_SUCCESS) {
-        return fail("spv reflect failed"); // 加载失败，返回空
+        return fail("spv reflect failed"); // load failed, return empty
     }
 
-    // 2. 查询描述符集的数量
+    // 2. Query the number of descriptor sets
     uint32_t set_count = 0;
     result = spvReflectEnumerateDescriptorSets(&module, &set_count, nullptr);
     if (result != SPV_REFLECT_RESULT_SUCCESS || set_count == 0) {
@@ -334,7 +334,7 @@ vulkan::pipeline::parse_descriptor_set_layouts(
         return set_layouts;
     }
 
-    // 3. 获取所有描述符集的指针
+    // 3. Get pointers to all descriptor sets
     std::vector<SpvReflectDescriptorSet*> sets(set_count);
     result = spvReflectEnumerateDescriptorSets(&module, &set_count, sets.data());
     if (result != SPV_REFLECT_RESULT_SUCCESS) {
@@ -342,7 +342,7 @@ vulkan::pipeline::parse_descriptor_set_layouts(
         return set_layouts;
     }
 
-    // 4. 遍历并转换数据
+    // 4. Iterate and convert the data
     set_layouts.resize(sets.size());
     for (size_t i = 0; i < sets.size(); ++i) {
         const SpvReflectDescriptorSet& refl_set = *sets[i];
@@ -358,23 +358,23 @@ vulkan::pipeline::parse_descriptor_set_layouts(
             vk_binding.binding = refl_binding.binding;
             vk_binding.descriptorType = static_cast<VkDescriptorType>(refl_binding.descriptor_type);
 
-            // 计算描述符数量，处理数组情况
+            // Compute the descriptor count, handling arrays
             vk_binding.descriptorCount = 1;
             for (uint32_t dim = 0; dim < refl_binding.array.dims_count; ++dim) {
                 vk_binding.descriptorCount *= refl_binding.array.dims[dim];
             }
 
-            // 设置着色器阶段
+            // Set the shader stage
             vk_binding.stageFlags = shader_stage;
         }
 
-        // 填充最终的 VkDescriptorSetLayoutCreateInfo
+        // Fill the final VkDescriptorSetLayoutCreateInfo
         layout_data.create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layout_data.create_info.bindingCount = static_cast<uint32_t>(layout_data.bindings.size());
         layout_data.create_info.pBindings = layout_data.bindings.data();
     }
 
-    // 5. 清理并返回
+    // 5. Clean up and return
     spvReflectDestroyShaderModule(&module);
     return set_layouts;
 }
@@ -400,7 +400,7 @@ std::expected<vulkan::pipeline::push_constant_layout, std::string_view> vulkan::
     result = spvReflectEnumeratePushConstantBlocks(&module, &pc_count, nullptr);
     if (result != SPV_REFLECT_RESULT_SUCCESS || pc_count == 0) {
         spvReflectDestroyShaderModule(&module);
-        return {}; // 没有 Push Constant 也是合法状态
+        return {}; // no Push Constants is a valid state
     }
 
     std::vector<SpvReflectBlockVariable*> pc_blocks(pc_count);
@@ -439,7 +439,7 @@ std::expected<vulkan::pipeline::push_constant_layout, std::string_view> vulkan::
 
     out_layout.total_size = max_offset;
 
-    // 6. 清理
+    // 6. Cleanup
     spvReflectDestroyShaderModule(&module);
     return out_layout;
 }

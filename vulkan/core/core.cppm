@@ -57,11 +57,11 @@ namespace vulkan {
 
         void init_image_views() noexcept;
 
-        // MSAA相关
-        VkSampleCountFlagBits msaa_samples = VK_SAMPLE_COUNT_1_BIT; // 默认为无MSAA
-        std::vector<VkImage> color_images = {};                     // MSAA颜色缓冲图像
+        // MSAA related
+        VkSampleCountFlagBits msaa_samples = VK_SAMPLE_COUNT_1_BIT; // no MSAA by default
+        std::vector<VkImage> color_images = {};                     // MSAA color buffer images
         std::vector<VkDeviceMemory> color_image_memories = {};
-        std::vector<VkImageView> color_image_views = {}; // MSAA图像视图
+        std::vector<VkImageView> color_image_views = {}; // MSAA image views
         VkFormat color_format = VK_FORMAT_UNDEFINED;
         void create_msaa_image(
             const uint32_t& width,

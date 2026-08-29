@@ -10,8 +10,8 @@ namespace {
         return ((value + 3) / 4) * 4;
     }
 
-    // 收集 pipeline 创建过程中产生的 Vulkan 对象，任意一步失败时由析构统一释放；
-    // 全部成功后调用 release() 放弃所有权（转交给 vk_pipeline）。
+    // Collects the Vulkan objects created during pipeline creation; the destructor frees them all
+    // if any step fails; on full success, release() surrenders ownership (handed over to vk_pipeline).
     struct resource_guard {
         VkDevice device = VK_NULL_HANDLE;
         std::vector<VkDescriptorSetLayout> set_layouts = {};
@@ -47,8 +47,8 @@ namespace {
         }
     };
 
-    // 把 vertex/fragment 两个 stage 各自解析出的描述符布局按 set/binding 合并，
-    // 两个 stage 共用同一 binding 时 stageFlags 取并集。
+    // Merge the descriptor layouts parsed from the vertex and fragment stages by set/binding,
+    // taking the union of stageFlags when both stages share a binding.
     std::map<uint32_t, std::map<uint32_t, VkDescriptorSetLayoutBinding>> merge_descriptor_layouts(
         const std::vector<vulkan::pipeline::descriptor_set_layout_data>& vertex_layouts,
         const std::vector<vulkan::pipeline::descriptor_set_layout_data>& fragment_layouts) {
@@ -81,7 +81,7 @@ namespace vulkan {
         const VkSampleCountFlagBits msaa_level) {
         using fail = std::unexpected<std::string_view>;
 
-        // ---- 1. 解析 vertex stage 接口，过滤 builtin 变量，构建顶点输入 ----
+        // ---- 1. Parse the vertex stage interface, filter builtins, build vertex input ----
         auto vertex_interface_expected = pipeline::parse_shader_stage_interface(vertex_shader_code, VK_SHADER_STAGE_VERTEX_BIT);
         if (!vertex_interface_expected) {
             return fail(vertex_interface_expected.error());
@@ -116,7 +116,7 @@ namespace vulkan {
         vertex_input_state_create_info.vertexAttributeDescriptionCount = static_cast<uint32_t>(attribute_descriptions.size());
         vertex_input_state_create_info.pVertexAttributeDescriptions = attribute_descriptions.empty() ? nullptr : attribute_descriptions.data();
 
-        // ---- 2. 创建 shader module（失败才返回错误） ----
+        // ---- 2. Create shader modules (errors only on failure) ----
         auto vertex_shader_module = make_shader_module(vertex_shader_code, device);
         if (!vertex_shader_module) {
             return fail("failed to create vertex shader module");
@@ -127,7 +127,7 @@ namespace vulkan {
             return fail("failed to create fragment shader module");
         }
 
-        // ---- 3. 固定管线状态 ----
+        // ---- 3. Fixed-function pipeline state ----
         VkPipelineShaderStageCreateInfo vertex_stage = {};
         vertex_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         vertex_stage.module = **vertex_shader_module;
@@ -208,7 +208,7 @@ namespace vulkan {
         multisample_state_create_info.alphaToCoverageEnable = VK_FALSE;
         multisample_state_create_info.alphaToOneEnable = VK_FALSE;
 
-        // ---- 4. push constant：vertex/fragment 各一段，4 字节对齐，总长 ≤ 256 ----
+        // ---- 4. Push constants: one block each for vertex/fragment, 4-byte aligned, total <= 256 ----
         auto vertex_push_constant_expected = pipeline::parse_push_constant_layout(vertex_shader_code);
         if (!vertex_push_constant_expected) {
             return fail("can't parse vertex push constant");
@@ -224,9 +224,10 @@ namespace vulkan {
         std::vector<VkPushConstantRange> push_constant_ranges;
         push_constant_ranges.reserve(2);
 
-        // 每个 stage 的 push constant 块都以偏移 0 为基准（shader 视角），
-        // 多个 stage 声明同一 offset 范围的块时必须合并为一个 range（stageFlags 取并集），
-        // 否则会出现 shader 块不在对应 stage range 内的非法布局（VUID-VkGraphicsPipelineCreateInfo-layout-10069）。
+        // Each stage's push constant block is relative to offset 0 (shader view),
+        // so blocks that multiple stages declare over the same offset range must merge into one
+        // range (union of stageFlags), otherwise the layout is illegal because a shader block
+        // falls outside its stage's range (VUID-VkGraphicsPipelineCreateInfo-layout-10069).
         const auto add_push_constant_range = [&push_constant_ranges](const VkShaderStageFlags stage_flags, const uint32_t block_offset, const uint32_t block_size) -> bool {
             if (block_size == 0) {
                 return true;
@@ -260,7 +261,7 @@ namespace vulkan {
             return fail("push constant range too big");
         }
 
-        // ---- 5. 描述符集布局：分别解析 vertex/fragment，再按 set/binding 合并 ----
+        // ---- 5. Descriptor set layouts: parse vertex/fragment separately, then merge by set/binding ----
         auto vertex_descriptor_layout_expected = pipeline::parse_descriptor_set_layouts(vertex_shader_code, VK_SHADER_STAGE_VERTEX_BIT);
         if (!vertex_descriptor_layout_expected) {
             return fail(vertex_descriptor_layout_expected.error());
@@ -331,7 +332,7 @@ namespace vulkan {
             return fail("failed to create graphics pipeline");
         }
 
-        // ---- 8. 成功：所有权转交 vk_pipeline，guard 不再清理 ----
+        // ---- 8. Success: transfer ownership to vk_pipeline; guard no longer cleans up ----
         vk_pipeline result(guard.pipeline, guard.pipeline_layout, guard.set_layouts, device);
         guard.release();
         return result;

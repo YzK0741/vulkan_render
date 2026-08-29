@@ -9,7 +9,7 @@ module vulkan.vma;
 namespace {
     constexpr uint32_t sizeof_vk_format(const VkFormat format) {
         switch (format) {
-        // 8-bit 单通道
+        // 8-bit single channel
         case VK_FORMAT_R8_UNORM:
         case VK_FORMAT_R8_SNORM:
         case VK_FORMAT_R8_USCALED:
@@ -19,7 +19,7 @@ namespace {
         case VK_FORMAT_R8_SRGB:
             return 1;
 
-        // 16-bit 单通道 / 8-bit 双通道
+        // 16-bit single channel / 8-bit dual channel
         case VK_FORMAT_R16_UNORM:
         case VK_FORMAT_R16_SNORM:
         case VK_FORMAT_R16_USCALED:
@@ -108,7 +108,7 @@ namespace {
         case VK_FORMAT_R32G32B32A32_SFLOAT:
             return 16;
 
-        // 深度/模板
+        // Depth/stencil
         case VK_FORMAT_D16_UNORM:
             return 2;
         case VK_FORMAT_X8_D24_UNORM_PACK32:
@@ -117,7 +117,7 @@ namespace {
             return 4;
         case VK_FORMAT_D32_SFLOAT_S8_UINT:
         case VK_FORMAT_S8_UINT:
-        // BC 压缩格式
+        // BC compressed formats
         case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
         case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
         case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
@@ -136,7 +136,7 @@ namespace {
         case VK_FORMAT_BC6H_SFLOAT_BLOCK:
         case VK_FORMAT_BC7_UNORM_BLOCK:
         case VK_FORMAT_BC7_SRGB_BLOCK:
-        // ASTC 压缩格式（所有格式都是16字节/块）
+        // ASTC compressed formats (all are 16 bytes/block)
         case VK_FORMAT_ASTC_4x4_UNORM_BLOCK:
         case VK_FORMAT_ASTC_4x4_SRGB_BLOCK:
         case VK_FORMAT_ASTC_5x4_UNORM_BLOCK:
@@ -167,7 +167,7 @@ namespace {
         case VK_FORMAT_ASTC_12x12_SRGB_BLOCK:
             return 16;
 
-        // ETC2 / EAC 压缩格式（8字节/块）
+        // ETC2 / EAC compressed formats (8 bytes/block)
         case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
         case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
         case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:
@@ -371,7 +371,7 @@ namespace vulkan {
                 vkDestroyCommandPool(this->device, command_pool, nullptr);
                 command_pool = VK_NULL_HANDLE;
             }
-            // 释放缓存的 staging buffer
+            // Release the cached staging buffer
             if (this->staging_cache.buffer != VK_NULL_HANDLE) {
                 vmaDestroyBuffer(this->allocator, this->staging_cache.buffer, this->staging_cache.allocation);
                 this->staging_cache = {};
@@ -395,7 +395,7 @@ namespace vulkan {
     }
 
     bool vma_allocator::ensure_staging_buffer(const VkDeviceSize size, VkBuffer& buffer, VmaAllocation& allocation, VmaAllocationInfo& info) {
-        // 缓存容量足够则复用
+        // Reuse if the cached capacity is sufficient
         if (this->staging_cache.buffer != VK_NULL_HANDLE && this->buffer_size >= size) {
             buffer = this->staging_cache.buffer;
             allocation = this->staging_cache.allocation;
@@ -403,7 +403,7 @@ namespace vulkan {
             return true;
         }
 
-        // 容量不足：销毁当前缓存并重新创建
+        // Not enough capacity: destroy the current cache and re-create
         if (this->staging_cache.buffer != VK_NULL_HANDLE) {
             vmaDestroyBuffer(this->allocator, this->staging_cache.buffer, this->staging_cache.allocation);
             this->staging_cache = {};
@@ -461,15 +461,15 @@ namespace vulkan {
         VmaAllocation staging_allocation = VK_NULL_HANDLE;
         VmaAllocationInfo staging_info = {};
 
-        // staging buffer 是共享资源，写入 + GPU 拷贝完成期间必须互斥占用
+        // The staging buffer is shared; it must be held exclusively during writes + GPU copies
         std::lock_guard staging_guard(this->staging_mutex);
 
-        // 复用缓存中的 staging buffer，容量不足时自动重建
+        // Reuse the cached staging buffer, rebuilding automatically when too small
         if (!this->ensure_staging_buffer(size, staging_buffer, staging_allocation, staging_info)) {
             return false;
         }
 
-        // 拷贝数据
+        // Copy data
         if (staging_info.pMappedData) {
             memcpy(staging_info.pMappedData, data, size);
             if ((staging_info.memoryType & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
@@ -478,7 +478,7 @@ namespace vulkan {
         } else {
             return false;
         }
-        // 执行拷贝命令（缓存访问由 cache_mutex 保护）
+        // Execute the copy command (cache access guarded by cache_mutex)
         std::pair<VkCommandPool, VkCommandBuffer> command_pair;
         VkFence fence = VK_NULL_HANDLE;
         {
@@ -517,14 +517,14 @@ namespace vulkan {
         submit_info.pCommandBuffers = &command_buffer;
 
         {
-            // VkQueue 是外部同步对象，submit 必须串行化
+            // VkQueue is externally synchronized; submits must be serialized
             std::lock_guard guard(this->queue_mutex);
             vkQueueSubmit(this->queue, 1, &submit_info, fence);
         }
 
         vkWaitForFences(this->device, 1, &fence, VK_TRUE, UINT64_MAX);
 
-        // 清理
+        // Cleanup
         vkResetFences(this->device, 1, &fence);
         vkResetCommandBuffer(command_buffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
         {
@@ -560,15 +560,15 @@ namespace vulkan {
         VmaAllocation staging_allocation = VK_NULL_HANDLE;
         VmaAllocationInfo staging_info = {};
 
-        // staging buffer 是共享资源，写入 + GPU 拷贝完成期间必须互斥占用
+        // The staging buffer is shared; it must be held exclusively during writes + GPU copies
         std::lock_guard staging_guard(this->staging_mutex);
 
-        // 复用缓存中的 staging buffer，容量不足时自动重建
+        // Reuse the cached staging buffer, rebuilding automatically when too small
         if (!this->ensure_staging_buffer(size, staging_buffer, staging_allocation, staging_info)) {
             return false;
         }
 
-        // 拷贝数据到 staging buffer
+        // Copy data into the staging buffer
         if (staging_info.pMappedData) {
             memcpy(staging_info.pMappedData, data, size);
             if ((staging_info.memoryType & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
@@ -577,7 +577,7 @@ namespace vulkan {
         } else {
             return false;
         }
-        // 执行拷贝命令（缓存访问由 cache_mutex 保护）
+        // Execute the copy command (cache access guarded by cache_mutex)
         std::pair<VkCommandPool, VkCommandBuffer> command_pair;
         VkFence fence = VK_NULL_HANDLE;
         {
@@ -603,8 +603,8 @@ namespace vulkan {
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(command_buffer, &begin_info);
 
-        // ========== 修复点 1：正确的布局转换顺序 ==========
-        // 第一步：UNDEFINED -> TRANSFER_DST_OPTIMAL
+        // ========== Fix point 1: correct layout transition order ==========
+        // Step 1: UNDEFINED -> TRANSFER_DST_OPTIMAL
         VkImageMemoryBarrier barrier = {};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -627,9 +627,9 @@ namespace vulkan {
             0, nullptr,
             1, &barrier);
 
-        // 第二步：逐 mip 拷贝。
-        // 数据按 mip 主序排列（mip0 全部 layer → mip1 全部 layer → ...），
-        // 每个 mip 内各 layer 连续（face0, face1, ...），由 bufferOffset 定位。
+        // Step 2: copy per mip.
+        // Data is laid out in mip-major order (all layers of mip0 -> all layers of mip1 -> ...),
+        // with layers contiguous within each mip (face0, face1, ...), located via bufferOffset.
         const uint32_t bytes_per_pixel = sizeof_vk_format(info.format);
         std::vector<VkBufferImageCopy> regions;
         regions.reserve(info.mip_levels);
@@ -640,7 +640,7 @@ namespace vulkan {
 
             VkBufferImageCopy region = {};
             region.bufferOffset = buffer_offset;
-            region.bufferRowLength = 0; // 0 表示紧密排列
+            region.bufferRowLength = 0; // 0 means tightly packed
             region.bufferImageHeight = 0;
             region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             region.imageSubresource.mipLevel = mip;
@@ -661,7 +661,7 @@ namespace vulkan {
             static_cast<uint32_t>(regions.size()),
             regions.data());
 
-        // 第三步：TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
+        // Step 3: TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
         barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -678,21 +678,21 @@ namespace vulkan {
 
         vkEndCommandBuffer(command_buffer);
 
-        // 提交并等待完成
+        // Submit and wait for completion
         VkSubmitInfo submit_info = {};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit_info.commandBufferCount = 1;
         submit_info.pCommandBuffers = &command_buffer;
 
         {
-            // VkQueue 是外部同步对象，submit 必须串行化
+            // VkQueue is externally synchronized; submits must be serialized
             std::lock_guard guard(this->queue_mutex);
             vkQueueSubmit(this->queue, 1, &submit_info, fence);
         }
 
         vkWaitForFences(this->device, 1, &fence, VK_TRUE, UINT64_MAX);
 
-        // 清理
+        // Cleanup
         vkResetFences(this->device, 1, &fence);
         vkResetCommandBuffer(command_buffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
         {
@@ -706,7 +706,7 @@ namespace vulkan {
 
     uint64_t vma_allocator::create_buffer(const unsigned char* data, const uint64_t size_byte, const buffer_type type) {
         uint64_t handle = 0;
-        // distribute() 内部自带锁（enable_handle_distribute::access_mutex），无需外层持锁
+        // distribute() locks internally (enable_handle_distribute::access_mutex); no outer lock needed
         if (const auto result = this->distribute(); result) {
             handle = result.value();
         } else {
@@ -721,7 +721,7 @@ namespace vulkan {
         VkBuffer buffer = VK_NULL_HANDLE;
         VmaAllocationInfo alloc_info = {};
 
-        // VMA 内部线程安全，分配与上传都无需持有 access_mutex
+        // VMA is internally thread-safe; allocation and upload need no access_mutex
         const VkResult result = vmaCreateBuffer(
             this->allocator,
             &buffer_create_info,
@@ -740,14 +740,14 @@ namespace vulkan {
         switch (type) {
         case buffer_type::uniform_coherent:
         case buffer_type::uniform_cached:
-            // 直接映射上传
+            // Upload via direct mapping
             upload_success = direct_upload(allocation, alloc_info, data, size_byte);
             break;
 
         case buffer_type::vertex:
         case buffer_type::index:
         case buffer_type::uniform_gpu_only:
-            // 使用 staging buffer
+            // Use a staging buffer
             upload_success = staging_upload(buffer, data, size_byte);
             break;
         }
@@ -767,7 +767,7 @@ namespace vulkan {
 
     uint64_t vma_allocator::create_image(const unsigned char* data, const uint64_t size_byte, image_create_info const& create_info, const image_type type) {
         uint64_t handle = 0;
-        // distribute() 内部自带锁（enable_handle_distribute::access_mutex），无需外层持锁
+        // distribute() locks internally (enable_handle_distribute::access_mutex); no outer lock needed
         if (const auto result = this->distribute(); result) {
             handle = result.value();
         } else {
@@ -776,7 +776,7 @@ namespace vulkan {
 
         const VkDeviceSize image_size = size_byte;
 
-        // 期望大小 = array_layers × 所有 mip 尺寸之和 × 每像素字节数
+        // Expected size = array_layers * sum of all mip sizes * bytes per pixel
         VkDeviceSize expected_size = 0;
         for (uint32_t mip = 0; mip < create_info.mip_levels; ++mip) {
             expected_size += static_cast<VkDeviceSize>(std::max(1u, create_info.width >> mip)) *
@@ -814,7 +814,7 @@ namespace vulkan {
             return 0;
         }
 
-        // 根据类型选择上传方式
+        // Pick the upload path based on the type
         bool upload_success = false;
         switch (type) {
         case image_type::texture_2d_staging:
@@ -839,7 +839,7 @@ namespace vulkan {
             return 0;
         }
 
-        // sha256 是纯 CPU 计算，放在临界区之外
+        // sha256 is pure CPU work; keep it outside the critical section
         const auto digest = utility::sha256(std::span(data, size_byte));
 
         if (!digest) {

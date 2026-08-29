@@ -15,7 +15,7 @@ debug_callback(
     const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
     [[maybe_unused]] void* user_data) noexcept {
     if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-        // 错误走 error()：Debug 直接红色 stderr（含调用栈），Release 进日志文件
+        // Errors go through error(): Debug prints red to stderr (with call stack), Release writes to the log file
         utility::error("stacktrace:\n{}\n{}",
                        boost::stacktrace::to_string(boost::stacktrace::stacktrace()),
                        callback_data->pMessage);
@@ -63,7 +63,7 @@ bool check_device_extension_support(
 }
 
 void device_capabilities::query(const VkPhysicalDevice physical_device, const uint32_t api_version) noexcept {
-    // ---- 特性 pNext 链：features2 → 1_1 → 1_2 → 1_3 → 1_4（按 api_version 截断） ----
+    // ---- Feature pNext chain: features2 -> 1_1 -> 1_2 -> 1_3 -> 1_4 (truncated by api_version) ----
     features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features_1_1.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
     features_1_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -76,7 +76,7 @@ void device_capabilities::query(const VkPhysicalDevice physical_device, const ui
     features_1_3.pNext = api_version >= VK_API_VERSION_1_4 ? &features_1_4 : nullptr;
     vkGetPhysicalDeviceFeatures2(physical_device, &features2);
 
-    // ---- 属性 pNext 链：properties2 → driver → subgroup → descriptor indexing → maintenance4 ----
+    // ---- Property pNext chain: properties2 -> driver -> subgroup -> descriptor indexing -> maintenance4 ----
     properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
     driver_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
     subgroup_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
@@ -89,8 +89,8 @@ void device_capabilities::query(const VkPhysicalDevice physical_device, const ui
     descriptor_indexing_properties.pNext = &maintenance4_properties;
     vkGetPhysicalDeviceProperties2(physical_device, &properties2);
 
-    // ---- 特性策略：除显式关闭的外，全部透传驱动支持状态（拿全除光追外的大部分特性） ----
-    features_1_1.protectedMemory = VK_FALSE; // 受保护内存暂不需要
+    // ---- Feature policy: pass through driver support except explicitly disabled ones (take most features except ray tracing) ----
+    features_1_1.protectedMemory = VK_FALSE; // protected memory not needed for now
 }
 
 const void* device_capabilities::device_pnext() const noexcept {
@@ -98,7 +98,7 @@ const void* device_capabilities::device_pnext() const noexcept {
 }
 
 namespace {
-    // 把结构体中已启用（VK_TRUE）的成员名追加到输出串，返回启用数量
+    // Append names of enabled (VK_TRUE) members to the output string, return the enabled count
     template <typename T>
     size_t append_enabled_features(std::string& out, const T& features,
                                    const std::initializer_list<std::pair<const char*, VkBool32 T::*>>& entries) {
@@ -115,7 +115,7 @@ namespace {
         return count;
     }
 
-    // 按宽度换行打印，续行带缩进
+    // Wrap output at the given width, indenting continuation lines
     void print_wrapped(const std::string& text, const int width, const std::string_view indent) {
         std::string current(indent);
         size_t start = 0;
@@ -274,13 +274,13 @@ logical_device create_logical_device(
         utility::panic("queue family is empty");
     }
 
-    // 使用set收集唯一的队列族索引
+    // Use a set to collect unique queue family indices
     std::set<uint32_t> unique_queue_families = {
         create_info.queue_families.graphics_family.value(),
         create_info.queue_families.present_family.value(),
     };
 
-    // 可选：添加其他队列族
+    // Optional: add more queue families
     if (create_info.queue_families.compute_family) {
         unique_queue_families.insert(create_info.queue_families.compute_family.value());
     }
@@ -288,7 +288,7 @@ logical_device create_logical_device(
         unique_queue_families.insert(create_info.queue_families.transfer_family.value());
     }
 
-    // 创建队列信息
+    // Create queue infos
     std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
     constexpr float queue_priority = 1.0f;
 
@@ -308,27 +308,27 @@ logical_device create_logical_device(
     physical_device_features.pNext = &fifo_latest_ready_features;
     vkGetPhysicalDeviceFeatures2(physical_device, &physical_device_features);
 
-    // 创建设备
+    // Create the device
     VkDeviceCreateInfo device_create_info{};
     device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     device_create_info.queueCreateInfoCount = static_cast<uint32_t>(queue_create_infos.size());
     device_create_info.pQueueCreateInfos = queue_create_infos.data();
-    // 特性统一走 pNext 链（VkPhysicalDeviceFeatures2 打头）。
-    // pEnabledFeatures 必须为 NULL：pNext 链含 VkPhysicalDeviceFeatures2 / VkPhysicalDeviceVulkan11Features 时
-    // 设置它会违反 VUID-VkDeviceCreateInfo-pNext-04748 / -02829。
+    // Features go through the pNext chain (headed by VkPhysicalDeviceFeatures2).
+    // pEnabledFeatures must be NULL: with VkPhysicalDeviceFeatures2 / VkPhysicalDeviceVulkan11Features
+    // in the chain, setting it violates VUID-VkDeviceCreateInfo-pNext-04748 / -02829.
     device_create_info.pEnabledFeatures = nullptr;
 
-    // 扩展 - 必须正确处理空向量
+    // Extensions - must handle empty vectors correctly
     device_create_info.enabledExtensionCount = static_cast<uint32_t>(create_info.extensions.size());
     device_create_info.ppEnabledExtensionNames =
         create_info.extensions.empty() ? nullptr : create_info.extensions.data();
 
-    // 验证层 - 现代Vulkan通常不在设备级启用
+    // Validation layers - modern Vulkan usually doesn't enable them at device level
     device_create_info.enabledLayerCount = static_cast<uint32_t>(create_info.validation_layers.size());
     device_create_info.ppEnabledLayerNames =
         create_info.validation_layers.empty() ? nullptr : create_info.validation_layers.data();
 
-    // 组装 pNext 链：VkPhysicalDeviceFeatures2（头部，承载 device_features）→ [FifoLatestReady] → create_info.pNext（Vulkan11Features 等）
+    // Assemble the pNext chain: VkPhysicalDeviceFeatures2 (head, carries device_features) -> [FifoLatestReady] -> create_info.pNext (Vulkan11Features etc.)
     physical_device_features.features = create_info.device_features;
     if (fifo_latest_ready_features.presentModeFifoLatestReady == VK_TRUE) {
         fifo_latest_ready_features.pNext = const_cast<void*>(create_info.pNext);
@@ -344,7 +344,7 @@ logical_device create_logical_device(
         utility::panic(std::format("Failed to create logical device: {}", std::to_string(result)));
     }
 
-    // 获取队列
+    // Get queues
     logical_device logical_device;
     logical_device.device = device;
     logical_device.graphics_family_index = create_info.queue_families.graphics_family.value();
@@ -361,30 +361,30 @@ logical_device create_logical_device(
 queue_family_indices find_queue_families(VkPhysicalDevice const& device, VkSurfaceKHR const& surface) noexcept { // NOLINT(*-function-cognitive-complexity)
     queue_family_indices indices;
 
-    // 获取队列族属性
+    // Get queue family properties
     uint32_t queue_family_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, nullptr);
 
     std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
     vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, queue_families.data());
 
-    // 查找合适的队列族
+    // Find a suitable queue family
     for (uint32_t i = 0; i < queue_family_count; ++i) {
         const auto& queue_family = queue_families[i];
 
-        // 检查图形支持
+        // Check graphics support
         if ((queue_family.queueFlags & VK_QUEUE_GRAPHICS_BIT) && !indices.graphics_family.has_value()) {
             indices.graphics_family = i;
         }
 
-        // 检查计算支持（非图形队列）
+        // Check compute support (non-graphics queue)
         if ((queue_family.queueFlags & VK_QUEUE_COMPUTE_BIT) &&
             !indices.compute_family.has_value() &&
             !(queue_family.queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
             indices.compute_family = i;
         }
 
-        // 检查传输支持（非图形/计算队列）
+        // Check transfer support (non-graphics/compute queue)
         if ((queue_family.queueFlags & VK_QUEUE_TRANSFER_BIT) &&
             !indices.transfer_family.has_value() &&
             !(queue_family.queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
@@ -392,7 +392,7 @@ queue_family_indices find_queue_families(VkPhysicalDevice const& device, VkSurfa
             indices.transfer_family = i;
         }
 
-        // 检查呈现支持（需要表面）
+        // Check present support (requires a surface)
         if (surface != VK_NULL_HANDLE) {
             VkBool32 present_support = false;
             vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &present_support);
@@ -401,12 +401,12 @@ queue_family_indices find_queue_families(VkPhysicalDevice const& device, VkSurfa
             }
         }
 
-        // 如果只需要图形支持，提前退出
+        // Early-exit if only graphics support is required
         if (surface == VK_NULL_HANDLE && indices.graphics_family.has_value()) {
             break;
         }
 
-        // 如果所有需要的队列都已找到，提前退出
+        // Early-exit once all required queues are found
         if (surface == VK_NULL_HANDLE) {
             if (indices.graphics_family.has_value()) {
                 break;
@@ -416,13 +416,13 @@ queue_family_indices find_queue_families(VkPhysicalDevice const& device, VkSurfa
         }
     }
 
-    // 回退方案：如果没有找到专用的计算/传输队列，使用图形队列
+    // Fallback: if no dedicated compute/transfer queue was found, use the graphics queue
     if (!indices.compute_family.has_value() && indices.graphics_family.has_value()) {
         indices.compute_family = indices.graphics_family;
     }
 
     if (!indices.transfer_family.has_value()) {
-        // 优先使用图形队列，如果没有图形队列则使用第一个可用的队列
+        // Prefer the graphics queue; if none exists, use the first available queue
         if (indices.graphics_family.has_value()) {
             indices.transfer_family = indices.graphics_family;
         } else {
@@ -457,7 +457,7 @@ VkPhysicalDevice pick_suitable_device(VkInstance const& instance, VkSurfaceKHR s
             continue;
         }
 
-        // 检查扩展支持
+        // Check extension support
         const std::vector<const char*> requiredExtensions = {
             VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         };
@@ -465,7 +465,7 @@ VkPhysicalDevice pick_suitable_device(VkInstance const& instance, VkSurfaceKHR s
             continue;
         }
 
-        return device; // 找到合适的设备
+        return device; // suitable device found
     }
 
     utility::panic("Failed to find a suitable GPU!");
@@ -474,10 +474,10 @@ VkPhysicalDevice pick_suitable_device(VkInstance const& instance, VkSurfaceKHR s
 swap_chain_support_details query_swap_chain_support(VkPhysicalDevice const& device, VkSurfaceKHR const& surface) noexcept {
     swap_chain_support_details details = {};
 
-    // 1. 查询表面能力
+    // 1. Query surface capabilities
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities);
 
-    // 2. 查询表面格式
+    // 2. Query surface formats
     uint32_t format_count;
     vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, nullptr);
     if (format_count != 0) {
@@ -485,7 +485,7 @@ swap_chain_support_details query_swap_chain_support(VkPhysicalDevice const& devi
         vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, details.formats.data());
     }
 
-    // 3. 查询呈现模式
+    // 3. Query present modes
     uint32_t present_mode_count = 0;
     vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &present_mode_count, nullptr);
     if (present_mode_count != 0) {
@@ -499,7 +499,7 @@ swap_chain_support_details query_swap_chain_support(VkPhysicalDevice const& devi
 }
 
 VkPresentModeKHR choose_swap_present_mode(std::vector<VkPresentModeKHR> const& available_present_modes) noexcept {
-    // 优先选择 MAILBOX（低延迟），否则回退到 FIFO（Vulkan 规范强制支持）
+    // Prefer MAILBOX (low latency), else fall back to FIFO (mandated by the Vulkan spec)
     if (std::ranges::find(available_present_modes, VK_PRESENT_MODE_MAILBOX_KHR) != available_present_modes.end()) {
         return VK_PRESENT_MODE_MAILBOX_KHR;
     }
@@ -523,7 +523,7 @@ VkExtent2D choose_swap_extent(VkSurfaceCapabilitiesKHR const& capabilities, GLFW
     int height;
     glfwGetFramebufferSize(window, &width, &height);
 
-    // 确保宽度和高度不为0
+    // Ensure width and height are non-zero
     width = std::max(width, 1);
     height = std::max(height, 1);
 
@@ -543,25 +543,25 @@ VkExtent2D choose_swap_extent(VkSurfaceCapabilitiesKHR const& capabilities, GLFW
 }
 
 uint32_t find_memory_type(const uint32_t& type_filter, const VkMemoryPropertyFlags& properties, const VkPhysicalDevice& physical_device) noexcept {
-    // 获取物理设备的内存属性
+    // Get the physical device's memory properties
     VkPhysicalDeviceMemoryProperties mem_properties;
     vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_properties);
 
-    // 遍历所有内存类型
+    // Iterate over all memory types
     for (uint32_t i = 0; i < mem_properties.memoryTypeCount; i++) {
-        // 检查内存类型是否满足过滤条件
-        // type_filter 是一个位掩码，每个位对应一个内存类型
+        // Check whether the memory type satisfies the filter
+        // type_filter is a bitmask; each bit corresponds to a memory type
         if ((type_filter & (1 << i)) &&
-            // 检查内存属性是否满足要求
+            // Check whether the memory properties meet the requirements
             (mem_properties.memoryTypes[i].propertyFlags & properties) == properties) {
-            return i; // 返回找到的内存类型索引
+            return i; // return the found memory type index
         }
     }
     utility::panic("failed to find suitable memory type");
 }
 
 VkFormat find_depth_format(const VkPhysicalDevice& physical_device) noexcept {
-    // 尝试获取支持的深度格式，按偏好顺序
+    // Try to find a supported depth format, in order of preference
     const std::vector<VkFormat> candidates = {
         VK_FORMAT_D32_SFLOAT_S8_UINT,
         VK_FORMAT_D32_SFLOAT,
@@ -574,7 +574,7 @@ VkFormat find_depth_format(const VkPhysicalDevice& physical_device) noexcept {
         VkFormatProperties props;
         vkGetPhysicalDeviceFormatProperties(physical_device, format, &props);
 
-        // 检查格式是否支持作为深度附件
+        // Check whether the format supports depth attachments
         if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
             return format;
         }
@@ -619,13 +619,13 @@ VkImageView create_image_view(const VkImage& image, const VkFormat& format, cons
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = format;
 
-    // 组件映射（保持默认）
+    // Component mapping (keep defaults)
     viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
     viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
     viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
     viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
 
-    // 子资源范围（描述图像的哪部分可访问）
+    // Subresource range (describes which part of the image is accessible)
     viewInfo.subresourceRange.aspectMask = aspectFlags;
     viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = 1;

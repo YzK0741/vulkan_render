@@ -63,14 +63,14 @@ export struct queue_family_indices {
  *      - device_pnext() returns the feature chain head to pass via device_creation_info::pNext
  */
 export struct device_capabilities {
-    // ---- 特性链（查询与设备创建共用） ----
+    // ---- Feature chain (shared by query and device creation) ----
     VkPhysicalDeviceFeatures2 features2 = {};
     VkPhysicalDeviceVulkan11Features features_1_1 = {};
     VkPhysicalDeviceVulkan12Features features_1_2 = {};
     VkPhysicalDeviceVulkan13Features features_1_3 = {};
     VkPhysicalDeviceVulkan14Features features_1_4 = {};
 
-    // ---- 属性链（只查询，供渲染器决策/诊断） ----
+    // ---- Property chain (query only, for renderer decisions/diagnostics) ----
     VkPhysicalDeviceProperties2 properties2 = {};
     VkPhysicalDeviceDriverProperties driver_properties = {};
     VkPhysicalDeviceSubgroupProperties subgroup_properties = {};
@@ -107,7 +107,7 @@ export struct device_creation_info {
     std::vector<const char*> extensions = {};
     std::vector<const char*> validation_layers = {};
     VkPhysicalDeviceFeatures device_features = {};
-    const void* pNext = nullptr; // 用于Vulkan 1.1+的特性链
+    const void* pNext = nullptr; // for the Vulkan 1.1+ feature chain
 };
 
 /**
