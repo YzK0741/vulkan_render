@@ -127,6 +127,96 @@ std::optional<std::string> utility::read_binary_to_string(const std::filesystem:
     return data;
 }
 
+// ---- 异步日志（Meyer 单例，内部实现） ----
+
+utility::log_sink& utility::log_sink::instance() noexcept {
+    static log_sink instance;
+    return instance;
+}
+
+utility::log_sink::log_sink() {
+#ifdef NDEBUG
+    // Release 构建：写入 debug.log（追加模式）
+    this->file.open("debug.log", std::ios::out | std::ios::app);
+#endif
+    this->worker = std::thread([this] { this->worker_loop(); });
+}
+
+utility::log_sink::~log_sink() {
+    this->running = false;
+    this->queue_cv.notify_all();
+    if (this->worker.joinable()) {
+        this->worker.join(); // 等 worker 排空队列后退出
+    }
+#ifdef NDEBUG
+    if (this->file.is_open()) {
+        this->file.close();
+    }
+#endif
+}
+
+void utility::log_sink::worker_loop() noexcept {
+    while (true) {
+        std::string message;
+        {
+            std::unique_lock lock(this->queue_mutex);
+            // 一直等待并尝试取消息；退出前把队列排空
+            this->queue_cv.wait(lock, [this] { return !this->running || !this->messages.empty(); });
+            if (this->messages.empty()) {
+                if (!this->running) {
+                    break;
+                }
+                continue;
+            }
+            message = std::move(this->messages.front());
+            this->messages.pop();
+        }
+        // 锁外输出，避免阻塞生产者（统一补换行，消息本身不带 \n）
+#ifdef NDEBUG
+        if (this->file.is_open()) {
+            this->file << message << '\n'
+                       << std::flush;
+        } else {
+            std::println("{}", message); // 文件打不开时回退终端
+        }
+#else
+        std::println("{}", message);
+#endif
+        // 输出完成后再递减待写计数，wait_log_all 才能等到包括"正在输出"的最后一条
+        {
+            std::lock_guard lock(this->queue_mutex);
+            --this->pending;
+            if (this->pending == 0) {
+                this->drained_cv.notify_all();
+            }
+        }
+    }
+}
+
+void utility::log_sink::write(std::string message) {
+    {
+        std::lock_guard lock(this->queue_mutex);
+        ++this->pending;
+        this->messages.push(std::move(message));
+    }
+    this->queue_cv.notify_one();
+}
+
+void utility::log_sink::wait_all() {
+    std::unique_lock lock(this->queue_mutex);
+    this->drained_cv.wait(lock, [this] { return this->pending == 0; });
+}
+
+void utility::error_message(std::string message) {
+#ifdef NDEBUG
+    // Release：交给日志线程（写入 debug.log）
+    log_sink::instance().write("[ERROR] " + std::move(message));
+#else
+    // Debug：直接红色输出到 stderr，醒目不排队（error 之后基本是 terminate）
+    std::print(stderr, "\x1b[31m[ERROR] {}\x1b[0m\n", message);
+#endif
+}
+
 std::optional<utility::md5_digest> utility::md5(const std::span<const unsigned char> data_view) {
     md5_digest digest = {};
     unsigned int size_byte = sizeof(md5_digest);

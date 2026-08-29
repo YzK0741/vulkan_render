@@ -146,6 +146,99 @@ namespace utility {
     export std::optional<std::string> read_binary_to_string(const std::filesystem::path& path);
 
     /**
+     * @ingroup utility
+     * @brief asynchronous logging sink (Meyer's singleton), internal implementation
+     * @note
+     *      - messages are pushed to a thread-safe queue; a background thread keeps popping
+     *        them and writes each one: to the terminal in Debug builds (NDEBUG unset),
+     *        to a debug.log file in Release builds (NDEBUG set)
+     *      - not exported; use the utility::log() function template instead
+     */
+    class log_sink {
+        std::mutex queue_mutex = {};
+        std::condition_variable queue_cv = {};
+        std::condition_variable drained_cv = {}; // 队列排空通知
+        std::queue<std::string> messages = {};
+        std::size_t pending = 0; // 待写消息数（排队中 + 正在输出）
+        std::thread worker = {};
+        std::atomic<bool> running = true;
+        std::ofstream file = {}; // Release 构建输出到 debug.log
+
+        log_sink();
+        ~log_sink();
+        void worker_loop() noexcept;
+
+    public:
+        log_sink(log_sink const&) = delete;
+        log_sink& operator=(log_sink const&) = delete;
+
+        static log_sink& instance() noexcept;
+        void write(std::string message);
+        void wait_all();
+    };
+
+    /**
+     * @ingroup utility
+     * @brief asynchronous log: formats the message like std::format and pushes it to the log singleton
+     * @tparam Args argument types
+     * @param fmt the format string (compile-time checked)
+     * @param args arguments to format
+     * @note output goes to the terminal in Debug builds, to a debug.log file in Release builds
+     */
+    export template <typename... Args>
+    void log(std::format_string<Args...> fmt, Args&&... args) {
+        log_sink::instance().write(std::format(fmt, std::forward<Args>(args)...));
+    }
+
+    /**
+     * @ingroup utility
+     * @brief asynchronous log: writes a single pre-formatted string as-is
+     * @param message the message (string literal, const char*, std::string or std::string_view)
+     * @note
+     *      - for runtime strings, which cannot construct the consteval std::format_string
+     *      - for format-string usage prefer the template overload
+     */
+    export void log(std::string_view message) {
+        log_sink::instance().write(std::string(message));
+    }
+
+    // 内部：错误消息输出——Debug 直接红色输出到 stderr（不经过日志队列，error 之后基本是 terminate），
+    //       Release 交给日志线程写入 debug.log
+    void error_message(std::string message);
+
+    /**
+     * @ingroup utility
+     * @brief error log: in Debug builds prints directly to stderr in red (not queued);
+     *        in Release builds hands the message to the log singleton with an [ERROR] prefix
+     * @tparam Args argument types
+     * @param fmt the format string (compile-time checked)
+     * @param args arguments to format
+     */
+    export template <typename... Args>
+    void error(std::format_string<Args...> fmt, Args&&... args) {
+        error_message(std::format(fmt, std::forward<Args>(args)...));
+    }
+
+    /**
+     * @ingroup utility
+     * @brief error log: in Debug builds prints directly to stderr in red (not queued);
+     *        in Release builds hands the message to the log singleton with an [ERROR] prefix
+     * @param message the message (string literal, const char*, std::string or std::string_view)
+     */
+    export void error(std::string_view message) {
+        error_message(std::string(message));
+    }
+
+    /**
+     * @ingroup utility
+     * @brief block until all log messages queued so far have been written by the log thread
+     * @note useful before shutdown or before reading output that must be complete
+     */
+    export void wait_log_all() {
+        log_sink::instance().wait_all();
+    }
+
+    /**
      * @defgroup hash
      * @ingroup utility
      * @brief hash series functions wrapper of openssl
