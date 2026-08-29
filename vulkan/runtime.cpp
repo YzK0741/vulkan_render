@@ -53,6 +53,14 @@ namespace vulkan {
         glfwSetScrollCallback(this->vulkan_core.window, scroll_callback);
     }
 
+    // The destructor body runs before member destruction, so vulkan_core (and the VkDevice it
+    // holds) is still alive here: destroying cached pipelines in this order is guaranteed safe,
+    // independent of future member reordering. Members then destruct in reverse declaration order
+    // with pipelines already empty.
+    runtime::~runtime() {
+        this->pipelines.clear();
+    }
+
     void runtime::begin_render_pass(const VkCommandBuffer command_buffer, const uint32_t image_index) {
         std::array<VkClearValue, 2> clear_values = {};
         clear_values[0].color = {{0.02f, 0.02f, 0.03f, 1.0f}};

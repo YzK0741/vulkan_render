@@ -57,6 +57,15 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief destroy cached pipelines before the inner core (and thus the VkDevice) is destroyed
+         * @note explicit destructor: member destruction order is reverse declaration order, which
+         *      currently already destroys pipelines before vulkan_core; making it explicit keeps
+         *      that guarantee even if members are reordered later
+         */
+        ~runtime();
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief begin the swapchain render pass on the given command buffer
          * @param command_buffer the command buffer being recorded
          * @param image_index the acquired swapchain image index (selects the framebuffer)
