@@ -33,9 +33,9 @@ namespace {
         const float dy = static_cast<float>(y - camera.last_y);
         camera.last_x = x;
         camera.last_y = y;
-        camera.yaw += dx * sensitivity; // 拖拽方向与模型旋转方向一致
+        camera.yaw += dx * sensitivity; // drag direction matches the model rotation
         camera.pitch -= dy * sensitivity;
-        camera.pitch = std::clamp(camera.pitch, -1.5f, 1.5f); // 避免翻转
+        camera.pitch = std::clamp(camera.pitch, -1.5f, 1.5f); // avoid flipping
     }
 
     void scroll_callback(GLFWwindow* window, const double, const double yoffset) {

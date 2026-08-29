@@ -24,7 +24,7 @@ namespace vulkan {
         double last_y = 0.0;
         bool dragging = false;
         float yaw = 0.0f;
-        float pitch = 0.35f; // 略俯视
+        float pitch = 0.35f; // slight downward tilt
         float distance = 2.2f;
     };
 

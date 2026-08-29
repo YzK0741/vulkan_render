@@ -9,7 +9,7 @@ module vulkan.model;
 namespace {
     constexpr float k_pi = 3.14159265359f;
 
-    // 立方体面方向：texel (u, v) ∈ [-1, 1] → 单位方向（Vulkan/GL 立方体约定）
+    // Cubemap face direction: texel (u, v) in [-1, 1] -> unit direction (Vulkan/GL cubemap convention)
     glm::vec3 cube_face_direction(const int face, const float u, const float v) {
         switch (face) {
         case 0:
@@ -27,7 +27,7 @@ namespace {
         }
     }
 
-    // 程序化环境（HDR）：渐变天空/地面 + 太阳亮斑
+    // Procedural environment (HDR): gradient sky/ground + sun disc
     glm::vec3 environment_color(const glm::vec3& dir) {
         const float t = std::clamp(dir.y * 0.5f + 0.5f, 0.0f, 1.0f);
         const glm::vec3 ground = glm::vec3(0.03f, 0.03f, 0.05f) * 0.75f;
@@ -36,11 +36,11 @@ namespace {
         glm::vec3 env = t < 0.5f ? glm::mix(ground, horizon, t * 2.0f) : glm::mix(horizon, sky, (t - 0.5f) * 2.0f);
         const glm::vec3 sun_dir = glm::normalize(glm::vec3(0.3f, 1.0f, 0.5f));
         const float sun = std::pow(std::max(glm::dot(dir, sun_dir), 0.0f), 64.0f);
-        env += glm::vec3(1.0f, 0.95f, 0.85f) * sun * 1.5f; // 太阳亮斑略强，金属高光更清晰
+        env += glm::vec3(1.0f, 0.95f, 0.85f) * sun * 1.5f; // slightly stronger sun disc for clearer metallic highlights
         return env;
     }
 
-    // 最近邻采样 cubemap（卷积累加平均后足够平滑）
+    // Nearest-neighbor cubemap sampling (smooth enough after summed-area averaging)
     glm::vec3 sample_cubemap(const std::vector<float>& data, const int size, const glm::vec3& dir) {
         const float ax = std::abs(dir.x), ay = std::abs(dir.y), az = std::abs(dir.z);
         int face = 0;
@@ -65,7 +65,7 @@ namespace {
         return glm::vec3(data[offset], data[offset + 1], data[offset + 2]);
     }
 
-    // Van der Corput 序列（Hammersley 的第二分量）
+    // Van der Corput sequence (second component of Hammersley)
     float radical_inverse_vdc(uint32_t bits) {
         bits = (bits << 16u) | (bits >> 16u);
         bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
@@ -79,7 +79,7 @@ namespace {
         return glm::vec2(static_cast<float>(i) / static_cast<float>(n), radical_inverse_vdc(i));
     }
 
-    // GGX 重要性采样：根据 Hammersley 样本生成半向量
+    // GGX importance sampling: build the half vector from Hammersley samples
     glm::vec3 importance_sample_ggx(const glm::vec2& xi, const glm::vec3& n, const float roughness) {
         const float a = roughness * roughness;
         const float phi = 2.0f * k_pi * xi.x;
@@ -92,17 +92,17 @@ namespace {
         return glm::normalize(tangent * h.x + bitangent * h.y + n * h.z);
     }
 
-    // IEEE 754 binary32 → binary16（截断，环境光精度足够）
+    // IEEE 754 binary32 -> binary16 (truncated; plenty for ambient light)
     uint16_t float_to_half(const float value) {
         const uint32_t bits = std::bit_cast<uint32_t>(value);
         const uint16_t sign = static_cast<uint16_t>((bits >> 16) & 0x8000u);
         const int32_t exponent = static_cast<int32_t>((bits >> 23) & 0xFFu) - 127 + 15;
         const uint32_t mantissa = bits & 0x7FFFFFu;
         if (exponent >= 31) {
-            return static_cast<uint16_t>(sign | 0x7C00u); // 无穷
+            return static_cast<uint16_t>(sign | 0x7C00u); // infinity
         }
         if (exponent <= 0) {
-            return sign; // 次正规/零 → 0
+            return sign; // subnormal/zero -> 0
         }
         return static_cast<uint16_t>(sign | (static_cast<uint32_t>(exponent) << 10) | (mantissa >> 13));
     }
@@ -138,17 +138,17 @@ namespace vulkan {
         const float distance,
         const glm::mat4& model,
         const float aspect) {
-        // 轨道相机位置：模型已平移到原点，相机绕原点球面运动
+        // Orbit camera position: model centered at the origin, camera orbits spherically
         const float cp = std::cos(pitch);
         const glm::vec3 eye(distance * cp * std::sin(yaw),
                             distance * std::sin(pitch),
                             distance * cp * std::cos(yaw));
 
-        // RH_ZO：右手系 + 深度 [0,1]（Vulkan 约定）
+        // RH_ZO: right-handed + depth [0,1] (Vulkan convention)
         glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(45.0f), aspect, 0.1f, 100.0f);
-        // glm 的投影按 OpenGL 约定（NDC y 向上），而 Vulkan framebuffer 的 y 向下：
-        // 翻转投影 Y 分量，否则 glTF 的 CCW 正面绕序在帧缓冲里变成 CW，
-        // 被管线的 CULL_BACK 裁掉，只会看到模型内壁。
+        // glm's projection follows the OpenGL convention (NDC y up), but Vulkan framebuffers are y-down:
+        // flip the projection's Y, otherwise glTF's CCW front-face winding becomes CW in the framebuffer
+        // and is culled by the pipeline's CULL_BACK, leaving only the model's interior visible.
         proj[1][1] *= -1.0f;
 
         camera_ubo ubo;

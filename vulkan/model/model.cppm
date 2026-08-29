@@ -69,7 +69,7 @@ namespace vulkan {
         const glm::mat4& model,
         float aspect);
 
-    // ---- CPU 端 IBL 预计算（预过滤 mip 链 / 辐照度 / BRDF LUT / 半精度转换） ----
+    // ---- CPU-side IBL precomputation (prefiltered mip chain / irradiance / BRDF LUT / half-float conversion) ----
 
     /**
      * @ingroup vulkan_model
