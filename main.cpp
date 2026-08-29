@@ -9,7 +9,7 @@ import vulkan.model;
 import vulkan.runtime;
 
 namespace {
-    // 与 pbr.vert 的顶点输入一致：position(0) normal(1) uv(2) tangent(3)，stride 44
+    // Matches pbr.vert's vertex inputs: position(0) normal(1) uv(2) tangent(3), stride 44
     struct vertex {
         glm::vec3 position;
         glm::vec3 normal;
@@ -17,7 +17,7 @@ namespace {
         glm::vec3 tangent;
     };
 
-    // 与 pbr.frag 的 PushConstants 一致（48 字节）
+    // Matches pbr.frag's PushConstants (48 bytes)
     struct pbr_push_constants {
         glm::vec4 base_color_factor = glm::vec4(1.0f);
         glm::vec4 emissive_factor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
@@ -28,7 +28,7 @@ namespace {
     };
     static_assert(sizeof(pbr_push_constants) == 48);
 
-    // 读取单个着色器 SPIR-V 文件并打印信息；失败直接 panic
+    // Read a single shader SPIR-V file and print info; panic on failure
     void load_shader(const std::filesystem::path& dir, std::string_view file_name, std::vector<unsigned char>& out) {
         const std::filesystem::path path = dir / file_name;
         const std::optional<std::vector<unsigned char>> data = utility::read_binary_to_vector(path);
@@ -39,8 +39,8 @@ namespace {
         utility::log("loaded shader: {} ({} bytes)", path.string(), out.size());
     }
 
-    // 从当前工作目录向上逐级查找 shaders/ 目录，
-    // 兼容在项目根目录或 cmake-build-* 目录下运行的情况
+    // Walk up from the working directory to find the shaders/ directory,
+    // so it works when run from the project root or a cmake-build-* directory
     std::optional<std::filesystem::path> locate_shaders_dir() {
         std::filesystem::path current = std::filesystem::current_path();
         for (int depth = 0; depth < 4; ++depth) {
@@ -57,7 +57,7 @@ namespace {
         return std::nullopt;
     }
 
-    // 从当前工作目录向上逐级查找 gltf_model/ 目录下的默认模型文件
+    // Walk up from the working directory to find the default model under gltf_model/
     std::optional<std::filesystem::path> locate_model_file() {
         std::filesystem::path current = std::filesystem::current_path();
         for (int depth = 0; depth < 4; ++depth) {
@@ -74,7 +74,7 @@ namespace {
         return std::nullopt;
     }
 
-    // 加载一对 vertex/fragment SPIR-V，并通过 runtime 创建管线；失败直接 panic
+    // Load a vertex/fragment SPIR-V pair and create the pipeline via runtime; panic on failure
     void load_and_create_pipeline(vulkan::runtime& runtime,
                                   const std::filesystem::path& shaders_dir,
                                   std::string_view pipeline_name,
@@ -92,7 +92,7 @@ namespace {
         utility::log("SUCCESS: pipeline '{}' created and cached in the runtime", pipeline_name);
     }
 
-    // 把 stb 解码的纹理数据转成 RGBA（3 通道补 alpha，1 通道灰度扩展）
+    // Convert stb-decoded texture data to RGBA (3 channels get alpha, 1 channel is gray-scaled)
     std::vector<unsigned char> to_rgba(const gltf::texture_data& texture) {
         const size_t pixel_count = static_cast<size_t>(texture.width) * texture.height;
         std::vector<unsigned char> rgba(pixel_count * 4, 255);
@@ -121,10 +121,10 @@ namespace {
         return rgba;
     }
 
-    // VMA 上传贴图 + 创建 image view
+    // Upload the texture via VMA + create an image view
     struct texture_bundle {
         uint64_t image = 0;
-        vulkan::vk_image_view view; // RAII，析构时自动销毁
+        vulkan::vk_image_view view; // RAII; destroyed automatically on destruction
     };
 
     texture_bundle create_texture(vulkan::runtime& runtime, const gltf::texture_data& texture, const VkFormat format) {
@@ -152,20 +152,20 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) {
-    // 1. 定位 shaders 目录（保存 GLSL 源码与编译好的 SPIR-V）
+    // 1. Locate the shaders directory (holds GLSL sources and compiled SPIR-V)
     const std::optional<std::filesystem::path> shaders_dir = locate_shaders_dir();
     if (!shaders_dir) {
         utility::panic("cannot find shaders/ directory. run the program from the project root or a cmake-build-* directory.");
     }
 
-    // 2. 构造 vulkan::runtime：默认构造会完成 window/instance/device/swapchain 等全部初始化
+    // 2. Construct vulkan::runtime: the default constructor performs all window/instance/device/swapchain initialization
     vulkan::runtime runtime;
 
-    // 3. 管线加载测试：简单三角形 + 标准 PBR
+    // 3. Pipeline loading test: simple triangle + standard PBR
     load_and_create_pipeline(runtime, *shaders_dir, "triangle", "triangle.vert.spv", "triangle.frag.spv");
     load_and_create_pipeline(runtime, *shaders_dir, "pbr", "pbr.vert.spv", "pbr.frag.spv");
 
-    // 4. 加载 glTF 模型（默认 gltf_model/ 下的 DamagedHelmet，可用命令行参数指定其它 .gltf/.glb）
+    // 4. Load a glTF model (defaults to DamagedHelmet under gltf_model/; other .gltf/.glb via command line)
     std::string model_path;
     if (argc > 1) {
         model_path = argv[1];
@@ -186,7 +186,7 @@ int main(int argc, char** argv) {
     const auto& prim = scenes->scene[0].nodes[0].meshes[0].primitives[0];
     utility::log("model loaded: {} textures, {} primitives", scenes->textures.size(), scenes->scene[0].nodes[0].meshes[0].primitives.size());
 
-    // 5. 取顶点属性（分离存储），缺少的属性用默认值
+    // 5. Fetch vertex attributes (separate storage), defaulting missing ones
     const auto get_portion = [&prim](const std::string_view name) -> const gltf::vertex_portion* {
         const auto it = prim.vertex.find(std::string(name));
         return it == prim.vertex.end() ? nullptr : &it->second;
@@ -218,7 +218,7 @@ int main(int argc, char** argv) {
         uvs.push_back(*uv);
     }
 
-    // 6. 索引数据与类型
+    // 6. Index data and type
     if (prim.index.empty()) {
         utility::panic("model has no index data");
     }
@@ -236,8 +236,8 @@ int main(int argc, char** argv) {
         return reinterpret_cast<const uint16_t*>(prim.index.data())[i];
     };
 
-    // 7. 切线：模型自带 TANGENT 则直接使用，否则按 position/uv 逐三角形计算
-    //    （经典算法：按三角形累加切线，再用 Gram-Schmidt 正交化）
+    // 7. Tangents: use the model's TANGENT if present, otherwise compute per-triangle from position/uv
+    //    (classic approach: accumulate tangents per triangle, then Gram-Schmidt orthogonalize)
     std::vector<glm::vec3> tangents(vertex_count, glm::vec3(1.0f, 0.0f, 0.0f));
     if (tangent_portion != nullptr) {
         for (size_t i = 0; i < vertex_count; ++i) {
@@ -256,7 +256,7 @@ int main(int argc, char** argv) {
             const glm::vec2 duv2 = uvs[i2] - uvs[i0];
             const float denom = duv1.x * duv2.y - duv2.x * duv1.y;
             if (std::abs(denom) < 1e-8f) {
-                continue; // 退化的 UV 三角形
+                continue; // degenerate UV triangle
             }
             const float f = 1.0f / denom;
             const glm::vec3 tangent = f * duv2.y * e1 - f * duv1.y * e2;
@@ -271,14 +271,14 @@ int main(int argc, char** argv) {
         utility::log("TANGENT not in model, computed from position/uv");
     }
 
-    // 8. 交错成管线要求的单绑定布局（stride 44）
+    // 8. Interleave into the single-binding layout the pipeline expects (stride 44)
     std::vector<vertex> vertices;
     vertices.reserve(vertex_count);
     for (size_t i = 0; i < vertex_count; ++i) {
         vertices.push_back(vertex{.position = positions[i], .normal = normals[i], .uv = uvs[i], .tangent = tangents[i]});
     }
 
-    // 9. 包围盒自动适配相机
+    // 9. Fit the camera from the bounding box
     auto b_min = glm::vec3(std::numeric_limits<float>::infinity());
     auto b_max = glm::vec3(-std::numeric_limits<float>::infinity());
     for (const auto& v : vertices) {
@@ -291,7 +291,7 @@ int main(int argc, char** argv) {
     const float fit_scale = max_extent > 0.0f ? 1.6f / max_extent : 1.0f;
     utility::log("mesh: {} vertices, {} indices, center ({:.3f}, {:.3f}, {:.3f}), extent {:.3f}", vertices.size(), index_count, center.x, center.y, center.z, max_extent);
 
-    // 10. GPU 缓冲：顶点 + 索引
+    // 10. GPU buffers: vertices + indices
     const uint64_t vertex_buffer = runtime->vma.create_buffer(std::span(vertices), vulkan::buffer_type::vertex);
     const uint64_t index_buffer = runtime->vma.create_buffer(prim.index.data(), prim.index.size(), vulkan::buffer_type::index);
     const auto* vertex_detail = runtime->vma.get_buffer_detail(vertex_buffer);
@@ -300,13 +300,13 @@ int main(int argc, char** argv) {
         utility::panic("failed to create mesh buffers");
     }
 
-    // 11. 取 PBR 管线
+    // 11. Fetch the PBR pipeline
     const auto* pipeline = runtime.get_pipeline("pbr");
     if (pipeline == nullptr) {
         utility::panic("pipeline 'pbr' not found in runtime");
     }
 
-    // 12. 材质纹理：albedo 用 sRGB（PBR 线性空间），其余数据贴图用 UNORM
+    // 12. Material textures: albedo as sRGB (PBR linear space), data maps as UNORM
     const auto& texture_indices = prim.texture_indices;
     const auto load_material_texture = [&runtime, &scenes, &texture_indices](const std::string_view semantic, const VkFormat format) -> texture_bundle {
         const auto it = texture_indices.find(std::string(semantic));
@@ -323,7 +323,7 @@ int main(int argc, char** argv) {
         load_material_texture("emissive", VK_FORMAT_R8G8B8A8_UNORM),
     };
 
-    // 缺失贴图时的 1x1 白色占位
+    // 1x1 white fallback for missing textures
     gltf::texture_data white_texture_data{};
     white_texture_data.data = {255, 255, 255, 255};
     white_texture_data.width = 1;
@@ -333,7 +333,7 @@ int main(int argc, char** argv) {
 
     const vulkan::vk_sampler sampler = runtime->make_sampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 0.25f);
 
-    // 12.1 生成并上传 IBL 资源（split-sum：预过滤环境 + 辐照度 + BRDF LUT）
+    // 12.1 Generate and upload IBL resources (split-sum: prefiltered env + irradiance + BRDF LUT)
     constexpr int env_size = 128;
     constexpr int env_mip_count = 5;
     utility::log("generating IBL environment (CPU)...");
@@ -392,7 +392,7 @@ int main(int argc, char** argv) {
     const vulkan::vk_sampler env_sampler = runtime->make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, static_cast<float>(env_mip_count - 1));
     utility::log("IBL ready: {} mips, irradiance 32x32, LUT 256x256", env_mip_count);
 
-    // set 1：5 张贴图（binding 0-4）+ 3 个 IBL 资源（binding 5-7）
+    // set 1: 5 textures (binding 0-4) + 3 IBL resources (binding 5-7)
     auto texture_set = runtime->make_descriptor_set(pipeline->get_descriptor_set_layouts()[1]);
     std::array<VkDescriptorImageInfo, 8> image_infos{};
     std::array<VkWriteDescriptorSet, 8> texture_writes{};
@@ -419,7 +419,7 @@ int main(int argc, char** argv) {
     }
     vkUpdateDescriptorSets(runtime->device, static_cast<uint32_t>(texture_writes.size()), texture_writes.data(), 0, nullptr);
 
-    // 13. 每帧槽位一个 CameraUBO + set 0 描述符集
+    // 13. One CameraUBO per frame slot + a set-0 descriptor set
     constexpr size_t ubo_size = sizeof(vulkan::camera_ubo);
     std::vector<uint64_t> ubo_buffers;
     std::vector<vulkan::vk_descriptor_set> ubo_sets;
@@ -446,14 +446,14 @@ int main(int argc, char** argv) {
         ubo_sets.push_back(std::move(ubo_set));
     }
 
-    // 14. 每帧槽位一条命令缓冲
+    // 14. One command buffer per frame slot
     std::vector<vulkan::vk_command_buffer> command_buffers;
     command_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
     for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
         command_buffers.push_back(runtime->make_command_buffer());
     }
 
-    // 15. 材质 push constants
+    // 15. Material push constants
     pbr_push_constants push = {};
     push.flags = 0;
     if (texture_indices.contains("normal")) {
@@ -466,14 +466,14 @@ int main(int argc, char** argv) {
         push.flags |= 4u;
     }
 
-    // 16. 相机：轨道观察（左键拖拽旋转，滚轮缩放）。
-    //    相机状态在 runtime 中（构造时已注册鼠标回调），矩阵计算在 vulkan::model
+    // 16. Camera: orbit view (left-drag to rotate, wheel to zoom).
+    //    Camera state lives in runtime (mouse callbacks registered at construction); matrices are built in vulkan::model
     const float aspect = static_cast<float>(runtime->swap_chain_extent.width) / static_cast<float>(runtime->swap_chain_extent.height);
 
-    // 模型矩阵（适配缩放 + 居中到原点）
+    // Model matrix (fit scale + centered at origin)
     const glm::mat4 model_matrix = glm::scale(glm::mat4(1.0f), glm::vec3(fit_scale)) * glm::translate(glm::mat4(1.0f), -center);
 
-    // 17. 渲染主循环：直到关闭窗口或按 ESC
+    // 17. Main render loop: until the window closes or ESC is pressed
     utility::log("rendering '{}' with PBR... left-drag to orbit, wheel to zoom, ESC to exit", model_path);
     while (!glfwWindowShouldClose(runtime->window)) {
         glfwPollEvents();
@@ -486,7 +486,7 @@ int main(int argc, char** argv) {
         vkWaitForFences(runtime->device, 1, &runtime->in_flight_fences[frame_slot], VK_TRUE, UINT64_MAX);
         vkResetFences(runtime->device, 1, &runtime->in_flight_fences[frame_slot]);
 
-        // 更新本槽位的 UBO（轨道相机）
+        // Update this slot's UBO (orbit camera)
         const vulkan::camera_ubo ubo = vulkan::make_orbit_camera_ubo(
             runtime.camera.yaw, runtime.camera.pitch, runtime.camera.distance, model_matrix, aspect);
         const auto* ubo_detail = runtime->vma.get_buffer_detail(ubo_buffers[frame_slot]);
@@ -509,10 +509,10 @@ int main(int argc, char** argv) {
             break;
         }
 
-        // 开始 render pass（清屏 + framebuffer/渲染区域，封装在 runtime 中）
+        // Begin the render pass (clear + framebuffer/render area, wrapped in runtime)
         runtime.begin_render_pass(*command_buffer, image_index);
 
-        // 绑定管线 + 设置视口/裁剪（封装在 vk_pipeline 中）
+        // Bind pipeline + set viewport/scissor (wrapped in vk_pipeline)
         pipeline->begin_pipeline(*command_buffer);
 
         const VkBuffer vertex_handle = vertex_detail->buffer;
@@ -542,7 +542,7 @@ int main(int argc, char** argv) {
             break;
         }
 
-        // 提交 + 呈现（封装在 core 中，含信号量/栅栏/队列选择）
+        // Submit + present (wrapped in core: semaphores/fences/queue selection)
         if (runtime->submit(*command_buffer, image_index) != VK_SUCCESS) {
             break;
         }
@@ -553,7 +553,7 @@ int main(int argc, char** argv) {
         runtime->to_next_frame();
     }
 
-    // 18. 等待 GPU 完成后再释放资源（image view / sampler 由 RAII 句柄自动销毁）
+    // 18. Wait for the GPU to finish before releasing resources (image views / samplers freed by RAII handles)
     vkDeviceWaitIdle(runtime->device);
     runtime->vma.free_image(lut_image);
     runtime->vma.free_image(irr_image);
