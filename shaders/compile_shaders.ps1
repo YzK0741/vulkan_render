@@ -1,9 +1,9 @@
-# 重新编译 shaders/ 目录下的 GLSL 着色器为 SPIR-V 二进制
-# 用法: powershell -ExecutionPolicy Bypass -File shaders/compile_shaders.ps1
+# Recompile the GLSL shaders in shaders/ to SPIR-V binaries
+# Usage: powershell -ExecutionPolicy Bypass -File shaders/compile_shaders.ps1
 
 $ErrorActionPreference = "Stop"
 
-# 查找 glslc：优先 PATH，其次 VULKAN_SDK
+# Locate glslc: PATH first, then VULKAN_SDK
 $glslcPath = ""
 $cmd = Get-Command glslc -ErrorAction SilentlyContinue
 if ($cmd) {

@@ -19,9 +19,9 @@ layout(set = 1, binding = 1) uniform sampler2D metallic_roughness_texture;
 layout(set = 1, binding = 2) uniform sampler2D normal_texture;
 layout(set = 1, binding = 3) uniform sampler2D occlusion_texture;
 layout(set = 1, binding = 4) uniform sampler2D emissive_texture;
-layout(set = 1, binding = 5) uniform samplerCube env_sampler;        // 预过滤环境（粗糙度 mip 链）
-layout(set = 1, binding = 6) uniform samplerCube irradiance_sampler; // 辐照度图（漫反射 IBL）
-layout(set = 1, binding = 7) uniform sampler2D brdf_lut_sampler;     // BRDF 积分 LUT
+layout(set = 1, binding = 5) uniform samplerCube env_sampler;        // prefiltered environment (roughness mip chain)
+layout(set = 1, binding = 6) uniform samplerCube irradiance_sampler; // irradiance map (diffuse IBL)
+layout(set = 1, binding = 7) uniform sampler2D brdf_lut_sampler;     // BRDF integration LUT
 
 layout(push_constant) uniform PushConstants {
     vec4 base_color_factor;
@@ -33,9 +33,9 @@ layout(push_constant) uniform PushConstants {
 } push;
 
 const float PI = 3.14159265359;
-const float ENV_MIP_COUNT = 5.0; // 与 CPU 端生成的预过滤环境 mip 数一致
+const float ENV_MIP_COUNT = 5.0; // must match the prefiltered-env mip count generated on the CPU
 
-// 法线分布函数：GGX / Trowbridge-Reitz
+// Normal distribution function: GGX / Trowbridge-Reitz
 float distribution_ggx(vec3 n, vec3 h, float roughness) {
     float a = roughness * roughness;
     float a2 = a * a;
@@ -44,7 +44,7 @@ float distribution_ggx(vec3 n, vec3 h, float roughness) {
     return a2 / (PI * denom * denom);
 }
 
-// 几何遮蔽：Schlick-GGX（直接光照变体）
+// Geometric shadowing: Schlick-GGX (direct-lighting variant)
 float geometry_schlick_ggx(float ndotv, float roughness) {
     float r = roughness + 1.0;
     float k = (r * r) / 8.0;
@@ -57,24 +57,24 @@ float geometry_smith(vec3 n, vec3 v, vec3 l, float roughness) {
     return geometry_schlick_ggx(ndotv, roughness) * geometry_schlick_ggx(ndotl, roughness);
 }
 
-// 菲涅尔：Schlick 近似
+// Fresnel: Schlick approximation
 vec3 fresnel_schlick(float cos_theta, vec3 f0) {
     return f0 + (1.0 - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
 }
 
-// ---- IBL：split-sum 近似（移植自 glTF-Sample-Renderer 的 ibl.glsl） ----
+// ---- IBL: split-sum approximation (ported from glTF-Sample-Renderer's ibl.glsl) ----
 
-// 漫反射环境：辐照度图
+// Diffuse ambient: irradiance map
 vec3 get_diffuse_light(vec3 n) {
     return texture(irradiance_sampler, n).rgb;
 }
 
-// 镜面环境：按 lod 采样预过滤环境
+// Specular ambient: sample the prefiltered env by lod
 vec3 get_specular_sample(vec3 reflection, float lod) {
     return textureLod(env_sampler, reflection, lod).rgb;
 }
 
-// 单次散射 + 多次散射补偿的 Fresnel 权重（BRDF LUT），来自 Fdez-Aguera
+// Single-scatter + multi-scatter-compensated Fresnel weights (BRDF LUT), from Fdez-Aguera
 vec3 get_ibl_ggx_fresnel(vec3 n, vec3 v, float roughness, vec3 f0, float specular_weight) {
     float ndotv = clamp(dot(n, v), 0.0, 1.0);
     vec2 brdf_sample_point = clamp(vec2(ndotv, roughness), vec2(0.0), vec2(1.0));
@@ -96,20 +96,20 @@ vec3 get_ibl_radiance_ggx(vec3 n, vec3 v, float roughness) {
     return get_specular_sample(reflection, lod);
 }
 
-// ACES 电影级色调映射
+// ACES filmic tonemapping
 vec3 aces_tone_mapping(vec3 color) {
     return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);
 }
 
 void main() {
-    // ---- 材质参数：因子 × 贴图 ----
+    // ---- Material parameters: factor * texture ----
     vec4 base_color = push.base_color_factor * texture(base_color_texture, v_uv);
     float metallic = push.metallic_factor * texture(metallic_roughness_texture, v_uv).b;
     float roughness = push.roughness_factor * texture(metallic_roughness_texture, v_uv).g;
     float ao = texture(occlusion_texture, v_uv).r;
     vec3 emissive = push.emissive_factor.rgb * texture(emissive_texture, v_uv).rgb;
 
-    // ---- 法线：可选切线空间法线贴图，否则使用插值法线 ----
+    // ---- Normal: optional tangent-space normal map, else interpolated normal ----
     vec3 n;
     if ((push.flags & 1u) != 0u) {
         vec3 tangent = normalize(v_tangent);
@@ -123,7 +123,7 @@ void main() {
         n = normalize(v_normal);
     }
 
-    // ---- Cook-Torrance BRDF（单一方向光） ----
+    // ---- Cook-Torrance BRDF (single directional light) ----
     vec3 v = normalize(camera.camera_pos - v_world_pos);
     vec3 l = normalize(vec3(0.3, 1.0, 0.5));
     vec3 h = normalize(v + l);
@@ -144,19 +144,19 @@ void main() {
 
     vec3 diffuse = kd * base_color.rgb / PI;
 
-    // ---- IBL（split-sum）：漫反射辐照度 + 预过滤镜面反射 ----
+    // ---- IBL (split-sum): diffuse irradiance + prefiltered specular ----
     vec3 ibl_diffuse = get_diffuse_light(n);
     vec3 ibl_specular = get_ibl_radiance_ggx(n, v, roughness);
     vec3 fresnel_ibl = get_ibl_ggx_fresnel(n, v, roughness, f0, 1.0);
 
-    // 金属没有漫反射项：漫反射环境光按 (1 - metallic) 衰减，
-    // 金属的颜色完全来自镜面反射环境（与官方 mix(dielectric, metal, metallic) 行为一致）
+    // Metals have no diffuse term: diffuse ambient is scaled by (1 - metallic),
+    // metal color comes entirely from specular environment (matches the official mix(dielectric, metal, metallic))
     vec3 ambient = ibl_diffuse * base_color.rgb * ao * (1.0 - metallic);
     vec3 specular_ibl = ibl_specular * fresnel_ibl * ao;
 
     vec3 color = ambient + (diffuse + specular) * radiance + specular_ibl + emissive;
 
-    // ---- 色调映射 + Gamma 校正 ----
+    // ---- Tonemapping + gamma correction ----
     color = aces_tone_mapping(color);
     color = pow(color, vec3(1.0 / 2.2));
 
