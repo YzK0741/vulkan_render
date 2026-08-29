@@ -154,15 +154,15 @@ namespace utility {
      *        to a debug.log file in Release builds (NDEBUG set)
      *      - not exported; use the utility::log() function template instead
      */
-    class log_sink {
+    class log_sink { // NOLINT
         std::mutex queue_mutex = {};
         std::condition_variable queue_cv = {};
-        std::condition_variable drained_cv = {}; // 队列排空通知
+        std::condition_variable drained_cv = {}; // notifies when the queue has been drained
         std::queue<std::string> messages = {};
-        std::size_t pending = 0; // 待写消息数（排队中 + 正在输出）
+        std::size_t pending = 0; // messages pending write (queued + currently being written)
         std::thread worker = {};
         std::atomic<bool> running = true;
-        std::ofstream file = {}; // Release 构建输出到 debug.log
+        std::ofstream file = {}; // Release builds write to debug.log
 
         log_sink();
         ~log_sink();
@@ -202,8 +202,8 @@ namespace utility {
         log_sink::instance().write(std::string(message));
     }
 
-    // 内部：错误消息输出——Debug 直接红色输出到 stderr（不经过日志队列，error 之后基本是 terminate），
-    //       Release 交给日志线程写入 debug.log
+    // Internal: error message output — Debug writes directly to stderr in red (bypassing the log queue;
+    //       error is usually followed by terminate), Release hands it to the log thread for debug.log
     void error_message(std::string message);
 
     /**

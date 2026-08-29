@@ -97,7 +97,7 @@ std::optional<std::vector<unsigned char>> utility::read_binary_to_vector(const s
     if (!file) {
         return std::nullopt;
     }
-    // 按文件大小预分配，避免读取过程中反复扩容
+    // Preallocate based on file size to avoid repeated reallocation while reading
     std::vector<unsigned char> data;
     data.reserve(static_cast<size_t>(file_size));
     data.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
@@ -117,7 +117,7 @@ std::optional<std::string> utility::read_binary_to_string(const std::filesystem:
     if (!file) {
         return std::nullopt;
     }
-    // 按文件大小预分配，避免读取过程中反复扩容
+    // Preallocate based on file size to avoid repeated reallocation while reading
     std::string data;
     data.reserve(static_cast<size_t>(file_size));
     data.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
@@ -127,7 +127,7 @@ std::optional<std::string> utility::read_binary_to_string(const std::filesystem:
     return data;
 }
 
-// ---- 异步日志（Meyer 单例，内部实现） ----
+// ---- Async logging (Meyer singleton, internal implementation) ----
 
 utility::log_sink& utility::log_sink::instance() noexcept {
     static log_sink instance;
@@ -136,7 +136,7 @@ utility::log_sink& utility::log_sink::instance() noexcept {
 
 utility::log_sink::log_sink() {
 #ifdef NDEBUG
-    // Release 构建：写入 debug.log（追加模式）
+    // Release builds: append to debug.log
     this->file.open("debug.log", std::ios::out | std::ios::app);
 #endif
     this->worker = std::thread([this] { this->worker_loop(); });
@@ -146,7 +146,7 @@ utility::log_sink::~log_sink() {
     this->running = false;
     this->queue_cv.notify_all();
     if (this->worker.joinable()) {
-        this->worker.join(); // 等 worker 排空队列后退出
+        this->worker.join(); // wait for the worker to drain the queue before exiting
     }
 #ifdef NDEBUG
     if (this->file.is_open()) {
@@ -160,7 +160,7 @@ void utility::log_sink::worker_loop() noexcept {
         std::string message;
         {
             std::unique_lock lock(this->queue_mutex);
-            // 一直等待并尝试取消息；退出前把队列排空
+            // Keep waiting for messages; drain the queue before exiting
             this->queue_cv.wait(lock, [this] { return !this->running || !this->messages.empty(); });
             if (this->messages.empty()) {
                 if (!this->running) {
@@ -171,18 +171,18 @@ void utility::log_sink::worker_loop() noexcept {
             message = std::move(this->messages.front());
             this->messages.pop();
         }
-        // 锁外输出，避免阻塞生产者（统一补换行，消息本身不带 \n）
+        // Write outside the lock to avoid blocking producers (newline appended here; messages carry no \n)
 #ifdef NDEBUG
         if (this->file.is_open()) {
             this->file << message << '\n'
                        << std::flush;
         } else {
-            std::println("{}", message); // 文件打不开时回退终端
+            std::println("{}", message); // fall back to the terminal if the file cannot be opened
         }
 #else
         std::println("{}", message);
 #endif
-        // 输出完成后再递减待写计数，wait_log_all 才能等到包括"正在输出"的最后一条
+        // Decrement pending only after the write finishes so wait_log_all also covers the message being written
         {
             std::lock_guard lock(this->queue_mutex);
             --this->pending;
@@ -209,10 +209,10 @@ void utility::log_sink::wait_all() {
 
 void utility::error_message(std::string message) {
 #ifdef NDEBUG
-    // Release：交给日志线程（写入 debug.log）
+    // Release: hand to the log thread (writes to debug.log)
     log_sink::instance().write("[ERROR] " + std::move(message));
 #else
-    // Debug：直接红色输出到 stderr，醒目不排队（error 之后基本是 terminate）
+    // Debug: print directly to stderr in red, no queueing (error is usually followed by terminate)
     std::print(stderr, "\x1b[31m[ERROR] {}\x1b[0m\n", message);
 #endif
 }

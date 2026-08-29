@@ -239,9 +239,9 @@ namespace utility {
             }
 
             if (layers.size() == 1) {
-                // 只有一个元素时，layers[0][0] 指向的是 leaves 的 vector 元素，
-                // 直接交给 unique_ptr 会在析构时 delete 它（不是 new 出来的）→ 双重释放 UB。
-                // 在堆上拷贝一份作为根节点。
+                // With a single element, layers[0][0] points at an element of the leaves vector;
+                // handing it to a unique_ptr would delete it on destruction (it wasn't new'd) -> double-free UB.
+                // Copy it to the heap as the root node instead.
                 return {std::make_unique<bvh_node<T>>(*layers.back()[0])};
             }
 
