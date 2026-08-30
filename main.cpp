@@ -335,17 +335,23 @@ int main(int argc, char** argv) {
     double fps_elapsed = 0.0;
     uint32_t fps_frame_count = 0;
 
-    while (!glfwWindowShouldClose(runtime->get_window())) {
-        glfwPollEvents();
-        if (glfwGetKey(runtime->get_window(), GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-            glfwSetWindowShouldClose(runtime->get_window(), GLFW_TRUE);
-        }
-
-        if (!runtime.render_frame()) {
+    // All per-frame decisions (event polling, ESC/close response, minimize skip, swapchain
+    // recreation on restore/resize) live inside runtime::render_frame(); main only reacts to
+    // the returned frame_result.
+    while (true) {
+        const vulkan::frame_result result = runtime.render_frame();
+        if (result == vulkan::frame_result::closed || result == vulkan::frame_result::failed) {
             break;
         }
+        if (result == vulkan::frame_result::skipped) {
+            // Minimized or swapchain recreated: skip this frame; keep the FPS timer fresh so the
+            // pause is not counted as one huge rendered frame.
+            last_frame_time = std::chrono::steady_clock::now();
+            std::this_thread::yield();
+            continue;
+        }
 
-        // FPS statistics: frame time = wall time since the previous frame
+        // render_success: frame time = wall time since the previous rendered frame
         const auto now = std::chrono::steady_clock::now();
         fps_elapsed += std::chrono::duration<double>(now - last_frame_time).count();
         last_frame_time = now;
