@@ -139,7 +139,7 @@ namespace vulkan {
          * @param frame_slot the frame slot whose camera UBO set to bind (see vulkan::core::MAX_FRAMES_IN_FLIGHT)
          */
         void draw(VkCommandBuffer command_buffer, uint32_t frame_slot) const;
-        void update_camera_ubo(uint32_t frame_slot, const camera_ubo& ubo) noexcept;
+        void update_camera_ubo(uint32_t frame_slot, const camera_ubo& ubo) const noexcept;
         void destroy(vma_allocator& vma) noexcept;
         [[nodiscard]] bool is_valid() const noexcept;
     };

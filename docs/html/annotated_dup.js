@@ -32,6 +32,7 @@ var annotated_dup =
       [ "buffer_detail", "structvulkan_1_1buffer__detail.html", null ],
       [ "camera_ubo", "structvulkan_1_1camera__ubo.html", null ],
       [ "core", "structvulkan_1_1core.html", "structvulkan_1_1core" ],
+      [ "core_filter", "classvulkan_1_1core__filter.html", null ],
       [ "ibl_input", "structvulkan_1_1ibl__input.html", null ],
       [ "image_create_info", "structvulkan_1_1image__create__info.html", null ],
       [ "image_detail", "structvulkan_1_1image__detail.html", null ],

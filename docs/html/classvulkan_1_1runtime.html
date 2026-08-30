@@ -117,8 +117,8 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('classvulkan_1_
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-pub-methods" class="groupheader"><a id="pub-methods" name="pub-methods"></a>
 Public Member Functions</h2></td></tr>
-<tr class="memitem:a86f22a16b21fe992d2fb71b2ea85554f" id="r_a86f22a16b21fe992d2fb71b2ea85554f"><td class="memItemLeft"><a id="a86f22a16b21fe992d2fb71b2ea85554f" name="a86f22a16b21fe992d2fb71b2ea85554f"></a>
-<a class="el" href="structvulkan_1_1core.html">core</a> *&#160;</td><td class="memItemRight"><b>operator-&gt;</b> ()</td></tr>
+<tr class="memitem:a5534e256f4e8084417086e4bc0cde0c2" id="r_a5534e256f4e8084417086e4bc0cde0c2"><td class="memItemLeft"><a id="a5534e256f4e8084417086e4bc0cde0c2" name="a5534e256f4e8084417086e4bc0cde0c2"></a>
+const <a class="el" href="classvulkan_1_1core__filter.html">core_filter</a> *&#160;</td><td class="memItemRight"><b>operator-&gt;</b> () const noexcept</td></tr>
 <tr class="memitem:gaadc641aed747aabe9d10ccb2fb71db1f" id="r_gaadc641aed747aabe9d10ccb2fb71db1f"><td class="memItemLeft">&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__runtime.html#gaadc641aed747aabe9d10ccb2fb71db1f">~runtime</a> ()</td></tr>
 <tr class="memdesc:gaadc641aed747aabe9d10ccb2fb71db1f"><td class="mdescLeft">&#160;</td><td class="mdescRight">destroy cached pipelines before the inner core (and thus the VkDevice) is destroyed  <br /></td></tr>
 <tr class="memitem:gaa83ba5bdc781dedaf7ba711d634d28d8" id="r_gaa83ba5bdc781dedaf7ba711d634d28d8"><td class="memItemLeft">bool&#160;</td><td class="memItemRight"><a class="el" href="group__vulkan__runtime.html#gaa83ba5bdc781dedaf7ba711d634d28d8">render_frame</a> ()</td></tr>
@@ -142,7 +142,7 @@ Public Attributes</h2></td></tr>
 </table>
 <a name="details" id="details"></a><h2 id="header-details" class="groupheader">Detailed Description</h2>
 <div class="textblock"><dl class="section note"><dt>Note</dt><dd><ul>
-<li>use operator-&gt; to access the inner core (e.g. runtime-&gt;vma.create_buffer(...))</li>
+<li>use operator-&gt; to access the filtered core view (<a class="el" href="classvulkan_1_1core__filter.html" title="filtered view over a core: forwards only the methods and objects suitable for external consumers,...">core_filter</a>, e.g. runtime-&gt;get_device())</li>
 <li>default construction performs the whole core initialization (window/instance/device/swap chain etc.) and registers the orbit camera mouse callbacks on the window </li>
 </ul>
 </dd></dl>

@@ -79,7 +79,7 @@ namespace utility {
         return code;
     }
 
-    bool frustum::in(glm::vec3 const& min, glm::vec3 const& max) {
+    bool frustum::in(glm::vec3 const& min, glm::vec3 const& max) const {
         return std::ranges::all_of(this->planes, [&min, &max](glm::vec4 const& p) {
             glm::vec3 pos = {};
             pos.x = p.x >= 0 ? max.x : min.x;

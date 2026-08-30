@@ -6,5 +6,5 @@ var searchData=
   ['format_5fsize_3',['format_size',['../group__vulkan__spirv__parser.html#ga6601bf3790a44042d2e16417e1268a1a',1,'vulkan::pipeline']]],
   ['free_5fbuffer_4',['free_buffer',['../group__vulkan__vma.html#ga64983a580277af98f33956510c9ca0aa',1,'vulkan::vma_allocator']]],
   ['free_5fimage_5',['free_image',['../group__vulkan__vma.html#gaa5ba469b58a27a57d67fc898338afe3d',1,'vulkan::vma_allocator']]],
-  ['frustum_5fcull_6',['frustum_cull',['../group__bvh.html#gaf91e76d3f3ff45e3fe7fb2938ccf258f',1,'utility::bvh']]]
+  ['frustum_5fcull_6',['frustum_cull',['../group__bvh.html#ga66dd81724ab0912f93109c62daa9fcf7',1,'utility::bvh']]]
 ];

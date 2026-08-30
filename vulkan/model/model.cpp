@@ -269,7 +269,7 @@ namespace vulkan {
         vkCmdDrawIndexed(command_buffer, this->index_count, 1, 0, 0, 0);
     }
 
-    void model::update_camera_ubo(const uint32_t frame_slot, const camera_ubo& ubo) noexcept {
+    void model::update_camera_ubo(const uint32_t frame_slot, const camera_ubo& ubo) const noexcept {
         if (frame_slot < this->ubo_mapped.size() && this->ubo_mapped[frame_slot] != nullptr) {
             std::memcpy(this->ubo_mapped[frame_slot], &ubo, this->ubo_size);
         }

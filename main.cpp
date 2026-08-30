@@ -334,10 +334,10 @@ int main(int argc, char** argv) {
     double fps_elapsed = 0.0;
     uint32_t fps_frame_count = 0;
 
-    while (!glfwWindowShouldClose(runtime->window)) {
+    while (!glfwWindowShouldClose(runtime->get_window())) {
         glfwPollEvents();
-        if (glfwGetKey(runtime->window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-            glfwSetWindowShouldClose(runtime->window, GLFW_TRUE);
+        if (glfwGetKey(runtime->get_window(), GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+            glfwSetWindowShouldClose(runtime->get_window(), GLFW_TRUE);
         }
 
         if (!runtime.render_frame()) {
@@ -352,14 +352,14 @@ int main(int argc, char** argv) {
         if (fps_elapsed >= 1.0) {
             const double fps = fps_frame_count / fps_elapsed;
             utility::log("fps: {:.1f} ({:.2f} ms/frame)", fps, 1000.0 * fps_elapsed / fps_frame_count);
-            glfwSetWindowTitle(runtime->window, std::format("vulkan_render - {:.1f} fps", fps).c_str());
+            glfwSetWindowTitle(runtime->get_window(), std::format("vulkan_render - {:.1f} fps", fps).c_str());
             fps_elapsed = 0.0;
             fps_frame_count = 0;
         }
     }
 
     // 18. Wait for the GPU to finish; models and pipelines are released by the runtime destructor
-    vkDeviceWaitIdle(runtime->device);
+    vkDeviceWaitIdle(runtime->get_device());
     utility::log("render loop finished");
     return 0;
 }

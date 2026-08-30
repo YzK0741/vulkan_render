@@ -764,15 +764,15 @@ namespace vulkan {
         });
     }
 
-    vk_command_buffer core::make_command_buffer() {
+    vk_command_buffer core::make_command_buffer() const {
         return ::vulkan::make_command_buffer(this->device, this->command_pool);
     }
 
-    vk_descriptor_set core::make_descriptor_set(const VkDescriptorSetLayout layout) { // NOLINT(*-misplaced-const)
+    vk_descriptor_set core::make_descriptor_set(const VkDescriptorSetLayout layout) const { // NOLINT(*-misplaced-const)
         return ::vulkan::make_descriptor_set(this->device, this->descriptor_pool, layout);
     }
 
-    vk_image_view core::make_image_view(const VkImage image, const VkFormat format, const VkImageViewType type) {
+    vk_image_view core::make_image_view(const VkImage image, const VkFormat format, const VkImageViewType type) const {
         VkImageViewCreateInfo view_info = {};
         view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         view_info.image = image;
@@ -784,7 +784,7 @@ namespace vulkan {
         return vk_image_view(view, this->device);
     }
 
-    vk_sampler core::make_sampler(const VkSamplerAddressMode address_mode, const float max_lod) {
+    vk_sampler core::make_sampler(const VkSamplerAddressMode address_mode, const float max_lod) const {
         VkSamplerCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
         info.magFilter = VK_FILTER_LINEAR;
@@ -801,7 +801,7 @@ namespace vulkan {
         return vk_sampler(sampler, this->device);
     }
 
-    std::optional<vk_shader_module> core::make_shader_module(const std::span<unsigned char> shader) noexcept {
+    std::optional<vk_shader_module> core::make_shader_module(const std::span<unsigned char> shader) const noexcept {
         return ::vulkan::make_shader_module(shader, this->device);
     }
 
@@ -830,7 +830,7 @@ namespace vulkan {
         current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
-    VkResult core::submit(const VkCommandBuffer command_buffer, const uint32_t image_index) {
+    VkResult core::submit(const VkCommandBuffer command_buffer, const uint32_t image_index) const {
         const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submit_info = {};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -844,7 +844,7 @@ namespace vulkan {
         return vkQueueSubmit(this->graphics_queue, 1, &submit_info, this->in_flight_fences[this->current_frame]);
     }
 
-    VkResult core::present(const uint32_t image_index) {
+    VkResult core::present(const uint32_t image_index) const {
         VkPresentInfoKHR present_info = {};
         present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         present_info.waitSemaphoreCount = 1;
@@ -948,7 +948,7 @@ namespace vulkan {
 
     std::expected<vk_pipeline, std::string_view> core::make_pipeline(
         std::span<const unsigned char> vertex_shader_code,
-        const std::span<const unsigned char> fragment_shader_code) {
+        const std::span<const unsigned char> fragment_shader_code) const {
         auto result = vulkan::make_pipeline(
             this->device,
             this->renderpass,
@@ -966,5 +966,56 @@ namespace vulkan {
             result->scissor = {{0, 0}, this->swap_chain_extent};
         }
         return result;
+    }
+} // namespace vulkan
+
+// core_filter
+namespace vulkan {
+    core_filter::core_filter(core& core) noexcept
+        : vk_core(std::addressof(core)) {
+    }
+
+    VkDevice core_filter::get_device() const noexcept {
+        return this->vk_core->device;
+    }
+
+    GLFWwindow* core_filter::get_window() const noexcept {
+        return this->vk_core->window;
+    }
+
+    VkExtent2D core_filter::get_swap_chain_extent() const noexcept {
+        return this->vk_core->swap_chain_extent;
+    }
+
+    VkFormat core_filter::get_swap_chain_image_format() const noexcept {
+        return this->vk_core->swap_chain_image_format;
+    }
+
+    uint32_t core_filter::get_current_frame() const noexcept {
+        return static_cast<uint32_t>(this->vk_core->current_frame);
+    }
+
+    vk_command_buffer core_filter::make_command_buffer() const {
+        return this->vk_core->make_command_buffer();
+    }
+
+    vk_descriptor_set core_filter::make_descriptor_set(const VkDescriptorSetLayout layout) const {
+        return this->vk_core->make_descriptor_set(layout);
+    }
+
+    std::optional<vk_shader_module> core_filter::make_shader_module(const std::span<unsigned char> shader) const noexcept {
+        return this->vk_core->make_shader_module(shader);
+    }
+
+    vk_image_view core_filter::make_image_view(const VkImage image, const VkFormat format, const VkImageViewType type) const {
+        return this->vk_core->make_image_view(image, format, type);
+    }
+
+    vk_sampler core_filter::make_sampler(const VkSamplerAddressMode address_mode, const float max_lod) const {
+        return this->vk_core->make_sampler(address_mode, max_lod);
+    }
+
+    void core_filter::recreate_swap_chain() const {
+        this->vk_core->recreate_swap_chain();
     }
 } // namespace vulkan

@@ -41,7 +41,7 @@ namespace utility {
         glm::vec3 max = {};
         T* extra_data = nullptr;
 
-        bool is_valid() {
+        [[nodiscard]] bool is_valid() const {
             return this->min.x <= this->max.x && this->min.y <= this->max.y && this->min.z <= this->max.z;
         }
         [[nodiscard]] glm::vec3 get_midpoint() const noexcept {
@@ -64,14 +64,14 @@ namespace utility {
             return common;
         }
 
-        float surface_area() {
+        [[nodiscard]] float surface_area() const {
             const float w = this->max.y - this->min.y;
             const float h = this->max.x - this->min.x;
             const float l = this->max.z - this->min.z;
             return 2.0f * (w * h + w * l + h * l);
         }
 
-        explicit operator bool() {
+        explicit operator bool() const {
             return this->is_valid();
         }
 
@@ -120,7 +120,7 @@ namespace utility {
                 midpoint.z = (min.z + max.z) * 0.5f;
                 return midpoint;
             }
-            float surface_area() {
+            [[nodiscard]] float surface_area() const {
                 const float w = this->max.y - this->min.y;
                 const float h = this->max.x - this->min.x;
                 const float l = this->max.z - this->min.z;
@@ -151,7 +151,7 @@ namespace utility {
     export struct frustum {
         glm::vec4 planes[6];
         glm::vec3 corners[8];
-        bool in(glm::vec3 const& min, glm::vec3 const& max);
+        bool in(glm::vec3 const& min, glm::vec3 const& max) const;
     };
 
     /**
@@ -340,7 +340,7 @@ namespace utility {
          * @param t_min minimum hit distance
          * @param t_max maximum hit distance
          */
-        void get_hit(glm::vec3 const& start, glm::vec3 const& direction, float t_min = 0.01f, float t_max = std::numeric_limits<float>::infinity()) {
+        void get_hit(glm::vec3 const& start, glm::vec3 const& direction, float t_min = 0.01f, float t_max = std::numeric_limits<float>::infinity()) const {
             std::stack<bvh_node<T>*> nodes_to_access;
             std::priority_queue<bvh_node<T>*> hit_list;
             bvh_node<T>* root = this->root.get();
@@ -380,7 +380,7 @@ namespace utility {
          * @param f the frustum
          * @return leaf node pointers inside the frustum
          */
-        std::vector<bvh_node<T>*> frustum_cull(frustum const& f) {
+        std::vector<bvh_node<T>*> frustum_cull(frustum const& f) const {
             std::vector<bvh_node<T>*> result;
 
             if (root == nullptr) {

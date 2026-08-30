@@ -115,16 +115,21 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('group__vulkan_
 <p>manages core vulkan objects and windows instance init and destroy.  
 <a href="#details">More...</a></p>
 <table class="memberdecls">
+<tr class="heading"><td colspan="2"><h2 id="header-nested-classes" class="groupheader"><a id="nested-classes" name="nested-classes"></a>
+Classes</h2></td></tr>
+<tr class="memitem:vulkan_3A_3Acore_5Ffilter" id="r_vulkan_3A_3Acore_5Ffilter"><td class="memItemLeft">class &#160;</td><td class="memItemRight"><a class="el" href="classvulkan_1_1core__filter.html">vulkan::core_filter</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">filtered view over a core: forwards only the methods and objects suitable for external consumers, hiding the initialization internals  <a href="classvulkan_1_1core__filter.html#details">More...</a><br /></td></tr>
+</table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-func-members" class="groupheader"><a id="func-members" name="func-members"></a>
 Functions</h2></td></tr>
-<tr class="memitem:gad706b9bf949fac1ef4962fbe02765185" id="r_gad706b9bf949fac1ef4962fbe02765185"><td class="memItemLeft"><a class="el" href="classvulkan_1_1vk__image__view.html">vk_image_view</a>&#160;</td><td class="memItemRight"><a class="el" href="#gad706b9bf949fac1ef4962fbe02765185">vulkan::core::make_image_view</a> (VkImage image, VkFormat format, VkImageViewType type)</td></tr>
-<tr class="memdesc:gad706b9bf949fac1ef4962fbe02765185"><td class="mdescLeft">&#160;</td><td class="mdescRight">create an image view covering the whole image (all mip levels and layers)  <br /></td></tr>
-<tr class="memitem:gaef9e697bd65aa9d424a22cfc221e1f85" id="r_gaef9e697bd65aa9d424a22cfc221e1f85"><td class="memItemLeft"><a class="el" href="classvulkan_1_1vk__sampler.html">vk_sampler</a>&#160;</td><td class="memItemRight"><a class="el" href="#gaef9e697bd65aa9d424a22cfc221e1f85">vulkan::core::make_sampler</a> (VkSamplerAddressMode address_mode, float max_lod)</td></tr>
-<tr class="memdesc:gaef9e697bd65aa9d424a22cfc221e1f85"><td class="mdescLeft">&#160;</td><td class="mdescRight">create a linear/min-linear sampler with the given wrap mode  <br /></td></tr>
-<tr class="memitem:ga98fccc376f5793a56bca2a3c3dc8b2e8" id="r_ga98fccc376f5793a56bca2a3c3dc8b2e8"><td class="memItemLeft">VkResult&#160;</td><td class="memItemRight"><a class="el" href="#ga98fccc376f5793a56bca2a3c3dc8b2e8">vulkan::core::submit</a> (VkCommandBuffer command_buffer, uint32_t image_index)</td></tr>
-<tr class="memdesc:ga98fccc376f5793a56bca2a3c3dc8b2e8"><td class="mdescLeft">&#160;</td><td class="mdescRight">submit the recorded command buffer for the current frame  <br /></td></tr>
-<tr class="memitem:ga287e55ac98603de1f98598e48a8337ba" id="r_ga287e55ac98603de1f98598e48a8337ba"><td class="memItemLeft">VkResult&#160;</td><td class="memItemRight"><a class="el" href="#ga287e55ac98603de1f98598e48a8337ba">vulkan::core::present</a> (uint32_t image_index)</td></tr>
-<tr class="memdesc:ga287e55ac98603de1f98598e48a8337ba"><td class="mdescLeft">&#160;</td><td class="mdescRight">present the rendered swapchain image  <br /></td></tr>
+<tr class="memitem:gae42c6351bcfef936876e6c5afe14dc75" id="r_gae42c6351bcfef936876e6c5afe14dc75"><td class="memItemLeft"><a class="el" href="classvulkan_1_1vk__image__view.html">vk_image_view</a>&#160;</td><td class="memItemRight"><a class="el" href="#gae42c6351bcfef936876e6c5afe14dc75">vulkan::core::make_image_view</a> (VkImage image, VkFormat format, VkImageViewType type) const</td></tr>
+<tr class="memdesc:gae42c6351bcfef936876e6c5afe14dc75"><td class="mdescLeft">&#160;</td><td class="mdescRight">create an image view covering the whole image (all mip levels and layers)  <br /></td></tr>
+<tr class="memitem:ga18cd8ab3ad9139e28667af3dae540b0e" id="r_ga18cd8ab3ad9139e28667af3dae540b0e"><td class="memItemLeft"><a class="el" href="classvulkan_1_1vk__sampler.html">vk_sampler</a>&#160;</td><td class="memItemRight"><a class="el" href="#ga18cd8ab3ad9139e28667af3dae540b0e">vulkan::core::make_sampler</a> (VkSamplerAddressMode address_mode, float max_lod) const</td></tr>
+<tr class="memdesc:ga18cd8ab3ad9139e28667af3dae540b0e"><td class="mdescLeft">&#160;</td><td class="mdescRight">create a linear/min-linear sampler with the given wrap mode  <br /></td></tr>
+<tr class="memitem:ga5a6905504a1b3bc0d49f8fed79858f91" id="r_ga5a6905504a1b3bc0d49f8fed79858f91"><td class="memItemLeft">VkResult&#160;</td><td class="memItemRight"><a class="el" href="#ga5a6905504a1b3bc0d49f8fed79858f91">vulkan::core::submit</a> (VkCommandBuffer command_buffer, uint32_t image_index) const</td></tr>
+<tr class="memdesc:ga5a6905504a1b3bc0d49f8fed79858f91"><td class="mdescLeft">&#160;</td><td class="mdescRight">submit the recorded command buffer for the current frame  <br /></td></tr>
+<tr class="memitem:ga0d6e3f5ab64ae48d534a617e94998c23" id="r_ga0d6e3f5ab64ae48d534a617e94998c23"><td class="memItemLeft">VkResult&#160;</td><td class="memItemRight"><a class="el" href="#ga0d6e3f5ab64ae48d534a617e94998c23">vulkan::core::present</a> (uint32_t image_index) const</td></tr>
+<tr class="memdesc:ga0d6e3f5ab64ae48d534a617e94998c23"><td class="mdescLeft">&#160;</td><td class="mdescRight">present the rendered swapchain image  <br /></td></tr>
 </table>
 <a name="details" id="details"></a><h2 id="header-details" class="groupheader">Detailed Description</h2>
 <div class="textblock"><dl class="section note"><dt>Note</dt><dd><ul>
@@ -138,8 +143,8 @@ Functions</h2></td></tr>
 </ul>
 </dd></dl>
 </div><a name="doc-func-members" id="doc-func-members"></a><h2 id="header-doc-func-members" class="groupheader">Function Documentation</h2>
-<a id="gad706b9bf949fac1ef4962fbe02765185" name="gad706b9bf949fac1ef4962fbe02765185"></a>
-<h2 class="memtitle"><span class="permalink"><a href="#gad706b9bf949fac1ef4962fbe02765185">&#9670;&#160;</a></span>make_image_view()</h2>
+<a id="gae42c6351bcfef936876e6c5afe14dc75" name="gae42c6351bcfef936876e6c5afe14dc75"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#gae42c6351bcfef936876e6c5afe14dc75">&#9670;&#160;</a></span>make_image_view()</h2>
 
 <div class="memitem">
 <div class="memproto">
@@ -157,7 +162,7 @@ Functions</h2></td></tr>
         <tr>
           <td class="paramkey"></td>
           <td></td>
-          <td class="paramtype">VkImageViewType</td>          <td class="paramname"><span class="paramname"><em>type</em></span>&#160;)</td>
+          <td class="paramtype">VkImageViewType</td>          <td class="paramname"><span class="paramname"><em>type</em></span>&#160;) const</td>
         </tr>
       </table>
 </div><div class="memdoc">
@@ -173,8 +178,8 @@ Functions</h2></td></tr>
 
 </div>
 </div>
-<a id="gaef9e697bd65aa9d424a22cfc221e1f85" name="gaef9e697bd65aa9d424a22cfc221e1f85"></a>
-<h2 class="memtitle"><span class="permalink"><a href="#gaef9e697bd65aa9d424a22cfc221e1f85">&#9670;&#160;</a></span>make_sampler()</h2>
+<a id="ga18cd8ab3ad9139e28667af3dae540b0e" name="ga18cd8ab3ad9139e28667af3dae540b0e"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga18cd8ab3ad9139e28667af3dae540b0e">&#9670;&#160;</a></span>make_sampler()</h2>
 
 <div class="memitem">
 <div class="memproto">
@@ -187,7 +192,7 @@ Functions</h2></td></tr>
         <tr>
           <td class="paramkey"></td>
           <td></td>
-          <td class="paramtype">float</td>          <td class="paramname"><span class="paramname"><em>max_lod</em></span>&#160;)</td>
+          <td class="paramtype">float</td>          <td class="paramname"><span class="paramname"><em>max_lod</em></span>&#160;) const</td>
         </tr>
       </table>
 </div><div class="memdoc">
@@ -202,8 +207,8 @@ Functions</h2></td></tr>
 
 </div>
 </div>
-<a id="ga287e55ac98603de1f98598e48a8337ba" name="ga287e55ac98603de1f98598e48a8337ba"></a>
-<h2 class="memtitle"><span class="permalink"><a href="#ga287e55ac98603de1f98598e48a8337ba">&#9670;&#160;</a></span>present()</h2>
+<a id="ga0d6e3f5ab64ae48d534a617e94998c23" name="ga0d6e3f5ab64ae48d534a617e94998c23"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga0d6e3f5ab64ae48d534a617e94998c23">&#9670;&#160;</a></span>present()</h2>
 
 <div class="memitem">
 <div class="memproto">
@@ -212,7 +217,7 @@ Functions</h2></td></tr>
           <td class="memname">VkResult vulkan::core::present </td>
           <td>(</td>
           <td class="paramtype">uint32_t</td>          <td class="paramname"><span class="paramname"><em>image_index</em></span></td><td>)</td>
-          <td></td>
+          <td> const</td>
         </tr>
       </table>
 </div><div class="memdoc">
@@ -226,8 +231,8 @@ Functions</h2></td></tr>
 
 </div>
 </div>
-<a id="ga98fccc376f5793a56bca2a3c3dc8b2e8" name="ga98fccc376f5793a56bca2a3c3dc8b2e8"></a>
-<h2 class="memtitle"><span class="permalink"><a href="#ga98fccc376f5793a56bca2a3c3dc8b2e8">&#9670;&#160;</a></span>submit()</h2>
+<a id="ga5a6905504a1b3bc0d49f8fed79858f91" name="ga5a6905504a1b3bc0d49f8fed79858f91"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga5a6905504a1b3bc0d49f8fed79858f91">&#9670;&#160;</a></span>submit()</h2>
 
 <div class="memitem">
 <div class="memproto">
@@ -240,7 +245,7 @@ Functions</h2></td></tr>
         <tr>
           <td class="paramkey"></td>
           <td></td>
-          <td class="paramtype">uint32_t</td>          <td class="paramname"><span class="paramname"><em>image_index</em></span>&#160;)</td>
+          <td class="paramtype">uint32_t</td>          <td class="paramname"><span class="paramname"><em>image_index</em></span>&#160;) const</td>
         </tr>
       </table>
 </div><div class="memdoc">

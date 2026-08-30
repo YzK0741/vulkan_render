@@ -146,10 +146,10 @@ void&#160;</td><td class="memItemRight"><b>utility::bvh&lt; T &gt;::rebuild</b> 
 <tr class="memdesc:ga0144da7e393f4011164d198a4bb33278"><td class="mdescLeft">&#160;</td><td class="mdescRight">rebuild the tree from the current leaves <br /></td></tr>
 <tr class="memitem:ga56534c524870d3a7479294b4e072e32d" id="r_ga56534c524870d3a7479294b4e072e32d"><td class="memItemLeft">std::expected&lt; void, std::string &gt;&#160;</td><td class="memItemRight"><a class="el" href="#ga56534c524870d3a7479294b4e072e32d">utility::bvh&lt; T &gt;::add</a> (<a class="el" href="structutility_1_1aabb__box.html">aabb_box</a>&lt; T &gt; const &amp;box)</td></tr>
 <tr class="memdesc:ga56534c524870d3a7479294b4e072e32d"><td class="mdescLeft">&#160;</td><td class="mdescRight">add an AABB as a new leaf  <br /></td></tr>
-<tr class="memitem:ga8ded9218d47c322d70f06226d669ef5c" id="r_ga8ded9218d47c322d70f06226d669ef5c"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="#ga8ded9218d47c322d70f06226d669ef5c">utility::bvh&lt; T &gt;::get_hit</a> (glm::vec3 const &amp;start, glm::vec3 const &amp;direction, float t_min=0.01f, float t_max=std::numeric_limits&lt; float &gt;::infinity())</td></tr>
-<tr class="memdesc:ga8ded9218d47c322d70f06226d669ef5c"><td class="mdescLeft">&#160;</td><td class="mdescRight">collect leaf nodes hit by a ray  <br /></td></tr>
-<tr class="memitem:gaf91e76d3f3ff45e3fe7fb2938ccf258f" id="r_gaf91e76d3f3ff45e3fe7fb2938ccf258f"><td class="memItemLeft">std::vector&lt; <a class="el" href="structutility_1_1bvh__node.html">bvh_node</a>&lt; T &gt; * &gt;&#160;</td><td class="memItemRight"><a class="el" href="#gaf91e76d3f3ff45e3fe7fb2938ccf258f">utility::bvh&lt; T &gt;::frustum_cull</a> (<a class="el" href="structutility_1_1frustum.html">frustum</a> const &amp;f)</td></tr>
-<tr class="memdesc:gaf91e76d3f3ff45e3fe7fb2938ccf258f"><td class="mdescLeft">&#160;</td><td class="mdescRight">return leaf nodes intersecting the frustum  <br /></td></tr>
+<tr class="memitem:ga6df306b3fff8cb9037c1fa27d588e9f7" id="r_ga6df306b3fff8cb9037c1fa27d588e9f7"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="#ga6df306b3fff8cb9037c1fa27d588e9f7">utility::bvh&lt; T &gt;::get_hit</a> (glm::vec3 const &amp;start, glm::vec3 const &amp;direction, float t_min=0.01f, float t_max=std::numeric_limits&lt; float &gt;::infinity()) const</td></tr>
+<tr class="memdesc:ga6df306b3fff8cb9037c1fa27d588e9f7"><td class="mdescLeft">&#160;</td><td class="mdescRight">collect leaf nodes hit by a ray  <br /></td></tr>
+<tr class="memitem:ga66dd81724ab0912f93109c62daa9fcf7" id="r_ga66dd81724ab0912f93109c62daa9fcf7"><td class="memItemLeft">std::vector&lt; <a class="el" href="structutility_1_1bvh__node.html">bvh_node</a>&lt; T &gt; * &gt;&#160;</td><td class="memItemRight"><a class="el" href="#ga66dd81724ab0912f93109c62daa9fcf7">utility::bvh&lt; T &gt;::frustum_cull</a> (<a class="el" href="structutility_1_1frustum.html">frustum</a> const &amp;f) const</td></tr>
+<tr class="memdesc:ga66dd81724ab0912f93109c62daa9fcf7"><td class="mdescLeft">&#160;</td><td class="mdescRight">return leaf nodes intersecting the frustum  <br /></td></tr>
 </table>
 <a name="details" id="details"></a><h2 id="header-details" class="groupheader">Detailed Description</h2>
 <div class="textblock"><dl class="section note"><dt>Note</dt><dd><ul>
@@ -193,8 +193,8 @@ template&lt;typename T&gt; </div>
 
 </div>
 </div>
-<a id="gaf91e76d3f3ff45e3fe7fb2938ccf258f" name="gaf91e76d3f3ff45e3fe7fb2938ccf258f"></a>
-<h2 class="memtitle"><span class="permalink"><a href="#gaf91e76d3f3ff45e3fe7fb2938ccf258f">&#9670;&#160;</a></span>frustum_cull()</h2>
+<a id="ga66dd81724ab0912f93109c62daa9fcf7" name="ga66dd81724ab0912f93109c62daa9fcf7"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga66dd81724ab0912f93109c62daa9fcf7">&#9670;&#160;</a></span>frustum_cull()</h2>
 
 <div class="memitem">
 <div class="memproto">
@@ -208,7 +208,7 @@ template&lt;typename T&gt; </div>
           <td class="memname">std::vector&lt; <a class="el" href="structutility_1_1bvh__node.html">bvh_node</a>&lt; T &gt; * &gt; <a class="el" href="classutility_1_1bvh.html">utility::bvh</a>&lt; T &gt;::frustum_cull </td>
           <td>(</td>
           <td class="paramtype"><a class="el" href="structutility_1_1frustum.html">frustum</a> const &amp;</td>          <td class="paramname"><span class="paramname"><em>f</em></span></td><td>)</td>
-          <td></td>
+          <td> const</td>
         </tr>
       </table>
   </td>
@@ -256,8 +256,8 @@ template&lt;typename T&gt; </div>
 
 </div>
 </div>
-<a id="ga8ded9218d47c322d70f06226d669ef5c" name="ga8ded9218d47c322d70f06226d669ef5c"></a>
-<h2 class="memtitle"><span class="permalink"><a href="#ga8ded9218d47c322d70f06226d669ef5c">&#9670;&#160;</a></span>get_hit()</h2>
+<a id="ga6df306b3fff8cb9037c1fa27d588e9f7" name="ga6df306b3fff8cb9037c1fa27d588e9f7"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga6df306b3fff8cb9037c1fa27d588e9f7">&#9670;&#160;</a></span>get_hit()</h2>
 
 <div class="memitem">
 <div class="memproto">
@@ -285,7 +285,7 @@ template&lt;typename T&gt; </div>
         <tr>
           <td class="paramkey"></td>
           <td></td>
-          <td class="paramtype">float</td>          <td class="paramname"><span class="paramname"><em>t_max</em></span><span class="paramdefsep"> = </span><span class="paramdefval">std::numeric_limits&lt;float&gt;::infinity()</span>&#160;)</td>
+          <td class="paramtype">float</td>          <td class="paramname"><span class="paramname"><em>t_max</em></span><span class="paramdefsep"> = </span><span class="paramdefval">std::numeric_limits&lt;float&gt;::infinity()</span>&#160;) const</td>
         </tr>
       </table>
   </td>

@@ -6,6 +6,7 @@ var hierarchy =
     [ "utility::bvh&lt; T &gt;", "classutility_1_1bvh.html", null ],
     [ "utility::bvh_node&lt; T &gt;", "structutility_1_1bvh__node.html", null ],
     [ "vulkan::camera_ubo", "structvulkan_1_1camera__ubo.html", null ],
+    [ "vulkan::core_filter", "classvulkan_1_1core__filter.html", null ],
     [ "utility::data_block&lt; S &gt;", "structutility_1_1data__block.html", null ],
     [ "vulkan::pipeline::descriptor_set_layout_data", "structvulkan_1_1pipeline_1_1descriptor__set__layout__data.html", null ],
     [ "device_capabilities", "structdevice__capabilities.html", null ],

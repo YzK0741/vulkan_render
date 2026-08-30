@@ -12,7 +12,7 @@ export import vulkan.model;
  * @defgroup vulkan_runtime Vulkan Runtime Facade
  * @brief runtime facade: a thin wrapper exposing all functionality of vulkan::core
  * @note
- *      - access the inner core via operator->, same usage as a raw core
+ *      - use operator-> to access the filtered core view (core_filter, e.g. runtime->get_device())
  *      - the inner core's lifetime is tied to the runtime
  */
 namespace vulkan {
@@ -33,7 +33,7 @@ namespace vulkan {
      * @ingroup vulkan_runtime
      * @brief vulkan runtime facade class
      * @note
-     *      - use operator-> to access the inner core (e.g. runtime->vma.create_buffer(...))
+     *      - use operator-> to access the filtered core view (core_filter, e.g. runtime->get_device())
      *      - default construction performs the whole core initialization (window/instance/device/swap chain etc.)
      *        and registers the orbit camera mouse callbacks on the window
      */
@@ -46,6 +46,8 @@ namespace vulkan {
         std::map<std::string_view, std::vector<model>> models;
         // one command buffer per frame slot, used and reused by render_frame()
         std::vector<vk_command_buffer> command_buffers;
+        // filtered view over vulkan_core, exposed via operator-> (external code never sees the raw core)
+        core_filter filtered_core;
 
         /**
          * @ingroup vulkan_runtime
@@ -57,8 +59,8 @@ namespace vulkan {
         void begin_render_pass(VkCommandBuffer command_buffer, uint32_t image_index) const;
 
     public:
-        core* operator->() {
-            return &this->vulkan_core;
+        const core_filter* operator->() const noexcept {
+            return &this->filtered_core;
         }
 
         /**

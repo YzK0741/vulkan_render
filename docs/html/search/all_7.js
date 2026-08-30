@@ -8,7 +8,7 @@ var searchData=
   ['get_5fbuffer_5fdetail_5',['get_buffer_detail',['../group__vulkan__vma.html#gaf0db03b519b559b2fa78e15210248f4a',1,'vulkan::vma_allocator']]],
   ['get_5fcomponent_5fsize_6',['get_component_size',['../group__gltf__loader.html#ga2627d11be3269842552a57c8e0466172',1,'gltf']]],
   ['get_5felement_5fsize_7',['get_element_size',['../group__gltf__loader.html#ga05425ea7659a3b58f44135a48a612d37',1,'gltf']]],
-  ['get_5fhit_8',['get_hit',['../group__bvh.html#ga8ded9218d47c322d70f06226d669ef5c',1,'utility::bvh']]],
+  ['get_5fhit_8',['get_hit',['../group__bvh.html#ga6df306b3fff8cb9037c1fa27d588e9f7',1,'utility::bvh']]],
   ['get_5fimage_5fdetail_9',['get_image_detail',['../group__vulkan__vma.html#gaea42f0dffc2399a1920aff3f550381bb',1,'vulkan::vma_allocator']]],
   ['get_5fmax_5fusable_5fsample_5fcount_10',['get_max_usable_sample_count',['../group__vulkan__init__utils.html#gad4a1377aa21df89eda1b88341a3d79c7',1,'get_max_usable_sample_count(const VkPhysicalDevice &amp;physical_device) noexcept:&#160;init_util.cpp'],['../group__vulkan__init__utils.html#gad4a1377aa21df89eda1b88341a3d79c7',1,'get_max_usable_sample_count(const VkPhysicalDevice &amp;physical_device) noexcept:&#160;init_util.cpp']]],
   ['get_5fmodels_11',['get_models',['../group__vulkan__runtime.html#ga58719234bd34240f63dc4b9c0f110352',1,'vulkan::runtime']]],

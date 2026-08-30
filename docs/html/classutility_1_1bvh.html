@@ -122,10 +122,10 @@ void&#160;</td><td class="memItemRight"><b>rebuild</b> ()</td></tr>
 <tr class="memdesc:ga0144da7e393f4011164d198a4bb33278"><td class="mdescLeft">&#160;</td><td class="mdescRight">rebuild the tree from the current leaves <br /></td></tr>
 <tr class="memitem:ga56534c524870d3a7479294b4e072e32d" id="r_ga56534c524870d3a7479294b4e072e32d"><td class="memItemLeft">std::expected&lt; void, std::string &gt;&#160;</td><td class="memItemRight"><a class="el" href="group__bvh.html#ga56534c524870d3a7479294b4e072e32d">add</a> (<a class="el" href="structutility_1_1aabb__box.html">aabb_box</a>&lt; T &gt; const &amp;box)</td></tr>
 <tr class="memdesc:ga56534c524870d3a7479294b4e072e32d"><td class="mdescLeft">&#160;</td><td class="mdescRight">add an AABB as a new leaf  <br /></td></tr>
-<tr class="memitem:ga8ded9218d47c322d70f06226d669ef5c" id="r_ga8ded9218d47c322d70f06226d669ef5c"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="group__bvh.html#ga8ded9218d47c322d70f06226d669ef5c">get_hit</a> (glm::vec3 const &amp;start, glm::vec3 const &amp;direction, float t_min=0.01f, float t_max=std::numeric_limits&lt; float &gt;::infinity())</td></tr>
-<tr class="memdesc:ga8ded9218d47c322d70f06226d669ef5c"><td class="mdescLeft">&#160;</td><td class="mdescRight">collect leaf nodes hit by a ray  <br /></td></tr>
-<tr class="memitem:gaf91e76d3f3ff45e3fe7fb2938ccf258f" id="r_gaf91e76d3f3ff45e3fe7fb2938ccf258f"><td class="memItemLeft">std::vector&lt; <a class="el" href="structutility_1_1bvh__node.html">bvh_node</a>&lt; T &gt; * &gt;&#160;</td><td class="memItemRight"><a class="el" href="group__bvh.html#gaf91e76d3f3ff45e3fe7fb2938ccf258f">frustum_cull</a> (<a class="el" href="structutility_1_1frustum.html">frustum</a> const &amp;f)</td></tr>
-<tr class="memdesc:gaf91e76d3f3ff45e3fe7fb2938ccf258f"><td class="mdescLeft">&#160;</td><td class="mdescRight">return leaf nodes intersecting the frustum  <br /></td></tr>
+<tr class="memitem:ga6df306b3fff8cb9037c1fa27d588e9f7" id="r_ga6df306b3fff8cb9037c1fa27d588e9f7"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="group__bvh.html#ga6df306b3fff8cb9037c1fa27d588e9f7">get_hit</a> (glm::vec3 const &amp;start, glm::vec3 const &amp;direction, float t_min=0.01f, float t_max=std::numeric_limits&lt; float &gt;::infinity()) const</td></tr>
+<tr class="memdesc:ga6df306b3fff8cb9037c1fa27d588e9f7"><td class="mdescLeft">&#160;</td><td class="mdescRight">collect leaf nodes hit by a ray  <br /></td></tr>
+<tr class="memitem:ga66dd81724ab0912f93109c62daa9fcf7" id="r_ga66dd81724ab0912f93109c62daa9fcf7"><td class="memItemLeft">std::vector&lt; <a class="el" href="structutility_1_1bvh__node.html">bvh_node</a>&lt; T &gt; * &gt;&#160;</td><td class="memItemRight"><a class="el" href="group__bvh.html#ga66dd81724ab0912f93109c62daa9fcf7">frustum_cull</a> (<a class="el" href="structutility_1_1frustum.html">frustum</a> const &amp;f) const</td></tr>
+<tr class="memdesc:ga66dd81724ab0912f93109c62daa9fcf7"><td class="mdescLeft">&#160;</td><td class="mdescRight">return leaf nodes intersecting the frustum  <br /></td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-pub-static-methods" class="groupheader"><a id="pub-static-methods" name="pub-static-methods"></a>
 Static Public Member Functions</h2></td></tr>
@@ -143,8 +143,8 @@ class utility::bvh&lt; T &gt;</div><dl class="tparams"><dt>Template Parameters</
 <dl class="section note"><dt>Note</dt><dd><ul>
 <li><a class="el" href="group__bvh.html#ga42d3420a1cb6fdafd8ab68002ce2fae9" title="build a BVH from the given AABBs">make()</a> builds the tree from AABBs</li>
 <li><a class="el" href="group__bvh.html#ga56534c524870d3a7479294b4e072e32d" title="add an AABB as a new leaf">add()</a> inserts a leaf, call <a class="el" href="group__bvh.html#ga0144da7e393f4011164d198a4bb33278" title="rebuild the tree from the current leaves">rebuild()</a> afterwards</li>
-<li><a class="el" href="group__bvh.html#ga8ded9218d47c322d70f06226d669ef5c" title="collect leaf nodes hit by a ray">get_hit()</a> collects hit leaves along a ray</li>
-<li><a class="el" href="group__bvh.html#gaf91e76d3f3ff45e3fe7fb2938ccf258f" title="return leaf nodes intersecting the frustum">frustum_cull()</a> returns leaves inside a frustum </li>
+<li><a class="el" href="group__bvh.html#ga6df306b3fff8cb9037c1fa27d588e9f7" title="collect leaf nodes hit by a ray">get_hit()</a> collects hit leaves along a ray</li>
+<li><a class="el" href="group__bvh.html#ga66dd81724ab0912f93109c62daa9fcf7" title="return leaf nodes intersecting the frustum">frustum_cull()</a> returns leaves inside a frustum </li>
 </ul>
 </dd></dl>
 </div><hr/>The documentation for this class was generated from the following file:<ul>
