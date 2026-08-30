@@ -1,7 +1,6 @@
 module;
 
 #include <GLFW/glfw3.h>
-#include <boost/stacktrace/stacktrace.hpp>
 #include <vulkan/vulkan.h>
 
 module vulkan.core.init_utils;
@@ -15,10 +14,8 @@ debug_callback(
     const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
     [[maybe_unused]] void* user_data) noexcept {
     if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-        // Errors go through error(): Debug prints red to stderr (with call stack), Release writes to the log file
-        utility::error("stacktrace:\n{}\n{}",
-                       boost::stacktrace::to_string(boost::stacktrace::stacktrace()),
-                       callback_data->pMessage);
+        // Errors go through error(): Debug prints red to stderr, Release writes to the log file
+        utility::error(callback_data->pMessage);
     } else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
         utility::log("[WARNING] {}", callback_data->pMessage);
     } else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT) {

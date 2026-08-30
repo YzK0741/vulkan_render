@@ -68,7 +68,7 @@ doxygen Doxyfile
 
 - CMake ≥ 4.3 and a compiler with C++23 / C++20 modules support (this project uses MSYS2 clang64's clang)
 - [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) (includes `glslc`)
-- System packages: `glfw3`, `glm`, `OpenSSL`, `boost` (for `boost/stacktrace` in the debug callback), `fastgltf` (MSYS2 package; `libfastgltf.dll` + `libsimdjson.dll` must be on PATH), Vulkan Memory Allocator (VMA, `vma/vk_mem_alloc.h`)
+- System packages: `glfw3`, `glm`, `OpenSSL`, `fastgltf` (MSYS2 package; `libfastgltf.dll` + `libsimdjson.dll` must be on PATH), Vulkan Memory Allocator (VMA, `vma/vk_mem_alloc.h`)
 - `spirv-reflect` is vendored under `third_party/`
 
 ### Build
