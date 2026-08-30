@@ -475,6 +475,12 @@ int main(int argc, char** argv) {
 
     // 17. Main render loop: until the window closes or ESC is pressed
     utility::log("rendering '{}' with PBR... left-drag to orbit, wheel to zoom, ESC to exit", model_path);
+
+    // FPS statistics: accumulate frame times, report once per second (log + window title)
+    std::chrono::steady_clock::time_point last_frame_time = std::chrono::steady_clock::now();
+    double fps_elapsed = 0.0;
+    uint32_t fps_frame_count = 0;
+
     while (!glfwWindowShouldClose(runtime->window)) {
         glfwPollEvents();
         if (glfwGetKey(runtime->window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
@@ -551,6 +557,19 @@ int main(int argc, char** argv) {
         }
 
         runtime->to_next_frame();
+
+        // FPS statistics: frame time = wall time since the previous frame
+        const auto now = std::chrono::steady_clock::now();
+        fps_elapsed += std::chrono::duration<double>(now - last_frame_time).count();
+        last_frame_time = now;
+        ++fps_frame_count;
+        if (fps_elapsed >= 1.0) {
+            const double fps = fps_frame_count / fps_elapsed;
+            utility::log("fps: {:.1f} ({:.2f} ms/frame)", fps, 1000.0 * fps_elapsed / fps_frame_count);
+            glfwSetWindowTitle(runtime->window, std::format("vulkan_render - {:.1f} fps", fps).c_str());
+            fps_elapsed = 0.0;
+            fps_frame_count = 0;
+        }
     }
 
     // 18. Wait for the GPU to finish before releasing resources (image views / samplers freed by RAII handles)
