@@ -115,6 +115,7 @@ target_link_libraries(vulkan_lib
         utility
         glm::glm
         ${CMAKE_DL_LIBS}
+        std_lib
 )
 
 add_executable(vulkan_render main.cpp)
@@ -124,12 +125,13 @@ add_executable(vulkan_render main.cpp)
 # still calls main(), only the subsystem changes. Debug keeps the console for terminal log output.
 set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE $<$<CONFIG:Release>:ON>)
 
-target_link_libraries(vulkan_lib
-        std_lib
-)
-
+# utility.cpp implements the hash functions (md5 / sha256 / blake2) on top of OpenSSL, so the
+# dependency is declared here, on the library that actually uses the EVP_* symbols. It propagates
+# to consumers (vulkan_lib / gltf_loader / vulkan_render) at link time, so the executable no
+# longer needs to link OpenSSL itself.
 target_link_libraries(utility
         std_lib
+        OpenSSL::Crypto
 )
 
 target_link_libraries(thread_pool
@@ -140,7 +142,6 @@ target_link_libraries(${PROJECT_NAME}
         utility
         vulkan_lib
         gltf_loader
-        OpenSSL::Crypto
         thread_pool
         std_lib
         glm::glm
