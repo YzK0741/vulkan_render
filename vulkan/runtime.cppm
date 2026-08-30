@@ -32,6 +32,17 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_runtime
+     * @brief result of one runtime::render_frame() call; the caller reacts to it
+     */
+    export enum class frame_result {
+        render_success, // a frame was recorded, submitted and presented
+        skipped,        // not renderable this iteration (window minimized / swapchain recreated); caller yields and retries
+        closed,         // the window was closed (ESC or the native close button); caller exits the loop
+        failed,         // a fatal Vulkan error occurred; caller exits the loop
+    };
+
+    /**
+     * @ingroup vulkan_runtime
      * @brief vulkan runtime facade class
      * @note
      *      - use operator-> to access the filtered core view (core_filter, e.g. runtime->get_device())
@@ -40,6 +51,9 @@ namespace vulkan {
      */
     export class runtime {
         core vulkan_core;
+
+        // set while the window is iconified; the restore transition recreates the swapchain
+        bool was_minimized = false;
 
         std::mutex access_mutex;
         // string keys (not string_view): the runtime owns the pipeline/model names, so lookups
@@ -87,15 +101,17 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief render one complete frame: wait/reset the frame's fence, update every model's
-         *        camera UBO from the shared orbit camera, acquire a swapchain image, record and
-         *        submit the frame (render pass + all models grouped by pipeline), then present
-         * @return true if the frame was presented, false if acquire/submit/present failed
-         *         (caller usually exits or retries on false)
-         * @note all Vulkan frame management lives here: fences, acquire, command buffers,
-         *       render pass, submit, present and the frame-slot advance are internal
+         * @brief drive one application frame: poll window events, respond to ESC / native close,
+         *        skip rendering while the window is minimized, recreate the swapchain on restore
+         *        and on resize (VK_ERROR_OUT_OF_DATE_KHR / VK_SUBOPTIMAL_KHR), then record,
+         *        submit and present one frame when renderable
+         * @return frame_result: render_success when a frame was presented; skipped when not renderable
+         *         (minimized or swapchain recreated — caller yields and calls again); closed on
+         *         window close; failed on a fatal Vulkan error (caller exits the loop)
+         * @note all window-event handling, swapchain recreation and frame management live here,
+         *       so the caller's loop needs no Vulkan or GLFW knowledge
          */
-        bool render_frame();
+        frame_result render_frame();
 
         std::expected<void, std::string> make_pipeline(
             std::string_view pipeline_name,

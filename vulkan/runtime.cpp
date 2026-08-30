@@ -5,6 +5,8 @@ module;
 
 module vulkan.runtime;
 
+import utility;
+
 namespace {
     vulkan::runtime* runtime_from_window(GLFWwindow* window) {
         return static_cast<vulkan::runtime*>(glfwGetWindowUserPointer(window));
@@ -89,15 +91,60 @@ namespace vulkan {
         vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
     }
 
-    bool runtime::render_frame() {
+    frame_result runtime::render_frame() {
         core& vk = this->vulkan_core;
-        const uint32_t frame_slot = static_cast<uint32_t>(vk.current_frame);
+        GLFWwindow* window = vk.window;
 
-        // 1. Wait until this slot's previous submission is done, then reset the fence
+        // 1. Window events first: respond to ESC / native close before any GPU work
+        glfwPollEvents();
+        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+            glfwSetWindowShouldClose(window, GLFW_TRUE);
+        }
+        if (glfwWindowShouldClose(window)) {
+            return frame_result::closed;
+        }
+
+        // 2. Minimized: skip this frame (acquiring from an invalidated / 0-sized swapchain would
+        //    fail); the restore transition below rebuilds the swapchain before the next render
+        if (glfwGetWindowAttrib(window, GLFW_ICONIFIED) == GLFW_TRUE) {
+            this->was_minimized = true;
+            return frame_result::skipped;
+        }
+        if (this->was_minimized) {
+            this->was_minimized = false;
+            utility::log("window restored, recreating swapchain");
+            vk.recreate_swap_chain();
+        }
+
+        // 3. The frame slot's fence guards both the command buffer and the acquire semaphore:
+        //    wait it BEFORE acquiring so the previous submission on this slot (and its semaphore
+        //    wait operation) has fully completed — acquiring first would reuse a semaphore that
+        //    may still have pending operations (VUID-vkAcquireNextImageKHR-semaphore-01779)
+        const uint32_t frame_slot = static_cast<uint32_t>(vk.current_frame);
         vkWaitForFences(vk.device, 1, &vk.in_flight_fences[frame_slot], VK_TRUE, UINT64_MAX);
+
+        // 4. Acquire the next swapchain image; on out-of-date (e.g. the window was resized)
+        //    rebuild the swapchain and let the caller retry on the next iteration. The fence is
+        //    only reset after a successful acquire, so this path never leaves a reset-but-
+        //    unsubmitted fence behind (which would deadlock the next frame's wait)
+        uint32_t image_index = 0;
+        const VkResult acquire_result = vkAcquireNextImageKHR(vk.device,
+                                                              vk.swap_chain,
+                                                              UINT64_MAX,
+                                                              vk.image_available_semaphores[frame_slot],
+                                                              VK_NULL_HANDLE,
+                                                              &image_index);
+        if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
+            utility::log("swapchain out of date, recreating");
+            vk.recreate_swap_chain();
+            return frame_result::skipped;
+        }
+        if (acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
+            return frame_result::failed;
+        }
         vkResetFences(vk.device, 1, &vk.in_flight_fences[frame_slot]);
 
-        // 2. Update every model's camera UBO from the shared orbit camera
+        // 5. Update every model's camera UBO from the shared orbit camera
         //    (the model matrix is owned by the model; the aspect comes from the swapchain)
         const float aspect = static_cast<float>(vk.swap_chain_extent.width) / static_cast<float>(vk.swap_chain_extent.height);
         for (auto& pipeline_models : this->models | std::views::values) {
@@ -108,23 +155,12 @@ namespace vulkan {
             }
         }
 
-        // 3. Acquire the next swapchain image
-        uint32_t image_index = 0;
-        if (vkAcquireNextImageKHR(vk.device,
-                                  vk.swap_chain,
-                                  UINT64_MAX,
-                                  vk.image_available_semaphores[frame_slot],
-                                  VK_NULL_HANDLE,
-                                  &image_index) != VK_SUCCESS) {
-            return false;
-        }
-
-        // 4. Record the frame into this slot's command buffer
+        // 6. Record the frame into this slot's command buffer
         vk_command_buffer& command_buffer = this->command_buffers[frame_slot];
         VkCommandBufferBeginInfo begin_info = {};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         if (vkBeginCommandBuffer(*command_buffer, &begin_info) != VK_SUCCESS) {
-            return false;
+            return frame_result::failed;
         }
 
         this->begin_render_pass(*command_buffer, image_index);
@@ -142,18 +178,22 @@ namespace vulkan {
 
         vkCmdEndRenderPass(*command_buffer);
         if (vkEndCommandBuffer(*command_buffer) != VK_SUCCESS) {
-            return false;
+            return frame_result::failed;
         }
 
-        // 5. Submit + present, then advance to the next frame slot
+        // 7. Submit + present; recreate the swapchain when presentation reports out of date
         if (vk.submit(*command_buffer, image_index) != VK_SUCCESS) {
-            return false;
+            return frame_result::failed;
         }
-        if (vk.present(image_index) != VK_SUCCESS) {
-            return false;
+        const VkResult present_result = vk.present(image_index);
+        if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
+            utility::log("present out of date, recreating swapchain");
+            vk.recreate_swap_chain();
+        } else if (present_result != VK_SUCCESS) {
+            return frame_result::failed;
         }
         vk.to_next_frame();
-        return true;
+        return frame_result::render_success;
     }
 
     std::expected<void, std::string> runtime::make_pipeline(std::string_view pipeline_name, std::span<const unsigned char> vertex_shader_code, std::span<const unsigned char> fragment_shader_code) {
