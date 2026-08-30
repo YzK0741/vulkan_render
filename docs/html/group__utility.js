@@ -18,6 +18,7 @@ var group__utility =
     [ "utility::error", "group__utility.html#ga15476f13f88a52452fc9368e2040e665", null ],
     [ "utility::log", "group__utility.html#ga12b382664ab54893f4c3905deb81021f", null ],
     [ "utility::log", "group__utility.html#ga29d70d51736007898f64372550663da6", null ],
+    [ "utility::panic", "group__utility.html#ga41f7e60a5acff7c985caceab24911acc", null ],
     [ "utility::panic", "group__utility.html#ga9262e2d4ee15e47c9e03e600f75c9fb8", null ],
     [ "utility::read_binary_to_string", "group__utility.html#gade57c8c8f375e42404a4f95252bd0e2b", null ],
     [ "utility::read_binary_to_vector", "group__utility.html#ga4c7ed10e171cf5c2e94fcb06119615ef", null ],

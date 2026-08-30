@@ -123,6 +123,22 @@ namespace utility {
 
     /**
      * @ingroup utility
+     * @brief panic with a compile-time-checked format string (like std::format)
+     * @tparam Args argument types
+     * @param source_location the caller's location, pass std::source_location::current()
+     * @param fmt the format string (compile-time checked)
+     * @param args arguments to format
+     * @note thread safe
+     * @note the location is an explicit parameter because clang does not deduce a parameter
+     *       pack that is followed by another parameter
+     */
+    export template <typename... Args>
+    [[noreturn]] void panic(std::source_location source_location, std::format_string<Args...> fmt, Args&&... args) noexcept {
+        panic(std::format(fmt, std::forward<Args>(args)...), source_location);
+    }
+
+    /**
+     * @ingroup utility
      * @brief a simple time test function
      * @param test callable objects wants to get the invoke time cost
      * @return used time in invoking the argument

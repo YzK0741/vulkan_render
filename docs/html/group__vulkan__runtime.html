@@ -124,6 +124,8 @@ Classes</h2></td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-func-members" class="groupheader"><a id="func-members" name="func-members"></a>
 Functions</h2></td></tr>
+<tr class="memitem:gaadc641aed747aabe9d10ccb2fb71db1f" id="r_gaadc641aed747aabe9d10ccb2fb71db1f"><td class="memItemLeft">&#160;</td><td class="memItemRight"><a class="el" href="#gaadc641aed747aabe9d10ccb2fb71db1f">vulkan::runtime::~runtime</a> ()</td></tr>
+<tr class="memdesc:gaadc641aed747aabe9d10ccb2fb71db1f"><td class="mdescLeft">&#160;</td><td class="mdescRight">destroy cached pipelines before the inner core (and thus the VkDevice) is destroyed  <br /></td></tr>
 <tr class="memitem:ga7b5a6419f776e7e79cd91b3dff6dac53" id="r_ga7b5a6419f776e7e79cd91b3dff6dac53"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="#ga7b5a6419f776e7e79cd91b3dff6dac53">vulkan::runtime::begin_render_pass</a> (VkCommandBuffer command_buffer, uint32_t image_index)</td></tr>
 <tr class="memdesc:ga7b5a6419f776e7e79cd91b3dff6dac53"><td class="mdescLeft">&#160;</td><td class="mdescRight">begin the swapchain render pass on the given command buffer  <br /></td></tr>
 <tr class="memitem:ga46d36b4e0ca40800c8e6df8f61606d8f" id="r_ga46d36b4e0ca40800c8e6df8f61606d8f"><td class="memItemLeft">const <a class="el" href="structvulkan_1_1vk__pipeline.html">vk_pipeline</a> *&#160;</td><td class="memItemRight"><a class="el" href="#ga46d36b4e0ca40800c8e6df8f61606d8f">vulkan::runtime::get_pipeline</a> (std::string_view pipeline_name) const noexcept</td></tr>
@@ -200,6 +202,24 @@ Variables</h2></td></tr>
   </dd>
 </dl>
 <dl class="section return"><dt>Returns</dt><dd>pointer to the cached pipeline, or nullptr if no pipeline with that name exists </dd></dl>
+
+</div>
+</div>
+<a id="gaadc641aed747aabe9d10ccb2fb71db1f" name="gaadc641aed747aabe9d10ccb2fb71db1f"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#gaadc641aed747aabe9d10ccb2fb71db1f">&#9670;&#160;</a></span>~runtime()</h2>
+
+<div class="memitem">
+<div class="memproto">
+      <table class="memname">
+        <tr>
+          <td class="memname">vulkan::runtime::~runtime </td>
+          <td>(</td>
+          <td class="paramname"><span class="paramname"><em></em></span></td><td>)</td>
+          <td></td>
+        </tr>
+      </table>
+</div><div class="memdoc">
+<dl class="section note"><dt>Note</dt><dd>explicit destructor: member destruction order is reverse declaration order, which currently already destroys pipelines before vulkan_core; making it explicit keeps that guarantee even if members are reordered later </dd></dl>
 
 </div>
 </div>

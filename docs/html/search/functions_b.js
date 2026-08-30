@@ -1,6 +1,6 @@
 var searchData=
 [
-  ['panic_0',['panic',['../group__utility.html#ga9262e2d4ee15e47c9e03e600f75c9fb8',1,'utility']]],
+  ['panic_0',['panic',['../group__utility.html#ga9262e2d4ee15e47c9e03e600f75c9fb8',1,'utility::panic(std::string_view msg=&quot;&quot;, std::source_location source_location=std::source_location::current()) noexcept'],['../group__utility.html#ga41f7e60a5acff7c985caceab24911acc',1,'utility::panic(std::source_location source_location, std::format_string&lt; Args... &gt; fmt, Args &amp;&amp;... args) noexcept']]],
   ['parse_5fdescriptor_5fset_5flayouts_1',['parse_descriptor_set_layouts',['../group__vulkan__spirv__parser.html#gaa58a52dd21e380e426a992708dec9b40',1,'vulkan::pipeline']]],
   ['parse_5fpush_5fconstant_5flayout_2',['parse_push_constant_layout',['../group__vulkan__spirv__parser.html#gacc4de5e6090850080d3e2acdf5577c57',1,'vulkan::pipeline']]],
   ['parse_5fshader_5fstage_5finterface_3',['parse_shader_stage_interface',['../group__vulkan__spirv__parser.html#ga7368f1105bf317615a81bc6c29c2af89',1,'vulkan::pipeline']]],

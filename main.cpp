@@ -33,7 +33,7 @@ namespace {
         const std::filesystem::path path = dir / file_name;
         const std::optional<std::vector<unsigned char>> data = utility::read_binary_to_vector(path);
         if (!data) {
-            utility::panic(std::format("cannot open shader file '{}'", path.string()));
+            utility::panic(std::source_location::current(), "cannot open shader file '{}'", path.string());
         }
         out = *data;
         utility::log("loaded shader: {} ({} bytes)", path.string(), out.size());
@@ -87,7 +87,7 @@ namespace {
 
         const std::expected<void, std::string> result = runtime.make_pipeline(pipeline_name, vertex_code, fragment_code);
         if (!result) {
-            utility::panic(std::format("failed to create pipeline '{}': {}", pipeline_name, result.error()));
+            utility::panic(std::source_location::current(), "failed to create pipeline '{}': {}", pipeline_name, result.error());
         }
         utility::log("SUCCESS: pipeline '{}' created and cached in the runtime", pipeline_name);
     }
@@ -177,11 +177,11 @@ int main(int argc, char** argv) {
     utility::log("loading model: {}", model_path);
     auto scenes = gltf::load_model(model_path);
     if (!scenes) {
-        utility::panic(std::format("failed to load model '{}': error code {}", model_path, static_cast<int>(scenes.error())));
+        utility::panic(std::source_location::current(), "failed to load model '{}': error code {}", model_path, static_cast<int>(scenes.error()));
     }
     if (scenes->scene.empty() || scenes->scene[0].nodes.empty() ||
         scenes->scene[0].nodes[0].meshes.empty() || scenes->scene[0].nodes[0].meshes[0].primitives.empty()) {
-        utility::panic(std::format("model '{}' has no drawable primitive", model_path));
+        utility::panic(std::source_location::current(), "model '{}' has no drawable primitive", model_path);
     }
     const auto& prim = scenes->scene[0].nodes[0].meshes[0].primitives[0];
     utility::log("model loaded: {} textures, {} primitives", scenes->textures.size(), scenes->scene[0].nodes[0].meshes[0].primitives.size());
@@ -226,7 +226,7 @@ int main(int argc, char** argv) {
     if (prim.index_component_type == gltf::component_type::unsigned_int_t) {
         index_type = VK_INDEX_TYPE_UINT32;
     } else if (prim.index_component_type != gltf::component_type::unsigned_short_t) {
-        utility::panic(std::format("unsupported index component type: {}", static_cast<int>(prim.index_component_type)));
+        utility::panic(std::source_location::current(), "unsupported index component type: {}", static_cast<int>(prim.index_component_type));
     }
     const uint32_t index_count = static_cast<uint32_t>(prim.index.size() / (index_type == VK_INDEX_TYPE_UINT32 ? 4 : 2));
     const auto read_index = [&prim, index_type](const size_t i) -> uint32_t {

@@ -4,6 +4,7 @@ var module__utility =
     [ "enable_stack_destruct", "classutility_1_1enable__stack__destruct.html", "classutility_1_1enable__stack__destruct" ],
     [ "utility::at_panic", "module__utility.html#ga9384d7b6a427aad66cff4e11e8ceaa64", null ],
     [ "utility::panic", "module__utility.html#ga9262e2d4ee15e47c9e03e600f75c9fb8", null ],
+    [ "utility::panic", "module__utility.html#ga41f7e60a5acff7c985caceab24911acc", null ],
     [ "utility::time_test", "module__utility.html#gada249d78450c0dee389d3743b8ac2276", null ],
     [ "utility::read_binary_to_vector", "module__utility.html#ga4c7ed10e171cf5c2e94fcb06119615ef", null ],
     [ "utility::read_binary_to_string", "module__utility.html#gade57c8c8f375e42404a4f95252bd0e2b", null ],

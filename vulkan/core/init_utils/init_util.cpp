@@ -341,7 +341,7 @@ logical_device create_logical_device(
     VkDevice device = {};
     const VkResult result = vkCreateDevice(physical_device, &device_create_info, nullptr, &device);
     if (result != VK_SUCCESS) {
-        utility::panic(std::format("Failed to create logical device: {}", std::to_string(result)));
+        utility::panic(std::source_location::current(), "Failed to create logical device: {}", std::to_string(result));
     }
 
     // Get queues

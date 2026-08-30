@@ -139,6 +139,9 @@ Functions</h2></td></tr>
 <tr class="memdesc:ga9384d7b6a427aad66cff4e11e8ceaa64"><td class="mdescLeft">&#160;</td><td class="mdescRight">stack-style save the argument and invoke it when panic attached  <br /></td></tr>
 <tr class="memitem:ga9262e2d4ee15e47c9e03e600f75c9fb8" id="r_ga9262e2d4ee15e47c9e03e600f75c9fb8"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="#ga9262e2d4ee15e47c9e03e600f75c9fb8">utility::panic</a> (std::string_view msg=&quot;&quot;, std::source_location source_location=std::source_location::current()) noexcept</td></tr>
 <tr class="memdesc:ga9262e2d4ee15e47c9e03e600f75c9fb8"><td class="mdescLeft">&#160;</td><td class="mdescRight">use when program cause a terminating error, will invoke functions assigned by at_panic()  <br /></td></tr>
+<tr class="memitem:ga41f7e60a5acff7c985caceab24911acc" id="r_ga41f7e60a5acff7c985caceab24911acc"><td class="memTemplParams" colspan="2">template&lt;typename... Args&gt; </td></tr>
+<tr class="memitem:ga41f7e60a5acff7c985caceab24911acc template"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="#ga41f7e60a5acff7c985caceab24911acc">utility::panic</a> (std::source_location source_location, std::format_string&lt; Args... &gt; fmt, Args &amp;&amp;... args) noexcept</td></tr>
+<tr class="memdesc:ga41f7e60a5acff7c985caceab24911acc"><td class="mdescLeft">&#160;</td><td class="mdescRight">panic with a compile-time-checked format string (like std::format)  <br /></td></tr>
 <tr class="memitem:gada249d78450c0dee389d3743b8ac2276" id="r_gada249d78450c0dee389d3743b8ac2276"><td class="memItemLeft">std::chrono::milliseconds&#160;</td><td class="memItemRight"><a class="el" href="#gada249d78450c0dee389d3743b8ac2276">utility::time_test</a> (std::function&lt; void()&gt; const &amp;test) noexcept</td></tr>
 <tr class="memdesc:gada249d78450c0dee389d3743b8ac2276"><td class="mdescLeft">&#160;</td><td class="mdescRight">a simple time test function  <br /></td></tr>
 <tr class="memitem:ga4c7ed10e171cf5c2e94fcb06119615ef" id="r_ga4c7ed10e171cf5c2e94fcb06119615ef"><td class="memItemLeft">std::optional&lt; std::vector&lt; unsigned char &gt; &gt;&#160;</td><td class="memItemRight"><a class="el" href="#ga4c7ed10e171cf5c2e94fcb06119615ef">utility::read_binary_to_vector</a> (const std::filesystem::path &amp;path)</td></tr>
@@ -352,8 +355,61 @@ template&lt;typename... Args&gt; </div>
 
 </div>
 </div>
+<a id="ga41f7e60a5acff7c985caceab24911acc" name="ga41f7e60a5acff7c985caceab24911acc"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga41f7e60a5acff7c985caceab24911acc">&#9670;&#160;</a></span>panic() <span class="overload">[1/2]</span></h2>
+
+<div class="memitem">
+<div class="memproto">
+<div class="memtemplate">
+template&lt;typename... Args&gt; </div>
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
+      <table class="memname">
+        <tr>
+          <td class="memname">void utility::panic </td>
+          <td>(</td>
+          <td class="paramtype">std::source_location</td>          <td class="paramname"><span class="paramname"><em>source_location</em></span>, </td>
+        </tr>
+        <tr>
+          <td class="paramkey"></td>
+          <td></td>
+          <td class="paramtype">std::format_string&lt; Args... &gt;</td>          <td class="paramname"><span class="paramname"><em>fmt</em></span>, </td>
+        </tr>
+        <tr>
+          <td class="paramkey"></td>
+          <td></td>
+          <td class="paramtype">Args &amp;&amp;...</td>          <td class="paramname"><span class="paramname"><em>args</em></span>&#160;)</td>
+        </tr>
+      </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel export">export</span><span class="mlabel noexcept">noexcept</span></span>  </td>
+  </tr>
+</table>
+</div><div class="memdoc">
+<dl class="tparams"><dt>Template Parameters</dt><dd>
+  <table class="tparams">
+    <tr><td class="paramname">Args</td><td>argument types </td></tr>
+  </table>
+  </dd>
+</dl>
+<dl class="params"><dt>Parameters</dt><dd>
+  <table class="params">
+    <tr><td class="paramname">source_location</td><td>the caller's location, pass std::source_location::current() </td></tr>
+    <tr><td class="paramname">fmt</td><td>the format string (compile-time checked) </td></tr>
+    <tr><td class="paramname">args</td><td>arguments to format </td></tr>
+  </table>
+  </dd>
+</dl>
+<dl class="section note"><dt>Note</dt><dd>thread safe </dd>
+<dd>
+the location is an explicit parameter because clang does not deduce a parameter pack that is followed by another parameter </dd></dl>
+
+</div>
+</div>
 <a id="ga9262e2d4ee15e47c9e03e600f75c9fb8" name="ga9262e2d4ee15e47c9e03e600f75c9fb8"></a>
-<h2 class="memtitle"><span class="permalink"><a href="#ga9262e2d4ee15e47c9e03e600f75c9fb8">&#9670;&#160;</a></span>panic()</h2>
+<h2 class="memtitle"><span class="permalink"><a href="#ga9262e2d4ee15e47c9e03e600f75c9fb8">&#9670;&#160;</a></span>panic() <span class="overload">[2/2]</span></h2>
 
 <div class="memitem">
 <div class="memproto">
