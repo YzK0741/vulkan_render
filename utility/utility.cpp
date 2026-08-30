@@ -135,6 +135,55 @@ std::optional<std::string> utility::read_binary_to_string(const std::filesystem:
 
 // ---- Async logging (Meyer singleton, internal implementation) ----
 
+namespace {
+    // Startup rotation for the Release log file: move the previous session's debug.log content
+    // aside to debug.log.old (with a session-end timestamp when the content carries none), then
+    // truncate debug.log so the new session starts fresh. Only called in Release builds (NDEBUG).
+    [[maybe_unused]] void rotate_previous_log() {
+        // Text mode on both sides: the read translates CRLF to LF, the text-mode write
+        // translates LF back to CRLF, so line endings stay consistent with debug.log
+        std::ifstream current_log("debug.log");
+        if (!current_log) {
+            return; // no previous log yet
+        }
+        current_log.seekg(0, std::ios::end);
+        if (current_log.tellg() <= 0) {
+            return; // empty, nothing to rotate
+        }
+        current_log.seekg(0, std::ios::beg);
+
+        const std::string content((std::istreambuf_iterator<char>(current_log)), std::istreambuf_iterator<char>());
+        current_log.close();
+
+        std::ofstream old_log("debug.log.old", std::ios::out | std::ios::app);
+        if (!old_log) {
+            return;
+        }
+
+        // Timestamp the rotated block so sessions are distinguishable in debug.log.old
+        if (content.find("===== session") == std::string::npos) {
+            old_log << std::format("===== session ended at {:%Y-%m-%d %H:%M:%S} =====\n",
+                                   std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
+        }
+
+        // Normalize to one blank line after every log line, matching the worker's debug.log
+        // format (idempotent: already double-spaced content stays unchanged)
+        std::istringstream lines(content);
+        std::string line;
+        while (std::getline(lines, line)) {
+            if (!line.empty()) {
+                old_log << line << '\n'
+                        << '\n';
+            }
+        }
+        old_log.close();
+
+        // Start the new session with an empty debug.log
+        std::ofstream fresh_log("debug.log", std::ios::out | std::ios::trunc);
+        fresh_log.close();
+    }
+} // namespace
+
 utility::log_sink& utility::log_sink::instance() noexcept {
     static log_sink instance;
     return instance;
@@ -142,7 +191,8 @@ utility::log_sink& utility::log_sink::instance() noexcept {
 
 utility::log_sink::log_sink() {
 #ifdef NDEBUG
-    // Release builds: append to debug.log
+    // Release builds: rotate the previous session's log aside, then append the new session
+    rotate_previous_log();
     this->file.open("debug.log", std::ios::out | std::ios::app);
 #endif
     this->worker = std::thread([this] { this->worker_loop(); });
@@ -177,10 +227,12 @@ void utility::log_sink::worker_loop() noexcept {
             message = std::move(this->messages.front());
             this->messages.pop();
         }
-        // Write outside the lock to avoid blocking producers (newline appended here; messages carry no \n)
+        // Write outside the lock to avoid blocking producers (a blank line follows every
+        // message for readability; messages carry no \n)
 #ifdef NDEBUG
         if (this->file.is_open()) {
             this->file << message << '\n'
+                       << '\n'
                        << std::flush;
         } else {
             std::println("{}", message); // fall back to the terminal if the file cannot be opened
