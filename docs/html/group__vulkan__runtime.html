@@ -126,10 +126,16 @@ Classes</h2></td></tr>
 Functions</h2></td></tr>
 <tr class="memitem:gaadc641aed747aabe9d10ccb2fb71db1f" id="r_gaadc641aed747aabe9d10ccb2fb71db1f"><td class="memItemLeft">&#160;</td><td class="memItemRight"><a class="el" href="#gaadc641aed747aabe9d10ccb2fb71db1f">vulkan::runtime::~runtime</a> ()</td></tr>
 <tr class="memdesc:gaadc641aed747aabe9d10ccb2fb71db1f"><td class="mdescLeft">&#160;</td><td class="mdescRight">destroy cached pipelines before the inner core (and thus the VkDevice) is destroyed  <br /></td></tr>
-<tr class="memitem:ga7b5a6419f776e7e79cd91b3dff6dac53" id="r_ga7b5a6419f776e7e79cd91b3dff6dac53"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="#ga7b5a6419f776e7e79cd91b3dff6dac53">vulkan::runtime::begin_render_pass</a> (VkCommandBuffer command_buffer, uint32_t image_index)</td></tr>
-<tr class="memdesc:ga7b5a6419f776e7e79cd91b3dff6dac53"><td class="mdescLeft">&#160;</td><td class="mdescRight">begin the swapchain render pass on the given command buffer  <br /></td></tr>
+<tr class="memitem:gaa83ba5bdc781dedaf7ba711d634d28d8" id="r_gaa83ba5bdc781dedaf7ba711d634d28d8"><td class="memItemLeft">bool&#160;</td><td class="memItemRight"><a class="el" href="#gaa83ba5bdc781dedaf7ba711d634d28d8">vulkan::runtime::render_frame</a> ()</td></tr>
+<tr class="memdesc:gaa83ba5bdc781dedaf7ba711d634d28d8"><td class="mdescLeft">&#160;</td><td class="mdescRight">render one complete frame: wait/reset the frame's fence, update every model's camera UBO from the shared orbit camera, acquire a swapchain image, record and submit the frame (render pass + all models grouped by pipeline), then present  <br /></td></tr>
 <tr class="memitem:ga46d36b4e0ca40800c8e6df8f61606d8f" id="r_ga46d36b4e0ca40800c8e6df8f61606d8f"><td class="memItemLeft">const <a class="el" href="structvulkan_1_1vk__pipeline.html">vk_pipeline</a> *&#160;</td><td class="memItemRight"><a class="el" href="#ga46d36b4e0ca40800c8e6df8f61606d8f">vulkan::runtime::get_pipeline</a> (std::string_view pipeline_name) const noexcept</td></tr>
 <tr class="memdesc:ga46d36b4e0ca40800c8e6df8f61606d8f"><td class="mdescLeft">&#160;</td><td class="mdescRight">get a cached pipeline by its name  <br /></td></tr>
+<tr class="memitem:gab814dcfe9af466df4a2790ec1fd9ff19" id="r_gab814dcfe9af466df4a2790ec1fd9ff19"><td class="memItemLeft"><a class="el" href="structvulkan_1_1model.html">model</a> *&#160;</td><td class="memItemRight"><a class="el" href="#gab814dcfe9af466df4a2790ec1fd9ff19">vulkan::runtime::make_model</a> (std::string_view pipeline_name, const <a class="el" href="structvulkan_1_1model__create__info.html">model_create_info</a> &amp;info)</td></tr>
+<tr class="memdesc:gab814dcfe9af466df4a2790ec1fd9ff19"><td class="mdescLeft">&#160;</td><td class="mdescRight">create and cache a model (geometry + material + per-frame UBOs)  <br /></td></tr>
+<tr class="memitem:ga58719234bd34240f63dc4b9c0f110352" id="r_ga58719234bd34240f63dc4b9c0f110352"><td class="memItemLeft">const std::vector&lt; <a class="el" href="structvulkan_1_1model.html">model</a> &gt; *&#160;</td><td class="memItemRight"><a class="el" href="#ga58719234bd34240f63dc4b9c0f110352">vulkan::runtime::get_models</a> (std::string_view pipeline_name) const noexcept</td></tr>
+<tr class="memdesc:ga58719234bd34240f63dc4b9c0f110352"><td class="mdescLeft">&#160;</td><td class="mdescRight">get all models cached under a pipeline  <br /></td></tr>
+<tr class="memitem:gafd0bd47ce4a3e238080276d5fb8ac05c" id="r_gafd0bd47ce4a3e238080276d5fb8ac05c"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="#gafd0bd47ce4a3e238080276d5fb8ac05c">vulkan::runtime::clear_models</a> (std::string_view pipeline_name)</td></tr>
+<tr class="memdesc:gafd0bd47ce4a3e238080276d5fb8ac05c"><td class="mdescLeft">&#160;</td><td class="mdescRight">destroy and remove all models of a pipeline, no-op if the pipeline has none  <br /></td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-var-members" class="groupheader"><a id="var-members" name="var-members"></a>
 Variables</h2></td></tr>
@@ -144,32 +150,58 @@ Variables</h2></td></tr>
 </ul>
 </dd></dl>
 </div><a name="doc-func-members" id="doc-func-members"></a><h2 id="header-doc-func-members" class="groupheader">Function Documentation</h2>
-<a id="ga7b5a6419f776e7e79cd91b3dff6dac53" name="ga7b5a6419f776e7e79cd91b3dff6dac53"></a>
-<h2 class="memtitle"><span class="permalink"><a href="#ga7b5a6419f776e7e79cd91b3dff6dac53">&#9670;&#160;</a></span>begin_render_pass()</h2>
+<a id="gafd0bd47ce4a3e238080276d5fb8ac05c" name="gafd0bd47ce4a3e238080276d5fb8ac05c"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#gafd0bd47ce4a3e238080276d5fb8ac05c">&#9670;&#160;</a></span>clear_models()</h2>
 
 <div class="memitem">
 <div class="memproto">
       <table class="memname">
         <tr>
-          <td class="memname">void vulkan::runtime::begin_render_pass </td>
+          <td class="memname">void vulkan::runtime::clear_models </td>
           <td>(</td>
-          <td class="paramtype">VkCommandBuffer</td>          <td class="paramname"><span class="paramname"><em>command_buffer</em></span>, </td>
-        </tr>
-        <tr>
-          <td class="paramkey"></td>
+          <td class="paramtype">std::string_view</td>          <td class="paramname"><span class="paramname"><em>pipeline_name</em></span></td><td>)</td>
           <td></td>
-          <td class="paramtype">uint32_t</td>          <td class="paramname"><span class="paramname"><em>image_index</em></span>&#160;)</td>
         </tr>
       </table>
 </div><div class="memdoc">
 <dl class="params"><dt>Parameters</dt><dd>
   <table class="params">
-    <tr><td class="paramname">command_buffer</td><td>the command buffer being recorded </td></tr>
-    <tr><td class="paramname">image_index</td><td>the acquired swapchain image index (selects the framebuffer) </td></tr>
+    <tr><td class="paramname">pipeline_name</td><td>the pipeline name passed to <a class="el" href="#gab814dcfe9af466df4a2790ec1fd9ff19" title="create and cache a model (geometry + material + per-frame UBOs)">make_model()</a> </td></tr>
   </table>
   </dd>
 </dl>
-<dl class="section note"><dt>Note</dt><dd>clears the color attachment with a dark background and the depth attachment </dd></dl>
+
+</div>
+</div>
+<a id="ga58719234bd34240f63dc4b9c0f110352" name="ga58719234bd34240f63dc4b9c0f110352"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga58719234bd34240f63dc4b9c0f110352">&#9670;&#160;</a></span>get_models()</h2>
+
+<div class="memitem">
+<div class="memproto">
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
+      <table class="memname">
+        <tr>
+          <td class="memname">const std::vector&lt; <a class="el" href="structvulkan_1_1model.html">model</a> &gt; * vulkan::runtime::get_models </td>
+          <td>(</td>
+          <td class="paramtype">std::string_view</td>          <td class="paramname"><span class="paramname"><em>pipeline_name</em></span></td><td>)</td>
+          <td> const</td>
+        </tr>
+      </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel nodiscard">nodiscard</span><span class="mlabel noexcept">noexcept</span></span>  </td>
+  </tr>
+</table>
+</div><div class="memdoc">
+<dl class="params"><dt>Parameters</dt><dd>
+  <table class="params">
+    <tr><td class="paramname">pipeline_name</td><td>the pipeline name passed to <a class="el" href="#gab814dcfe9af466df4a2790ec1fd9ff19" title="create and cache a model (geometry + material + per-frame UBOs)">make_model()</a> </td></tr>
+  </table>
+  </dd>
+</dl>
+<dl class="section return"><dt>Returns</dt><dd>pointer to the model vector, or nullptr if no model uses that pipeline </dd></dl>
 
 </div>
 </div>
@@ -202,6 +234,56 @@ Variables</h2></td></tr>
   </dd>
 </dl>
 <dl class="section return"><dt>Returns</dt><dd>pointer to the cached pipeline, or nullptr if no pipeline with that name exists </dd></dl>
+
+</div>
+</div>
+<a id="gab814dcfe9af466df4a2790ec1fd9ff19" name="gab814dcfe9af466df4a2790ec1fd9ff19"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#gab814dcfe9af466df4a2790ec1fd9ff19">&#9670;&#160;</a></span>make_model()</h2>
+
+<div class="memitem">
+<div class="memproto">
+      <table class="memname">
+        <tr>
+          <td class="memname"><a class="el" href="structvulkan_1_1model.html">model</a> * vulkan::runtime::make_model </td>
+          <td>(</td>
+          <td class="paramtype">std::string_view</td>          <td class="paramname"><span class="paramname"><em>pipeline_name</em></span>, </td>
+        </tr>
+        <tr>
+          <td class="paramkey"></td>
+          <td></td>
+          <td class="paramtype">const <a class="el" href="structvulkan_1_1model__create__info.html">model_create_info</a> &amp;</td>          <td class="paramname"><span class="paramname"><em>info</em></span>&#160;)</td>
+        </tr>
+      </table>
+</div><div class="memdoc">
+<dl class="params"><dt>Parameters</dt><dd>
+  <table class="params">
+    <tr><td class="paramname">pipeline_name</td><td>the pipeline whose descriptor set layouts the model binds against (must already exist) </td></tr>
+    <tr><td class="paramname">info</td><td>geometry / material / IBL data </td></tr>
+  </table>
+  </dd>
+</dl>
+<dl class="section return"><dt>Returns</dt><dd>pointer to the appended model, or nullptr if the pipeline does not exist </dd></dl>
+<dl class="section note"><dt>Note</dt><dd>the model is owned by the runtime and released in its destructor (before the VkDevice) </dd></dl>
+<dl class="section warning"><dt>Warning</dt><dd>appending another model to the same pipeline may reallocate its vector and invalidate previously returned pointers; use <a class="el" href="#ga58719234bd34240f63dc4b9c0f110352" title="get all models cached under a pipeline">get_models()</a> for index-based access </dd></dl>
+
+</div>
+</div>
+<a id="gaa83ba5bdc781dedaf7ba711d634d28d8" name="gaa83ba5bdc781dedaf7ba711d634d28d8"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#gaa83ba5bdc781dedaf7ba711d634d28d8">&#9670;&#160;</a></span>render_frame()</h2>
+
+<div class="memitem">
+<div class="memproto">
+      <table class="memname">
+        <tr>
+          <td class="memname">bool vulkan::runtime::render_frame </td>
+          <td>(</td>
+          <td class="paramname"><span class="paramname"><em></em></span></td><td>)</td>
+          <td></td>
+        </tr>
+      </table>
+</div><div class="memdoc">
+<dl class="section return"><dt>Returns</dt><dd>true if the frame was presented, false if acquire/submit/present failed (caller usually exits or retries on false) </dd></dl>
+<dl class="section note"><dt>Note</dt><dd>all Vulkan frame management lives here: fences, acquire, command buffers, render pass, submit, present and the frame-slot advance are internal </dd></dl>
 
 </div>
 </div>

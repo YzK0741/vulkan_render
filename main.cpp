@@ -17,17 +17,6 @@ namespace {
         glm::vec3 tangent;
     };
 
-    // Matches pbr.frag's PushConstants (48 bytes)
-    struct pbr_push_constants {
-        glm::vec4 base_color_factor = glm::vec4(1.0f);
-        glm::vec4 emissive_factor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-        float metallic_factor = 1.0f;
-        float roughness_factor = 1.0f;
-        float normal_scale = 1.0f;
-        uint32_t flags = 0; // bit0: normal map, bit1: occlusion map, bit2: emissive map
-    };
-    static_assert(sizeof(pbr_push_constants) == 48);
-
     // Read a single shader SPIR-V file and print info; panic on failure
     void load_shader(const std::filesystem::path& dir, std::string_view file_name, std::vector<unsigned char>& out) {
         const std::filesystem::path path = dir / file_name;
@@ -121,34 +110,6 @@ namespace {
         return rgba;
     }
 
-    // Upload the texture via VMA + create an image view
-    struct texture_bundle {
-        uint64_t image = 0;
-        vulkan::vk_image_view view; // RAII; destroyed automatically on destruction
-    };
-
-    texture_bundle create_texture(vulkan::runtime& runtime, const gltf::texture_data& texture, const VkFormat format) {
-        texture_bundle bundle;
-        const std::vector<unsigned char> rgba = to_rgba(texture);
-        if (rgba.empty()) {
-            return bundle;
-        }
-
-        vulkan::image_create_info create_info = {};
-        create_info.width = texture.width;
-        create_info.height = texture.height;
-        create_info.mip_levels = 1;
-        create_info.array_layers = 1;
-        create_info.format = format;
-        bundle.image = runtime->vma.create_image(rgba.data(), rgba.size(), create_info, vulkan::image_type::texture_2d);
-        const auto* detail = runtime->vma.get_image_detail(bundle.image);
-        if (detail == nullptr) {
-            return bundle;
-        }
-
-        bundle.view = runtime->make_image_view(detail->image, format, VK_IMAGE_VIEW_TYPE_2D);
-        return bundle;
-    }
 } // namespace
 
 int main(int argc, char** argv) {
@@ -291,49 +252,33 @@ int main(int argc, char** argv) {
     const float fit_scale = max_extent > 0.0f ? 1.6f / max_extent : 1.0f;
     utility::log("mesh: {} vertices, {} indices, center ({:.3f}, {:.3f}, {:.3f}), extent {:.3f}", vertices.size(), index_count, center.x, center.y, center.z, max_extent);
 
-    // 10. GPU buffers: vertices + indices
-    const uint64_t vertex_buffer = runtime->vma.create_buffer(std::span(vertices), vulkan::buffer_type::vertex);
-    const uint64_t index_buffer = runtime->vma.create_buffer(prim.index.data(), prim.index.size(), vulkan::buffer_type::index);
-    const auto* vertex_detail = runtime->vma.get_buffer_detail(vertex_buffer);
-    const auto* index_detail = runtime->vma.get_buffer_detail(index_buffer);
-    if (vertex_detail == nullptr || index_detail == nullptr) {
-        utility::panic("failed to create mesh buffers");
-    }
-
-    // 11. Fetch the PBR pipeline
-    const auto* pipeline = runtime.get_pipeline("pbr");
-    if (pipeline == nullptr) {
-        utility::panic("pipeline 'pbr' not found in runtime");
-    }
-
-    // 12. Material textures: albedo as sRGB (PBR linear space), data maps as UNORM
+    // 12. Material textures: decode glTF textures to RGBA and hand them to the model (missing -> white fallback)
     const auto& texture_indices = prim.texture_indices;
-    const auto load_material_texture = [&runtime, &scenes, &texture_indices](const std::string_view semantic, const VkFormat format) -> texture_bundle {
-        const auto it = texture_indices.find(std::string(semantic));
+    const std::array<std::pair<std::string_view, VkFormat>, 5> texture_slots = {
+        std::pair{"albedo", VK_FORMAT_R8G8B8A8_SRGB},
+        std::pair{"metallic_roughness", VK_FORMAT_R8G8B8A8_UNORM},
+        std::pair{"normal", VK_FORMAT_R8G8B8A8_UNORM},
+        std::pair{"occlusion", VK_FORMAT_R8G8B8A8_UNORM},
+        std::pair{"emissive", VK_FORMAT_R8G8B8A8_UNORM},
+    };
+    std::array<std::vector<unsigned char>, 5> texture_rgba;
+    std::array<vulkan::texture_input, 5> texture_inputs;
+    for (int i = 0; i < 5; ++i) {
+        const auto it = texture_indices.find(std::string(texture_slots[i].first));
         if (it != texture_indices.end() && it->second < scenes->textures.size()) {
-            return create_texture(runtime, scenes->textures[it->second], format);
+            const gltf::texture_data& source = scenes->textures[it->second];
+            texture_rgba[i] = to_rgba(source);
+            if (!texture_rgba[i].empty()) {
+                texture_inputs[i].data = texture_rgba[i];
+                texture_inputs[i].width = source.width;
+                texture_inputs[i].height = source.height;
+                texture_inputs[i].format = texture_slots[i].second;
+                texture_inputs[i].valid = true;
+            }
         }
-        return {};
-    };
-    const std::array<texture_bundle, 5> material_textures = {
-        load_material_texture("albedo", VK_FORMAT_R8G8B8A8_SRGB),
-        load_material_texture("metallic_roughness", VK_FORMAT_R8G8B8A8_UNORM),
-        load_material_texture("normal", VK_FORMAT_R8G8B8A8_UNORM),
-        load_material_texture("occlusion", VK_FORMAT_R8G8B8A8_UNORM),
-        load_material_texture("emissive", VK_FORMAT_R8G8B8A8_UNORM),
-    };
+    }
 
-    // 1x1 white fallback for missing textures
-    gltf::texture_data white_texture_data{};
-    white_texture_data.data = {255, 255, 255, 255};
-    white_texture_data.width = 1;
-    white_texture_data.height = 1;
-    white_texture_data.component = 4;
-    const texture_bundle white_texture = create_texture(runtime, white_texture_data, VK_FORMAT_R8G8B8A8_UNORM);
-
-    const vulkan::vk_sampler sampler = runtime->make_sampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 0.25f);
-
-    // 12.1 Generate and upload IBL resources (split-sum: prefiltered env + irradiance + BRDF LUT)
+    // 12.1 Generate IBL resources on the CPU (split-sum: prefiltered env + irradiance + BRDF LUT)
     constexpr int env_size = 128;
     constexpr int env_mip_count = 5;
     utility::log("generating IBL environment (CPU)...");
@@ -356,124 +301,32 @@ int main(int argc, char** argv) {
     const std::vector<unsigned char> irr_bytes = vulkan::to_half_rgba(irradiance);
     const std::vector<unsigned char> lut_bytes = vulkan::to_half_rg(brdf_lut);
 
-    vulkan::image_create_info env_create_info{};
-    env_create_info.width = env_size;
-    env_create_info.height = env_size;
-    env_create_info.mip_levels = env_mip_count;
-    env_create_info.array_layers = 6;
-    env_create_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
-    const uint64_t env_image = runtime->vma.create_image(env_bytes.data(), env_bytes.size(), env_create_info, vulkan::image_type::texture_cubemap);
+    // 13. Build the model: geometry + material + IBL + per-frame UBOs, all owned by the runtime
+    vulkan::model_create_info model_info{};
+    model_info.vertex_data = std::span(reinterpret_cast<const unsigned char*>(vertices.data()), vertices.size() * sizeof(vertex));
+    model_info.vertex_stride = sizeof(vertex);
+    model_info.vertex_count = static_cast<uint32_t>(vertices.size());
+    model_info.index_data = std::span<const unsigned char>(prim.index);
+    model_info.index_type = index_type;
+    model_info.index_count = index_count;
+    model_info.albedo = texture_inputs[0];
+    model_info.metallic_roughness = texture_inputs[1];
+    model_info.normal = texture_inputs[2];
+    model_info.occlusion = texture_inputs[3];
+    model_info.emissive = texture_inputs[4];
+    model_info.ibl = vulkan::ibl_input{.prefiltered_env = env_bytes, .irradiance = irr_bytes, .brdf_lut = lut_bytes, .env_size = env_size, .env_mip_count = env_mip_count, .irr_size = 32, .lut_size = 256};
 
-    vulkan::image_create_info irr_create_info{};
-    irr_create_info.width = 32;
-    irr_create_info.height = 32;
-    irr_create_info.mip_levels = 1;
-    irr_create_info.array_layers = 6;
-    irr_create_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
-    const uint64_t irr_image = runtime->vma.create_image(irr_bytes.data(), irr_bytes.size(), irr_create_info, vulkan::image_type::texture_cubemap);
+    // Model matrix (fit scale + centered at origin), owned by the model for per-frame UBO updates
+    model_info.model_matrix = glm::scale(glm::mat4(1.0f), glm::vec3(fit_scale)) * glm::translate(glm::mat4(1.0f), -center);
 
-    vulkan::image_create_info lut_create_info{};
-    lut_create_info.width = 256;
-    lut_create_info.height = 256;
-    lut_create_info.mip_levels = 1;
-    lut_create_info.array_layers = 1;
-    lut_create_info.format = VK_FORMAT_R16G16_SFLOAT;
-    const uint64_t lut_image = runtime->vma.create_image(lut_bytes.data(), lut_bytes.size(), lut_create_info, vulkan::image_type::texture_2d);
-
-    const auto* env_detail = runtime->vma.get_image_detail(env_image);
-    const auto* irr_detail = runtime->vma.get_image_detail(irr_image);
-    const auto* lut_detail = runtime->vma.get_image_detail(lut_image);
-    if (env_detail == nullptr || irr_detail == nullptr || lut_detail == nullptr) {
-        utility::panic("failed to create IBL images");
-    }
-    const vulkan::vk_image_view env_view = runtime->make_image_view(env_detail->image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE);
-    const vulkan::vk_image_view irr_view = runtime->make_image_view(irr_detail->image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE);
-    const vulkan::vk_image_view lut_view = runtime->make_image_view(lut_detail->image, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_VIEW_TYPE_2D);
-    const vulkan::vk_sampler env_sampler = runtime->make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, static_cast<float>(env_mip_count - 1));
-    utility::log("IBL ready: {} mips, irradiance 32x32, LUT 256x256", env_mip_count);
-
-    // set 1: 5 textures (binding 0-4) + 3 IBL resources (binding 5-7)
-    auto texture_set = runtime->make_descriptor_set(pipeline->get_descriptor_set_layouts()[1]);
-    std::array<VkDescriptorImageInfo, 8> image_infos{};
-    std::array<VkWriteDescriptorSet, 8> texture_writes{};
-    for (int binding = 0; binding < 5; ++binding) {
-        const auto& [image, view] = material_textures[binding].view.get() != VK_NULL_HANDLE ? material_textures[binding] : white_texture;
-        image_infos[binding] = {.sampler = *sampler, .imageView = *view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        texture_writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        texture_writes[binding].dstSet = *texture_set;
-        texture_writes[binding].dstBinding = static_cast<uint32_t>(binding);
-        texture_writes[binding].descriptorCount = 1;
-        texture_writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        texture_writes[binding].pImageInfo = &image_infos[binding];
-    }
-    image_infos[5] = {.sampler = *env_sampler, .imageView = *env_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    image_infos[6] = {.sampler = *env_sampler, .imageView = *irr_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    image_infos[7] = {.sampler = *env_sampler, .imageView = *lut_view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    for (int binding = 5; binding < 8; ++binding) {
-        texture_writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        texture_writes[binding].dstSet = *texture_set;
-        texture_writes[binding].dstBinding = static_cast<uint32_t>(binding);
-        texture_writes[binding].descriptorCount = 1;
-        texture_writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        texture_writes[binding].pImageInfo = &image_infos[binding];
-    }
-    vkUpdateDescriptorSets(runtime->device, static_cast<uint32_t>(texture_writes.size()), texture_writes.data(), 0, nullptr);
-
-    // 13. One CameraUBO per frame slot + a set-0 descriptor set
-    constexpr size_t ubo_size = sizeof(vulkan::camera_ubo);
-    std::vector<uint64_t> ubo_buffers;
-    std::vector<vulkan::vk_descriptor_set> ubo_sets;
-    ubo_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-    ubo_sets.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-    for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-        vulkan::camera_ubo initial{};
-        ubo_buffers.push_back(runtime->vma.create_buffer(std::span(&initial, 1), vulkan::buffer_type::uniform_coherent));
-        const auto* ubo_detail = runtime->vma.get_buffer_detail(ubo_buffers.back());
-        if (ubo_detail == nullptr) {
-            utility::panic("failed to create ubo buffer");
-        }
-
-        auto ubo_set = runtime->make_descriptor_set(pipeline->get_descriptor_set_layouts()[0]);
-        const VkDescriptorBufferInfo ubo_info{ubo_detail->buffer, 0, ubo_size};
-        VkWriteDescriptorSet write_info{};
-        write_info.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write_info.dstSet = *ubo_set;
-        write_info.dstBinding = 0;
-        write_info.descriptorCount = 1;
-        write_info.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        write_info.pBufferInfo = &ubo_info;
-        vkUpdateDescriptorSets(runtime->device, 1, &write_info, 0, nullptr);
-        ubo_sets.push_back(std::move(ubo_set));
+    auto* model = runtime.make_model("pbr", model_info);
+    if (model == nullptr) {
+        utility::panic("failed to create model (pipeline 'pbr' missing)");
     }
 
-    // 14. One command buffer per frame slot
-    std::vector<vulkan::vk_command_buffer> command_buffers;
-    command_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-    for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-        command_buffers.push_back(runtime->make_command_buffer());
-    }
-
-    // 15. Material push constants
-    pbr_push_constants push = {};
-    push.flags = 0;
-    if (texture_indices.contains("normal")) {
-        push.flags |= 1u;
-    }
-    if (texture_indices.contains("occlusion")) {
-        push.flags |= 2u;
-    }
-    if (texture_indices.contains("emissive")) {
-        push.flags |= 4u;
-    }
-
-    // 16. Camera: orbit view (left-drag to rotate, wheel to zoom).
-    //    Camera state lives in runtime (mouse callbacks registered at construction); matrices are built in vulkan::model
-    const float aspect = static_cast<float>(runtime->swap_chain_extent.width) / static_cast<float>(runtime->swap_chain_extent.height);
-
-    // Model matrix (fit scale + centered at origin)
-    const glm::mat4 model_matrix = glm::scale(glm::mat4(1.0f), glm::vec3(fit_scale)) * glm::translate(glm::mat4(1.0f), -center);
-
-    // 17. Main render loop: until the window closes or ESC is pressed
+    // 14. Main render loop: until the window closes or ESC is pressed.
+    //     Every Vulkan frame step (fences, acquire, command buffers, render pass, submit, present)
+    //     lives inside runtime::render_frame()
     utility::log("rendering '{}' with PBR... left-drag to orbit, wheel to zoom, ESC to exit", model_path);
 
     // FPS statistics: accumulate frame times, report once per second (log + window title)
@@ -487,76 +340,9 @@ int main(int argc, char** argv) {
             glfwSetWindowShouldClose(runtime->window, GLFW_TRUE);
         }
 
-        const size_t frame_slot = runtime->current_frame;
-
-        vkWaitForFences(runtime->device, 1, &runtime->in_flight_fences[frame_slot], VK_TRUE, UINT64_MAX);
-        vkResetFences(runtime->device, 1, &runtime->in_flight_fences[frame_slot]);
-
-        // Update this slot's UBO (orbit camera)
-        const vulkan::camera_ubo ubo = vulkan::make_orbit_camera_ubo(
-            runtime.camera.yaw, runtime.camera.pitch, runtime.camera.distance, model_matrix, aspect);
-        const auto* ubo_detail = runtime->vma.get_buffer_detail(ubo_buffers[frame_slot]);
-        std::memcpy(ubo_detail->allocation_info.pMappedData, &ubo, ubo_size);
-
-        uint32_t image_index = 0;
-        if (vkAcquireNextImageKHR(runtime->device,
-                                  runtime->swap_chain,
-                                  UINT64_MAX,
-                                  runtime->image_available_semaphores[frame_slot],
-                                  VK_NULL_HANDLE,
-                                  &image_index) != VK_SUCCESS) {
+        if (!runtime.render_frame()) {
             break;
         }
-
-        auto& command_buffer = command_buffers[frame_slot];
-        VkCommandBufferBeginInfo begin_info{};
-        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        if (vkBeginCommandBuffer(*command_buffer, &begin_info) != VK_SUCCESS) {
-            break;
-        }
-
-        // Begin the render pass (clear + framebuffer/render area, wrapped in runtime)
-        runtime.begin_render_pass(*command_buffer, image_index);
-
-        // Bind pipeline + set viewport/scissor (wrapped in vk_pipeline)
-        pipeline->begin_pipeline(*command_buffer);
-
-        const VkBuffer vertex_handle = vertex_detail->buffer;
-        constexpr VkDeviceSize vertex_offset = 0;
-        vkCmdBindVertexBuffers(*command_buffer, 0, 1, &vertex_handle, &vertex_offset);
-        vkCmdBindIndexBuffer(*command_buffer, index_detail->buffer, 0, index_type);
-
-        const std::array<VkDescriptorSet, 2> bound_sets = {*ubo_sets[frame_slot], *texture_set};
-        vkCmdBindDescriptorSets(*command_buffer,
-                                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipeline->get_pipeline_layout(),
-                                0,
-                                bound_sets.size(),
-                                bound_sets.data(),
-                                0,
-                                nullptr);
-        vkCmdPushConstants(*command_buffer,
-                           pipeline->get_pipeline_layout(),
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0,
-                           sizeof(pbr_push_constants),
-                           &push);
-        vkCmdDrawIndexed(*command_buffer, index_count, 1, 0, 0, 0);
-
-        vkCmdEndRenderPass(*command_buffer);
-        if (vkEndCommandBuffer(*command_buffer) != VK_SUCCESS) {
-            break;
-        }
-
-        // Submit + present (wrapped in core: semaphores/fences/queue selection)
-        if (runtime->submit(*command_buffer, image_index) != VK_SUCCESS) {
-            break;
-        }
-        if (runtime->present(image_index) != VK_SUCCESS) {
-            break;
-        }
-
-        runtime->to_next_frame();
 
         // FPS statistics: frame time = wall time since the previous frame
         const auto now = std::chrono::steady_clock::now();
@@ -572,24 +358,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    // 18. Wait for the GPU to finish before releasing resources (image views / samplers freed by RAII handles)
+    // 18. Wait for the GPU to finish; models and pipelines are released by the runtime destructor
     vkDeviceWaitIdle(runtime->device);
-    runtime->vma.free_image(lut_image);
-    runtime->vma.free_image(irr_image);
-    runtime->vma.free_image(env_image);
-    for (const auto& bundle : material_textures) {
-        if (bundle.image != 0) {
-            runtime->vma.free_image(bundle.image);
-        }
-    }
-    if (white_texture.image != 0) {
-        runtime->vma.free_image(white_texture.image);
-    }
-    for (const uint64_t ubo : ubo_buffers) {
-        runtime->vma.free_buffer(ubo);
-    }
-    runtime->vma.free_buffer(index_buffer);
-    runtime->vma.free_buffer(vertex_buffer);
     utility::log("render loop finished");
     return 0;
 }

@@ -112,40 +112,98 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('structvulkan_1
 </div><!--header-->
 <div class="contents">
 
-<p>model class managing vertex/index buffers and the descriptor set  
+<p>a GPU model: geometry buffers, material descriptor set (set 1) and per-frame camera UBO descriptor sets (set 0)  
  <a href="#details">More...</a></p>
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-pub-methods" class="groupheader"><a id="pub-methods" name="pub-methods"></a>
 Public Member Functions</h2></td></tr>
-<tr class="memitem:ab1e8d5af668ee627722dcaaac84ae7c9" id="r_ab1e8d5af668ee627722dcaaac84ae7c9"><td class="memItemLeft"><a id="ab1e8d5af668ee627722dcaaac84ae7c9" name="ab1e8d5af668ee627722dcaaac84ae7c9"></a>
-void&#160;</td><td class="memItemRight"><b>draw</b> (VkCommandBuffer command_buffer, VkPipelineLayout pipeline_layout) const</td></tr>
-<tr class="memitem:adf61065dded8392b0e238783558a3aae" id="r_adf61065dded8392b0e238783558a3aae"><td class="memItemLeft"><a id="adf61065dded8392b0e238783558a3aae" name="adf61065dded8392b0e238783558a3aae"></a>
-void&#160;</td><td class="memItemRight"><b>destroy</b> (VkDevice device, VkDescriptorPool descriptor_pool, <a class="el" href="classvulkan_1_1vma__allocator.html">vma_allocator</a> &amp;vma)</td></tr>
+<tr class="memitem:a582d757c1def0ad9d113f0194c57aad3" id="r_a582d757c1def0ad9d113f0194c57aad3"><td class="memItemLeft">void&#160;</td><td class="memItemRight"><a class="el" href="#a582d757c1def0ad9d113f0194c57aad3">draw</a> (VkCommandBuffer command_buffer, uint32_t frame_slot) const</td></tr>
+<tr class="memdesc:a582d757c1def0ad9d113f0194c57aad3"><td class="mdescLeft">&#160;</td><td class="mdescRight">record the model's draw commands; the pipeline and push constants come from the model  <br /></td></tr>
+<tr class="memitem:a884001a9ff7bfdefaef00902965a35e7" id="r_a884001a9ff7bfdefaef00902965a35e7"><td class="memItemLeft"><a id="a884001a9ff7bfdefaef00902965a35e7" name="a884001a9ff7bfdefaef00902965a35e7"></a>
+void&#160;</td><td class="memItemRight"><b>update_camera_ubo</b> (uint32_t frame_slot, const <a class="el" href="structvulkan_1_1camera__ubo.html">camera_ubo</a> &amp;ubo) noexcept</td></tr>
+<tr class="memitem:ac54365e1103d57278a263ddc121f6365" id="r_ac54365e1103d57278a263ddc121f6365"><td class="memItemLeft"><a id="ac54365e1103d57278a263ddc121f6365" name="ac54365e1103d57278a263ddc121f6365"></a>
+void&#160;</td><td class="memItemRight"><b>destroy</b> (<a class="el" href="classvulkan_1_1vma__allocator.html">vma_allocator</a> &amp;vma) noexcept</td></tr>
 <tr class="memitem:a99a9bd28257c5a0418fb80c55d767e5d" id="r_a99a9bd28257c5a0418fb80c55d767e5d"><td class="memItemLeft"><a id="a99a9bd28257c5a0418fb80c55d767e5d" name="a99a9bd28257c5a0418fb80c55d767e5d"></a>
 bool&#160;</td><td class="memItemRight"><b>is_valid</b> () const noexcept</td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-pub-attribs" class="groupheader"><a id="pub-attribs" name="pub-attribs"></a>
 Public Attributes</h2></td></tr>
-<tr class="memitem:aeb49623195a3f35cecccd589e656265d" id="r_aeb49623195a3f35cecccd589e656265d"><td class="memItemLeft"><a id="aeb49623195a3f35cecccd589e656265d" name="aeb49623195a3f35cecccd589e656265d"></a>
-uint32_t&#160;</td><td class="memItemRight"><b>vertex_buffer_handle</b> = 0</td></tr>
-<tr class="memitem:a93d28aab0bf877bdcfe074114d6ffb1a" id="r_a93d28aab0bf877bdcfe074114d6ffb1a"><td class="memItemLeft"><a id="a93d28aab0bf877bdcfe074114d6ffb1a" name="a93d28aab0bf877bdcfe074114d6ffb1a"></a>
-VkBuffer&#160;</td><td class="memItemRight"><b>vertex_buffer</b> = VK_NULL_HANDLE</td></tr>
-<tr class="memitem:a60ca1efd57a435b88ec7a8465d241529" id="r_a60ca1efd57a435b88ec7a8465d241529"><td class="memItemLeft"><a id="a60ca1efd57a435b88ec7a8465d241529" name="a60ca1efd57a435b88ec7a8465d241529"></a>
-uint32_t&#160;</td><td class="memItemRight"><b>index_buffer_handle</b> = 0</td></tr>
-<tr class="memitem:a5132c226e2c22e8db4a0a838af85531c" id="r_a5132c226e2c22e8db4a0a838af85531c"><td class="memItemLeft"><a id="a5132c226e2c22e8db4a0a838af85531c" name="a5132c226e2c22e8db4a0a838af85531c"></a>
-VkBuffer&#160;</td><td class="memItemRight"><b>index_buffer</b> = VK_NULL_HANDLE</td></tr>
+<tr class="memitem:a7cd03f39888c8a295ca14ee2c8357721" id="r_a7cd03f39888c8a295ca14ee2c8357721"><td class="memItemLeft"><a id="a7cd03f39888c8a295ca14ee2c8357721" name="a7cd03f39888c8a295ca14ee2c8357721"></a>
+uint64_t&#160;</td><td class="memItemRight"><b>vertex_buffer_handle</b> = 0</td></tr>
+<tr class="memitem:ae8f79efa5a94b01999a63021f25b80e6" id="r_ae8f79efa5a94b01999a63021f25b80e6"><td class="memItemLeft"><a id="ae8f79efa5a94b01999a63021f25b80e6" name="ae8f79efa5a94b01999a63021f25b80e6"></a>
+const <a class="el" href="structvulkan_1_1buffer__detail.html">buffer_detail</a> *&#160;</td><td class="memItemRight"><b>vertex_detail</b> = nullptr</td></tr>
+<tr class="memitem:ae7e3397cb6f17ed6f1e70c32009807e9" id="r_ae7e3397cb6f17ed6f1e70c32009807e9"><td class="memItemLeft"><a id="ae7e3397cb6f17ed6f1e70c32009807e9" name="ae7e3397cb6f17ed6f1e70c32009807e9"></a>
+uint64_t&#160;</td><td class="memItemRight"><b>index_buffer_handle</b> = 0</td></tr>
+<tr class="memitem:a26462a6c7c98568584dcec7799af7a69" id="r_a26462a6c7c98568584dcec7799af7a69"><td class="memItemLeft"><a id="a26462a6c7c98568584dcec7799af7a69" name="a26462a6c7c98568584dcec7799af7a69"></a>
+const <a class="el" href="structvulkan_1_1buffer__detail.html">buffer_detail</a> *&#160;</td><td class="memItemRight"><b>index_detail</b> = nullptr</td></tr>
+<tr class="memitem:a7f86a27b45238aebe42d2fe1152af723" id="r_a7f86a27b45238aebe42d2fe1152af723"><td class="memItemLeft"><a id="a7f86a27b45238aebe42d2fe1152af723" name="a7f86a27b45238aebe42d2fe1152af723"></a>
+VkIndexType&#160;</td><td class="memItemRight"><b>index_type</b> = VK_INDEX_TYPE_UINT32</td></tr>
 <tr class="memitem:a602980692cf13e58aa832689aab1ef47" id="r_a602980692cf13e58aa832689aab1ef47"><td class="memItemLeft"><a id="a602980692cf13e58aa832689aab1ef47" name="a602980692cf13e58aa832689aab1ef47"></a>
 uint32_t&#160;</td><td class="memItemRight"><b>index_count</b> = 0</td></tr>
-<tr class="memitem:af9f6783c074c81b5a2eaf967d0fa2bfb" id="r_af9f6783c074c81b5a2eaf967d0fa2bfb"><td class="memItemLeft"><a id="af9f6783c074c81b5a2eaf967d0fa2bfb" name="af9f6783c074c81b5a2eaf967d0fa2bfb"></a>
-VkDescriptorSet&#160;</td><td class="memItemRight"><b>descriptor_set</b> = VK_NULL_HANDLE</td></tr>
+<tr class="memitem:a107609637b8fae3589ac7243bdcd8e01" id="r_a107609637b8fae3589ac7243bdcd8e01"><td class="memItemLeft"><a id="a107609637b8fae3589ac7243bdcd8e01" name="a107609637b8fae3589ac7243bdcd8e01"></a>
+uint32_t&#160;</td><td class="memItemRight"><b>vertex_count</b> = 0</td></tr>
+<tr class="memitem:a3ffaa42f10578b6608aa4a603e7bb8d4" id="r_a3ffaa42f10578b6608aa4a603e7bb8d4"><td class="memItemLeft"><a id="a3ffaa42f10578b6608aa4a603e7bb8d4" name="a3ffaa42f10578b6608aa4a603e7bb8d4"></a>
+const <a class="el" href="structvulkan_1_1vk__pipeline.html">vk_pipeline</a> *&#160;</td><td class="memItemRight"><b>pipeline</b> = nullptr</td></tr>
+<tr class="memitem:aa62e0db8da310f65e7ef151b0e562ad9" id="r_aa62e0db8da310f65e7ef151b0e562ad9"><td class="memItemLeft"><a id="aa62e0db8da310f65e7ef151b0e562ad9" name="aa62e0db8da310f65e7ef151b0e562ad9"></a>
+glm::mat4&#160;</td><td class="memItemRight"><b>model_matrix</b> = glm::mat4(1.0f)</td></tr>
+<tr class="memitem:a78551b7219a994dd6c7c228c624dd703" id="r_a78551b7219a994dd6c7c228c624dd703"><td class="memItemLeft"><a id="a78551b7219a994dd6c7c228c624dd703" name="a78551b7219a994dd6c7c228c624dd703"></a>
+<a class="el" href="structvulkan_1_1material__push__constants.html">material_push_constants</a>&#160;</td><td class="memItemRight"><b>push</b> = {}</td></tr>
+<tr class="memitem:ab2852c44e699274cbb67c95044e4039a" id="r_ab2852c44e699274cbb67c95044e4039a"><td class="memItemLeft"><a id="ab2852c44e699274cbb67c95044e4039a" name="ab2852c44e699274cbb67c95044e4039a"></a>
+std::vector&lt; uint64_t &gt;&#160;</td><td class="memItemRight"><b>image_handles</b> = {}</td></tr>
+<tr class="memitem:adcf684b8a63767a8ff3997e390f2502f" id="r_adcf684b8a63767a8ff3997e390f2502f"><td class="memItemLeft"><a id="adcf684b8a63767a8ff3997e390f2502f" name="adcf684b8a63767a8ff3997e390f2502f"></a>
+std::vector&lt; <a class="el" href="classvulkan_1_1vk__image__view.html">vk_image_view</a> &gt;&#160;</td><td class="memItemRight"><b>image_views</b> = {}</td></tr>
+<tr class="memitem:a60204fde48a0e5b6da6cf3e863ebfe76" id="r_a60204fde48a0e5b6da6cf3e863ebfe76"><td class="memItemLeft"><a id="a60204fde48a0e5b6da6cf3e863ebfe76" name="a60204fde48a0e5b6da6cf3e863ebfe76"></a>
+<a class="el" href="classvulkan_1_1vk__descriptor__set.html">vk_descriptor_set</a>&#160;</td><td class="memItemRight"><b>material_set</b> = {}</td></tr>
+<tr class="memitem:aad6ff55d656d5652fd74eb6c2288e006" id="r_aad6ff55d656d5652fd74eb6c2288e006"><td class="memItemLeft"><a id="aad6ff55d656d5652fd74eb6c2288e006" name="aad6ff55d656d5652fd74eb6c2288e006"></a>
+<a class="el" href="classvulkan_1_1vk__sampler.html">vk_sampler</a>&#160;</td><td class="memItemRight"><b>texture_sampler</b> = {}</td></tr>
+<tr class="memitem:a644f80463ef7249799a1bd5d87b911a0" id="r_a644f80463ef7249799a1bd5d87b911a0"><td class="memItemLeft"><a id="a644f80463ef7249799a1bd5d87b911a0" name="a644f80463ef7249799a1bd5d87b911a0"></a>
+<a class="el" href="classvulkan_1_1vk__sampler.html">vk_sampler</a>&#160;</td><td class="memItemRight"><b>env_sampler</b> = {}</td></tr>
+<tr class="memitem:a1d2ffe5e0b5f2a820379b2459b09c996" id="r_a1d2ffe5e0b5f2a820379b2459b09c996"><td class="memItemLeft"><a id="a1d2ffe5e0b5f2a820379b2459b09c996" name="a1d2ffe5e0b5f2a820379b2459b09c996"></a>
+std::vector&lt; uint64_t &gt;&#160;</td><td class="memItemRight"><b>ubo_buffer_handles</b> = {}</td></tr>
+<tr class="memitem:a12f7e3fd424eceda519bb3a8fc3c40e1" id="r_a12f7e3fd424eceda519bb3a8fc3c40e1"><td class="memItemLeft"><a id="a12f7e3fd424eceda519bb3a8fc3c40e1" name="a12f7e3fd424eceda519bb3a8fc3c40e1"></a>
+std::vector&lt; void * &gt;&#160;</td><td class="memItemRight"><b>ubo_mapped</b> = {}</td></tr>
+<tr class="memitem:af3fc2b238453591bf993d7dbe8715b88" id="r_af3fc2b238453591bf993d7dbe8715b88"><td class="memItemLeft"><a id="af3fc2b238453591bf993d7dbe8715b88" name="af3fc2b238453591bf993d7dbe8715b88"></a>
+std::vector&lt; <a class="el" href="classvulkan_1_1vk__descriptor__set.html">vk_descriptor_set</a> &gt;&#160;</td><td class="memItemRight"><b>ubo_sets</b> = {}</td></tr>
+<tr class="memitem:af21ce1c3a3c17268c7ca0c6835688289" id="r_af21ce1c3a3c17268c7ca0c6835688289"><td class="memItemLeft"><a id="af21ce1c3a3c17268c7ca0c6835688289" name="af21ce1c3a3c17268c7ca0c6835688289"></a>
+size_t&#160;</td><td class="memItemRight"><b>ubo_size</b> = 0</td></tr>
 </table>
 <a name="details" id="details"></a><h2 id="header-details" class="groupheader">Detailed Description</h2>
 <div class="textblock"><dl class="section note"><dt>Note</dt><dd><ul>
-<li>draw() binds the descriptor set and vertex/index buffers, then issues a draw call</li>
-<li>destroy() frees the buffers and the descriptor set, pass the owning device/pool/vma </li>
+<li>owns every GPU resource it needs to draw itself, including its pipeline reference and material push constants</li>
+<li><a class="el" href="#a582d757c1def0ad9d113f0194c57aad3" title="record the model&#39;s draw commands; the pipeline and push constants come from the model">draw()</a> binds the pipeline, both descriptor sets, geometry and push constants, then draws</li>
+<li>destroy() frees the vma buffers/images; RAII views/sets/samplers free themselves </li>
 </ul>
 </dd></dl>
-</div><hr/>The documentation for this struct was generated from the following files:<ul>
+</div><a name="doc-func-members" id="doc-func-members"></a><h2 id="header-doc-func-members" class="groupheader">Member Function Documentation</h2>
+<a id="a582d757c1def0ad9d113f0194c57aad3" name="a582d757c1def0ad9d113f0194c57aad3"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#a582d757c1def0ad9d113f0194c57aad3">&#9670;&#160;</a></span>draw()</h2>
+
+<div class="memitem">
+<div class="memproto">
+      <table class="memname">
+        <tr>
+          <td class="memname">void vulkan::model::draw </td>
+          <td>(</td>
+          <td class="paramtype">VkCommandBuffer</td>          <td class="paramname"><span class="paramname"><em>command_buffer</em></span>, </td>
+        </tr>
+        <tr>
+          <td class="paramkey"></td>
+          <td></td>
+          <td class="paramtype">uint32_t</td>          <td class="paramname"><span class="paramname"><em>frame_slot</em></span>&#160;) const</td>
+        </tr>
+      </table>
+</div><div class="memdoc">
+<dl class="params"><dt>Parameters</dt><dd>
+  <table class="params">
+    <tr><td class="paramname">command_buffer</td><td>the command buffer being recorded </td></tr>
+    <tr><td class="paramname">frame_slot</td><td>the frame slot whose camera UBO set to bind (see vulkan::core::MAX_FRAMES_IN_FLIGHT) </td></tr>
+  </table>
+  </dd>
+</dl>
+
+</div>
+</div>
+<hr/>The documentation for this struct was generated from the following files:<ul>
 <li>vulkan/model/<a class="el" href="model_8cppm.html">model.cppm</a></li>
 <li>vulkan/model/<b>model.cpp</b></li>
 </ul>

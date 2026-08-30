@@ -5,6 +5,7 @@ module;
 export module vulkan.runtime;
 export import std;
 export import vulkan.core;
+export import vulkan.model;
 
 /**
  * @file runtime.cppm
@@ -41,6 +42,19 @@ namespace vulkan {
 
         std::mutex access_mutex;
         std::map<std::string_view, vk_pipeline> pipelines;
+        // models grouped by the pipeline they bind against: bind the pipeline once, draw them all
+        std::map<std::string_view, std::vector<model>> models;
+        // one command buffer per frame slot, used and reused by render_frame()
+        std::vector<vk_command_buffer> command_buffers;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief begin the swapchain render pass on the given command buffer
+         * @param command_buffer the command buffer being recorded
+         * @param image_index the acquired swapchain image index (selects the framebuffer)
+         * @note clears the color attachment with a dark background and the depth attachment
+         */
+        void begin_render_pass(VkCommandBuffer command_buffer, uint32_t image_index) const;
 
     public:
         core* operator->() {
@@ -66,12 +80,15 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief begin the swapchain render pass on the given command buffer
-         * @param command_buffer the command buffer being recorded
-         * @param image_index the acquired swapchain image index (selects the framebuffer)
-         * @note clears the color attachment with a dark background and the depth attachment
+         * @brief render one complete frame: wait/reset the frame's fence, update every model's
+         *        camera UBO from the shared orbit camera, acquire a swapchain image, record and
+         *        submit the frame (render pass + all models grouped by pipeline), then present
+         * @return true if the frame was presented, false if acquire/submit/present failed
+         *         (caller usually exits or retries on false)
+         * @note all Vulkan frame management lives here: fences, acquire, command buffers,
+         *       render pass, submit, present and the frame-slot advance are internal
          */
-        void begin_render_pass(VkCommandBuffer command_buffer, uint32_t image_index);
+        bool render_frame();
 
         std::expected<void, std::string> make_pipeline(
             std::string_view pipeline_name,
@@ -85,5 +102,32 @@ namespace vulkan {
          * @return pointer to the cached pipeline, or nullptr if no pipeline with that name exists
          */
         [[nodiscard]] const vk_pipeline* get_pipeline(std::string_view pipeline_name) const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief create and cache a model (geometry + material + per-frame UBOs)
+         * @param pipeline_name the pipeline whose descriptor set layouts the model binds against (must already exist)
+         * @param info geometry / material / IBL data
+         * @return pointer to the appended model, or nullptr if the pipeline does not exist
+         * @note the model is owned by the runtime and released in its destructor (before the VkDevice)
+         * @warning appending another model to the same pipeline may reallocate its vector and
+         *          invalidate previously returned pointers; use get_models() for index-based access
+         */
+        model* make_model(std::string_view pipeline_name, const model_create_info& info);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief get all models cached under a pipeline
+         * @param pipeline_name the pipeline name passed to make_model()
+         * @return pointer to the model vector, or nullptr if no model uses that pipeline
+         */
+        [[nodiscard]] const std::vector<model>* get_models(std::string_view pipeline_name) const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief destroy and remove all models of a pipeline, no-op if the pipeline has none
+         * @param pipeline_name the pipeline name passed to make_model()
+         */
+        void clear_models(std::string_view pipeline_name);
     };
 } // namespace vulkan

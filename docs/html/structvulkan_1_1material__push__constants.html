@@ -5,7 +5,7 @@
 <meta http-equiv="X-UA-Compatible" content="IE=11"/>
 <meta name="generator" content="Doxygen 1.18.0"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>vulkan render: vulkan/runtime.cppm File Reference</title>
+<title>vulkan render: vulkan::material_push_constants Struct Reference</title>
 <link href="tabs.css" rel="stylesheet" type="text/css"/>
 <script type="text/javascript" src="codefolding.js"></script>
 <script type="text/javascript" src="clipboard.js"></script>
@@ -85,7 +85,7 @@ document.addEventListener('DOMContentLoaded', codefold.init);
   </div>
 </div>
 <script type="text/javascript">
-document.addEventListener('DOMContentLoaded',() => { initNavTree('runtime_8cppm.html','',''); });
+document.addEventListener('DOMContentLoaded',() => { initNavTree('structvulkan_1_1material__push__constants.html','','structvulkan_1_1material__push__constants-members'); });
 </script>
 <div id="container">
 <div id="doc-content">
@@ -108,21 +108,31 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('runtime_8cppm.
 </div>
 
 <div class="header">
-  <div class="headertitle"><div class="title">runtime.cppm File Reference<div class="ingroups">module <a class="el" href="module__vulkan_8runtime.html">vulkan.runtime</a></div></div></div>
+  <div class="headertitle"><div class="title">vulkan::material_push_constants Struct Reference<span class="mlabels"><span class="mlabel export">export</span></span><div class="ingroups"><a class="el" href="group__vulkan__model.html">Vulkan Model</a> &#124; module <a class="el" href="module__vulkan_8model.html">vulkan.model</a></div></div></div>
 </div><!--header-->
 <div class="contents">
-<div class="textblock"><code>#include &lt;vulkan/vulkan.h&gt;</code><br />
-<code>import std;</code><br />
-<code>import <a class="el" href="core_8cppm.html">vulkan.core</a>;</code><br />
-<code>import <a class="el" href="model_8cppm.html">vulkan.model</a>;</code><br />
-</div><table class="memberdecls">
-<tr class="heading"><td colspan="2"><h2 id="header-nested-classes" class="groupheader"><a id="nested-classes" name="nested-classes"></a>
-Classes</h2></td></tr>
-<tr class="memitem:vulkan_3A_3Aorbit_5Fcamera" id="r_vulkan_3A_3Aorbit_5Fcamera"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1orbit__camera.html">vulkan::orbit_camera</a></td></tr>
-<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">orbit camera state, updated by the mouse callbacks registered in the runtime constructor  <a href="structvulkan_1_1orbit__camera.html#details">More...</a><br /></td></tr>
-<tr class="memitem:vulkan_3A_3Aruntime" id="r_vulkan_3A_3Aruntime"><td class="memItemLeft">class &#160;</td><td class="memItemRight"><a class="el" href="classvulkan_1_1runtime.html">vulkan::runtime</a></td></tr>
-<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">vulkan runtime facade class  <a href="classvulkan_1_1runtime.html#details">More...</a><br /></td></tr>
+
+<p>material parameters pushed at draw time, layout matches pbr.frag's PushConstants (48 bytes)  
+</p>
+<table class="memberdecls">
+<tr class="heading"><td colspan="2"><h2 id="header-pub-attribs" class="groupheader"><a id="pub-attribs" name="pub-attribs"></a>
+Public Attributes</h2></td></tr>
+<tr class="memitem:a1eec0c07cfdd056a44f11c83c77bc196" id="r_a1eec0c07cfdd056a44f11c83c77bc196"><td class="memItemLeft"><a id="a1eec0c07cfdd056a44f11c83c77bc196" name="a1eec0c07cfdd056a44f11c83c77bc196"></a>
+glm::vec4&#160;</td><td class="memItemRight"><b>base_color_factor</b> = glm::vec4(1.0f)</td></tr>
+<tr class="memitem:a7ceeb20d1462653ba9cbbaf8dbe2cf44" id="r_a7ceeb20d1462653ba9cbbaf8dbe2cf44"><td class="memItemLeft"><a id="a7ceeb20d1462653ba9cbbaf8dbe2cf44" name="a7ceeb20d1462653ba9cbbaf8dbe2cf44"></a>
+glm::vec4&#160;</td><td class="memItemRight"><b>emissive_factor</b> = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f)</td></tr>
+<tr class="memitem:a89b12539805594a5f61698538ffa6a09" id="r_a89b12539805594a5f61698538ffa6a09"><td class="memItemLeft"><a id="a89b12539805594a5f61698538ffa6a09" name="a89b12539805594a5f61698538ffa6a09"></a>
+float&#160;</td><td class="memItemRight"><b>metallic_factor</b> = 1.0f</td></tr>
+<tr class="memitem:ad7fe13035a3b8f6aadd8010abd94bdef" id="r_ad7fe13035a3b8f6aadd8010abd94bdef"><td class="memItemLeft"><a id="ad7fe13035a3b8f6aadd8010abd94bdef" name="ad7fe13035a3b8f6aadd8010abd94bdef"></a>
+float&#160;</td><td class="memItemRight"><b>roughness_factor</b> = 1.0f</td></tr>
+<tr class="memitem:a92588c78c42d9d8a11b0e4ed338f48e0" id="r_a92588c78c42d9d8a11b0e4ed338f48e0"><td class="memItemLeft"><a id="a92588c78c42d9d8a11b0e4ed338f48e0" name="a92588c78c42d9d8a11b0e4ed338f48e0"></a>
+float&#160;</td><td class="memItemRight"><b>normal_scale</b> = 1.0f</td></tr>
+<tr class="memitem:a931eb70a0c0c5721d5ff8218f55910d0" id="r_a931eb70a0c0c5721d5ff8218f55910d0"><td class="memItemLeft"><a id="a931eb70a0c0c5721d5ff8218f55910d0" name="a931eb70a0c0c5721d5ff8218f55910d0"></a>
+uint32_t&#160;</td><td class="memItemRight"><b>flags</b> = 0</td></tr>
 </table>
+<hr/>The documentation for this struct was generated from the following file:<ul>
+<li>vulkan/model/<a class="el" href="model_8cppm.html">model.cppm</a></li>
+</ul>
 </div><!-- contents -->
 </div><!-- doc-content -->
 <div id="page-nav" class="page-nav-panel">
@@ -136,7 +146,7 @@ Classes</h2></td></tr>
 <!-- start footer part -->
 <div id="nav-path" class="navpath"><!-- id is needed for treeview function! -->
   <ul>
-    <li class="navelem"><b>vulkan</b></li><li class="navelem"><a href="runtime_8cppm.html">runtime.cppm</a></li>
+    <li class="navelem"><b>vulkan</b></li><li class="navelem"><a href="structvulkan_1_1material__push__constants.html">material_push_constants</a></li>
     <li class="footer">Generated by <a href="https://www.doxygen.org/index.html"><img class="footer" src="doxygen.svg" width="104" height="31" alt="doxygen"/></a> 1.18.0 </li>
   </ul>
 </div>

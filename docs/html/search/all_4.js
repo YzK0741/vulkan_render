@@ -12,5 +12,6 @@ var searchData=
   ['device_5fcapabilities_9',['device_capabilities',['../structdevice__capabilities.html',1,'']]],
   ['device_5fcreation_5finfo_10',['device_creation_info',['../structdevice__creation__info.html',1,'']]],
   ['device_5fpnext_11',['device_pnext',['../structdevice__capabilities.html#a61b87d346eb8f8a09b218d28acaff982',1,'device_capabilities']]],
-  ['do_5fcleanup_12',['do_cleanup',['../classutility_1_1enable__stack__destruct.html#ad29ba1d710708a248ac8ee9ac35c3639',1,'utility::enable_stack_destruct']]]
+  ['do_5fcleanup_12',['do_cleanup',['../classutility_1_1enable__stack__destruct.html#ad29ba1d710708a248ac8ee9ac35c3639',1,'utility::enable_stack_destruct']]],
+  ['draw_13',['draw',['../structvulkan_1_1model.html#a582d757c1def0ad9d113f0194c57aad3',1,'vulkan::model']]]
 ];

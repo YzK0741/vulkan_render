@@ -5,7 +5,7 @@
 <meta http-equiv="X-UA-Compatible" content="IE=11"/>
 <meta name="generator" content="Doxygen 1.18.0"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>vulkan render: vulkan/runtime.cppm File Reference</title>
+<title>vulkan render: vulkan::texture_input Struct Reference</title>
 <link href="tabs.css" rel="stylesheet" type="text/css"/>
 <script type="text/javascript" src="codefolding.js"></script>
 <script type="text/javascript" src="clipboard.js"></script>
@@ -85,7 +85,7 @@ document.addEventListener('DOMContentLoaded', codefold.init);
   </div>
 </div>
 <script type="text/javascript">
-document.addEventListener('DOMContentLoaded',() => { initNavTree('runtime_8cppm.html','',''); });
+document.addEventListener('DOMContentLoaded',() => { initNavTree('structvulkan_1_1texture__input.html','','structvulkan_1_1texture__input-members'); });
 </script>
 <div id="container">
 <div id="doc-content">
@@ -108,21 +108,31 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('runtime_8cppm.
 </div>
 
 <div class="header">
-  <div class="headertitle"><div class="title">runtime.cppm File Reference<div class="ingroups">module <a class="el" href="module__vulkan_8runtime.html">vulkan.runtime</a></div></div></div>
+  <div class="headertitle"><div class="title">vulkan::texture_input Struct Reference<span class="mlabels"><span class="mlabel export">export</span></span><div class="ingroups"><a class="el" href="group__vulkan__model.html">Vulkan Model</a> &#124; module <a class="el" href="module__vulkan_8model.html">vulkan.model</a></div></div></div>
 </div><!--header-->
 <div class="contents">
-<div class="textblock"><code>#include &lt;vulkan/vulkan.h&gt;</code><br />
-<code>import std;</code><br />
-<code>import <a class="el" href="core_8cppm.html">vulkan.core</a>;</code><br />
-<code>import <a class="el" href="model_8cppm.html">vulkan.model</a>;</code><br />
-</div><table class="memberdecls">
-<tr class="heading"><td colspan="2"><h2 id="header-nested-classes" class="groupheader"><a id="nested-classes" name="nested-classes"></a>
-Classes</h2></td></tr>
-<tr class="memitem:vulkan_3A_3Aorbit_5Fcamera" id="r_vulkan_3A_3Aorbit_5Fcamera"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1orbit__camera.html">vulkan::orbit_camera</a></td></tr>
-<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">orbit camera state, updated by the mouse callbacks registered in the runtime constructor  <a href="structvulkan_1_1orbit__camera.html#details">More...</a><br /></td></tr>
-<tr class="memitem:vulkan_3A_3Aruntime" id="r_vulkan_3A_3Aruntime"><td class="memItemLeft">class &#160;</td><td class="memItemRight"><a class="el" href="classvulkan_1_1runtime.html">vulkan::runtime</a></td></tr>
-<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">vulkan runtime facade class  <a href="classvulkan_1_1runtime.html#details">More...</a><br /></td></tr>
+
+<p>RGBA texture pixels ready for GPU upload (already converted to the target format).  
+ <a href="#details">More...</a></p>
+<table class="memberdecls">
+<tr class="heading"><td colspan="2"><h2 id="header-pub-attribs" class="groupheader"><a id="pub-attribs" name="pub-attribs"></a>
+Public Attributes</h2></td></tr>
+<tr class="memitem:a78e46ffad916c778ae333c1c22b08b18" id="r_a78e46ffad916c778ae333c1c22b08b18"><td class="memItemLeft"><a id="a78e46ffad916c778ae333c1c22b08b18" name="a78e46ffad916c778ae333c1c22b08b18"></a>
+std::span&lt; const unsigned char &gt;&#160;</td><td class="memItemRight"><b>data</b> = {}</td></tr>
+<tr class="memitem:a239195c3ca4692950c0263ec8f330944" id="r_a239195c3ca4692950c0263ec8f330944"><td class="memItemLeft"><a id="a239195c3ca4692950c0263ec8f330944" name="a239195c3ca4692950c0263ec8f330944"></a>
+uint32_t&#160;</td><td class="memItemRight"><b>width</b> = 0</td></tr>
+<tr class="memitem:a0d8a2634dd20bbcabfa387a3abe27394" id="r_a0d8a2634dd20bbcabfa387a3abe27394"><td class="memItemLeft"><a id="a0d8a2634dd20bbcabfa387a3abe27394" name="a0d8a2634dd20bbcabfa387a3abe27394"></a>
+uint32_t&#160;</td><td class="memItemRight"><b>height</b> = 0</td></tr>
+<tr class="memitem:ad3932bee0dd6bf6ef93b182a5f63709a" id="r_ad3932bee0dd6bf6ef93b182a5f63709a"><td class="memItemLeft"><a id="ad3932bee0dd6bf6ef93b182a5f63709a" name="ad3932bee0dd6bf6ef93b182a5f63709a"></a>
+VkFormat&#160;</td><td class="memItemRight"><b>format</b> = VK_FORMAT_R8G8B8A8_UNORM</td></tr>
+<tr class="memitem:a5cae1fcd04815c81bf1e1e33e6ce16ce" id="r_a5cae1fcd04815c81bf1e1e33e6ce16ce"><td class="memItemLeft"><a id="a5cae1fcd04815c81bf1e1e33e6ce16ce" name="a5cae1fcd04815c81bf1e1e33e6ce16ce"></a>
+bool&#160;</td><td class="memItemRight"><b>valid</b> = false</td></tr>
 </table>
+<a name="details" id="details"></a><h2 id="header-details" class="groupheader">Detailed Description</h2>
+<div class="textblock"><dl class="section note"><dt>Note</dt><dd>valid == false means "missing texture", the model falls back to a 1x1 white image </dd></dl>
+</div><hr/>The documentation for this struct was generated from the following file:<ul>
+<li>vulkan/model/<a class="el" href="model_8cppm.html">model.cppm</a></li>
+</ul>
 </div><!-- contents -->
 </div><!-- doc-content -->
 <div id="page-nav" class="page-nav-panel">
@@ -136,7 +146,7 @@ Classes</h2></td></tr>
 <!-- start footer part -->
 <div id="nav-path" class="navpath"><!-- id is needed for treeview function! -->
   <ul>
-    <li class="navelem"><b>vulkan</b></li><li class="navelem"><a href="runtime_8cppm.html">runtime.cppm</a></li>
+    <li class="navelem"><b>vulkan</b></li><li class="navelem"><a href="structvulkan_1_1texture__input.html">texture_input</a></li>
     <li class="footer">Generated by <a href="https://www.doxygen.org/index.html"><img class="footer" src="doxygen.svg" width="104" height="31" alt="doxygen"/></a> 1.18.0 </li>
   </ul>
 </div>

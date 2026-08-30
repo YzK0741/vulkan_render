@@ -114,18 +114,28 @@ document.addEventListener('DOMContentLoaded',() => { initNavTree('model_8cppm.ht
 <div class="textblock"><code>#include &lt;glm/glm.hpp&gt;</code><br />
 <code>#include &lt;vulkan/vulkan.h&gt;</code><br />
 <code>import std;</code><br />
-<code>import <a class="el" href="handles_8cppm.html">vulkan.core.handles</a>;</code><br />
-<code>import <a class="el" href="vma_8cppm.html">vulkan.vma</a>;</code><br />
+<code>import <a class="el" href="core_8cppm.html">vulkan.core</a>;</code><br />
 </div><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-nested-classes" class="groupheader"><a id="nested-classes" name="nested-classes"></a>
 Classes</h2></td></tr>
-<tr class="memitem:vulkan_3A_3Amodel" id="r_vulkan_3A_3Amodel"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1model.html">vulkan::model</a></td></tr>
-<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">model class managing vertex/index buffers and the descriptor set  <a href="structvulkan_1_1model.html#details">More...</a><br /></td></tr>
 <tr class="memitem:vulkan_3A_3Acamera_5Fubo" id="r_vulkan_3A_3Acamera_5Fubo"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1camera__ubo.html">vulkan::camera_ubo</a></td></tr>
 <tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">camera UBO content, layout matches the CameraUBO block in pbr.frag  <a href="structvulkan_1_1camera__ubo.html#details">More...</a><br /></td></tr>
+<tr class="memitem:vulkan_3A_3Atexture_5Finput" id="r_vulkan_3A_3Atexture_5Finput"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1texture__input.html">vulkan::texture_input</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">RGBA texture pixels ready for GPU upload (already converted to the target format).  <a href="structvulkan_1_1texture__input.html#details">More...</a><br /></td></tr>
+<tr class="memitem:vulkan_3A_3Aibl_5Finput" id="r_vulkan_3A_3Aibl_5Finput"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1ibl__input.html">vulkan::ibl_input</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">precomputed split-sum IBL resources as half-float bytes, ready for upload  <a href="structvulkan_1_1ibl__input.html#details">More...</a><br /></td></tr>
+<tr class="memitem:vulkan_3A_3Amodel_5Fcreate_5Finfo" id="r_vulkan_3A_3Amodel_5Fcreate_5Finfo"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1model__create__info.html">vulkan::model_create_info</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">everything <a class="el" href="group__vulkan__model.html#ga7ddb825b619c28db0c1c2bbacb3d352f" title="build a model (geometry + material + IBL + per-frame UBOs) from plain data">make_model()</a> needs: geometry + material textures + IBL  <a href="structvulkan_1_1model__create__info.html#details">More...</a><br /></td></tr>
+<tr class="memitem:vulkan_3A_3Amaterial_5Fpush_5Fconstants" id="r_vulkan_3A_3Amaterial_5Fpush_5Fconstants"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1material__push__constants.html">vulkan::material_push_constants</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">material parameters pushed at draw time, layout matches pbr.frag's PushConstants (48 bytes)  <a href="structvulkan_1_1material__push__constants.html#details">More...</a><br /></td></tr>
+<tr class="memitem:vulkan_3A_3Amodel" id="r_vulkan_3A_3Amodel"><td class="memItemLeft">struct &#160;</td><td class="memItemRight"><a class="el" href="structvulkan_1_1model.html">vulkan::model</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">a GPU model: geometry buffers, material descriptor set (set 1) and per-frame camera UBO descriptor sets (set 0)  <a href="structvulkan_1_1model.html#details">More...</a><br /></td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 id="header-func-members" class="groupheader"><a id="func-members" name="func-members"></a>
 Functions</h2></td></tr>
+<tr class="memitem:ga7ddb825b619c28db0c1c2bbacb3d352f" id="r_ga7ddb825b619c28db0c1c2bbacb3d352f"><td class="memItemLeft">
+<a class="el" href="structvulkan_1_1model.html">model</a>&#160;</td><td class="memItemRight"><b>vulkan::make_model</b> (<a class="el" href="structvulkan_1_1core.html">vulkan::core</a> &amp;core, const <a class="el" href="structvulkan_1_1vk__pipeline.html">vk_pipeline</a> &amp;pipeline, const <a class="el" href="structvulkan_1_1model__create__info.html">model_create_info</a> &amp;info)</td></tr>
+<tr class="memdesc:ga7ddb825b619c28db0c1c2bbacb3d352f"><td class="mdescLeft">&#160;</td><td class="mdescRight">build a model (geometry + material + IBL + per-frame UBOs) from plain data <br /></td></tr>
 <tr class="memitem:gabe6e1053ef7a74b6335df6048a6d952a" id="r_gabe6e1053ef7a74b6335df6048a6d952a"><td class="memItemLeft">
 <a class="el" href="structvulkan_1_1camera__ubo.html">camera_ubo</a>&#160;</td><td class="memItemRight"><b>vulkan::make_orbit_camera_ubo</b> (float yaw, float pitch, float distance, const glm::mat4 &amp;model, float aspect)</td></tr>
 <tr class="memdesc:gabe6e1053ef7a74b6335df6048a6d952a"><td class="mdescLeft">&#160;</td><td class="mdescRight">build the camera UBO from orbit camera state (the model is assumed centered at the origin) <br /></td></tr>

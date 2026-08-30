@@ -6,7 +6,7 @@ A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), implementin
 
 ## Features
 
-- **Vulkan wrapper (`vulkan` module)**: C++ modules wrapping the full initialization flow — instance / device / swapchain / render pass / pipeline / descriptor set / command buffer. The `vulkan::runtime` facade sets up everything from window to swapchain in one line and caches named pipelines.
+- **Vulkan wrapper (`vulkan` module)**: C++ modules wrapping the full initialization flow — instance / device / swapchain / render pass / pipeline / descriptor set / command buffer. The `vulkan::runtime` facade sets up everything from window to swapchain in one line, caches named pipelines plus per-pipeline model lists, and renders a complete frame with a single `render_frame()` call (fences, acquire, command buffers, render pass, submit and present are all internal); a model owns all the GPU resources it needs to draw itself (geometry buffers, material + IBL descriptor set, per-frame camera UBO).
 - **PBR rendering**: standard metallic-roughness workflow with five texture slots — albedo (sRGB), metallic-roughness, normal, occlusion, emissive — falling back to a 1×1 white texture when missing; material parameters are passed via push constants.
 - **IBL lighting**: CPU-precomputed environment cubemap → GGX importance-sampled prefiltered environment (mip chain), irradiance map, and BRDF LUT (split-sum), uploaded as `R16G16B16A16_SFLOAT` cubemaps / `R16G16_SFLOAT` LUT.
 - **glTF loading (`gltf_loader` module)**: standalone CPU module built on [fastgltf](https://github.com/spnda/fastgltf), supporting `.gltf` / `.glb` / data URIs and exporting a world-space flattened node hierarchy with raw de-interleaved vertex/index data.

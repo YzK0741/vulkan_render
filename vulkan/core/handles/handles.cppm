@@ -60,6 +60,7 @@ namespace vulkan {
         [[nodiscard]] VkDescriptorSet const& get() const noexcept;
         [[nodiscard]] VkDescriptorSet const& operator*() const noexcept;
         void release() noexcept;
+        vk_descriptor_set() noexcept = default;
         explicit vk_descriptor_set(VkDescriptorSet descriptor_set, VkDevice device, VkDescriptorPool descriptor_pool) noexcept;
         ~vk_descriptor_set() noexcept;
 

@@ -17,16 +17,19 @@ var hierarchy =
       [ "vulkan::core", "structvulkan_1_1core.html", null ]
     ] ],
     [ "utility::frustum", "structutility_1_1frustum.html", null ],
+    [ "vulkan::ibl_input", "structvulkan_1_1ibl__input.html", null ],
     [ "vulkan::image_create_info", "structvulkan_1_1image__create__info.html", null ],
     [ "vulkan::image_detail", "structvulkan_1_1image__detail.html", null ],
     [ "vulkan::pipeline::interface_variable_info", "structvulkan_1_1pipeline_1_1interface__variable__info.html", null ],
     [ "utility::log_sink", "classutility_1_1log__sink.html", null ],
     [ "logical_device", "structlogical__device.html", null ],
+    [ "vulkan::material_push_constants", "structvulkan_1_1material__push__constants.html", null ],
     [ "std::pmr::memory_resource", null, [
       [ "mimalloc_memory_resource", "classmimalloc__memory__resource.html", null ]
     ] ],
     [ "gltf::mesh", "structgltf_1_1mesh.html", null ],
     [ "vulkan::model", "structvulkan_1_1model.html", null ],
+    [ "vulkan::model_create_info", "structvulkan_1_1model__create__info.html", null ],
     [ "gltf::node", "structgltf_1_1node.html", null ],
     [ "vulkan::orbit_camera", "structvulkan_1_1orbit__camera.html", null ],
     [ "utility::pmr_manager", "classutility_1_1pmr__manager.html", null ],
@@ -40,6 +43,7 @@ var hierarchy =
     [ "vulkan::pipeline::shader_stage_interface", "structvulkan_1_1pipeline_1_1shader__stage__interface.html", null ],
     [ "swap_chain_support_details", "structswap__chain__support__details.html", null ],
     [ "gltf::texture_data", "structgltf_1_1texture__data.html", null ],
+    [ "vulkan::texture_input", "structvulkan_1_1texture__input.html", null ],
     [ "utility::thread_pool", "classutility_1_1thread__pool.html", null ],
     [ "gltf::vertex_portion", "structgltf_1_1vertex__portion.html", null ],
     [ "vulkan::vk_command_buffer", "classvulkan_1_1vk__command__buffer.html", null ],
