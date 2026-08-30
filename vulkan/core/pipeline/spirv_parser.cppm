@@ -2,7 +2,7 @@ module;
 
 #include <vulkan/vulkan_core.h>
 
-export module vulkan.pipeline.spirv_parser;
+export module vulkan.core.pipeline.spirv_parser;
 export import std;
 
 /**

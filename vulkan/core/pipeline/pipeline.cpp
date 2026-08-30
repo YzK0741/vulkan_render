@@ -3,7 +3,7 @@ module;
 #include <vulkan/vulkan.h>
 
 module vulkan.core.pipeline;
-import vulkan.pipeline.spirv_parser;
+import vulkan.core.pipeline.spirv_parser;
 
 namespace {
     constexpr uint32_t to_multiple_of_4(const uint32_t value) noexcept {

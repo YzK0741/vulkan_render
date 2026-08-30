@@ -7,7 +7,7 @@ export module vulkan.core;
 import utility;
 export import std;
 export import vulkan.core.handles;
-export import vulkan.vma;
+export import vulkan.core.vma;
 
 /**
  * @file core.cppm

@@ -5,7 +5,7 @@ module;
 #include <algorithm>
 #include <vulkan/vulkan.h>
 
-module vulkan.pipeline.spirv_parser;
+module vulkan.core.pipeline.spirv_parser;
 import utility;
 
 namespace {

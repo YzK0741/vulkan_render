@@ -4,7 +4,7 @@ module;
 #define VMA_IMPLEMENTATION
 #include <vma/vk_mem_alloc.h>
 
-module vulkan.vma;
+module vulkan.core.vma;
 
 namespace {
     constexpr uint32_t sizeof_vk_format(const VkFormat format) {

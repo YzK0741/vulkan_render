@@ -2,7 +2,7 @@ module;
 
 #include <vma/vk_mem_alloc.h>
 
-export module vulkan.vma;
+export module vulkan.core.vma;
 export import std;
 import utility;
 
