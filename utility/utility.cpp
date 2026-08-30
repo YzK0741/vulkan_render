@@ -59,9 +59,10 @@ void utility::at_panic(std::function<void()> const& task) {
 
 [[noreturn]] void utility::panic(std::string_view msg, std::source_location source_location) noexcept {
     std::lock_guard guard(access_mutex);
-    std::println(stderr, "program panic!");
+    // Route through error(): Debug prints to stderr, Release (GUI subsystem, no console) writes to debug.log
+    error("program panic!");
 
-    std::println(stderr, "processing terminate tasks...");
+    error("processing terminate tasks...");
 
     while (!tasks.empty()) {
         tasks.top()();
@@ -69,11 +70,16 @@ void utility::at_panic(std::function<void()> const& task) {
     }
 
     if (!msg.empty()) {
-        std::println(stderr, "error info: {}", msg);
+        error("error info: {}", msg);
     }
 
-    std::println(stderr, "occurred at function [{}] line {}", source_location.function_name(), source_location.line());
-    std::println(stderr, "time point: {:%Y-%m-%d %H:%M:%S}", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
+    error("occurred at function [{}] line {}", source_location.function_name(), source_location.line());
+    error("time point: {:%Y-%m-%d %H:%M:%S}", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
+
+    // Release writes logs through the async log thread; flush before terminating,
+    // otherwise the panic messages above may be lost (std::terminate skips static destructors).
+    wait_log_all();
+
     std::terminate();
 }
 
