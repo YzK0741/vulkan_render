@@ -77,6 +77,7 @@ target_sources(vulkan_lib
         vulkan/core/init_utils/init_utils.cppm
         vulkan/core/pipeline/pipeline.cppm
         vulkan/model/model.cppm
+        vulkan/math/math.cppm
         vulkan/runtime.cppm
         vulkan/core/pipeline/spirv_parser.cppm
     PRIVATE
@@ -87,6 +88,7 @@ target_sources(vulkan_lib
         vulkan/core/init_utils/init_util.cpp
         vulkan/core/pipeline/pipeline.cpp
         vulkan/model/model.cpp
+        vulkan/math/math.cpp
         vulkan/core/pipeline/spirv_parser.cpp
         vulkan/runtime.cpp
         third_party/spirv-reflect/spirv_reflect.c

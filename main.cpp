@@ -5,6 +5,7 @@
 import std;
 import gltf_loader;
 import utility;
+import vulkan.math;
 import vulkan.model;
 import vulkan.runtime;
 
