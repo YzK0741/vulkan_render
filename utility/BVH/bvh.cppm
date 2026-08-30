@@ -15,6 +15,8 @@ export import utility.data_block;
  * @note
  *      - leaf nodes live in an internal std::vector, internal nodes are heap allocated
  *      - make() builds the tree, rebuild() rebuilds it after leaves change
+ *      - <b>reserved for future use</b>: not yet consumed by the renderer (no callers of utility.bvh
+ *        exist); kept for upcoming occlusion/frustum culling work
  */
 /**
  * @ingroup bvh

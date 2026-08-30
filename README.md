@@ -11,7 +11,7 @@ A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), implementin
 - **IBL lighting**: CPU-precomputed environment cubemap → GGX importance-sampled prefiltered environment (mip chain), irradiance map, and BRDF LUT (split-sum), uploaded as `R16G16B16A16_SFLOAT` cubemaps / `R16G16_SFLOAT` LUT.
 - **glTF loading (`gltf_loader` module)**: standalone CPU module built on [fastgltf](https://github.com/spnda/fastgltf), supporting `.gltf` / `.glb` / data URIs and exporting a world-space flattened node hierarchy with raw de-interleaved vertex/index data.
 - **Orbit camera**: left-drag to rotate, wheel to zoom, per-frame camera UBO updates, with `MAX_FRAMES_IN_FLIGHT` frames in flight.
-- **Utility library (`utility` module)**: handle distribution, stack-style destructor mixin, `pmr` manager, thread pool, BVH, data block, and more.
+- **Utility library (`utility` module)**: handle distribution, stack-style destructor mixin, `pmr` manager, thread pool, BVH, data block, and more (BVH / `better_pmr` / thread pool are reserved for future use).
 - **Engineering practices**: automatic `clang-format` before every build, `-Wall -Wextra -Werror`, and **exceptions disabled in all build configurations** (`-fno-exceptions`; the vendored `std` module makes this work), plus `-flto -march=native -fno-rtti` in Release builds.
 
 ## Documentation
@@ -35,8 +35,8 @@ Related source docs (tracked in the repo):
 ├── main.cpp                 # Demo: pipeline loading + glTF model + PBR/IBL render loop
 ├── CMakeLists.txt           # CMake 4.3, C++23 modules build
 ├── Doxyfile                 # Doxygen config (PROJECT_NAME: "vulkan render")
-├── vulkan/                  # vulkan module (core / vma / handles / init_utils / pipeline / spirv_parser / model / runtime)
-├── utility/                 # utility module (better_pmr / BVH / thread_pool / data_block)
+├── vulkan/                  # vulkan modules (core / vma / handles / init_utils / pipeline / spirv_parser / model / math / runtime)
+├── utility/                 # utility module (data_block / better_pmr / BVH / thread_pool; the latter three are reserved for future use)
 ├── gltf_loader/             # gltf_loader module (CPU-side glTF/GLB loading)
 ├── std/                     # std / std.compat modules (vendored libc++ module; required by the -fno-exceptions builds,
 │                            #   avoids configuring CMake's experimental C++ modules flags)

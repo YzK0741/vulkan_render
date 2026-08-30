@@ -5,6 +5,8 @@ export import std;
  * @ingroup utility
  * @brief a submodule from utility helps to optimize pmr container's memory performance via mimalloc
  * @note the entry is utility::init_pmr()
+ * @note <b>reserved for future use</b>: exported from the utility module but not yet called anywhere;
+ *     kept for upcoming allocation-heavy workloads (e.g. scene data or material caches)
  */
 
 class mimalloc_memory_resource : public std::pmr::memory_resource // NOLINT

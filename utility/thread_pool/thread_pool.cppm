@@ -11,6 +11,9 @@ import std;
  * @brief a module provides raii thread pool (utility::thread_pool)
  * @note due to a clang bug std::jthread can't be used in module, so use the header-style, and requires link
  *     thread_pool separately
+ * @note <b>reserved for future use</b>: no target imports this module yet (it is only built and linked
+ *     into the executable); it is kept as a ready-to-use building block for upcoming parallel work,
+ *     e.g. async glTF loading or BVH build tasks
  *
  * @code {.cpp}
  * #include "utility/thread_pool/thread_pool.cppm"
