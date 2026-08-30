@@ -16,33 +16,18 @@ A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), implementin
 
 ## Documentation
 
-The project uses **Doxygen** to generate API documentation; every module, class, and interface is annotated in-source with `@defgroup` / `@brief`. The generated docs live in `docs/html/` (tracked in the repo) — open `docs/html/index.html` to browse:
-
-| Page | Link |
-|---|---|
-| Doxygen main page | [docs/html/index.html](docs/html/index.html) |
-| Modules overview | [docs/html/modules.html](docs/html/modules.html) |
-| Class index | [docs/html/annotated.html](docs/html/annotated.html) |
-| Class hierarchy | [docs/html/hierarchy.html](docs/html/hierarchy.html) |
-| Function index | [docs/html/functions.html](docs/html/functions.html) |
-| File list | [docs/html/files.html](docs/html/files.html) |
-
-Per-module Doxygen groups:
-
-- [vulkan group](docs/html/group__vulkan.html) ([core](docs/html/group__vulkan__core.html) / [handles](docs/html/group__vulkan__handles.html) / [init_utils](docs/html/group__vulkan__init__utils.html) / [pipeline](docs/html/group__vulkan__pipeline.html) / [spirv_parser](docs/html/group__vulkan__spirv__parser.html) / [model](docs/html/group__vulkan__model.html) / [runtime](docs/html/group__vulkan__runtime.html) / [vma](docs/html/group__vulkan__vma.html))
-- [utility group](docs/html/group__utility.html) ([better_pmr](docs/html/group__better__pmr.html) / [bvh](docs/html/group__bvh.html) / [data_block](docs/html/group__data__block.html) / [thread_pool](docs/html/group__thread__pool.html))
-- [gltf_loader group](docs/html/group__gltf__loader.html)
-
-Related docs:
-
-- [gltf_loader usage guide](docs/gltf_loader_usage.md) (API semantics, data formats, Vulkan integration examples)
-- [docs/official-shaders/](docs/official-shaders/): reference shaders (IBL / PBR / primitive)
-
-To regenerate the Doxygen docs (outputs to `docs/html` and `docs/latex`):
+The project uses **Doxygen** for API documentation; every module, class, and interface is annotated in-source with `@defgroup` / `@brief`. The generated HTML is **not** committed to the repo (it would drown the source tree in generated files) — generate it yourself whenever you need it:
 
 ```bash
 doxygen Doxyfile
 ```
+
+Output: `docs/html/` (open `docs/html/index.html`) and `docs/latex/` (both gitignored).
+
+Related source docs (tracked in the repo):
+
+- [gltf_loader usage guide](docs/gltf_loader_usage.md) (API semantics, data formats, Vulkan integration examples)
+- [docs/official-shaders/](docs/official-shaders/): reference shaders (IBL / PBR / primitive)
 
 ## Layout
 
@@ -58,7 +43,7 @@ doxygen Doxyfile
 ├── shaders/                 # GLSL sources + precompiled SPIR-V (recompile via compile_shaders.ps1)
 ├── gltf_model/              # Sample model (DamagedHelmet)
 ├── snapshot/                # Screenshots
-├── docs/                    # Doxygen output (html/ is tracked because this README links to it) + usage guides
+├── docs/                    # Usage guides + reference shaders; Doxygen HTML is generated on demand (gitignored)
 └── third_party/             # Vendored dependencies (spirv-reflect)
 ```
 
