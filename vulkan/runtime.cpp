@@ -175,7 +175,8 @@ namespace vulkan {
         if (pipeline == nullptr) {
             return nullptr;
         }
-        auto& pipeline_models = this->models[pipeline_name];
+        // operator[] has no heterogeneous overload (unlike find), so construct the key explicitly
+        auto& pipeline_models = this->models[std::string(pipeline_name)];
         pipeline_models.push_back(vulkan::make_model(this->vulkan_core, *pipeline, info));
         return &pipeline_models.back();
     }

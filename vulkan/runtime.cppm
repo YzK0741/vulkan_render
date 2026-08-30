@@ -42,9 +42,13 @@ namespace vulkan {
         core vulkan_core;
 
         std::mutex access_mutex;
-        std::map<std::string_view, vk_pipeline> pipelines;
+        // string keys (not string_view): the runtime owns the pipeline/model names, so lookups
+        // stay valid regardless of the caller's storage lifetime. std::less<> enables heterogeneous
+        // lookup, so the string_view-based API (get_pipeline / make_model / ...) still works
+        // without constructing a std::string per call.
+        std::map<std::string, vk_pipeline, std::less<>> pipelines;
         // models grouped by the pipeline they bind against: bind the pipeline once, draw them all
-        std::map<std::string_view, std::vector<model>> models;
+        std::map<std::string, std::vector<model>, std::less<>> models;
         // one command buffer per frame slot, used and reused by render_frame()
         std::vector<vk_command_buffer> command_buffers;
         // filtered view over vulkan_core, exposed via operator-> (external code never sees the raw core)
