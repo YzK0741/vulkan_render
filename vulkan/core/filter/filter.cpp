@@ -1,11 +1,14 @@
 module;
 
+#include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
 
 module vulkan.core.filter;
 
 namespace vulkan {
-    core_filter::core_filter(core& core) noexcept : vk_core(std::addressof(core)) {}
+    core_filter::core_filter(core& core) noexcept
+        : vk_core(std::addressof(core)) {
+    }
 
     VkDevice core_filter::get_device() const noexcept {
         return this->vk_core->device;
