@@ -5,6 +5,7 @@ module;
 export module vulkan.runtime;
 export import std;
 export import vulkan.core;
+export import vulkan.core.filter;
 export import vulkan.model;
 
 /**

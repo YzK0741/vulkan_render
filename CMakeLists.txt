@@ -71,6 +71,7 @@ target_sources(vulkan_lib
         FILE_SET CXX_MODULES
         FILES
         vulkan/core/core.cppm
+        vulkan/core/filter/filter.cppm
         vulkan/core/vma/vma.cppm
         vulkan/core/handles/handles.cppm
         vulkan/core/init_utils/init_utils.cppm
@@ -80,6 +81,7 @@ target_sources(vulkan_lib
         vulkan/core/pipeline/spirv_parser.cppm
     PRIVATE
         vulkan/core/core.cpp
+        vulkan/core/filter/filter.cpp
         vulkan/core/vma/vma.cpp
         vulkan/core/handles/handles.cpp
         vulkan/core/init_utils/init_util.cpp

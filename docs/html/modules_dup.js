@@ -1,6 +1,7 @@
 var modules_dup =
 [
     [ "vulkan.core", "module__vulkan_8core.html", "module__vulkan_8core" ],
+    [ "vulkan.core.filter", "module__vulkan_8core_8filter.html", "module__vulkan_8core_8filter" ],
     [ "vulkan.core.handles", "module__vulkan_8core_8handles.html", "module__vulkan_8core_8handles" ],
     [ "vulkan.core.init_utils", "module__vulkan_8core_8init__utils.html", "module__vulkan_8core_8init__utils" ],
     [ "vulkan.core.pipeline", "module__vulkan_8core_8pipeline.html", "module__vulkan_8core_8pipeline" ],

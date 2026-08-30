@@ -12,11 +12,12 @@ var searchData=
   ['vma_2ecppm_9',['vma.cppm',['../vma_8cppm.html',1,'']]],
   ['vma_5fallocator_10',['vma_allocator',['../classvulkan_1_1vma__allocator.html',1,'vulkan']]],
   ['volume_20hierarchy_11',['Bounding Volume Hierarchy',['../group__bvh.html',1,'']]],
-  ['vulkan_20core_20objects_20manager_12',['Vulkan Core Objects Manager',['../group__vulkan__core.html',1,'']]],
-  ['vulkan_20init_20utils_13',['Vulkan Init Utils',['../group__vulkan__init__utils.html',1,'']]],
-  ['vulkan_20main_20handles_20raii_20wrapper_14',['Vulkan Main Handles&apos; RAII Wrapper',['../group__vulkan__handles.html',1,'']]],
-  ['vulkan_20model_15',['Vulkan Model',['../group__vulkan__model.html',1,'']]],
-  ['vulkan_20pipeline_16',['Vulkan Pipeline',['../group__vulkan__pipeline.html',1,'']]],
-  ['vulkan_20runtime_20facade_17',['Vulkan Runtime Facade',['../group__vulkan__runtime.html',1,'']]],
-  ['vulkan_20vma_20allocator_18',['Vulkan VMA Allocator',['../group__vulkan__vma.html',1,'']]]
+  ['vulkan_20core_20filter_12',['Vulkan Core Filter',['../group__vulkan__core__filter.html',1,'']]],
+  ['vulkan_20core_20objects_20manager_13',['Vulkan Core Objects Manager',['../group__vulkan__core.html',1,'']]],
+  ['vulkan_20init_20utils_14',['Vulkan Init Utils',['../group__vulkan__init__utils.html',1,'']]],
+  ['vulkan_20main_20handles_20raii_20wrapper_15',['Vulkan Main Handles&apos; RAII Wrapper',['../group__vulkan__handles.html',1,'']]],
+  ['vulkan_20model_16',['Vulkan Model',['../group__vulkan__model.html',1,'']]],
+  ['vulkan_20pipeline_17',['Vulkan Pipeline',['../group__vulkan__pipeline.html',1,'']]],
+  ['vulkan_20runtime_20facade_18',['Vulkan Runtime Facade',['../group__vulkan__runtime.html',1,'']]],
+  ['vulkan_20vma_20allocator_19',['Vulkan VMA Allocator',['../group__vulkan__vma.html',1,'']]]
 ];
