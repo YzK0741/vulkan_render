@@ -6,26 +6,14 @@ module vulkan.core.pipeline;
 import vulkan.core.pipeline.spirv_parser;
 
 namespace {
-    constexpr uint32_t to_multiple_of_4(const uint32_t value) noexcept {
-        return ((value + 3) / 4) * 4;
-    }
-
-    // Collects the Vulkan objects created during pipeline creation; the destructor frees them all
-    // if any step fails; on full success, release() surrenders ownership (handed over to vk_pipeline).
+    // Collects the Vulkan objects created during pipeline creation; the destructor frees the
+    // pipeline if any later step fails; on full success, release() surrenders ownership to vk_pipeline.
     struct resource_guard {
         VkDevice device = VK_NULL_HANDLE;
-        std::vector<VkDescriptorSetLayout> set_layouts = {};
-        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         VkPipeline pipeline = VK_NULL_HANDLE;
-
-        void add_set_layout(const VkDescriptorSetLayout layout) noexcept {
-            this->set_layouts.push_back(layout);
-        }
 
         void release() noexcept {
             this->device = VK_NULL_HANDLE;
-            this->set_layouts.clear();
-            this->pipeline_layout = VK_NULL_HANDLE;
             this->pipeline = VK_NULL_HANDLE;
         }
 
@@ -36,46 +24,15 @@ namespace {
             if (this->pipeline != VK_NULL_HANDLE) {
                 vkDestroyPipeline(this->device, this->pipeline, nullptr);
             }
-            if (this->pipeline_layout != VK_NULL_HANDLE) {
-                vkDestroyPipelineLayout(this->device, this->pipeline_layout, nullptr);
-            }
-            for (const auto& layout : this->set_layouts) {
-                if (layout != VK_NULL_HANDLE) {
-                    vkDestroyDescriptorSetLayout(this->device, layout, nullptr);
-                }
-            }
         }
     };
-
-    // Merge the descriptor layouts parsed from the vertex and fragment stages by set/binding,
-    // taking the union of stageFlags when both stages share a binding.
-    std::map<uint32_t, std::map<uint32_t, VkDescriptorSetLayoutBinding>> merge_descriptor_layouts(
-        const std::vector<vulkan::pipeline::descriptor_set_layout_data>& vertex_layouts,
-        const std::vector<vulkan::pipeline::descriptor_set_layout_data>& fragment_layouts) {
-        std::map<uint32_t, std::map<uint32_t, VkDescriptorSetLayoutBinding>> merged;
-
-        const auto merge_one = [&merged](const std::vector<vulkan::pipeline::descriptor_set_layout_data>& layouts) {
-            for (const auto& set_data : layouts) {
-                auto& bindings_map = merged[set_data.set_number];
-                for (const auto& binding : set_data.bindings) {
-                    auto [it, inserted] = bindings_map.try_emplace(binding.binding, binding);
-                    if (!inserted) {
-                        it->second.stageFlags |= binding.stageFlags;
-                    }
-                }
-            }
-        };
-
-        merge_one(vertex_layouts);
-        merge_one(fragment_layouts);
-        return merged;
-    }
 } // namespace
 
 namespace vulkan {
     std::expected<vk_pipeline, std::string_view> make_pipeline( // NOLINT(*-function-cognitive-complexity)
         VkDevice device,
-        const VkRenderPass render_pass, // NOLINT(*-misplaced-const) ; VK_NULL_HANDLE selects dynamic rendering
+        const VkPipelineLayout pipeline_layout, // shared scene layout (fixed set 0 + push block); not owned
+        const VkRenderPass render_pass,         // NOLINT(*-misplaced-const) ; VK_NULL_HANDLE selects dynamic rendering
         const VkFormat color_format,
         const VkFormat depth_format,
         const std::span<const unsigned char> vertex_shader_code,
@@ -210,109 +167,13 @@ namespace vulkan {
         multisample_state_create_info.alphaToCoverageEnable = VK_FALSE;
         multisample_state_create_info.alphaToOneEnable = VK_FALSE;
 
-        // ---- 4. Push constants: one block each for vertex/fragment, 4-byte aligned, total <= 256 ----
-        auto vertex_push_constant_expected = pipeline::parse_push_constant_layout(vertex_shader_code);
-        if (!vertex_push_constant_expected) {
-            return fail("can't parse vertex push constant");
-        }
-        const auto vertex_push_constant = std::move(vertex_push_constant_expected).value();
-
-        auto fragment_push_constant_expected = pipeline::parse_push_constant_layout(fragment_shader_code);
-        if (!fragment_push_constant_expected) {
-            return fail("can't parse fragment push constant");
-        }
-        const auto fragment_push_constant = std::move(fragment_push_constant_expected).value();
-
-        std::vector<VkPushConstantRange> push_constant_ranges;
-        push_constant_ranges.reserve(2);
-
-        // Each stage's push constant block is relative to offset 0 (shader view),
-        // so blocks that multiple stages declare over the same offset range must merge into one
-        // range (union of stageFlags), otherwise the layout is illegal because a shader block
-        // falls outside its stage's range (VUID-VkGraphicsPipelineCreateInfo-layout-10069).
-        const auto add_push_constant_range = [&push_constant_ranges](const VkShaderStageFlags stage_flags, const uint32_t block_offset, const uint32_t block_size) -> bool {
-            if (block_size == 0) {
-                return true;
-            }
-            const uint32_t size = to_multiple_of_4(block_size);
-            const uint32_t end = block_offset + size;
-
-            for (auto& range : push_constant_ranges) {
-                const uint32_t range_end = range.offset + range.size;
-                if (block_offset < range_end && range.offset < end) {
-                    const uint32_t merged_offset = std::min(range.offset, block_offset);
-                    const uint32_t merged_end = std::max(range_end, end);
-                    if (merged_end - merged_offset > 256) {
-                        return false;
-                    }
-                    range.offset = merged_offset;
-                    range.size = merged_end - merged_offset;
-                    range.stageFlags |= stage_flags;
-                    return true;
-                }
-            }
-
-            if (end > 256) {
-                return false;
-            }
-            push_constant_ranges.push_back({stage_flags, block_offset, size});
-            return true;
-        };
-
-        if (!add_push_constant_range(VK_SHADER_STAGE_VERTEX_BIT, 0, vertex_push_constant.total_size) || !add_push_constant_range(VK_SHADER_STAGE_FRAGMENT_BIT, 0, fragment_push_constant.total_size)) {
-            return fail("push constant range too big");
-        }
-
-        // ---- 5. Descriptor set layouts: parse vertex/fragment separately, then merge by set/binding ----
-        auto vertex_descriptor_layout_expected = pipeline::parse_descriptor_set_layouts(vertex_shader_code, VK_SHADER_STAGE_VERTEX_BIT);
-        if (!vertex_descriptor_layout_expected) {
-            return fail(vertex_descriptor_layout_expected.error());
-        }
-        const auto vertex_descriptor_layout = std::move(vertex_descriptor_layout_expected).value();
-
-        auto fragment_descriptor_layout_expected = pipeline::parse_descriptor_set_layouts(fragment_shader_code, VK_SHADER_STAGE_FRAGMENT_BIT);
-        if (!fragment_descriptor_layout_expected) {
-            return fail(fragment_descriptor_layout_expected.error());
-        }
-        const auto fragment_descriptor_layout = std::move(fragment_descriptor_layout_expected).value();
-
-        const auto merged_layouts = merge_descriptor_layouts(vertex_descriptor_layout, fragment_descriptor_layout);
-
+        // ---- 4. Pipeline layout: the shared scene layout (passed in) already carries the
+        //         agreed flat descriptor set 0 and the fixed push constant block; nothing to
+        //         parse from SPIR-V for the indexed layout (see core::init_scene_layouts) ----
         resource_guard guard;
         guard.device = device;
 
-        for (const auto& bindings_map : merged_layouts | std::views::values) {
-            std::vector<VkDescriptorSetLayoutBinding> bindings;
-            bindings.reserve(bindings_map.size());
-            for (const auto& binding : bindings_map | std::views::values) {
-                bindings.push_back(binding);
-            }
-
-            VkDescriptorSetLayoutCreateInfo layout_create_info = {};
-            layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-            layout_create_info.bindingCount = static_cast<uint32_t>(bindings.size());
-            layout_create_info.pBindings = bindings.data();
-
-            VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
-            if (vkCreateDescriptorSetLayout(device, &layout_create_info, nullptr, &descriptor_set_layout) != VK_SUCCESS) {
-                return fail("failed to create descriptor set layout");
-            }
-            guard.add_set_layout(descriptor_set_layout);
-        }
-
-        // ---- 6. pipeline layout ----
-        VkPipelineLayoutCreateInfo pipeline_layout_create_info = {};
-        pipeline_layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_create_info.pPushConstantRanges = push_constant_ranges.data();
-        pipeline_layout_create_info.pushConstantRangeCount = static_cast<uint32_t>(push_constant_ranges.size());
-        pipeline_layout_create_info.pSetLayouts = guard.set_layouts.data();
-        pipeline_layout_create_info.setLayoutCount = static_cast<uint32_t>(guard.set_layouts.size());
-
-        if (vkCreatePipelineLayout(device, &pipeline_layout_create_info, nullptr, &guard.pipeline_layout) != VK_SUCCESS) {
-            return fail("failed to create pipeline layout");
-        }
-
-        // ---- 7. graphics pipeline ----
+        // ---- 5. graphics pipeline ----
         // With dynamic rendering (render_pass == VK_NULL_HANDLE) the attachments are described
         // by VkPipelineRenderingCreateInfo in the pNext chain instead of a render pass + subpass
         VkPipelineRenderingCreateInfo rendering_create_info = {};
@@ -331,7 +192,7 @@ namespace vulkan {
         pipeline_create_info.pDepthStencilState = &depth_stencil_state_create_info;
         pipeline_create_info.pColorBlendState = &color_blend_state_create_info;
         pipeline_create_info.pVertexInputState = &vertex_input_state_create_info;
-        pipeline_create_info.layout = guard.pipeline_layout;
+        pipeline_create_info.layout = pipeline_layout;
         pipeline_create_info.pRasterizationState = &rasterization_state_create_info;
         pipeline_create_info.pMultisampleState = &multisample_state_create_info;
         pipeline_create_info.pDynamicState = &dynamic_state_create_info;
@@ -345,7 +206,8 @@ namespace vulkan {
         }
 
         // ---- 8. Success: transfer ownership to vk_pipeline; guard no longer cleans up ----
-        vk_pipeline result(guard.pipeline, guard.pipeline_layout, guard.set_layouts, device);
+        //      (the pipeline layout is shared and owned by core, not by the pipeline)
+        vk_pipeline result(guard.pipeline, pipeline_layout, device);
         guard.release();
         return result;
     }

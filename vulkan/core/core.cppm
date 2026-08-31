@@ -26,6 +26,19 @@ namespace vulkan {
      *      - do not call the init or create function, just use the members or other functions
      *      - no thread-safe
      */
+
+    /**
+     * @ingroup vulkan_core
+     * @brief agreed flat scene descriptor set layout, shared by all pipelines (see shaders/pbr.frag):
+     *        set 0 binding 0 = CameraUBO (uniform buffer, update-after-bind),
+     *              binding 1 = sampler2D textures[] (runtime array, partially bound + update-after-bind + non-uniform index),
+     *              binding 2/3/4 = prefiltered env / irradiance / BRDF LUT (combined image samplers)
+     * @note hardcoded instead of parsed from SPIR-V: the indexed layout is flat, so pipelines
+     *       skip descriptor / push constant parsing and share one layout object
+     */
+    export constexpr uint32_t scene_texture_capacity = 128;
+    // material_push_constants: 4+4 floats + 2 uints + mat4 = 128 bytes, see vulkan/model.cppm
+    export constexpr uint32_t scene_push_constant_size = 128;
     export struct core : utility::enable_stack_destruct {
         VkInstance instance = VK_NULL_HANDLE;
         VkDevice device = VK_NULL_HANDLE;
@@ -89,6 +102,12 @@ namespace vulkan {
 
         VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
         void create_descriptor_pool() noexcept;
+
+        // shared scene layouts (see the scene_texture_capacity / scene_push_constant_size docs above);
+        // all pipelines are created against scene_pipeline_layout, so one descriptor set works for all
+        VkDescriptorSetLayout scene_descriptor_set_layout = VK_NULL_HANDLE;
+        VkPipelineLayout scene_pipeline_layout = VK_NULL_HANDLE;
+        void init_scene_layouts() noexcept;
 
         VkRenderPass renderpass = {};
         void init_renderpass() noexcept;

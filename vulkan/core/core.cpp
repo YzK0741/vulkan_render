@@ -26,6 +26,7 @@ namespace vulkan {
         }
         create_command_pool();
         create_descriptor_pool();
+        init_scene_layouts();
         create_sync_objects();
 
         vma.init(this->instance, this->device, this->physical_device, this->graphics_queue, this->graphics_family_index);
@@ -704,15 +705,18 @@ namespace vulkan {
 
     void core::create_descriptor_pool() noexcept {
         std::vector<VkDescriptorPoolSize> pool_sizes;
-        constexpr int max_size = 1024;
-        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, max_size});
-
-        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, max_size});
+        // Uniform buffers: one camera UBO binding per scene set (few sets total)
+        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 64});
+        // Combined image samplers: the texture array (scene_texture_capacity per scene set)
+        // dominates; plus a few IBL / fallback entries per set
+        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * scene_texture_capacity});
 
         VkDescriptorPoolCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-        info.maxSets = max_size;
+        // UPDATE_AFTER_BIND: the scene set's camera binding is rewritten every frame and the
+        // texture array entries are appended while the set may already be bound
+        info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+        info.maxSets = 64;
         info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
         info.pPoolSizes = pool_sizes.data();
         if (vkCreateDescriptorPool(this->device, &info, nullptr, &this->descriptor_pool) != 0) {
@@ -721,6 +725,63 @@ namespace vulkan {
         register_cleanup([this] {
             if (descriptor_pool != VK_NULL_HANDLE) {
                 vkDestroyDescriptorPool(this->device, this->descriptor_pool, nullptr);
+            }
+        });
+    }
+
+    void core::init_scene_layouts() noexcept {
+        // ---- 1. Fixed flat descriptor set layout (see the convention docs in core.cppm) ----
+        std::array<VkDescriptorSetLayoutBinding, 5> bindings = {};
+        bindings[0] = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
+        bindings[1] = {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = scene_texture_capacity, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
+        bindings[2] = {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
+        bindings[3] = {.binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
+        bindings[4] = {.binding = 4, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
+
+        std::array<VkDescriptorBindingFlags, 5> binding_flags = {};
+        binding_flags[0] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT; // camera UBO rewritten per frame
+        // texture array: only written entries are valid, appended while the set may be bound;
+        // non-uniform indexing itself is a device feature, not a layout flag
+        binding_flags[1] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+
+        VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info = {};
+        flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+        flags_info.bindingCount = static_cast<uint32_t>(binding_flags.size());
+        flags_info.pBindingFlags = binding_flags.data();
+
+        VkDescriptorSetLayoutCreateInfo layout_info = {};
+        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
+        layout_info.pBindings = bindings.data();
+        layout_info.pNext = &flags_info;
+        if (vkCreateDescriptorSetLayout(this->device, &layout_info, nullptr, &this->scene_descriptor_set_layout) != VK_SUCCESS) {
+            utility::panic("failed to create scene descriptor set layout");
+        }
+
+        // ---- 2. Fixed pipeline layout: the scene set + the agreed push constant block ----
+        VkPushConstantRange push_range = {};
+        push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        push_range.offset = 0;
+        push_range.size = scene_push_constant_size;
+
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &this->scene_descriptor_set_layout;
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        if (vkCreatePipelineLayout(this->device, &pipeline_layout_info, nullptr, &this->scene_pipeline_layout) != VK_SUCCESS) {
+            utility::panic("failed to create scene pipeline layout");
+        }
+
+        register_cleanup([this] {
+            if (this->scene_pipeline_layout != VK_NULL_HANDLE) {
+                vkDestroyPipelineLayout(this->device, this->scene_pipeline_layout, nullptr);
+                this->scene_pipeline_layout = VK_NULL_HANDLE;
+            }
+            if (this->scene_descriptor_set_layout != VK_NULL_HANDLE) {
+                vkDestroyDescriptorSetLayout(this->device, this->scene_descriptor_set_layout, nullptr);
+                this->scene_descriptor_set_layout = VK_NULL_HANDLE;
             }
         });
     }
@@ -962,6 +1023,7 @@ namespace vulkan {
         const std::span<const unsigned char> fragment_shader_code) const {
         auto result = vulkan::make_pipeline(
             this->device,
+            this->scene_pipeline_layout,
             this->use_dynamic_rendering ? VK_NULL_HANDLE : this->renderpass,
             this->swap_chain_image_format,
             this->depth_format,

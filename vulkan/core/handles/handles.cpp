@@ -207,23 +207,20 @@ namespace vulkan {
 
 // vk_pipeline
 namespace vulkan {
-    vk_pipeline::vk_pipeline(const VkPipeline pipeline, const VkPipelineLayout pipeline_layout, std::vector<VkDescriptorSetLayout> const& descriptor_set_layouts, const VkDevice device) noexcept { // NOLINT(*-misplaced-const)
+    vk_pipeline::vk_pipeline(const VkPipeline pipeline, const VkPipelineLayout pipeline_layout, const VkDevice device) noexcept { // NOLINT(*-misplaced-const)
         this->pipeline = pipeline;
         this->pipeline_layout = pipeline_layout;
-        this->descriptor_set_layouts = descriptor_set_layouts;
         this->device = device;
     }
 
     vk_pipeline::vk_pipeline(vk_pipeline&& other) noexcept {
         this->device = other.device;
         this->pipeline = other.pipeline;
-        this->descriptor_set_layouts = other.descriptor_set_layouts;
         this->pipeline_layout = other.pipeline_layout;
         this->viewport = other.viewport;
         this->scissor = other.scissor;
         other.device = VK_NULL_HANDLE;
         other.pipeline = VK_NULL_HANDLE;
-        other.descriptor_set_layouts.clear();
         other.pipeline_layout = VK_NULL_HANDLE;
     }
 
@@ -234,13 +231,11 @@ namespace vulkan {
         this->release();
         this->device = other.device;
         this->pipeline = other.pipeline;
-        this->descriptor_set_layouts = other.descriptor_set_layouts;
         this->pipeline_layout = other.pipeline_layout;
         this->viewport = other.viewport;
         this->scissor = other.scissor;
         other.device = VK_NULL_HANDLE;
         other.pipeline = VK_NULL_HANDLE;
-        other.descriptor_set_layouts.clear();
         other.pipeline_layout = VK_NULL_HANDLE;
         return *this;
     }
@@ -257,10 +252,6 @@ namespace vulkan {
         return pipeline_layout;
     }
 
-    std::vector<VkDescriptorSetLayout> vk_pipeline::get_descriptor_set_layouts() const noexcept {
-        return this->descriptor_set_layouts;
-    }
-
     void vk_pipeline::begin_pipeline(const VkCommandBuffer command_buffer) const {
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pipeline);
         vkCmdSetViewport(command_buffer, 0, 1, &this->viewport);
@@ -269,24 +260,13 @@ namespace vulkan {
 
     void vk_pipeline::release() noexcept {
         if (this->device != VK_NULL_HANDLE) {
-            if (!this->descriptor_set_layouts.empty()) {
-                for (auto& set_layout : this->descriptor_set_layouts) {
-                    vkDestroyDescriptorSetLayout(this->device, set_layout, nullptr);
-                }
-            }
-
-            if (this->pipeline_layout != VK_NULL_HANDLE) {
-                vkDestroyPipelineLayout(this->device, this->pipeline_layout, nullptr);
-            }
-
             if (this->pipeline != VK_NULL_HANDLE) {
                 vkDestroyPipeline(this->device, this->pipeline, nullptr);
             }
         }
         this->device = VK_NULL_HANDLE;
-        this->descriptor_set_layouts.clear();
-        this->pipeline_layout = VK_NULL_HANDLE;
         this->pipeline = VK_NULL_HANDLE;
+        this->pipeline_layout = VK_NULL_HANDLE;
     }
 
     // vk_image_view

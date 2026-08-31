@@ -124,20 +124,20 @@ namespace vulkan {
      */
     export struct vk_pipeline {
         VkPipeline pipeline = VK_NULL_HANDLE;
+        // non-owning: every pipeline is created against the shared core::scene_pipeline_layout
+        // (flat indexed set layout + fixed push constant block), so a single descriptor set
+        // works with all pipelines and no per-pipeline layout objects exist
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-
-        std::vector<VkDescriptorSetLayout> descriptor_set_layouts = {};
         VkDevice device = VK_NULL_HANDLE;
 
         // Per-pipeline viewport/scissor (dynamic state; vkCmdSetViewport/Scissor required before drawing)
         VkViewport viewport = {};
         VkRect2D scissor = {};
 
-        explicit vk_pipeline(VkPipeline pipeline, VkPipelineLayout pipeline_layout, std::vector<VkDescriptorSetLayout> const& descriptor_set_layouts, VkDevice device) noexcept; // NOLINT(*-avoid-const-params-in-decls)
+        explicit vk_pipeline(VkPipeline pipeline, VkPipelineLayout pipeline_layout, VkDevice device) noexcept;
         ~vk_pipeline();
         [[nodiscard]] VkPipeline get_pipeline() const noexcept;
         [[nodiscard]] VkPipelineLayout get_pipeline_layout() const noexcept;
-        [[nodiscard]] std::vector<VkDescriptorSetLayout> get_descriptor_set_layouts() const noexcept;
 
         /**
          * @ingroup vulkan_handles
