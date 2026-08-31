@@ -161,7 +161,7 @@ namespace {
         }
 
         // Timestamp the rotated block so sessions are distinguishable in debug.log.old
-        if (content.find("===== session") == std::string::npos) {
+        if (!content.contains("===== session")) {
             old_log << std::format("===== session ended at {:%Y-%m-%d %H:%M:%S} =====\n",
                                    std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
         }

@@ -41,7 +41,9 @@ namespace vulkan {
 
         // Nearest-neighbor cubemap sampling (smooth enough after summed-area averaging)
         glm::vec3 sample_cubemap(const std::vector<float>& data, const int size, const glm::vec3& dir) {
-            const float ax = std::abs(dir.x), ay = std::abs(dir.y), az = std::abs(dir.z);
+            const float ax = std::abs(dir.x);
+            const float ay = std::abs(dir.y);
+            const float az = std::abs(dir.z);
             int face = 0;
             float u = 0.0f;
             float v = 0.0f;
@@ -58,8 +60,8 @@ namespace vulkan {
                 u = face == 4 ? dir.x : -dir.x;
                 v = -dir.y;
             }
-            const int px = std::clamp(static_cast<int>((u * 0.5f + 0.5f) * size), 0, size - 1);
-            const int py = std::clamp(static_cast<int>((v * 0.5f + 0.5f) * size), 0, size - 1);
+            const int px = std::clamp(static_cast<int>((u * 0.5f + 0.5f) * static_cast<float>(size)), 0, size - 1);
+            const int py = std::clamp(static_cast<int>((v * 0.5f + 0.5f) * static_cast<float>(size)), 0, size - 1);
             const size_t offset = (static_cast<size_t>(face) * size * size + static_cast<size_t>(py) * size + px) * 4;
             return glm::vec3(data[offset], data[offset + 1], data[offset + 2]);
         }
@@ -112,8 +114,8 @@ namespace vulkan {
         for (int face = 0; face < 6; ++face) {
             for (int y = 0; y < size; ++y) {
                 for (int x = 0; x < size; ++x) {
-                    const float u = (static_cast<float>(x) + 0.5f) / size * 2.0f - 1.0f;
-                    const float v = (static_cast<float>(y) + 0.5f) / size * 2.0f - 1.0f;
+                    const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(size) * 2.0f - 1.0f;
+                    const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(size) * 2.0f - 1.0f;
                     const glm::vec3 color = environment_color(cube_face_direction(face, u, v));
                     const size_t offset = (static_cast<size_t>(face) * size * size + static_cast<size_t>(y) * size + x) * 4;
                     data[offset + 0] = color.r;
@@ -136,8 +138,8 @@ namespace vulkan {
             for (int face = 0; face < 6; ++face) {
                 for (int y = 0; y < mip_size; ++y) {
                     for (int x = 0; x < mip_size; ++x) {
-                        const float u = (static_cast<float>(x) + 0.5f) / mip_size * 2.0f - 1.0f;
-                        const float v = (static_cast<float>(y) + 0.5f) / mip_size * 2.0f - 1.0f;
+                        const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(mip_size) * 2.0f - 1.0f;
+                        const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(mip_size) * 2.0f - 1.0f;
                         const glm::vec3 n = cube_face_direction(face, u, v);
                         glm::vec3 sum(0.0f);
                         float total_weight = 0.0f;
@@ -170,8 +172,8 @@ namespace vulkan {
         for (int face = 0; face < 6; ++face) {
             for (int y = 0; y < irr_size; ++y) {
                 for (int x = 0; x < irr_size; ++x) {
-                    const float u = (static_cast<float>(x) + 0.5f) / irr_size * 2.0f - 1.0f;
-                    const float v = (static_cast<float>(y) + 0.5f) / irr_size * 2.0f - 1.0f;
+                    const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(irr_size) * 2.0f - 1.0f;
+                    const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(irr_size) * 2.0f - 1.0f;
                     const glm::vec3 n = cube_face_direction(face, u, v);
                     const glm::vec3 up = std::abs(n.z) < 0.999f ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
                     const glm::vec3 tangent = glm::normalize(glm::cross(up, n));
@@ -204,14 +206,14 @@ namespace vulkan {
         std::vector<float> result(static_cast<size_t>(size) * size * 2);
         for (int y = 0; y < size; ++y) {
             for (int x = 0; x < size; ++x) {
-                const float ndotv = (static_cast<float>(x) + 0.5f) / size;
-                const float roughness = (static_cast<float>(y) + 0.5f) / size;
+                const float ndotv = (static_cast<float>(x) + 0.5f) / static_cast<float>(size);
+                const float roughness = (static_cast<float>(y) + 0.5f) / static_cast<float>(size);
                 const glm::vec4 c0(-1.0f, -0.0275f, -0.572f, 0.022f);
                 const glm::vec4 c1(1.0f, 0.0425f, 1.04f, -0.04f);
                 const glm::vec4 r = roughness * c0 + c1;
                 const float a004 = std::min(r.x * r.x, std::exp2(-9.28f * ndotv)) * r.x + r.y;
-                result[static_cast<size_t>(y) * size * 2 + x * 2 + 0] = -1.04f * a004 + r.z;
-                result[static_cast<size_t>(y) * size * 2 + x * 2 + 1] = 1.04f * a004 + r.w;
+                result[static_cast<size_t>(y) * size * 2 + static_cast<size_t>(x) * 2 + 0] = -1.04f * a004 + r.z;
+                result[static_cast<size_t>(y) * size * 2 + static_cast<size_t>(x) * 2 + 1] = 1.04f * a004 + r.w;
             }
         }
         return result;

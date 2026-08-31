@@ -13,7 +13,7 @@ namespace {
         return static_cast<vulkan::runtime*>(glfwGetWindowUserPointer(window));
     }
 
-    void mouse_button_callback(GLFWwindow* window, const int button, const int action, const int) {
+    void mouse_button_callback(GLFWwindow* window, const int button, const int action, [[maybe_unused]] const int mods) {
         auto* runtime = runtime_from_window(window);
         if (button != GLFW_MOUSE_BUTTON_LEFT) {
             return;
@@ -41,7 +41,7 @@ namespace {
         camera.pitch = std::clamp(camera.pitch, -1.5f, 1.5f); // avoid flipping
     }
 
-    void scroll_callback(GLFWwindow* window, const double, const double yoffset) {
+    void scroll_callback(GLFWwindow* window, [[maybe_unused]] const double xoffset, const double yoffset) {
         auto& camera = runtime_from_window(window)->camera;
         camera.distance *= std::pow(0.9f, static_cast<float>(yoffset));
         camera.distance = std::clamp(camera.distance, 0.5f, 20.0f);
@@ -688,7 +688,7 @@ namespace vulkan {
 
         // operator[] has no heterogeneous overload (unlike find), so construct the key explicitly
         auto& pipeline_models = this->models[std::string(pipeline_name)];
-        pipeline_models.push_back(std::move(result));
+        pipeline_models.push_back(result);
         return &pipeline_models.back();
     }
 
