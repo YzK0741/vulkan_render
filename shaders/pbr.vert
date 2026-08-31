@@ -6,7 +6,6 @@ layout(location = 2) in vec2 in_uv;
 layout(location = 3) in vec3 in_tangent;
 
 layout(set = 0, binding = 0) uniform CameraUBO {
-    mat4 model;
     mat4 view;
     mat4 proj;
     vec3 camera_pos;
@@ -19,6 +18,8 @@ layout(push_constant) uniform PushConstants {
     float roughness_factor;
     float normal_scale;
     uint flags; // bit0: has normal map, bit1: has occlusion map, bit2: has emissive map
+    uint texture_base; // base index into the scene texture array (albedo +0, MR +1, normal +2, occlusion +3, emissive +4)
+    mat4 model; // per-model world transform (kept out of the shared camera UBO)
 } push;
 
 layout(location = 0) out vec3 v_world_pos;
@@ -27,10 +28,10 @@ layout(location = 2) out vec2 v_uv;
 layout(location = 3) out vec3 v_tangent;
 
 void main() {
-    vec4 world_pos = camera.model * vec4(in_position, 1.0);
+    vec4 world_pos = push.model * vec4(in_position, 1.0);
     v_world_pos = world_pos.xyz;
-    v_normal = normalize(mat3(camera.model) * in_normal);
+    v_normal = normalize(mat3(push.model) * in_normal);
     v_uv = in_uv;
-    v_tangent = normalize(mat3(camera.model) * in_tangent);
+    v_tangent = normalize(mat3(push.model) * in_tangent);
     gl_Position = camera.proj * camera.view * world_pos;
 }

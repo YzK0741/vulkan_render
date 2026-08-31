@@ -55,6 +55,26 @@ namespace vulkan {
         // set while the window is iconified; the restore transition recreates the swapchain
         bool was_minimized = false;
 
+        // ---- shared scene resources (single flat descriptor set, see core::init_scene_layouts) ----
+        // camera UBO: one buffer per frame slot, updated once per frame, shared by every model
+        std::vector<uint64_t> camera_buffer_handles = {};
+        std::vector<void*> camera_mapped = {};
+        // texture registry: flat entries of the set 0 binding 1 array (raw handles; the white
+        // fallback view may repeat); the owning views / vma handles live in the vectors below
+        std::vector<VkImageView> texture_array_views = {};
+        std::vector<vk_image_view> owned_texture_views = {};
+        std::vector<uint64_t> owned_texture_handles = {};
+        uint32_t white_texture_index = 0;
+        // scene-wide IBL (bindings 2-4): prefiltered env / irradiance / BRDF LUT, uploaded once
+        std::vector<vk_image_view> ibl_views = {};
+        std::vector<uint64_t> ibl_handles = {};
+        vk_sampler texture_sampler = {};
+        vk_sampler env_sampler = {};
+        // the single scene descriptor set: all pipelines share the layout, so one set covers them all
+        vk_descriptor_set scene_set = {};
+        bool scene_set_created = false;
+        bool ibl_ready = false;
+
         std::mutex access_mutex;
         // string keys (not string_view): the runtime owns the pipeline/model names, so lookups
         // stay valid regardless of the caller's storage lifetime. std::less<> enables heterogeneous
@@ -78,6 +98,12 @@ namespace vulkan {
          *       otherwise falls back to the classic render pass + framebuffer path
          */
         void begin_rendering(VkCommandBuffer command_buffer, uint32_t image_index) const;
+
+        // ---- scene resource management (see the members above) ----
+        void init_scene_resources();                               // camera UBO buffers + white fallback texture + texture sampler
+        void ensure_scene_set();                                   // lazily create the scene set and write camera + IBL bindings
+        void write_ibl_bindings();                                 // (re)write bindings 2-4 with the current IBL views / placeholders
+        uint32_t register_textures(const model_create_info& info); // upload 5 textures into the array, return base index
 
     public:
         // A non-const runtime exposes a mutable filter (e.g. runtime->get_vma()); a const runtime
@@ -135,11 +161,23 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief create and cache a model (geometry + material + per-frame UBOs)
-         * @param pipeline_name the pipeline whose descriptor set layouts the model binds against (must already exist)
-         * @param info geometry / material / IBL data
+         * @brief upload the scene-wide IBL resources (prefiltered env / irradiance / BRDF LUT)
+         *        into the shared scene set; call it before creating models that use IBL
+         * @param info precomputed split-sum IBL bytes (see vulkan::generate_* helpers)
+         * @note the images are uploaded once and shared by every model (they used to be
+         *       duplicated per model)
+         */
+        void set_ibl(const ibl_input& info);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief create and cache a model (geometry + texture array registration)
+         * @param pipeline_name the pipeline the model draws with (must already exist)
+         * @param info geometry and material textures
          * @return pointer to the appended model, or nullptr if the pipeline does not exist
-         * @note the model is owned by the runtime and released in its destructor (before the VkDevice)
+         * @note the model is owned by the runtime and released in its destructor (before the VkDevice);
+         *       its textures are appended to the shared scene texture array, its descriptor state
+         *       is the single scene set bound once per frame by render_frame()
          * @warning appending another model to the same pipeline may reallocate its vector and
          *          invalidate previously returned pointers; use get_models() for index-based access
          */

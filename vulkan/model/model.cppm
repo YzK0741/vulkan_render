@@ -10,19 +10,22 @@ export import vulkan.core;
 /**
  * @file model.cppm
  * @defgroup vulkan_model Vulkan Model
- * @brief GPU model management: geometry buffers, material descriptor set, per-frame UBO,
- *        plus camera/MVP helpers (CPU-side IBL precomputation lives in the vulkan.math module)
+ * @brief GPU model management: geometry buffers, material push constants, plus camera/MVP
+ *        helpers (CPU-side IBL precomputation lives in the vulkan.math module)
  * @note
- *      - a model owns every GPU resource it needs to draw itself
- *      - create via vulkan::make_model() (wrapped by vulkan::runtime::make_model), release via destroy()
+ *      - a model owns its geometry and the material push constants; it does NOT own descriptor
+ *        sets — the runtime owns the single flat scene descriptor set (camera UBO + texture
+ *        array + IBL, see core::init_scene_layouts) and binds it once per frame
+ *      - create via vulkan::runtime::make_model(), release via destroy()
  */
 namespace vulkan {
     /**
      * @ingroup vulkan_model
-     * @brief camera UBO content, layout matches the CameraUBO block in pbr.frag
+     * @brief camera UBO content, layout matches the CameraUBO block in pbr.frag (no model
+     *        matrix: the per-model world transform lives in the push constants instead, so the
+     *        camera UBO can be shared by every model)
      */
     export struct camera_ubo {
-        glm::mat4 model;
         glm::mat4 view;
         glm::mat4 proj;
         glm::vec3 camera_pos;
@@ -59,7 +62,7 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_model
-     * @brief everything make_model() needs: geometry + material textures + IBL
+     * @brief everything runtime::make_model() needs: geometry + material textures
      */
     export struct model_create_info {
         std::span<const unsigned char> vertex_data = {};
@@ -74,15 +77,19 @@ namespace vulkan {
         texture_input normal = {};
         texture_input occlusion = {};
         texture_input emissive = {};
-        ibl_input ibl = {};
 
-        // world transform applied to the geometry (e.g. fit-scale + centering from the bounding box)
+        // world transform applied to the geometry (e.g. fit-scale + centering from the bounding box);
+        // pushed per model (the shared camera UBO carries no model matrix)
         glm::mat4 model_matrix = glm::mat4(1.0f);
     };
 
     /**
      * @ingroup vulkan_model
-     * @brief material parameters pushed at draw time, layout matches pbr.frag's PushConstants (48 bytes)
+     * @brief material parameters pushed at draw time, layout matches pbr.frag's PushConstants (128 bytes)
+     * @note
+     *      - texture_base indexes into the runtime's shared scene texture array
+     *        (albedo +0, metallic-roughness +1, normal +2, occlusion +3, emissive +4)
+     *      - model is the per-model world transform (the shared camera UBO carries no model matrix)
      */
     export struct material_push_constants {
         glm::vec4 base_color_factor = glm::vec4(1.0f);
@@ -91,18 +98,22 @@ namespace vulkan {
         float roughness_factor = 1.0f;
         float normal_scale = 1.0f;
         uint32_t flags = 0; // bit0: normal map, bit1: occlusion map, bit2: emissive map
+        uint32_t texture_base = 0;
+        // glm::mat4 is only 4-byte aligned by default, but GLSL std430 aligns mat4 to 16 bytes
+        // (offset 64 in the block): align explicitly so the CPU layout matches the shader
+        alignas(16) glm::mat4 model = glm::mat4(1.0f);
     };
-    static_assert(sizeof(material_push_constants) == 48);
+    static_assert(sizeof(material_push_constants) == scene_push_constant_size);
 
     /**
      * @ingroup vulkan_model
-     * @brief a GPU model: geometry buffers, material descriptor set (set 1) and
-     *        per-frame camera UBO descriptor sets (set 0)
+     * @brief a GPU model: geometry buffers + material push constants + texture array base index
      * @note
-     *      - owns every GPU resource it needs to draw itself, including its pipeline reference
-     *        and material push constants
-     *      - draw() binds the pipeline, both descriptor sets, geometry and push constants, then draws
-     *      - destroy() frees the vma buffers/images; RAII views/sets/samplers free themselves
+     *      - owns only its geometry (vma buffers); textures live in the runtime's shared texture
+     *        array and descriptor sets are owned by the runtime (single scene set, bound once)
+     *      - draw() binds geometry, pushes the material constants and draws; the runtime binds
+     *        the pipeline and the scene set before the model loop
+     *      - destroy() frees the geometry buffers
      */
     export struct model {
         // geometry: vma handles for release, detail pointers for access (no raw Vulkan objects)
@@ -115,61 +126,33 @@ namespace vulkan {
         uint32_t vertex_count = 0;
 
         // pipeline the model binds against (points into the runtime's pipeline cache; valid for
-        // the runtime's lifetime), the world transform and the material push constants
+        // the runtime's lifetime) and the material push constants (includes texture_base + model)
         const vk_pipeline* pipeline = nullptr;
-        glm::mat4 model_matrix = glm::mat4(1.0f);
         material_push_constants push = {};
 
-        // set 1: material textures + IBL images (vma handles to free; views are RAII)
-        std::vector<uint64_t> image_handles = {};
-        std::vector<vk_image_view> image_views = {};
-        vk_descriptor_set material_set = {};
-        vk_sampler texture_sampler = {};
-        vk_sampler env_sampler = {};
-
-        // set 0: per-frame camera UBO
-        std::vector<uint64_t> ubo_buffer_handles = {};
-        std::vector<void*> ubo_mapped = {};
-        std::vector<vk_descriptor_set> ubo_sets = {};
-        size_t ubo_size = 0;
-
         /**
-         * @brief record the model's draw commands; the pipeline and push constants come from the model
+         * @brief record the model's draw commands (geometry + push constants + indexed draw)
          * @param command_buffer the command buffer being recorded
-         * @param frame_slot the frame slot whose camera UBO set to bind (see vulkan::core::MAX_FRAMES_IN_FLIGHT)
+         * @note the pipeline and the shared scene descriptor set are bound by the runtime
          */
-        void draw(VkCommandBuffer command_buffer, uint32_t frame_slot) const;
-        void update_camera_ubo(uint32_t frame_slot, const camera_ubo& ubo) const noexcept;
+        void draw(VkCommandBuffer command_buffer) const;
         void destroy(vma_allocator& vma) noexcept;
         [[nodiscard]] bool is_valid() const noexcept;
     };
 
     /**
      * @ingroup vulkan_model
-     * @brief build a model (geometry + material + IBL + per-frame UBOs) from plain data
-     * @param core the vulkan core (vma / device / descriptor pool / view & sampler factories)
-     * @param pipeline the pipeline whose descriptor set layouts the model binds against
-     * @param info geometry, material textures and IBL bytes
-     * @return the created model, owning all of its GPU resources
-     * @note panics on allocation failure (consistent with the rest of the engine)
-     */
-    export model make_model(vulkan::core& core, const vk_pipeline& pipeline, const model_create_info& info);
-
-    /**
-     * @ingroup vulkan_model
-     * @brief build the camera UBO from orbit camera state (the model is assumed centered at the origin)
+     * @brief build the camera UBO from orbit camera state (the scene is assumed centered at the origin)
      * @param yaw yaw angle in radians (see vulkan::runtime::camera)
      * @param pitch pitch angle in radians
      * @param distance camera distance from the origin
-     * @param model the model matrix (fit scale + centering)
      * @param aspect swapchain width / height
-     * @return camera UBO with view/proj/camera_pos filled in; model is copied through
+     * @return camera UBO with view/proj/camera_pos filled in
      * @note proj uses perspectiveRH_ZO with a Y flip to match Vulkan's y-down framebuffer
      */
     export camera_ubo make_orbit_camera_ubo(
         float yaw,
         float pitch,
         float distance,
-        const glm::mat4& model,
         float aspect);
 } // namespace vulkan

@@ -302,7 +302,11 @@ int main(int argc, char** argv) {
     const std::vector<unsigned char> irr_bytes = vulkan::to_half_rgba(irradiance);
     const std::vector<unsigned char> lut_bytes = vulkan::to_half_rg(brdf_lut);
 
-    // 13. Build the model: geometry + material + IBL + per-frame UBOs, all owned by the runtime
+    // 12.2 Upload the scene-wide IBL once: shared by every model (bindings 2-4 of the scene set)
+    runtime.set_ibl(vulkan::ibl_input{.prefiltered_env = env_bytes, .irradiance = irr_bytes, .brdf_lut = lut_bytes, .env_size = env_size, .env_mip_count = env_mip_count, .irr_size = 32, .lut_size = 256});
+
+    // 13. Build the model: geometry + material textures; IBL and the camera UBO are scene-wide
+    //     and owned by the runtime, the model only registers its textures into the shared array
     vulkan::model_create_info model_info{};
     model_info.vertex_data = std::span(reinterpret_cast<const unsigned char*>(vertices.data()), vertices.size() * sizeof(vertex));
     model_info.vertex_stride = sizeof(vertex);
@@ -315,9 +319,8 @@ int main(int argc, char** argv) {
     model_info.normal = texture_inputs[2];
     model_info.occlusion = texture_inputs[3];
     model_info.emissive = texture_inputs[4];
-    model_info.ibl = vulkan::ibl_input{.prefiltered_env = env_bytes, .irradiance = irr_bytes, .brdf_lut = lut_bytes, .env_size = env_size, .env_mip_count = env_mip_count, .irr_size = 32, .lut_size = 256};
 
-    // Model matrix (fit scale + centered at origin), owned by the model for per-frame UBO updates
+    // Model matrix (fit scale + centered at origin), pushed per model (shared UBO carries none)
     model_info.model_matrix = glm::scale(glm::mat4(1.0f), glm::vec3(fit_scale)) * glm::translate(glm::mat4(1.0f), -center);
 
     auto* model = runtime.make_model("pbr", model_info);

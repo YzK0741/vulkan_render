@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_nonuniform_qualifier : enable
 
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_normal;
@@ -8,20 +9,17 @@ layout(location = 3) in vec3 v_tangent;
 layout(location = 0) out vec4 out_color;
 
 layout(set = 0, binding = 0) uniform CameraUBO {
-    mat4 model;
     mat4 view;
     mat4 proj;
     vec3 camera_pos;
 } camera;
 
-layout(set = 1, binding = 0) uniform sampler2D base_color_texture;
-layout(set = 1, binding = 1) uniform sampler2D metallic_roughness_texture;
-layout(set = 1, binding = 2) uniform sampler2D normal_texture;
-layout(set = 1, binding = 3) uniform sampler2D occlusion_texture;
-layout(set = 1, binding = 4) uniform sampler2D emissive_texture;
-layout(set = 1, binding = 5) uniform samplerCube env_sampler;        // prefiltered environment (roughness mip chain)
-layout(set = 1, binding = 6) uniform samplerCube irradiance_sampler; // irradiance map (diffuse IBL)
-layout(set = 1, binding = 7) uniform sampler2D brdf_lut_sampler;     // BRDF integration LUT
+// Single flat scene set: shared camera UBO (binding 0), runtime texture array (binding 1,
+// descriptor indexing: partially bound + update-after-bind) and shared IBL (bindings 2-4).
+layout(set = 0, binding = 1) uniform sampler2D textures[];          // per-model: albedo +0, MR +1, normal +2, occlusion +3, emissive +4
+layout(set = 0, binding = 2) uniform samplerCube env_sampler;       // prefiltered environment (roughness mip chain)
+layout(set = 0, binding = 3) uniform samplerCube irradiance_sampler; // irradiance map (diffuse IBL)
+layout(set = 0, binding = 4) uniform sampler2D brdf_lut_sampler;    // BRDF integration LUT
 
 layout(push_constant) uniform PushConstants {
     vec4 base_color_factor;
@@ -30,6 +28,8 @@ layout(push_constant) uniform PushConstants {
     float roughness_factor;
     float normal_scale;
     uint flags; // bit0: has normal map, bit1: has occlusion map, bit2: has emissive map
+    uint texture_base; // base index into the scene texture array
+    mat4 model; // unused here, declared to keep the block layout identical to pbr.vert
 } push;
 
 const float PI = 3.14159265359;
@@ -102,12 +102,12 @@ vec3 aces_tone_mapping(vec3 color) {
 }
 
 void main() {
-    // ---- Material parameters: factor * texture ----
-    vec4 base_color = push.base_color_factor * texture(base_color_texture, v_uv);
-    float metallic = push.metallic_factor * texture(metallic_roughness_texture, v_uv).b;
-    float roughness = push.roughness_factor * texture(metallic_roughness_texture, v_uv).g;
-    float ao = texture(occlusion_texture, v_uv).r;
-    vec3 emissive = push.emissive_factor.rgb * texture(emissive_texture, v_uv).rgb;
+    // ---- Material parameters: factor * texture (indexed into the shared texture array) ----
+    vec4 base_color = push.base_color_factor * texture(textures[push.texture_base + 0u], v_uv);
+    float metallic = push.metallic_factor * texture(textures[push.texture_base + 1u], v_uv).b;
+    float roughness = push.roughness_factor * texture(textures[push.texture_base + 1u], v_uv).g;
+    float ao = texture(textures[push.texture_base + 3u], v_uv).r;
+    vec3 emissive = push.emissive_factor.rgb * texture(textures[push.texture_base + 4u], v_uv).rgb;
 
     // ---- Normal: optional tangent-space normal map, else interpolated normal ----
     vec3 n;
@@ -115,7 +115,7 @@ void main() {
         vec3 tangent = normalize(v_tangent);
         vec3 normal = normalize(v_normal);
         vec3 bitangent = normalize(cross(normal, tangent));
-        vec3 tbn_normal = texture(normal_texture, v_uv).rgb * 2.0 - 1.0;
+        vec3 tbn_normal = texture(textures[push.texture_base + 2u], v_uv).rgb * 2.0 - 1.0;
         tbn_normal.xy *= push.normal_scale;
         tbn_normal = normalize(tbn_normal);
         n = normalize(mat3(tangent, bitangent, normal) * tbn_normal);
