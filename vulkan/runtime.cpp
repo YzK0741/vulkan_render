@@ -563,6 +563,21 @@ namespace vulkan {
                                     nullptr);
         }
 
+        // Pipelines cache a fullscreen viewport/scissor at creation; after a resize the swapchain
+        // extent changed, so resync them from the current extent before drawing (begin_pipeline
+        // applies the stored values)
+        const VkViewport full_viewport = {0.0f,
+                                          0.0f,
+                                          static_cast<float>(vk.swap_chain_extent.width),
+                                          static_cast<float>(vk.swap_chain_extent.height),
+                                          0.0f,
+                                          1.0f};
+        const VkRect2D full_scissor = {{0, 0}, vk.swap_chain_extent};
+        for (auto& [pipeline_name, pipeline] : this->pipelines) {
+            pipeline.viewport = full_viewport;
+            pipeline.scissor = full_scissor;
+        }
+
         for (const auto& [pipeline_name, pipeline] : this->pipelines) {
             const auto models_it = this->models.find(pipeline_name);
             if (models_it == this->models.end() || models_it->second.empty()) {

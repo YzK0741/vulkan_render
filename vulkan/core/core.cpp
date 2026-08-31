@@ -44,7 +44,7 @@ namespace vulkan {
         glfwInit();
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE); // resizing recreates the swapchain via render_frame's OUT_OF_DATE handling
 
         window = glfwCreateWindow(
             width,
