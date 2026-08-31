@@ -906,7 +906,7 @@ namespace vulkan {
     }
 
     VkResult core::submit(const VkCommandBuffer command_buffer, const uint32_t image_index) const {
-        const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        constexpr VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submit_info = {};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit_info.waitSemaphoreCount = 1;
@@ -1039,12 +1039,14 @@ namespace vulkan {
             this->msaa_samples);
         if (result) {
             // Save the fullscreen viewport/scissor for the current swapchain size, used directly before draw
-            result->viewport = {0.0f,
-                                0.0f,
-                                static_cast<float>(this->swap_chain_extent.width),
-                                static_cast<float>(this->swap_chain_extent.height),
-                                0.0f,
-                                1.0f};
+            result->viewport = {
+                0.0f,
+                0.0f,
+                static_cast<float>(this->swap_chain_extent.width),
+                static_cast<float>(this->swap_chain_extent.height),
+                0.0f,
+                1.0f,
+            };
             result->scissor = {{0, 0}, this->swap_chain_extent};
         }
         return result;
