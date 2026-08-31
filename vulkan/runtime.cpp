@@ -454,21 +454,32 @@ namespace vulkan {
         const uint32_t frame_slot = static_cast<uint32_t>(vk.current_frame);
         vkWaitForFences(vk.device, 1, &vk.in_flight_fences[frame_slot], VK_TRUE, UINT64_MAX);
 
-        // 4. Acquire the next swapchain image; on out-of-date (e.g. the window was resized)
-        //    rebuild the swapchain and let the caller retry on the next iteration. The fence is
-        //    only reset after a successful acquire, so this path never leaves a reset-but-
-        //    unsubmitted fence behind (which would deadlock the next frame's wait)
+        // 4. Acquire the next swapchain image. While the window is being resized the swapchain is
+        //    permanently out of date; instead of skipping the frame (which would freeze the image
+        //    until the drag ends), recreate the swapchain and retry within this frame so every
+        //    frame renders at the current size (live resize). The fence is only reset after a
+        //    successful acquire, so these retries never leave a reset-but-unsubmitted fence behind
+        //    (which would deadlock the next frame's wait).
         uint32_t image_index = 0;
-        const VkResult acquire_result = vkAcquireNextImageKHR(vk.device,
-                                                              vk.swap_chain,
-                                                              UINT64_MAX,
-                                                              vk.image_available_semaphores[frame_slot],
-                                                              VK_NULL_HANDLE,
-                                                              &image_index);
-        if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
+        VkResult acquire_result = VK_ERROR_OUT_OF_DATE_KHR;
+        bool swapchain_recreated = false;
+        for (int attempt = 0; attempt < 4 && acquire_result == VK_ERROR_OUT_OF_DATE_KHR; ++attempt) {
+            acquire_result = vkAcquireNextImageKHR(vk.device,
+                                                   vk.swap_chain,
+                                                   UINT64_MAX,
+                                                   vk.image_available_semaphores[frame_slot],
+                                                   VK_NULL_HANDLE,
+                                                   &image_index);
+            if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
+                vk.recreate_swap_chain();
+                swapchain_recreated = true;
+            }
+        }
+        if (swapchain_recreated) {
             utility::log("swapchain out of date, recreating");
-            vk.recreate_swap_chain();
-            return frame_result::skipped;
+        }
+        if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
+            return frame_result::skipped; // give up this frame (rare: the size keeps changing)
         }
         if (acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
             return frame_result::failed;

@@ -142,8 +142,9 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief drive one application frame: poll window events, respond to ESC / native close,
          *        skip rendering while the window is minimized, recreate the swapchain on restore
-         *        and on resize (VK_ERROR_OUT_OF_DATE_KHR / VK_SUBOPTIMAL_KHR), then record,
-         *        submit and present one frame when renderable
+         *        and on resize (retrying within the frame so dragging the window border renders
+         *        live instead of freezing until the drag ends), then record, submit and present
+         *        one frame when renderable
          * @return frame_result: render_success when a frame was presented; skipped when not renderable
          *         (minimized or swapchain recreated — caller yields and calls again); closed on
          *         window close; failed on a fatal Vulkan error (caller exits the loop)
