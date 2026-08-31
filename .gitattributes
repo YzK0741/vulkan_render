@@ -1,3 +1,12 @@
-* linguist-vendored
-*.cppm linguist-vendored=false
-*.cpp linguist-vendored=false
+# Language statistics: count project code, ignore third-party and non-code folders.
+# (Folder-based vendoring replaces the previous extension whitelist, so project
+#  sources — cpp/cppm/headers/cmake/glsl — count naturally.)
+
+# Third-party code / assets
+std/** linguist-vendored
+third_party/** linguist-vendored
+gltf_model/** linguist-vendored
+
+# Non-code folders (docs, screenshots)
+docs/** linguist-vendored
+snapshot/** linguist-vendored
