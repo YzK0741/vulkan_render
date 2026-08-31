@@ -108,7 +108,7 @@ namespace vulkan {
         // ---- scene resource management (see the members above) ----
         void init_scene_resources();                               // camera UBO buffers + white fallback texture + texture sampler + material table
         void ensure_scene_set();                                   // lazily create the scene set and write camera + IBL + material bindings
-        void write_ibl_bindings();                                 // (re)write bindings 2-4 with the current IBL views / placeholders
+        void write_ibl_bindings() const;                           // (re)write bindings 2-4 with the current IBL views / placeholders
         uint32_t register_material(const model_create_info& info); // upload textures into the array, append a material_record, return its index
 
     public:

@@ -29,9 +29,9 @@ namespace vulkan {
         // Procedural environment (HDR): gradient sky/ground + sun disc
         glm::vec3 environment_color(const glm::vec3& dir) {
             const float t = std::clamp(dir.y * 0.5f + 0.5f, 0.0f, 1.0f);
-            const glm::vec3 ground = glm::vec3(0.03f, 0.03f, 0.05f) * 0.75f;
-            const glm::vec3 horizon = glm::vec3(0.16f, 0.19f, 0.26f) * 0.75f;
-            const glm::vec3 sky = glm::vec3(0.28f, 0.45f, 0.75f) * 0.75f;
+            constexpr glm::vec3 ground = glm::vec3(0.03f, 0.03f, 0.05f) * 0.75f;
+            constexpr glm::vec3 horizon = glm::vec3(0.16f, 0.19f, 0.26f) * 0.75f;
+            constexpr glm::vec3 sky = glm::vec3(0.28f, 0.45f, 0.75f) * 0.75f;
             glm::vec3 env = t < 0.5f ? glm::mix(ground, horizon, t * 2.0f) : glm::mix(horizon, sky, (t - 0.5f) * 2.0f);
             const glm::vec3 sun_dir = glm::normalize(glm::vec3(0.3f, 1.0f, 0.5f));
             const float sun = std::pow(std::max(glm::dot(dir, sun_dir), 0.0f), 64.0f);
@@ -168,7 +168,8 @@ namespace vulkan {
 
     std::vector<float> generate_irradiance_map(const std::vector<float>& env, const int env_size, const int irr_size) {
         std::vector<float> result(static_cast<size_t>(6) * irr_size * irr_size * 4, 0.0f);
-        constexpr uint32_t sample_count = 512;
+        // Loop-invariant constant: deliberately at function scope (not inside the loops)
+        constexpr uint32_t sample_count = 512; // NOLINT (some toolchains flag the constant when scoped to the inner loop)
         for (int face = 0; face < 6; ++face) {
             for (int y = 0; y < irr_size; ++y) {
                 for (int x = 0; x < irr_size; ++x) {
@@ -208,8 +209,8 @@ namespace vulkan {
             for (int x = 0; x < size; ++x) {
                 const float ndotv = (static_cast<float>(x) + 0.5f) / static_cast<float>(size);
                 const float roughness = (static_cast<float>(y) + 0.5f) / static_cast<float>(size);
-                const glm::vec4 c0(-1.0f, -0.0275f, -0.572f, 0.022f);
-                const glm::vec4 c1(1.0f, 0.0425f, 1.04f, -0.04f);
+                constexpr glm::vec4 c0(-1.0f, -0.0275f, -0.572f, 0.022f);
+                constexpr glm::vec4 c1(1.0f, 0.0425f, 1.04f, -0.04f);
                 const glm::vec4 r = roughness * c0 + c1;
                 const float a004 = std::min(r.x * r.x, std::exp2(-9.28f * ndotv)) * r.x + r.y;
                 result[static_cast<size_t>(y) * size * 2 + static_cast<size_t>(x) * 2 + 0] = -1.04f * a004 + r.z;

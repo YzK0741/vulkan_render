@@ -255,7 +255,7 @@ int main(int argc, char** argv) {
 
     // 12. Material textures: decode glTF textures to RGBA and hand them to the model (missing -> white fallback)
     const auto& texture_indices = prim.texture_indices;
-    const std::array<std::pair<std::string_view, VkFormat>, 5> texture_slots = {
+    constexpr std::array<std::pair<std::string_view, VkFormat>, 5> texture_slots = {
         std::pair{"albedo", VK_FORMAT_R8G8B8A8_SRGB},
         std::pair{"metallic_roughness", VK_FORMAT_R8G8B8A8_UNORM},
         std::pair{"normal", VK_FORMAT_R8G8B8A8_UNORM},

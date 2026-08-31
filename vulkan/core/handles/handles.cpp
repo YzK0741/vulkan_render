@@ -68,7 +68,8 @@ namespace vulkan {
             .pNext = nullptr,
             .commandPool = command_pool,
             .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1};
+            .commandBufferCount = 1,
+        };
 
         if (vkAllocateCommandBuffers(device, &allocate_info, &buffer) != VK_SUCCESS) {
             utility::panic("failed to allocate command buffer");

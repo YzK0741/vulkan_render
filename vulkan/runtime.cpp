@@ -197,7 +197,7 @@ namespace vulkan {
         this->write_ibl_bindings();
     }
 
-    void runtime::write_ibl_bindings() {
+    void runtime::write_ibl_bindings() const {
         if (!this->scene_set_created) {
             return;
         }
@@ -206,9 +206,11 @@ namespace vulkan {
         const VkImageView placeholder_view = *this->owned_texture_views[0]; // white
         const VkSampler placeholder_sampler = *this->texture_sampler;
         for (int i = 0; i < 3; ++i) {
-            image_infos[i] = {.sampler = this->ibl_ready ? *this->env_sampler : placeholder_sampler,
-                              .imageView = this->ibl_ready ? *this->ibl_views[i] : placeholder_view,
-                              .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            image_infos[i] = {
+                .sampler = this->ibl_ready ? *this->env_sampler : placeholder_sampler,
+                .imageView = this->ibl_ready ? *this->ibl_views[i] : placeholder_view,
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            };
             writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[i].dstSet = *this->scene_set;
             writes[i].dstBinding = static_cast<uint32_t>(2 + i);
@@ -566,14 +568,16 @@ namespace vulkan {
         // Pipelines cache a fullscreen viewport/scissor at creation; after a resize the swapchain
         // extent changed, so resync them from the current extent before drawing (begin_pipeline
         // applies the stored values)
-        const VkViewport full_viewport = {0.0f,
-                                          0.0f,
-                                          static_cast<float>(vk.swap_chain_extent.width),
-                                          static_cast<float>(vk.swap_chain_extent.height),
-                                          0.0f,
-                                          1.0f};
+        const VkViewport full_viewport = {
+            0.0f,
+            0.0f,
+            static_cast<float>(vk.swap_chain_extent.width),
+            static_cast<float>(vk.swap_chain_extent.height),
+            0.0f,
+            1.0f,
+        };
         const VkRect2D full_scissor = {{0, 0}, vk.swap_chain_extent};
-        for (auto& [pipeline_name, pipeline] : this->pipelines) {
+        for (auto& pipeline : this->pipelines | std::views::values) {
             pipeline.viewport = full_viewport;
             pipeline.scissor = full_scissor;
         }

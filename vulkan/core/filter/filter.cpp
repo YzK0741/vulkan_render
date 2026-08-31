@@ -50,7 +50,10 @@ namespace vulkan {
         return this->vk_core->make_sampler(address_mode, max_lod);
     }
 
-    vma_allocator& core_filter::get_vma() noexcept {
+    // Deliberately non-const: returning a mutable vma_allocator from a const method would break
+    // the const contract (a const runtime must not allocate). Some toolchains still suggest
+    // adding const here, hence the suppression.
+    vma_allocator& core_filter::get_vma() noexcept { // NOLINT
         return this->vk_core->vma;
     }
 
