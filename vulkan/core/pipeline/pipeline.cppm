@@ -21,7 +21,10 @@ namespace vulkan {
      * @ingroup vulkan_pipeline
      * @brief create a graphics pipeline directly from raw SPIR-V binary
      * @param device the logical device
-     * @param render_pass the render pass the pipeline renders into
+     * @param render_pass the render pass the pipeline renders into; pass VK_NULL_HANDLE to use
+     *        dynamic rendering instead (the attachments are then described by color/depth formats)
+     * @param color_format swapchain color attachment format (dynamic rendering only)
+     * @param depth_format depth attachment format (dynamic rendering only)
      * @param vertex_shader_code raw SPIR-V binary of the vertex shader
      * @param fragment_shader_code raw SPIR-V binary of the fragment shader
      * @param msaa_level MSAA sample count used by the render pass
@@ -30,6 +33,8 @@ namespace vulkan {
     export std::expected<vk_pipeline, std::string_view> make_pipeline(
         VkDevice device,
         VkRenderPass render_pass,
+        VkFormat color_format,
+        VkFormat depth_format,
         std::span<const unsigned char> vertex_shader_code,
         std::span<const unsigned char> fragment_shader_code,
         VkSampleCountFlagBits msaa_level);

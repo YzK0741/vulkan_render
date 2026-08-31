@@ -20,8 +20,10 @@ namespace vulkan {
         create_depth_resources();
         color_format = swap_chain_image_format;
         create_color_resources();
-        init_renderpass();
-        create_frame_buffers();
+        if (!this->use_dynamic_rendering) {
+            init_renderpass();
+            create_frame_buffers();
+        }
         create_command_pool();
         create_descriptor_pool();
         create_sync_objects();
@@ -204,6 +206,11 @@ namespace vulkan {
         device_capabilities capabilities;
         capabilities.query(this->physical_device);
         print_device_capabilities(capabilities);
+
+        // Dynamic rendering (Vulkan 1.3 core) is preferred when supported; the classic render
+        // pass path stays as the fallback for devices without it
+        this->use_dynamic_rendering = capabilities.features_1_3.dynamicRendering == VK_TRUE;
+        utility::log("rendering path: {}", this->use_dynamic_rendering ? "dynamic rendering (Vulkan 1.3)" : "classic render pass");
 
         device_creation_info creation_info;
 
@@ -859,16 +866,18 @@ namespace vulkan {
         // 1. Wait for the device to be idle
         vkDeviceWaitIdle(device);
 
-        // 2. Destroy all framebuffers first
-        for (const auto& frame_buffer : swap_chain_framebuffers) {
-            vkDestroyFramebuffer(device, frame_buffer, nullptr);
-        }
-        swap_chain_framebuffers.clear();
+        // 2-3. Framebuffers and the render pass only exist on the classic render pass path;
+        //      dynamic rendering recreates neither
+        if (!this->use_dynamic_rendering) {
+            for (const auto& frame_buffer : swap_chain_framebuffers) {
+                vkDestroyFramebuffer(device, frame_buffer, nullptr);
+            }
+            swap_chain_framebuffers.clear();
 
-        // 3. Destroy the render pass
-        if (this->renderpass != VK_NULL_HANDLE) {
-            vkDestroyRenderPass(device, renderpass, nullptr);
-            renderpass = VK_NULL_HANDLE;
+            if (this->renderpass != VK_NULL_HANDLE) {
+                vkDestroyRenderPass(device, renderpass, nullptr);
+                renderpass = VK_NULL_HANDLE;
+            }
         }
 
         // 4. Destroy MSAA color resources
@@ -926,8 +935,10 @@ namespace vulkan {
             this->create_color_resources(); // rebuild MSAA color resources
         }
 
-        this->init_renderpass();      // rebuild render pass
-        this->create_frame_buffers(); // rebuild framebuffers
+        if (!this->use_dynamic_rendering) {
+            this->init_renderpass();      // rebuild render pass
+            this->create_frame_buffers(); // rebuild framebuffers
+        }
 
         // Rebuild the per-image tracking table for the new image count to keep wait_usable_image in bounds
         images_in_flight.resize(swap_chain_images.size(), VK_NULL_HANDLE);
@@ -951,7 +962,9 @@ namespace vulkan {
         const std::span<const unsigned char> fragment_shader_code) const {
         auto result = vulkan::make_pipeline(
             this->device,
-            this->renderpass,
+            this->use_dynamic_rendering ? VK_NULL_HANDLE : this->renderpass,
+            this->swap_chain_image_format,
+            this->depth_format,
             vertex_shader_code,
             fragment_shader_code,
             this->msaa_samples);

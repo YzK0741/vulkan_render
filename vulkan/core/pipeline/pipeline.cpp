@@ -75,7 +75,9 @@ namespace {
 namespace vulkan {
     std::expected<vk_pipeline, std::string_view> make_pipeline( // NOLINT(*-function-cognitive-complexity)
         VkDevice device,
-        const VkRenderPass render_pass, // NOLINT(*-misplaced-const)
+        const VkRenderPass render_pass, // NOLINT(*-misplaced-const) ; VK_NULL_HANDLE selects dynamic rendering
+        const VkFormat color_format,
+        const VkFormat depth_format,
         const std::span<const unsigned char> vertex_shader_code,
         const std::span<const unsigned char> fragment_shader_code,
         const VkSampleCountFlagBits msaa_level) {
@@ -311,8 +313,18 @@ namespace vulkan {
         }
 
         // ---- 7. graphics pipeline ----
+        // With dynamic rendering (render_pass == VK_NULL_HANDLE) the attachments are described
+        // by VkPipelineRenderingCreateInfo in the pNext chain instead of a render pass + subpass
+        VkPipelineRenderingCreateInfo rendering_create_info = {};
+        if (render_pass == VK_NULL_HANDLE) {
+            rendering_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+            rendering_create_info.colorAttachmentCount = 1;
+            rendering_create_info.pColorAttachmentFormats = &color_format;
+            rendering_create_info.depthAttachmentFormat = depth_format;
+        }
         VkGraphicsPipelineCreateInfo pipeline_create_info = {};
         pipeline_create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipeline_create_info.pNext = render_pass == VK_NULL_HANDLE ? &rendering_create_info : nullptr;
         pipeline_create_info.renderPass = render_pass;
         pipeline_create_info.pInputAssemblyState = &input_assembly_state_create_info;
         pipeline_create_info.pViewportState = &viewport_state_create_info;

@@ -93,6 +93,11 @@ namespace vulkan {
         VkRenderPass renderpass = {};
         void init_renderpass() noexcept;
 
+        // true when the device supports dynamic rendering (Vulkan 1.3 core): frames then use
+        // vkCmdBeginRendering and no render pass / framebuffer objects exist; devices without
+        // it fall back to the classic render pass path below
+        bool use_dynamic_rendering = false;
+
         std::vector<VkFramebuffer> swap_chain_framebuffers{};
         void create_frame_buffers() noexcept;
 

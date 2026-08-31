@@ -76,16 +76,56 @@ namespace vulkan {
         this->pipelines.clear();
     }
 
-    void runtime::begin_render_pass(const VkCommandBuffer command_buffer, const uint32_t image_index) const {
+    void runtime::begin_rendering(const VkCommandBuffer command_buffer, const uint32_t image_index) const {
         std::array<VkClearValue, 2> clear_values = {};
         clear_values[0].color = {{0.02f, 0.02f, 0.03f, 1.0f}};
         clear_values[1].depthStencil = {1.0f, 0};
 
+        const core& vk = this->vulkan_core;
+
+        if (vk.use_dynamic_rendering) {
+            // Dynamic rendering (Vulkan 1.3): attachments are described inline, no render pass
+            VkRenderingAttachmentInfo color_attachment = {};
+            color_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            color_attachment.imageView = vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT
+                                             ? vk.color_image_views[image_index]
+                                             : vk.swap_chain_image_views[image_index];
+            color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            color_attachment.clearValue = clear_values[0];
+            if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
+                // MSAA resolve: the MSAA color attachment resolves into the swapchain image
+                color_attachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+                color_attachment.resolveImageView = vk.swap_chain_image_views[image_index];
+                color_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            }
+
+            VkRenderingAttachmentInfo depth_attachment = {};
+            depth_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            depth_attachment.imageView = vk.depth_image_views[image_index];
+            depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depth_attachment.clearValue = clear_values[1];
+
+            VkRenderingInfo rendering_info = {};
+            rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            rendering_info.renderArea = {{0, 0}, vk.swap_chain_extent};
+            rendering_info.layerCount = 1;
+            rendering_info.colorAttachmentCount = 1;
+            rendering_info.pColorAttachments = &color_attachment;
+            rendering_info.pDepthAttachment = &depth_attachment;
+            vkCmdBeginRendering(command_buffer, &rendering_info);
+            return;
+        }
+
+        // Classic render pass fallback (devices without dynamic rendering)
         VkRenderPassBeginInfo render_pass_info = {};
         render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        render_pass_info.renderPass = this->vulkan_core.renderpass;
-        render_pass_info.framebuffer = this->vulkan_core.swap_chain_framebuffers[image_index];
-        render_pass_info.renderArea = {{0, 0}, this->vulkan_core.swap_chain_extent};
+        render_pass_info.renderPass = vk.renderpass;
+        render_pass_info.framebuffer = vk.swap_chain_framebuffers[image_index];
+        render_pass_info.renderArea = {{0, 0}, vk.swap_chain_extent};
         render_pass_info.clearValueCount = static_cast<uint32_t>(clear_values.size());
         render_pass_info.pClearValues = clear_values.data();
         vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
@@ -163,7 +203,7 @@ namespace vulkan {
             return frame_result::failed;
         }
 
-        this->begin_render_pass(*command_buffer, image_index);
+        this->begin_rendering(*command_buffer, image_index);
 
         for (const auto& [pipeline_name, pipeline] : this->pipelines) {
             const auto models_it = this->models.find(pipeline_name);
@@ -176,7 +216,34 @@ namespace vulkan {
             }
         }
 
-        vkCmdEndRenderPass(*command_buffer);
+        if (vk.use_dynamic_rendering) {
+            vkCmdEndRendering(*command_buffer);
+            // Dynamic rendering has no render pass finalLayout to hand the image back to the
+            // presentation engine: transition the swapchain image to PRESENT_SRC_KHR explicitly
+            // (with MSAA resolve the resolve target already ends up in PRESENT_SRC_KHR, so the
+            // barrier is only needed on the direct-render path)
+            if (vk.msaa_samples == VK_SAMPLE_COUNT_1_BIT) {
+                VkImageMemoryBarrier2 present_barrier = {};
+                present_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                present_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                present_barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                present_barrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+                present_barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                present_barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+                present_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                present_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                present_barrier.image = vk.swap_chain_images[image_index];
+                present_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+                VkDependencyInfo dependency_info = {};
+                dependency_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dependency_info.imageMemoryBarrierCount = 1;
+                dependency_info.pImageMemoryBarriers = &present_barrier;
+                vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
+            }
+        } else {
+            vkCmdEndRenderPass(*command_buffer);
+        }
         if (vkEndCommandBuffer(*command_buffer) != VK_SUCCESS) {
             return frame_result::failed;
         }
