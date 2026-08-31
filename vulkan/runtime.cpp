@@ -1,6 +1,7 @@
 module;
 
 #include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
 
 module vulkan.runtime;
@@ -88,6 +89,10 @@ namespace vulkan {
         for (const uint64_t handle : this->ibl_handles) {
             this->vulkan_core.vma.free_image(handle);
         }
+        if (this->material_buffer_handle != 0) {
+            this->vulkan_core.vma.free_buffer(this->material_buffer_handle);
+            this->material_buffer_handle = 0;
+        }
     }
 
     void runtime::init_scene_resources() {
@@ -134,6 +139,20 @@ namespace vulkan {
 
         // Shared sampler for the texture array entries
         this->texture_sampler = this->vulkan_core.make_sampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 0.25f);
+
+        // GPU material table: fixed capacity, host-visible (direct mapping); records are appended
+        // at registration and read-only for the GPU (set 0 binding 5)
+        const std::vector<unsigned char> zeroed_materials(static_cast<size_t>(vulkan::material_capacity) * sizeof(material_record), 0);
+        const uint64_t material_handle = this->vulkan_core.vma.create_buffer(zeroed_materials.data(), zeroed_materials.size(), vulkan::buffer_type::storage_coherent);
+        if (material_handle == 0) {
+            utility::panic("failed to create material table buffer");
+        }
+        const auto* material_detail = this->vulkan_core.vma.get_buffer_detail(material_handle);
+        if (material_detail == nullptr) {
+            utility::panic("failed to get material table buffer detail");
+        }
+        this->material_buffer_handle = material_handle;
+        this->material_mapped = material_detail->allocation_info.pMappedData;
     }
 
     void runtime::ensure_scene_set() {
@@ -158,6 +177,21 @@ namespace vulkan {
         camera_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         camera_write.pBufferInfo = &camera_info;
         vkUpdateDescriptorSets(this->vulkan_core.device, 1, &camera_write, 0, nullptr);
+
+        // binding 5: material table (storage buffer, written once)
+        const auto* material_detail = this->vulkan_core.vma.get_buffer_detail(this->material_buffer_handle);
+        if (material_detail == nullptr) {
+            utility::panic("failed to get material table buffer detail");
+        }
+        const VkDescriptorBufferInfo material_info{material_detail->buffer, 0, static_cast<VkDeviceSize>(vulkan::material_capacity) * sizeof(material_record)};
+        VkWriteDescriptorSet material_write = {};
+        material_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        material_write.dstSet = *this->scene_set;
+        material_write.dstBinding = 5;
+        material_write.descriptorCount = 1;
+        material_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        material_write.pBufferInfo = &material_info;
+        vkUpdateDescriptorSets(this->vulkan_core.device, 1, &material_write, 0, nullptr);
 
         // bindings 2-4: IBL (or white placeholders until set_ibl() is called)
         this->write_ibl_bindings();
@@ -249,9 +283,9 @@ namespace vulkan {
         this->write_ibl_bindings();
     }
 
-    uint32_t runtime::register_textures(const model_create_info& info) {
-        const uint32_t base = static_cast<uint32_t>(this->texture_array_views.size());
-        if (base + 5 > vulkan::scene_texture_capacity) {
+    uint32_t runtime::register_material(const model_create_info& info) {
+        // ---- 1. Upload the 5 texture slots into the shared array; missing ones use the white fallback ----
+        if (this->texture_array_views.size() + 5 > vulkan::scene_texture_capacity) {
             utility::panic("scene texture array capacity exceeded");
         }
 
@@ -263,6 +297,7 @@ namespace vulkan {
             std::pair{&info.emissive, VK_FORMAT_R8G8B8A8_UNORM},
         };
 
+        std::array<uint32_t, 5> texture_indices = {};
         std::array<VkDescriptorImageInfo, 5> image_infos = {};
         std::array<VkWriteDescriptorSet, 5> writes = {};
         uint32_t write_count = 0;
@@ -292,19 +327,42 @@ namespace vulkan {
                 view = this->texture_array_views[this->white_texture_index]; // white fallback
             }
 
+            texture_indices[i] = static_cast<uint32_t>(this->texture_array_views.size());
             this->texture_array_views.push_back(view);
             image_infos[i] = {.sampler = sampler, .imageView = view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
             writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[i].dstSet = *this->scene_set;
             writes[i].dstBinding = 1;
-            writes[i].dstArrayElement = base + static_cast<uint32_t>(i);
+            writes[i].dstArrayElement = texture_indices[i];
             writes[i].descriptorCount = 1;
             writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             writes[i].pImageInfo = &image_infos[i];
             ++write_count;
         }
         vkUpdateDescriptorSets(this->vulkan_core.device, write_count, writes.data(), 0, nullptr);
-        return base;
+
+        // ---- 2. Append one material record: texture indices + presence flags; factors keep
+        //         their identity defaults (extend model_create_info to pass custom factors) ----
+        if (this->material_count >= vulkan::material_capacity) {
+            utility::panic("material table capacity exceeded");
+        }
+        material_record record = {};
+        record.tex_indices = glm::uvec4(texture_indices[0], texture_indices[1], texture_indices[2], texture_indices[3]);
+        record.emissive_index = texture_indices[4];
+        record.flags = 0;
+        if (info.normal.valid) {
+            record.flags |= 1u;
+        }
+        if (info.occlusion.valid) {
+            record.flags |= 2u;
+        }
+        if (info.emissive.valid) {
+            record.flags |= 4u;
+        }
+
+        const uint32_t material_index = this->material_count++;
+        std::memcpy(static_cast<unsigned char*>(this->material_mapped) + static_cast<size_t>(material_index) * sizeof(material_record), &record, sizeof(record));
+        return material_index;
     }
 
     void runtime::begin_rendering(const VkCommandBuffer command_buffer, const uint32_t image_index) const {
@@ -326,10 +384,12 @@ namespace vulkan {
             color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             color_attachment.clearValue = clear_values[0];
             if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-                // MSAA resolve: the MSAA color attachment resolves into the swapchain image
+                // MSAA resolve: the MSAA color attachment resolves into the swapchain image.
+                // resolveImageLayout must not be PRESENT_SRC_KHR (VUID-VkRenderingAttachmentInfo-imageView-06146);
+                // the swapchain image is transitioned to PRESENT_SRC_KHR after vkCmdEndRendering instead
                 color_attachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
                 color_attachment.resolveImageView = vk.swap_chain_image_views[image_index];
-                color_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+                color_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             }
 
             VkRenderingAttachmentInfo depth_attachment = {};
@@ -444,6 +504,49 @@ namespace vulkan {
             return frame_result::failed;
         }
 
+        // Dynamic rendering has no automatic attachment transitions (unlike a render pass):
+        // move every attachment into its render layout before vkCmdBeginRendering
+        if (vk.use_dynamic_rendering) {
+            std::array<VkImageMemoryBarrier2, 3> attachment_barriers = {};
+            uint32_t barrier_count = 0;
+            const auto add_render_barrier = [&attachment_barriers, &barrier_count](const VkImage image, const VkImageAspectFlags aspect, const VkImageLayout new_layout, const VkPipelineStageFlags2 dst_stage, const VkAccessFlags2 dst_access) {
+                VkImageMemoryBarrier2& barrier = attachment_barriers[barrier_count++];
+                barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                barrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+                barrier.srcAccessMask = 0;
+                barrier.dstStageMask = dst_stage;
+                barrier.dstAccessMask = dst_access;
+                // loadOp CLEAR discards the contents: UNDEFINED as oldLayout is valid whatever the
+                // image's actual current layout is, and avoids tracking it per frame
+                barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                barrier.newLayout = new_layout;
+                barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barrier.image = image;
+                barrier.subresourceRange = {aspect, 0, 1, 0, 1};
+            };
+
+            if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
+                // MSAA color attachment and the swapchain resolve target both render in COLOR_ATTACHMENT_OPTIMAL
+                add_render_barrier(vk.color_images[image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+                add_render_barrier(vk.swap_chain_images[image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+            } else {
+                add_render_barrier(vk.swap_chain_images[image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+            }
+            add_render_barrier(vk.depth_images[image_index], VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                               VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                               VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+
+            VkDependencyInfo dependency_info = {};
+            dependency_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dependency_info.imageMemoryBarrierCount = barrier_count;
+            dependency_info.pImageMemoryBarriers = attachment_barriers.data();
+            vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
+        }
+
         this->begin_rendering(*command_buffer, image_index);
 
         // Bind the single scene descriptor set once: every pipeline shares the scene layout, so
@@ -474,28 +577,26 @@ namespace vulkan {
         if (vk.use_dynamic_rendering) {
             vkCmdEndRendering(*command_buffer);
             // Dynamic rendering has no render pass finalLayout to hand the image back to the
-            // presentation engine: transition the swapchain image to PRESENT_SRC_KHR explicitly
-            // (with MSAA resolve the resolve target already ends up in PRESENT_SRC_KHR, so the
-            // barrier is only needed on the direct-render path)
-            if (vk.msaa_samples == VK_SAMPLE_COUNT_1_BIT) {
-                VkImageMemoryBarrier2 present_barrier = {};
-                present_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-                present_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-                present_barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-                present_barrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
-                present_barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                present_barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-                present_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                present_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                present_barrier.image = vk.swap_chain_images[image_index];
-                present_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            // presentation engine: transition the swapchain image to PRESENT_SRC_KHR explicitly.
+            // With MSAA the resolve target ends up in resolveImageLayout (COLOR_ATTACHMENT_OPTIMAL),
+            // so the barrier is needed on both the direct-render and the resolve paths.
+            VkImageMemoryBarrier2 present_barrier = {};
+            present_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            present_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            present_barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            present_barrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+            present_barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            present_barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            present_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            present_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            present_barrier.image = vk.swap_chain_images[image_index];
+            present_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
-                VkDependencyInfo dependency_info = {};
-                dependency_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                dependency_info.imageMemoryBarrierCount = 1;
-                dependency_info.pImageMemoryBarriers = &present_barrier;
-                vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
-            }
+            VkDependencyInfo dependency_info = {};
+            dependency_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dependency_info.imageMemoryBarrierCount = 1;
+            dependency_info.pImageMemoryBarriers = &present_barrier;
+            vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
         } else {
             vkCmdEndRenderPass(*command_buffer);
         }
@@ -565,18 +666,9 @@ namespace vulkan {
         result.index_count = info.index_count;
         result.vertex_count = info.vertex_count;
 
-        // ---- material push constants: texture-presence flags, texture array base, world transform ----
-        result.push.flags = 0;
-        if (info.normal.valid) {
-            result.push.flags |= 1u;
-        }
-        if (info.occlusion.valid) {
-            result.push.flags |= 2u;
-        }
-        if (info.emissive.valid) {
-            result.push.flags |= 4u;
-        }
-        result.push.texture_base = this->register_textures(info);
+        // ---- material: register textures + append a material record; the model only carries
+        //         the material index (texture indices / factors / flags live in the GPU table) ----
+        result.push.material_index = this->register_material(info);
         result.push.model = info.model_matrix;
 
         // operator[] has no heterogeneous overload (unlike find), so construct the key explicitly

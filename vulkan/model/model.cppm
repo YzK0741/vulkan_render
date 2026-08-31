@@ -85,22 +85,42 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_model
-     * @brief material parameters pushed at draw time, layout matches pbr.frag's PushConstants (128 bytes)
-     * @note
-     *      - texture_base indexes into the runtime's shared scene texture array
-     *        (albedo +0, metallic-roughness +1, normal +2, occlusion +3, emissive +4)
-     *      - model is the per-model world transform (the shared camera UBO carries no model matrix)
+     * @brief one entry of the scene's GPU-side material table (set 0 binding 5, a storage buffer):
+     *        the 5 texture array indices + all material parameters. Models only push a
+     *        material_index and the shader reads the record — material data lives in one
+     *        GPU-visible place and is shareable between models
+     * @note layout matches the Material struct in pbr.frag (std430, 80 bytes)
      */
-    export struct material_push_constants {
+    export struct material_record {
+        glm::uvec4 tex_indices = {}; // albedo, metallic-roughness, normal, occlusion (indices into the texture array)
+        uint32_t emissive_index = 0; // emissive texture index
+        uint32_t _pad[3] = {};       // keep the vec4 members 16-byte aligned (std430)
         glm::vec4 base_color_factor = glm::vec4(1.0f);
         glm::vec4 emissive_factor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         float metallic_factor = 1.0f;
         float roughness_factor = 1.0f;
         float normal_scale = 1.0f;
         uint32_t flags = 0; // bit0: normal map, bit1: occlusion map, bit2: emissive map
-        uint32_t texture_base = 0;
+    };
+    static_assert(sizeof(material_record) == 80);
+
+    /**
+     * @ingroup vulkan_model
+     * @brief max entries of the GPU material table
+     */
+    export constexpr uint32_t material_capacity = 256;
+
+    /**
+     * @ingroup vulkan_model
+     * @brief per-draw push constants, layout matches pbr.frag's PushConstants (80 bytes)
+     * @note material data (texture indices, factors, flags) lives in the material table
+     *       (set 0 binding 5), so the push block only carries the material reference and the
+     *       per-model world transform
+     */
+    export struct material_push_constants {
+        uint32_t material_index = 0; // index into the scene's material table
         // glm::mat4 is only 4-byte aligned by default, but GLSL std430 aligns mat4 to 16 bytes
-        // (offset 64 in the block): align explicitly so the CPU layout matches the shader
+        // (offset 16 in the block): align explicitly so the CPU layout matches the shader
         alignas(16) glm::mat4 model = glm::mat4(1.0f);
     };
     static_assert(sizeof(material_push_constants) == scene_push_constant_size);
@@ -126,7 +146,7 @@ namespace vulkan {
         uint32_t vertex_count = 0;
 
         // pipeline the model binds against (points into the runtime's pipeline cache; valid for
-        // the runtime's lifetime) and the material push constants (includes texture_base + model)
+        // the runtime's lifetime) and the material push constants (material_index + model)
         const vk_pipeline* pipeline = nullptr;
         material_push_constants push = {};
 

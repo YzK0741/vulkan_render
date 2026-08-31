@@ -47,6 +47,7 @@ namespace vulkan {
         uniform_gpu_only, // GPU_ONLY, suited for uniforms updated infrequently
         uniform_coherent, // HOST_VISIBLE | HOST_COHERENT, suited for per-frame uniforms
         uniform_cached,   // HOST_VISIBLE | HOST_CACHED, suited for read-back
+        storage_coherent, // HOST_VISIBLE | HOST_COHERENT storage buffer (e.g. GPU-visible material table)
     };
 
     /**

@@ -710,6 +710,8 @@ namespace vulkan {
         // Combined image samplers: the texture array (scene_texture_capacity per scene set)
         // dominates; plus a few IBL / fallback entries per set
         pool_sizes.push_back({VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * scene_texture_capacity});
+        // Material table storage buffer: one per scene set
+        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64});
 
         VkDescriptorPoolCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -731,14 +733,16 @@ namespace vulkan {
 
     void core::init_scene_layouts() noexcept {
         // ---- 1. Fixed flat descriptor set layout (see the convention docs in core.cppm) ----
-        std::array<VkDescriptorSetLayoutBinding, 5> bindings = {};
+        std::array<VkDescriptorSetLayoutBinding, 6> bindings = {};
         bindings[0] = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         bindings[1] = {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = scene_texture_capacity, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         bindings[2] = {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         bindings[3] = {.binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         bindings[4] = {.binding = 4, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
+        // material table: per-material texture indices + factors (see material_record in vulkan/model.cppm)
+        bindings[5] = {.binding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
 
-        std::array<VkDescriptorBindingFlags, 5> binding_flags = {};
+        std::array<VkDescriptorBindingFlags, 6> binding_flags = {};
         binding_flags[0] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT; // camera UBO rewritten per frame
         // texture array: only written entries are valid, appended while the set may be bound;
         // non-uniform indexing itself is a device feature, not a layout flag
@@ -751,6 +755,9 @@ namespace vulkan {
 
         VkDescriptorSetLayoutCreateInfo layout_info = {};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        // bindings 0/1 carry VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, so the layout must
+        // declare the update-after-bind pool requirement (VUID-VkDescriptorSetLayoutCreateInfo-flags-03000)
+        layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
         layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
         layout_info.pBindings = bindings.data();
         layout_info.pNext = &flags_info;

@@ -12,13 +12,7 @@ layout(set = 0, binding = 0) uniform CameraUBO {
 } camera;
 
 layout(push_constant) uniform PushConstants {
-    vec4 base_color_factor;
-    vec4 emissive_factor;
-    float metallic_factor;
-    float roughness_factor;
-    float normal_scale;
-    uint flags; // bit0: has normal map, bit1: has occlusion map, bit2: has emissive map
-    uint texture_base; // base index into the scene texture array (albedo +0, MR +1, normal +2, occlusion +3, emissive +4)
+    uint material_index; // unused here (vertex stage), declared to keep the block layout identical to pbr.frag
     mat4 model; // per-model world transform (kept out of the shared camera UBO)
 } push;
 

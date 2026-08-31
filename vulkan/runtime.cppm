@@ -70,6 +70,12 @@ namespace vulkan {
         std::vector<uint64_t> ibl_handles = {};
         vk_sampler texture_sampler = {};
         vk_sampler env_sampler = {};
+        // GPU material table (set 0 binding 5): one material_record per entry (texture indices +
+        // factors + flags); models only push their material_index. Host-visible, written at
+        // registration, read-only for the GPU.
+        uint64_t material_buffer_handle = 0;
+        void* material_mapped = nullptr;
+        uint32_t material_count = 0;
         // the single scene descriptor set: all pipelines share the layout, so one set covers them all
         vk_descriptor_set scene_set = {};
         bool scene_set_created = false;
@@ -100,10 +106,10 @@ namespace vulkan {
         void begin_rendering(VkCommandBuffer command_buffer, uint32_t image_index) const;
 
         // ---- scene resource management (see the members above) ----
-        void init_scene_resources();                               // camera UBO buffers + white fallback texture + texture sampler
-        void ensure_scene_set();                                   // lazily create the scene set and write camera + IBL bindings
+        void init_scene_resources();                               // camera UBO buffers + white fallback texture + texture sampler + material table
+        void ensure_scene_set();                                   // lazily create the scene set and write camera + IBL + material bindings
         void write_ibl_bindings();                                 // (re)write bindings 2-4 with the current IBL views / placeholders
-        uint32_t register_textures(const model_create_info& info); // upload 5 textures into the array, return base index
+        uint32_t register_material(const model_create_info& info); // upload textures into the array, append a material_record, return its index
 
     public:
         // A non-const runtime exposes a mutable filter (e.g. runtime->get_vma()); a const runtime

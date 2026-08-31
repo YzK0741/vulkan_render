@@ -208,6 +208,12 @@ namespace {
                          VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
             break;
         }
+        case vulkan::buffer_type::storage_coherent: {
+            info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+            info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+            break;
+        }
         }
         return info;
     }
@@ -235,6 +241,10 @@ namespace {
         case vulkan::buffer_type::uniform_coherent:
         case vulkan::buffer_type::uniform_cached: {
             info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            break;
+        }
+        case vulkan::buffer_type::storage_coherent: {
+            info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
             break;
         }
         }
@@ -740,6 +750,7 @@ namespace vulkan {
         switch (type) {
         case buffer_type::uniform_coherent:
         case buffer_type::uniform_cached:
+        case buffer_type::storage_coherent:
             // Upload via direct mapping
             upload_success = direct_upload(allocation, alloc_info, data, size_byte);
             break;
