@@ -50,6 +50,10 @@ namespace vulkan {
         return this->vk_core->make_sampler(address_mode, max_lod);
     }
 
+    vma_allocator& core_filter::get_vma() noexcept {
+        return this->vk_core->vma;
+    }
+
     void core_filter::recreate_swap_chain() const {
         this->vk_core->recreate_swap_chain();
     }

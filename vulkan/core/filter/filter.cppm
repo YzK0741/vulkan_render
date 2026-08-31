@@ -21,8 +21,8 @@ namespace vulkan {
      * @note
      *      - holds a non-owning pointer to a core; the core must outlive the filter
      *      - the runtime exposes it via operator-> so external code never sees the raw core
-     *      - frame management (acquire/submit/present), allocation (vma) and pipeline/model
-     *        creation are deliberately not forwarded: they belong to runtime / model
+     *      - frame management (acquire/submit/present) and pipeline/model creation are
+     *        deliberately not forwarded: they belong to runtime / model
      */
     export class core_filter {
         core* vk_core = nullptr;
@@ -44,6 +44,16 @@ namespace vulkan {
         std::optional<vk_shader_module> make_shader_module(std::span<unsigned char> shader) const noexcept;
         vk_image_view make_image_view(VkImage image, VkFormat format, VkImageViewType type) const;
         vk_sampler make_sampler(VkSamplerAddressMode address_mode, float max_lod) const;
+
+        // ---- GPU allocation ----
+        /**
+         * @ingroup vulkan_core_filter
+         * @brief access the VMA allocator for GPU buffer / image allocation
+         * @return reference to the core's vma_allocator (thread-safe for creation and lookup)
+         * @note non-const accessor: allocating GPU memory mutates the allocator, so this is
+         *       only available on a non-const filter — a const runtime cannot allocate
+         */
+        vma_allocator& get_vma() noexcept;
 
         // ---- swapchain handling ----
         void recreate_swap_chain() const;

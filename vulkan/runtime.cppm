@@ -70,14 +70,21 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief begin the swapchain render pass on the given command buffer
+         * @brief begin the frame's rendering on the given command buffer: clears the color
+         *        attachment with a dark background and the depth attachment
          * @param command_buffer the command buffer being recorded
-         * @param image_index the acquired swapchain image index (selects the framebuffer)
-         * @note clears the color attachment with a dark background and the depth attachment
+         * @param image_index the acquired swapchain image index (selects the attachment views)
+         * @note uses vkCmdBeginRendering (dynamic rendering) when the device supports it,
+         *       otherwise falls back to the classic render pass + framebuffer path
          */
-        void begin_render_pass(VkCommandBuffer command_buffer, uint32_t image_index) const;
+        void begin_rendering(VkCommandBuffer command_buffer, uint32_t image_index) const;
 
     public:
+        // A non-const runtime exposes a mutable filter (e.g. runtime->get_vma()); a const runtime
+        // gets a read-only filter, so mutating operations are impossible through const access.
+        core_filter* operator->() noexcept {
+            return &this->filtered_core;
+        }
         const core_filter* operator->() const noexcept {
             return &this->filtered_core;
         }
