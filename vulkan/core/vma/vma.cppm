@@ -24,17 +24,8 @@ namespace vulkan {
         VkBuffer buffer = VK_NULL_HANDLE;
         VmaAllocation allocation = VK_NULL_HANDLE;
         VmaAllocationInfo allocation_info = {};
-    };
-
-    /**
-     * @ingroup vulkan_vma
-     * @brief detail of a created image: the image handle, its allocation and allocation info
-     */
-    export struct image_detail {
-        VkImage image = VK_NULL_HANDLE;
-        VmaAllocation allocation = VK_NULL_HANDLE;
-        VmaAllocationInfo allocation_info = {};
-        utility::sha256_digest digest = {};
+        // reference count for shared resources; buffers have no digest today, so this stays 1
+        std::atomic<uint32_t> use_count = 1;
     };
 
     /**
@@ -75,6 +66,26 @@ namespace vulkan {
         uint32_t array_layers = 1;
         VkFormat format = {};
         VkImageUsageFlags extra_usage = 0;
+        bool operator==(image_create_info const&) const = default;
+    };
+
+    /**
+     * @ingroup vulkan_vma
+     * @brief detail of a created image: the image handle, its allocation and allocation info
+     * @note immutable, data-uploaded textures (texture_2d / texture_2d_color / texture_cubemap)
+     *       are deduplicated by content: identical bytes + identical create parameters share one
+     *       GPU image and one handle, tracked by use_count
+     */
+    export struct image_detail {
+        VkImage image = VK_NULL_HANDLE;
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        VmaAllocationInfo allocation_info = {};
+        utility::sha256_digest digest = {};
+        // creation parameters, kept so a digest hit only reuses an identical image
+        image_create_info create_info = {};
+        image_type type = image_type::texture_2d;
+        // reference count for shared images; free_image() only really destroys at zero
+        std::atomic<uint32_t> use_count = 1;
     };
 
     /**

@@ -771,12 +771,39 @@ namespace vulkan {
 
         {
             std::lock_guard guard(this->access_mutex);
-            this->buffers[handle] = {.buffer = buffer, .allocation = allocation, .allocation_info = alloc_info};
+            // use_count is an atomic, which is not copyable: fill the fields in place
+            auto [it, inserted] = this->buffers.try_emplace(handle);
+            auto& detail = it->second;
+            detail.buffer = buffer;
+            detail.allocation = allocation;
+            detail.allocation_info = alloc_info;
         }
         return handle;
     }
 
     uint64_t vma_allocator::create_image(unsigned char const* data, uint64_t const size_byte, image_create_info const& create_info, image_type const type) {
+        // sha256 is pure CPU work; keep it outside the critical section. It is computed before
+        // allocating so a content hit can reuse an existing image without any allocation or upload.
+        auto const digest = utility::sha256(std::span(data, size_byte));
+        if (!digest) {
+            utility::panic("sha256 failed");
+        }
+
+        // Only immutable, data-uploaded textures are shareable: depth / staging / render targets
+        // must stay distinct even with identical parameters.
+        constexpr auto is_dedupable = [](image_type const t) {
+            return t == image_type::texture_2d || t == image_type::texture_2d_color || t == image_type::texture_cubemap;
+        };
+        if (is_dedupable(type)) {
+            std::lock_guard guard(this->access_mutex);
+            for (auto& [existing_handle, detail] : this->images) {
+                if (detail.type == type && detail.create_info == create_info && detail.digest == digest.value()) {
+                    detail.use_count.fetch_add(1); // shared: bump the reference count and reuse
+                    return existing_handle;
+                }
+            }
+        }
+
         uint64_t handle = 0;
         // distribute() locks internally (enable_handle_distribute::access_mutex); no outer lock needed
         if (auto const result = this->distribute(); result) {
@@ -850,16 +877,18 @@ namespace vulkan {
             return 0;
         }
 
-        // sha256 is pure CPU work; keep it outside the critical section
-        auto const digest = utility::sha256(std::span(data, size_byte));
-
-        if (!digest) {
-            utility::panic("sha256 failed");
-        }
-
         {
             std::lock_guard guard(this->access_mutex);
-            this->images[handle] = {.image = image, .allocation = allocation, .allocation_info = alloc_detail, .digest = digest.value()};
+            // use_count is an atomic, which is not copyable: default-construct the entry and fill
+            // the fields in place (use_count keeps its default 1)
+            auto [it, inserted] = this->images.try_emplace(handle);
+            auto& detail = it->second;
+            detail.image = image;
+            detail.allocation = allocation;
+            detail.allocation_info = alloc_detail;
+            detail.digest = digest.value();
+            detail.create_info = create_info;
+            detail.type = type;
         }
         return handle;
     }
@@ -882,20 +911,30 @@ namespace vulkan {
 
     void vma_allocator::free_buffer(uint64_t const handle) {
         std::lock_guard guard(this->access_mutex);
-        if (this->buffers.contains(handle)) {
-            auto const& info = this->buffers[handle];
-            vmaDestroyBuffer(this->allocator, info.buffer, info.allocation);
-            this->buffers.erase(handle);
+        auto const it = this->buffers.find(handle);
+        if (it == this->buffers.end()) {
+            return;
         }
+        // shared resources are freed by reference count: only the last free really destroys
+        if (it->second.use_count.fetch_sub(1) > 1) {
+            return;
+        }
+        vmaDestroyBuffer(this->allocator, it->second.buffer, it->second.allocation);
+        this->buffers.erase(it);
     }
 
     void vma_allocator::free_image(uint64_t const handle) {
         std::lock_guard guard(this->access_mutex);
-        if (this->images.contains(handle)) {
-            auto const& info = this->images[handle];
-            vmaDestroyImage(this->allocator, info.image, info.allocation);
-            this->images.erase(handle);
+        auto const it = this->images.find(handle);
+        if (it == this->images.end()) {
+            return;
         }
+        // shared images are freed by reference count: only the last free really destroys
+        if (it->second.use_count.fetch_sub(1) > 1) {
+            return;
+        }
+        vmaDestroyImage(this->allocator, it->second.image, it->second.allocation);
+        this->images.erase(it);
     }
 
     std::pair<VkCommandPool, VkCommandBuffer> vma_allocator::create_command_pair() const {
