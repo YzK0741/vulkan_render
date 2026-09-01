@@ -8,7 +8,7 @@ module vulkan.model;
 import vulkan.core;
 
 namespace vulkan {
-    void model::draw(const VkCommandBuffer command_buffer) const {
+    void model::draw(VkCommandBuffer const command_buffer) const {
         // The pipeline and the shared scene descriptor set are bound by the runtime once per
         // frame; a model only binds its geometry, pushes its material constants and draws.
         constexpr VkDeviceSize vertex_offset = 0;
@@ -45,13 +45,13 @@ namespace vulkan {
     }
 
     camera_ubo make_orbit_camera_ubo(
-        const float yaw,
-        const float pitch,
-        const float distance,
-        const float aspect) {
+        float const yaw,
+        float const pitch,
+        float const distance,
+        float const aspect) {
         // Orbit camera position: scene centered at the origin, camera orbits spherically
-        const float cp = std::cos(pitch);
-        const glm::vec3 eye(distance * cp * std::sin(yaw),
+        float const cp = std::cos(pitch);
+        glm::vec3 const eye(distance * cp * std::sin(yaw),
                             distance * std::sin(pitch),
                             distance * cp * std::cos(yaw));
 

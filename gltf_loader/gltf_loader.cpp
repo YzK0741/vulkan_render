@@ -1,4 +1,4 @@
-module;
+﻿module;
 
 #include <fastgltf/core.hpp>
 #include <fastgltf/tools.hpp>
@@ -23,7 +23,7 @@ namespace {
         uint64_t byte_size = 0;
     };
 
-    gltf::component_type to_component_type(const fastgltf::ComponentType type) {
+    gltf::component_type to_component_type(fastgltf::ComponentType const type) {
         switch (type) {
         case fastgltf::ComponentType::Byte:
             return gltf::component_type::byte_t;
@@ -46,7 +46,7 @@ namespace {
         }
     }
 
-    gltf::element_type to_element_type(const fastgltf::AccessorType type) {
+    gltf::element_type to_element_type(fastgltf::AccessorType const type) {
         switch (type) {
         case fastgltf::AccessorType::Scalar:
             return gltf::element_type::scale;
@@ -67,7 +67,7 @@ namespace {
         }
     }
 
-    gltf::error_code to_error_code(const fastgltf::Error error) {
+    gltf::error_code to_error_code(fastgltf::Error const error) {
         switch (error) {
         case fastgltf::Error::InvalidFileData:
         case fastgltf::Error::InvalidGLB:
@@ -88,7 +88,7 @@ namespace {
     }
 
     template <typename T>
-    std::vector<unsigned char> copy_accessor(const Asset& asset, const fastgltf::Accessor& accessor) {
+    std::vector<unsigned char> copy_accessor(Asset const& asset, fastgltf::Accessor const& accessor) {
         std::vector<unsigned char> data(accessor.count * sizeof(T));
         fastgltf::copyFromAccessor<T>(asset, accessor, data.data());
         return data;
@@ -97,7 +97,7 @@ namespace {
     // copyFromAccessor handles byteStride de-interleaving, sparse accessors and
     // normalized component conversion for every (AccessorType, ComponentType) pair
     // that fastgltf's ElementTraits provides.
-    parsed_data get_data_from_accessor(const Asset& asset, const fastgltf::Accessor& accessor) {
+    parsed_data get_data_from_accessor(Asset const& asset, fastgltf::Accessor const& accessor) {
         using namespace fastgltf;
         using namespace fastgltf::math;
 
@@ -245,37 +245,37 @@ namespace {
     }
 
     // Extract raw bytes from a fastgltf data source (loaded buffers/images are sources::Array).
-    std::span<const std::byte> get_source_bytes(const Asset& asset, const fastgltf::DataSource& source) {
+    std::span<std::byte const> get_source_bytes(Asset const& asset, fastgltf::DataSource const& source) {
         using namespace fastgltf;
-        if (const auto* array = std::get_if<sources::Array>(&source)) {
+        if (auto const* array = std::get_if<sources::Array>(&source)) {
             return {array->bytes.data(), array->bytes.size_bytes()};
         }
-        if (const auto* vector = std::get_if<sources::Vector>(&source)) {
+        if (auto const* vector = std::get_if<sources::Vector>(&source)) {
             return {vector->bytes.data(), vector->bytes.size()};
         }
-        if (const auto* byte_view = std::get_if<sources::ByteView>(&source)) {
+        if (auto const* byte_view = std::get_if<sources::ByteView>(&source)) {
             return byte_view->bytes;
         }
-        if (const auto* buffer_view = std::get_if<sources::BufferView>(&source)) {
-            const auto& view = asset.bufferViews[buffer_view->bufferViewIndex];
-            const auto& buffer = asset.buffers[view.bufferIndex];
+        if (auto const* buffer_view = std::get_if<sources::BufferView>(&source)) {
+            auto const& view = asset.bufferViews[buffer_view->bufferViewIndex];
+            auto const& buffer = asset.buffers[view.bufferIndex];
             auto bytes = get_source_bytes(asset, buffer.data);
             return bytes.subspan(view.byteOffset, view.byteLength);
         }
         return {};
     }
 
-    gltf::texture_data load_texture(const Asset& asset, const std::size_t texture_index) {
+    gltf::texture_data load_texture(Asset const& asset, std::size_t const texture_index) {
         gltf::texture_data out;
         if (texture_index >= asset.textures.size()) {
             return out;
         }
-        const auto& texture = asset.textures[texture_index];
+        auto const& texture = asset.textures[texture_index];
         if (!texture.imageIndex) {
             return out;
         }
-        const auto& image = asset.images[*texture.imageIndex];
-        const auto bytes = get_source_bytes(asset, image.data);
+        auto const& image = asset.images[*texture.imageIndex];
+        auto const bytes = get_source_bytes(asset, image.data);
         if (bytes.empty()) {
             return out;
         }
@@ -284,7 +284,7 @@ namespace {
         int height = 0;
         int channels = 0;
         unsigned char* pixels = stbi_load_from_memory(
-            reinterpret_cast<const unsigned char*>(bytes.data()),
+            reinterpret_cast<unsigned char const*>(bytes.data()),
             static_cast<int>(bytes.size()),
             &width, &height, &channels, 0);
         if (pixels == nullptr) {
@@ -299,7 +299,7 @@ namespace {
         return out;
     }
 
-    std::map<std::string, uint16_t> get_texture_indices(const fastgltf::Material& material) {
+    std::map<std::string, uint16_t> get_texture_indices(fastgltf::Material const& material) {
         std::map<std::string, uint16_t> texture_indices;
         if (material.pbrData.baseColorTexture) {
             texture_indices["albedo"] = static_cast<uint16_t>(material.pbrData.baseColorTexture->textureIndex);
@@ -319,11 +319,11 @@ namespace {
         return texture_indices;
     }
 
-    gltf::primitive load_primitive(const fastgltf::Primitive& primitive, const Asset& asset) {
+    gltf::primitive load_primitive(fastgltf::Primitive const& primitive, Asset const& asset) {
         std::map<std::string, gltf::vertex_portion> vertex;
-        for (const auto& attribute : primitive.attributes) {
+        for (auto const& attribute : primitive.attributes) {
             auto data = get_data_from_accessor(asset, asset.accessors[attribute.accessorIndex]);
-            const std::string name(attribute.name);
+            std::string const name(attribute.name);
             vertex[name].component = data.component_type;
             vertex[name].data = std::move(data.data);
         }
@@ -346,7 +346,7 @@ namespace {
         };
     }
 
-    glm::mat4 to_glm_mat4(const fastgltf::math::fmat4x4& matrix) {
+    glm::mat4 to_glm_mat4(fastgltf::math::fmat4x4 const& matrix) {
         glm::mat4 result;
         for (int column = 0; column < 4; ++column) {
             for (int row = 0; row < 4; ++row) {
@@ -356,18 +356,18 @@ namespace {
         return result;
     }
 
-    gltf::scene load_scene(const Asset& asset, const std::size_t scene_index) {
+    gltf::scene load_scene(Asset const& asset, std::size_t const scene_index) {
         gltf::scene result;
         result.name = asset.scenes[scene_index].name;
 
         // Recursively walk the scene graph, computing world-space transforms.
         fastgltf::iterateSceneNodes(asset, scene_index, fastgltf::math::fmat4x4{},
-                                    [&](const fastgltf::Node& node, const fastgltf::math::fmat4x4& matrix) {
-                                        gltf::node current_node{};
+                                    [&](fastgltf::Node const& node, fastgltf::math::fmat4x4 const& matrix) {
+                                        gltf::node current_node = {};
                                         current_node.transform_matrix = to_glm_mat4(matrix);
                                         if (node.meshIndex) {
-                                            gltf::mesh current_mesh{};
-                                            for (const auto& primitive : asset.meshes[*node.meshIndex].primitives) {
+                                            gltf::mesh current_mesh = {};
+                                            for (auto const& primitive : asset.meshes[*node.meshIndex].primitives) {
                                                 current_mesh.primitives.push_back(load_primitive(primitive, asset));
                                             }
                                             current_node.meshes.push_back(std::move(current_mesh));
@@ -380,7 +380,7 @@ namespace {
 
 namespace gltf {
     std::expected<scenes, error_code> load_model(std::string_view file_name) {
-        const std::filesystem::path path(file_name);
+        std::filesystem::path const path(file_name);
         if (!std::filesystem::is_regular_file(path)) {
             return std::unexpected(error_code::file_not_found);
         }

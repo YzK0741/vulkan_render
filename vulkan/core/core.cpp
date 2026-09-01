@@ -1,4 +1,4 @@
-module;
+﻿module;
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -40,7 +40,7 @@ namespace vulkan {
         this->do_cleanup();
     }
 
-    void core::init_window(const int width, const int height, const std::string_view window_name) noexcept {
+    void core::init_window(int const width, int const height, std::string_view const window_name) noexcept {
         glfwInit();
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -61,7 +61,7 @@ namespace vulkan {
     }
 
     void core::init_instance() noexcept {
-        VkApplicationInfo app_info{};
+        VkApplicationInfo app_info = {};
         app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
         app_info.pApplicationName = "vulkan render";
         app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
@@ -75,9 +75,9 @@ namespace vulkan {
 
         // get and set GLFW required extensions
         uint32_t glfw_extension_count = 0;
-        const char** glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_extension_count);
+        char const** glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_extension_count);
 
-        std::vector<const char*> extensions(glfw_extensions, glfw_extensions + glfw_extension_count);
+        std::vector<char const*> extensions(glfw_extensions, glfw_extensions + glfw_extension_count);
 
 #ifdef _DEBUG
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -86,7 +86,7 @@ namespace vulkan {
 
         // print all extensions
         utility::log("required instance extension ({}):", extensions.size());
-        for (const auto& ext : extensions) {
+        for (auto const& ext : extensions) {
             utility::log("  - {}", ext);
         }
 
@@ -94,7 +94,7 @@ namespace vulkan {
         create_info.ppEnabledExtensionNames = extensions.data();
 
         // enable validation_layers
-        std::vector<const char*> validation_layers;
+        std::vector<char const*> validation_layers;
 
 #ifdef _DEBUG
         validation_layers = {
@@ -106,7 +106,7 @@ namespace vulkan {
             create_info.enabledLayerCount = static_cast<uint32_t>(validation_layers.size());
             create_info.ppEnabledLayerNames = validation_layers.data();
             utility::log("validation layers enabled ( {} )", validation_layers.size());
-            for (const auto& layer : validation_layers) {
+            for (auto const& layer : validation_layers) {
                 utility::log("  - {}", layer);
             }
         } else {
@@ -159,7 +159,7 @@ namespace vulkan {
         if ((vkCreateDebugUtilsMessengerEXT == nullptr) || (vkDestroyDebugUtilsMessengerEXT == nullptr)) {
             utility::panic("Failed to get debug utils function pointers");
         }
-        VkDebugUtilsMessengerCreateInfoEXT debug_info{};
+        VkDebugUtilsMessengerCreateInfoEXT debug_info = {};
         debug_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
         debug_info.messageSeverity =
             VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
@@ -226,7 +226,7 @@ namespace vulkan {
         // Features go through the pNext chain (device_capabilities query result, incl. all 1.1/1.2/1.3 supported features)
         creation_info.pNext = capabilities.device_pnext();
 
-        const auto [device, graphics_family_index, present_family_index, graphics_queue, present_queue] = create_logical_device(physical_device, creation_info); // NOLINT(*-misplaced-const)
+        auto const [device, graphics_family_index, present_family_index, graphics_queue, present_queue] = create_logical_device(physical_device, creation_info); // NOLINT(*-misplaced-const)
 
         this->device = device;
         this->graphics_queue = graphics_queue;
@@ -244,16 +244,16 @@ namespace vulkan {
     }
 
     void core::init_swap_chain() noexcept {
-        const auto [capabilities, formats, present_modes] = query_swap_chain_support(this->physical_device, this->surface);
+        auto const [capabilities, formats, present_modes] = query_swap_chain_support(this->physical_device, this->surface);
 
         // Add checks:
         if (formats.empty() || present_modes.empty()) {
             utility::panic("Swap chain not adequately supported");
         }
 
-        const auto [format, color_space] = choose_swap_surface_format(formats);
-        const VkPresentModeKHR present_mode = choose_swap_present_mode(present_modes);
-        const VkExtent2D extent = choose_swap_extent(capabilities, this->window);
+        auto const [format, color_space] = choose_swap_surface_format(formats);
+        VkPresentModeKHR const present_mode = choose_swap_present_mode(present_modes);
+        VkExtent2D const extent = choose_swap_extent(capabilities, this->window);
 
         uint32_t image_count = capabilities.minImageCount + 1;
 
@@ -274,12 +274,12 @@ namespace vulkan {
         create_info.imageArrayLayers = 1;
         create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
-        const queue_family_indices indices = find_queue_families(this->physical_device, this->surface);
+        queue_family_indices const indices = find_queue_families(this->physical_device, this->surface);
         if (!indices.compute_family || !indices.graphics_family || !indices.present_family) {
             utility::panic("find queue family index failed");
         }
 
-        const uint32_t queue_family_indices[] = {indices.graphics_family.value(), indices.present_family.value()};
+        uint32_t const queue_family_indices[] = {indices.graphics_family.value(), indices.present_family.value()};
 
         if (indices.graphics_family != indices.present_family) {
             create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
@@ -339,7 +339,7 @@ namespace vulkan {
             }
         }
         register_cleanup([this] {
-            for (const auto& image_view : this->swap_chain_image_views) {
+            for (auto const& image_view : this->swap_chain_image_views) {
                 vkDestroyImageView(device, image_view, nullptr);
             }
             this->swap_chain_image_views.clear();
@@ -348,10 +348,10 @@ namespace vulkan {
 
     void core::create_depth_image(VkImage& image, VkDeviceMemory& image_memory, VkImageView& image_view) const noexcept {
         // Use the swapchain size stored in the class
-        const auto& [width, height] = this->swap_chain_extent;
+        auto const& [width, height] = this->swap_chain_extent;
 
         // 1. Create images
-        VkImageCreateInfo image_info{};
+        VkImageCreateInfo image_info = {};
         image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         image_info.imageType = VK_IMAGE_TYPE_2D;
         image_info.extent = {width, height, 1};
@@ -373,7 +373,7 @@ namespace vulkan {
         VkMemoryRequirements mem_requirements;
         vkGetImageMemoryRequirements(device, image, &mem_requirements);
 
-        VkMemoryAllocateInfo alloc_info{};
+        VkMemoryAllocateInfo alloc_info = {};
         alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         alloc_info.allocationSize = mem_requirements.size;
         alloc_info.memoryTypeIndex = find_memory_type(mem_requirements.memoryTypeBits,
@@ -386,7 +386,7 @@ namespace vulkan {
         vkBindImageMemory(device, image, image_memory, 0);
 
         // 3. Create image views
-        VkImageViewCreateInfo view_info{};
+        VkImageViewCreateInfo view_info = {};
         view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         view_info.image = image;
         view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -422,13 +422,13 @@ namespace vulkan {
         }
 
         register_cleanup([this] {
-            for (const auto& view : depth_image_views) {
+            for (auto const& view : depth_image_views) {
                 vkDestroyImageView(device, view, nullptr);
             }
-            for (const auto& image : depth_images) {
+            for (auto const& image : depth_images) {
                 vkDestroyImage(device, image, nullptr);
             }
-            for (const auto& memory : depth_image_memories) {
+            for (auto const& memory : depth_image_memories) {
                 vkFreeMemory(device, memory, nullptr);
             }
             depth_image_views.clear();
@@ -463,13 +463,13 @@ namespace vulkan {
         }
 
         register_cleanup([this] {
-            for (const auto& view : color_image_views) {
+            for (auto const& view : color_image_views) {
                 vkDestroyImageView(device, view, nullptr);
             }
-            for (const auto& memory : color_image_memories) {
+            for (auto const& memory : color_image_memories) {
                 vkFreeMemory(device, memory, nullptr);
             }
-            for (const auto& image : color_images) {
+            for (auto const& image : color_images) {
                 vkDestroyImage(device, image, nullptr);
             }
             color_image_views.clear();
@@ -520,21 +520,21 @@ namespace vulkan {
             color_resolve_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         }
 
-        VkAttachmentReference color_attachment_ref{};
+        VkAttachmentReference color_attachment_ref = {};
         color_attachment_ref.attachment = 0;
         color_attachment_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-        VkAttachmentReference depth_attachment_ref{};
+        VkAttachmentReference depth_attachment_ref = {};
         depth_attachment_ref.attachment = 1;
         depth_attachment_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-        VkAttachmentReference color_resolve_ref{};
+        VkAttachmentReference color_resolve_ref = {};
         if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
             color_resolve_ref.attachment = 2;
             color_resolve_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         }
 
-        VkSubpassDescription subpass{};
+        VkSubpassDescription subpass = {};
         subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         subpass.colorAttachmentCount = 1;
         subpass.pColorAttachments = &color_attachment_ref;
@@ -556,7 +556,7 @@ namespace vulkan {
             attachments.push_back(color_resolve_attachment);
         }
 
-        VkRenderPassCreateInfo render_pass_info{};
+        VkRenderPassCreateInfo render_pass_info = {};
         render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
         render_pass_info.attachmentCount = static_cast<uint32_t>(attachments.size());
         render_pass_info.pAttachments = attachments.data();
@@ -617,7 +617,7 @@ namespace vulkan {
                 attachments.push_back(swap_chain_image_views[i]); // resolve to the swapchain image
             }
 
-            VkFramebufferCreateInfo framebuffer_create_info{};
+            VkFramebufferCreateInfo framebuffer_create_info = {};
             framebuffer_create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
             framebuffer_create_info.renderPass = renderpass;
             framebuffer_create_info.attachmentCount = static_cast<uint32_t>(attachments.size());
@@ -632,7 +632,7 @@ namespace vulkan {
         }
 
         register_cleanup([this] {
-            for (const auto& frame_buffer : swap_chain_framebuffers) {
+            for (auto const& frame_buffer : swap_chain_framebuffers) {
                 vkDestroyFramebuffer(device, frame_buffer, nullptr);
             }
             swap_chain_framebuffers.clear();
@@ -640,7 +640,7 @@ namespace vulkan {
     }
 
     void core::create_command_pool() noexcept {
-        VkCommandPoolCreateInfo pool_info{};
+        VkCommandPoolCreateInfo pool_info = {};
         pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         pool_info.queueFamilyIndex = graphics_family_index;
@@ -657,13 +657,13 @@ namespace vulkan {
     }
 
     void core::create_msaa_image(
-        const uint32_t& width,
-        const uint32_t& height,
-        const VkFormat& format,
-        const VkSampleCountFlagBits& num_samples,
-        const VkImageTiling& tiling,
-        const VkImageUsageFlags& usage,
-        const VkMemoryPropertyFlags& properties,
+        uint32_t const& width,
+        uint32_t const& height,
+        VkFormat const& format,
+        VkSampleCountFlagBits const& num_samples,
+        VkImageTiling const& tiling,
+        VkImageUsageFlags const& usage,
+        VkMemoryPropertyFlags const& properties,
         VkImage& image,
         VkDeviceMemory& image_memory) const noexcept {
         VkImageCreateInfo image_info = {};
@@ -688,7 +688,7 @@ namespace vulkan {
         VkMemoryRequirements mem_requirements;
         vkGetImageMemoryRequirements(device, image, &mem_requirements);
 
-        VkMemoryAllocateInfo alloc_info{};
+        VkMemoryAllocateInfo alloc_info = {};
         alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         alloc_info.allocationSize = mem_requirements.size;
         alloc_info.memoryTypeIndex = find_memory_type(
@@ -804,10 +804,10 @@ namespace vulkan {
         // would signal the same semaphore again before the image is re-acquired (VUID-vkQueueSubmit-pSignalSemaphores-00067).
         render_finished_semaphores.resize(swap_chain_images.size());
 
-        VkSemaphoreCreateInfo semaphore_info{};
+        VkSemaphoreCreateInfo semaphore_info = {};
         semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-        VkFenceCreateInfo fence_info{};
+        VkFenceCreateInfo fence_info = {};
         fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT; // initially signaled
 
@@ -825,15 +825,15 @@ namespace vulkan {
         }
 
         register_cleanup([this] {
-            for (const auto& semaphore : image_available_semaphores) {
+            for (auto const& semaphore : image_available_semaphores) {
                 vkDestroySemaphore(device, semaphore, nullptr);
             }
 
-            for (const auto& semaphore : render_finished_semaphores) {
+            for (auto const& semaphore : render_finished_semaphores) {
                 vkDestroySemaphore(device, semaphore, nullptr);
             }
 
-            for (const auto& fence : in_flight_fences) {
+            for (auto const& fence : in_flight_fences) {
                 vkDestroyFence(device, fence, nullptr);
             }
         });
@@ -843,11 +843,11 @@ namespace vulkan {
         return ::vulkan::make_command_buffer(this->device, this->command_pool);
     }
 
-    vk_descriptor_set core::make_descriptor_set(const VkDescriptorSetLayout layout) const { // NOLINT(*-misplaced-const)
+    vk_descriptor_set core::make_descriptor_set(VkDescriptorSetLayout const layout) const { // NOLINT(*-misplaced-const)
         return ::vulkan::make_descriptor_set(this->device, this->descriptor_pool, layout);
     }
 
-    vk_image_view core::make_image_view(const VkImage image, const VkFormat format, const VkImageViewType type) const {
+    vk_image_view core::make_image_view(VkImage const image, VkFormat const format, VkImageViewType const type) const {
         VkImageViewCreateInfo view_info = {};
         view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         view_info.image = image;
@@ -859,7 +859,7 @@ namespace vulkan {
         return vk_image_view(view, this->device);
     }
 
-    vk_sampler core::make_sampler(const VkSamplerAddressMode address_mode, const float max_lod) const {
+    vk_sampler core::make_sampler(VkSamplerAddressMode const address_mode, float const max_lod) const {
         VkSamplerCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
         info.magFilter = VK_FILTER_LINEAR;
@@ -876,7 +876,7 @@ namespace vulkan {
         return vk_sampler(sampler, this->device);
     }
 
-    std::optional<vk_shader_module> core::make_shader_module(const std::span<unsigned char> shader) const noexcept {
+    std::optional<vk_shader_module> core::make_shader_module(std::span<unsigned char> const shader) const noexcept {
         return ::vulkan::make_shader_module(shader, this->device);
     }
 
@@ -890,14 +890,14 @@ namespace vulkan {
             &image_index);
     }
 
-    void core::wait_usable_image(const uint32_t image_index) {
+    void core::wait_usable_image(uint32_t const image_index) {
         if (images_in_flight[image_index] != VK_NULL_HANDLE) {
             vkWaitForFences(device, 1, &images_in_flight[image_index], VK_TRUE, UINT64_MAX);
         }
         images_in_flight[image_index] = in_flight_fences[current_frame];
     }
 
-    void core::reset_fence(const uint32_t frame_index) const {
+    void core::reset_fence(uint32_t const frame_index) const {
         vkResetFences(device, 1, &in_flight_fences[frame_index]);
     }
 
@@ -905,7 +905,7 @@ namespace vulkan {
         current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
-    VkResult core::submit(const VkCommandBuffer command_buffer, const uint32_t image_index) const {
+    VkResult core::submit(VkCommandBuffer const command_buffer, uint32_t const image_index) const {
         constexpr VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submit_info = {};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -919,7 +919,7 @@ namespace vulkan {
         return vkQueueSubmit(this->graphics_queue, 1, &submit_info, this->in_flight_fences[this->current_frame]);
     }
 
-    VkResult core::present(const uint32_t image_index) const {
+    VkResult core::present(uint32_t const image_index) const {
         VkPresentInfoKHR present_info = {};
         present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         present_info.waitSemaphoreCount = 1;
@@ -937,7 +937,7 @@ namespace vulkan {
         // 2-3. Framebuffers and the render pass only exist on the classic render pass path;
         //      dynamic rendering recreates neither
         if (!this->use_dynamic_rendering) {
-            for (const auto& frame_buffer : swap_chain_framebuffers) {
+            for (auto const& frame_buffer : swap_chain_framebuffers) {
                 vkDestroyFramebuffer(device, frame_buffer, nullptr);
             }
             swap_chain_framebuffers.clear();
@@ -950,40 +950,40 @@ namespace vulkan {
 
         // 4. Destroy MSAA color resources
         if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-            for (const auto& view : color_image_views) {
+            for (auto const& view : color_image_views) {
                 vkDestroyImageView(device, view, nullptr);
             }
             color_image_views.clear();
 
-            for (const auto& image : color_images) {
+            for (auto const& image : color_images) {
                 vkDestroyImage(device, image, nullptr);
             }
             color_images.clear();
 
-            for (const auto& memory : color_image_memories) {
+            for (auto const& memory : color_image_memories) {
                 vkFreeMemory(device, memory, nullptr);
             }
             color_image_memories.clear();
         }
 
         // 5. Destroy depth resources
-        for (const auto& view : depth_image_views) {
+        for (auto const& view : depth_image_views) {
             vkDestroyImageView(device, view, nullptr);
         }
         depth_image_views.clear();
 
-        for (const auto& image : depth_images) {
+        for (auto const& image : depth_images) {
             vkDestroyImage(device, image, nullptr);
         }
         depth_images.clear();
 
-        for (const auto& memory : depth_image_memories) {
+        for (auto const& memory : depth_image_memories) {
             vkFreeMemory(device, memory, nullptr);
         }
         depth_image_memories.clear();
 
         // 6. Destroy swapchain image views
-        for (const auto& image_view : swap_chain_image_views) {
+        for (auto const& image_view : swap_chain_image_views) {
             vkDestroyImageView(device, image_view, nullptr);
         }
         swap_chain_image_views.clear();
@@ -1012,12 +1012,12 @@ namespace vulkan {
         images_in_flight.resize(swap_chain_images.size(), VK_NULL_HANDLE);
 
         // Present semaphores are allocated per image index; destroy and rebuild when the count changes (device is idle here)
-        for (const auto& semaphore : render_finished_semaphores) {
+        for (auto const& semaphore : render_finished_semaphores) {
             vkDestroySemaphore(device, semaphore, nullptr);
         }
         render_finished_semaphores.resize(swap_chain_images.size());
         for (auto& semaphore : render_finished_semaphores) {
-            VkSemaphoreCreateInfo semaphore_info{};
+            VkSemaphoreCreateInfo semaphore_info = {};
             semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
             if (vkCreateSemaphore(device, &semaphore_info, nullptr, &semaphore) != VK_SUCCESS) {
                 utility::panic("failed to recreate render finished semaphore!");
@@ -1026,8 +1026,8 @@ namespace vulkan {
     }
 
     std::expected<vk_pipeline, std::string_view> core::make_pipeline(
-        std::span<const unsigned char> vertex_shader_code,
-        const std::span<const unsigned char> fragment_shader_code) const {
+        std::span<unsigned char const> vertex_shader_code,
+        std::span<unsigned char const> const fragment_shader_code) const {
         auto result = vulkan::make_pipeline(
             this->device,
             this->scene_pipeline_layout,

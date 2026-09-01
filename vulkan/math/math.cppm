@@ -26,13 +26,13 @@ namespace vulkan {
      * @param mip_count number of mip levels
      * @return mip-major RGBA32F data (mip0 all faces, then mip1, ...), ready for a cubemap upload
      */
-    export std::vector<float> prefilter_environment(std::span<const float> env, int env_size, int mip_count);
+    export std::vector<float> prefilter_environment(std::span<float const> env, int env_size, int mip_count);
 
     /**
      * @ingroup vulkan_math
      * @brief cosine-weighted hemisphere convolution for the diffuse irradiance cubemap
      */
-    export std::vector<float> generate_irradiance_map(std::span<const float> env, int env_size, int irr_size);
+    export std::vector<float> generate_irradiance_map(std::span<float const> env, int env_size, int irr_size);
 
     /**
      * @ingroup vulkan_math
@@ -44,11 +44,11 @@ namespace vulkan {
      * @ingroup vulkan_math
      * @brief convert 4-channel float data to a packed RGBA16F byte stream
      */
-    export std::vector<unsigned char> to_half_rgba(std::span<const float> data);
+    export std::vector<unsigned char> to_half_rgba(std::span<float const> data);
 
     /**
      * @ingroup vulkan_math
      * @brief convert 2-channel float data to a packed RG16F byte stream
      */
-    export std::vector<unsigned char> to_half_rg(std::span<const float> data);
+    export std::vector<unsigned char> to_half_rg(std::span<float const> data);
 } // namespace vulkan

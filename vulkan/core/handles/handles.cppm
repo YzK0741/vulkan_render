@@ -94,7 +94,7 @@ namespace vulkan {
         [[nodiscard]] VkShaderModule const& get() const noexcept;
         [[nodiscard]] VkShaderModule const& operator*() const noexcept;
         void release();
-        explicit vk_shader_module(const VkShaderModule& shader_module, VkDevice device) noexcept;
+        explicit vk_shader_module(VkShaderModule const& shader_module, VkDevice device) noexcept;
         ~vk_shader_module() noexcept;
 
         explicit vk_shader_module(vk_shader_module& shader_module) = delete;
@@ -110,7 +110,7 @@ namespace vulkan {
      * @return success: raii wrapper of VkShaderModule
      *     fail: std::nullopt
      */
-    export std::optional<vk_shader_module> make_shader_module(std::span<const unsigned char> shader,
+    export std::optional<vk_shader_module> make_shader_module(std::span<unsigned char const> shader,
                                                               VkDevice device) noexcept;
 
     /**

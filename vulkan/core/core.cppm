@@ -1,4 +1,4 @@
-module;
+﻿module;
 
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
@@ -67,7 +67,7 @@ namespace vulkan {
 
         void init_swap_chain() noexcept;
 
-        std::vector<VkImageView> swap_chain_image_views{};
+        std::vector<VkImageView> swap_chain_image_views = {};
 
         void init_image_views() noexcept;
 
@@ -78,13 +78,13 @@ namespace vulkan {
         std::vector<VkImageView> color_image_views = {}; // MSAA image views
         VkFormat color_format = VK_FORMAT_UNDEFINED;
         void create_msaa_image(
-            const uint32_t& width,
-            const uint32_t& height,
-            const VkFormat& format,
-            const VkSampleCountFlagBits& num_samples,
-            const VkImageTiling& tiling,
-            const VkImageUsageFlags& usage,
-            const VkMemoryPropertyFlags& properties,
+            uint32_t const& width,
+            uint32_t const& height,
+            VkFormat const& format,
+            VkSampleCountFlagBits const& num_samples,
+            VkImageTiling const& tiling,
+            VkImageUsageFlags const& usage,
+            VkMemoryPropertyFlags const& properties,
             VkImage& image,
             VkDeviceMemory& image_memory) const noexcept;
 
@@ -118,7 +118,7 @@ namespace vulkan {
         // it fall back to the classic render pass path below
         bool use_dynamic_rendering = false;
 
-        std::vector<VkFramebuffer> swap_chain_framebuffers{};
+        std::vector<VkFramebuffer> swap_chain_framebuffers = {};
         void create_frame_buffers() noexcept;
 
         vma_allocator vma = {};
@@ -189,7 +189,7 @@ namespace vulkan {
         VkResult present(uint32_t image_index) const;
 
         std::expected<vk_pipeline, std::string_view> make_pipeline(
-            std::span<const unsigned char> vertex_shader_code,
-            std::span<const unsigned char> fragment_shader_code) const;
+            std::span<unsigned char const> vertex_shader_code,
+            std::span<unsigned char const> fragment_shader_code) const;
     };
 } // namespace vulkan

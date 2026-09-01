@@ -9,7 +9,7 @@ module vulkan.core.pipeline.spirv_parser;
 import utility;
 
 namespace {
-    vulkan::pipeline::interface_variable_info reflect_var_to_info(const SpvReflectInterfaceVariable* p_var) {
+    vulkan::pipeline::interface_variable_info reflect_var_to_info(SpvReflectInterfaceVariable const* p_var) {
         vulkan::pipeline::interface_variable_info info = {};
         info.location = p_var->location;
         info.component = p_var->component;
@@ -21,7 +21,7 @@ namespace {
 
     void sort_interface_variables(std::vector<vulkan::pipeline::interface_variable_info>& vars) {
         std::ranges::sort(vars,
-                          [](const vulkan::pipeline::interface_variable_info& a, const vulkan::pipeline::interface_variable_info& b) {
+                          [](vulkan::pipeline::interface_variable_info const& a, vulkan::pipeline::interface_variable_info const& b) {
                               if (a.location != b.location) {
                                   return a.location < b.location;
                               }
@@ -30,7 +30,7 @@ namespace {
     }
 } // namespace
 
-uint32_t vulkan::pipeline::format_size(const VkFormat format) {
+uint32_t vulkan::pipeline::format_size(VkFormat const format) {
     uint32_t result = 0;
     switch (format) {
     case VK_FORMAT_UNDEFINED:
@@ -206,8 +206,8 @@ uint32_t vulkan::pipeline::format_size(const VkFormat format) {
 
 std::expected<vulkan::pipeline::shader_stage_interface, std::string_view>
 vulkan::pipeline::parse_shader_stage_interface(
-    const std::span<const unsigned char> spirv_code,
-    const VkShaderStageFlagBits stage) {
+    std::span<unsigned char const> const spirv_code,
+    VkShaderStageFlagBits const stage) {
     using fail = std::unexpected<std::string_view>;
 
     shader_stage_interface out_interface;
@@ -262,18 +262,18 @@ vulkan::pipeline::parse_shader_stage_interface(
 }
 
 bool vulkan::pipeline::validate_interface_match(
-    const shader_stage_interface& producer,
-    const shader_stage_interface& consumer) {
+    shader_stage_interface const& producer,
+    shader_stage_interface const& consumer) {
     // Get the non-builtin outputs and inputs
-    std::vector<const interface_variable_info*> producer_outputs;
-    std::vector<const interface_variable_info*> consumer_inputs;
+    std::vector<interface_variable_info const*> producer_outputs;
+    std::vector<interface_variable_info const*> consumer_inputs;
 
-    for (const auto& out : producer.outputs) {
+    for (auto const& out : producer.outputs) {
         if (!out.is_builtin) {
             producer_outputs.push_back(&out);
         }
     }
-    for (const auto& in : consumer.inputs) {
+    for (auto const& in : consumer.inputs) {
         if (!in.is_builtin) {
             consumer_inputs.push_back(&in);
         }
@@ -287,8 +287,8 @@ bool vulkan::pipeline::validate_interface_match(
 
     // Compare one by one
     for (size_t i = 0; i < producer_outputs.size(); ++i) {
-        const vulkan::pipeline::interface_variable_info* p_out = producer_outputs[i];
-        const vulkan::pipeline::interface_variable_info* p_in = consumer_inputs[i];
+        vulkan::pipeline::interface_variable_info const* p_out = producer_outputs[i];
+        vulkan::pipeline::interface_variable_info const* p_in = consumer_inputs[i];
 
         if (p_out->location != p_in->location) {
             // error: location mismatch
@@ -309,8 +309,8 @@ bool vulkan::pipeline::validate_interface_match(
 
 std::expected<std::vector<vulkan::pipeline::descriptor_set_layout_data>, std::string_view>
 vulkan::pipeline::parse_descriptor_set_layouts(
-    const std::span<const unsigned char> spirv_code,
-    const VkShaderStageFlagBits shader_stage) {
+    std::span<unsigned char const> const spirv_code,
+    VkShaderStageFlagBits const shader_stage) {
 
     using fail = std::unexpected<std::string_view>;
 
@@ -345,14 +345,14 @@ vulkan::pipeline::parse_descriptor_set_layouts(
     // 4. Iterate and convert the data
     set_layouts.resize(sets.size());
     for (size_t i = 0; i < sets.size(); ++i) {
-        const SpvReflectDescriptorSet& refl_set = *sets[i];
+        SpvReflectDescriptorSet const& refl_set = *sets[i];
         vulkan::pipeline::descriptor_set_layout_data& layout_data = set_layouts[i];
 
         layout_data.set_number = refl_set.set;
         layout_data.bindings.resize(refl_set.binding_count);
 
         for (uint32_t j = 0; j < refl_set.binding_count; ++j) {
-            const SpvReflectDescriptorBinding& refl_binding = *(refl_set.bindings[j]);
+            SpvReflectDescriptorBinding const& refl_binding = *(refl_set.bindings[j]);
             VkDescriptorSetLayoutBinding& vk_binding = layout_data.bindings[j];
 
             vk_binding.binding = refl_binding.binding;
@@ -380,7 +380,7 @@ vulkan::pipeline::parse_descriptor_set_layouts(
 }
 
 std::expected<vulkan::pipeline::push_constant_layout, std::string_view> vulkan::pipeline::parse_push_constant_layout(
-    std::span<const unsigned char> spirv_code) {
+    std::span<unsigned char const> spirv_code) {
 
     using fail = std::unexpected<std::string_view>;
     push_constant_layout out_layout;
@@ -414,10 +414,10 @@ std::expected<vulkan::pipeline::push_constant_layout, std::string_view> vulkan::
     uint32_t max_offset = 0;
 
     for (uint32_t i = 0; i < pc_count; ++i) {
-        const SpvReflectBlockVariable* p_block = pc_blocks[i];
+        SpvReflectBlockVariable const* p_block = pc_blocks[i];
 
         for (uint32_t j = 0; j < p_block->member_count; ++j) {
-            const SpvReflectBlockVariable& member = p_block->members[j];
+            SpvReflectBlockVariable const& member = p_block->members[j];
 
             push_constant_info info = {};
             info.offset = member.offset;
@@ -427,13 +427,13 @@ std::expected<vulkan::pipeline::push_constant_layout, std::string_view> vulkan::
 
             out_layout.constants.push_back(info);
 
-            const uint32_t end = member.offset + member.size;
+            uint32_t const end = member.offset + member.size;
             max_offset = std::max(end, max_offset);
         }
     }
 
     std::ranges::sort(out_layout.constants,
-                      [](const push_constant_info& a, const push_constant_info& b) {
+                      [](push_constant_info const& a, push_constant_info const& b) {
                           return a.offset < b.offset;
                       });
 

@@ -1,4 +1,4 @@
-module;
+﻿module;
 
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
@@ -9,9 +9,9 @@ import utility;
 
 [[maybe_unused]] VKAPI_ATTR VkBool32 VKAPI_CALL
 debug_callback(
-    const VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
+    VkDebugUtilsMessageSeverityFlagBitsEXT const message_severity,
     [[maybe_unused]] VkDebugUtilsMessageTypeFlagsEXT message_type,
-    const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
+    VkDebugUtilsMessengerCallbackDataEXT const* callback_data,
     [[maybe_unused]] void* user_data) noexcept {
     if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
         // Errors go through error(): Debug prints red to stderr, Release writes to the log file
@@ -27,24 +27,24 @@ debug_callback(
     return VK_FALSE; // VK_FALSE means not terminate this function call
 }
 
-bool check_validation_layer_support(const std::vector<const char*>& validation_layers) noexcept {
+bool check_validation_layer_support(std::vector<char const*> const& validation_layers) noexcept {
     uint32_t layer_count;
     vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
     std::vector<VkLayerProperties> available_layers(layer_count);
     vkEnumerateInstanceLayerProperties(&layer_count, available_layers.data());
 
     std::unordered_set<std::string> available_names;
-    for (const auto& layer : available_layers) {
+    for (auto const& layer : available_layers) {
         available_names.insert(layer.layerName);
     }
 
     return std::ranges::all_of(validation_layers,
-                               [&](const char* name) { return available_names.contains(name); });
+                               [&](char const* name) { return available_names.contains(name); });
 }
 
 bool check_device_extension_support(
     VkPhysicalDevice const& physical_device,
-    std::vector<const char*> const& required_extensions) noexcept {
+    std::vector<char const*> const& required_extensions) noexcept {
     uint32_t extension_count;
     vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count, nullptr);
     std::vector<VkExtensionProperties> available_extensions(extension_count);
@@ -52,14 +52,14 @@ bool check_device_extension_support(
                                          available_extensions.data());
 
     std::set<std::string> required_set(required_extensions.begin(), required_extensions.end());
-    for (const auto& [extension_name, spec_version] : available_extensions) {
+    for (auto const& [extension_name, spec_version] : available_extensions) {
         required_set.erase(extension_name);
     }
 
     return required_set.empty();
 }
 
-void device_capabilities::query(const VkPhysicalDevice physical_device, const uint32_t api_version) noexcept {
+void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t const api_version) noexcept {
     // ---- Feature pNext chain: features_2 -> 1_1 -> 1_2 -> 1_3 -> 1_4 (truncated by api_version) ----
     features_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features_1_1.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
@@ -90,17 +90,17 @@ void device_capabilities::query(const VkPhysicalDevice physical_device, const ui
     features_1_1.protectedMemory = VK_FALSE; // protected memory not needed for now
 }
 
-const void* device_capabilities::device_pnext() const noexcept {
+void const* device_capabilities::device_pnext() const noexcept {
     return &this->features_1_1;
 }
 
 namespace {
     // Append names of enabled (VK_TRUE) members to the output string, return the enabled count
     template <typename T>
-    size_t append_enabled_features(std::string& out, const T& features,
-                                   const std::initializer_list<std::pair<const char*, VkBool32 T::*>>& entries) {
+    size_t append_enabled_features(std::string& out, T const& features,
+                                   std::initializer_list<std::pair<char const*, VkBool32 T::*>> const& entries) {
         size_t count = 0;
-        for (const auto& [name, member] : entries) {
+        for (auto const& [name, member] : entries) {
             if (features.*member == VK_TRUE) {
                 if (!out.empty()) {
                     out += ", ";
@@ -113,13 +113,13 @@ namespace {
     }
 
     // Wrap output at the given width, indenting continuation lines
-    void print_wrapped(const std::string& text, const int width, const std::string_view indent) {
+    void print_wrapped(std::string const& text, int const width, std::string_view const indent) {
         std::string current(indent);
         size_t start = 0;
         while (start < text.size()) {
-            const size_t comma = text.find(", ", start);
-            const size_t token_end = comma == std::string::npos ? text.size() : comma;
-            const std::string_view token(text.data() + start, token_end - start);
+            size_t const comma = text.find(", ", start);
+            size_t const token_end = comma == std::string::npos ? text.size() : comma;
+            std::string_view const token(text.data() + start, token_end - start);
             if (current.size() > indent.size() && current.size() + token.size() + 2 > static_cast<size_t>(width)) {
                 utility::log("{}", current);
                 current = std::string(indent);
@@ -139,7 +139,7 @@ namespace {
     }
 } // namespace
 
-void print_device_capabilities(const device_capabilities& capabilities) {
+void print_device_capabilities(device_capabilities const& capabilities) {
     constexpr std::string_view box_line = "================================================";
     constexpr std::string_view sep_line = "------------------------------------------------";
 
@@ -147,10 +147,10 @@ void print_device_capabilities(const device_capabilities& capabilities) {
     utility::log(" Vulkan device capabilities");
     utility::log("{}", box_line);
 
-    static constexpr std::array<const char*, 5> device_type_names = {
+    static constexpr std::array<char const*, 5> device_type_names = {
         "other", "integrated gpu", "discrete gpu", "virtual gpu", "cpu"};
-    const uint32_t device_type = static_cast<uint32_t>(capabilities.properties_2.properties.deviceType);
-    const char* type_name = device_type < device_type_names.size() ? device_type_names[device_type] : "unknown";
+    uint32_t const device_type = static_cast<uint32_t>(capabilities.properties_2.properties.deviceType);
+    char const* type_name = device_type < device_type_names.size() ? device_type_names[device_type] : "unknown";
 
     utility::log(" driver        : {} {}", capabilities.driver_properties.driverName, capabilities.driver_properties.driverInfo);
     utility::log(" api version   : {}.{}.{}",
@@ -165,7 +165,7 @@ void print_device_capabilities(const device_capabilities& capabilities) {
     using feature_1_3 = VkPhysicalDeviceVulkan13Features;
 
     std::string enabled_1_1;
-    const size_t count_1_1 = append_enabled_features(enabled_1_1, capabilities.features_1_1, {
+    size_t const count_1_1 = append_enabled_features(enabled_1_1, capabilities.features_1_1, {
                                                                                                  {"storageBuffer16BitAccess", &feature_1_1::storageBuffer16BitAccess},
                                                                                                  {"uniformAndStorageBuffer16BitAccess", &feature_1_1::uniformAndStorageBuffer16BitAccess},
                                                                                                  {"storagePushConstant16", &feature_1_1::storagePushConstant16},
@@ -183,7 +183,7 @@ void print_device_capabilities(const device_capabilities& capabilities) {
     print_wrapped(enabled_1_1, 100, "   ");
 
     std::string enabled_1_2;
-    const size_t count_1_2 = append_enabled_features(enabled_1_2, capabilities.features_1_2, {
+    size_t const count_1_2 = append_enabled_features(enabled_1_2, capabilities.features_1_2, {
                                                                                                  {"samplerMirrorClampToEdge", &feature_1_2::samplerMirrorClampToEdge},
                                                                                                  {"drawIndirectCount", &feature_1_2::drawIndirectCount},
                                                                                                  {"storageBuffer8BitAccess", &feature_1_2::storageBuffer8BitAccess},
@@ -236,7 +236,7 @@ void print_device_capabilities(const device_capabilities& capabilities) {
     print_wrapped(enabled_1_2, 100, "   ");
 
     std::string enabled_1_3;
-    const size_t count_1_3 = append_enabled_features(enabled_1_3, capabilities.features_1_3, {
+    size_t const count_1_3 = append_enabled_features(enabled_1_3, capabilities.features_1_3, {
                                                                                                  {"robustImageAccess", &feature_1_3::robustImageAccess},
                                                                                                  {"inlineUniformBlock", &feature_1_3::inlineUniformBlock},
                                                                                                  {"descriptorBindingInlineUniformBlockUpdateAfterBind", &feature_1_3::descriptorBindingInlineUniformBlockUpdateAfterBind},
@@ -260,7 +260,7 @@ void print_device_capabilities(const device_capabilities& capabilities) {
 }
 
 logical_device create_logical_device(
-    const VkPhysicalDevice physical_device, // NOLINT(*-misplaced-const)
+    VkPhysicalDevice const physical_device, // NOLINT(*-misplaced-const)
     device_creation_info const& create_info) noexcept {
     if (!create_info.queue_families.is_complete()) {
         utility::error("Queue families not complete");
@@ -289,8 +289,8 @@ logical_device create_logical_device(
     std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
     constexpr float queue_priority = 1.0f;
 
-    for (const uint32_t& queue_family : unique_queue_families) {
-        VkDeviceQueueCreateInfo queue_info{};
+    for (uint32_t const& queue_family : unique_queue_families) {
+        VkDeviceQueueCreateInfo queue_info = {};
         queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queue_info.queueFamilyIndex = queue_family;
         queue_info.queueCount = 1;
@@ -306,7 +306,7 @@ logical_device create_logical_device(
     vkGetPhysicalDeviceFeatures2(physical_device, &physical_device_features);
 
     // Create the device
-    VkDeviceCreateInfo device_create_info{};
+    VkDeviceCreateInfo device_create_info = {};
     device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     device_create_info.queueCreateInfoCount = static_cast<uint32_t>(queue_create_infos.size());
     device_create_info.pQueueCreateInfos = queue_create_infos.data();
@@ -336,7 +336,7 @@ logical_device create_logical_device(
     device_create_info.pNext = &physical_device_features;
 
     VkDevice device = {};
-    const VkResult result = vkCreateDevice(physical_device, &device_create_info, nullptr, &device);
+    VkResult const result = vkCreateDevice(physical_device, &device_create_info, nullptr, &device);
     if (result != VK_SUCCESS) {
         utility::panic(std::source_location::current(), "Failed to create logical device: {}", std::to_string(result));
     }
@@ -367,7 +367,7 @@ queue_family_indices find_queue_families(VkPhysicalDevice const& device, VkSurfa
 
     // Find a suitable queue family
     for (uint32_t i = 0; i < queue_family_count; ++i) {
-        const auto& queue_family = queue_families[i];
+        auto const& queue_family = queue_families[i];
 
         // Check graphics support
         if ((queue_family.queueFlags & VK_QUEUE_GRAPHICS_BIT) && !indices.graphics_family.has_value()) {
@@ -444,7 +444,7 @@ VkPhysicalDevice pick_suitable_device(VkInstance const& instance, VkSurfaceKHR s
     std::vector<VkPhysicalDevice> devices(device_count);
     vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
 
-    for (const auto& device : devices) {
+    for (auto const& device : devices) {
         VkPhysicalDeviceProperties device_properties;
         VkPhysicalDeviceFeatures device_features;
         vkGetPhysicalDeviceProperties(device, &device_properties);
@@ -455,7 +455,7 @@ VkPhysicalDevice pick_suitable_device(VkInstance const& instance, VkSurfaceKHR s
         }
 
         // Check extension support
-        const std::vector<const char*> required_extensions = {
+        std::vector<char const*> const required_extensions = {
             VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         };
         if (!check_device_extension_support(device, required_extensions)) {
@@ -504,7 +504,7 @@ VkPresentModeKHR choose_swap_present_mode(std::vector<VkPresentModeKHR> const& a
 }
 
 VkSurfaceFormatKHR choose_swap_surface_format(std::vector<VkSurfaceFormatKHR> const& available_formats) noexcept {
-    for (const auto& available_format : available_formats) {
+    for (auto const& available_format : available_formats) {
         if (available_format.format == VK_FORMAT_B8G8R8A8_SRGB && available_format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
             return available_format;
         }
@@ -539,7 +539,7 @@ VkExtent2D choose_swap_extent(VkSurfaceCapabilitiesKHR const& capabilities, GLFW
     return actual_extent;
 }
 
-uint32_t find_memory_type(const uint32_t& type_filter, const VkMemoryPropertyFlags& properties, const VkPhysicalDevice& physical_device) noexcept {
+uint32_t find_memory_type(uint32_t const& type_filter, VkMemoryPropertyFlags const& properties, VkPhysicalDevice const& physical_device) noexcept {
     // Get the physical device's memory properties
     VkPhysicalDeviceMemoryProperties mem_properties;
     vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_properties);
@@ -557,9 +557,9 @@ uint32_t find_memory_type(const uint32_t& type_filter, const VkMemoryPropertyFla
     utility::panic("failed to find suitable memory type");
 }
 
-VkFormat find_depth_format(const VkPhysicalDevice& physical_device) noexcept {
+VkFormat find_depth_format(VkPhysicalDevice const& physical_device) noexcept {
     // Try to find a supported depth format, in order of preference
-    const std::vector<VkFormat> candidates = {
+    std::vector<VkFormat> const candidates = {
         VK_FORMAT_D32_SFLOAT_S8_UINT,
         VK_FORMAT_D32_SFLOAT,
         VK_FORMAT_D24_UNORM_S8_UINT,
@@ -580,11 +580,11 @@ VkFormat find_depth_format(const VkPhysicalDevice& physical_device) noexcept {
     utility::panic("failed to find supported depth format!");
 }
 
-VkSampleCountFlagBits get_max_usable_sample_count(const VkPhysicalDevice& physical_device) noexcept {
+VkSampleCountFlagBits get_max_usable_sample_count(VkPhysicalDevice const& physical_device) noexcept {
     VkPhysicalDeviceProperties physical_device_properties;
     vkGetPhysicalDeviceProperties(physical_device, &physical_device_properties);
 
-    const VkSampleCountFlags counts = physical_device_properties.limits.framebufferColorSampleCounts &
+    VkSampleCountFlags const counts = physical_device_properties.limits.framebufferColorSampleCounts &
                                       physical_device_properties.limits.framebufferDepthSampleCounts;
 
     if (counts & VK_SAMPLE_COUNT_64_BIT) {
@@ -609,8 +609,8 @@ VkSampleCountFlagBits get_max_usable_sample_count(const VkPhysicalDevice& physic
     return VK_SAMPLE_COUNT_1_BIT;
 }
 
-VkImageView create_image_view(const VkImage& image, const VkFormat& format, const VkImageAspectFlags& aspect_flags, const VkDevice& device) noexcept {
-    VkImageViewCreateInfo view_info{};
+VkImageView create_image_view(VkImage const& image, VkFormat const& format, VkImageAspectFlags const& aspect_flags, VkDevice const& device) noexcept {
+    VkImageViewCreateInfo view_info = {};
     view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     view_info.image = image;
     view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;

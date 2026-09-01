@@ -4,7 +4,7 @@ module;
 
 module utility.bvh;
 
-bool hit(glm::vec3 const& min, glm::vec3 const& max, glm::vec3 const& start, glm::vec3 const& direction, const float t_min, const float t_max) {
+bool hit(glm::vec3 const& min, glm::vec3 const& max, glm::vec3 const& start, glm::vec3 const& direction, float const t_min, float const t_max) {
     float near = t_min;
     float far = t_max;
 
@@ -14,7 +14,7 @@ bool hit(glm::vec3 const& min, glm::vec3 const& max, glm::vec3 const& start, glm
                 return false;
             }
         } else {
-            const float inv_d = 1.0f / direction[axis];
+            float const inv_d = 1.0f / direction[axis];
             float t1 = (min[axis] - start[axis]) * inv_d;
             float t2 = (max[axis] - start[axis]) * inv_d;
 
@@ -34,22 +34,22 @@ bool hit(glm::vec3 const& min, glm::vec3 const& max, glm::vec3 const& start, glm
 }
 
 namespace {
-    utility::morton_code morton_encode(const uint32_t x, const uint32_t y, const uint32_t z) {
+    utility::morton_code morton_encode(uint32_t const x, uint32_t const y, uint32_t const z) {
         utility::morton_code code;
         auto* const out = code.data.data();
 
-        auto spread = [](const uint32_t n) -> __uint128_t {
+        auto spread = [](uint32_t const n) -> __uint128_t {
             __uint128_t output = 0;
             for (int i = 0; i < 32; i++) {
-                const __uint128_t bit = (n >> i) & 1u; // NOLINT(*-signed-bitwise)
+                __uint128_t const bit = (n >> i) & 1u; // NOLINT(*-signed-bitwise)
                 output |= (bit << (3 * i));            // NOLINT(*-signed-bitwise)
             }
             return output;
         };
 
-        const __uint128_t x_spread = spread(x);
-        const __uint128_t y_spread = spread(y);
-        const __uint128_t z_spread = spread(z);
+        __uint128_t const x_spread = spread(x);
+        __uint128_t const y_spread = spread(y);
+        __uint128_t const z_spread = spread(z);
 
         __uint128_t result = 0;
         result |= static_cast<__uint128_t>(x_spread);
@@ -63,16 +63,16 @@ namespace {
 
 namespace utility {
 
-    std::expected<morton_code, std::string> generate_morton_from_midpoint(glm::vec3 const& midpoint, const float scale) {
+    std::expected<morton_code, std::string> generate_morton_from_midpoint(glm::vec3 const& midpoint, float const scale) {
         using fail = std::unexpected<std::string>;
 
         if (midpoint.x < 0.0 || midpoint.y < 0.0 || midpoint.z < 0.0 || midpoint.x > 1.0 || midpoint.y > 1.0 || midpoint.z > 1.0) {
             return fail("position must be in [0, 1]");
         }
 
-        const auto x = static_cast<uint32_t>(midpoint.x * scale);
-        const auto y = static_cast<uint32_t>(midpoint.y * scale);
-        const auto z = static_cast<uint32_t>(midpoint.z * scale);
+        auto const x = static_cast<uint32_t>(midpoint.x * scale);
+        auto const y = static_cast<uint32_t>(midpoint.y * scale);
+        auto const z = static_cast<uint32_t>(midpoint.z * scale);
 
         morton_code code = morton_encode(x, y, z);
 

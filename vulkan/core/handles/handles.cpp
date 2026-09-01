@@ -8,7 +8,7 @@ import utility;
 
 // vk_command_buffer
 namespace vulkan {
-    vk_command_buffer::vk_command_buffer(const VkCommandBuffer command_buffer, const VkDevice device, const VkCommandPool pool) noexcept { // NOLINT(*-misplaced-const)
+    vk_command_buffer::vk_command_buffer(VkCommandBuffer const command_buffer, VkDevice const device, VkCommandPool const pool) noexcept { // NOLINT(*-misplaced-const)
         this->command_buffer = command_buffer;
         this->device = device;
         this->command_pool = pool;
@@ -60,7 +60,7 @@ namespace vulkan {
         return *this;
     }
 
-    vk_command_buffer make_command_buffer(const VkDevice device, const VkCommandPool command_pool) noexcept {
+    vk_command_buffer make_command_buffer(VkDevice const device, VkCommandPool const command_pool) noexcept {
         VkCommandBuffer buffer = VK_NULL_HANDLE;
 
         VkCommandBufferAllocateInfo allocate_info = {
@@ -81,7 +81,7 @@ namespace vulkan {
 
 // vk_descriptor_set
 namespace vulkan {
-    vk_descriptor_set::vk_descriptor_set(const VkDescriptorSet descriptor_set, const VkDevice device, const VkDescriptorPool descriptor_pool) noexcept { // NOLINT(*-misplaced-const)
+    vk_descriptor_set::vk_descriptor_set(VkDescriptorSet const descriptor_set, VkDevice const device, VkDescriptorPool const descriptor_pool) noexcept { // NOLINT(*-misplaced-const)
         this->descriptor_set = descriptor_set;
         this->device = device;
         this->descriptor_pool = descriptor_pool;
@@ -131,7 +131,7 @@ namespace vulkan {
         this->descriptor_pool = VK_NULL_HANDLE;
     }
 
-    vk_descriptor_set make_descriptor_set(const VkDevice device, const VkDescriptorPool descriptor_pool, VkDescriptorSetLayout const& layout) noexcept {
+    vk_descriptor_set make_descriptor_set(VkDevice const device, VkDescriptorPool const descriptor_pool, VkDescriptorSetLayout const& layout) noexcept {
         VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSetAllocateInfo allocate_info = {};
         allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -146,7 +146,7 @@ namespace vulkan {
 
 // vk_shader_module
 namespace vulkan {
-    vk_shader_module::vk_shader_module(const VkShaderModule& shader_module, const VkDevice device) noexcept {
+    vk_shader_module::vk_shader_module(VkShaderModule const& shader_module, VkDevice const device) noexcept {
         this->shader_module = shader_module;
         this->device = device;
     }
@@ -190,13 +190,13 @@ namespace vulkan {
         this->device = VK_NULL_HANDLE;
     }
 
-    std::optional<vk_shader_module> make_shader_module(const std::span<const unsigned char> shader, const VkDevice device) noexcept {
+    std::optional<vk_shader_module> make_shader_module(std::span<unsigned char const> const shader, VkDevice const device) noexcept {
         VkShaderModule shader_module = {};
 
         VkShaderModuleCreateInfo create_info = {};
         create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         create_info.codeSize = shader.size_bytes();
-        create_info.pCode = reinterpret_cast<const uint32_t*>(shader.data());
+        create_info.pCode = reinterpret_cast<uint32_t const*>(shader.data());
 
         if (vkCreateShaderModule(device, &create_info, nullptr, &shader_module) != VK_SUCCESS) {
             return std::nullopt;
@@ -208,7 +208,7 @@ namespace vulkan {
 
 // vk_pipeline
 namespace vulkan {
-    vk_pipeline::vk_pipeline(const VkPipeline pipeline, const VkPipelineLayout pipeline_layout, const VkDevice device) noexcept { // NOLINT(*-misplaced-const)
+    vk_pipeline::vk_pipeline(VkPipeline const pipeline, VkPipelineLayout const pipeline_layout, VkDevice const device) noexcept { // NOLINT(*-misplaced-const)
         this->pipeline = pipeline;
         this->pipeline_layout = pipeline_layout;
         this->device = device;
@@ -253,7 +253,7 @@ namespace vulkan {
         return pipeline_layout;
     }
 
-    void vk_pipeline::begin_pipeline(const VkCommandBuffer command_buffer) const {
+    void vk_pipeline::begin_pipeline(VkCommandBuffer const command_buffer) const {
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pipeline);
         vkCmdSetViewport(command_buffer, 0, 1, &this->viewport);
         vkCmdSetScissor(command_buffer, 0, 1, &this->scissor);
@@ -271,7 +271,7 @@ namespace vulkan {
     }
 
     // vk_image_view
-    vk_image_view::vk_image_view(const VkImageView image_view, const VkDevice device) noexcept {
+    vk_image_view::vk_image_view(VkImageView const image_view, VkDevice const device) noexcept {
         this->image_view = image_view;
         this->device = device;
     }
@@ -316,7 +316,7 @@ namespace vulkan {
     }
 
     // vk_sampler
-    vk_sampler::vk_sampler(const VkSampler sampler, const VkDevice device) noexcept {
+    vk_sampler::vk_sampler(VkSampler const sampler, VkDevice const device) noexcept {
         this->sampler = sampler;
         this->device = device;
     }

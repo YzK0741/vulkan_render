@@ -110,7 +110,7 @@ namespace utility {
      *     - thread safe
      *     - LIFO
      */
-    export void at_panic(const std::function<void()>& task);
+    export void at_panic(std::function<void()> const& task);
 
     /**
      * @ingroup utility
@@ -151,7 +151,7 @@ namespace utility {
      * @param path the file path
      * @return the file contents, or std::nullopt if the file cannot be read
      */
-    export std::optional<std::vector<unsigned char>> read_binary_to_vector(const std::filesystem::path& path);
+    export std::optional<std::vector<unsigned char>> read_binary_to_vector(std::filesystem::path const& path);
 
     /**
      * @ingroup utility
@@ -159,7 +159,7 @@ namespace utility {
      * @param path the file path
      * @return the file contents, or std::nullopt if the file cannot be read
      */
-    export std::optional<std::string> read_binary_to_string(const std::filesystem::path& path);
+    export std::optional<std::string> read_binary_to_string(std::filesystem::path const& path);
 
     /**
      * @ingroup utility
@@ -277,7 +277,7 @@ namespace utility {
      * @return md5 digest
      * @ingroup hash
      */
-    export std::optional<md5_digest> md5(std::span<const unsigned char> data_view);
+    export std::optional<md5_digest> md5(std::span<unsigned char const> data_view);
 
     /**
      * @typedef sha256_digest
@@ -292,7 +292,7 @@ namespace utility {
      * @return sha256 digest
      * @ingroup hash
      */
-    export std::optional<sha256_digest> sha256(std::span<const unsigned char> data_view);
+    export std::optional<sha256_digest> sha256(std::span<unsigned char const> data_view);
 
     /**
      * @typedef blake2_digest
@@ -307,5 +307,5 @@ namespace utility {
      * @return blake2 digest
      * @ingroup hash
      */
-    export std::optional<blake2_digest> blake2(std::span<const unsigned char> data_view);
+    export std::optional<blake2_digest> blake2(std::span<unsigned char const> data_view);
 } // namespace utility

@@ -3,11 +3,11 @@
 import std;
 
 namespace utility {
-    bool thread_pool::task::operator<(const task& other) const noexcept {
+    bool thread_pool::task::operator<(task const& other) const noexcept {
         return this->priority < other.priority;
     }
 
-    void thread_pool::worker_loop(const std::stop_token& token) {
+    void thread_pool::worker_loop(std::stop_token const& token) {
         this->active_thread.fetch_add(1);
         std::function<void()> current_task;
         while (true) {
@@ -51,12 +51,12 @@ namespace utility {
         }
     }
 
-    thread_pool::thread_pool(const int threads, const shutdown_policy policy) {
+    thread_pool::thread_pool(int const threads, shutdown_policy const policy) {
         this->threads.resize(threads);
         this->policy = policy;
 
         for (auto& thread : this->threads) {
-            thread = std::jthread([this](const std::stop_token& stop_token) {
+            thread = std::jthread([this](std::stop_token const& stop_token) {
                 thread_pool::worker_loop(stop_token);
             });
         }

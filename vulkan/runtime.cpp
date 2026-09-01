@@ -13,7 +13,7 @@ namespace {
         return static_cast<vulkan::runtime*>(glfwGetWindowUserPointer(window));
     }
 
-    void mouse_button_callback(GLFWwindow* window, const int button, const int action, [[maybe_unused]] const int mods) {
+    void mouse_button_callback(GLFWwindow* window, int const button, int const action, [[maybe_unused]] int const mods) {
         auto* runtime = runtime_from_window(window);
         if (button != GLFW_MOUSE_BUTTON_LEFT) {
             return;
@@ -26,14 +26,14 @@ namespace {
         }
     }
 
-    void cursor_pos_callback(GLFWwindow* window, const double x, const double y) {
+    void cursor_pos_callback(GLFWwindow* window, double const x, double const y) {
         auto& camera = runtime_from_window(window)->camera;
         if (!camera.dragging) {
             return;
         }
         constexpr float sensitivity = 0.005f;
-        const float dx = static_cast<float>(x - camera.last_x);
-        const float dy = static_cast<float>(y - camera.last_y);
+        float const dx = static_cast<float>(x - camera.last_x);
+        float const dy = static_cast<float>(y - camera.last_y);
         camera.last_x = x;
         camera.last_y = y;
         camera.yaw += dx * sensitivity; // drag direction matches the model rotation
@@ -41,7 +41,7 @@ namespace {
         camera.pitch = std::clamp(camera.pitch, -1.5f, 1.5f); // avoid flipping
     }
 
-    void scroll_callback(GLFWwindow* window, [[maybe_unused]] const double xoffset, const double yoffset) {
+    void scroll_callback(GLFWwindow* window, [[maybe_unused]] double const xoffset, double const yoffset) {
         auto& camera = runtime_from_window(window)->camera;
         camera.distance *= std::pow(0.9f, static_cast<float>(yoffset));
         camera.distance = std::clamp(camera.distance, 0.5f, 20.0f);
@@ -80,13 +80,13 @@ namespace vulkan {
         this->pipelines.clear();
 
         // Shared scene resources (views/sets/samplers are RAII and free themselves)
-        for (const uint64_t handle : this->camera_buffer_handles) {
+        for (uint64_t const handle : this->camera_buffer_handles) {
             this->vulkan_core.vma.free_buffer(handle);
         }
-        for (const uint64_t handle : this->owned_texture_handles) {
+        for (uint64_t const handle : this->owned_texture_handles) {
             this->vulkan_core.vma.free_image(handle);
         }
-        for (const uint64_t handle : this->ibl_handles) {
+        for (uint64_t const handle : this->ibl_handles) {
             this->vulkan_core.vma.free_image(handle);
         }
         if (this->material_buffer_handle != 0) {
@@ -103,11 +103,11 @@ namespace vulkan {
         this->camera_mapped.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
             camera_ubo initial = {};
-            const uint64_t handle = this->vulkan_core.vma.create_buffer(std::span(&initial, 1), vulkan::buffer_type::uniform_coherent);
+            uint64_t const handle = this->vulkan_core.vma.create_buffer(std::span(&initial, 1), vulkan::buffer_type::uniform_coherent);
             if (handle == 0) {
                 utility::panic("failed to create camera ubo buffer");
             }
-            const auto* detail = this->vulkan_core.vma.get_buffer_detail(handle);
+            auto const* detail = this->vulkan_core.vma.get_buffer_detail(handle);
             if (detail == nullptr) {
                 utility::panic("failed to get camera ubo buffer detail");
             }
@@ -124,11 +124,11 @@ namespace vulkan {
         white_info.mip_levels = 1;
         white_info.array_layers = 1;
         white_info.format = VK_FORMAT_R8G8B8A8_UNORM;
-        const uint64_t white_handle = this->vulkan_core.vma.create_image(white_pixels.data(), white_pixels.size(), white_info, vulkan::image_type::texture_2d);
+        uint64_t const white_handle = this->vulkan_core.vma.create_image(white_pixels.data(), white_pixels.size(), white_info, vulkan::image_type::texture_2d);
         if (white_handle == 0) {
             utility::panic("failed to create white fallback texture");
         }
-        const auto* white_detail = this->vulkan_core.vma.get_image_detail(white_handle);
+        auto const* white_detail = this->vulkan_core.vma.get_image_detail(white_handle);
         if (white_detail == nullptr) {
             utility::panic("failed to get white texture detail");
         }
@@ -142,12 +142,12 @@ namespace vulkan {
 
         // GPU material table: fixed capacity, host-visible (direct mapping); records are appended
         // at registration and read-only for the GPU (set 0 binding 5)
-        const std::vector<unsigned char> zeroed_materials(static_cast<size_t>(vulkan::material_capacity) * sizeof(material_record), 0);
-        const uint64_t material_handle = this->vulkan_core.vma.create_buffer(zeroed_materials.data(), zeroed_materials.size(), vulkan::buffer_type::storage_coherent);
+        std::vector<unsigned char> const zeroed_materials(static_cast<size_t>(vulkan::material_capacity) * sizeof(material_record), 0);
+        uint64_t const material_handle = this->vulkan_core.vma.create_buffer(zeroed_materials.data(), zeroed_materials.size(), vulkan::buffer_type::storage_coherent);
         if (material_handle == 0) {
             utility::panic("failed to create material table buffer");
         }
-        const auto* material_detail = this->vulkan_core.vma.get_buffer_detail(material_handle);
+        auto const* material_detail = this->vulkan_core.vma.get_buffer_detail(material_handle);
         if (material_detail == nullptr) {
             utility::panic("failed to get material table buffer detail");
         }
@@ -164,11 +164,11 @@ namespace vulkan {
 
         // binding 0: camera UBO -> buffer[0]; render_frame() rewrites it per frame with the
         // current frame slot's buffer (update-after-bind)
-        const auto* detail = this->vulkan_core.vma.get_buffer_detail(this->camera_buffer_handles[0]);
+        auto const* detail = this->vulkan_core.vma.get_buffer_detail(this->camera_buffer_handles[0]);
         if (detail == nullptr) {
             utility::panic("failed to get camera ubo buffer detail");
         }
-        const VkDescriptorBufferInfo camera_info{detail->buffer, 0, sizeof(camera_ubo)};
+        VkDescriptorBufferInfo const camera_info{detail->buffer, 0, sizeof(camera_ubo)};
         VkWriteDescriptorSet camera_write = {};
         camera_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         camera_write.dstSet = *this->scene_set;
@@ -179,11 +179,11 @@ namespace vulkan {
         vkUpdateDescriptorSets(this->vulkan_core.device, 1, &camera_write, 0, nullptr);
 
         // binding 5: material table (storage buffer, written once)
-        const auto* material_detail = this->vulkan_core.vma.get_buffer_detail(this->material_buffer_handle);
+        auto const* material_detail = this->vulkan_core.vma.get_buffer_detail(this->material_buffer_handle);
         if (material_detail == nullptr) {
             utility::panic("failed to get material table buffer detail");
         }
-        const VkDescriptorBufferInfo material_info{material_detail->buffer, 0, static_cast<VkDeviceSize>(vulkan::material_capacity) * sizeof(material_record)};
+        VkDescriptorBufferInfo const material_info{material_detail->buffer, 0, static_cast<VkDeviceSize>(vulkan::material_capacity) * sizeof(material_record)};
         VkWriteDescriptorSet material_write = {};
         material_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         material_write.dstSet = *this->scene_set;
@@ -203,8 +203,8 @@ namespace vulkan {
         }
         std::array<VkDescriptorImageInfo, 3> image_infos = {};
         std::array<VkWriteDescriptorSet, 3> writes = {};
-        const VkImageView placeholder_view = *this->owned_texture_views[0]; // white
-        const VkSampler placeholder_sampler = *this->texture_sampler;
+        VkImageView const placeholder_view = *this->owned_texture_views[0]; // white
+        VkSampler const placeholder_sampler = *this->texture_sampler;
         for (int i = 0; i < 3; ++i) {
             image_infos[i] = {
                 .sampler = this->ibl_ready ? *this->env_sampler : placeholder_sampler,
@@ -221,12 +221,12 @@ namespace vulkan {
         vkUpdateDescriptorSets(this->vulkan_core.device, 3, writes.data(), 0, nullptr);
     }
 
-    void runtime::set_ibl(const ibl_input& info) {
+    void runtime::set_ibl(ibl_input const& info) {
         if (info.env_size == 0) {
             return;
         }
-        const auto upload = [this](const std::span<const unsigned char> data, const image_create_info& create_info, const image_type type) -> uint64_t {
-            const uint64_t handle = this->vulkan_core.vma.create_image(data.data(), data.size_bytes(), create_info, type);
+        auto const upload = [this](std::span<unsigned char const> const data, image_create_info const& create_info, image_type const type) -> uint64_t {
+            uint64_t const handle = this->vulkan_core.vma.create_image(data.data(), data.size_bytes(), create_info, type);
             if (handle == 0) {
                 utility::panic("failed to create IBL image");
             }
@@ -241,7 +241,7 @@ namespace vulkan {
         env_info.array_layers = 6;
         env_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
         uint64_t handle = upload(info.prefiltered_env, env_info, vulkan::image_type::texture_cubemap);
-        const auto* env_detail = this->vulkan_core.vma.get_image_detail(handle);
+        auto const* env_detail = this->vulkan_core.vma.get_image_detail(handle);
         if (env_detail == nullptr) {
             utility::panic("failed to get environment image detail");
         }
@@ -256,7 +256,7 @@ namespace vulkan {
         irr_info.array_layers = 6;
         irr_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
         handle = upload(info.irradiance, irr_info, vulkan::image_type::texture_cubemap);
-        const auto* irr_detail = this->vulkan_core.vma.get_image_detail(handle);
+        auto const* irr_detail = this->vulkan_core.vma.get_image_detail(handle);
         if (irr_detail == nullptr) {
             utility::panic("failed to get irradiance image detail");
         }
@@ -271,7 +271,7 @@ namespace vulkan {
         lut_info.array_layers = 1;
         lut_info.format = VK_FORMAT_R16G16_SFLOAT;
         handle = upload(info.brdf_lut, lut_info, vulkan::image_type::texture_2d);
-        const auto* lut_detail = this->vulkan_core.vma.get_image_detail(handle);
+        auto const* lut_detail = this->vulkan_core.vma.get_image_detail(handle);
         if (lut_detail == nullptr) {
             utility::panic("failed to get BRDF LUT image detail");
         }
@@ -285,13 +285,13 @@ namespace vulkan {
         this->write_ibl_bindings();
     }
 
-    uint32_t runtime::register_material(const model_create_info& info) {
+    uint32_t runtime::register_material(model_create_info const& info) {
         // ---- 1. Upload the 5 texture slots into the shared array; missing ones use the white fallback ----
         if (this->texture_array_views.size() + 5 > vulkan::scene_texture_capacity) {
             utility::panic("scene texture array capacity exceeded");
         }
 
-        const std::array<std::pair<const texture_input*, VkFormat>, 5> slots = {
+        std::array<std::pair<texture_input const*, VkFormat>, 5> const slots = {
             std::pair{&info.albedo, VK_FORMAT_R8G8B8A8_SRGB},
             std::pair{&info.metallic_roughness, VK_FORMAT_R8G8B8A8_UNORM},
             std::pair{&info.normal, VK_FORMAT_R8G8B8A8_UNORM},
@@ -303,22 +303,22 @@ namespace vulkan {
         std::array<VkDescriptorImageInfo, 5> image_infos = {};
         std::array<VkWriteDescriptorSet, 5> writes = {};
         uint32_t write_count = 0;
-        const VkSampler sampler = *this->texture_sampler;
+        VkSampler const sampler = *this->texture_sampler;
         for (int i = 0; i < 5; ++i) {
             VkImageView view;
             if (slots[i].first->valid && !slots[i].first->data.empty()) {
-                const texture_input& tex = *slots[i].first;
+                texture_input const& tex = *slots[i].first;
                 vulkan::image_create_info image_info = {};
                 image_info.width = tex.width;
                 image_info.height = tex.height;
                 image_info.mip_levels = 1;
                 image_info.array_layers = 1;
                 image_info.format = tex.format;
-                const uint64_t handle = this->vulkan_core.vma.create_image(tex.data.data(), tex.data.size_bytes(), image_info, vulkan::image_type::texture_2d);
+                uint64_t const handle = this->vulkan_core.vma.create_image(tex.data.data(), tex.data.size_bytes(), image_info, vulkan::image_type::texture_2d);
                 if (handle == 0) {
                     utility::panic("failed to create material texture");
                 }
-                const auto* detail = this->vulkan_core.vma.get_image_detail(handle);
+                auto const* detail = this->vulkan_core.vma.get_image_detail(handle);
                 if (detail == nullptr) {
                     utility::panic("failed to get material texture detail");
                 }
@@ -362,17 +362,17 @@ namespace vulkan {
             record.flags |= 4u;
         }
 
-        const uint32_t material_index = this->material_count++;
+        uint32_t const material_index = this->material_count++;
         std::memcpy(static_cast<unsigned char*>(this->material_mapped) + static_cast<size_t>(material_index) * sizeof(material_record), &record, sizeof(record));
         return material_index;
     }
 
-    void runtime::begin_rendering(const VkCommandBuffer command_buffer, const uint32_t image_index) const {
+    void runtime::begin_rendering(VkCommandBuffer const command_buffer, uint32_t const image_index) const {
         std::array<VkClearValue, 2> clear_values = {};
         clear_values[0].color = {{0.02f, 0.02f, 0.03f, 1.0f}};
         clear_values[1].depthStencil = {1.0f, 0};
 
-        const core& vk = this->vulkan_core;
+        core const& vk = this->vulkan_core;
 
         if (vk.use_dynamic_rendering) {
             // Dynamic rendering (Vulkan 1.3): attachments are described inline, no render pass
@@ -453,7 +453,7 @@ namespace vulkan {
         //    wait it BEFORE acquiring so the previous submission on this slot (and its semaphore
         //    wait operation) has fully completed — acquiring first would reuse a semaphore that
         //    may still have pending operations (VUID-vkAcquireNextImageKHR-semaphore-01779)
-        const uint32_t frame_slot = static_cast<uint32_t>(vk.current_frame);
+        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
         vkWaitForFences(vk.device, 1, &vk.in_flight_fences[frame_slot], VK_TRUE, UINT64_MAX);
 
         // 4. Acquire the next swapchain image; on out-of-date (e.g. the window was resized)
@@ -461,7 +461,7 @@ namespace vulkan {
         //    only reset after a successful acquire, so this path never leaves a reset-but-
         //    unsubmitted fence behind (which would deadlock the next frame's wait)
         uint32_t image_index = 0;
-        const VkResult acquire_result = vkAcquireNextImageKHR(vk.device,
+        VkResult const acquire_result = vkAcquireNextImageKHR(vk.device,
                                                               vk.swap_chain,
                                                               UINT64_MAX,
                                                               vk.image_available_semaphores[frame_slot],
@@ -480,14 +480,14 @@ namespace vulkan {
         // 5. Update the shared camera UBO once: every model references these buffers through the
         //    scene set, so one memcpy (+ one update-after-bind descriptor write) replaces the old
         //    per-model per-frame UBO updates
-        const float aspect = static_cast<float>(vk.swap_chain_extent.width) / static_cast<float>(vk.swap_chain_extent.height);
-        const camera_ubo ubo = make_orbit_camera_ubo(this->camera.yaw, this->camera.pitch, this->camera.distance, aspect);
+        float const aspect = static_cast<float>(vk.swap_chain_extent.width) / static_cast<float>(vk.swap_chain_extent.height);
+        camera_ubo const ubo = make_orbit_camera_ubo(this->camera.yaw, this->camera.pitch, this->camera.distance, aspect);
         if (this->camera_mapped[frame_slot] != nullptr) {
             std::memcpy(this->camera_mapped[frame_slot], &ubo, sizeof(ubo));
         }
         if (this->scene_set.get() != VK_NULL_HANDLE) {
-            const auto* ubo_detail = vk.vma.get_buffer_detail(this->camera_buffer_handles[frame_slot]);
-            const VkDescriptorBufferInfo camera_info{ubo_detail->buffer, 0, sizeof(camera_ubo)};
+            auto const* ubo_detail = vk.vma.get_buffer_detail(this->camera_buffer_handles[frame_slot]);
+            VkDescriptorBufferInfo const camera_info{ubo_detail->buffer, 0, sizeof(camera_ubo)};
             VkWriteDescriptorSet camera_write = {};
             camera_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             camera_write.dstSet = *this->scene_set;
@@ -511,7 +511,7 @@ namespace vulkan {
         if (vk.use_dynamic_rendering) {
             std::array<VkImageMemoryBarrier2, 3> attachment_barriers = {};
             uint32_t barrier_count = 0;
-            const auto add_render_barrier = [&attachment_barriers, &barrier_count](const VkImage image, const VkImageAspectFlags aspect, const VkImageLayout new_layout, const VkPipelineStageFlags2 dst_stage, const VkAccessFlags2 dst_access) {
+            auto const add_render_barrier = [&attachment_barriers, &barrier_count](VkImage const image, VkImageAspectFlags const aspect, VkImageLayout const new_layout, VkPipelineStageFlags2 const dst_stage, VkAccessFlags2 const dst_access) {
                 VkImageMemoryBarrier2& barrier = attachment_barriers[barrier_count++];
                 barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
                 barrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
@@ -554,7 +554,7 @@ namespace vulkan {
         // Bind the single scene descriptor set once: every pipeline shares the scene layout, so
         // the set stays valid across pipeline binds and only models vary per draw
         if (this->scene_set.get() != VK_NULL_HANDLE) {
-            const VkDescriptorSet scene_set_handle = *this->scene_set;
+            VkDescriptorSet const scene_set_handle = *this->scene_set;
             vkCmdBindDescriptorSets(*command_buffer,
                                     VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     vk.scene_pipeline_layout,
@@ -568,7 +568,7 @@ namespace vulkan {
         // Pipelines cache a fullscreen viewport/scissor at creation; after a resize the swapchain
         // extent changed, so resync them from the current extent before drawing (begin_pipeline
         // applies the stored values)
-        const VkViewport full_viewport = {
+        VkViewport const full_viewport = {
             0.0f,
             0.0f,
             static_cast<float>(vk.swap_chain_extent.width),
@@ -576,19 +576,19 @@ namespace vulkan {
             0.0f,
             1.0f,
         };
-        const VkRect2D full_scissor = {{0, 0}, vk.swap_chain_extent};
+        VkRect2D const full_scissor = {{0, 0}, vk.swap_chain_extent};
         for (auto& pipeline : this->pipelines | std::views::values) {
             pipeline.viewport = full_viewport;
             pipeline.scissor = full_scissor;
         }
 
-        for (const auto& [pipeline_name, pipeline] : this->pipelines) {
-            const auto models_it = this->models.find(pipeline_name);
+        for (auto const& [pipeline_name, pipeline] : this->pipelines) {
+            auto const models_it = this->models.find(pipeline_name);
             if (models_it == this->models.end() || models_it->second.empty()) {
                 continue; // pipeline without models: nothing to draw
             }
             pipeline.begin_pipeline(*command_buffer);
-            for (const auto& model : models_it->second) {
+            for (auto const& model : models_it->second) {
                 model.draw(*command_buffer);
             }
         }
@@ -627,7 +627,7 @@ namespace vulkan {
         if (vk.submit(*command_buffer, image_index) != VK_SUCCESS) {
             return frame_result::failed;
         }
-        const VkResult present_result = vk.present(image_index);
+        VkResult const present_result = vk.present(image_index);
         if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
             utility::log("present out of date, recreating swapchain");
             vk.recreate_swap_chain();
@@ -638,7 +638,7 @@ namespace vulkan {
         return frame_result::render_success;
     }
 
-    std::expected<void, std::string> runtime::make_pipeline(std::string_view pipeline_name, std::span<const unsigned char> vertex_shader_code, std::span<const unsigned char> fragment_shader_code) {
+    std::expected<void, std::string> runtime::make_pipeline(std::string_view pipeline_name, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code) {
         using fail = std::unexpected<std::string>;
         auto make_result = this->vulkan_core.make_pipeline(vertex_shader_code, fragment_shader_code);
         if (!make_result) {
@@ -647,13 +647,13 @@ namespace vulkan {
         this->pipelines.emplace(pipeline_name, std::move(make_result).value());
         return {};
     }
-    const vk_pipeline* runtime::get_pipeline(const std::string_view pipeline_name) const noexcept {
-        const auto it = this->pipelines.find(pipeline_name);
+    vk_pipeline const* runtime::get_pipeline(std::string_view const pipeline_name) const noexcept {
+        auto const it = this->pipelines.find(pipeline_name);
         return it == this->pipelines.end() ? nullptr : &it->second;
     }
 
-    model* runtime::make_model(const std::string_view pipeline_name, const model_create_info& info) {
-        const vk_pipeline* pipeline = this->get_pipeline(pipeline_name);
+    model* runtime::make_model(std::string_view const pipeline_name, model_create_info const& info) {
+        vk_pipeline const* pipeline = this->get_pipeline(pipeline_name);
         if (pipeline == nullptr) {
             return nullptr;
         }
@@ -696,13 +696,13 @@ namespace vulkan {
         return &pipeline_models.back();
     }
 
-    const std::vector<model>* runtime::get_models(const std::string_view pipeline_name) const noexcept {
-        const auto it = this->models.find(pipeline_name);
+    std::vector<model> const* runtime::get_models(std::string_view const pipeline_name) const noexcept {
+        auto const it = this->models.find(pipeline_name);
         return it == this->models.end() ? nullptr : &it->second;
     }
 
-    void runtime::clear_models(const std::string_view pipeline_name) {
-        const auto it = this->models.find(pipeline_name);
+    void runtime::clear_models(std::string_view const pipeline_name) {
+        auto const it = this->models.find(pipeline_name);
         if (it != this->models.end()) {
             for (auto& model : it->second) {
                 model.destroy(this->vulkan_core.vma);

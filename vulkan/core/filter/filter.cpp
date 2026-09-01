@@ -34,19 +34,19 @@ namespace vulkan {
         return this->vk_core->make_command_buffer();
     }
 
-    vk_descriptor_set core_filter::make_descriptor_set(const VkDescriptorSetLayout layout) const {
+    vk_descriptor_set core_filter::make_descriptor_set(VkDescriptorSetLayout const layout) const {
         return this->vk_core->make_descriptor_set(layout);
     }
 
-    std::optional<vk_shader_module> core_filter::make_shader_module(const std::span<unsigned char> shader) const noexcept {
+    std::optional<vk_shader_module> core_filter::make_shader_module(std::span<unsigned char> const shader) const noexcept {
         return this->vk_core->make_shader_module(shader);
     }
 
-    vk_image_view core_filter::make_image_view(const VkImage image, const VkFormat format, const VkImageViewType type) const {
+    vk_image_view core_filter::make_image_view(VkImage const image, VkFormat const format, VkImageViewType const type) const {
         return this->vk_core->make_image_view(image, format, type);
     }
 
-    vk_sampler core_filter::make_sampler(const VkSamplerAddressMode address_mode, const float max_lod) const {
+    vk_sampler core_filter::make_sampler(VkSamplerAddressMode const address_mode, float const max_lod) const {
         return this->vk_core->make_sampler(address_mode, max_lod);
     }
 

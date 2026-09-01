@@ -39,7 +39,7 @@ namespace vulkan {
         VkRenderPass render_pass,
         VkFormat color_format,
         VkFormat depth_format,
-        std::span<const unsigned char> vertex_shader_code,
-        std::span<const unsigned char> fragment_shader_code,
+        std::span<unsigned char const> vertex_shader_code,
+        std::span<unsigned char const> fragment_shader_code,
         VkSampleCountFlagBits msaa_level);
 } // namespace vulkan

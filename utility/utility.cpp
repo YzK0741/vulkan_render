@@ -7,7 +7,7 @@ module utility;
 std::optional<uint64_t> utility::enable_handle_distribute::distribute() noexcept {
     std::lock_guard guard(this->access_mutex);
     if (!this->recycled_handles.empty()) {
-        const auto it = recycled_handles.begin();
+        auto const it = recycled_handles.begin();
         uint64_t handle = *it;
         recycled_handles.erase(it);
         return handle;
@@ -18,7 +18,7 @@ std::optional<uint64_t> utility::enable_handle_distribute::distribute() noexcept
     return std::nullopt;
 }
 
-void utility::enable_handle_distribute::recycle(const uint64_t handle) noexcept {
+void utility::enable_handle_distribute::recycle(uint64_t const handle) noexcept {
     std::lock_guard guard(this->access_mutex);
     if (handle < this->handle_upper_bound && !this->recycled_handles.contains(handle)) {
         this->recycled_handles.insert(handle);
@@ -84,18 +84,18 @@ void utility::at_panic(std::function<void()> const& task) {
 }
 
 std::chrono::milliseconds utility::time_test(std::function<void()> const& test) noexcept {
-    const auto start = std::chrono::steady_clock::now();
+    auto const start = std::chrono::steady_clock::now();
 
     test();
 
-    const auto end = std::chrono::steady_clock::now();
+    auto const end = std::chrono::steady_clock::now();
 
     return std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 }
 
-std::optional<std::vector<unsigned char>> utility::read_binary_to_vector(const std::filesystem::path& path) {
+std::optional<std::vector<unsigned char>> utility::read_binary_to_vector(std::filesystem::path const& path) {
     std::error_code error;
-    const uintmax_t file_size = std::filesystem::file_size(path, error);
+    uintmax_t const file_size = std::filesystem::file_size(path, error);
     if (error) {
         return std::nullopt;
     }
@@ -113,9 +113,9 @@ std::optional<std::vector<unsigned char>> utility::read_binary_to_vector(const s
     return data;
 }
 
-std::optional<std::string> utility::read_binary_to_string(const std::filesystem::path& path) {
+std::optional<std::string> utility::read_binary_to_string(std::filesystem::path const& path) {
     std::error_code error;
-    const uintmax_t file_size = std::filesystem::file_size(path, error);
+    uintmax_t const file_size = std::filesystem::file_size(path, error);
     if (error) {
         return std::nullopt;
     }
@@ -152,7 +152,7 @@ namespace {
         }
         current_log.seekg(0, std::ios::beg);
 
-        const std::string content((std::istreambuf_iterator<char>(current_log)), std::istreambuf_iterator<char>());
+        std::string const content((std::istreambuf_iterator<char>(current_log)), std::istreambuf_iterator<char>());
         current_log.close();
 
         std::ofstream old_log("debug.log.old", std::ios::out | std::ios::app);
@@ -275,7 +275,7 @@ void utility::error_message(std::string message) {
 #endif
 }
 
-std::optional<utility::md5_digest> utility::md5(const std::span<const unsigned char> data_view) {
+std::optional<utility::md5_digest> utility::md5(std::span<unsigned char const> const data_view) {
     md5_digest digest = {};
     unsigned int size_byte = sizeof(md5_digest);
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
@@ -293,7 +293,7 @@ std::optional<utility::md5_digest> utility::md5(const std::span<const unsigned c
         return std::nullopt;
     }
 
-    if (const int code = EVP_DigestFinal_ex(ctx, digest.data.data(), &size_byte); code == 1) {
+    if (int const code = EVP_DigestFinal_ex(ctx, digest.data.data(), &size_byte); code == 1) {
         EVP_MD_CTX_destroy(ctx);
         return digest;
     }
@@ -301,7 +301,7 @@ std::optional<utility::md5_digest> utility::md5(const std::span<const unsigned c
     return std::nullopt;
 }
 
-std::optional<utility::sha256_digest> utility::sha256(const std::span<const unsigned char> data_view) {
+std::optional<utility::sha256_digest> utility::sha256(std::span<unsigned char const> const data_view) {
     sha256_digest digest = {};
     unsigned int size_byte = sizeof(sha256_digest);
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
@@ -319,7 +319,7 @@ std::optional<utility::sha256_digest> utility::sha256(const std::span<const unsi
         return std::nullopt;
     }
 
-    if (const int code = EVP_DigestFinal_ex(ctx, digest.data.data(), &size_byte); code == 1) {
+    if (int const code = EVP_DigestFinal_ex(ctx, digest.data.data(), &size_byte); code == 1) {
         EVP_MD_CTX_destroy(ctx);
         return digest;
     }
@@ -327,7 +327,7 @@ std::optional<utility::sha256_digest> utility::sha256(const std::span<const unsi
     return std::nullopt;
 }
 
-std::optional<utility::blake2_digest> utility::blake2(std::span<const unsigned char> data_view) {
+std::optional<utility::blake2_digest> utility::blake2(std::span<unsigned char const> data_view) {
     blake2_digest digest = {};
 
     unsigned int size_byte = blake2_digest::size_byte;
@@ -347,7 +347,7 @@ std::optional<utility::blake2_digest> utility::blake2(std::span<const unsigned c
         return std::nullopt;
     }
 
-    if (const int code = EVP_DigestFinal_ex(ctx, digest.data.data(), &size_byte); code == 1) {
+    if (int const code = EVP_DigestFinal_ex(ctx, digest.data.data(), &size_byte); code == 1) {
         EVP_MD_CTX_destroy(ctx);
         return digest;
     }

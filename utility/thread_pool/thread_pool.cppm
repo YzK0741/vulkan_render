@@ -46,7 +46,7 @@ namespace utility {
         struct task {
             int priority = 0;
             std::function<void()> action;
-            bool operator<(const task& other) const noexcept;
+            bool operator<(task const& other) const noexcept;
         };
 
         std::vector<std::jthread> threads;
@@ -57,7 +57,7 @@ namespace utility {
         std::atomic_int active_thread = 0;
         shutdown_policy policy = shutdown_policy::wait;
 
-        void worker_loop(const std::stop_token& token);
+        void worker_loop(std::stop_token const& token);
 
     public:
         /**

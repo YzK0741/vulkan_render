@@ -109,7 +109,7 @@ namespace vulkan {
         void init_scene_resources();                               // camera UBO buffers + white fallback texture + texture sampler + material table
         void ensure_scene_set();                                   // lazily create the scene set and write camera + IBL + material bindings
         void write_ibl_bindings() const;                           // (re)write bindings 2-4 with the current IBL views / placeholders
-        uint32_t register_material(const model_create_info& info); // upload textures into the array, append a material_record, return its index
+        uint32_t register_material(model_create_info const& info); // upload textures into the array, append a material_record, return its index
 
     public:
         // A non-const runtime exposes a mutable filter (e.g. runtime->get_vma()); a const runtime
@@ -117,7 +117,7 @@ namespace vulkan {
         core_filter* operator->() noexcept {
             return &this->filtered_core;
         }
-        const core_filter* operator->() const noexcept {
+        core_filter const* operator->() const noexcept {
             return &this->filtered_core;
         }
 
@@ -154,8 +154,8 @@ namespace vulkan {
 
         std::expected<void, std::string> make_pipeline(
             std::string_view pipeline_name,
-            std::span<const unsigned char> vertex_shader_code,
-            std::span<const unsigned char> fragment_shader_code);
+            std::span<unsigned char const> vertex_shader_code,
+            std::span<unsigned char const> fragment_shader_code);
 
         /**
          * @ingroup vulkan_runtime
@@ -163,7 +163,7 @@ namespace vulkan {
          * @param pipeline_name the name passed to make_pipeline()
          * @return pointer to the cached pipeline, or nullptr if no pipeline with that name exists
          */
-        [[nodiscard]] const vk_pipeline* get_pipeline(std::string_view pipeline_name) const noexcept;
+        [[nodiscard]] vk_pipeline const* get_pipeline(std::string_view pipeline_name) const noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -173,7 +173,7 @@ namespace vulkan {
          * @note the images are uploaded once and shared by every model (they used to be
          *       duplicated per model)
          */
-        void set_ibl(const ibl_input& info);
+        void set_ibl(ibl_input const& info);
 
         /**
          * @ingroup vulkan_runtime
@@ -187,7 +187,7 @@ namespace vulkan {
          * @warning appending another model to the same pipeline may reallocate its vector and
          *          invalidate previously returned pointers; use get_models() for index-based access
          */
-        model* make_model(std::string_view pipeline_name, const model_create_info& info);
+        model* make_model(std::string_view pipeline_name, model_create_info const& info);
 
         /**
          * @ingroup vulkan_runtime
@@ -195,7 +195,7 @@ namespace vulkan {
          * @param pipeline_name the pipeline name passed to make_model()
          * @return pointer to the model vector, or nullptr if no model uses that pipeline
          */
-        [[nodiscard]] const std::vector<model>* get_models(std::string_view pipeline_name) const noexcept;
+        [[nodiscard]] std::vector<model> const* get_models(std::string_view pipeline_name) const noexcept;
 
         /**
          * @ingroup vulkan_runtime

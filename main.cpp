@@ -1,4 +1,4 @@
-#include <GLFW/glfw3.h>
+﻿#include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <vulkan/vulkan.h>
@@ -19,9 +19,9 @@ namespace {
     };
 
     // Read a single shader SPIR-V file and print info; panic on failure
-    void load_shader(const std::filesystem::path& dir, std::string_view file_name, std::vector<unsigned char>& out) {
-        const std::filesystem::path path = dir / file_name;
-        const std::optional<std::vector<unsigned char>> data = utility::read_binary_to_vector(path);
+    void load_shader(std::filesystem::path const& dir, std::string_view file_name, std::vector<unsigned char>& out) {
+        std::filesystem::path const path = dir / file_name;
+        std::optional<std::vector<unsigned char>> const data = utility::read_binary_to_vector(path);
         if (!data) {
             utility::panic(std::source_location::current(), "cannot open shader file '{}'", path.string());
         }
@@ -38,7 +38,7 @@ namespace {
             if (std::filesystem::is_directory(candidate)) {
                 return candidate;
             }
-            const std::filesystem::path parent = current.parent_path();
+            std::filesystem::path const parent = current.parent_path();
             if (parent == current) {
                 break;
             }
@@ -55,7 +55,7 @@ namespace {
             if (std::filesystem::is_regular_file(candidate)) {
                 return candidate;
             }
-            const std::filesystem::path parent = current.parent_path();
+            std::filesystem::path const parent = current.parent_path();
             if (parent == current) {
                 break;
             }
@@ -66,7 +66,7 @@ namespace {
 
     // Load a vertex/fragment SPIR-V pair and create the pipeline via runtime; panic on failure
     void load_and_create_pipeline(vulkan::runtime& runtime,
-                                  const std::filesystem::path& shaders_dir,
+                                  std::filesystem::path const& shaders_dir,
                                   std::string_view pipeline_name,
                                   std::string_view vertex_file,
                                   std::string_view fragment_file) {
@@ -75,7 +75,7 @@ namespace {
         load_shader(shaders_dir, vertex_file, vertex_code);
         load_shader(shaders_dir, fragment_file, fragment_code);
 
-        const std::expected<void, std::string> result = runtime.make_pipeline(pipeline_name, vertex_code, fragment_code);
+        std::expected<void, std::string> const result = runtime.make_pipeline(pipeline_name, vertex_code, fragment_code);
         if (!result) {
             utility::panic(std::source_location::current(), "failed to create pipeline '{}': {}", pipeline_name, result.error());
         }
@@ -83,8 +83,8 @@ namespace {
     }
 
     // Convert stb-decoded texture data to RGBA (3 channels get alpha, 1 channel is gray-scaled)
-    std::vector<unsigned char> to_rgba(const gltf::texture_data& texture) {
-        const size_t pixel_count = static_cast<size_t>(texture.width) * texture.height;
+    std::vector<unsigned char> to_rgba(gltf::texture_data const& texture) {
+        size_t const pixel_count = static_cast<size_t>(texture.width) * texture.height;
         std::vector<unsigned char> rgba(pixel_count * 4, 255);
         switch (texture.component) {
         case 4:
@@ -115,7 +115,7 @@ namespace {
 
 int main(int argc, char** argv) {
     // 1. Locate the shaders directory (holds GLSL sources and compiled SPIR-V)
-    const std::optional<std::filesystem::path> shaders_dir = locate_shaders_dir();
+    std::optional<std::filesystem::path> const shaders_dir = locate_shaders_dir();
     if (!shaders_dir) {
         utility::panic("cannot find shaders/ directory. run the program from the project root or a cmake-build-* directory.");
     }
@@ -131,7 +131,7 @@ int main(int argc, char** argv) {
     std::string model_path;
     if (argc > 1) {
         model_path = argv[1];
-    } else if (const std::optional<std::filesystem::path> located = locate_model_file()) {
+    } else if (std::optional<std::filesystem::path> const located = locate_model_file()) {
         model_path = located->string();
     } else {
         utility::panic("cannot find gltf_model/DamagedHelmet.gltf. run the program from the project root or pass a model path as argv[1]");
@@ -145,25 +145,25 @@ int main(int argc, char** argv) {
         scenes->scene[0].nodes[0].meshes.empty() || scenes->scene[0].nodes[0].meshes[0].primitives.empty()) {
         utility::panic(std::source_location::current(), "model '{}' has no drawable primitive", model_path);
     }
-    const auto& prim = scenes->scene[0].nodes[0].meshes[0].primitives[0];
+    auto const& prim = scenes->scene[0].nodes[0].meshes[0].primitives[0];
     utility::log("model loaded: {} textures, {} primitives", scenes->textures.size(), scenes->scene[0].nodes[0].meshes[0].primitives.size());
 
     // 5. Fetch vertex attributes (separate storage), defaulting missing ones
-    const auto get_portion = [&prim](const std::string_view name) -> const gltf::vertex_portion* {
-        const auto it = prim.vertex.find(std::string(name));
+    auto const get_portion = [&prim](std::string_view const name) -> gltf::vertex_portion const* {
+        auto const it = prim.vertex.find(std::string(name));
         return it == prim.vertex.end() ? nullptr : &it->second;
     };
-    const auto* position_portion = get_portion("POSITION");
-    const auto* normal_portion = get_portion("NORMAL");
-    const auto* uv_portion = get_portion("TEXCOORD_0");
-    const auto* tangent_portion = get_portion("TANGENT");
+    auto const* position_portion = get_portion("POSITION");
+    auto const* normal_portion = get_portion("NORMAL");
+    auto const* uv_portion = get_portion("TEXCOORD_0");
+    auto const* tangent_portion = get_portion("TANGENT");
     if (position_portion == nullptr) {
         utility::panic("model has no POSITION attribute");
     }
 
     constexpr glm::vec3 default_normal(0.0f, 1.0f, 0.0f);
     constexpr glm::vec2 default_uv(0.0f, 0.0f);
-    const size_t vertex_count = position_portion->data.size() / sizeof(glm::vec3);
+    size_t const vertex_count = position_portion->data.size() / sizeof(glm::vec3);
 
     std::vector<glm::vec3> positions;
     std::vector<glm::vec3> normals;
@@ -172,9 +172,9 @@ int main(int argc, char** argv) {
     normals.reserve(vertex_count);
     uvs.reserve(vertex_count);
     for (size_t i = 0; i < vertex_count; ++i) {
-        const auto* p = reinterpret_cast<const glm::vec3*>(position_portion->data.data()) + i;
-        const auto* n = normal_portion == nullptr ? &default_normal : reinterpret_cast<const glm::vec3*>(normal_portion->data.data()) + i;
-        const auto* uv = uv_portion == nullptr ? &default_uv : reinterpret_cast<const glm::vec2*>(uv_portion->data.data()) + i;
+        auto const* p = reinterpret_cast<glm::vec3 const*>(position_portion->data.data()) + i;
+        auto const* n = normal_portion == nullptr ? &default_normal : reinterpret_cast<glm::vec3 const*>(normal_portion->data.data()) + i;
+        auto const* uv = uv_portion == nullptr ? &default_uv : reinterpret_cast<glm::vec2 const*>(uv_portion->data.data()) + i;
         positions.push_back(*p);
         normals.push_back(*n);
         uvs.push_back(*uv);
@@ -190,12 +190,12 @@ int main(int argc, char** argv) {
     } else if (prim.index_component_type != gltf::component_type::unsigned_short_t) {
         utility::panic(std::source_location::current(), "unsupported index component type: {}", static_cast<int>(prim.index_component_type));
     }
-    const uint32_t index_count = static_cast<uint32_t>(prim.index.size() / (index_type == VK_INDEX_TYPE_UINT32 ? 4 : 2));
-    const auto read_index = [&prim, index_type](const size_t i) -> uint32_t {
+    uint32_t const index_count = static_cast<uint32_t>(prim.index.size() / (index_type == VK_INDEX_TYPE_UINT32 ? 4 : 2));
+    auto const read_index = [&prim, index_type](size_t const i) -> uint32_t {
         if (index_type == VK_INDEX_TYPE_UINT32) {
-            return reinterpret_cast<const uint32_t*>(prim.index.data())[i];
+            return reinterpret_cast<uint32_t const*>(prim.index.data())[i];
         }
-        return reinterpret_cast<const uint16_t*>(prim.index.data())[i];
+        return reinterpret_cast<uint16_t const*>(prim.index.data())[i];
     };
 
     // 7. Tangents: use the model's TANGENT if present, otherwise compute per-triangle from position/uv
@@ -203,31 +203,31 @@ int main(int argc, char** argv) {
     std::vector<glm::vec3> tangents(vertex_count, glm::vec3(1.0f, 0.0f, 0.0f));
     if (tangent_portion != nullptr) {
         for (size_t i = 0; i < vertex_count; ++i) {
-            const auto* t = reinterpret_cast<const glm::vec4*>(tangent_portion->data.data()) + i;
+            auto const* t = reinterpret_cast<glm::vec4 const*>(tangent_portion->data.data()) + i;
             tangents[i] = glm::vec3(t->x, t->y, t->z);
         }
     } else {
         std::vector<glm::vec3> tangent_accumulator(vertex_count, glm::vec3(0.0f));
         for (uint32_t i = 0; i + 2 < index_count; i += 3) {
-            const uint32_t i0 = read_index(i);
-            const uint32_t i1 = read_index(i + 1);
-            const uint32_t i2 = read_index(i + 2);
-            const glm::vec3 e1 = positions[i1] - positions[i0];
-            const glm::vec3 e2 = positions[i2] - positions[i0];
-            const glm::vec2 duv1 = uvs[i1] - uvs[i0];
-            const glm::vec2 duv2 = uvs[i2] - uvs[i0];
-            const float denom = duv1.x * duv2.y - duv2.x * duv1.y;
+            uint32_t const i0 = read_index(i);
+            uint32_t const i1 = read_index(i + 1);
+            uint32_t const i2 = read_index(i + 2);
+            glm::vec3 const e1 = positions[i1] - positions[i0];
+            glm::vec3 const e2 = positions[i2] - positions[i0];
+            glm::vec2 const duv1 = uvs[i1] - uvs[i0];
+            glm::vec2 const duv2 = uvs[i2] - uvs[i0];
+            float const denom = duv1.x * duv2.y - duv2.x * duv1.y;
             if (std::abs(denom) < 1e-8f) {
                 continue; // degenerate UV triangle
             }
-            const float f = 1.0f / denom;
-            const glm::vec3 tangent = f * duv2.y * e1 - f * duv1.y * e2;
+            float const f = 1.0f / denom;
+            glm::vec3 const tangent = f * duv2.y * e1 - f * duv1.y * e2;
             tangent_accumulator[i0] += tangent;
             tangent_accumulator[i1] += tangent;
             tangent_accumulator[i2] += tangent;
         }
         for (size_t i = 0; i < vertex_count; ++i) {
-            const glm::vec3 t = tangent_accumulator[i] - normals[i] * glm::dot(normals[i], tangent_accumulator[i]);
+            glm::vec3 const t = tangent_accumulator[i] - normals[i] * glm::dot(normals[i], tangent_accumulator[i]);
             tangents[i] = glm::length(t) > 1e-8f ? glm::normalize(t) : glm::vec3(1.0f, 0.0f, 0.0f);
         }
         utility::log("TANGENT not in model, computed from position/uv");
@@ -243,18 +243,18 @@ int main(int argc, char** argv) {
     // 9. Fit the camera from the bounding box
     auto b_min = glm::vec3(std::numeric_limits<float>::infinity());
     auto b_max = glm::vec3(-std::numeric_limits<float>::infinity());
-    for (const auto& v : vertices) {
+    for (auto const& v : vertices) {
         b_min = glm::min(b_min, v.position);
         b_max = glm::max(b_max, v.position);
     }
-    const glm::vec3 center = b_min * 0.5f + b_max * 0.5f;
-    const glm::vec3 extent = b_max - b_min;
-    const float max_extent = glm::max(extent.x, glm::max(extent.y, extent.z));
-    const float fit_scale = max_extent > 0.0f ? 1.6f / max_extent : 1.0f;
+    glm::vec3 const center = b_min * 0.5f + b_max * 0.5f;
+    glm::vec3 const extent = b_max - b_min;
+    float const max_extent = glm::max(extent.x, glm::max(extent.y, extent.z));
+    float const fit_scale = max_extent > 0.0f ? 1.6f / max_extent : 1.0f;
     utility::log("mesh: {} vertices, {} indices, center ({:.3f}, {:.3f}, {:.3f}), extent {:.3f}", vertices.size(), index_count, center.x, center.y, center.z, max_extent);
 
     // 12. Material textures: decode glTF textures to RGBA and hand them to the model (missing -> white fallback)
-    const auto& texture_indices = prim.texture_indices;
+    auto const& texture_indices = prim.texture_indices;
     constexpr std::array<std::pair<std::string_view, VkFormat>, 5> texture_slots = {
         std::pair{"albedo", VK_FORMAT_R8G8B8A8_SRGB},
         std::pair{"metallic_roughness", VK_FORMAT_R8G8B8A8_UNORM},
@@ -265,9 +265,9 @@ int main(int argc, char** argv) {
     std::array<std::vector<unsigned char>, 5> texture_rgba;
     std::array<vulkan::texture_input, 5> texture_inputs;
     for (int i = 0; i < 5; ++i) {
-        const auto it = texture_indices.find(std::string(texture_slots[i].first));
+        auto const it = texture_indices.find(std::string(texture_slots[i].first));
         if (it != texture_indices.end() && it->second < scenes->textures.size()) {
-            const gltf::texture_data& source = scenes->textures[it->second];
+            gltf::texture_data const& source = scenes->textures[it->second];
             texture_rgba[i] = to_rgba(source);
             if (!texture_rgba[i].empty()) {
                 texture_inputs[i].data = texture_rgba[i];
@@ -283,35 +283,35 @@ int main(int argc, char** argv) {
     constexpr int env_size = 128;
     constexpr int env_mip_count = 5;
     utility::log("generating IBL environment (CPU)...");
-    const auto ibl_start = std::chrono::steady_clock::now();
-    const std::vector<float> env = vulkan::generate_environment_cubemap(env_size);
-    const auto env_done = std::chrono::steady_clock::now();
+    auto const ibl_start = std::chrono::steady_clock::now();
+    std::vector<float> const env = vulkan::generate_environment_cubemap(env_size);
+    auto const env_done = std::chrono::steady_clock::now();
     utility::log("  environment cubemap: {:.1f} ms", std::chrono::duration<double, std::milli>(env_done - ibl_start).count());
-    const std::vector<float> prefiltered = vulkan::prefilter_environment(env, env_size, env_mip_count);
-    const auto prefilter_done = std::chrono::steady_clock::now();
+    std::vector<float> const prefiltered = vulkan::prefilter_environment(env, env_size, env_mip_count);
+    auto const prefilter_done = std::chrono::steady_clock::now();
     utility::log("  prefilter (GGX importance sampling): {:.1f} ms", std::chrono::duration<double, std::milli>(prefilter_done - env_done).count());
-    const std::vector<float> irradiance = vulkan::generate_irradiance_map(env, env_size, 32);
-    const auto irradiance_done = std::chrono::steady_clock::now();
+    std::vector<float> const irradiance = vulkan::generate_irradiance_map(env, env_size, 32);
+    auto const irradiance_done = std::chrono::steady_clock::now();
     utility::log("  irradiance map: {:.1f} ms", std::chrono::duration<double, std::milli>(irradiance_done - prefilter_done).count());
-    const std::vector<float> brdf_lut = vulkan::generate_brdf_lut(256);
-    const auto lut_done = std::chrono::steady_clock::now();
+    std::vector<float> const brdf_lut = vulkan::generate_brdf_lut(256);
+    auto const lut_done = std::chrono::steady_clock::now();
     utility::log("  BRDF LUT: {:.1f} ms", std::chrono::duration<double, std::milli>(lut_done - irradiance_done).count());
     utility::log("  IBL total: {:.1f} ms", std::chrono::duration<double, std::milli>(lut_done - ibl_start).count());
 
-    const std::vector<unsigned char> env_bytes = vulkan::to_half_rgba(prefiltered);
-    const std::vector<unsigned char> irr_bytes = vulkan::to_half_rgba(irradiance);
-    const std::vector<unsigned char> lut_bytes = vulkan::to_half_rg(brdf_lut);
+    std::vector<unsigned char> const env_bytes = vulkan::to_half_rgba(prefiltered);
+    std::vector<unsigned char> const irr_bytes = vulkan::to_half_rgba(irradiance);
+    std::vector<unsigned char> const lut_bytes = vulkan::to_half_rg(brdf_lut);
 
     // 12.2 Upload the scene-wide IBL once: shared by every model (bindings 2-4 of the scene set)
     runtime.set_ibl(vulkan::ibl_input{.prefiltered_env = env_bytes, .irradiance = irr_bytes, .brdf_lut = lut_bytes, .env_size = env_size, .env_mip_count = env_mip_count, .irr_size = 32, .lut_size = 256});
 
     // 13. Build the model: geometry + material textures; IBL and the camera UBO are scene-wide
     //     and owned by the runtime, the model only registers its textures into the shared array
-    vulkan::model_create_info model_info{};
-    model_info.vertex_data = std::span(reinterpret_cast<const unsigned char*>(vertices.data()), vertices.size() * sizeof(vertex));
+    vulkan::model_create_info model_info = {};
+    model_info.vertex_data = std::span(reinterpret_cast<unsigned char const*>(vertices.data()), vertices.size() * sizeof(vertex));
     model_info.vertex_stride = sizeof(vertex);
     model_info.vertex_count = static_cast<uint32_t>(vertices.size());
-    model_info.index_data = std::span<const unsigned char>(prim.index);
+    model_info.index_data = std::span<unsigned char const>(prim.index);
     model_info.index_type = index_type;
     model_info.index_count = index_count;
     model_info.albedo = texture_inputs[0];
@@ -342,7 +342,7 @@ int main(int argc, char** argv) {
     // recreation on restore/resize) live inside runtime::render_frame(); main only reacts to
     // the returned frame_result.
     while (true) {
-        const vulkan::frame_result result = runtime.render_frame();
+        vulkan::frame_result const result = runtime.render_frame();
         if (result == vulkan::frame_result::closed || result == vulkan::frame_result::failed) {
             break;
         }
@@ -355,12 +355,12 @@ int main(int argc, char** argv) {
         }
 
         // render_success: frame time = wall time since the previous rendered frame
-        const auto now = std::chrono::steady_clock::now();
+        auto const now = std::chrono::steady_clock::now();
         fps_elapsed += std::chrono::duration<double>(now - last_frame_time).count();
         last_frame_time = now;
         ++fps_frame_count;
         if (fps_elapsed >= 1.0) {
-            const double fps = fps_frame_count / fps_elapsed;
+            double const fps = fps_frame_count / fps_elapsed;
             utility::log("fps: {:.1f} ({:.2f} ms/frame)", fps, 1000.0 * fps_elapsed / fps_frame_count);
             glfwSetWindowTitle(runtime->get_window(), std::format("vulkan_render - {:.1f} fps", fps).c_str());
             fps_elapsed = 0.0;

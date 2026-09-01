@@ -31,13 +31,13 @@ namespace {
 namespace vulkan {
     std::expected<vk_pipeline, std::string_view> make_pipeline( // NOLINT(*-function-cognitive-complexity)
         VkDevice device,
-        const VkPipelineLayout pipeline_layout, // shared scene layout (fixed set 0 + push block); not owned
-        const VkRenderPass render_pass,         // NOLINT(*-misplaced-const) ; VK_NULL_HANDLE selects dynamic rendering
-        const VkFormat color_format,
-        const VkFormat depth_format,
-        const std::span<const unsigned char> vertex_shader_code,
-        const std::span<const unsigned char> fragment_shader_code,
-        const VkSampleCountFlagBits msaa_level) {
+        VkPipelineLayout const pipeline_layout, // shared scene layout (fixed set 0 + push block); not owned
+        VkRenderPass const render_pass,         // NOLINT(*-misplaced-const) ; VK_NULL_HANDLE selects dynamic rendering
+        VkFormat const color_format,
+        VkFormat const depth_format,
+        std::span<unsigned char const> const vertex_shader_code,
+        std::span<unsigned char const> const fragment_shader_code,
+        VkSampleCountFlagBits const msaa_level) {
         using fail = std::unexpected<std::string_view>;
 
         // ---- 1. Parse the vertex stage interface, filter builtins, build vertex input ----
@@ -45,12 +45,12 @@ namespace vulkan {
         if (!vertex_interface_expected) {
             return fail(vertex_interface_expected.error());
         }
-        const auto vertex_interface = std::move(vertex_interface_expected).value();
+        auto const vertex_interface = std::move(vertex_interface_expected).value();
 
         std::vector<VkVertexInputAttributeDescription> attribute_descriptions;
         attribute_descriptions.reserve(vertex_interface.inputs.size());
         uint32_t stride = 0;
-        for (const auto& variable : vertex_interface.inputs) {
+        for (auto const& variable : vertex_interface.inputs) {
             if (variable.is_builtin || variable.format == VK_FORMAT_UNDEFINED) {
                 continue;
             }

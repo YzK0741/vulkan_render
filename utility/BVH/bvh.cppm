@@ -67,9 +67,9 @@ namespace utility {
         }
 
         [[nodiscard]] float surface_area() const {
-            const float w = this->max.y - this->min.y;
-            const float h = this->max.x - this->min.x;
-            const float l = this->max.z - this->min.z;
+            float const w = this->max.y - this->min.y;
+            float const h = this->max.x - this->min.x;
+            float const l = this->max.z - this->min.z;
             return 2.0f * (w * h + w * l + h * l);
         }
 
@@ -123,9 +123,9 @@ namespace utility {
                 return midpoint;
             }
             [[nodiscard]] float surface_area() const {
-                const float w = this->max.y - this->min.y;
-                const float h = this->max.x - this->min.x;
-                const float l = this->max.z - this->min.z;
+                float const w = this->max.y - this->min.y;
+                float const h = this->max.x - this->min.x;
+                float const l = this->max.z - this->min.z;
                 return 2.0f * (w * h + w * l + l * h);
             }
         } aabb;

@@ -7,7 +7,7 @@ module;
 module vulkan.core.vma;
 
 namespace {
-    constexpr uint32_t sizeof_vk_format(const VkFormat format) {
+    constexpr uint32_t sizeof_vk_format(VkFormat const format) {
         switch (format) {
         // 8-bit single channel
         case VK_FORMAT_R8_UNORM:
@@ -185,7 +185,7 @@ namespace {
         }
     }
 
-    constexpr VmaAllocationCreateInfo get_allocation_info_from_type(const vulkan::buffer_type type) {
+    constexpr VmaAllocationCreateInfo get_allocation_info_from_type(vulkan::buffer_type const type) {
         VmaAllocationCreateInfo info = {};
         switch (type) {
         case vulkan::buffer_type::vertex:
@@ -218,7 +218,7 @@ namespace {
         return info;
     }
 
-    constexpr VkBufferCreateInfo get_create_info_from_type(const vulkan::buffer_type type) {
+    constexpr VkBufferCreateInfo get_create_info_from_type(vulkan::buffer_type const type) {
         VkBufferCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 
@@ -251,7 +251,7 @@ namespace {
         return info;
     }
 
-    constexpr VmaAllocationCreateInfo get_image_allocation_info_from_type(const vulkan::image_type type) {
+    constexpr VmaAllocationCreateInfo get_image_allocation_info_from_type(vulkan::image_type const type) {
         VmaAllocationCreateInfo info = {};
 
         switch (type) {
@@ -274,8 +274,8 @@ namespace {
     }
 
     constexpr VkImageCreateInfo get_image_create_info_from_type(
-        const vulkan::image_type type,
-        const vulkan::image_create_info& info) {
+        vulkan::image_type const type,
+        vulkan::image_create_info const& info) {
         VkImageCreateInfo image_info = {};
         image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         image_info.extent.width = info.width;
@@ -335,11 +335,11 @@ namespace {
 
 namespace vulkan {
     void vma_allocator::init(
-        const VkInstance instance,              // NOLINT(*-misplaced-const)
-        const VkDevice device,                  // NOLINT(*-misplaced-const)
-        const VkPhysicalDevice physical_device, // NOLINT(*-misplaced-const)
-        const VkQueue queue,                    // NOLINT(*-misplaced-const)
-        const uint32_t queue_family_index) {
+        VkInstance const instance,              // NOLINT(*-misplaced-const)
+        VkDevice const device,                  // NOLINT(*-misplaced-const)
+        VkPhysicalDevice const physical_device, // NOLINT(*-misplaced-const)
+        VkQueue const queue,                    // NOLINT(*-misplaced-const)
+        uint32_t const queue_family_index) {
 
         std::lock_guard guard(this->access_mutex);
         if (this->allocator != VK_NULL_HANDLE) {
@@ -404,7 +404,7 @@ namespace vulkan {
         return fence;
     }
 
-    bool vma_allocator::ensure_staging_buffer(const VkDeviceSize size, VkBuffer& buffer, VmaAllocation& allocation, VmaAllocationInfo& info) {
+    bool vma_allocator::ensure_staging_buffer(VkDeviceSize const size, VkBuffer& buffer, VmaAllocation& allocation, VmaAllocationInfo& info) {
         // Reuse if the cached capacity is sufficient
         if (this->staging_cache.buffer != VK_NULL_HANDLE && this->buffer_size >= size) {
             buffer = this->staging_cache.buffer;
@@ -430,7 +430,7 @@ namespace vulkan {
         staging_alloc_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
                                    VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 
-        const VkResult result = vmaCreateBuffer(
+        VkResult const result = vmaCreateBuffer(
             this->allocator,
             &staging_create_info,
             &staging_alloc_info,
@@ -448,9 +448,9 @@ namespace vulkan {
         return true;
     }
 
-    bool vma_allocator::direct_upload(VmaAllocation const& allocation, VmaAllocationInfo& allocation_info, const void* data, const VkDeviceSize size) const {
+    bool vma_allocator::direct_upload(VmaAllocation const& allocation, VmaAllocationInfo& allocation_info, void const* data, VkDeviceSize const size) const {
         void* mapped_data = nullptr;
-        if (const VkResult result = vmaMapMemory(this->allocator, allocation, &mapped_data); result != VK_SUCCESS) {
+        if (VkResult const result = vmaMapMemory(this->allocator, allocation, &mapped_data); result != VK_SUCCESS) {
             utility::error("Failed to map memory: {}", static_cast<int>(result));
             return false;
         }
@@ -466,7 +466,7 @@ namespace vulkan {
         return true;
     }
 
-    bool vma_allocator::staging_upload(const VkBuffer dst_buffer, const void* data, const VkDeviceSize size) { // NOLINT(*-misplaced-const)
+    bool vma_allocator::staging_upload(VkBuffer const dst_buffer, void const* data, VkDeviceSize const size) { // NOLINT(*-misplaced-const)
         VkBuffer staging_buffer = VK_NULL_HANDLE;
         VmaAllocation staging_allocation = VK_NULL_HANDLE;
         VmaAllocationInfo staging_info = {};
@@ -546,9 +546,9 @@ namespace vulkan {
         return true;
     }
 
-    bool vma_allocator::direct_image_upload(const VmaAllocation allocation, const void* data, const VkDeviceSize size) const { // NOLINT(*-misplaced-const)
+    bool vma_allocator::direct_image_upload(VmaAllocation const allocation, void const* data, VkDeviceSize const size) const { // NOLINT(*-misplaced-const)
         void* mapped_data = nullptr;
-        if (const VkResult result = vmaMapMemory(this->allocator, allocation, &mapped_data); result != VK_SUCCESS) {
+        if (VkResult const result = vmaMapMemory(this->allocator, allocation, &mapped_data); result != VK_SUCCESS) {
             utility::error("Failed to map image memory: {}", static_cast<int>(result));
             return false;
         }
@@ -565,7 +565,7 @@ namespace vulkan {
         return true;
     }
 
-    bool vma_allocator::staging_image_upload(VkImage dst_image, const void* data, VkDeviceSize size, const image_create_info& info) {
+    bool vma_allocator::staging_image_upload(VkImage dst_image, void const* data, VkDeviceSize size, image_create_info const& info) {
         VkBuffer staging_buffer = VK_NULL_HANDLE;
         VmaAllocation staging_allocation = VK_NULL_HANDLE;
         VmaAllocationInfo staging_info = {};
@@ -640,13 +640,13 @@ namespace vulkan {
         // Step 2: copy per mip.
         // Data is laid out in mip-major order (all layers of mip0 -> all layers of mip1 -> ...),
         // with layers contiguous within each mip (face0, face1, ...), located via bufferOffset.
-        const uint32_t bytes_per_pixel = sizeof_vk_format(info.format);
+        uint32_t const bytes_per_pixel = sizeof_vk_format(info.format);
         std::vector<VkBufferImageCopy> regions;
         regions.reserve(info.mip_levels);
         VkDeviceSize buffer_offset = 0;
         for (uint32_t mip = 0; mip < info.mip_levels; ++mip) {
-            const uint32_t mip_width = std::max(1u, info.width >> mip);
-            const uint32_t mip_height = std::max(1u, info.height >> mip);
+            uint32_t const mip_width = std::max(1u, info.width >> mip);
+            uint32_t const mip_height = std::max(1u, info.height >> mip);
 
             VkBufferImageCopy region = {};
             region.bufferOffset = buffer_offset;
@@ -714,16 +714,16 @@ namespace vulkan {
         return true;
     }
 
-    uint64_t vma_allocator::create_buffer(const unsigned char* data, const uint64_t size_byte, const buffer_type type) {
+    uint64_t vma_allocator::create_buffer(unsigned char const* data, uint64_t const size_byte, buffer_type const type) {
         uint64_t handle = 0;
         // distribute() locks internally (enable_handle_distribute::access_mutex); no outer lock needed
-        if (const auto result = this->distribute(); result) {
+        if (auto const result = this->distribute(); result) {
             handle = result.value();
         } else {
             return handle;
         }
 
-        const auto allocation_create_info = get_allocation_info_from_type(type);
+        auto const allocation_create_info = get_allocation_info_from_type(type);
         auto buffer_create_info = get_create_info_from_type(type);
         buffer_create_info.size = size_byte;
 
@@ -732,7 +732,7 @@ namespace vulkan {
         VmaAllocationInfo alloc_info = {};
 
         // VMA is internally thread-safe; allocation and upload need no access_mutex
-        const VkResult result = vmaCreateBuffer(
+        VkResult const result = vmaCreateBuffer(
             this->allocator,
             &buffer_create_info,
             &allocation_create_info,
@@ -776,16 +776,16 @@ namespace vulkan {
         return handle;
     }
 
-    uint64_t vma_allocator::create_image(const unsigned char* data, const uint64_t size_byte, image_create_info const& create_info, const image_type type) {
+    uint64_t vma_allocator::create_image(unsigned char const* data, uint64_t const size_byte, image_create_info const& create_info, image_type const type) {
         uint64_t handle = 0;
         // distribute() locks internally (enable_handle_distribute::access_mutex); no outer lock needed
-        if (const auto result = this->distribute(); result) {
+        if (auto const result = this->distribute(); result) {
             handle = result.value();
         } else {
             return handle;
         }
 
-        const VkDeviceSize image_size = size_byte;
+        VkDeviceSize const image_size = size_byte;
 
         // Expected size = array_layers * sum of all mip sizes * bytes per pixel
         VkDeviceSize expected_size = 0;
@@ -799,7 +799,7 @@ namespace vulkan {
             utility::log("incorrect image size [{}], expected [{}]", image_size, expected_size);
         }
 
-        const auto alloc_info = get_image_allocation_info_from_type(type);
+        auto const alloc_info = get_image_allocation_info_from_type(type);
         auto image_create_info = get_image_create_info_from_type(type, create_info);
         image_create_info.mipLevels = create_info.mip_levels;
         image_create_info.extent.width = create_info.width;
@@ -811,7 +811,7 @@ namespace vulkan {
         VkImage image = VK_NULL_HANDLE;
         VmaAllocationInfo alloc_detail = {};
 
-        const VkResult vk_result = vmaCreateImage(
+        VkResult const vk_result = vmaCreateImage(
             this->allocator,
             &image_create_info,
             &alloc_info,
@@ -851,7 +851,7 @@ namespace vulkan {
         }
 
         // sha256 is pure CPU work; keep it outside the critical section
-        const auto digest = utility::sha256(std::span(data, size_byte));
+        auto const digest = utility::sha256(std::span(data, size_byte));
 
         if (!digest) {
             utility::panic("sha256 failed");
@@ -864,7 +864,7 @@ namespace vulkan {
         return handle;
     }
 
-    const buffer_detail* vma_allocator::get_buffer_detail(const uint64_t handle) {
+    buffer_detail const* vma_allocator::get_buffer_detail(uint64_t const handle) {
         std::lock_guard guard(this->access_mutex);
         if (this->buffers.contains(handle)) {
             return &this->buffers[handle];
@@ -872,7 +872,7 @@ namespace vulkan {
         return nullptr;
     }
 
-    const image_detail* vma_allocator::get_image_detail(const uint64_t handle) {
+    image_detail const* vma_allocator::get_image_detail(uint64_t const handle) {
         std::lock_guard guard(this->access_mutex);
         if (this->images.contains(handle)) {
             return &this->images[handle];
@@ -880,19 +880,19 @@ namespace vulkan {
         return nullptr;
     }
 
-    void vma_allocator::free_buffer(const uint64_t handle) {
+    void vma_allocator::free_buffer(uint64_t const handle) {
         std::lock_guard guard(this->access_mutex);
         if (this->buffers.contains(handle)) {
-            const auto& info = this->buffers[handle];
+            auto const& info = this->buffers[handle];
             vmaDestroyBuffer(this->allocator, info.buffer, info.allocation);
             this->buffers.erase(handle);
         }
     }
 
-    void vma_allocator::free_image(const uint64_t handle) {
+    void vma_allocator::free_image(uint64_t const handle) {
         std::lock_guard guard(this->access_mutex);
         if (this->images.contains(handle)) {
-            const auto& info = this->images[handle];
+            auto const& info = this->images[handle];
             vmaDestroyImage(this->allocator, info.image, info.allocation);
             this->images.erase(handle);
         }

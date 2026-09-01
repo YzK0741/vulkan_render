@@ -114,10 +114,10 @@ namespace vulkan {
         [[nodiscard]] VkFence create_fence() const;
         // Called while holding staging_mutex: reuse the cached buffer if large enough, else destroy and rebuild
         bool ensure_staging_buffer(VkDeviceSize size, VkBuffer& buffer, VmaAllocation& allocation, VmaAllocationInfo& info);
-        bool direct_upload(VmaAllocation const& allocation, VmaAllocationInfo& allocation_info, const void* data, uint64_t size) const;
-        bool staging_upload(VkBuffer dst_buffer, const void* data, VkDeviceSize size);
-        bool direct_image_upload(VmaAllocation allocation, const void* data, VkDeviceSize size) const;
-        bool staging_image_upload(VkImage dst_image, const void* data, VkDeviceSize size, const image_create_info& info);
+        bool direct_upload(VmaAllocation const& allocation, VmaAllocationInfo& allocation_info, void const* data, uint64_t size) const;
+        bool staging_upload(VkBuffer dst_buffer, void const* data, VkDeviceSize size);
+        bool direct_image_upload(VmaAllocation allocation, void const* data, VkDeviceSize size) const;
+        bool staging_image_upload(VkImage dst_image, void const* data, VkDeviceSize size, image_create_info const& info);
         [[nodiscard]] std::pair<VkCommandPool, VkCommandBuffer> create_command_pair() const;
 
     public:
@@ -146,7 +146,7 @@ namespace vulkan {
          * @param type buffer usage type
          * @return the buffer handle
          */
-        uint64_t create_buffer(const unsigned char* data, uint64_t size_byte, buffer_type type);
+        uint64_t create_buffer(unsigned char const* data, uint64_t size_byte, buffer_type type);
 
         /**
          * @ingroup vulkan_vma
@@ -157,7 +157,7 @@ namespace vulkan {
          * @return the buffer handle
          */
         template <typename T>
-        uint64_t create_buffer(std::span<T> data, const buffer_type type) {
+        uint64_t create_buffer(std::span<T> data, buffer_type const type) {
             return this->create_buffer(reinterpret_cast<unsigned char*>(data.data()), data.size_bytes(), type);
         }
 
@@ -171,7 +171,7 @@ namespace vulkan {
          * @return the buffer handle
          */
         template <typename T, std::size_t N>
-        uint64_t create_buffer(std::span<T, N> data, const buffer_type type) {
+        uint64_t create_buffer(std::span<T, N> data, buffer_type const type) {
             return this->create_buffer(reinterpret_cast<unsigned char*>(data.data()), data.size_bytes(), type);
         }
 
@@ -184,7 +184,7 @@ namespace vulkan {
          * @param type image usage type
          * @return the image handle
          */
-        uint64_t create_image(const unsigned char* data, uint64_t size_byte, image_create_info const& create_info, image_type type);
+        uint64_t create_image(unsigned char const* data, uint64_t size_byte, image_create_info const& create_info, image_type type);
 
         /**
          * @ingroup vulkan_vma
@@ -196,7 +196,7 @@ namespace vulkan {
          * @return the image handle
          */
         template <typename T>
-        uint64_t create_image(std::span<T> data, image_create_info create_info, const image_type type) {
+        uint64_t create_image(std::span<T> data, image_create_info create_info, image_type const type) {
             return this->create_image(reinterpret_cast<unsigned char*>(data.data()), create_info, data.size_bytes(), type);
         }
 
@@ -211,7 +211,7 @@ namespace vulkan {
          * @return the image handle
          */
         template <typename T, size_t N>
-        uint64_t create_image(std::span<T, N> data, image_create_info create_info, const image_type type) {
+        uint64_t create_image(std::span<T, N> data, image_create_info create_info, image_type const type) {
             return this->create_image(reinterpret_cast<unsigned char*>(data.data()), create_info, data.size_bytes(), type);
         }
 
@@ -221,7 +221,7 @@ namespace vulkan {
          * @param handle the buffer handle
          * @return pointer to the buffer detail, or nullptr if the handle is invalid
          */
-        [[nodiscard]] const buffer_detail* get_buffer_detail(uint64_t handle);
+        [[nodiscard]] buffer_detail const* get_buffer_detail(uint64_t handle);
 
         /**
          * @ingroup vulkan_vma
@@ -229,7 +229,7 @@ namespace vulkan {
          * @param handle the image handle
          * @return pointer to the image detail, or nullptr if the handle is invalid
          */
-        [[nodiscard]] const image_detail* get_image_detail(uint64_t handle);
+        [[nodiscard]] image_detail const* get_image_detail(uint64_t handle);
 
         /**
          * @ingroup vulkan_vma

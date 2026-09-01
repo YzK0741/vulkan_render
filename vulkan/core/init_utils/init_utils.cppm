@@ -1,4 +1,4 @@
-module;
+﻿module;
 
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
@@ -87,7 +87,7 @@ export struct device_capabilities {
     /**
      * @brief pNext chain head for vkCreateDevice (enables the queried features)
      */
-    [[nodiscard]] const void* device_pnext() const noexcept;
+    [[nodiscard]] void const* device_pnext() const noexcept;
 };
 
 /**
@@ -103,11 +103,11 @@ export void print_device_capabilities(device_capabilities const& capabilities);
  * @brief input data for creating a logical device
  */
 export struct device_creation_info {
-    queue_family_indices queue_families{};
-    std::vector<const char*> extensions = {};
-    std::vector<const char*> validation_layers = {};
+    queue_family_indices queue_families = {};
+    std::vector<char const*> extensions = {};
+    std::vector<char const*> validation_layers = {};
     VkPhysicalDeviceFeatures device_features = {};
-    const void* pNext = nullptr; // for the Vulkan 1.1+ feature chain
+    void const* pNext = nullptr; // for the Vulkan 1.1+ feature chain
 };
 
 /**
@@ -116,9 +116,9 @@ export struct device_creation_info {
  */
 export [[maybe_unused]] VKAPI_ATTR VkBool32 VKAPI_CALL
 debug_callback(
-    const VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
+    VkDebugUtilsMessageSeverityFlagBitsEXT const message_severity,
     [[maybe_unused]] VkDebugUtilsMessageTypeFlagsEXT message_type,
-    const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
+    VkDebugUtilsMessengerCallbackDataEXT const* callback_data,
     [[maybe_unused]] void* user_data) noexcept;
 
 /**
@@ -127,7 +127,7 @@ debug_callback(
  * @param validation_layers layer names to check
  * @return true if all layers are supported
  */
-export bool check_validation_layer_support(const std::vector<const char*>& validation_layers) noexcept;
+export bool check_validation_layer_support(std::vector<char const*> const& validation_layers) noexcept;
 
 /**
  * @ingroup vulkan_init_utils
@@ -138,7 +138,7 @@ export bool check_validation_layer_support(const std::vector<const char*>& valid
  */
 export bool check_device_extension_support(
     VkPhysicalDevice const& physical_device,
-    std::vector<const char*> const& required_extensions) noexcept;
+    std::vector<char const*> const& required_extensions) noexcept;
 
 /**
  * @ingroup vulkan_init_utils
@@ -211,7 +211,7 @@ export VkExtent2D choose_swap_extent(VkSurfaceCapabilitiesKHR const& capabilitie
  * @param physical_device the physical device to query
  * @return the matching memory type index; panics if none matches
  */
-export uint32_t find_memory_type(const uint32_t& type_filter, const VkMemoryPropertyFlags& properties, const VkPhysicalDevice& physical_device) noexcept;
+export uint32_t find_memory_type(uint32_t const& type_filter, VkMemoryPropertyFlags const& properties, VkPhysicalDevice const& physical_device) noexcept;
 
 /**
  * @ingroup vulkan_init_utils
@@ -219,7 +219,7 @@ export uint32_t find_memory_type(const uint32_t& type_filter, const VkMemoryProp
  * @param physical_device the physical device to query
  * @return the chosen depth format; panics if none is supported
  */
-export VkFormat find_depth_format(const VkPhysicalDevice& physical_device) noexcept;
+export VkFormat find_depth_format(VkPhysicalDevice const& physical_device) noexcept;
 
 /**
  * @ingroup vulkan_init_utils
@@ -227,7 +227,7 @@ export VkFormat find_depth_format(const VkPhysicalDevice& physical_device) noexc
  * @param physical_device the physical device to query
  * @return the maximum supported sample count flag
  */
-export VkSampleCountFlagBits get_max_usable_sample_count(const VkPhysicalDevice& physical_device) noexcept;
+export VkSampleCountFlagBits get_max_usable_sample_count(VkPhysicalDevice const& physical_device) noexcept;
 
 /**
  * @ingroup vulkan_init_utils
@@ -238,4 +238,4 @@ export VkSampleCountFlagBits get_max_usable_sample_count(const VkPhysicalDevice&
  * @param device the logical device
  * @return the created image view
  */
-export VkImageView create_image_view(const VkImage& image, const VkFormat& format, const VkImageAspectFlags& aspect_flags, const VkDevice& device) noexcept;
+export VkImageView create_image_view(VkImage const& image, VkFormat const& format, VkImageAspectFlags const& aspect_flags, VkDevice const& device) noexcept;

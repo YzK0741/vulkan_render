@@ -38,7 +38,7 @@ namespace vulkan {
      * @note valid == false means "missing texture", the model falls back to a 1x1 white image
      */
     export struct texture_input {
-        std::span<const unsigned char> data = {};
+        std::span<unsigned char const> data = {};
         uint32_t width = 0;
         uint32_t height = 0;
         VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
@@ -51,9 +51,9 @@ namespace vulkan {
      * @note env_size == 0 disables the IBL bindings
      */
     export struct ibl_input {
-        std::span<const unsigned char> prefiltered_env = {};
-        std::span<const unsigned char> irradiance = {};
-        std::span<const unsigned char> brdf_lut = {};
+        std::span<unsigned char const> prefiltered_env = {};
+        std::span<unsigned char const> irradiance = {};
+        std::span<unsigned char const> brdf_lut = {};
         uint32_t env_size = 0;
         uint32_t env_mip_count = 0;
         uint32_t irr_size = 0;
@@ -65,10 +65,10 @@ namespace vulkan {
      * @brief everything runtime::make_model() needs: geometry + material textures
      */
     export struct model_create_info {
-        std::span<const unsigned char> vertex_data = {};
+        std::span<unsigned char const> vertex_data = {};
         uint32_t vertex_stride = 0;
         uint32_t vertex_count = 0;
-        std::span<const unsigned char> index_data = {};
+        std::span<unsigned char const> index_data = {};
         VkIndexType index_type = VK_INDEX_TYPE_UINT32;
         uint32_t index_count = 0;
 
@@ -138,16 +138,16 @@ namespace vulkan {
     export struct model {
         // geometry: vma handles for release, detail pointers for access (no raw Vulkan objects)
         uint64_t vertex_buffer_handle = 0;
-        const buffer_detail* vertex_detail = nullptr;
+        buffer_detail const* vertex_detail = nullptr;
         uint64_t index_buffer_handle = 0;
-        const buffer_detail* index_detail = nullptr;
+        buffer_detail const* index_detail = nullptr;
         VkIndexType index_type = VK_INDEX_TYPE_UINT32;
         uint32_t index_count = 0;
         uint32_t vertex_count = 0;
 
         // pipeline the model binds against (points into the runtime's pipeline cache; valid for
         // the runtime's lifetime) and the material push constants (material_index + model)
-        const vk_pipeline* pipeline = nullptr;
+        vk_pipeline const* pipeline = nullptr;
         material_push_constants push = {};
 
         /**

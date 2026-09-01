@@ -37,7 +37,7 @@ namespace gltf {
      * @param gltf_constant the OpenGL constant (5120..5130)
      * @return the mapped component_type, unknown for unrecognized values
      */
-    export constexpr component_type to_component_type(const int gltf_constant) {
+    export constexpr component_type to_component_type(int const gltf_constant) {
         switch (gltf_constant) {
         case 5120:
             return component_type::byte_t;
@@ -66,7 +66,7 @@ namespace gltf {
      * @param type the component type
      * @return byte size, 0 for unknown
      */
-    export constexpr uint8_t get_component_size(const component_type type) {
+    export constexpr uint8_t get_component_size(component_type const type) {
         switch (type) {
         case component_type::byte_t:
             [[fallthrough]];
@@ -96,7 +96,7 @@ namespace gltf {
      * @param type the component type
      * @return the glTF OpenGL constant, -1 for unknown
      */
-    export constexpr int to_gltf_macro_type(const component_type type) {
+    export constexpr int to_gltf_macro_type(component_type const type) {
         if (type == component_type::unknown) {
             return -1;
         }
@@ -124,7 +124,7 @@ namespace gltf {
      * @param type the glTF type constant (0..6)
      * @return the mapped element_type
      */
-    export constexpr element_type to_element_type(const int type) {
+    export constexpr element_type to_element_type(int const type) {
         switch (type) {
         case 0:
             return element_type::scale;
@@ -152,7 +152,7 @@ namespace gltf {
      * @param type the element type
      * @return element count, 0 for unknown
      */
-    export constexpr uint8_t get_element_size(const element_type type) {
+    export constexpr uint8_t get_element_size(element_type const type) {
         switch (type) {
         case element_type::scale:
             return 1;

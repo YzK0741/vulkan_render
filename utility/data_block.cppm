@@ -29,7 +29,7 @@ namespace utility {
             return !(*this == other);
         }
 
-        auto operator<=>(const data_block<S>& other) const {
+        auto operator<=>(data_block<S> const& other) const {
             return std::lexicographical_compare_three_way(
                 data.begin(), data.end(),
                 other.data.begin(), other.data.end());
