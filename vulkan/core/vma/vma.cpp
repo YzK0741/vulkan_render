@@ -771,12 +771,12 @@ namespace vulkan {
 
         {
             std::lock_guard guard(this->access_mutex);
-            // use_count is an atomic, which is not copyable: fill the fields in place
-            auto [it, inserted] = this->buffers.try_emplace(handle);
-            auto& detail = it->second;
+            // built on the stack, then moved in (use_count keeps its default 1)
+            buffer_detail detail;
             detail.buffer = buffer;
             detail.allocation = allocation;
             detail.allocation_info = alloc_info;
+            this->buffers.emplace(handle, std::move(detail));
         }
         return handle;
     }
@@ -879,16 +879,15 @@ namespace vulkan {
 
         {
             std::lock_guard guard(this->access_mutex);
-            // use_count is an atomic, which is not copyable: default-construct the entry and fill
-            // the fields in place (use_count keeps its default 1)
-            auto [it, inserted] = this->images.try_emplace(handle);
-            auto& detail = it->second;
+            // built on the stack, then moved in (use_count keeps its default 1)
+            image_detail detail;
             detail.image = image;
             detail.allocation = allocation;
             detail.allocation_info = alloc_detail;
             detail.digest = digest.value();
             detail.create_info = create_info;
             detail.type = type;
+            this->images.emplace(handle, std::move(detail));
         }
         return handle;
     }

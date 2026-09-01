@@ -26,6 +26,21 @@ namespace vulkan {
         VmaAllocationInfo allocation_info = {};
         // reference count for shared resources; buffers have no digest today, so this stays 1
         std::atomic<uint32_t> use_count = 1;
+
+        buffer_detail() = default;
+        // std::atomic is neither copyable nor movable: a custom move constructor carries the
+        // reference count by loading it (the source is discarded right after)
+        buffer_detail(buffer_detail&& other) noexcept
+            : buffer(other.buffer)
+            , allocation(other.allocation)
+            , allocation_info(other.allocation_info)
+            , use_count(other.use_count.load()) {
+            other.buffer = VK_NULL_HANDLE;
+            other.allocation = VK_NULL_HANDLE;
+        }
+        buffer_detail(buffer_detail const&) = delete;
+        buffer_detail& operator=(buffer_detail const&) = delete;
+        buffer_detail& operator=(buffer_detail&&) = delete;
     };
 
     /**
@@ -86,6 +101,24 @@ namespace vulkan {
         image_type type = image_type::texture_2d;
         // reference count for shared images; free_image() only really destroys at zero
         std::atomic<uint32_t> use_count = 1;
+
+        image_detail() = default;
+        // std::atomic is neither copyable nor movable: a custom move constructor carries the
+        // reference count by loading it (the source is discarded right after)
+        image_detail(image_detail&& other) noexcept
+            : image(other.image)
+            , allocation(other.allocation)
+            , allocation_info(other.allocation_info)
+            , digest(std::move(other.digest))
+            , create_info(std::move(other.create_info))
+            , type(other.type)
+            , use_count(other.use_count.load()) {
+            other.image = VK_NULL_HANDLE;
+            other.allocation = VK_NULL_HANDLE;
+        }
+        image_detail(image_detail const&) = delete;
+        image_detail& operator=(image_detail const&) = delete;
+        image_detail& operator=(image_detail&&) = delete;
     };
 
     /**
