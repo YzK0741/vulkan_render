@@ -26,16 +26,26 @@ namespace vulkan {
             }
         }
 
-        // Procedural environment (HDR): gradient sky/ground + sun disc
+        // Procedural environment (HDR): gradient sky/ground + sun disc.
+        // Keep in sync with shaders/skybox.frag sky_color(): the visible sky is computed
+        // analytically per-pixel (no cubemap sampling), so the IBL cubemap baked from this
+        // function must produce exactly the same colors for reflections to match the sky.
         glm::vec3 environment_color(glm::vec3 const& dir) {
-            float const t = std::clamp(dir.y * 0.5f + 0.5f, 0.0f, 1.0f);
-            constexpr glm::vec3 ground = glm::vec3(0.03f, 0.03f, 0.05f) * 0.75f;
-            constexpr glm::vec3 horizon = glm::vec3(0.16f, 0.19f, 0.26f) * 0.75f;
+            float const t = std::clamp(dir.y * 0.5f + 0.5f, 0.0f, 1.0f); // 0 nadir, 1 zenith
+            auto const smooth = [](float const e0, float const e1, float const x) {
+                float const u = std::clamp((x - e0) / (e1 - e0), 0.0f, 1.0f);
+                return u * u * (3.0f - 2.0f * u);
+            };
+            constexpr glm::vec3 ground = glm::vec3(0.05f, 0.05f, 0.07f) * 0.75f;
+            constexpr glm::vec3 horizon = glm::vec3(0.17f, 0.20f, 0.27f) * 0.75f;
             constexpr glm::vec3 sky = glm::vec3(0.28f, 0.45f, 0.75f) * 0.75f;
-            glm::vec3 env = t < 0.5f ? glm::mix(ground, horizon, t * 2.0f) : glm::mix(horizon, sky, (t - 0.5f) * 2.0f);
+            float const g = smooth(0.28f, 0.50f, t); // ground -> horizon
+            float const s = smooth(0.50f, 0.92f, t); // horizon -> sky
+            glm::vec3 env = ground + (horizon - ground) * g;
+            env += (sky - env) * s;
             glm::vec3 const sun_dir = glm::normalize(glm::vec3(0.3f, 1.0f, 0.5f));
-            float const sun = std::pow(std::max(glm::dot(dir, sun_dir), 0.0f), 64.0f);
-            env += glm::vec3(1.0f, 0.95f, 0.85f) * sun * 1.5f; // slightly stronger sun disc for clearer metallic highlights
+            float const sun = smooth(0.98f, 1.0f, glm::dot(dir, sun_dir)); // soft-edged disc
+            env += glm::vec3(1.0f, 0.95f, 0.85f) * sun * 1.5f;             // visible sun for metallic highlights
             return env;
         }
 
