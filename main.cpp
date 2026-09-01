@@ -1,3 +1,5 @@
+#include "utility/thread_pool/thread_pool.cppm" // header-style pool (not a real module), see utility/thread_pool
+
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -330,24 +332,43 @@ int main(int argc, char** argv) {
         return input;
     };
 
-    // 8. Generate IBL resources on the CPU (split-sum: prefiltered env + irradiance + BRDF LUT)
-    constexpr int env_size = 128;
+    // 8. Generate IBL resources on the CPU (split-sum: prefiltered env + irradiance + BRDF LUT).
+    //    The base environment is generated first (everything depends on it); the prefilter,
+    //    irradiance and BRDF LUT stages only depend on the base env, so they run in parallel on
+    //    the thread pool (each with its own timing, reported after the pool drains).
+    constexpr int env_size = 256;
     constexpr int env_mip_count = 5;
-    utility::log("generating IBL environment (CPU)...");
+    utility::log("generating IBL environment (CPU, {}x{} env, {} worker threads)...", env_size, env_size, 3);
     auto const ibl_start = std::chrono::steady_clock::now();
     std::vector<float> const env = vulkan::generate_environment_cubemap(env_size);
     auto const env_done = std::chrono::steady_clock::now();
     utility::log("  environment cubemap: {:.1f} ms", std::chrono::duration<double, std::milli>(env_done - ibl_start).count());
-    std::vector<float> const prefiltered = vulkan::prefilter_environment(env, env_size, env_mip_count);
-    auto const prefilter_done = std::chrono::steady_clock::now();
+
+    std::vector<float> prefiltered;
+    std::vector<float> irradiance;
+    std::vector<float> brdf_lut;
+    std::chrono::steady_clock::time_point prefilter_done;
+    std::chrono::steady_clock::time_point irradiance_done;
+    std::chrono::steady_clock::time_point lut_done;
+    utility::thread_pool pool(3);
+    pool.post([&] {
+        prefiltered = vulkan::prefilter_environment(env, env_size, env_mip_count);
+        prefilter_done = std::chrono::steady_clock::now();
+    });
+    pool.post([&] {
+        irradiance = vulkan::generate_irradiance_map(env, env_size, 32);
+        irradiance_done = std::chrono::steady_clock::now();
+    });
+    pool.post([&] {
+        brdf_lut = vulkan::generate_brdf_lut(256);
+        lut_done = std::chrono::steady_clock::now();
+    });
+    pool.wait_until_free();
+    auto const ibl_done = std::max({prefilter_done, irradiance_done, lut_done});
     utility::log("  prefilter (GGX importance sampling): {:.1f} ms", std::chrono::duration<double, std::milli>(prefilter_done - env_done).count());
-    std::vector<float> const irradiance = vulkan::generate_irradiance_map(env, env_size, 32);
-    auto const irradiance_done = std::chrono::steady_clock::now();
-    utility::log("  irradiance map: {:.1f} ms", std::chrono::duration<double, std::milli>(irradiance_done - prefilter_done).count());
-    std::vector<float> const brdf_lut = vulkan::generate_brdf_lut(256);
-    auto const lut_done = std::chrono::steady_clock::now();
-    utility::log("  BRDF LUT: {:.1f} ms", std::chrono::duration<double, std::milli>(lut_done - irradiance_done).count());
-    utility::log("  IBL total: {:.1f} ms", std::chrono::duration<double, std::milli>(lut_done - ibl_start).count());
+    utility::log("  irradiance map: {:.1f} ms", std::chrono::duration<double, std::milli>(irradiance_done - env_done).count());
+    utility::log("  BRDF LUT: {:.1f} ms", std::chrono::duration<double, std::milli>(lut_done - env_done).count());
+    utility::log("  IBL total: {:.1f} ms", std::chrono::duration<double, std::milli>(ibl_done - env_done).count());
 
     std::vector<unsigned char> const env_bytes = vulkan::to_half_rgba(prefiltered);
     std::vector<unsigned char> const irr_bytes = vulkan::to_half_rgba(irradiance);
