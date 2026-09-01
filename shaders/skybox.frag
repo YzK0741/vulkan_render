@@ -9,5 +9,6 @@ layout(location = 0) in vec3 v_dir;
 
 void main() {
     vec3 dir = normalize(v_dir);
-    out_color = vec4(texture(env_sampler, dir).rgb, 1.0);
+    // Force mip 0: implicit LOD over a fullscreen triangle would pick the darkest prefiltered mip
+    out_color = vec4(textureLod(env_sampler, dir, 0.0).rgb, 1.0);
 }
