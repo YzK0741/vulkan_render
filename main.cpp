@@ -113,6 +113,91 @@ namespace {
         return rgba;
     }
 
+    // 8-bit sRGB <-> linear conversion. Averaging sRGB-encoded bytes directly would darken the
+    // mips (encoding is gamma-ish), so color textures are averaged in linear space through these
+    // tables; UNORM data (normal/roughness/metal/occlusion) is averaged in byte space, which is
+    // the correct linear operation for those channels.
+    float srgb_to_linear(unsigned char const c) {
+        static std::array<float, 256> const table = [] {
+            std::array<float, 256> t = {};
+            for (int i = 0; i < 256; ++i) {
+                float const v = static_cast<float>(i) / 255.0f;
+                t[i] = v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
+            }
+            return t;
+        }();
+        return table[c];
+    }
+
+    unsigned char linear_to_srgb(float const v) {
+        static std::array<unsigned char, 4096> const table = [] {
+            std::array<unsigned char, 4096> t = {};
+            for (int i = 0; i < 4096; ++i) {
+                float const v = static_cast<float>(i) / 4095.0f;
+                float const s = v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+                t[i] = static_cast<unsigned char>(std::clamp(std::lround(s * 255.0f), 0L, 255L));
+            }
+            return t;
+        }();
+        int const idx = std::clamp(static_cast<int>(std::lround(v * 4095.0f)), 0, 4095);
+        return table[idx];
+    }
+
+    // A full RGBA8 mip chain: mip0, mip1, ... laid out contiguously (mip-major), as the vma
+    // upload path expects. The level count is floor(log2(min(width, height))) + 1.
+    struct mip_chain {
+        std::vector<unsigned char> data = {};
+        uint32_t mip_levels = 0;
+    };
+
+    mip_chain generate_mip_chain(std::span<unsigned char const> const rgba, uint32_t const width, uint32_t const height, bool const srgb) {
+        uint32_t const mip_count = static_cast<uint32_t>(std::floor(std::log2(static_cast<float>(std::min(width, height))))) + 1;
+        mip_chain result;
+        result.mip_levels = mip_count;
+        result.data.reserve(static_cast<size_t>(width) * height * 4 * 4 / 3); // geometric series for power-of-two
+
+        std::vector<unsigned char> a(rgba.begin(), rgba.end());
+        std::vector<unsigned char> b;
+        std::span<unsigned char const> cur = a;
+        uint32_t w = width;
+        uint32_t h = height;
+        for (uint32_t mip = 0; mip < mip_count; ++mip) {
+            result.data.insert(result.data.end(), cur.begin(), cur.end());
+            if (w == 1 && h == 1) {
+                break;
+            }
+            uint32_t const nw = std::max(1u, w / 2);
+            uint32_t const nh = std::max(1u, h / 2);
+            b.assign(static_cast<size_t>(nw) * nh * 4, 0);
+            for (uint32_t y = 0; y < nh; ++y) {
+                uint32_t const sy0 = std::min(y * 2, h - 1);
+                uint32_t const sy1 = std::min(y * 2 + 1, h - 1);
+                for (uint32_t x = 0; x < nw; ++x) {
+                    uint32_t const sx0 = std::min(x * 2, w - 1);
+                    uint32_t const sx1 = std::min(x * 2 + 1, w - 1);
+                    size_t const p00 = (static_cast<size_t>(sy0) * w + sx0) * 4;
+                    size_t const p10 = (static_cast<size_t>(sy0) * w + sx1) * 4;
+                    size_t const p01 = (static_cast<size_t>(sy1) * w + sx0) * 4;
+                    size_t const p11 = (static_cast<size_t>(sy1) * w + sx1) * 4;
+                    size_t const dst = (static_cast<size_t>(y) * nw + x) * 4;
+                    for (int c = 0; c < 4; ++c) {
+                        if (srgb && c < 3) {
+                            float const l = (srgb_to_linear(cur[p00 + c]) + srgb_to_linear(cur[p10 + c]) + srgb_to_linear(cur[p01 + c]) + srgb_to_linear(cur[p11 + c])) * 0.25f;
+                            b[dst + c] = linear_to_srgb(l);
+                        } else {
+                            b[dst + c] = static_cast<unsigned char>((static_cast<unsigned>(cur[p00 + c]) + cur[p10 + c] + cur[p01 + c] + cur[p11 + c] + 2) / 4);
+                        }
+                    }
+                }
+            }
+            std::swap(a, b);
+            cur = a;
+            w = nw;
+            h = nh;
+        }
+        return result;
+    }
+
     // Interleaved geometry of one primitive, ready for the pbr pipeline (stride 44)
     struct built_mesh {
         std::vector<vertex> vertices;
@@ -316,21 +401,30 @@ int main(int argc, char** argv) {
     glm::vec3 const scene_sink(0.0f, -scene_radius, 0.0f);
     runtime.camera.target = scene_sink;
 
-    // 7. Material textures: decode each glTF texture once (cached), then reference it per slot
-    std::vector<std::optional<std::vector<unsigned char>>> texture_cache(scenes->textures.size());
+    // 7. Material textures: decode each glTF texture once (cached, with its CPU-generated mip
+    //    chain), then reference it per slot
+    std::vector<std::optional<mip_chain>> texture_cache(scenes->textures.size());
     auto const get_texture = [&scenes, &texture_cache](uint16_t const texture_index, VkFormat const format) -> vulkan::texture_input {
         if (texture_index >= scenes->textures.size()) {
             return {};
         }
         auto& cached = texture_cache[texture_index];
         if (!cached) {
-            cached = to_rgba(scenes->textures[texture_index]);
+            cached = mip_chain{};
+            std::vector<unsigned char> const rgba = to_rgba(scenes->textures[texture_index]);
+            uint32_t const width = scenes->textures[texture_index].width;
+            uint32_t const height = scenes->textures[texture_index].height;
+            if (!rgba.empty() && width > 0 && height > 0) {
+                // albedo is sRGB (average mips in linear space); the other slots are UNORM
+                *cached = generate_mip_chain(rgba, width, height, format == VK_FORMAT_R8G8B8A8_SRGB);
+            }
         }
         vulkan::texture_input input = {};
-        if (!cached->empty()) {
-            input.data = *cached;
+        if (!cached->data.empty()) {
+            input.data = cached->data;
             input.width = scenes->textures[texture_index].width;
             input.height = scenes->textures[texture_index].height;
+            input.mip_levels = cached->mip_levels;
             input.format = format;
             input.valid = true;
         }

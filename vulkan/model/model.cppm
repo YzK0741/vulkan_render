@@ -38,9 +38,12 @@ namespace vulkan {
      * @note valid == false means "missing texture", the model falls back to a 1x1 white image
      */
     export struct texture_input {
+        // RGBA8 bytes of mip level 0 (or the whole mip chain, mip-major: mip0, mip1, ..., when
+        // mip_levels > 1); the vma upload path copies each level at a computed buffer offset
         std::span<unsigned char const> data = {};
         uint32_t width = 0;
         uint32_t height = 0;
+        uint32_t mip_levels = 1;
         VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
         bool valid = false;
     };

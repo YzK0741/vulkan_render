@@ -138,7 +138,10 @@ namespace vulkan {
         this->texture_array_views.push_back(*this->owned_texture_views.back());
 
         // Shared sampler for the texture array entries
-        this->texture_sampler = this->vulkan_core.make_sampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 0.25f);
+        // maxLod 12 covers mip chains up to 4096x4096 (13 levels); images with fewer mips simply
+        // clamp to their last level. Sampled with a LINEAR mip filter, so far/small surfaces
+        // use the pre-generated mips instead of aliasing mip0.
+        this->texture_sampler = this->vulkan_core.make_sampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 12.0f);
 
         // GPU material table: fixed capacity, host-visible (direct mapping); records are appended
         // at registration and read-only for the GPU (set 0 binding 5)
@@ -311,7 +314,7 @@ namespace vulkan {
                 vulkan::image_create_info image_info = {};
                 image_info.width = tex.width;
                 image_info.height = tex.height;
-                image_info.mip_levels = 1;
+                image_info.mip_levels = tex.mip_levels; // the caller uploads a full mip-major chain
                 image_info.array_layers = 1;
                 image_info.format = tex.format;
                 uint64_t const handle = this->vulkan_core.vma.create_image(tex.data.data(), tex.data.size_bytes(), image_info, vulkan::image_type::texture_2d);
