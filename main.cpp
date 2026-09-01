@@ -235,9 +235,20 @@ int main(int argc, char** argv) {
     // 2. Construct vulkan::runtime: the default constructor performs all window/instance/device/swapchain initialization
     vulkan::runtime runtime;
 
-    // 3. Pipeline loading test: simple triangle + standard PBR
+    // 3. Pipelines: triangle + standard PBR + skybox background (fullscreen environment pass)
     load_and_create_pipeline(runtime, *shaders_dir, "triangle", "triangle.vert.spv", "triangle.frag.spv");
     load_and_create_pipeline(runtime, *shaders_dir, "pbr", "pbr.vert.spv", "pbr.frag.spv");
+    {
+        std::vector<unsigned char> vertex_code;
+        std::vector<unsigned char> fragment_code;
+        load_shader(*shaders_dir, "skybox.vert.spv", vertex_code);
+        load_shader(*shaders_dir, "skybox.frag.spv", fragment_code);
+        auto const skybox_result = runtime.make_skybox_pipeline(vertex_code, fragment_code);
+        if (!skybox_result) {
+            utility::panic(std::source_location::current(), "failed to create skybox pipeline: {}", skybox_result.error());
+        }
+        utility::log("SUCCESS: skybox pipeline created (fullscreen environment background)");
+    }
 
     // 4. Load a glTF model (defaults to DamagedHelmet under gltf_model/; other .gltf/.glb via command line)
     std::string model_path;

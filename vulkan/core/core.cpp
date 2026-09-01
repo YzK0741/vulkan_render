@@ -1,4 +1,4 @@
-﻿module;
+module;
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -1027,7 +1027,8 @@ namespace vulkan {
 
     std::expected<vk_pipeline, std::string_view> core::make_pipeline(
         std::span<unsigned char const> vertex_shader_code,
-        std::span<unsigned char const> const fragment_shader_code) const {
+        std::span<unsigned char const> const fragment_shader_code,
+        bool const depth_test_enabled) const {
         auto result = vulkan::make_pipeline(
             this->device,
             this->scene_pipeline_layout,
@@ -1036,7 +1037,8 @@ namespace vulkan {
             this->depth_format,
             vertex_shader_code,
             fragment_shader_code,
-            this->msaa_samples);
+            this->msaa_samples,
+            depth_test_enabled);
         if (result) {
             // Save the fullscreen viewport/scissor for the current swapchain size, used directly before draw
             result->viewport = {

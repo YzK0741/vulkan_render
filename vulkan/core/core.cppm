@@ -1,4 +1,4 @@
-﻿module;
+module;
 
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
@@ -190,6 +190,7 @@ namespace vulkan {
 
         std::expected<vk_pipeline, std::string_view> make_pipeline(
             std::span<unsigned char const> vertex_shader_code,
-            std::span<unsigned char const> fragment_shader_code) const;
+            std::span<unsigned char const> fragment_shader_code,
+            bool depth_test_enabled = true) const;
     };
 } // namespace vulkan

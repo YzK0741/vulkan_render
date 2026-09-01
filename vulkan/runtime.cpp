@@ -586,6 +586,17 @@ namespace vulkan {
             pipeline.viewport = full_viewport;
             pipeline.scissor = full_scissor;
         }
+        if (this->skybox_pipeline) {
+            this->skybox_pipeline->viewport = full_viewport;
+            this->skybox_pipeline->scissor = full_scissor;
+        }
+
+        // Background pass first: the skybox draws a fullscreen triangle (no vertex/index buffers)
+        // with depth test/write disabled, then the models render over it
+        if (this->skybox_pipeline) {
+            this->skybox_pipeline->begin_pipeline(*command_buffer);
+            vkCmdDraw(*command_buffer, 3, 1, 0, 0);
+        }
 
         for (auto const& [pipeline_name, pipeline] : this->pipelines) {
             auto const models_it = this->models.find(pipeline_name);
@@ -650,6 +661,17 @@ namespace vulkan {
             return fail(make_result.error());
         }
         this->pipelines.emplace(pipeline_name, std::move(make_result).value());
+        return {};
+    }
+
+    std::expected<void, std::string> runtime::make_skybox_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code) {
+        using fail = std::unexpected<std::string>;
+        // no depth test / write: the skybox is a background pass drawn before the models
+        auto make_result = this->vulkan_core.make_pipeline(vertex_shader_code, fragment_shader_code, false);
+        if (!make_result) {
+            return fail(make_result.error());
+        }
+        this->skybox_pipeline = std::move(make_result).value();
         return {};
     }
     vk_pipeline const* runtime::get_pipeline(std::string_view const pipeline_name) const noexcept {

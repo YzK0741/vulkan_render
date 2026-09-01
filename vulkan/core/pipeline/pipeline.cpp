@@ -37,7 +37,8 @@ namespace vulkan {
         VkFormat const depth_format,
         std::span<unsigned char const> const vertex_shader_code,
         std::span<unsigned char const> const fragment_shader_code,
-        VkSampleCountFlagBits const msaa_level) {
+        VkSampleCountFlagBits const msaa_level,
+        bool const depth_test_enabled) {
         using fail = std::unexpected<std::string_view>;
 
         // ---- 1. Parse the vertex stage interface, filter builtins, build vertex input ----
@@ -136,8 +137,10 @@ namespace vulkan {
 
         VkPipelineDepthStencilStateCreateInfo depth_stencil_state_create_info = {};
         depth_stencil_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        depth_stencil_state_create_info.depthTestEnable = VK_TRUE;
-        depth_stencil_state_create_info.depthWriteEnable = VK_TRUE;
+        // depth test + write disabled for background passes (e.g. the skybox), which draw first
+        // and must not occlude later geometry
+        depth_stencil_state_create_info.depthTestEnable = depth_test_enabled ? VK_TRUE : VK_FALSE;
+        depth_stencil_state_create_info.depthWriteEnable = depth_test_enabled ? VK_TRUE : VK_FALSE;
         depth_stencil_state_create_info.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 
         VkPipelineColorBlendAttachmentState color_blend_attachment_state = {};

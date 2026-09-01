@@ -31,6 +31,7 @@ namespace vulkan {
      * @param vertex_shader_code raw SPIR-V binary of the vertex shader
      * @param fragment_shader_code raw SPIR-V binary of the fragment shader
      * @param msaa_level MSAA sample count used by the render pass
+     * @param depth_test_enabled enable depth test + depth write (false e.g. for the skybox pass)
      * @return vk_pipeline on success, error message on failure
      */
     export std::expected<vk_pipeline, std::string_view> make_pipeline(
@@ -41,5 +42,6 @@ namespace vulkan {
         VkFormat depth_format,
         std::span<unsigned char const> vertex_shader_code,
         std::span<unsigned char const> fragment_shader_code,
-        VkSampleCountFlagBits msaa_level);
+        VkSampleCountFlagBits msaa_level,
+        bool depth_test_enabled = true);
 } // namespace vulkan

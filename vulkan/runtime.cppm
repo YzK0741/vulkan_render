@@ -80,6 +80,8 @@ namespace vulkan {
         vk_descriptor_set scene_set = {};
         bool scene_set_created = false;
         bool ibl_ready = false;
+        // background pass (fullscreen triangle, no depth test): drawn first every frame
+        std::optional<vk_pipeline> skybox_pipeline = std::nullopt;
 
         std::mutex access_mutex;
         // string keys (not string_view): the runtime owns the pipeline/model names, so lookups
@@ -154,6 +156,20 @@ namespace vulkan {
 
         std::expected<void, std::string> make_pipeline(
             std::string_view pipeline_name,
+            std::span<unsigned char const> vertex_shader_code,
+            std::span<unsigned char const> fragment_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief create the skybox background pipeline: a fullscreen triangle (drawn with
+         *        vkCmdDraw(3), no vertex/index buffers) that samples the environment cubemap
+         * @param vertex_shader_code raw SPIR-V binary of the skybox vertex shader
+         * @param fragment_shader_code raw SPIR-V binary of the skybox fragment shader
+         * @return success, or an error message on failure
+         * @note drawn first in every frame with depth test/write disabled, so models render over it;
+         *       uses the shared scene set (camera UBO binding 0, env cubemap binding 2)
+         */
+        std::expected<void, std::string> make_skybox_pipeline(
             std::span<unsigned char const> vertex_shader_code,
             std::span<unsigned char const> fragment_shader_code);
 
