@@ -351,6 +351,11 @@ namespace vulkan {
         material_record record = {};
         record.tex_indices = glm::uvec4(texture_indices[0], texture_indices[1], texture_indices[2], texture_indices[3]);
         record.emissive_index = texture_indices[4];
+        record.base_color_factor = info.factors.base_color_factor;
+        record.emissive_factor = info.factors.emissive_factor;
+        record.metallic_factor = info.factors.metallic_factor;
+        record.roughness_factor = info.factors.roughness_factor;
+        record.normal_scale = info.factors.normal_scale;
         record.flags = 0;
         if (info.normal.valid) {
             record.flags |= 1u;

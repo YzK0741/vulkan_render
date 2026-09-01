@@ -1,4 +1,4 @@
-﻿module;
+module;
 
 #include <fastgltf/core.hpp>
 #include <fastgltf/tools.hpp>
@@ -319,6 +319,22 @@ namespace {
         return texture_indices;
     }
 
+    gltf::material load_material(fastgltf::Material const& material) {
+        gltf::material result;
+        result.factors.base_color_factor = glm::vec4(material.pbrData.baseColorFactor[0],
+                                                     material.pbrData.baseColorFactor[1],
+                                                     material.pbrData.baseColorFactor[2],
+                                                     material.pbrData.baseColorFactor[3]);
+        result.factors.metallic_factor = material.pbrData.metallicFactor;
+        result.factors.roughness_factor = material.pbrData.roughnessFactor;
+        result.factors.emissive_factor = glm::vec3(material.emissiveFactor[0],
+                                                   material.emissiveFactor[1],
+                                                   material.emissiveFactor[2]);
+        result.factors.normal_scale = material.normalTexture ? material.normalTexture->scale : 1.0f;
+        result.texture_indices = get_texture_indices(material);
+        return result;
+    }
+
     gltf::primitive load_primitive(fastgltf::Primitive const& primitive, Asset const& asset) {
         std::map<std::string, gltf::vertex_portion> vertex;
         for (auto const& attribute : primitive.attributes) {
@@ -333,16 +349,13 @@ namespace {
             index_data = get_data_from_accessor(asset, asset.accessors[*primitive.indicesAccessor]);
         }
 
-        std::map<std::string, uint16_t> texture_indices;
-        if (primitive.materialIndex) {
-            texture_indices = get_texture_indices(asset.materials[*primitive.materialIndex]);
-        }
-
         return {
             .vertex = std::move(vertex),
             .index = std::move(index_data.data),
             .index_component_type = index_data.component_type,
-            .texture_indices = std::move(texture_indices),
+            .material_index = primitive.materialIndex
+                                  ? static_cast<uint32_t>(*primitive.materialIndex)
+                                  : std::numeric_limits<uint32_t>::max(),
         };
     }
 
@@ -409,6 +422,11 @@ namespace gltf {
         result.textures.reserve(asset.textures.size());
         for (std::size_t i = 0; i < asset.textures.size(); ++i) {
             result.textures.push_back(load_texture(asset, i));
+        }
+
+        result.materials.reserve(asset.materials.size());
+        for (std::size_t i = 0; i < asset.materials.size(); ++i) {
+            result.materials.push_back(load_material(asset.materials[i]));
         }
 
         return result;

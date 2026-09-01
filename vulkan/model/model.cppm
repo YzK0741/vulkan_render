@@ -62,7 +62,20 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_model
-     * @brief everything runtime::make_model() needs: geometry + material textures
+     * @brief PBR material factors, mirrored into the GPU material table (material_record)
+     * @note the same shape as gltf::material_factors, converted by the scene builder
+     */
+    export struct material_factors {
+        glm::vec4 base_color_factor = glm::vec4(1.0f);
+        glm::vec4 emissive_factor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        float metallic_factor = 1.0f;
+        float roughness_factor = 1.0f;
+        float normal_scale = 1.0f;
+    };
+
+    /**
+     * @ingroup vulkan_model
+     * @brief everything runtime::make_model() needs: geometry + material textures + factors
      */
     export struct model_create_info {
         std::span<unsigned char const> vertex_data = {};
@@ -77,6 +90,9 @@ namespace vulkan {
         texture_input normal = {};
         texture_input occlusion = {};
         texture_input emissive = {};
+
+        // PBR factors, stored in the model's material_record
+        material_factors factors = {};
 
         // world transform applied to the geometry (e.g. fit-scale + centering from the bounding box);
         // pushed per model (the shared camera UBO carries no model matrix)

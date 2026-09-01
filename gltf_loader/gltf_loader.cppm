@@ -206,13 +206,38 @@ namespace gltf {
 
     /**
      * @ingroup gltf_loader
-     * @brief a drawable primitive: vertex attributes, index data and texture indices
+     * @brief metallic-roughness material factors, defaults follow the glTF spec
+     */
+    export struct material_factors {
+        glm::vec4 base_color_factor = glm::vec4(1.0f);
+        glm::vec3 emissive_factor = glm::vec3(0.0f);
+        float metallic_factor = 1.0f;
+        float roughness_factor = 1.0f;
+        float normal_scale = 1.0f;
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief a glTF material: factors plus the texture slots it uses
+     * @note texture_indices maps slot names ("albedo" / "metallic_roughness" / "normal" /
+     *       "occlusion" / "emissive") to indices into scenes::textures
+     */
+    export struct material {
+        material_factors factors = {};
+        std::map<std::string, uint16_t> texture_indices = {};
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief a drawable primitive: vertex attributes, index data and its material reference
      */
     export struct primitive {
         std::map<std::string, vertex_portion> vertex;
         std::vector<unsigned char> index;
         component_type index_component_type;
-        std::map<std::string, uint16_t> texture_indices;
+        // index into scenes::materials; std::numeric_limits<uint32_t>::max() when the primitive
+        // has no material (render with default factors and no textures)
+        uint32_t material_index = std::numeric_limits<uint32_t>::max();
     };
 
     /**
@@ -245,12 +270,13 @@ namespace gltf {
 
     /**
      * @ingroup gltf_loader
-     * @brief loaded result of a glTF file: textures and scenes
-     * @note textures holds one entry per glTF texture (in texture order); primitive
-     *       texture_indices values index into this array
+     * @brief loaded result of a glTF file: textures, materials and scenes
+     * @note textures holds one entry per glTF texture (in texture order); material texture_indices
+     *       values index into this array; primitive.material_index indexes into materials
      */
     export struct scenes {
         std::vector<texture_data> textures;
+        std::vector<material> materials;
         std::vector<scene> scene;
     };
 
