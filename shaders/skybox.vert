@@ -12,8 +12,10 @@ layout(set = 0, binding = 0) uniform CameraUBO {
 layout(location = 0) out vec3 v_dir;
 
 void main() {
-    // Fullscreen triangle covering the viewport (no vertex input)
-    vec2 uv = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
+    // Fullscreen triangle covering the viewport (no vertex input). Winding flipped vs. the naive
+    // (id<<1)&2, id&2 pattern so the triangle is front-facing with the pipeline's BACK culling
+    // (VK_FRONT_FACE_COUNTER_CLOCKWISE, framebuffer coords with y down).
+    vec2 uv = vec2(float(gl_VertexIndex & 2), float((gl_VertexIndex << 1) & 2));
     vec2 ndc = uv * 2.0 - 1.0;
 
     // View-space ray direction: the camera translation does not matter for an infinite skybox
