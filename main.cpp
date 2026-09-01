@@ -1,4 +1,4 @@
-﻿#include <GLFW/glfw3.h>
+#include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <vulkan/vulkan.h>
@@ -111,6 +111,118 @@ namespace {
         return rgba;
     }
 
+    // Interleaved geometry of one primitive, ready for the pbr pipeline (stride 44)
+    struct built_mesh {
+        std::vector<vertex> vertices;
+        std::vector<unsigned char> index_data;
+        VkIndexType index_type = VK_INDEX_TYPE_UINT32;
+        uint32_t index_count = 0;
+        glm::vec3 bbox_min = glm::vec3(std::numeric_limits<float>::infinity());
+        glm::vec3 bbox_max = glm::vec3(-std::numeric_limits<float>::infinity());
+    };
+
+    // Build interleaved vertices (position/normal/uv/tangent) for one glTF primitive:
+    // fetch the attribute portions, default missing ones, compute tangents when absent, interleave
+    built_mesh build_mesh(gltf::primitive const& prim) {
+        built_mesh result;
+        auto const get_portion = [&prim](std::string_view const name) -> gltf::vertex_portion const* {
+            auto const it = prim.vertex.find(std::string(name));
+            return it == prim.vertex.end() ? nullptr : &it->second;
+        };
+        auto const* position_portion = get_portion("POSITION");
+        auto const* normal_portion = get_portion("NORMAL");
+        auto const* uv_portion = get_portion("TEXCOORD_0");
+        auto const* tangent_portion = get_portion("TANGENT");
+        if (position_portion == nullptr) {
+            utility::panic("primitive has no POSITION attribute");
+        }
+
+        constexpr glm::vec3 default_normal(0.0f, 1.0f, 0.0f);
+        constexpr glm::vec2 default_uv(0.0f, 0.0f);
+        size_t const vertex_count = position_portion->data.size() / sizeof(glm::vec3);
+
+        std::vector<glm::vec3> positions;
+        std::vector<glm::vec3> normals;
+        std::vector<glm::vec2> uvs;
+        positions.reserve(vertex_count);
+        normals.reserve(vertex_count);
+        uvs.reserve(vertex_count);
+        for (size_t i = 0; i < vertex_count; ++i) {
+            auto const* p = reinterpret_cast<glm::vec3 const*>(position_portion->data.data()) + i;
+            auto const* n = normal_portion == nullptr ? &default_normal : reinterpret_cast<glm::vec3 const*>(normal_portion->data.data()) + i;
+            auto const* uv = uv_portion == nullptr ? &default_uv : reinterpret_cast<glm::vec2 const*>(uv_portion->data.data()) + i;
+            positions.push_back(*p);
+            normals.push_back(*n);
+            uvs.push_back(*uv);
+        }
+
+        // index data and type
+        if (prim.index.empty()) {
+            utility::panic("primitive has no index data");
+        }
+        VkIndexType index_type = VK_INDEX_TYPE_UINT16;
+        if (prim.index_component_type == gltf::component_type::unsigned_int_t) {
+            index_type = VK_INDEX_TYPE_UINT32;
+        } else if (prim.index_component_type != gltf::component_type::unsigned_short_t) {
+            utility::panic(std::source_location::current(), "unsupported index component type: {}", static_cast<int>(prim.index_component_type));
+        }
+        uint32_t const index_count = static_cast<uint32_t>(prim.index.size() / (index_type == VK_INDEX_TYPE_UINT32 ? 4 : 2));
+        auto const read_index = [&prim, index_type](size_t const i) -> uint32_t {
+            if (index_type == VK_INDEX_TYPE_UINT32) {
+                return reinterpret_cast<uint32_t const*>(prim.index.data())[i];
+            }
+            return reinterpret_cast<uint16_t const*>(prim.index.data())[i];
+        };
+
+        // tangents: use the model's TANGENT if present, otherwise compute per-triangle from position/uv
+        // (classic approach: accumulate tangents per triangle, then Gram-Schmidt orthogonalize)
+        std::vector<glm::vec3> tangents(vertex_count, glm::vec3(1.0f, 0.0f, 0.0f));
+        if (tangent_portion != nullptr) {
+            for (size_t i = 0; i < vertex_count; ++i) {
+                auto const* t = reinterpret_cast<glm::vec4 const*>(tangent_portion->data.data()) + i;
+                tangents[i] = glm::vec3(t->x, t->y, t->z);
+            }
+        } else {
+            std::vector<glm::vec3> tangent_accumulator(vertex_count, glm::vec3(0.0f));
+            for (uint32_t i = 0; i + 2 < index_count; i += 3) {
+                uint32_t const i0 = read_index(i);
+                uint32_t const i1 = read_index(i + 1);
+                uint32_t const i2 = read_index(i + 2);
+                glm::vec3 const e1 = positions[i1] - positions[i0];
+                glm::vec3 const e2 = positions[i2] - positions[i0];
+                glm::vec2 const duv1 = uvs[i1] - uvs[i0];
+                glm::vec2 const duv2 = uvs[i2] - uvs[i0];
+                float const denom = duv1.x * duv2.y - duv2.x * duv1.y;
+                if (std::abs(denom) < 1e-8f) {
+                    continue; // degenerate UV triangle
+                }
+                float const f = 1.0f / denom;
+                glm::vec3 const tangent = f * duv2.y * e1 - f * duv1.y * e2;
+                tangent_accumulator[i0] += tangent;
+                tangent_accumulator[i1] += tangent;
+                tangent_accumulator[i2] += tangent;
+            }
+            for (size_t i = 0; i < vertex_count; ++i) {
+                glm::vec3 const t = tangent_accumulator[i] - normals[i] * glm::dot(normals[i], tangent_accumulator[i]);
+                tangents[i] = glm::length(t) > 1e-8f ? glm::normalize(t) : glm::vec3(1.0f, 0.0f, 0.0f);
+            }
+        }
+
+        // interleave into the single-binding layout the pipeline expects (stride 44)
+        result.vertices.reserve(vertex_count);
+        for (size_t i = 0; i < vertex_count; ++i) {
+            result.vertices.push_back(vertex{.position = positions[i], .normal = normals[i], .uv = uvs[i], .tangent = tangents[i]});
+        }
+        result.index_data = prim.index;
+        result.index_type = index_type;
+        result.index_count = index_count;
+        for (auto const& v : result.vertices) {
+            result.bbox_min = glm::min(result.bbox_min, v.position);
+            result.bbox_max = glm::max(result.bbox_max, v.position);
+        }
+        return result;
+    }
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -141,145 +253,73 @@ int main(int argc, char** argv) {
     if (!scenes) {
         utility::panic(std::source_location::current(), "failed to load model '{}': error code {}", model_path, static_cast<int>(scenes.error()));
     }
-    if (scenes->scene.empty() || scenes->scene[0].nodes.empty() ||
-        scenes->scene[0].nodes[0].meshes.empty() || scenes->scene[0].nodes[0].meshes[0].primitives.empty()) {
-        utility::panic(std::source_location::current(), "model '{}' has no drawable primitive", model_path);
-    }
-    auto const& prim = scenes->scene[0].nodes[0].meshes[0].primitives[0];
-    utility::log("model loaded: {} textures, {} primitives", scenes->textures.size(), scenes->scene[0].nodes[0].meshes[0].primitives.size());
 
-    // 5. Fetch vertex attributes (separate storage), defaulting missing ones
-    auto const get_portion = [&prim](std::string_view const name) -> gltf::vertex_portion const* {
-        auto const it = prim.vertex.find(std::string(name));
-        return it == prim.vertex.end() ? nullptr : &it->second;
+    // 5. Collect every drawable primitive of the scene (one model per primitive)
+    struct scene_drawable {
+        built_mesh geometry;
+        glm::mat4 world_transform;
+        uint32_t material_index;
     };
-    auto const* position_portion = get_portion("POSITION");
-    auto const* normal_portion = get_portion("NORMAL");
-    auto const* uv_portion = get_portion("TEXCOORD_0");
-    auto const* tangent_portion = get_portion("TANGENT");
-    if (position_portion == nullptr) {
-        utility::panic("model has no POSITION attribute");
-    }
-
-    constexpr glm::vec3 default_normal(0.0f, 1.0f, 0.0f);
-    constexpr glm::vec2 default_uv(0.0f, 0.0f);
-    size_t const vertex_count = position_portion->data.size() / sizeof(glm::vec3);
-
-    std::vector<glm::vec3> positions;
-    std::vector<glm::vec3> normals;
-    std::vector<glm::vec2> uvs;
-    positions.reserve(vertex_count);
-    normals.reserve(vertex_count);
-    uvs.reserve(vertex_count);
-    for (size_t i = 0; i < vertex_count; ++i) {
-        auto const* p = reinterpret_cast<glm::vec3 const*>(position_portion->data.data()) + i;
-        auto const* n = normal_portion == nullptr ? &default_normal : reinterpret_cast<glm::vec3 const*>(normal_portion->data.data()) + i;
-        auto const* uv = uv_portion == nullptr ? &default_uv : reinterpret_cast<glm::vec2 const*>(uv_portion->data.data()) + i;
-        positions.push_back(*p);
-        normals.push_back(*n);
-        uvs.push_back(*uv);
-    }
-
-    // 6. Index data and type
-    if (prim.index.empty()) {
-        utility::panic("model has no index data");
-    }
-    VkIndexType index_type = VK_INDEX_TYPE_UINT16;
-    if (prim.index_component_type == gltf::component_type::unsigned_int_t) {
-        index_type = VK_INDEX_TYPE_UINT32;
-    } else if (prim.index_component_type != gltf::component_type::unsigned_short_t) {
-        utility::panic(std::source_location::current(), "unsupported index component type: {}", static_cast<int>(prim.index_component_type));
-    }
-    uint32_t const index_count = static_cast<uint32_t>(prim.index.size() / (index_type == VK_INDEX_TYPE_UINT32 ? 4 : 2));
-    auto const read_index = [&prim, index_type](size_t const i) -> uint32_t {
-        if (index_type == VK_INDEX_TYPE_UINT32) {
-            return reinterpret_cast<uint32_t const*>(prim.index.data())[i];
-        }
-        return reinterpret_cast<uint16_t const*>(prim.index.data())[i];
-    };
-
-    // 7. Tangents: use the model's TANGENT if present, otherwise compute per-triangle from position/uv
-    //    (classic approach: accumulate tangents per triangle, then Gram-Schmidt orthogonalize)
-    std::vector<glm::vec3> tangents(vertex_count, glm::vec3(1.0f, 0.0f, 0.0f));
-    if (tangent_portion != nullptr) {
-        for (size_t i = 0; i < vertex_count; ++i) {
-            auto const* t = reinterpret_cast<glm::vec4 const*>(tangent_portion->data.data()) + i;
-            tangents[i] = glm::vec3(t->x, t->y, t->z);
-        }
-    } else {
-        std::vector<glm::vec3> tangent_accumulator(vertex_count, glm::vec3(0.0f));
-        for (uint32_t i = 0; i + 2 < index_count; i += 3) {
-            uint32_t const i0 = read_index(i);
-            uint32_t const i1 = read_index(i + 1);
-            uint32_t const i2 = read_index(i + 2);
-            glm::vec3 const e1 = positions[i1] - positions[i0];
-            glm::vec3 const e2 = positions[i2] - positions[i0];
-            glm::vec2 const duv1 = uvs[i1] - uvs[i0];
-            glm::vec2 const duv2 = uvs[i2] - uvs[i0];
-            float const denom = duv1.x * duv2.y - duv2.x * duv1.y;
-            if (std::abs(denom) < 1e-8f) {
-                continue; // degenerate UV triangle
-            }
-            float const f = 1.0f / denom;
-            glm::vec3 const tangent = f * duv2.y * e1 - f * duv1.y * e2;
-            tangent_accumulator[i0] += tangent;
-            tangent_accumulator[i1] += tangent;
-            tangent_accumulator[i2] += tangent;
-        }
-        for (size_t i = 0; i < vertex_count; ++i) {
-            glm::vec3 const t = tangent_accumulator[i] - normals[i] * glm::dot(normals[i], tangent_accumulator[i]);
-            tangents[i] = glm::length(t) > 1e-8f ? glm::normalize(t) : glm::vec3(1.0f, 0.0f, 0.0f);
-        }
-        utility::log("TANGENT not in model, computed from position/uv");
-    }
-
-    // 8. Interleave into the single-binding layout the pipeline expects (stride 44)
-    std::vector<vertex> vertices;
-    vertices.reserve(vertex_count);
-    for (size_t i = 0; i < vertex_count; ++i) {
-        vertices.push_back(vertex{.position = positions[i], .normal = normals[i], .uv = uvs[i], .tangent = tangents[i]});
-    }
-
-    // 9. Fit the camera from the bounding box
-    auto b_min = glm::vec3(std::numeric_limits<float>::infinity());
-    auto b_max = glm::vec3(-std::numeric_limits<float>::infinity());
-    for (auto const& v : vertices) {
-        b_min = glm::min(b_min, v.position);
-        b_max = glm::max(b_max, v.position);
-    }
-    glm::vec3 const center = b_min * 0.5f + b_max * 0.5f;
-    glm::vec3 const extent = b_max - b_min;
-    float const max_extent = glm::max(extent.x, glm::max(extent.y, extent.z));
-    float const fit_scale = max_extent > 0.0f ? 1.6f / max_extent : 1.0f;
-    utility::log("mesh: {} vertices, {} indices, center ({:.3f}, {:.3f}, {:.3f}), extent {:.3f}", vertices.size(), index_count, center.x, center.y, center.z, max_extent);
-
-    // 12. Material textures: decode glTF textures to RGBA and hand them to the model (missing -> white fallback)
-    auto const& texture_indices = prim.texture_indices;
-    constexpr std::array<std::pair<std::string_view, VkFormat>, 5> texture_slots = {
-        std::pair{"albedo", VK_FORMAT_R8G8B8A8_SRGB},
-        std::pair{"metallic_roughness", VK_FORMAT_R8G8B8A8_UNORM},
-        std::pair{"normal", VK_FORMAT_R8G8B8A8_UNORM},
-        std::pair{"occlusion", VK_FORMAT_R8G8B8A8_UNORM},
-        std::pair{"emissive", VK_FORMAT_R8G8B8A8_UNORM},
-    };
-    std::array<std::vector<unsigned char>, 5> texture_rgba;
-    std::array<vulkan::texture_input, 5> texture_inputs;
-    for (int i = 0; i < 5; ++i) {
-        auto const it = texture_indices.find(std::string(texture_slots[i].first));
-        if (it != texture_indices.end() && it->second < scenes->textures.size()) {
-            gltf::texture_data const& source = scenes->textures[it->second];
-            texture_rgba[i] = to_rgba(source);
-            if (!texture_rgba[i].empty()) {
-                texture_inputs[i].data = texture_rgba[i];
-                texture_inputs[i].width = source.width;
-                texture_inputs[i].height = source.height;
-                texture_inputs[i].format = texture_slots[i].second;
-                texture_inputs[i].valid = true;
+    std::vector<scene_drawable> drawables;
+    for (auto const& loaded_scene : scenes->scene) {
+        for (auto const& node : loaded_scene.nodes) {
+            for (auto const& mesh : node.meshes) {
+                for (auto const& prim : mesh.primitives) {
+                    drawables.push_back(scene_drawable{.geometry = build_mesh(prim), .world_transform = node.transform_matrix, .material_index = prim.material_index});
+                }
             }
         }
     }
+    if (drawables.empty()) {
+        utility::panic("model has no drawable primitives");
+    }
+    utility::log("scene loaded: {} textures, {} materials, {} primitives", scenes->textures.size(), scenes->materials.size(), drawables.size());
 
-    // 12.1 Generate IBL resources on the CPU (split-sum: prefiltered env + irradiance + BRDF LUT)
+    // 6. World-space bounding box: transform each mesh's local AABB by its node transform
+    //    (TRS transforms map an AABB to an AABB, so transforming 8 corners is exact)
+    glm::vec3 scene_min(std::numeric_limits<float>::infinity());
+    glm::vec3 scene_max(-std::numeric_limits<float>::infinity());
+    for (auto const& drawable : drawables) {
+        glm::mat4 const& m = drawable.world_transform;
+        for (int x = 0; x < 2; ++x) {
+            for (int y = 0; y < 2; ++y) {
+                for (int z = 0; z < 2; ++z) {
+                    glm::vec3 const corner(x ? drawable.geometry.bbox_max.x : drawable.geometry.bbox_min.x,
+                                           y ? drawable.geometry.bbox_max.y : drawable.geometry.bbox_min.y,
+                                           z ? drawable.geometry.bbox_max.z : drawable.geometry.bbox_min.z);
+                    glm::vec4 const world = m * glm::vec4(corner, 1.0f);
+                    scene_min = glm::min(scene_min, glm::vec3(world));
+                    scene_max = glm::max(scene_max, glm::vec3(world));
+                }
+            }
+        }
+    }
+    glm::vec3 const scene_center = scene_min * 0.5f + scene_max * 0.5f;
+    float const scene_radius = glm::length(scene_max - scene_min) * 0.5f;
+    utility::log("scene bounds: center ({:.3f}, {:.3f}, {:.3f}), radius {:.3f}", scene_center.x, scene_center.y, scene_center.z, scene_radius);
+
+    // 7. Material textures: decode each glTF texture once (cached), then reference it per slot
+    std::vector<std::optional<std::vector<unsigned char>>> texture_cache(scenes->textures.size());
+    auto const get_texture = [&scenes, &texture_cache](uint16_t const texture_index, VkFormat const format) -> vulkan::texture_input {
+        if (texture_index >= scenes->textures.size()) {
+            return {};
+        }
+        auto& cached = texture_cache[texture_index];
+        if (!cached) {
+            cached = to_rgba(scenes->textures[texture_index]);
+        }
+        vulkan::texture_input input = {};
+        if (!cached->empty()) {
+            input.data = *cached;
+            input.width = scenes->textures[texture_index].width;
+            input.height = scenes->textures[texture_index].height;
+            input.format = format;
+            input.valid = true;
+        }
+        return input;
+    };
+
+    // 8. Generate IBL resources on the CPU (split-sum: prefiltered env + irradiance + BRDF LUT)
     constexpr int env_size = 128;
     constexpr int env_mip_count = 5;
     utility::log("generating IBL environment (CPU)...");
@@ -302,31 +342,61 @@ int main(int argc, char** argv) {
     std::vector<unsigned char> const irr_bytes = vulkan::to_half_rgba(irradiance);
     std::vector<unsigned char> const lut_bytes = vulkan::to_half_rg(brdf_lut);
 
-    // 12.2 Upload the scene-wide IBL once: shared by every model (bindings 2-4 of the scene set)
+    // 9. Upload the scene-wide IBL once: shared by every model (bindings 2-4 of the scene set)
     runtime.set_ibl(vulkan::ibl_input{.prefiltered_env = env_bytes, .irradiance = irr_bytes, .brdf_lut = lut_bytes, .env_size = env_size, .env_mip_count = env_mip_count, .irr_size = 32, .lut_size = 256});
 
-    // 13. Build the model: geometry + material textures; IBL and the camera UBO are scene-wide
-    //     and owned by the runtime, the model only registers its textures into the shared array
-    vulkan::model_create_info model_info = {};
-    model_info.vertex_data = std::span(reinterpret_cast<unsigned char const*>(vertices.data()), vertices.size() * sizeof(vertex));
-    model_info.vertex_stride = sizeof(vertex);
-    model_info.vertex_count = static_cast<uint32_t>(vertices.size());
-    model_info.index_data = std::span<unsigned char const>(prim.index);
-    model_info.index_type = index_type;
-    model_info.index_count = index_count;
-    model_info.albedo = texture_inputs[0];
-    model_info.metallic_roughness = texture_inputs[1];
-    model_info.normal = texture_inputs[2];
-    model_info.occlusion = texture_inputs[3];
-    model_info.emissive = texture_inputs[4];
+    // 13. Create one model per primitive; the orbit camera looks at the origin, so center the
+    //     scene and pull the camera back to fit its radius (same framing as the old single-model fit)
+    runtime.camera.distance = scene_radius * 2.75f;
+    constexpr std::array<std::pair<std::string_view, VkFormat>, 5> texture_slots = {
+        std::pair{"albedo", VK_FORMAT_R8G8B8A8_SRGB},
+        std::pair{"metallic_roughness", VK_FORMAT_R8G8B8A8_UNORM},
+        std::pair{"normal", VK_FORMAT_R8G8B8A8_UNORM},
+        std::pair{"occlusion", VK_FORMAT_R8G8B8A8_UNORM},
+        std::pair{"emissive", VK_FORMAT_R8G8B8A8_UNORM},
+    };
+    uint32_t model_count = 0;
+    for (auto const& drawable : drawables) {
+        // material: factors + texture slots (default factors and no textures without a material)
+        vulkan::material_factors factors = {};
+        std::array<vulkan::texture_input, 5> texture_inputs = {};
+        if (drawable.material_index < scenes->materials.size()) {
+            gltf::material const& mat = scenes->materials[drawable.material_index];
+            factors.base_color_factor = mat.factors.base_color_factor;
+            factors.emissive_factor = glm::vec4(mat.factors.emissive_factor, 1.0f);
+            factors.metallic_factor = mat.factors.metallic_factor;
+            factors.roughness_factor = mat.factors.roughness_factor;
+            factors.normal_scale = mat.factors.normal_scale;
+            for (int i = 0; i < 5; ++i) {
+                auto const it = mat.texture_indices.find(std::string(texture_slots[i].first));
+                if (it != mat.texture_indices.end()) {
+                    texture_inputs[i] = get_texture(it->second, texture_slots[i].second);
+                }
+            }
+        }
 
-    // Model matrix (fit scale + centered at origin), pushed per model (shared UBO carries none)
-    model_info.model_matrix = glm::scale(glm::mat4(1.0f), glm::vec3(fit_scale)) * glm::translate(glm::mat4(1.0f), -center);
+        vulkan::model_create_info info = {};
+        info.vertex_data = std::span(reinterpret_cast<unsigned char const*>(drawable.geometry.vertices.data()), drawable.geometry.vertices.size() * sizeof(vertex));
+        info.vertex_stride = sizeof(vertex);
+        info.vertex_count = static_cast<uint32_t>(drawable.geometry.vertices.size());
+        info.index_data = drawable.geometry.index_data;
+        info.index_type = drawable.geometry.index_type;
+        info.index_count = drawable.geometry.index_count;
+        info.albedo = texture_inputs[0];
+        info.metallic_roughness = texture_inputs[1];
+        info.normal = texture_inputs[2];
+        info.occlusion = texture_inputs[3];
+        info.emissive = texture_inputs[4];
+        info.factors = factors;
+        // world transform baked by the loader, centered around the orbit target
+        info.model_matrix = glm::translate(glm::mat4(1.0f), -scene_center) * drawable.world_transform;
 
-    auto* model = runtime.make_model("pbr", model_info);
-    if (model == nullptr) {
-        utility::panic("failed to create model (pipeline 'pbr' missing)");
+        if (runtime.make_model("pbr", info) == nullptr) {
+            utility::panic("failed to create model (pipeline 'pbr' missing)");
+        }
+        ++model_count;
     }
+    utility::log("created {} models", model_count);
 
     // 14. Main render loop: until the window closes or ESC is pressed.
     //     Every Vulkan frame step (fences, acquire, command buffers, render pass, submit, present)

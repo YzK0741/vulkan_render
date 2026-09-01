@@ -29,14 +29,18 @@ namespace gltf {
 
     struct texture_data  { std::vector<unsigned char> data; uint32_t width, height; uint8_t component; };
     struct vertex_portion{ std::vector<unsigned char> data; component_type component; };
+    struct material_factors { glm::vec4 base_color_factor; glm::vec3 emissive_factor;
+                              float metallic_factor; float roughness_factor; float normal_scale; };
+    struct material      { material_factors factors; std::map<std::string, uint16_t> texture_indices; };
     struct primitive     { std::map<std::string, vertex_portion> vertex;
                            std::vector<unsigned char> index;
                            component_type index_component_type;
-                           std::map<std::string, uint16_t> texture_indices; };
+                           uint32_t material_index; };   // into scenes::materials, UINT32_MAX = none
     struct mesh          { std::vector<primitive> primitives; };
     struct node          { std::vector<mesh> meshes; glm::mat4 transform_matrix; };   // world space
     struct scene         { std::string name; std::vector<node> nodes; };
-    struct scenes        { std::vector<texture_data> textures; std::vector<scene> scene; };
+    struct scenes        { std::vector<texture_data> textures; std::vector<material> materials;
+                           std::vector<scene> scene; };
 
     std::expected<scenes, error_code> load_model(std::string_view file_name);
 }
@@ -47,7 +51,7 @@ namespace gltf {
 - The node hierarchy is **already flattened recursively**: `scene.nodes` contains **every** node reachable from the scene root (including transform-only nodes), and `transform_matrix` is the **world-space** column-major matrix (TRS or matrix already composed).
 - Keys of `primitive.vertex` are glTF attribute names (`POSITION` / `NORMAL` / `TEXCOORD_0` / `COLOR_0` …).
 - Vertex and index data are **de-interleaved raw bytes**; their type is described by `component` / `index_component_type` (byteStride and sparse accessors are already handled by fastgltf).
-- `primitive.texture_indices` uses the fixed roles `albedo` / `metallic_roughness` / `normal` / `occlusion` / `emissive`; the values index into `scenes::textures` (in glTF texture order).
+- `scenes.materials` holds one entry per glTF material (in material order); each `material.texture_indices` uses the fixed roles `albedo` / `metallic_roughness` / `normal` / `occlusion` / `emissive`, and the values index into `scenes::textures` (in glTF texture order). `primitive.material_index` selects the primitive's material (`UINT32_MAX` when the glTF primitive has none).
 
 ---
 
@@ -129,11 +133,16 @@ if (pos.data.size() != gltf::get_element_size(gltf::element_type::vec3)
 ## 5. Using Textures
 
 ```cpp
-if (const auto it = prim.texture_indices.find("albedo"); it != prim.texture_indices.end()) {
-    const gltf::texture_data& tex = model.textures[it->second];
-    // tex.data: width * height * component 8-bit pixels (already decoded, not raw PNG/JPEG bytes)
-    std::println("texture {}x{} channels={} bytes={}",
-                 tex.width, tex.height, tex.component, tex.data.size());
+// material lookup (default factors when the primitive has no material)
+if (prim.material_index < model.materials.size()) {
+    const gltf::material& mat = model.materials[prim.material_index];
+    // factors: mat.factors.base_color_factor / metallic_factor / roughness_factor / ...
+    if (const auto it = mat.texture_indices.find("albedo"); it != mat.texture_indices.end()) {
+        const gltf::texture_data& tex = model.textures[it->second];
+        // tex.data: width * height * component 8-bit pixels (already decoded, not raw PNG/JPEG bytes)
+        std::println("texture {}x{} channels={} bytes={}",
+                     tex.width, tex.height, tex.component, tex.data.size());
+    }
 }
 ```
 
