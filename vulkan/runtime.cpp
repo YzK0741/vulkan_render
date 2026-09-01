@@ -486,7 +486,7 @@ namespace vulkan {
         //    scene set, so one memcpy (+ one update-after-bind descriptor write) replaces the old
         //    per-model per-frame UBO updates
         float const aspect = static_cast<float>(vk.swap_chain_extent.width) / static_cast<float>(vk.swap_chain_extent.height);
-        camera_ubo const ubo = make_orbit_camera_ubo(this->camera.yaw, this->camera.pitch, this->camera.distance, aspect);
+        camera_ubo const ubo = make_orbit_camera_ubo(this->camera.yaw, this->camera.pitch, this->camera.distance, this->camera.target, aspect);
         if (this->camera_mapped[frame_slot] != nullptr) {
             std::memcpy(this->camera_mapped[frame_slot], &ubo, sizeof(ubo));
         }

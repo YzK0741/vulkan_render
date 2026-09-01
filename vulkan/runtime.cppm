@@ -1,5 +1,6 @@
 module;
 
+#include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
 
 export module vulkan.runtime;
@@ -26,8 +27,13 @@ namespace vulkan {
         double last_y = 0.0;
         bool dragging = false;
         float yaw = 0.0f;
-        float pitch = 0.35f; // slight downward tilt
+        // level view: the skybox horizon (the direction parallel to the ground plane) then sits
+        // exactly at the screen center, where the model is framed against it
+        float pitch = 0.0f;
         float distance = 2.2f;
+        // point the camera looks at and orbits around (default origin; main may sink it
+        // together with the scene so the camera follows the model)
+        glm::vec3 target = glm::vec3(0.0f);
     };
 
     /**

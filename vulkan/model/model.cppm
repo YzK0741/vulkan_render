@@ -178,10 +178,12 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_model
-     * @brief build the camera UBO from orbit camera state (the scene is assumed centered at the origin)
+     * @brief build the camera UBO from orbit camera state (the camera orbits the target point)
      * @param yaw yaw angle in radians (see vulkan::runtime::camera)
      * @param pitch pitch angle in radians
-     * @param distance camera distance from the origin
+     * @param distance camera distance from the target
+     * @param target the point the camera looks at and orbits around (e.g. the centered scene origin,
+     *        or the scene sink so the camera follows the model)
      * @param aspect swapchain width / height
      * @return camera UBO with view/proj/camera_pos filled in
      * @note proj uses perspectiveRH_ZO with a Y flip to match Vulkan's y-down framebuffer
@@ -190,5 +192,6 @@ namespace vulkan {
         float yaw,
         float pitch,
         float distance,
+        glm::vec3 const& target,
         float aspect);
 } // namespace vulkan

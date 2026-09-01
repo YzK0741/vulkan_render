@@ -48,12 +48,13 @@ namespace vulkan {
         float const yaw,
         float const pitch,
         float const distance,
+        glm::vec3 const& target,
         float const aspect) {
-        // Orbit camera position: scene centered at the origin, camera orbits spherically
+        // Orbit camera: the eye orbits the target point spherically
         float const cp = std::cos(pitch);
-        glm::vec3 const eye(distance * cp * std::sin(yaw),
-                            distance * std::sin(pitch),
-                            distance * cp * std::cos(yaw));
+        glm::vec3 const eye(target + glm::vec3(distance * cp * std::sin(yaw),
+                                               distance * std::sin(pitch),
+                                               distance * cp * std::cos(yaw)));
 
         // RH_ZO: right-handed + depth [0,1] (Vulkan convention)
         glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(45.0f), aspect, 0.1f, 100.0f);
@@ -63,7 +64,7 @@ namespace vulkan {
         proj[1][1] *= -1.0f;
 
         camera_ubo ubo;
-        ubo.view = glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+        ubo.view = glm::lookAt(eye, target, glm::vec3(0.0f, 1.0f, 0.0f));
         ubo.proj = proj;
         ubo.camera_pos = eye;
         return ubo;

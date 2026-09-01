@@ -311,6 +311,11 @@ int main(int argc, char** argv) {
     float const scene_radius = glm::length(scene_max - scene_min) * 0.5f;
     utility::log("scene bounds: center ({:.3f}, {:.3f}, {:.3f}), radius {:.3f}", scene_center.x, scene_center.y, scene_center.z, scene_radius);
 
+    // Sink the model so it sits near the world horizon (y = 0) and move the camera target with it:
+    // the camera then orbits/looks at the model's position instead of the scene origin.
+    glm::vec3 const scene_sink(0.0f, -scene_radius, 0.0f);
+    runtime.camera.target = scene_sink;
+
     // 7. Material textures: decode each glTF texture once (cached), then reference it per slot
     std::vector<std::optional<std::vector<unsigned char>>> texture_cache(scenes->textures.size());
     auto const get_texture = [&scenes, &texture_cache](uint16_t const texture_index, VkFormat const format) -> vulkan::texture_input {
@@ -421,7 +426,7 @@ int main(int argc, char** argv) {
         info.emissive = texture_inputs[4];
         info.factors = factors;
         // world transform baked by the loader, centered around the orbit target
-        info.model_matrix = glm::translate(glm::mat4(1.0f), -scene_center) * drawable.world_transform;
+        info.model_matrix = glm::translate(glm::mat4(1.0f), -scene_center + scene_sink) * drawable.world_transform;
 
         if (runtime.make_model("pbr", info) == nullptr) {
             utility::panic("failed to create model (pipeline 'pbr' missing)");
