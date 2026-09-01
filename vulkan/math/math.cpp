@@ -40,7 +40,7 @@ namespace vulkan {
         }
 
         // Nearest-neighbor cubemap sampling (smooth enough after summed-area averaging)
-        glm::vec3 sample_cubemap(const std::vector<float>& data, const int size, const glm::vec3& dir) {
+        glm::vec3 sample_cubemap(const std::span<const float> data, const int size, const glm::vec3& dir) {
             const float ax = std::abs(dir.x);
             const float ay = std::abs(dir.y);
             const float az = std::abs(dir.z);
@@ -128,7 +128,7 @@ namespace vulkan {
         return data;
     }
 
-    std::vector<float> prefilter_environment(const std::vector<float>& env, const int env_size, const int mip_count) {
+    std::vector<float> prefilter_environment(const std::span<const float> env, const int env_size, const int mip_count) {
         std::vector<float> result;
         for (int mip = 0; mip < mip_count; ++mip) {
             const int mip_size = std::max(1, env_size >> mip);
@@ -166,7 +166,7 @@ namespace vulkan {
         return result;
     }
 
-    std::vector<float> generate_irradiance_map(const std::vector<float>& env, const int env_size, const int irr_size) {
+    std::vector<float> generate_irradiance_map(const std::span<const float> env, const int env_size, const int irr_size) {
         std::vector<float> result(static_cast<size_t>(6) * irr_size * irr_size * 4, 0.0f);
         // Loop-invariant constant: deliberately at function scope (not inside the loops)
         constexpr uint32_t sample_count = 512; // NOLINT (some toolchains flag the constant when scoped to the inner loop)
@@ -220,7 +220,7 @@ namespace vulkan {
         return result;
     }
 
-    std::vector<unsigned char> to_half_rgba(const std::vector<float>& data) {
+    std::vector<unsigned char> to_half_rgba(const std::span<const float> data) {
         std::vector<unsigned char> out(data.size() * 2);
         for (size_t i = 0; i < data.size(); ++i) {
             const uint16_t h = float_to_half(data[i]);
@@ -230,7 +230,7 @@ namespace vulkan {
         return out;
     }
 
-    std::vector<unsigned char> to_half_rg(const std::vector<float>& data) {
+    std::vector<unsigned char> to_half_rg(const std::span<const float> data) {
         std::vector<unsigned char> out(data.size() * 2);
         for (size_t i = 0; i < data.size(); ++i) {
             const uint16_t h = float_to_half(data[i]);
