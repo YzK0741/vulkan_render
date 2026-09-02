@@ -231,6 +231,7 @@ namespace gltf {
     export struct material {
         material_factors factors = {};
         std::map<std::string, uint16_t> texture_indices = {};
+        bool double_sided = false; // glTF doubleSided: back faces are rendered, normals flipped
     };
 
     /**
@@ -414,6 +415,7 @@ namespace gltf {
     export struct resolved_material {
         std::array<image_view, 5> slots = {}; // albedo, metallic_roughness, normal, occlusion, emissive
         resolved_factors factors = {};
+        bool double_sided = false; // glTF doubleSided: disable back-face culling + flip normals
     };
 
     /**
@@ -465,6 +467,7 @@ namespace gltf {
         image_view get_occlusion() const;
         image_view get_emissive() const;
         resolved_factors get_factors() const;
+        bool get_double_sided() const;
 
     private:
         void ensure_built() const; // build the current drawable's interleaved geometry lazily

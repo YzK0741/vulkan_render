@@ -116,9 +116,11 @@ namespace vulkan {
         viewport_state_create_info.pScissors = nullptr;
         viewport_state_create_info.pViewports = nullptr;
 
-        std::array<VkDynamicState, 2> dynamic_states = {};
+        std::array<VkDynamicState, 3> dynamic_states = {};
         dynamic_states[0] = VK_DYNAMIC_STATE_VIEWPORT;
         dynamic_states[1] = VK_DYNAMIC_STATE_SCISSOR;
+        // double-sided materials need per-draw cull control (core dynamic state since Vulkan 1.3)
+        dynamic_states[2] = VK_DYNAMIC_STATE_CULL_MODE;
 
         VkPipelineDynamicStateCreateInfo dynamic_state_create_info = {};
         dynamic_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;

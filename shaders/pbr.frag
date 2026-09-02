@@ -134,6 +134,11 @@ void main() {
     } else {
         n = normalize(v_normal);
     }
+    // double-sided material (record flag bit3): mirror the normal on back faces, as the glTF
+    // spec requires, so the inner side of a shell is lit by its inward-facing normal
+    if ((mat.flags & 8u) != 0u && !gl_FrontFacing) {
+        n = -n;
+    }
 
     // ---- Cook-Torrance BRDF (single directional light) ----
     vec3 v = normalize(camera.camera_pos - v_world_pos);

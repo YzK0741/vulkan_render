@@ -402,6 +402,9 @@ namespace vulkan {
         if (info.emissive.valid) {
             record.flags |= 4u;
         }
+        if (info.double_sided) {
+            record.flags |= 8u; // bit3: back faces are rendered, fragment shader flips normals
+        }
 
         uint32_t const material_index = this->material_count++;
         std::memcpy(static_cast<unsigned char*>(this->material_mapped) + static_cast<size_t>(material_index) * sizeof(material_record), &record, sizeof(record));
@@ -752,6 +755,7 @@ namespace vulkan {
         //         the material index (texture indices / factors / flags live in the GPU table) ----
         result->push.material_index = this->register_material(info);
         result->push.model = info.model_matrix;
+        result->double_sided = info.double_sided;
 
         // operator[] has no heterogeneous overload (unlike find), so construct the key explicitly
         auto& pipeline_models = this->models[std::string(pipeline_name)];
@@ -781,6 +785,7 @@ namespace vulkan {
         result->push.material_index = source.push.material_index;
         result->push.flags = 1u; // bit0: pbr.vert picks instances[gl_InstanceIndex]
         result->push.model = glm::mat4(1.0f);
+        result->double_sided = source.double_sided;
 
         auto& pipeline_models = this->models[std::string("pbr")];
         pipeline_models.push_back(std::move(result));

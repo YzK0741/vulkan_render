@@ -149,6 +149,7 @@ namespace vulkan {
         { it.get_occlusion() } -> image_source;
         { it.get_emissive() } -> image_source;
         { it.get_factors() } -> factors_source;
+        { it.get_double_sided() } -> std::convertible_to<bool>;
     };
 
     /**
@@ -172,6 +173,9 @@ namespace vulkan {
         // PBR factors, stored in the model's material_record
         material_factors factors = {};
 
+        // glTF doubleSided: render back faces and flip their normals (cull mode + record flag)
+        bool double_sided = false;
+
         // world transform applied to the geometry (e.g. fit-scale + centering from the bounding box);
         // pushed per model (the shared camera UBO carries no model matrix)
         glm::mat4 model_matrix = glm::mat4(1.0f);
@@ -194,7 +198,7 @@ namespace vulkan {
         float metallic_factor = 1.0f;
         float roughness_factor = 1.0f;
         float normal_scale = 1.0f;
-        uint32_t flags = 0; // bit0: normal map, bit1: occlusion map, bit2: emissive map
+        uint32_t flags = 0; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided
     };
     static_assert(sizeof(material_record) == 80);
 
@@ -256,6 +260,7 @@ namespace vulkan {
         // the runtime's lifetime) and the material push constants (material_index + model)
         vk_pipeline const* pipeline = nullptr;
         material_push_constants push = {};
+        bool double_sided = false; // glTF doubleSided: disable back-face culling (per draw)
 
         /**
          * @brief record the model's draw commands (the runtime already bound the pipeline and

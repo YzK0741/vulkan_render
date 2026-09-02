@@ -290,6 +290,7 @@ namespace vulkan {
                 info.factors.metallic_factor = factors.metallic_factor;
                 info.factors.roughness_factor = factors.roughness_factor;
                 info.factors.normal_scale = factors.normal_scale;
+                info.double_sided = first.get_double_sided();
                 info.model_matrix = glm::translate(glm::mat4(1.0f), offset) * first.get_transform();
                 if (this->make_model("pbr", info) == nullptr) {
                     utility::panic(std::source_location::current(), "failed to import drawable (pipeline 'pbr' missing)");

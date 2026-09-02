@@ -24,6 +24,8 @@ namespace vulkan {
     }
 
     void normal_draw_model::draw(VkCommandBuffer const command_buffer) const {
+        // double-sided materials keep back faces (dynamic cull mode, Vulkan 1.3 core)
+        vkCmdSetCullMode(command_buffer, this->double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
         this->bind_geometry_and_push(command_buffer);
         vkCmdDrawIndexed(command_buffer, this->index_count, 1, 0, 0, 0);
     }
@@ -52,6 +54,7 @@ namespace vulkan {
         // geometry belongs to source: bind ITS buffers, then draw it instance_count times;
         // push flag bit0 makes pbr.vert pick instances[gl_InstanceIndex] per instance
         model const& geometry_source = *this->source;
+        vkCmdSetCullMode(command_buffer, this->double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
         constexpr VkDeviceSize vertex_offset = 0;
         vkCmdBindVertexBuffers(command_buffer, 0, 1, &geometry_source.vertex_detail->buffer, &vertex_offset);
         vkCmdBindIndexBuffer(command_buffer, geometry_source.index_detail->buffer, 0, geometry_source.index_type);

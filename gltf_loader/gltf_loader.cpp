@@ -331,6 +331,7 @@ namespace {
                                                    material.emissiveFactor[1],
                                                    material.emissiveFactor[2]);
         result.factors.normal_scale = material.normalTexture ? material.normalTexture->scale : 1.0f;
+        result.double_sided = material.doubleSided;
         result.texture_indices = get_texture_indices(material);
         return result;
     }
@@ -769,6 +770,7 @@ namespace gltf {
             out.factors.metallic_factor = mat.factors.metallic_factor;
             out.factors.roughness_factor = mat.factors.roughness_factor;
             out.factors.normal_scale = mat.factors.normal_scale;
+            out.double_sided = mat.double_sided;
             for (int i = 0; i < 5; ++i) {
                 auto const it = mat.texture_indices.find(std::string(slot_names[i]));
                 if (it == mat.texture_indices.end() || it->second >= scenes.textures.size()) {
@@ -860,6 +862,11 @@ namespace gltf {
     resolved_factors drawable_iterator::get_factors() const {
         resolved_material const* material = this->current_material();
         return material == nullptr ? resolved_factors{} : material->factors;
+    }
+
+    bool drawable_iterator::get_double_sided() const {
+        resolved_material const* material = this->current_material();
+        return material != nullptr && material->double_sided;
     }
 
     // ---- async twins (see gltf_loader.cppm): delegate to the sync functions on a
