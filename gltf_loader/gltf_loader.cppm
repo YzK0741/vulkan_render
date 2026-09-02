@@ -268,16 +268,77 @@ namespace gltf {
         std::vector<node> nodes;
     };
 
+    export struct scenes; // forward declaration (defined below; scene_iterator only holds a pointer)
+
+    /**
+     * @ingroup gltf_loader
+     * @brief one drawable primitive of the scene hierarchy as seen by the iterator:
+     *        the primitive plus the world transform of the node that owns it
+     * @note the primitive carries its own material_index (primitive::material_index)
+     */
+    export struct drawable_ref {
+        primitive const* primitive = nullptr;
+        glm::mat4 transform_matrix = glm::mat4(1.0f);
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief single-pass input iterator over every drawable primitive of every scene:
+     *        flattens scene -> node -> mesh -> primitive, skipping empty levels.
+     *        Pure cursor over the loaded data (no scratch storage), yields drawable_ref.
+     */
+    export class scene_iterator {
+    public:
+        using iterator_concept = std::input_iterator_tag;
+        using iterator_category = std::input_iterator_tag;
+        using value_type = drawable_ref;
+        using difference_type = std::ptrdiff_t;
+        using pointer = drawable_ref const*;
+        using reference = drawable_ref const&;
+
+        scene_iterator() = default; // end(): the default-constructed iterator is exhausted
+        explicit scene_iterator(scenes const& owner);
+
+        reference operator*() const noexcept;
+        pointer operator->() const noexcept;
+        scene_iterator& operator++();
+        void operator++(int);
+
+        friend bool operator==(scene_iterator const& a, scene_iterator const& b) noexcept {
+            if (a.exhausted_ || b.exhausted_) {
+                return a.exhausted_ == b.exhausted_;
+            }
+            return a.scenes_ == b.scenes_ && a.scene_i == b.scene_i && a.node_i == b.node_i && a.mesh_i == b.mesh_i && a.prim_i == b.prim_i;
+        }
+
+    private:
+        void advance(); // move to the next primitive, or set exhausted_
+
+        scenes const* scenes_ = nullptr;
+        size_t scene_i = 0;
+        size_t node_i = 0;
+        size_t mesh_i = 0;
+        size_t prim_i = 0;
+        mutable drawable_ref current_ = {}; // operator* result cache (valid until ++)
+        bool exhausted_ = true;             // default = end(); begin() clears it before advancing
+    };
+
     /**
      * @ingroup gltf_loader
      * @brief loaded result of a glTF file: textures, materials and scenes
      * @note textures holds one entry per glTF texture (in texture order); material texture_indices
      *       values index into this array; primitive.material_index indexes into materials
+     * @note scenes is a range: begin()/end() yield every drawable primitive with its node's
+     *       world transform (see gltf::scene_iterator / gltf::drawable_ref), so callers can
+     *       iterate the whole scene without manual scene -> node -> mesh -> primitive loops
      */
     export struct scenes {
         std::vector<texture_data> textures;
         std::vector<material> materials;
         std::vector<scene> scene;
+
+        [[nodiscard]] scene_iterator begin() const;
+        [[nodiscard]] scene_iterator end() const noexcept;
     };
 
     /**

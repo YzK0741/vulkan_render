@@ -310,6 +310,97 @@ namespace {
         return result;
     }
 
+    // One CPU-side resolved material: the 5 texture slots + factors, indexed by the glTF
+    // material index (filled once in main(), shared by every drawable referencing it).
+    struct resolved_material {
+        std::array<vulkan::texture_input, 5> slots = {}; // albedo, metallic_roughness, normal, occlusion, emissive
+        vulkan::material_factors factors = {};
+    };
+
+    // Adapter over the gltf::scenes iteration that models vulkan::scene_drawable_iterator:
+    // the runtime's import_scene() template drives ++ and reads geometry/material through the
+    // getters, so the runtime never sees glTF types. Interleaved geometry (vertices + computed
+    // tangents) is built lazily per drawable via build_mesh() and cached until the next ++.
+    class gltf_scene_iterator {
+    public:
+        gltf_scene_iterator() = default; // end: wraps the exhausted gltf::scene_iterator
+
+        gltf_scene_iterator(gltf::scenes const& scenes, std::span<resolved_material const> materials)
+            : inner_(scenes)
+            , materials_(materials) {
+        }
+
+        gltf_scene_iterator& operator++() {
+            ++this->inner_;
+            this->geometry_.reset(); // rebuild lazily on the next get_vertex()/get_index()
+            return *this;
+        }
+
+        friend bool operator!=(gltf_scene_iterator const& a, gltf_scene_iterator const& b) {
+            return a.inner_ != b.inner_;
+        }
+
+        vulkan::vertex_data_view get_vertex() const {
+            built_mesh const& mesh = this->ensure_geometry();
+            return vulkan::vertex_data_view{
+                .data = std::span<unsigned char const>(reinterpret_cast<unsigned char const*>(mesh.vertices.data()), mesh.vertices.size() * sizeof(vertex)),
+                .stride = sizeof(vertex),
+                .count = static_cast<uint32_t>(mesh.vertices.size()),
+            };
+        }
+
+        vulkan::index_data_view get_index() const {
+            built_mesh const& mesh = this->ensure_geometry();
+            return vulkan::index_data_view{.data = mesh.index_data, .type = mesh.index_type, .count = mesh.index_count};
+        }
+
+        glm::mat4 get_transform() const {
+            return (*this->inner_).transform_matrix;
+        }
+
+        vulkan::texture_input get_albedo() const {
+            return this->slot(0);
+        }
+        vulkan::texture_input get_metallic_roughness() const {
+            return this->slot(1);
+        }
+        vulkan::texture_input get_normal() const {
+            return this->slot(2);
+        }
+        vulkan::texture_input get_occlusion() const {
+            return this->slot(3);
+        }
+        vulkan::texture_input get_emissive() const {
+            return this->slot(4);
+        }
+        vulkan::material_factors get_factors() const {
+            resolved_material const* material = this->current_material();
+            return material == nullptr ? vulkan::material_factors{} : material->factors;
+        }
+
+    private:
+        gltf::scene_iterator inner_;
+        std::span<resolved_material const> materials_ = {};
+        mutable std::optional<built_mesh> geometry_ = std::nullopt;
+
+        resolved_material const* current_material() const {
+            uint32_t const index = (*this->inner_).primitive->material_index;
+            return index < this->materials_.size() ? &this->materials_[index] : nullptr;
+        }
+
+        vulkan::texture_input slot(int const i) const {
+            resolved_material const* material = this->current_material();
+            return material == nullptr ? vulkan::texture_input{} : material->slots[i];
+        }
+
+        built_mesh const& ensure_geometry() const {
+            if (!this->geometry_) {
+                this->geometry_ = build_mesh(*((*this->inner_).primitive));
+            }
+            return *this->geometry_;
+        }
+    };
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -352,48 +443,47 @@ int main(int argc, char** argv) {
         utility::panic(std::source_location::current(), "failed to load model '{}': error code {}", model_path, static_cast<int>(scenes.error()));
     }
 
-    // 5. Collect every drawable primitive of the scene (one model per primitive)
-    struct scene_drawable {
-        built_mesh geometry;
-        glm::mat4 world_transform;
-        uint32_t material_index;
-    };
-    std::vector<scene_drawable> drawables;
-    for (auto const& loaded_scene : scenes->scene) {
-        for (auto const& node : loaded_scene.nodes) {
-            for (auto const& mesh : node.meshes) {
-                for (auto const& prim : mesh.primitives) {
-                    drawables.push_back(scene_drawable{.geometry = build_mesh(prim), .world_transform = node.transform_matrix, .material_index = prim.material_index});
-                }
+    // 5. Scene bounds from the raw POSITION attributes (no geometry building): the world AABB
+    //    of every drawable primitive's local AABB transformed by its node's world transform.
+    //    gltf::scenes is iterable (begin()/end() flatten scene -> node -> mesh -> primitive).
+    auto const local_bounds = [](gltf::primitive const& prim) -> std::pair<glm::vec3, glm::vec3> {
+        glm::vec3 min(std::numeric_limits<float>::infinity());
+        glm::vec3 max(-std::numeric_limits<float>::infinity());
+        auto const it = prim.vertex.find("POSITION");
+        if (it != prim.vertex.end()) {
+            size_t const count = it->second.data.size() / sizeof(glm::vec3);
+            for (size_t i = 0; i < count; ++i) {
+                glm::vec3 const p = reinterpret_cast<glm::vec3 const*>(it->second.data.data())[i];
+                min = glm::min(min, p);
+                max = glm::max(max, p);
             }
         }
-    }
-    if (drawables.empty()) {
-        utility::panic("model has no drawable primitives");
-    }
-    utility::log("scene loaded: {} textures, {} materials, {} primitives", scenes->textures.size(), scenes->materials.size(), drawables.size());
-
-    // 6. World-space bounding box: transform each mesh's local AABB by its node transform
-    //    (TRS transforms map an AABB to an AABB, so transforming 8 corners is exact)
+        return {min, max};
+    };
     glm::vec3 scene_min(std::numeric_limits<float>::infinity());
     glm::vec3 scene_max(-std::numeric_limits<float>::infinity());
-    for (auto const& drawable : drawables) {
-        glm::mat4 const& m = drawable.world_transform;
+    size_t primitive_count = 0;
+    for (gltf::drawable_ref const& drawable : *scenes) {
+        ++primitive_count;
+        auto const [lmin, lmax] = local_bounds(*drawable.primitive);
+        // TRS transforms map an AABB to an AABB, so transforming the 8 corners is exact
         for (int x = 0; x < 2; ++x) {
             for (int y = 0; y < 2; ++y) {
                 for (int z = 0; z < 2; ++z) {
-                    glm::vec3 const corner(x ? drawable.geometry.bbox_max.x : drawable.geometry.bbox_min.x,
-                                           y ? drawable.geometry.bbox_max.y : drawable.geometry.bbox_min.y,
-                                           z ? drawable.geometry.bbox_max.z : drawable.geometry.bbox_min.z);
-                    glm::vec4 const world = m * glm::vec4(corner, 1.0f);
+                    glm::vec3 const corner(x ? lmax.x : lmin.x, y ? lmax.y : lmin.y, z ? lmax.z : lmin.z);
+                    glm::vec4 const world = drawable.transform_matrix * glm::vec4(corner, 1.0f);
                     scene_min = glm::min(scene_min, glm::vec3(world));
                     scene_max = glm::max(scene_max, glm::vec3(world));
                 }
             }
         }
     }
+    if (primitive_count == 0) {
+        utility::panic("model has no drawable primitives");
+    }
     glm::vec3 const scene_center = scene_min * 0.5f + scene_max * 0.5f;
     float const scene_radius = glm::length(scene_max - scene_min) * 0.5f;
+    utility::log("scene loaded: {} textures, {} materials, {} primitives", scenes->textures.size(), scenes->materials.size(), primitive_count);
     utility::log("scene bounds: center ({:.3f}, {:.3f}, {:.3f}), radius {:.3f}", scene_center.x, scene_center.y, scene_center.z, scene_radius);
 
     // Sink the model so it sits near the world horizon (y = 0) and move the camera target with it:
@@ -476,9 +566,8 @@ int main(int argc, char** argv) {
     // 9. Upload the scene-wide IBL once: shared by every model (bindings 2-4 of the scene set)
     runtime.set_ibl(vulkan::ibl_input{.prefiltered_env = env_bytes, .irradiance = irr_bytes, .brdf_lut = lut_bytes, .env_size = env_size, .env_mip_count = env_mip_count, .irr_size = 32, .lut_size = 256});
 
-    // 13. Create one model per primitive; the orbit camera looks at the origin, so center the
-    //     scene and pull the camera back to fit its radius (same framing as the old single-model fit)
-    runtime.camera.distance = scene_radius * 2.75f;
+    // 10. Resolve every glTF material once into the runtime-neutral form the adapter exposes
+    //     (factors + the 5 texture slots, decoded with mip chains through the cache).
     constexpr std::array<std::pair<std::string_view, VkFormat>, 5> texture_slots = {
         std::pair{"albedo", VK_FORMAT_R8G8B8A8_SRGB},
         std::pair{"metallic_roughness", VK_FORMAT_R8G8B8A8_UNORM},
@@ -486,48 +575,33 @@ int main(int argc, char** argv) {
         std::pair{"occlusion", VK_FORMAT_R8G8B8A8_UNORM},
         std::pair{"emissive", VK_FORMAT_R8G8B8A8_UNORM},
     };
-    uint32_t model_count = 0;
-    for (auto const& drawable : drawables) {
-        // material: factors + texture slots (default factors and no textures without a material)
-        vulkan::material_factors factors = {};
-        std::array<vulkan::texture_input, 5> texture_inputs = {};
-        if (drawable.material_index < scenes->materials.size()) {
-            gltf::material const& mat = scenes->materials[drawable.material_index];
-            factors.base_color_factor = mat.factors.base_color_factor;
-            factors.emissive_factor = glm::vec4(mat.factors.emissive_factor, 1.0f);
-            factors.metallic_factor = mat.factors.metallic_factor;
-            factors.roughness_factor = mat.factors.roughness_factor;
-            factors.normal_scale = mat.factors.normal_scale;
-            for (int i = 0; i < 5; ++i) {
-                auto const it = mat.texture_indices.find(std::string(texture_slots[i].first));
-                if (it != mat.texture_indices.end()) {
-                    texture_inputs[i] = get_texture(it->second, texture_slots[i].second);
-                }
+    std::vector<resolved_material> materials;
+    materials.reserve(scenes->materials.size());
+    for (auto const& mat : scenes->materials) {
+        resolved_material out = {};
+        out.factors.base_color_factor = mat.factors.base_color_factor;
+        out.factors.emissive_factor = glm::vec4(mat.factors.emissive_factor, 1.0f);
+        out.factors.metallic_factor = mat.factors.metallic_factor;
+        out.factors.roughness_factor = mat.factors.roughness_factor;
+        out.factors.normal_scale = mat.factors.normal_scale;
+        for (int i = 0; i < 5; ++i) {
+            auto const it = mat.texture_indices.find(std::string(texture_slots[i].first));
+            if (it != mat.texture_indices.end()) {
+                out.slots[i] = get_texture(it->second, texture_slots[i].second);
             }
         }
-
-        vulkan::model_create_info info = {};
-        info.vertex_data = std::span(reinterpret_cast<unsigned char const*>(drawable.geometry.vertices.data()), drawable.geometry.vertices.size() * sizeof(vertex));
-        info.vertex_stride = sizeof(vertex);
-        info.vertex_count = static_cast<uint32_t>(drawable.geometry.vertices.size());
-        info.index_data = drawable.geometry.index_data;
-        info.index_type = drawable.geometry.index_type;
-        info.index_count = drawable.geometry.index_count;
-        info.albedo = texture_inputs[0];
-        info.metallic_roughness = texture_inputs[1];
-        info.normal = texture_inputs[2];
-        info.occlusion = texture_inputs[3];
-        info.emissive = texture_inputs[4];
-        info.factors = factors;
-        // world transform baked by the loader, centered around the orbit target
-        info.model_matrix = glm::translate(glm::mat4(1.0f), -scene_center + scene_sink) * drawable.world_transform;
-
-        if (runtime.make_model("pbr", info) == nullptr) {
-            utility::panic("failed to create model (pipeline 'pbr' missing)");
-        }
-        ++model_count;
+        materials.push_back(std::move(out));
     }
-    utility::log("created {} models", model_count);
+
+    // 11. Batch-import: the runtime drives the traversal itself through the adapter, which
+    //     models vulkan::scene_drawable_iterator (++ plus geometry/material getters); the
+    //     orbit camera looks at the origin, so center the scene and pull it back to fit
+    //     its radius (same framing as the old single-model fit).
+    runtime.camera.distance = scene_radius * 2.75f;
+    gltf_scene_iterator const scene_first(*scenes, materials);
+    gltf_scene_iterator const scene_last;
+    vulkan::scene_import_result const imported = runtime.import_scene(scene_first, scene_last, -scene_center + scene_sink);
+    utility::log("imported {} primitives ({} new materials)", imported.primitive_count, imported.material_count);
 
     // 14. Main render loop: until the window closes or ESC is pressed.
     //     Every Vulkan frame step (fences, acquire, command buffers, render pass, submit, present)

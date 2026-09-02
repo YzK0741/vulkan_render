@@ -1,6 +1,7 @@
 module;
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <vulkan/vulkan.h>
 
 export module vulkan.runtime;
@@ -8,6 +9,7 @@ export import std;
 export import vulkan.core;
 export import vulkan.core.filter;
 export import vulkan.model;
+import utility;
 
 /**
  * @file runtime.cppm
@@ -218,6 +220,50 @@ namespace vulkan {
          * @return pointer to the model vector, or nullptr if no model uses that pipeline
          */
         [[nodiscard]] std::vector<model> const* get_models(std::string_view pipeline_name) const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief batch-import a scene by traversing an iterator of drawables directly.
+         *        The iterator must model vulkan::scene_drawable_iterator: ++ advances to the
+         *        next drawable, and the geometry/material is read through get_vertex() /
+         *        get_index() / get_transform() / get_albedo() ... get_factors(). The runtime
+         *        drives the whole traversal: it uploads buffers, registers materials and
+         *        creates one model per drawable on the "pbr" pipeline. No glTF (or any scene
+         *        format) knowledge lives in the runtime.
+         * @param first,last iterator pair over the scene's drawables
+         * @param offset translation applied before each model's matrix (e.g. -scene_center + sink)
+         * @return counts of imported primitives and materials
+         */
+        template <class I, class S>
+            requires scene_drawable_iterator<I> && std::same_as<S, I>
+        scene_import_result import_scene(I first, S last, glm::vec3 const& offset) {
+            scene_import_result result = {};
+            uint32_t const materials_before = this->material_count;
+            for (; first != last; ++first) {
+                vulkan::vertex_data_view const vertex = first.get_vertex();
+                vulkan::index_data_view const index = first.get_index();
+                model_create_info info = {};
+                info.vertex_data = vertex.data;
+                info.vertex_stride = vertex.stride;
+                info.vertex_count = vertex.count;
+                info.index_data = index.data;
+                info.index_type = index.type;
+                info.index_count = index.count;
+                info.albedo = first.get_albedo();
+                info.metallic_roughness = first.get_metallic_roughness();
+                info.normal = first.get_normal();
+                info.occlusion = first.get_occlusion();
+                info.emissive = first.get_emissive();
+                info.factors = first.get_factors();
+                info.model_matrix = glm::translate(glm::mat4(1.0f), offset) * first.get_transform();
+                if (this->make_model("pbr", info) == nullptr) {
+                    utility::panic(std::source_location::current(), "failed to import drawable (pipeline 'pbr' missing)");
+                }
+                ++result.primitive_count;
+            }
+            result.material_count = this->material_count - materials_before;
+            return result;
+        }
 
         /**
          * @ingroup vulkan_runtime

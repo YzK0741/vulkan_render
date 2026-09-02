@@ -431,4 +431,72 @@ namespace gltf {
 
         return result;
     }
+
+    // ---- gltf::scenes iteration: flatten scene -> node -> mesh -> primitive ----
+
+    scene_iterator::scene_iterator(scenes const& owner)
+        : scenes_(&owner)
+        , exhausted_(false) {
+        this->advance();
+    }
+
+    scene_iterator::reference scene_iterator::operator*() const noexcept {
+        auto const& owner = *this->scenes_;
+        auto const& prim = owner.scene[this->scene_i].nodes[this->node_i].meshes[this->mesh_i].primitives[this->prim_i];
+        this->current_.primitive = &prim;
+        this->current_.transform_matrix = owner.scene[this->scene_i].nodes[this->node_i].transform_matrix;
+        return this->current_;
+    }
+
+    scene_iterator::pointer scene_iterator::operator->() const noexcept {
+        return &this->current_;
+    }
+
+    scene_iterator& scene_iterator::operator++() {
+        ++this->prim_i; // step past the current primitive
+        this->advance();
+        return *this;
+    }
+
+    void scene_iterator::operator++(int) {
+        ++*this;
+    }
+
+    void scene_iterator::advance() {
+        if (this->scenes_ == nullptr || this->exhausted_) {
+            this->exhausted_ = true;
+            return;
+        }
+        auto const& owner = *this->scenes_;
+        while (this->scene_i < owner.scene.size()) {
+            auto const& s = owner.scene[this->scene_i];
+            if (this->node_i >= s.nodes.size()) {
+                ++this->scene_i;
+                this->node_i = this->mesh_i = this->prim_i = 0;
+                continue;
+            }
+            auto const& node = s.nodes[this->node_i];
+            if (this->mesh_i >= node.meshes.size()) {
+                ++this->node_i;
+                this->mesh_i = this->prim_i = 0;
+                continue;
+            }
+            auto const& mesh = node.meshes[this->mesh_i];
+            if (this->prim_i >= mesh.primitives.size()) {
+                ++this->mesh_i;
+                this->prim_i = 0;
+                continue;
+            }
+            return; // (scene_i, node_i, mesh_i, prim_i) is a valid drawable primitive
+        }
+        this->exhausted_ = true;
+    }
+
+    scene_iterator scenes::begin() const {
+        return scene_iterator(*this);
+    }
+
+    scene_iterator scenes::end() const noexcept {
+        return scene_iterator();
+    }
 } // namespace gltf
