@@ -64,6 +64,7 @@ namespace vulkan {
 
         // Shared scene resources: camera UBO buffers, white fallback texture, texture sampler
         this->init_scene_resources();
+        this->init_shadow_resources();
     }
 
     // The destructor body runs before member destruction, so vulkan_core (and the VkDevice it
@@ -97,6 +98,14 @@ namespace vulkan {
             this->vulkan_core.vma.free_buffer(this->instance_buffer_handle);
             this->instance_buffer_handle = 0;
         }
+        if (this->light_buffer_handle != 0) {
+            this->vulkan_core.vma.free_buffer(this->light_buffer_handle);
+            this->light_buffer_handle = 0;
+        }
+        for (uint64_t const handle : this->shadow_image_handles) {
+            this->vulkan_core.vma.free_image(handle);
+        }
+        this->shadow_image_handles.clear();
     }
 
     void runtime::init_scene_resources() {
@@ -176,6 +185,47 @@ namespace vulkan {
         this->instance_mapped = instance_detail->allocation_info.pMappedData;
     }
 
+    void runtime::init_shadow_resources() {
+        // Shadow map: one depth image per frame slot (see the member docs). Depth-only images
+        // carry no uploaded content (vma::create_image with data == nullptr skips the digest /
+        // upload path), so each frame can render the scene's depth from the light's view into it.
+        this->shadow_image_handles.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        this->shadow_image_views.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            vulkan::image_create_info shadow_info = {};
+            shadow_info.width = vulkan::runtime::shadow_map_size;
+            shadow_info.height = vulkan::runtime::shadow_map_size;
+            shadow_info.mip_levels = 1;
+            shadow_info.array_layers = 1;
+            shadow_info.format = this->vulkan_core.depth_format;
+            shadow_info.extra_usage = VK_IMAGE_USAGE_SAMPLED_BIT; // sampled by pbr.frag
+            uint64_t const handle = this->vulkan_core.vma.create_image(nullptr, 0, shadow_info, vulkan::image_type::texture_2d_depth);
+            if (handle == 0) {
+                utility::panic("failed to create shadow map image");
+            }
+            auto const* detail = this->vulkan_core.vma.get_image_detail(handle);
+            if (detail == nullptr) {
+                utility::panic("failed to get shadow map image detail");
+            }
+            this->shadow_image_handles.push_back(handle);
+            this->shadow_image_views.push_back(this->vulkan_core.make_depth_image_view(detail->image, this->vulkan_core.depth_format));
+        }
+        this->shadow_sampler = this->vulkan_core.make_shadow_sampler();
+
+        // Light UBO (scene set binding 7): static content, filled by enable_shadows()
+        light_ubo initial = {};
+        uint64_t const light_handle = this->vulkan_core.vma.create_buffer(std::span(&initial, 1), vulkan::buffer_type::uniform_coherent);
+        if (light_handle == 0) {
+            utility::panic("failed to create light ubo buffer");
+        }
+        auto const* light_detail = this->vulkan_core.vma.get_buffer_detail(light_handle);
+        if (light_detail == nullptr) {
+            utility::panic("failed to get light ubo buffer detail");
+        }
+        this->light_buffer_handle = light_handle;
+        this->light_mapped = light_detail->allocation_info.pMappedData;
+    }
+
     void runtime::ensure_scene_set() {
         if (this->scene_set_created) {
             return;
@@ -229,8 +279,52 @@ namespace vulkan {
         instance_write.pBufferInfo = &instance_info;
         vkUpdateDescriptorSets(this->vulkan_core.device, 1, &instance_write, 0, nullptr);
 
+        // binding 7 + 8: light UBO + shadow map (created in init_shadow_resources)
+        this->write_light_and_shadow_bindings();
+
         // bindings 2-4: IBL (or white placeholders until set_ibl() is called)
         this->write_ibl_bindings();
+    }
+
+    void runtime::write_light_and_shadow_bindings() {
+        if (!this->scene_set_created) {
+            return;
+        }
+        // binding 7: light UBO (uniform buffer; light_view_proj + light_dir filled by enable_shadows)
+        auto const* light_detail = this->vulkan_core.vma.get_buffer_detail(this->light_buffer_handle);
+        if (light_detail == nullptr) {
+            utility::panic("failed to get light ubo buffer detail");
+        }
+        VkDescriptorBufferInfo const light_info{light_detail->buffer, 0, sizeof(light_ubo)};
+        VkWriteDescriptorSet light_write = {};
+        light_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        light_write.dstSet = *this->scene_set;
+        light_write.dstBinding = 7;
+        light_write.descriptorCount = 1;
+        light_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        light_write.pBufferInfo = &light_info;
+
+        // binding 8: shadow map depth texture (view + sampler; the view is re-pointed per frame
+        // to the current frame slot's image in render_frame, update-after-bind)
+        auto const* shadow_detail = this->vulkan_core.vma.get_image_detail(this->shadow_image_handles[0]);
+        if (shadow_detail == nullptr) {
+            utility::panic("failed to get shadow map image detail");
+        }
+        VkDescriptorImageInfo const shadow_info{
+            .sampler = *this->shadow_sampler,
+            .imageView = *this->shadow_image_views[0],
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        VkWriteDescriptorSet shadow_write = {};
+        shadow_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        shadow_write.dstSet = *this->scene_set;
+        shadow_write.dstBinding = 8;
+        shadow_write.descriptorCount = 1;
+        shadow_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        shadow_write.pImageInfo = &shadow_info;
+
+        std::array<VkWriteDescriptorSet, 2> const writes = {light_write, shadow_write};
+        vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     }
 
     void runtime::write_ibl_bindings() const {
@@ -540,6 +634,25 @@ namespace vulkan {
             camera_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             camera_write.pBufferInfo = &camera_info;
             vkUpdateDescriptorSets(vk.device, 1, &camera_write, 0, nullptr);
+
+            // binding 8: point the shadow map binding at this frame slot's depth image (the
+            // shadow pass below renders into it; the main pass samples it, update-after-bind)
+            auto const* shadow_detail = vk.vma.get_image_detail(this->shadow_image_handles[frame_slot]);
+            if (shadow_detail != nullptr) {
+                VkDescriptorImageInfo const shadow_info{
+                    .sampler = *this->shadow_sampler,
+                    .imageView = *this->shadow_image_views[frame_slot],
+                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                };
+                VkWriteDescriptorSet shadow_write = {};
+                shadow_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                shadow_write.dstSet = *this->scene_set;
+                shadow_write.dstBinding = 8;
+                shadow_write.descriptorCount = 1;
+                shadow_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                shadow_write.pImageInfo = &shadow_info;
+                vkUpdateDescriptorSets(vk.device, 1, &shadow_write, 0, nullptr);
+            }
         }
 
         // 6. Record the frame into this slot's command buffer
@@ -548,6 +661,97 @@ namespace vulkan {
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         if (vkBeginCommandBuffer(*command_buffer, &begin_info) != VK_SUCCESS) {
             return frame_result::failed;
+        }
+
+        // ---- Shadow pass: render the scene's depth from the light into this slot's shadow map.
+        //      Drawn before the main pass; the depth-only pipeline shares the flat scene layout
+        //      and the model draw() path (same vertex buffers / push constants), so the shadow
+        //      pass is just "bind the shadow pipeline, then draw the same models".
+        //      Dynamic rendering only: depth-only rendering needs no color attachment, which the
+        //      classic render-pass fallback cannot express (make_shadow_pipeline already failed
+        //      there, so this block is skipped together with shadows_enabled).
+        if (vk.use_dynamic_rendering && this->shadow_pipeline && this->shadows_enabled) {
+            auto const* shadow_detail = vk.vma.get_image_detail(this->shadow_image_handles[frame_slot]);
+            if (shadow_detail != nullptr) {
+                // 6a. transition the shadow image to a renderable depth attachment (loadOp CLEAR
+                //     discards the previous frame's contents, so UNDEFINED as oldLayout is valid)
+                VkImageMemoryBarrier2 shadow_barrier = {};
+                shadow_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                shadow_barrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+                shadow_barrier.srcAccessMask = 0;
+                shadow_barrier.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+                shadow_barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                shadow_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                shadow_barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                shadow_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                shadow_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                shadow_barrier.image = shadow_detail->image;
+                shadow_barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+                VkDependencyInfo shadow_dependency = {};
+                shadow_dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                shadow_dependency.imageMemoryBarrierCount = 1;
+                shadow_dependency.pImageMemoryBarriers = &shadow_barrier;
+                vkCmdPipelineBarrier2(*command_buffer, &shadow_dependency);
+
+                // 6b. depth-only rendering into the shadow map (no color attachment)
+                VkClearValue shadow_clear = {};
+                shadow_clear.depthStencil = {1.0f, 0};
+                VkRenderingAttachmentInfo shadow_depth_attachment = {};
+                shadow_depth_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                shadow_depth_attachment.imageView = *this->shadow_image_views[frame_slot];
+                shadow_depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                shadow_depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                shadow_depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                shadow_depth_attachment.clearValue = shadow_clear;
+
+                VkRenderingInfo shadow_rendering_info = {};
+                shadow_rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+                shadow_rendering_info.renderArea = {{0, 0}, {vulkan::runtime::shadow_map_size, vulkan::runtime::shadow_map_size}};
+                shadow_rendering_info.layerCount = 1;
+                shadow_rendering_info.colorAttachmentCount = 0;
+                shadow_rendering_info.pDepthAttachment = &shadow_depth_attachment;
+                vkCmdBeginRendering(*command_buffer, &shadow_rendering_info);
+
+                // 6c. bind the shared scene set (the light UBO binding 7) and the shadow pipeline,
+                //     then draw every model exactly like the main pass (polymorphic model::draw)
+                if (this->scene_set.get() != VK_NULL_HANDLE) {
+                    VkDescriptorSet const scene_set_handle = *this->scene_set;
+                    vkCmdBindDescriptorSets(*command_buffer,
+                                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                            vk.scene_pipeline_layout,
+                                            0,
+                                            1,
+                                            &scene_set_handle,
+                                            0,
+                                            nullptr);
+                }
+                this->shadow_pipeline->begin_pipeline(*command_buffer);
+                for (auto const& pipeline_models : this->models | std::views::values) {
+                    for (auto const& model : pipeline_models) {
+                        model->draw(*command_buffer); // depth-only: shadow.vert transforms into light space
+                    }
+                }
+                vkCmdEndRendering(*command_buffer);
+
+                // 6d. hand the shadow map back to the main pass as a sampled texture
+                VkImageMemoryBarrier2 shadow_read_barrier = {};
+                shadow_read_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                shadow_read_barrier.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+                shadow_read_barrier.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                shadow_read_barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                shadow_read_barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                shadow_read_barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                shadow_read_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                shadow_read_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                shadow_read_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                shadow_read_barrier.image = shadow_detail->image;
+                shadow_read_barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+                VkDependencyInfo shadow_read_dependency = {};
+                shadow_read_dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                shadow_read_dependency.imageMemoryBarrierCount = 1;
+                shadow_read_dependency.pImageMemoryBarriers = &shadow_read_barrier;
+                vkCmdPipelineBarrier2(*command_buffer, &shadow_read_dependency);
+            }
         }
 
         // Dynamic rendering has no automatic attachment transitions (unlike a render pass):
@@ -701,6 +905,41 @@ namespace vulkan {
         }
         this->pipelines.emplace(pipeline_name, std::move(make_result).value());
         return {};
+    }
+
+    std::expected<void, std::string> runtime::make_shadow_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code) {
+        using fail = std::unexpected<std::string>;
+        // depth-only pipeline (no color attachment, single sample); requires dynamic rendering
+        auto make_result = this->vulkan_core.make_depth_pipeline(vertex_shader_code, fragment_shader_code, this->vulkan_core.depth_format);
+        if (!make_result) {
+            return fail(std::string(make_result.error()));
+        }
+        this->shadow_pipeline = std::move(make_result).value();
+        // The shadow map is a fixed-size depth target: its viewport/scissor do not follow the
+        // swapchain size (render_frame only re-syncs pipelines stored in the pipelines map)
+        this->shadow_pipeline->viewport = {
+            0.0f,
+            0.0f,
+            static_cast<float>(vulkan::runtime::shadow_map_size),
+            static_cast<float>(vulkan::runtime::shadow_map_size),
+            0.0f,
+            1.0f,
+        };
+        this->shadow_pipeline->scissor = {{0, 0}, {vulkan::runtime::shadow_map_size, vulkan::runtime::shadow_map_size}};
+        return {};
+    }
+
+    void runtime::enable_shadows(glm::vec3 const& scene_center, float const scene_radius) {
+        if (!this->shadow_pipeline || this->light_mapped == nullptr) {
+            utility::log("shadow mapping not enabled (no shadow pipeline / light buffer)");
+            return;
+        }
+        // light UBO: orthographic light view-proj framing the scene + the light direction
+        light_ubo const ubo = make_directional_light_ubo(scene_center, scene_radius);
+        std::memcpy(this->light_mapped, &ubo, sizeof(ubo));
+        this->shadows_enabled = true;
+        utility::log("shadow mapping enabled: light frustum center ({:.2f}, {:.2f}, {:.2f}), radius {:.2f}",
+                     scene_center.x, scene_center.y, scene_center.z, scene_radius);
     }
 
     std::expected<void, std::string> runtime::make_skybox_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code) {

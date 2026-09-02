@@ -120,6 +120,20 @@ int main(int argc, char** argv) {
         }
         utility::log("SUCCESS: skybox pipeline created (fullscreen environment background)");
     }
+    {
+        // Shadow pass pipeline (depth-only): renders the scene from the light into the shadow
+        // map. Created once; enable_shadows() below activates the pass after the scene import.
+        std::vector<unsigned char> vertex_code;
+        std::vector<unsigned char> fragment_code;
+        load_shader(*shaders_dir, "shadow.vert.spv", vertex_code);
+        load_shader(*shaders_dir, "shadow.frag.spv", fragment_code);
+        auto const shadow_result = runtime.make_shadow_pipeline(vertex_code, fragment_code);
+        if (!shadow_result) {
+            utility::log("shadow pipeline disabled: {}", shadow_result.error());
+        } else {
+            utility::log("SUCCESS: shadow pipeline created (directional shadow map pass)");
+        }
+    }
 
     // 6. Collect the async startup results
     auto scenes = load_future.get();
@@ -214,6 +228,11 @@ int main(int argc, char** argv) {
     gltf::drawable_iterator const scene_last;
     vulkan::scene_import_result const imported = runtime.import_scene(scene_first, scene_last, -scene_center + scene_sink);
     utility::log("imported {} primitives ({} new materials)", imported.primitive_count, imported.material_count);
+
+    // 11b. Enable directional shadow mapping over the imported scene: the shadow frustum frames
+    //      the sphere around where the models actually sit (they were translated by the import
+    //      offset above, so their world-space center is scene_sink) with their original radius
+    runtime.enable_shadows(scene_sink, scene_radius);
 
     // 12. Optional instancing stress: `vulkan_render <model> <grid_side>` draws the first
     //     imported primitive as a grid_side x grid_side grid in ONE instanced draw call

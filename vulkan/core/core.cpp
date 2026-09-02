@@ -705,13 +705,13 @@ namespace vulkan {
 
     void core::create_descriptor_pool() noexcept {
         std::vector<VkDescriptorPoolSize> pool_sizes;
-        // Uniform buffers: one camera UBO binding per scene set (few sets total)
-        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 64});
+        // Uniform buffers: one camera UBO + one light UBO binding per scene set
+        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 128});
         // Combined image samplers: the texture array (scene_texture_capacity per scene set)
-        // dominates; plus a few IBL / fallback entries per set
-        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * scene_texture_capacity});
-        // Material table storage buffer: one per scene set
-        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64});
+        // dominates; plus the IBL bindings and the shadow map per set
+        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 * scene_texture_capacity});
+        // Material table + instance transform storage buffers: two per scene set
+        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128});
 
         VkDescriptorPoolCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -733,7 +733,7 @@ namespace vulkan {
 
     void core::init_scene_layouts() noexcept {
         // ---- 1. Fixed flat descriptor set layout (see the convention docs in core.cppm) ----
-        std::array<VkDescriptorSetLayoutBinding, 7> bindings = {};
+        std::array<VkDescriptorSetLayoutBinding, 9> bindings = {};
         bindings[0] = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         bindings[1] = {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = scene_texture_capacity, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         bindings[2] = {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
@@ -743,12 +743,18 @@ namespace vulkan {
         bindings[5] = {.binding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         // per-instance world transforms for instanced draws (mat4 per instance, read in pbr.vert)
         bindings[6] = {.binding = 6, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
+        // directional light: light-space view-proj + light direction (read by shadow.vert and pbr.frag)
+        bindings[7] = {.binding = 7, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
+        // shadow map depth texture (sampled by pbr.frag with a depth-comparison sampler, PCF)
+        bindings[8] = {.binding = 8, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
 
-        std::array<VkDescriptorBindingFlags, 7> binding_flags = {};
+        std::array<VkDescriptorBindingFlags, 9> binding_flags = {};
         binding_flags[0] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT; // camera UBO rewritten per frame
         // texture array: only written entries are valid, appended while the set may be bound;
         // non-uniform indexing itself is a device feature, not a layout flag
         binding_flags[1] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+        // shadow map: rewritten each frame to point at the current frame slot's depth image
+        binding_flags[8] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
 
         VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info = {};
         flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
@@ -1027,6 +1033,38 @@ namespace vulkan {
         }
     }
 
+    vk_image_view core::make_depth_image_view(VkImage const image, VkFormat const format) const {
+        VkImageViewCreateInfo view_info = {};
+        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.image = image;
+        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_info.format = format;
+        view_info.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+        VkImageView view = VK_NULL_HANDLE;
+        vkCreateImageView(this->device, &view_info, nullptr, &view);
+        return vk_image_view(view, this->device);
+    }
+
+    vk_sampler core::make_shadow_sampler() const {
+        // Shadow map sampler: NEAREST filtering so pbr.frag reads exact stored depths and does
+        // manual percentage-closer filtering (PCF) across neighbor texels. No depth comparison
+        // and no linear filtering on the depth format are required.
+        VkSamplerCreateInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        info.magFilter = VK_FILTER_NEAREST;
+        info.minFilter = VK_FILTER_NEAREST;
+        info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.maxAnisotropy = 1.0f;
+        info.minLod = 0.0f;
+        info.maxLod = 0.0f;
+        VkSampler sampler = VK_NULL_HANDLE;
+        vkCreateSampler(this->device, &info, nullptr, &sampler);
+        return vk_sampler(sampler, this->device);
+    }
+
     std::expected<vk_pipeline, std::string_view> core::make_pipeline(
         std::span<unsigned char const> vertex_shader_code,
         std::span<unsigned char const> const fragment_shader_code,
@@ -1053,6 +1091,32 @@ namespace vulkan {
             };
             result->scissor = {{0, 0}, this->swap_chain_extent};
         }
+        return result;
+    }
+
+    std::expected<vk_pipeline, std::string_view> core::make_depth_pipeline(
+        std::span<unsigned char const> vertex_shader_code,
+        std::span<unsigned char const> const fragment_shader_code,
+        VkFormat const depth_format) const {
+        using fail = std::unexpected<std::string_view>;
+        // The depth-only pipeline renders with no color attachment; only the dynamic rendering
+        // path can express that (the classic render pass fallback always has color attachments)
+        if (!this->use_dynamic_rendering) {
+            return fail("depth-only pipelines require dynamic rendering (shadow mapping disabled)");
+        }
+        auto result = vulkan::make_pipeline(
+            this->device,
+            this->scene_pipeline_layout,
+            VK_NULL_HANDLE,      // dynamic rendering
+            VK_FORMAT_UNDEFINED, // no color attachment
+            depth_format,
+            vertex_shader_code,
+            fragment_shader_code,
+            VK_SAMPLE_COUNT_1_BIT, // the shadow map is single-sampled
+            true,                  // depth test + write
+            false);                // no color attachment
+        // viewport/scissor are dynamic states set by the caller before drawing (the shadow map
+        // is a fixed-size target, so core::make_pipeline's swapchain-size defaults do not apply)
         return result;
     }
 

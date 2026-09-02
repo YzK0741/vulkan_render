@@ -95,6 +95,18 @@ namespace vulkan {
         // background pass (fullscreen triangle, no depth test): drawn first every frame
         std::optional<vk_pipeline> skybox_pipeline = std::nullopt;
 
+        // ---- directional shadow mapping (scene set binding 7 light UBO + binding 8 shadow map) ----
+        static constexpr uint32_t shadow_map_size = 2048;
+        // One shadow map per frame slot: while slot A is in flight, slot B already rewrites its
+        // own map, so the two never race on the same depth image
+        std::vector<uint64_t> shadow_image_handles = {}; // depth images, rendered into every frame
+        std::vector<vk_image_view> shadow_image_views = {};
+        vk_sampler shadow_sampler = {};   // nearest + clamp-to-edge (manual PCF in pbr.frag)
+        uint64_t light_buffer_handle = 0; // host-visible light UBO (static content)
+        void* light_mapped = nullptr;
+        std::optional<vk_pipeline> shadow_pipeline = std::nullopt; // depth-only pass pipeline
+        bool shadows_enabled = false;                              // true after enable_shadows() (light UBO filled + pipeline ready)
+
         std::mutex access_mutex;
         // string keys (not string_view): the runtime owns the pipeline/model names, so lookups
         // stay valid regardless of the caller's storage lifetime. std::less<> enables heterogeneous
@@ -122,8 +134,10 @@ namespace vulkan {
 
         // ---- scene resource management (see the members above) ----
         void init_scene_resources();                               // camera UBO buffers + white fallback texture + texture sampler + material table
+        void init_shadow_resources();                              // shadow map depth image/view/sampler + light UBO buffer
         void ensure_scene_set();                                   // lazily create the scene set and write camera + IBL + material bindings
         void write_ibl_bindings() const;                           // (re)write bindings 2-4 with the current IBL views / placeholders
+        void write_light_and_shadow_bindings();                    // (re)write binding 7 (light UBO) + binding 8 (shadow map)
         uint32_t register_material(model_create_info const& info); // upload textures into the array, append a material_record, return its index
 
     public:
@@ -185,6 +199,32 @@ namespace vulkan {
         std::expected<void, std::string> make_skybox_pipeline(
             std::span<unsigned char const> vertex_shader_code,
             std::span<unsigned char const> fragment_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief create the directional shadow pipeline: renders scene geometry depth-only into
+         *        the shadow map (no color attachment), from the light's view
+         * @param vertex_shader_code raw SPIR-V binary of the shadow vertex shader
+         * @param fragment_shader_code raw SPIR-V binary of the shadow fragment shader
+         * @return success, or an error message on failure
+         * @note requires dynamic rendering (Vulkan 1.3); on the classic render-pass fallback
+         *       path the creation fails and shadow mapping stays disabled
+         */
+        std::expected<void, std::string> make_shadow_pipeline(
+            std::span<unsigned char const> vertex_shader_code,
+            std::span<unsigned char const> fragment_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief enable directional shadow mapping: fills the light UBO with an orthographic
+         *        view-proj framing the given scene bounds (plus the light direction, matching
+         *        the sky sun). Must be called after the models exist (the shadow pass draws them).
+         * @param scene_center world-space center of the shadow frustum (usually the scene bounds
+         *        center after the scene offset is applied, i.e. where the models actually sit)
+         * @param scene_radius conservative radius covering all shadow casters
+         * @note requires make_shadow_pipeline() to have succeeded; no-op otherwise
+         */
+        void enable_shadows(glm::vec3 const& scene_center, float scene_radius);
 
         /**
          * @ingroup vulkan_runtime

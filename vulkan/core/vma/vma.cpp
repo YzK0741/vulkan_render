@@ -784,9 +784,14 @@ namespace vulkan {
     uint64_t vma_allocator::create_image(unsigned char const* data, uint64_t const size_byte, image_create_info const& create_info, image_type const type) {
         // sha256 is pure CPU work; keep it outside the critical section. It is computed before
         // allocating so a content hit can reuse an existing image without any allocation or upload.
-        auto const digest = utility::sha256(std::span(data, size_byte));
-        if (!digest) {
-            utility::panic("sha256 failed");
+        // Empty images (data == nullptr, e.g. a depth shadow map that is rendered into, never
+        // uploaded) have no content digest; they are never deduplicated (see is_dedupable below).
+        std::optional<utility::sha256_digest> digest;
+        if (data != nullptr && size_byte != 0) {
+            digest = utility::sha256(std::span(data, size_byte));
+            if (!digest) {
+                utility::panic("sha256 failed");
+            }
         }
 
         // Only immutable, data-uploaded textures are shareable: depth / staging / render targets
@@ -814,7 +819,8 @@ namespace vulkan {
 
         VkDeviceSize const image_size = size_byte;
 
-        // Expected size = array_layers * sum of all mip sizes * bytes per pixel
+        // Expected size = array_layers * sum of all mip sizes * bytes per pixel; only meaningful
+        // for images that carry uploaded data (empty render-target images have no payload)
         VkDeviceSize expected_size = 0;
         for (uint32_t mip = 0; mip < create_info.mip_levels; ++mip) {
             expected_size += static_cast<VkDeviceSize>(std::max(1u, create_info.width >> mip)) *
@@ -822,7 +828,7 @@ namespace vulkan {
                              sizeof_vk_format(create_info.format);
         }
         expected_size *= create_info.array_layers;
-        if (expected_size != image_size) {
+        if (data != nullptr && expected_size != image_size) {
             utility::log("incorrect image size [{}], expected [{}]", image_size, expected_size);
         }
 
@@ -884,7 +890,7 @@ namespace vulkan {
             detail.image = image;
             detail.allocation = allocation;
             detail.allocation_info = alloc_detail;
-            detail.digest = digest.value();
+            detail.digest = digest ? digest.value() : utility::sha256_digest{};
             detail.create_info = create_info;
             detail.type = type;
             this->images.emplace(handle, std::move(detail));

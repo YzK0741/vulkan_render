@@ -34,6 +34,20 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_model
+     * @brief directional light UBO content, layout matches the LightUBO block in pbr.frag /
+     *        shadow.vert (scene set binding 7): light-space view-proj plus the light direction
+     * @note single fixed directional sun: the runtime builds it from the scene bounds and both
+     *       shader stages read it, so the sun disc, the PBR direct light and the shadow map
+     *       sampling all agree on one direction
+     */
+    export struct light_ubo {
+        glm::mat4 light_view_proj; // world -> light clip space (orthographic)
+        glm::vec4 light_dir;       // xyz: normalized light direction (sun)
+    };
+    static_assert(sizeof(light_ubo) == 80);
+
+    /**
+     * @ingroup vulkan_model
      * @brief RGBA texture pixels ready for GPU upload (already converted to the target format)
      * @note valid == false means "missing texture", the model falls back to a 1x1 white image
      */
@@ -322,4 +336,18 @@ namespace vulkan {
         float distance,
         glm::vec3 const& target,
         float aspect);
+
+    /**
+     * @ingroup vulkan_model
+     * @brief build the directional light UBO (light-space view-proj + direction) for shadow
+     *        mapping. The light direction matches the analytic sky sun (see skybox.frag), so
+     *        shadows, the PBR direct light and the visible sun disc all agree.
+     * @param scene_center world-space center of the shadow frustum (e.g. the imported scene
+     *        bounds center after the scene offset is applied)
+     * @param scene_radius conservative radius covering the shadow casters
+     * @return light UBO with an orthographic view-proj framing the scene bounds
+     * @note ortho box sized to cover a sphere of the given radius around scene_center; the light
+     *       looks down the (0.3, 1.0, 0.5) direction (the same sun as the skybox)
+     */
+    export light_ubo make_directional_light_ubo(glm::vec3 const& scene_center, float scene_radius);
 } // namespace vulkan

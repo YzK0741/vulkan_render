@@ -33,7 +33,10 @@ namespace vulkan {
      *        set 0 binding 0 = CameraUBO (uniform buffer, update-after-bind),
      *              binding 1 = sampler2D textures[] (runtime array, partially bound + update-after-bind + non-uniform index),
      *              binding 2/3/4 = prefiltered env / irradiance / BRDF LUT (combined image samplers),
-     *              binding 5 = Material materials[] (storage buffer: per-material texture indices + factors)
+     *              binding 5 = Material materials[] (storage buffer: per-material texture indices + factors),
+     *              binding 6 = mat4 instance transforms[] (storage buffer, per-instance world matrices),
+     *              binding 7 = LightUBO (uniform buffer: directional light view-proj + direction),
+     *              binding 8 = shadow map (sampler2DShadow, depth comparison + hardware PCF)
      * @note hardcoded instead of parsed from SPIR-V: the indexed layout is flat, so pipelines
      *       skip descriptor / push constant parsing and share one layout object
      */
@@ -163,12 +166,49 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_core
+         * @brief create a 2D depth image view (DEPTH aspect) over the whole image
+         * @param image the image to view
+         * @param format the view format (a depth format)
+         * @return raii vk_image_view owning the created view
+         * @note the regular make_image_view uses the COLOR aspect; depth images (e.g. the shadow
+         *       map) need the DEPTH aspect to be sampled as depth
+         */
+        vk_image_view make_depth_image_view(VkImage image, VkFormat format) const;
+
+        /**
+         * @ingroup vulkan_core
          * @brief create a linear/min-linear sampler with the given wrap mode
          * @param address_mode wrap mode applied to all three axes
          * @param max_lod maximum mip level the sampler may access
          * @return raii vk_sampler owning the created sampler
          */
         vk_sampler make_sampler(VkSamplerAddressMode address_mode, float max_lod) const;
+
+        /**
+         * @ingroup vulkan_core
+         * @brief create the shadow map sampling sampler (NEAREST + clamp-to-edge)
+         * @return raii vk_sampler owning the created sampler
+         * @note pbr.frag does manual percentage-closer filtering: it fetches the stored depth
+         *       with this NEAREST sampler at a few neighbor texels and averages the comparisons,
+         *       so no depth-comparison/linear-filter format feature is required
+         */
+        vk_sampler make_shadow_sampler() const;
+
+        /**
+         * @ingroup vulkan_core
+         * @brief create a depth-only graphics pipeline (no color attachment, single sample),
+         *        used by the shadow pass to render depth into the shadow map
+         * @param vertex_shader_code raw SPIR-V binary of the vertex shader
+         * @param fragment_shader_code raw SPIR-V binary of the fragment shader
+         * @param depth_format depth attachment format (dynamic rendering only)
+         * @return vk_pipeline on success, error message on failure
+         * @note requires dynamic rendering (Vulkan 1.3); on the classic render-pass fallback
+         *       path it returns an error and the caller should disable shadow mapping
+         */
+        std::expected<vk_pipeline, std::string_view> make_depth_pipeline(
+            std::span<unsigned char const> vertex_shader_code,
+            std::span<unsigned char const> fragment_shader_code,
+            VkFormat depth_format) const;
 
         VkResult get_image_index(uint32_t& image_index) const;
         void wait_usable_image(uint32_t image_index);

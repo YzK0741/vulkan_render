@@ -32,6 +32,8 @@ namespace vulkan {
      * @param fragment_shader_code raw SPIR-V binary of the fragment shader
      * @param msaa_level MSAA sample count used by the render pass
      * @param depth_test_enabled enable depth test + depth write (false e.g. for the skybox pass)
+     * @param has_color_attachment whether the pipeline renders color (false for depth-only
+     *        passes like the shadow map: no color attachment, no color blending)
      * @return vk_pipeline on success, error message on failure
      */
     export std::expected<vk_pipeline, std::string_view> make_pipeline(
@@ -43,5 +45,6 @@ namespace vulkan {
         std::span<unsigned char const> vertex_shader_code,
         std::span<unsigned char const> fragment_shader_code,
         VkSampleCountFlagBits msaa_level,
-        bool depth_test_enabled = true);
+        bool depth_test_enabled = true,
+        bool has_color_attachment = true);
 } // namespace vulkan

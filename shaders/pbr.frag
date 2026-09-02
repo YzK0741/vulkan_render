@@ -41,6 +41,48 @@ layout(push_constant) uniform PushConstants {
     mat4 model; // per-model world transform (kept out of the shared camera UBO)
 } push;
 
+// Directional light UBO (scene set binding 7): the orthographic light view-proj (world -> shadow
+// map) and the light direction. The direction is filled by the CPU (make_directional_light_ubo)
+// and matches the sky sun, so the direct light, the visible sun disc and the shadows all agree.
+layout(set = 0, binding = 7) uniform LightUBO {
+    mat4 light_view_proj;
+    vec4 light_dir; // xyz: normalized light direction
+} light;
+
+// Shadow map (scene set binding 8): the scene's depth seen from the light, sampled with manual
+// percentage-closer filtering below (NEAREST sampler, no depth comparison required).
+layout(set = 0, binding = 8) uniform sampler2D shadow_map;
+
+// Percentage-closer filtering over the shadow map: average the lit/unlit decision of the
+// fragment's light-space depth against a 3x3 neighborhood of stored depths.
+float calc_shadow(vec3 world_pos) {
+    // Transform the fragment into the light's clip space
+    vec4 light_clip = light.light_view_proj * vec4(world_pos, 1.0);
+    vec3 ndc = light_clip.xyz / light_clip.w; // ortho projection: w == 1
+    vec2 uv = ndc.xy * 0.5 + 0.5;
+    float current_depth = ndc.z; // [0,1] (RH_ZO ortho)
+
+    // Outside the light frustum: fully lit (the shadow map covers the scene bounds only)
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || current_depth < 0.0 || current_depth > 1.0) {
+        return 1.0;
+    }
+
+    // Constant depth bias pushes the comparison away from the surface to hide acne; PCF then
+    // smooths the shadow edges
+    float bias = 0.002;
+    vec2 texel_size = 1.0 / vec2(textureSize(shadow_map, 0));
+
+    float shadow = 0.0;
+    for (int x = -1; x <= 1; ++x) {
+        for (int y = -1; y <= 1; ++y) {
+            float stored = texture(shadow_map, uv + vec2(x, y) * texel_size).r;
+            // lit when this fragment is not deeper than the stored depth (plus bias)
+            shadow += (current_depth - bias <= stored) ? 1.0 : 0.0;
+        }
+    }
+    return shadow / 9.0;
+}
+
 const float PI = 3.14159265359;
 const float ENV_MIP_COUNT = 5.0; // must match the prefiltered-env mip count generated on the CPU
 
@@ -140,9 +182,10 @@ void main() {
         n = -n;
     }
 
-    // ---- Cook-Torrance BRDF (single directional light) ----
+    // ---- Cook-Torrance BRDF (single directional light, direction from the shared LightUBO so
+    //      the direct light always agrees with the shadow map and the sky sun) ----
     vec3 v = normalize(camera.camera_pos - v_world_pos);
-    vec3 l = normalize(vec3(0.3, 1.0, 0.5));
+    vec3 l = normalize(light.light_dir.xyz);
     vec3 h = normalize(v + l);
 
     vec3 f0 = mix(vec3(0.04), base_color.rgb, metallic);
@@ -157,7 +200,9 @@ void main() {
 
     vec3 kd = (1.0 - f) * (1.0 - metallic);
     float ndotl = max(dot(n, l), 0.0);
-    vec3 radiance = vec3(7.5) * ndotl;
+    float shadow = calc_shadow(v_world_pos);
+    // direct-light radiance is attenuated by the shadow factor; IBL ambient stays unshadowed
+    vec3 radiance = vec3(7.5) * ndotl * shadow;
 
     vec3 diffuse = kd * base_color.rgb / PI;
 

@@ -38,7 +38,8 @@ namespace vulkan {
         std::span<unsigned char const> const vertex_shader_code,
         std::span<unsigned char const> const fragment_shader_code,
         VkSampleCountFlagBits const msaa_level,
-        bool const depth_test_enabled) {
+        bool const depth_test_enabled,
+        bool const has_color_attachment) {
         using fail = std::unexpected<std::string_view>;
 
         // ---- 1. Parse the vertex stage interface, filter builtins, build vertex input ----
@@ -157,12 +158,13 @@ namespace vulkan {
         color_blend_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
         color_blend_state_create_info.logicOpEnable = VK_FALSE;
         color_blend_state_create_info.logicOp = VK_LOGIC_OP_COPY;
-        color_blend_state_create_info.attachmentCount = 1;
+        // depth-only pipelines (e.g. the shadow pass) have no color attachment: no blend state
+        color_blend_state_create_info.attachmentCount = has_color_attachment ? 1u : 0u;
         color_blend_state_create_info.blendConstants[0] = 1.0f;
         color_blend_state_create_info.blendConstants[1] = 1.0f;
         color_blend_state_create_info.blendConstants[2] = 1.0f;
         color_blend_state_create_info.blendConstants[3] = 1.0f;
-        color_blend_state_create_info.pAttachments = &color_blend_attachment_state;
+        color_blend_state_create_info.pAttachments = has_color_attachment ? &color_blend_attachment_state : nullptr;
 
         VkPipelineMultisampleStateCreateInfo multisample_state_create_info = {};
         multisample_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -180,12 +182,14 @@ namespace vulkan {
 
         // ---- 5. graphics pipeline ----
         // With dynamic rendering (render_pass == VK_NULL_HANDLE) the attachments are described
-        // by VkPipelineRenderingCreateInfo in the pNext chain instead of a render pass + subpass
+        // by VkPipelineRenderingCreateInfo in the pNext chain instead of a render pass + subpass.
+        // Depth-only pipelines (has_color_attachment == false, e.g. the shadow pass) declare no
+        // color attachment format.
         VkPipelineRenderingCreateInfo rendering_create_info = {};
         if (render_pass == VK_NULL_HANDLE) {
             rendering_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-            rendering_create_info.colorAttachmentCount = 1;
-            rendering_create_info.pColorAttachmentFormats = &color_format;
+            rendering_create_info.colorAttachmentCount = has_color_attachment ? 1u : 0u;
+            rendering_create_info.pColorAttachmentFormats = has_color_attachment ? &color_format : nullptr;
             rendering_create_info.depthAttachmentFormat = depth_format;
         }
         VkGraphicsPipelineCreateInfo pipeline_create_info = {};
