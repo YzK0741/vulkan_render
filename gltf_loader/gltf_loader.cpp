@@ -861,4 +861,16 @@ namespace gltf {
         resolved_material const* material = this->current_material();
         return material == nullptr ? resolved_factors{} : material->factors;
     }
+
+    // ---- async twins (see gltf_loader.cppm): delegate to the sync functions on a
+    //      std::async thread; the caller consumes the future when the result is needed ----
+
+    std::future<std::expected<scenes, error_code>> load_model_async(std::string_view const file_name) {
+        // copy the path: the view must stay valid while the async task runs
+        return std::async(std::launch::async, [path = std::string(file_name)] { return load_model(path); });
+    }
+
+    std::future<std::vector<resolved_material>> resolve_materials_async(gltf::scenes const& scenes) {
+        return std::async(std::launch::async, [&scenes] { return resolve_materials(scenes); });
+    }
 } // namespace gltf

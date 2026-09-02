@@ -144,7 +144,6 @@ target_link_libraries(${PROJECT_NAME}
         utility
         vulkan_lib
         gltf_loader
-        thread_pool
         std_lib
         glm::glm
 )

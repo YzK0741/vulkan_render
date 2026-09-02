@@ -1,5 +1,3 @@
-#include "utility/thread_pool/thread_pool.cppm" // header-style pool (not a real module), see utility/thread_pool
-
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -85,10 +83,32 @@ int main(int argc, char** argv) {
         utility::panic("cannot find shaders/ directory. run the program from the project root or a cmake-build-* directory.");
     }
 
-    // 2. Construct vulkan::runtime: the default constructor performs all window/instance/device/swapchain initialization
-    vulkan::runtime runtime;
+    // 2. Pick the model file: independent of the runtime, needed before kicking off the async
+    //    load below (defaults to DamagedHelmet under gltf_model/; other .gltf/.glb via argv)
+    std::string model_path;
+    if (argc > 1) {
+        model_path = argv[1];
+    } else if (std::optional<std::filesystem::path> const located = locate_model_file()) {
+        model_path = located->string();
+    } else {
+        utility::panic("cannot find gltf_model/DamagedHelmet.gltf. run the program from the project root or pass a model path as argv[1]");
+    }
 
-    // 3. Pipelines: triangle + standard PBR + skybox background (fullscreen environment pass)
+    // 3. Kick off the runtime-independent heavy CPU stages BEFORE constructing the (heavy)
+    //    Vulkan runtime, so window/instance/device/swapchain init overlaps the model parse +
+    //    texture decode and the base environment cubemap generation.
+    constexpr int env_size = 256;
+    constexpr int env_mip_count = 5;
+    auto const startup_start = std::chrono::steady_clock::now();
+    auto env_future = vulkan::generate_environment_cubemap_async(env_size);
+    auto load_future = gltf::load_model_async(model_path);
+
+    // 4. Construct vulkan::runtime: the default constructor performs all window/instance/device/swapchain initialization
+    vulkan::runtime runtime;
+    auto const runtime_ready = std::chrono::steady_clock::now();
+    utility::log("vulkan runtime initialized: {:.1f} ms (async model load + env generation running in background)", std::chrono::duration<double, std::milli>(runtime_ready - startup_start).count());
+
+    // 5. Pipelines: triangle + standard PBR + skybox background (fullscreen environment pass)
     load_and_create_pipeline(runtime, *shaders_dir, "triangle", "triangle.vert.spv", "triangle.frag.spv");
     load_and_create_pipeline(runtime, *shaders_dir, "pbr", "pbr.vert.spv", "pbr.frag.spv");
     {
@@ -103,22 +123,16 @@ int main(int argc, char** argv) {
         utility::log("SUCCESS: skybox pipeline created (fullscreen environment background)");
     }
 
-    // 4. Load a glTF model (defaults to DamagedHelmet under gltf_model/; other .gltf/.glb via command line)
-    std::string model_path;
-    if (argc > 1) {
-        model_path = argv[1];
-    } else if (std::optional<std::filesystem::path> const located = locate_model_file()) {
-        model_path = located->string();
-    } else {
-        utility::panic("cannot find gltf_model/DamagedHelmet.gltf. run the program from the project root or pass a model path as argv[1]");
-    }
-    utility::log("loading model: {}", model_path);
-    auto scenes = gltf::load_model(model_path);
+    // 6. Collect the async startup results
+    auto scenes = load_future.get();
     if (!scenes) {
         utility::panic(std::source_location::current(), "failed to load model '{}': error code {}", model_path, static_cast<int>(scenes.error()));
     }
+    std::vector<float> const env = env_future.get();
+    auto const startup_done = std::chrono::steady_clock::now();
+    utility::log("model loaded + environment cubemap (startup window incl. runtime init): {:.1f} ms", std::chrono::duration<double, std::milli>(startup_done - startup_start).count());
 
-    // 5. Scene bounds from the raw POSITION attributes (no geometry building): the world AABB
+    // 7. Scene bounds from the raw POSITION attributes (no geometry building): the world AABB
     //    of every drawable primitive's local AABB transformed by its node's world transform.
     //    gltf::scenes is iterable (begin()/end() flatten scene -> node -> mesh -> primitive).
     auto const local_bounds = [](gltf::primitive const& prim) -> std::pair<glm::vec3, glm::vec3> {
@@ -166,54 +180,32 @@ int main(int argc, char** argv) {
     glm::vec3 const scene_sink(0.0f, -scene_radius, 0.0f);
     runtime.camera.target = scene_sink;
 
-    // 8. Generate IBL resources on the CPU (split-sum: prefiltered env + irradiance + BRDF LUT).
-    //    The base environment is generated first (everything depends on it); the prefilter,
-    //    irradiance and BRDF LUT stages only depend on the base env, so they run in parallel on
-    //    the thread pool (each with its own timing, reported after the pool drains).
-    constexpr int env_size = 256;
-    constexpr int env_mip_count = 5;
-    utility::log("generating IBL environment (CPU, {}x{} env, {} worker threads)...", env_size, env_size, 3);
-    auto const ibl_start = std::chrono::steady_clock::now();
-    std::vector<float> const env = vulkan::generate_environment_cubemap(env_size);
-    auto const env_done = std::chrono::steady_clock::now();
-    utility::log("  environment cubemap: {:.1f} ms", std::chrono::duration<double, std::milli>(env_done - ibl_start).count());
+    // 8. IBL stage 2 + material resolve run concurrently via their _async wrappers: the
+    //    prefilter (GGX importance sampling), irradiance map, BRDF LUT and the per-material
+    //    texture decode + mip chains only depend on what we already have (env, scenes). The
+    //    per-stage times are not reported individually: get() orders the waits, so only the
+    //    wall-clock of the parallel stage is meaningful (the other tasks hide under the
+    //    slowest one).
+    utility::log("generating IBL (prefilter/irradiance/BRDF LUT) + resolving materials...");
+    auto const stage2_start = std::chrono::steady_clock::now();
+    auto prefilter_future = vulkan::prefilter_environment_async(env, env_size, env_mip_count);
+    auto irradiance_future = vulkan::generate_irradiance_map_async(env, env_size, 32);
+    auto lut_future = vulkan::generate_brdf_lut_async(256);
+    auto resolve_future = gltf::resolve_materials_async(*scenes);
 
-    std::vector<float> prefiltered;
-    std::vector<float> irradiance;
-    std::vector<float> brdf_lut;
-    std::chrono::steady_clock::time_point prefilter_done;
-    std::chrono::steady_clock::time_point irradiance_done;
-    std::chrono::steady_clock::time_point lut_done;
-    utility::thread_pool pool(3);
-    pool.post([&] {
-        prefiltered = vulkan::prefilter_environment(env, env_size, env_mip_count);
-        prefilter_done = std::chrono::steady_clock::now();
-    });
-    pool.post([&] {
-        irradiance = vulkan::generate_irradiance_map(env, env_size, 32);
-        irradiance_done = std::chrono::steady_clock::now();
-    });
-    pool.post([&] {
-        brdf_lut = vulkan::generate_brdf_lut(256);
-        lut_done = std::chrono::steady_clock::now();
-    });
-    pool.wait_until_free();
-    auto const ibl_done = std::max({prefilter_done, irradiance_done, lut_done});
-    utility::log("  prefilter (GGX importance sampling): {:.1f} ms", std::chrono::duration<double, std::milli>(prefilter_done - env_done).count());
-    utility::log("  irradiance map: {:.1f} ms", std::chrono::duration<double, std::milli>(irradiance_done - env_done).count());
-    utility::log("  BRDF LUT: {:.1f} ms", std::chrono::duration<double, std::milli>(lut_done - env_done).count());
-    utility::log("  IBL total: {:.1f} ms", std::chrono::duration<double, std::milli>(ibl_done - env_done).count());
+    std::vector<float> const prefiltered = prefilter_future.get();
+    std::vector<float> const irradiance = irradiance_future.get();
+    std::vector<float> const brdf_lut = lut_future.get();
+    std::vector<gltf::resolved_material> const materials = resolve_future.get();
+    auto const stage2_done = std::chrono::steady_clock::now();
+    utility::log("  IBL (prefilter/irradiance/BRDF LUT) + material resolve, parallel wall: {:.1f} ms", std::chrono::duration<double, std::milli>(stage2_done - stage2_start).count());
 
     std::vector<unsigned char> const env_bytes = vulkan::to_half_rgba(prefiltered);
     std::vector<unsigned char> const irr_bytes = vulkan::to_half_rgba(irradiance);
     std::vector<unsigned char> const lut_bytes = vulkan::to_half_rg(brdf_lut);
 
-    // 9. Upload the scene-wide IBL once: shared by every model (bindings 2-4 of the scene set)
+    // 10. Upload the scene-wide IBL once: shared by every model (bindings 2-4 of the scene set)
     runtime.set_ibl(vulkan::ibl_input{.prefiltered_env = env_bytes, .irradiance = irr_bytes, .brdf_lut = lut_bytes, .env_size = env_size, .env_mip_count = env_mip_count, .irr_size = 32, .lut_size = 256});
-
-    // 10. Resolve every glTF material once (loader-side, pure CPU): factors + the 5 texture
-    //     slots, decoded with mip chains.
-    std::vector<gltf::resolved_material> const materials = gltf::resolve_materials(*scenes);
 
     // 11. Batch-import: the runtime drives the traversal itself through the loader's
     //     drawable_iterator, which models vulkan::scene_drawable_iterator (++ plus

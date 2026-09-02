@@ -249,4 +249,23 @@ namespace vulkan {
         }
         return out;
     }
+
+    // ---- async wrappers (see math.cppm): delegate to the synchronous functions on a
+    //      std::async thread; the caller consumes the future when the result is needed ----
+
+    std::future<std::vector<float>> generate_environment_cubemap_async(int const size) {
+        return std::async(std::launch::async, [size] { return generate_environment_cubemap(size); });
+    }
+
+    std::future<std::vector<float>> prefilter_environment_async(std::span<float const> const env, int const env_size, int const mip_count) {
+        return std::async(std::launch::async, [env, env_size, mip_count] { return prefilter_environment(env, env_size, mip_count); });
+    }
+
+    std::future<std::vector<float>> generate_irradiance_map_async(std::span<float const> const env, int const env_size, int const irr_size) {
+        return std::async(std::launch::async, [env, env_size, irr_size] { return generate_irradiance_map(env, env_size, irr_size); });
+    }
+
+    std::future<std::vector<float>> generate_brdf_lut_async(int const size) {
+        return std::async(std::launch::async, [size] { return generate_brdf_lut(size); });
+    }
 } // namespace vulkan

@@ -355,6 +355,14 @@ namespace gltf {
      */
     export std::expected<scenes, error_code> load_model(std::string_view file_name);
 
+    /**
+     * @ingroup gltf_loader
+     * @brief async twin of load_model(): runs the parse + texture decode on a std::async
+     *        thread; call get() on the returned future when the scene is actually needed
+     *        (e.g. to overlap model loading with other startup work)
+     */
+    export std::future<std::expected<scenes, error_code>> load_model_async(std::string_view file_name);
+
     // ---- renderer-ready drawable iteration ------------------------------------------------
     // Pure CPU types. The runtime's vulkan::scene_drawable_iterator concept is STRUCTURAL over
     // the member shapes below, so this module never needs vulkan.model (or any Vulkan header);
@@ -415,6 +423,13 @@ namespace gltf {
      *        textures decode once). No Vulkan types involved.
      */
     export std::vector<resolved_material> resolve_materials(gltf::scenes const& scenes);
+
+    /**
+     * @ingroup gltf_loader
+     * @brief async twin of resolve_materials(): runs the texture decode + mip generation on a
+     *        std::async thread; @p scenes must stay alive until the future is consumed
+     */
+    export std::future<std::vector<resolved_material>> resolve_materials_async(gltf::scenes const& scenes);
 
     /**
      * @ingroup gltf_loader

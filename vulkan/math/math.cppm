@@ -40,6 +40,17 @@ namespace vulkan {
      */
     export std::vector<float> generate_brdf_lut(int size);
 
+    // ---- async wrappers (each runs its synchronous twin on a fresh std::async thread) ----
+    // The heavy CPU stages get _async siblings returning std::future; the caller only blocks
+    // in get() when the result is actually needed, so independent stages can overlap.
+    // @note span parameters are taken by view: the pointed-to data (e.g. the env cubemap)
+    //       must stay alive until the returned future is consumed.
+
+    export std::future<std::vector<float>> generate_environment_cubemap_async(int size);
+    export std::future<std::vector<float>> prefilter_environment_async(std::span<float const> env, int env_size, int mip_count);
+    export std::future<std::vector<float>> generate_irradiance_map_async(std::span<float const> env, int env_size, int irr_size);
+    export std::future<std::vector<float>> generate_brdf_lut_async(int size);
+
     /**
      * @ingroup vulkan_math
      * @brief convert 4-channel float data to a packed RGBA16F byte stream
