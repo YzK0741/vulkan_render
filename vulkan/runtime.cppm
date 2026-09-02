@@ -239,22 +239,41 @@ namespace vulkan {
         scene_import_result import_scene(I first, S last, glm::vec3 const& offset) {
             scene_import_result result = {};
             uint32_t const materials_before = this->material_count;
+            // converts a pure image_source (e.g. the glTF loader's image_view) into the
+            // internal texture_input with the slot's upload format; invalid images -> white
+            auto const to_texture = [](auto const& image, VkFormat const format) {
+                texture_input out = {};
+                if (image.valid) {
+                    out.data = image.data;
+                    out.width = image.width;
+                    out.height = image.height;
+                    out.mip_levels = image.mip_levels;
+                    out.format = format;
+                    out.valid = true;
+                }
+                return out;
+            };
             for (; first != last; ++first) {
-                vulkan::vertex_data_view const vertex = first.get_vertex();
-                vulkan::index_data_view const index = first.get_index();
+                auto const vertex = first.get_vertex();
+                auto const index = first.get_index();
                 model_create_info info = {};
                 info.vertex_data = vertex.data;
                 info.vertex_stride = vertex.stride;
                 info.vertex_count = vertex.count;
                 info.index_data = index.data;
-                info.index_type = index.type;
+                info.index_type = index.width == 4 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
                 info.index_count = index.count;
-                info.albedo = first.get_albedo();
-                info.metallic_roughness = first.get_metallic_roughness();
-                info.normal = first.get_normal();
-                info.occlusion = first.get_occlusion();
-                info.emissive = first.get_emissive();
-                info.factors = first.get_factors();
+                info.albedo = to_texture(first.get_albedo(), VK_FORMAT_R8G8B8A8_SRGB);
+                info.metallic_roughness = to_texture(first.get_metallic_roughness(), VK_FORMAT_R8G8B8A8_UNORM);
+                info.normal = to_texture(first.get_normal(), VK_FORMAT_R8G8B8A8_UNORM);
+                info.occlusion = to_texture(first.get_occlusion(), VK_FORMAT_R8G8B8A8_UNORM);
+                info.emissive = to_texture(first.get_emissive(), VK_FORMAT_R8G8B8A8_UNORM);
+                auto const factors = first.get_factors();
+                info.factors.base_color_factor = factors.base_color_factor;
+                info.factors.emissive_factor = factors.emissive_factor;
+                info.factors.metallic_factor = factors.metallic_factor;
+                info.factors.roughness_factor = factors.roughness_factor;
+                info.factors.normal_scale = factors.normal_scale;
                 info.model_matrix = glm::translate(glm::mat4(1.0f), offset) * first.get_transform();
                 if (this->make_model("pbr", info) == nullptr) {
                     utility::panic(std::source_location::current(), "failed to import drawable (pipeline 'pbr' missing)");

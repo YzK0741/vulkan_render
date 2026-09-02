@@ -389,6 +389,230 @@ namespace {
                                     });
         return result;
     }
+
+    // ---- CPU-side geometry building for drawable_iterator (interleaved pbr.vert layout) ----
+
+    struct vertex {
+        glm::vec3 position;
+        glm::vec3 normal;
+        glm::vec2 uv;
+        glm::vec3 tangent;
+    };
+
+    struct built_mesh {
+        std::vector<vertex> vertices;
+        std::vector<unsigned char> index_data;
+        unsigned char index_width = 2; // bytes per index (2 or 4)
+        uint32_t index_count = 0;
+    };
+
+    built_mesh build_mesh(gltf::primitive const& prim) {
+        built_mesh result;
+        auto const get_portion = [&prim](std::string_view const name) -> gltf::vertex_portion const* {
+            auto const it = prim.vertex.find(std::string(name));
+            return it == prim.vertex.end() ? nullptr : &it->second;
+        };
+        auto const* position_portion = get_portion("POSITION");
+        auto const* normal_portion = get_portion("NORMAL");
+        auto const* uv_portion = get_portion("TEXCOORD_0");
+        auto const* tangent_portion = get_portion("TANGENT");
+        if (position_portion == nullptr) {
+            utility::panic("primitive has no POSITION attribute");
+        }
+
+        constexpr glm::vec3 default_normal(0.0f, 1.0f, 0.0f);
+        constexpr glm::vec2 default_uv(0.0f, 0.0f);
+        size_t const vertex_count = position_portion->data.size() / sizeof(glm::vec3);
+
+        std::vector<glm::vec3> positions;
+        std::vector<glm::vec3> normals;
+        std::vector<glm::vec2> uvs;
+        positions.reserve(vertex_count);
+        normals.reserve(vertex_count);
+        uvs.reserve(vertex_count);
+        for (size_t i = 0; i < vertex_count; ++i) {
+            auto const* p = reinterpret_cast<glm::vec3 const*>(position_portion->data.data()) + i;
+            auto const* n = normal_portion == nullptr ? &default_normal : reinterpret_cast<glm::vec3 const*>(normal_portion->data.data()) + i;
+            auto const* uv = uv_portion == nullptr ? &default_uv : reinterpret_cast<glm::vec2 const*>(uv_portion->data.data()) + i;
+            positions.push_back(*p);
+            normals.push_back(*n);
+            uvs.push_back(*uv);
+        }
+
+        // index data: 2 or 4 bytes per index
+        if (prim.index.empty()) {
+            utility::panic("primitive has no index data");
+        }
+        unsigned char index_width = 2;
+        if (prim.index_component_type == gltf::component_type::unsigned_int_t) {
+            index_width = 4;
+        } else if (prim.index_component_type != gltf::component_type::unsigned_short_t) {
+            utility::panic(std::source_location::current(), "unsupported index component type: {}", static_cast<int>(prim.index_component_type));
+        }
+        uint32_t const index_count = static_cast<uint32_t>(prim.index.size() / index_width);
+        auto const read_index = [&prim, index_width](size_t const i) -> uint32_t {
+            if (index_width == 4) {
+                return reinterpret_cast<uint32_t const*>(prim.index.data())[i];
+            }
+            return reinterpret_cast<uint16_t const*>(prim.index.data())[i];
+        };
+
+        // tangents: use the model's TANGENT if present, otherwise compute per-triangle from position/uv
+        // (classic approach: accumulate tangents per triangle, then Gram-Schmidt orthogonalize)
+        std::vector<glm::vec3> tangents(vertex_count, glm::vec3(1.0f, 0.0f, 0.0f));
+        if (tangent_portion != nullptr) {
+            for (size_t i = 0; i < vertex_count; ++i) {
+                auto const* t = reinterpret_cast<glm::vec4 const*>(tangent_portion->data.data()) + i;
+                tangents[i] = glm::vec3(t->x, t->y, t->z);
+            }
+        } else {
+            std::vector<glm::vec3> tangent_accumulator(vertex_count, glm::vec3(0.0f));
+            for (uint32_t i = 0; i + 2 < index_count; i += 3) {
+                uint32_t const i0 = read_index(i);
+                uint32_t const i1 = read_index(i + 1);
+                uint32_t const i2 = read_index(i + 2);
+                glm::vec3 const e1 = positions[i1] - positions[i0];
+                glm::vec3 const e2 = positions[i2] - positions[i0];
+                glm::vec2 const duv1 = uvs[i1] - uvs[i0];
+                glm::vec2 const duv2 = uvs[i2] - uvs[i0];
+                float const denom = duv1.x * duv2.y - duv2.x * duv1.y;
+                if (std::abs(denom) < 1e-8f) {
+                    continue; // degenerate UV triangle
+                }
+                float const f = 1.0f / denom;
+                glm::vec3 const tangent = f * duv2.y * e1 - f * duv1.y * e2;
+                tangent_accumulator[i0] += tangent;
+                tangent_accumulator[i1] += tangent;
+                tangent_accumulator[i2] += tangent;
+            }
+            for (size_t i = 0; i < vertex_count; ++i) {
+                glm::vec3 const t = tangent_accumulator[i] - normals[i] * glm::dot(normals[i], tangent_accumulator[i]);
+                tangents[i] = glm::length(t) > 1e-8f ? glm::normalize(t) : glm::vec3(1.0f, 0.0f, 0.0f);
+            }
+        }
+
+        // interleave into the single-binding layout the pbr pipeline expects (stride 44)
+        result.vertices.reserve(vertex_count);
+        for (size_t i = 0; i < vertex_count; ++i) {
+            result.vertices.push_back(vertex{.position = positions[i], .normal = normals[i], .uv = uvs[i], .tangent = tangents[i]});
+        }
+        result.index_data = prim.index;
+        result.index_width = index_width;
+        result.index_count = index_count;
+        return result;
+    }
+
+    // Convert stb-decoded texture data to RGBA (3 channels get alpha, 1 channel is gray-scaled)
+    std::vector<unsigned char> to_rgba(gltf::texture_data const& texture) {
+        size_t const pixel_count = static_cast<size_t>(texture.width) * texture.height;
+        std::vector<unsigned char> rgba(pixel_count * 4, 255);
+        switch (texture.component) {
+        case 4:
+            rgba = texture.data;
+            break;
+        case 3:
+            for (size_t i = 0; i < pixel_count; ++i) {
+                rgba[i * 4 + 0] = texture.data[i * 3 + 0];
+                rgba[i * 4 + 1] = texture.data[i * 3 + 1];
+                rgba[i * 4 + 2] = texture.data[i * 3 + 2];
+            }
+            break;
+        case 1:
+            for (size_t i = 0; i < pixel_count; ++i) {
+                rgba[i * 4 + 0] = texture.data[i];
+                rgba[i * 4 + 1] = texture.data[i];
+                rgba[i * 4 + 2] = texture.data[i];
+            }
+            break;
+        default:
+            rgba.clear();
+            break;
+        }
+        return rgba;
+    }
+
+    // 8-bit sRGB <-> linear conversion: color textures (slot 0) are averaged in linear space so
+    // their mips keep correct brightness; the other (UNORM data) slots are averaged in byte space.
+    float srgb_to_linear(unsigned char const c) {
+        static std::array<float, 256> const table = [] {
+            std::array<float, 256> t = {};
+            for (int i = 0; i < 256; ++i) {
+                float const v = static_cast<float>(i) / 255.0f;
+                t[i] = v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
+            }
+            return t;
+        }();
+        return table[c];
+    }
+
+    unsigned char linear_to_srgb(float const v) {
+        static std::array<unsigned char, 4096> const table = [] {
+            std::array<unsigned char, 4096> t = {};
+            for (int i = 0; i < 4096; ++i) {
+                float const v = static_cast<float>(i) / 4095.0f;
+                float const s = v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+                t[i] = static_cast<unsigned char>(std::clamp(std::lround(s * 255.0f), 0L, 255L));
+            }
+            return t;
+        }();
+        int const idx = std::clamp(static_cast<int>(std::lround(v * 4095.0f)), 0, 4095);
+        return table[idx];
+    }
+
+    // A full RGBA8 mip chain: mip0, mip1, ... laid out contiguously (mip-major). The level
+    // count is floor(log2(min(width, height))) + 1.
+    struct mip_chain {
+        std::vector<unsigned char> data = {};
+        uint32_t mip_levels = 0;
+    };
+
+    mip_chain generate_mip_chain(std::span<unsigned char const> const rgba, uint32_t const width, uint32_t const height, bool const srgb) {
+        uint32_t const mip_count = static_cast<uint32_t>(std::floor(std::log2(static_cast<float>(std::min(width, height))))) + 1;
+        mip_chain result;
+        result.mip_levels = mip_count;
+        result.data.reserve(static_cast<size_t>(width) * height * 4 * 4 / 3); // geometric series for power-of-two
+
+        std::vector<unsigned char> a(rgba.begin(), rgba.end());
+        std::vector<unsigned char> b;
+        std::span<unsigned char const> cur = a;
+        uint32_t w = width;
+        uint32_t h = height;
+        for (uint32_t mip = 0; mip < mip_count; ++mip) {
+            result.data.insert(result.data.end(), cur.begin(), cur.end());
+            if (w == 1 && h == 1) {
+                break;
+            }
+            uint32_t const nw = std::max(1u, w / 2);
+            uint32_t const nh = std::max(1u, h / 2);
+            b.assign(static_cast<size_t>(nw) * nh * 4, 0);
+            for (uint32_t y = 0; y < nh; ++y) {
+                uint32_t const sy0 = std::min(y * 2, h - 1);
+                uint32_t const sy1 = std::min(y * 2 + 1, h - 1);
+                for (uint32_t x = 0; x < nw; ++x) {
+                    uint32_t const sx0 = std::min(x * 2, w - 1);
+                    uint32_t const sx1 = std::min(x * 2 + 1, w - 1);
+                    size_t const p00 = (static_cast<size_t>(sy0) * w + sx0) * 4;
+                    size_t const p10 = (static_cast<size_t>(sy0) * w + sx1) * 4;
+                    size_t const p01 = (static_cast<size_t>(sy1) * w + sx0) * 4;
+                    size_t const p11 = (static_cast<size_t>(sy1) * w + sx1) * 4;
+                    size_t const dst = (static_cast<size_t>(y) * nw + x) * 4;
+                    for (int c = 0; c < 4; ++c) {
+                        if (srgb && c < 3) {
+                            float const l = (srgb_to_linear(cur[p00 + c]) + srgb_to_linear(cur[p10 + c]) + srgb_to_linear(cur[p01 + c]) + srgb_to_linear(cur[p11 + c])) * 0.25f;
+                            b[dst + c] = linear_to_srgb(l);
+                        } else {
+                            b[dst + c] = static_cast<unsigned char>((static_cast<unsigned>(cur[p00 + c]) + cur[p10 + c] + cur[p01 + c] + cur[p11 + c] + 2) / 4);
+                        }
+                    }
+                }
+            }
+            std::swap(a, b);
+            cur = a;
+            w = nw;
+            h = nh;
+        }
+        return result;
+    }
 } // namespace
 
 namespace gltf {
@@ -498,5 +722,143 @@ namespace gltf {
 
     scene_iterator scenes::end() const noexcept {
         return scene_iterator();
+    }
+
+    // ---- resolved materials + renderer-ready drawable iteration (pure CPU) ----
+
+    std::vector<resolved_material> resolve_materials(gltf::scenes const& scenes) {
+        constexpr std::array<std::string_view, 5> slot_names = {"albedo", "metallic_roughness", "normal", "occlusion", "emissive"};
+
+        // decoded texture cache: one entry per glTF texture index; shared textures decode once,
+        // and the shared_ptr owners keep every image_view's span alive for the caller
+        struct decoded_texture {
+            std::shared_ptr<std::vector<unsigned char>> data = {};
+            uint32_t width = 0;
+            uint32_t height = 0;
+            uint32_t mip_levels = 1;
+        };
+        std::vector<std::optional<decoded_texture>> cache(scenes.textures.size());
+
+        auto const decode = [&scenes, &cache](uint16_t const texture_index, bool const srgb) -> decoded_texture {
+            decoded_texture out = {};
+            auto& entry = cache[texture_index];
+            if (!entry) {
+                entry = decoded_texture{};
+                gltf::texture_data const& tex = scenes.textures[texture_index];
+                std::vector<unsigned char> const rgba = to_rgba(tex);
+                if (!rgba.empty() && tex.width > 0 && tex.height > 0) {
+                    mip_chain const mips = generate_mip_chain(rgba, tex.width, tex.height, srgb);
+                    entry->data = std::make_shared<std::vector<unsigned char>>(std::move(mips.data));
+                    entry->width = tex.width;
+                    entry->height = tex.height;
+                    entry->mip_levels = mips.mip_levels;
+                }
+            }
+            if (entry->data) {
+                out = *entry;
+            }
+            return out;
+        };
+
+        std::vector<resolved_material> result;
+        result.reserve(scenes.materials.size());
+        for (auto const& mat : scenes.materials) {
+            resolved_material out = {};
+            out.factors.base_color_factor = mat.factors.base_color_factor;
+            out.factors.emissive_factor = glm::vec4(mat.factors.emissive_factor, 1.0f);
+            out.factors.metallic_factor = mat.factors.metallic_factor;
+            out.factors.roughness_factor = mat.factors.roughness_factor;
+            out.factors.normal_scale = mat.factors.normal_scale;
+            for (int i = 0; i < 5; ++i) {
+                auto const it = mat.texture_indices.find(std::string(slot_names[i]));
+                if (it == mat.texture_indices.end() || it->second >= scenes.textures.size()) {
+                    continue;
+                }
+                // slot 0 (albedo) is sRGB color: average its mips in linear space
+                decoded_texture const decoded = decode(it->second, i == 0);
+                if (!decoded.data) {
+                    continue;
+                }
+                image_view& slot = out.slots[i];
+                slot.data = *decoded.data;
+                slot.width = decoded.width;
+                slot.height = decoded.height;
+                slot.mip_levels = decoded.mip_levels;
+                slot.owner = decoded.data;
+                slot.valid = true;
+            }
+            result.push_back(std::move(out));
+        }
+        return result;
+    }
+
+    drawable_iterator& drawable_iterator::operator++() {
+        ++this->inner_;
+        this->built_ = false; // geometry of the next drawable is rebuilt lazily
+        return *this;
+    }
+
+    void drawable_iterator::ensure_built() const {
+        if (this->built_) {
+            return;
+        }
+        built_mesh const mesh = build_mesh(*((*this->inner_).primitive));
+        auto const* const first = reinterpret_cast<unsigned char const*>(mesh.vertices.data());
+        this->vertex_bytes_.assign(first, first + mesh.vertices.size() * sizeof(vertex));
+        this->vertex_stride_ = sizeof(vertex);
+        this->vertex_count_ = static_cast<uint32_t>(mesh.vertices.size());
+        this->index_bytes_ = mesh.index_data;
+        this->index_width_ = mesh.index_width;
+        this->index_count_ = mesh.index_count;
+        this->built_ = true;
+    }
+
+    vertex_view drawable_iterator::get_vertex() const {
+        this->ensure_built();
+        return vertex_view{.data = this->vertex_bytes_, .stride = this->vertex_stride_, .count = this->vertex_count_};
+    }
+
+    index_view drawable_iterator::get_index() const {
+        this->ensure_built();
+        return index_view{.data = this->index_bytes_, .width = this->index_width_, .count = this->index_count_};
+    }
+
+    glm::mat4 drawable_iterator::get_transform() const {
+        return (*this->inner_).transform_matrix;
+    }
+
+    resolved_material const* drawable_iterator::current_material() const {
+        uint32_t const index = (*this->inner_).primitive->material_index;
+        return index < this->materials_.size() ? &this->materials_[index] : nullptr;
+    }
+
+    image_view drawable_iterator::slot(int const i) const {
+        resolved_material const* material = this->current_material();
+        return material == nullptr ? image_view{} : material->slots[i];
+    }
+
+    image_view drawable_iterator::get_albedo() const {
+        return this->slot(0);
+    }
+
+    image_view drawable_iterator::get_metallic_roughness() const {
+        return this->slot(1);
+    }
+
+    image_view drawable_iterator::get_normal() const {
+        return this->slot(2);
+    }
+
+    image_view drawable_iterator::get_occlusion() const {
+        return this->slot(3);
+    }
+
+    image_view drawable_iterator::get_emissive() const {
+        return this->slot(4);
+    }
+
+    resolved_factors drawable_iterator::get_factors() const {
+        resolved_material const* material = this->current_material();
+        return material == nullptr ? resolved_factors{} : material->factors;
     }
 } // namespace gltf

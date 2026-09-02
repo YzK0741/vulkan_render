@@ -78,26 +78,6 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_model
-     * @brief GPU-ready interleaved vertex data of one drawable (spans into caller-owned storage)
-     */
-    export struct vertex_data_view {
-        std::span<unsigned char const> data = {};
-        uint32_t stride = 0;
-        uint32_t count = 0;
-    };
-
-    /**
-     * @ingroup vulkan_model
-     * @brief index data of one drawable
-     */
-    export struct index_data_view {
-        std::span<unsigned char const> data = {};
-        VkIndexType type = VK_INDEX_TYPE_UINT32;
-        uint32_t count = 0;
-    };
-
-    /**
-     * @ingroup vulkan_model
      * @brief result of one runtime::import_scene() batch import
      */
     export struct scene_import_result {
@@ -105,27 +85,70 @@ namespace vulkan {
         uint32_t material_count = 0;
     };
 
+    // The scene_drawable_iterator concept is STRUCTURAL over the getters' result shapes, so a
+    // scene iterator can satisfy it with its own pure-CPU types (e.g. the glTF loader's) — no
+    // shared type identity with vulkan.model is required. The runtime template converts the
+    // read values (spans / widths / factors) into its internal types.
+
+    /** @brief a vertex source: interleaved byte span + stride + vertex count */
+    export template <class T>
+    concept vertex_source = requires(T const& v) {
+        { v.data } -> std::convertible_to<std::span<unsigned char const>>;
+        { v.stride } -> std::convertible_to<uint32_t>;
+        { v.count } -> std::convertible_to<uint32_t>;
+    };
+
+    /** @brief an index source: byte span + bytes-per-index (2 or 4) + index count */
+    export template <class T>
+    concept index_source = requires(T const& v) {
+        { v.data } -> std::convertible_to<std::span<unsigned char const>>;
+        { v.width } -> std::convertible_to<unsigned char>;
+        { v.count } -> std::convertible_to<uint32_t>;
+    };
+
+    /** @brief a texture source: mip-major RGBA8 byte span + dimensions + validity */
+    export template <class T>
+    concept image_source = requires(T const& v) {
+        { v.data } -> std::convertible_to<std::span<unsigned char const>>;
+        { v.width } -> std::convertible_to<uint32_t>;
+        { v.height } -> std::convertible_to<uint32_t>;
+        { v.mip_levels } -> std::convertible_to<uint32_t>;
+        { v.valid } -> std::convertible_to<bool>;
+    };
+
+    /** @brief a PBR factors source: the same field names/shapes as material_factors */
+    export template <class T>
+    concept factors_source = requires(T const& v) {
+        { v.base_color_factor } -> std::convertible_to<glm::vec4>;
+        { v.emissive_factor } -> std::convertible_to<glm::vec4>;
+        { v.metallic_factor } -> std::convertible_to<float>;
+        { v.roughness_factor } -> std::convertible_to<float>;
+        { v.normal_scale } -> std::convertible_to<float>;
+    };
+
     /**
      * @ingroup vulkan_model
      * @brief concept for a scene-traversal iterator the runtime can consume directly:
-     *        ++ moves to the next drawable, then the geometry/material is read through the
-     *        getters (vertex/index/transform + one getter per material slot).
-     *        Material getters return texture_input by value; a missing slot yields an invalid
-     *        texture_input and the runtime falls back to its white texture.
+     *        ++ moves to the next drawable, then geometry/material are read through the
+     *        getters (vertex/index/transform + one getter per material slot). The getters
+     *        return pure CPU values (byte spans etc., see the *_source concepts above);
+     *        the runtime template converts them to its internal types (formats, index type).
+     *        A missing material slot is reported through image_source::valid == false and the
+     *        runtime falls back to its white texture.
      */
     export template <class I>
     concept scene_drawable_iterator = requires(I& it, I const& end) {
         { ++it } -> std::same_as<I&>;
         { it != end } -> std::convertible_to<bool>;
-        { it.get_vertex() } -> std::same_as<vertex_data_view>;
-        { it.get_index() } -> std::same_as<index_data_view>;
-        { it.get_transform() } -> std::same_as<glm::mat4>;
-        { it.get_albedo() } -> std::same_as<texture_input>;
-        { it.get_metallic_roughness() } -> std::same_as<texture_input>;
-        { it.get_normal() } -> std::same_as<texture_input>;
-        { it.get_occlusion() } -> std::same_as<texture_input>;
-        { it.get_emissive() } -> std::same_as<texture_input>;
-        { it.get_factors() } -> std::same_as<material_factors>;
+        { it.get_vertex() } -> vertex_source;
+        { it.get_index() } -> index_source;
+        { it.get_transform() } -> std::convertible_to<glm::mat4>;
+        { it.get_albedo() } -> image_source;
+        { it.get_metallic_roughness() } -> image_source;
+        { it.get_normal() } -> image_source;
+        { it.get_occlusion() } -> image_source;
+        { it.get_emissive() } -> image_source;
+        { it.get_factors() } -> factors_source;
     };
 
     /**

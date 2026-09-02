@@ -8,10 +8,16 @@ export import std;
 /**
  * @file gltf_loader.cppm
  * @defgroup gltf_loader glTF Loader
- * @brief load glTF/GLB files into pure CPU-side data structures, no Vulkan dependency
+ * @brief load glTF/GLB files into pure CPU-side data structures, no Vulkan dependency.
+ *        Besides the raw scene data it provides renderer-ready drawable iteration
+ *        (resolved_material / drawable_iterator) in pure CPU types; the runtime's
+ *        scene_drawable_iterator concept is structural over them, so no Vulkan type is
+ *        needed here.
  * @note
  *      - built on fastgltf
  *      - load_model() returns std::expected, failures are reported via error_code
+ *      - drawable_iterator models vulkan::scene_drawable_iterator and can be fed directly
+ *        to vulkan::runtime::import_scene()
  */
 namespace gltf {
 
@@ -348,4 +354,117 @@ namespace gltf {
      * @return scenes on success, error_code on failure (file_not_found/file_type_error/file_load_failed)
      */
     export std::expected<scenes, error_code> load_model(std::string_view file_name);
+
+    // ---- renderer-ready drawable iteration ------------------------------------------------
+    // Pure CPU types. The runtime's vulkan::scene_drawable_iterator concept is STRUCTURAL over
+    // the member shapes below, so this module never needs vulkan.model (or any Vulkan header);
+    // the runtime template converts these values into its internal types itself.
+
+    /** @brief interleaved vertex bytes of one drawable (spans into loader-owned storage) */
+    export struct vertex_view {
+        std::span<unsigned char const> data = {};
+        uint32_t stride = 0;
+        uint32_t count = 0;
+    };
+
+    /** @brief index bytes of one drawable; width is bytes per index (2 or 4) */
+    export struct index_view {
+        std::span<unsigned char const> data = {};
+        unsigned char width = 2;
+        uint32_t count = 0;
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief decoded RGBA8 texture bytes (mip-major) of one material slot
+     * @note owner keeps the bytes alive while image_view is copied/moved around; data spans
+     *       into *owner. valid == false means the slot is missing.
+     */
+    export struct image_view {
+        std::span<unsigned char const> data = {};
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t mip_levels = 1;
+        bool valid = false;
+        std::shared_ptr<std::vector<unsigned char>> owner = {};
+    };
+
+    /** @brief PBR factors of one resolved material (mirrors the runtime's material_factors) */
+    export struct resolved_factors {
+        glm::vec4 base_color_factor = glm::vec4(1.0f);
+        glm::vec4 emissive_factor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        float metallic_factor = 1.0f;
+        float roughness_factor = 1.0f;
+        float normal_scale = 1.0f;
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief one resolved material: the 5 texture slots + PBR factors, indexed by the glTF
+     *        material index; a primitive without a material reads defaults instead
+     */
+    export struct resolved_material {
+        std::array<image_view, 5> slots = {}; // albedo, metallic_roughness, normal, occlusion, emissive
+        resolved_factors factors = {};
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief resolve every scene material once into resolved_material: factors plus the 5
+     *        texture slots, decoded to RGBA8 with full mip chains (CPU-side; shared glTF
+     *        textures decode once). No Vulkan types involved.
+     */
+    export std::vector<resolved_material> resolve_materials(gltf::scenes const& scenes);
+
+    /**
+     * @ingroup gltf_loader
+     * @brief iterator over every drawable primitive of the scene that models
+     *        vulkan::scene_drawable_iterator: ++ advances, then geometry/material are read
+     *        through the getters (get_vertex / get_index / get_transform + one getter per
+     *        material slot), all as pure CPU values. Interleaved geometry is built lazily per
+     *        drawable and cached until the next increment. Feed it directly to
+     *        runtime::import_scene(): the runtime drives the traversal and converts.
+     * @note default-constructed instance == end() (exhausted inner gltf::scene_iterator)
+     */
+    export class drawable_iterator {
+    public:
+        drawable_iterator() = default; // end
+
+        drawable_iterator(gltf::scenes const& scenes, std::span<resolved_material const> materials)
+            : inner_(scenes)
+            , materials_(materials) {
+        }
+
+        drawable_iterator& operator++();
+
+        friend bool operator!=(drawable_iterator const& a, drawable_iterator const& b) {
+            return a.inner_ != b.inner_;
+        }
+
+        vertex_view get_vertex() const;
+        index_view get_index() const;
+        glm::mat4 get_transform() const;
+        image_view get_albedo() const;
+        image_view get_metallic_roughness() const;
+        image_view get_normal() const;
+        image_view get_occlusion() const;
+        image_view get_emissive() const;
+        resolved_factors get_factors() const;
+
+    private:
+        void ensure_built() const; // build the current drawable's interleaved geometry lazily
+        resolved_material const* current_material() const;
+        image_view slot(int const i) const;
+
+        gltf::scene_iterator inner_;
+        std::span<resolved_material const> materials_ = {};
+        // scratch geometry of the current drawable (built lazily, valid until ++)
+        mutable std::vector<unsigned char> vertex_bytes_ = {};
+        mutable std::vector<unsigned char> index_bytes_ = {};
+        mutable uint32_t vertex_stride_ = 0;
+        mutable uint32_t vertex_count_ = 0;
+        mutable unsigned char index_width_ = 2; // 2 or 4 bytes per index
+        mutable uint32_t index_count_ = 0;
+        mutable bool built_ = false;
+    };
 } // namespace gltf
