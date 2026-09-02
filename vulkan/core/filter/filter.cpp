@@ -18,6 +18,14 @@ namespace vulkan {
         return this->vk_core->window;
     }
 
+    void core_filter::wait_idle() const noexcept {
+        this->vk_core->wait_idle();
+    }
+
+    void core_filter::set_window_title(std::string_view const title) const noexcept {
+        this->vk_core->set_window_title(title);
+    }
+
     VkExtent2D core_filter::get_swap_chain_extent() const noexcept {
         return this->vk_core->swap_chain_extent;
     }

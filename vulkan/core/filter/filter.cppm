@@ -38,6 +38,10 @@ namespace vulkan {
         [[nodiscard]] uint32_t get_current_frame() const noexcept;
         static constexpr int max_frames_in_flight = core::MAX_FRAMES_IN_FLIGHT;
 
+        // ---- facade operations (forwarded from core so callers need no raw API) ----
+        void wait_idle() const noexcept;
+        void set_window_title(std::string_view title) const noexcept;
+
         // ---- safe factory operations ----
         vk_command_buffer make_command_buffer() const;
         vk_descriptor_set make_descriptor_set(VkDescriptorSetLayout layout) const;

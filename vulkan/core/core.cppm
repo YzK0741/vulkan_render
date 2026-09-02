@@ -52,6 +52,10 @@ namespace vulkan {
         GLFWwindow* window = nullptr;
         void init_window(int width, int height, std::string_view window_name = "") noexcept;
 
+        // ---- facade operations (keep raw Vulkan / GLFW calls out of the caller) ----
+        void wait_idle() const noexcept;                              // vkDeviceWaitIdle
+        void set_window_title(std::string_view title) const noexcept; // glfwSetWindowTitle
+
         VkSurfaceKHR surface = VK_NULL_HANDLE;
         void init_surface() noexcept;
 

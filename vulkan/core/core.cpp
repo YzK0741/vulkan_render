@@ -1053,4 +1053,14 @@ namespace vulkan {
         }
         return result;
     }
+
+    void core::wait_idle() const noexcept {
+        vkDeviceWaitIdle(this->device);
+    }
+
+    void core::set_window_title(std::string_view const title) const noexcept {
+        if (this->window != nullptr) {
+            glfwSetWindowTitle(this->window, title.data());
+        }
+    }
 } // namespace vulkan

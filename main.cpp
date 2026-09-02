@@ -1,7 +1,5 @@
-#include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <vulkan/vulkan.h>
 import std;
 import gltf_loader;
 import utility;
@@ -251,14 +249,14 @@ int main(int argc, char** argv) {
         if (fps_elapsed >= 1.0) {
             double const fps = fps_frame_count / fps_elapsed;
             utility::log("fps: {:.1f} ({:.2f} ms/frame)", fps, 1000.0 * fps_elapsed / fps_frame_count);
-            glfwSetWindowTitle(runtime->get_window(), std::format("vulkan_render - {:.1f} fps", fps).c_str());
+            runtime->set_window_title(std::format("vulkan_render - {:.1f} fps", fps));
             fps_elapsed = 0.0;
             fps_frame_count = 0;
         }
     }
 
     // 18. Wait for the GPU to finish; models and pipelines are released by the runtime destructor
-    vkDeviceWaitIdle(runtime->get_device());
+    runtime->wait_idle();
     utility::log("render loop finished");
     return 0;
 }
