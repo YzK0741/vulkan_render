@@ -733,7 +733,7 @@ namespace vulkan {
 
     void core::init_scene_layouts() noexcept {
         // ---- 1. Fixed flat descriptor set layout (see the convention docs in core.cppm) ----
-        std::array<VkDescriptorSetLayoutBinding, 6> bindings = {};
+        std::array<VkDescriptorSetLayoutBinding, 7> bindings = {};
         bindings[0] = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         bindings[1] = {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = scene_texture_capacity, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         bindings[2] = {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
@@ -741,8 +741,10 @@ namespace vulkan {
         bindings[4] = {.binding = 4, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         // material table: per-material texture indices + factors (see material_record in vulkan/model.cppm)
         bindings[5] = {.binding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
+        // per-instance world transforms for instanced draws (mat4 per instance, read in pbr.vert)
+        bindings[6] = {.binding = 6, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
 
-        std::array<VkDescriptorBindingFlags, 6> binding_flags = {};
+        std::array<VkDescriptorBindingFlags, 7> binding_flags = {};
         binding_flags[0] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT; // camera UBO rewritten per frame
         // texture array: only written entries are valid, appended while the set may be bound;
         // non-uniform indexing itself is a device feature, not a layout flag

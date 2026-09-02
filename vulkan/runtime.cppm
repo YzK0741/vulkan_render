@@ -84,6 +84,10 @@ namespace vulkan {
         uint64_t material_buffer_handle = 0;
         void* material_mapped = nullptr;
         uint32_t material_count = 0;
+        // per-instance transforms for instanced models (scene set binding 6): one mat4 per
+        // instance, host-visible; filled by make_instanced_model()
+        uint64_t instance_buffer_handle = 0;
+        void* instance_mapped = nullptr;
         // the single scene descriptor set: all pipelines share the layout, so one set covers them all
         vk_descriptor_set scene_set = {};
         bool scene_set_created = false;
@@ -98,7 +102,8 @@ namespace vulkan {
         // without constructing a std::string per call.
         std::map<std::string, vk_pipeline, std::less<>> pipelines;
         // models grouped by the pipeline they bind against: bind the pipeline once, draw them all
-        std::map<std::string, std::vector<model>, std::less<>> models;
+        // polymorphically through model::draw() (normal_draw_model / instanced_draw_model / ...)
+        std::map<std::string, std::vector<std::unique_ptr<model>>, std::less<>> models;
         // one command buffer per frame slot, used and reused by render_frame()
         std::vector<vk_command_buffer> command_buffers;
         // filtered view over vulkan_core, exposed via operator-> (external code never sees the raw core)
@@ -219,7 +224,18 @@ namespace vulkan {
          * @param pipeline_name the pipeline name passed to make_model()
          * @return pointer to the model vector, or nullptr if no model uses that pipeline
          */
-        [[nodiscard]] std::vector<model> const* get_models(std::string_view pipeline_name) const noexcept;
+        [[nodiscard]] std::vector<std::unique_ptr<model>> const* get_models(std::string_view pipeline_name) const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief append an instanced_draw_model: draws @p source's geometry once per transform
+         *        in ONE draw call per frame (per-instance matrices in scene set binding 6)
+         * @param source any model of this runtime (its geometry is drawn transforms.size() times;
+         *        it must stay in the runtime's model list while the instanced model is drawn)
+         * @param transforms one world matrix per instance (fully places the source geometry)
+         * @return pointer to the appended instanced model, or nullptr if nothing was appended
+         */
+        model* make_instanced_model(model const& source, std::span<glm::mat4 const> transforms);
 
         /**
          * @ingroup vulkan_runtime

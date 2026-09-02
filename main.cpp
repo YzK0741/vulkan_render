@@ -215,6 +215,31 @@ int main(int argc, char** argv) {
     vulkan::scene_import_result const imported = runtime.import_scene(scene_first, scene_last, -scene_center + scene_sink);
     utility::log("imported {} primitives ({} new materials)", imported.primitive_count, imported.material_count);
 
+    // 12. Optional instancing stress: `vulkan_render <model> <grid_side>` draws the first
+    //     imported primitive as a grid_side x grid_side grid in ONE instanced draw call
+    //     (an instanced_draw_model appended to the normal models — the frame loop is untouched)
+    if (argc > 2) {
+        int const side = std::atoi(argv[2]);
+        if (side > 1) {
+            auto const* pbr_models = runtime.get_models("pbr");
+            if (pbr_models != nullptr && !pbr_models->empty()) {
+                vulkan::model const& source = *((*pbr_models)[0]);
+                std::vector<glm::mat4> transforms;
+                transforms.reserve(static_cast<size_t>(side) * side);
+                float const spacing = 2.5f * scene_radius; // keep instances apart: measure draw scaling, not overdraw
+                for (int i = 0; i < side; ++i) {
+                    for (int j = 0; j < side; ++j) {
+                        float const dx = (static_cast<float>(i) - (side - 1) * 0.5f) * spacing;
+                        float const dz = (static_cast<float>(j) - (side - 1) * 0.5f) * spacing;
+                        transforms.push_back(glm::translate(glm::mat4(1.0f), glm::vec3(dx, 0.0f, dz)) * source.push.model);
+                    }
+                }
+                runtime.make_instanced_model(source, transforms);
+                utility::log("instancing stress: {} x {} grid ({} instances, 1 draw call)", side, side, transforms.size());
+            }
+        }
+    }
+
     // 14. Main render loop: until the window closes or ESC is pressed.
     //     Every Vulkan frame step (fences, acquire, command buffers, render pass, submit, present)
     //     lives inside runtime::render_frame()

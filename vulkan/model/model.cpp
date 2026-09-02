@@ -8,9 +8,9 @@ module vulkan.model;
 import vulkan.core;
 
 namespace vulkan {
-    void model::draw(VkCommandBuffer const command_buffer) const {
-        // The pipeline and the shared scene descriptor set are bound by the runtime once per
-        // frame; a model only binds its geometry, pushes its material constants and draws.
+    // shared recording for draw strategies that render this object's own geometry with its
+    // push constants (normal_draw_model; instanced_draw_model overrides both pieces)
+    void model::bind_geometry_and_push(VkCommandBuffer const command_buffer) const {
         constexpr VkDeviceSize vertex_offset = 0;
         vkCmdBindVertexBuffers(command_buffer, 0, 1, &this->vertex_detail->buffer, &vertex_offset);
         vkCmdBindIndexBuffer(command_buffer, this->index_detail->buffer, 0, this->index_type);
@@ -21,10 +21,14 @@ namespace vulkan {
                            0,
                            sizeof(this->push),
                            &this->push);
+    }
+
+    void normal_draw_model::draw(VkCommandBuffer const command_buffer) const {
+        this->bind_geometry_and_push(command_buffer);
         vkCmdDrawIndexed(command_buffer, this->index_count, 1, 0, 0, 0);
     }
 
-    void model::destroy(vma_allocator& vma) noexcept {
+    void normal_draw_model::destroy(vma_allocator& vma) noexcept {
         if (this->vertex_buffer_handle != 0) {
             vma.free_buffer(this->vertex_buffer_handle);
         }
@@ -39,9 +43,35 @@ namespace vulkan {
         this->vertex_count = 0;
     }
 
-    bool model::is_valid() const noexcept {
+    bool normal_draw_model::is_valid() const noexcept {
         return this->vertex_detail != nullptr && this->index_detail != nullptr &&
                this->index_count != 0 && this->pipeline != nullptr;
+    }
+
+    void instanced_draw_model::draw(VkCommandBuffer const command_buffer) const {
+        // geometry belongs to source: bind ITS buffers, then draw it instance_count times;
+        // push flag bit0 makes pbr.vert pick instances[gl_InstanceIndex] per instance
+        model const& geometry_source = *this->source;
+        constexpr VkDeviceSize vertex_offset = 0;
+        vkCmdBindVertexBuffers(command_buffer, 0, 1, &geometry_source.vertex_detail->buffer, &vertex_offset);
+        vkCmdBindIndexBuffer(command_buffer, geometry_source.index_detail->buffer, 0, geometry_source.index_type);
+
+        vkCmdPushConstants(command_buffer,
+                           this->pipeline->get_pipeline_layout(),
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0,
+                           sizeof(this->push),
+                           &this->push);
+        vkCmdDrawIndexed(command_buffer, geometry_source.index_count, this->instance_count, 0, 0, 0);
+    }
+
+    void instanced_draw_model::destroy(vma_allocator&) noexcept {
+        // owns nothing: the instance transform buffer is runtime-owned, geometry is source's
+    }
+
+    bool instanced_draw_model::is_valid() const noexcept {
+        return this->source != nullptr && this->source->is_valid() && this->instance_count != 0 &&
+               this->pipeline != nullptr;
     }
 
     camera_ubo make_orbit_camera_ubo(

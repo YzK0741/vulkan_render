@@ -206,6 +206,12 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_model
+     * @brief max per-instance transforms of an instanced draw (set 0 binding 6 storage buffer)
+     */
+    export constexpr uint32_t instance_capacity = 8192;
+
+    /**
+     * @ingroup vulkan_model
      * @brief per-draw push constants, layout matches pbr.frag's PushConstants (80 bytes)
      * @note material data (texture indices, factors, flags) lives in the material table
      *       (set 0 binding 5), so the push block only carries the material reference and the
@@ -213,6 +219,8 @@ namespace vulkan {
      */
     export struct material_push_constants {
         uint32_t material_index = 0; // index into the scene's material table
+        uint32_t flags = 0;          // bit0: instanced draw -> model matrix comes from the
+                                     //       instance transform buffer (set 0 binding 6)
         // glm::mat4 is only 4-byte aligned by default, but GLSL std430 aligns mat4 to 16 bytes
         // (offset 16 in the block): align explicitly so the CPU layout matches the shader
         alignas(16) glm::mat4 model = glm::mat4(1.0f);
@@ -221,15 +229,20 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_model
-     * @brief a GPU model: geometry buffers + material push constants + texture array base index
+     * @brief base class of every drawable: owns geometry buffers + material push constants and
+     *        declares the draw strategy interface. Derived classes implement how the geometry
+     *        is drawn (single draw, instanced grid, ...), so the runtime's frame loop stays a
+     *        generic "for each model: model->draw()" — new strategies only add a subclass.
      * @note
      *      - owns only its geometry (vma buffers); textures live in the runtime's shared texture
      *        array and descriptor sets are owned by the runtime (single scene set, bound once)
-     *      - draw() binds geometry, pushes the material constants and draws; the runtime binds
-     *        the pipeline and the scene set before the model loop
-     *      - destroy() frees the geometry buffers
+     *      - the runtime binds the pipeline and the scene set before calling draw()
+     *      - destroy() frees whatever the instance owns (vma buffers); call it before teardown
      */
-    export struct model {
+    export class model {
+    public:
+        virtual ~model() = default;
+
         // geometry: vma handles for release, detail pointers for access (no raw Vulkan objects)
         uint64_t vertex_buffer_handle = 0;
         buffer_detail const* vertex_detail = nullptr;
@@ -245,13 +258,45 @@ namespace vulkan {
         material_push_constants push = {};
 
         /**
-         * @brief record the model's draw commands (geometry + push constants + indexed draw)
+         * @brief record the model's draw commands (the runtime already bound the pipeline and
+         *        the shared scene descriptor set)
          * @param command_buffer the command buffer being recorded
-         * @note the pipeline and the shared scene descriptor set are bound by the runtime
          */
-        void draw(VkCommandBuffer command_buffer) const;
-        void destroy(vma_allocator& vma) noexcept;
-        [[nodiscard]] bool is_valid() const noexcept;
+        virtual void draw(VkCommandBuffer command_buffer) const = 0;
+        virtual void destroy(vma_allocator& vma) noexcept = 0;
+        [[nodiscard]] virtual bool is_valid() const noexcept = 0;
+
+    protected:
+        // shared recording: bind this object's geometry buffers and push the push constants
+        void bind_geometry_and_push(VkCommandBuffer command_buffer) const;
+    };
+
+    /**
+     * @ingroup vulkan_model
+     * @brief the standard drawable: one indexed draw of its own geometry (push.model places it)
+     */
+    export class normal_draw_model final : public model {
+    public:
+        void draw(VkCommandBuffer command_buffer) const override;
+        void destroy(vma_allocator& vma) noexcept override;
+        [[nodiscard]] bool is_valid() const noexcept override;
+    };
+
+    /**
+     * @ingroup vulkan_model
+     * @brief instanced drawable: draws the geometry of another model (source) instance_count
+     *        times in ONE draw call; per-instance world transforms come from the runtime's
+     *        instance transform buffer (scene set binding 6, push flag bit0). Owns nothing:
+     *        geometry belongs to source, destroy() is a no-op, source must outlive this model.
+     */
+    export class instanced_draw_model final : public model {
+    public:
+        model const* source = nullptr;
+        uint32_t instance_count = 0;
+
+        void draw(VkCommandBuffer command_buffer) const override;
+        void destroy(vma_allocator& vma) noexcept override;
+        [[nodiscard]] bool is_valid() const noexcept override;
     };
 
     /**

@@ -73,7 +73,7 @@ namespace vulkan {
     runtime::~runtime() {
         for (auto& pipeline_models : this->models | std::views::values) {
             for (auto& model : pipeline_models) {
-                model.destroy(this->vulkan_core.vma);
+                model->destroy(this->vulkan_core.vma);
             }
         }
         this->models.clear();
@@ -92,6 +92,10 @@ namespace vulkan {
         if (this->material_buffer_handle != 0) {
             this->vulkan_core.vma.free_buffer(this->material_buffer_handle);
             this->material_buffer_handle = 0;
+        }
+        if (this->instance_buffer_handle != 0) {
+            this->vulkan_core.vma.free_buffer(this->instance_buffer_handle);
+            this->instance_buffer_handle = 0;
         }
     }
 
@@ -156,6 +160,20 @@ namespace vulkan {
         }
         this->material_buffer_handle = material_handle;
         this->material_mapped = material_detail->allocation_info.pMappedData;
+
+        // Per-instance transform buffer (set 0 binding 6): one mat4 per instance, host-visible;
+        // filled by set_instanced_draw() for instanced stress draws (see pbr.vert)
+        std::vector<unsigned char> const zeroed_instances(static_cast<size_t>(vulkan::instance_capacity) * sizeof(glm::mat4), 0);
+        uint64_t const instance_handle = this->vulkan_core.vma.create_buffer(zeroed_instances.data(), zeroed_instances.size(), vulkan::buffer_type::storage_coherent);
+        if (instance_handle == 0) {
+            utility::panic("failed to create instance transform buffer");
+        }
+        auto const* instance_detail = this->vulkan_core.vma.get_buffer_detail(instance_handle);
+        if (instance_detail == nullptr) {
+            utility::panic("failed to get instance transform buffer detail");
+        }
+        this->instance_buffer_handle = instance_handle;
+        this->instance_mapped = instance_detail->allocation_info.pMappedData;
     }
 
     void runtime::ensure_scene_set() {
@@ -195,6 +213,21 @@ namespace vulkan {
         material_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         material_write.pBufferInfo = &material_info;
         vkUpdateDescriptorSets(this->vulkan_core.device, 1, &material_write, 0, nullptr);
+
+        // binding 6: per-instance transforms (storage buffer, written by set_instanced_draw)
+        auto const* instance_detail = this->vulkan_core.vma.get_buffer_detail(this->instance_buffer_handle);
+        if (instance_detail == nullptr) {
+            utility::panic("failed to get instance transform buffer detail");
+        }
+        VkDescriptorBufferInfo const instance_info{instance_detail->buffer, 0, static_cast<VkDeviceSize>(vulkan::instance_capacity) * sizeof(glm::mat4)};
+        VkWriteDescriptorSet instance_write = {};
+        instance_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        instance_write.dstSet = *this->scene_set;
+        instance_write.dstBinding = 6;
+        instance_write.descriptorCount = 1;
+        instance_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        instance_write.pBufferInfo = &instance_info;
+        vkUpdateDescriptorSets(this->vulkan_core.device, 1, &instance_write, 0, nullptr);
 
         // bindings 2-4: IBL (or white placeholders until set_ibl() is called)
         this->write_ibl_bindings();
@@ -608,7 +641,7 @@ namespace vulkan {
             }
             pipeline.begin_pipeline(*command_buffer);
             for (auto const& model : models_it->second) {
-                model.draw(*command_buffer);
+                model->draw(*command_buffer); // polymorphic: normal / instanced / ...
             }
         }
 
@@ -689,44 +722,72 @@ namespace vulkan {
         }
         this->ensure_scene_set();
 
-        model result;
-        result.pipeline = pipeline;
+        auto result = std::make_unique<normal_draw_model>();
+        result->pipeline = pipeline;
 
         // ---- geometry buffers ----
-        result.vertex_buffer_handle = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex);
-        if (result.vertex_buffer_handle == 0) {
+        result->vertex_buffer_handle = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex);
+        if (result->vertex_buffer_handle == 0) {
             utility::panic("failed to create vertex buffer");
         }
-        result.vertex_detail = this->vulkan_core.vma.get_buffer_detail(result.vertex_buffer_handle);
-        if (result.vertex_detail == nullptr) {
+        result->vertex_detail = this->vulkan_core.vma.get_buffer_detail(result->vertex_buffer_handle);
+        if (result->vertex_detail == nullptr) {
             utility::panic("failed to get vertex buffer detail");
         }
 
-        result.index_buffer_handle = this->vulkan_core.vma.create_buffer(info.index_data.data(), info.index_data.size_bytes(), vulkan::buffer_type::index);
-        if (result.index_buffer_handle == 0) {
+        result->index_buffer_handle = this->vulkan_core.vma.create_buffer(info.index_data.data(), info.index_data.size_bytes(), vulkan::buffer_type::index);
+        if (result->index_buffer_handle == 0) {
             utility::panic("failed to create index buffer");
         }
-        result.index_detail = this->vulkan_core.vma.get_buffer_detail(result.index_buffer_handle);
-        if (result.index_detail == nullptr) {
+        result->index_detail = this->vulkan_core.vma.get_buffer_detail(result->index_buffer_handle);
+        if (result->index_detail == nullptr) {
             utility::panic("failed to get index buffer detail");
         }
 
-        result.index_type = info.index_type;
-        result.index_count = info.index_count;
-        result.vertex_count = info.vertex_count;
+        result->index_type = info.index_type;
+        result->index_count = info.index_count;
+        result->vertex_count = info.vertex_count;
 
         // ---- material: register textures + append a material record; the model only carries
         //         the material index (texture indices / factors / flags live in the GPU table) ----
-        result.push.material_index = this->register_material(info);
-        result.push.model = info.model_matrix;
+        result->push.material_index = this->register_material(info);
+        result->push.model = info.model_matrix;
 
         // operator[] has no heterogeneous overload (unlike find), so construct the key explicitly
         auto& pipeline_models = this->models[std::string(pipeline_name)];
-        pipeline_models.push_back(result);
-        return &pipeline_models.back();
+        pipeline_models.push_back(std::move(result));
+        return pipeline_models.back().get();
     }
 
-    std::vector<model> const* runtime::get_models(std::string_view const pipeline_name) const noexcept {
+    model* runtime::make_instanced_model(model const& source, std::span<glm::mat4 const> const transforms) {
+        uint32_t const count = std::min<uint32_t>(static_cast<uint32_t>(transforms.size()), vulkan::instance_capacity);
+        if (count == 0 || this->instance_mapped == nullptr || !source.is_valid()) {
+            return nullptr;
+        }
+        vk_pipeline const* pipeline = this->get_pipeline("pbr");
+        if (pipeline == nullptr) {
+            return nullptr;
+        }
+        this->ensure_scene_set();
+
+        // host-visible buffer (storage_coherent): no flush needed, the GPU reads it after the
+        // submit fence of a previous frame
+        std::memcpy(this->instance_mapped, transforms.data(), static_cast<size_t>(count) * sizeof(glm::mat4));
+
+        auto result = std::make_unique<instanced_draw_model>();
+        result->pipeline = pipeline;
+        result->source = &source; // geometry owner; must stay in this runtime's model list
+        result->instance_count = count;
+        result->push.material_index = source.push.material_index;
+        result->push.flags = 1u; // bit0: pbr.vert picks instances[gl_InstanceIndex]
+        result->push.model = glm::mat4(1.0f);
+
+        auto& pipeline_models = this->models[std::string("pbr")];
+        pipeline_models.push_back(std::move(result));
+        return pipeline_models.back().get();
+    }
+
+    std::vector<std::unique_ptr<model>> const* runtime::get_models(std::string_view const pipeline_name) const noexcept {
         auto const it = this->models.find(pipeline_name);
         return it == this->models.end() ? nullptr : &it->second;
     }
@@ -735,7 +796,7 @@ namespace vulkan {
         auto const it = this->models.find(pipeline_name);
         if (it != this->models.end()) {
             for (auto& model : it->second) {
-                model.destroy(this->vulkan_core.vma);
+                model->destroy(this->vulkan_core.vma);
             }
             this->models.erase(it);
         }

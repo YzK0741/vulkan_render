@@ -11,9 +11,16 @@ layout(set = 0, binding = 0) uniform CameraUBO {
     vec3 camera_pos;
 } camera;
 
+// Per-instance world transforms for instanced draws (one mat4 per instance, written by the
+// runtime via set_instanced_draw); only read when the push flag bit0 is set
+layout(set = 0, binding = 6) readonly buffer InstanceTransforms {
+    mat4 transforms[];
+} instances;
+
 layout(push_constant) uniform PushConstants {
     uint material_index; // unused here (vertex stage), declared to keep the block layout identical to pbr.frag
-    mat4 model; // per-model world transform (kept out of the shared camera UBO)
+    uint flags;          // bit0: instanced draw -> model comes from instances[gl_InstanceIndex]
+    mat4 model;          // per-model world transform (kept out of the shared camera UBO)
 } push;
 
 layout(location = 0) out vec3 v_world_pos;
@@ -22,10 +29,11 @@ layout(location = 2) out vec2 v_uv;
 layout(location = 3) out vec3 v_tangent;
 
 void main() {
-    vec4 world_pos = push.model * vec4(in_position, 1.0);
+    mat4 world = (push.flags & 1u) != 0u ? instances.transforms[gl_InstanceIndex] : push.model;
+    vec4 world_pos = world * vec4(in_position, 1.0);
     v_world_pos = world_pos.xyz;
-    v_normal = normalize(mat3(push.model) * in_normal);
+    v_normal = normalize(mat3(world) * in_normal);
     v_uv = in_uv;
-    v_tangent = normalize(mat3(push.model) * in_tangent);
+    v_tangent = normalize(mat3(world) * in_tangent);
     gl_Position = camera.proj * camera.view * world_pos;
 }
