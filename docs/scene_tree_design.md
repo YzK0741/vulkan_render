@@ -1,17 +1,21 @@
 # Scene Graph Storage — Design Document
 
-Status: proposal (no code changed yet)
+Status: migration in progress — storage + render loop are tree-driven
+(`vulkan.runtime.scene_tree`, commits below); the loader keeps the glTF
+hierarchy; remaining work: import_scene builds the real hierarchy (§5 option A /
+step 2b) and `vulkan.model` becomes a scene_tree primitive.
 
 ## 1. Motivation
 
-The renderer currently stores the scene as *two flattened levels* and the original
-glTF hierarchy is lost between them:
+*Why this pass exists* — as originally written, the renderer stored the scene as
+*two flattened levels* and the original glTF hierarchy was lost between them:
 
 1. **Loader side** (`gltf_loader.cpp` `load_scene`): the glTF node tree is expanded
    by `fastgltf::iterateSceneNodes` into a flat `gltf::scene { nodes: [...] }`
    where every `node` carries only `meshes` + a **world** `transform_matrix`.
    Parent/child edges, per-node local transforms and mesh-sharing semantics are
    gone the moment the file is loaded.
+   *(Fixed — the loader now keeps the tree, see §3.1 and step 1 in §6.)*
 
 2. **Runtime side** (`vulkan/runtime.cppm`): models live in
    `std::map<std::string, std::vector<std::unique_ptr<model>>>` — a flat list per
@@ -19,6 +23,7 @@ glTF hierarchy is lost between them:
    world matrix in `push.model`). There is no notion of a parent transform, so you
    cannot rotate/translate a *group*, re-parent parts programmatically, or express
    TRS animation later.
+   *(Fixed — runtime storage is now a scene tree, see §3.2 and step 2 in §6.)*
 
 Goals (agreed with maintainer):
 
@@ -35,7 +40,9 @@ Non-goals for this pass (explicitly deferred, see §8):
 - Per-node material overrides (glTF primitives reference materials by index; a
   later step may allow overriding per instance).
 
-## 2. Current shape (reference)
+## 2. Starting shape, pre-migration (historical reference)
+
+Before this work the shapes were flat, world-space at every level:
 
 ```cpp
 // gltf_loader: flat, world-space
@@ -48,10 +55,10 @@ std::map<std::string, std::vector<std::unique_ptr<model>>> models;
 //   normal_draw_model / instanced_draw_model (polymorphic draw())
 ```
 
-Consumers of the flat lists:
+Consumers of the flat lists (all re-pointed at the tree now):
 
 - `render_frame()`: per pipeline -> `begin_pipeline()` -> `model->draw()` (main pass
-  and shadow pass both iterate the same model lists; see runtime.cpp:729, 844).
+  and shadow pass both iterate the same model lists).
 - `import_scene()`: runtime template drives a structural `drawable_iterator`
   (pure CPU, no Vulkan in gltf_loader), calls `make_model("pbr", info)` per
   drawable, bakes `offset * node_world` into `push.model`.
@@ -68,133 +75,167 @@ Keep two separable concerns distinct:
   pipeline once, issue many draws). The tree is *walked* to produce the flat
   render list; the render loop itself barely changes.
 
-The two current "flat" structures are replaced by:
+The flat "before" shapes are replaced by:
 
 ```
 gltf (loader, pure CPU)               runtime (renderer)
 ----------------------------          ----------------------------
-scene                                scene graph (owned by runtime)
-└── roots: node                       └── scene_node { local, children }
-    ├── node { local TRS, meshes }        ├── ... (transform-only ok)
-    │                                     └── leaf: model* (drawable)
-    └── ...                                   push.model = accumulated world
+scene (node pool)                     scene_tree::scene (owned by runtime)
+└── roots: indices into nodes          └── roots: scene_node { name, local,
+    ├── node { name, local_matrix,          children, drawable_leaf }
+    │     meshes, children: indices }       ├── ... (transform-only ok)
+    │                                       └── leaf: model* (drawable)
+    └── ...                                    push.model = accumulated world
 ```
 
-### 3.1 Loader: keep the tree
+### 3.1 Loader: keep the tree (DONE — `87ef7e8`)
 
-New `gltf::node` shape (replaces the flat world-space node):
+`load_scene()` now walks `asset.scenes[i].nodeIndices` recursively instead of
+`fastgltf::iterateSceneNodes`, and stores the result as a **node pool** (DFS
+pre-order of every reachable node, roots first) with parent/child edges as
+indices — the glTF hierarchy survives the load:
 
 ```cpp
 struct node {
-    std::string name;                 // for debugging / future animation lookup
-    glm::vec3 translation = {0,0,0};  // local TRS
-    glm::quat rotation = glm::identity<glm::quat>();
-    glm::vec3 scale    = {1,1,1};
-    std::vector<mesh> meshes;         // geometry attached at THIS node (copied per
-                                      // referencing node for now; sharing is deferred)
-    std::vector<node> children;       // value semantics: simple ownership, no cycles
+    std::string name = {};                   // debugging / future animation lookup
+    glm::mat4 local_transform = mat4(1);     // relative to the parent (TRS-composed or raw matrix)
+    std::vector<mesh> meshes = {};           // geometry attached at THIS node (copied per
+                                             // referencing node for now; sharing is deferred)
+    std::vector<std::size_t> children = {};  // indices into the owning scene.nodes
+    glm::mat4 transform_matrix = mat4(1);    // world (parent * local) — kept for back-compat
 };
-struct scene { std::string name; std::vector<node> nodes; }; // nodes = roots
+struct scene {
+    std::string name;
+    std::vector<node> nodes;                 // node pool, DFS pre-order
+    std::vector<std::size_t> root_indices;   // which pool entries are roots
+};
 ```
 
-Notes:
+Notes (implemented):
 
-- fastgltf nodes can carry either TRS or a matrix. Decompose to TRS at load time
-  (matrix -> TRS) so animation can later target `rotation/translation/scale`
-  directly; keep a helper `local_matrix() = T * R * S`.
+- Nodes keep a full **matrix** local transform (TRS-composed at load). Decomposing
+  matrix -> TRS is deferred to the animation pass (§8); the tree work only needs
+  the accumulated world = parent * local.
 - The **flat view stays available** for existing consumers (bounds scan,
-  single-pass `drawable_iterator`): `scenes::begin()` is re-implemented as a
-  DFS flattening of the tree (document order = glTF order), still yielding
-  `drawable_ref { primitive*, world transform }`. `scene_iterator`'s cursor
-  becomes a small DFS stack instead of flat indices.
-- `load_scene()` walks `asset.scenes[i].nodeIndices` recursively instead of
-  `iterateSceneNodes`, preserving edges + local transforms.
+  single-pass `drawable_iterator`): `scenes::begin()` iterates the node pool
+  (skipping mesh-less nodes) and still yields
+  `drawable_ref { primitive*, world transform }` — same world matrices, same
+  order as before. Verified: scene bounds / fps unchanged.
+- Mesh-less (transform-only) nodes are kept in the pool so the hierarchy is
+  complete; the flattening iterators skip them.
 
-### 3.2 Runtime: scene tree storage
+### 3.2 Runtime: scene tree storage (DONE — `ca6769a`, `7a445d5`)
 
-```cpp
-// runtime.cppm (private storage, replacing `models`)
-struct scene_node {
-    glm::mat4 local = glm::mat4(1.0f);   // programmatic transforms land here
-    std::vector<scene_node> children;
-    std::unique_ptr<model> drawable;     // leaf payload; null for transform-only nodes
-};
-std::vector<scene_node> scene_roots_;    // one entry per imported scene / call site
-```
-
-- Runtime owns models inside the tree (same lifetime rules as today: destroyed in
-  `~runtime` before the VkDevice goes away, `model->destroy(vma)` per leaf).
-- `model` keeps its current shape (geometry + pipeline ptr + push) — **no geometry
-  sharing in this pass**, so leaves stay self-contained.
-- `instanced_draw_model` is orthogonal to the tree: an instancing stress helper
-  referencing a `source` model. It does not need a scene-tree slot (see §5.3).
-- **Root offset**: the `offset` argument of today's `import_scene` becomes an
-  extra transform on the scene root (or a runtime-level scene transform applied
-  when accumulating worlds), instead of being multiplied into every leaf.
-
-### 3.3 World accumulation
-
-Every frame (or on demand when the tree is marked dirty):
+New module `vulkan.runtime.scene_tree` (pure CPU: glm + std only, no Vulkan
+types) owns the storage; the old private `models` map is gone:
 
 ```cpp
-// DFS: node_world = parent_world * node.local
-void update_world(scene_node& n, glm::mat4 const& parent_world) {
-    glm::mat4 const world = parent_world * n.local;
-    if (n.drawable) n.drawable->push.model = world; // existing field, reused
-    for (auto& c : n.children) update_world(c, world);
+// vulkan/runtime/scene_tree/scene_tree.cppm
+namespace vulkan::scene_tree {
+    class drawable {                       // abstract leaf; the future "primitive"
+        virtual ~drawable() = default;
+        virtual void set_world(glm::mat4 const& world) = 0;  // push.model = world
+    };
+    struct scene_node {
+        std::string name = {};             // pipeline name today; glTF node name later
+        glm::mat4 local = mat4(1);         // programmatic transforms land here
+        std::vector<scene_node> children;  // value semantics; move-only (clone() for copies)
+        std::unique_ptr<drawable> drawable_leaf = {};  // null for transform-only nodes
+    };
+    struct scene { std::string name; std::vector<scene_node> roots; };
+    void update_world(scene_node& n, glm::mat4 const& parent_world);   // DFS accumulate
+    template <class F> void visit_drawables(scene_node const&, glm::mat4 const&, F&&); // DFS leaves
 }
 ```
 
-- Writes only the leaf's `push.model`; the push-constant block, vertex layout and
-  draw path are untouched.
+- `vulkan::model` (model.cppm) now `public vulkan::scene_tree::drawable`;
+  `model::set_world` writes `push.model = world`, so the existing draw path
+  (`model->draw()`) is untouched.
+- Runtime owns models inside the tree: `scene_` is a `scene_tree::scene`;
+  `~runtime` walks the tree and calls `model->destroy(vma)` per leaf before the
+  VkDevice goes away.
+- `make_model` / `make_instanced_model` attach a **root** leaf whose `name`
+  records the pipeline (models record their pipeline in `model->pipeline`;
+  `instanced_draw_model` gets a tree slot like any model).
+- **Scene offset / whole-scene transform**: `runtime::set_scene_transform(mat4)`
+  applies one extra world matrix on top of every root before `update_world`
+  (identity default → rendering identical to pre-tree). The `import_scene`
+  `offset` argument is still baked into each leaf's `local` today for back-compat;
+  step 2b will move it onto the root (see §4.2).
+
+### 3.3 World accumulation (DONE — `ca6769a`)
+
+Every frame `render_frame()` runs the DFS before recording either pass:
+
+```cpp
+// scene_tree.cppm (as implemented)
+void update_world(scene_node& n, glm::mat4 const& parent_world) {
+    glm::mat4 const world = parent_world * n.local;
+    if (n.drawable_leaf) n.drawable_leaf->set_world(world);  // model: push.model = world
+    for (auto& c : n.children) update_world(c, world);
+}
+// render_frame(): scene_transform_ * root.local for each root, then per-leaf
+//   set_world pushes the accumulated matrix into push.model via the vtable
+```
+
+- Writes only the leaf's `push.model` through `drawable::set_world`; the
+  push-constant block, vertex layout and draw path are untouched.
 - Cost is O(leaves) per frame with a tiny constant — negligible at current scene
   sizes; a dirty-flag skip can come later with animation.
 
 ## 4. Render loop changes
 
-### 4.1 Flat draw list derived from the tree
+### 4.1 Flat draw list derived from the tree (DONE — `7a445d5`, `896d5b3`)
 
-To keep "bind pipeline once, draw batch" (main and shadow passes) exactly as it is
-today, the runtime maintains a derived flat structure that mirrors the current
-`models` map, rebuilt when the tree changes (import / clear / programmatic edit):
-
-```cpp
-// derived (kept in sync with the tree, or rebuilt lazily per frame)
-std::map<std::string, std::vector<model const*>, std::less<>> render_lists_;
-//   pipeline name -> leaves in tree order
-```
-
-- `render_frame()` loops over `render_lists_` exactly like today (begin_pipeline,
-  then `model->draw()` per leaf) — the polymorphic draw and the shadow pass
-  (which iterates the same lists) keep working unchanged.
-- `update_world()` runs once per frame before recording; it walks the tree and
-  can collect leaves into per-pipeline lists in the same pass (cheap, no extra
-  map lookups).
-- Alternative if we want zero derived state: DFS inline and draw as we go, but
-  that would re-bind pipelines per leaf — rejected (keeps current batching).
-
-### 4.2 Public runtime API
+To keep "bind pipeline once, draw batch" (main and shadow passes) exactly as
+before, `render_frame()` derives the flat draw set from the tree **once per
+frame** — no persistent `render_lists_` map, no explicit cache to invalidate:
 
 ```cpp
-// — scene tree management (replaces per-pipeline make_model/import_scene) —
-scene_handle add_scene(gltf-view or structural tree source);   // tbd, see §5.1
-scene_node* scene_root(scene_handle);
-void        set_local_transform(scene_node&, glm::mat4 const& local);
-void        clear_scenes();
-
-// convenience: import a glTF through the existing structural iterator
-// (now building a tree of transform nodes + leaf models instead of flat list)
-scene_handle import_scene(I first, S last, glm::vec3 const& offset); // repurposed
-
-// model access for legacy helpers (bounds scan / instancing) is re-pointed at
-// tree leaves; exact shape TBD in implementation.
+// render_frame(), after update_world:
+std::vector<model const*> frame_leaves;              // DFS collect (once)
+for (scene_node const& root : scene_.roots) collect_leaf_models(root, frame_leaves);
+//   main pass: group frame_leaves by m->pipeline -> begin_pipeline() once, m->draw() per leaf
+//   shadow pass: bind shadow pipeline, m->draw() over the same frame_leaves
 ```
+
+- `collect_leaf_models` / `get_models` are thin wrappers over the scene_tree
+  module's own `visit_drawables()` DFS (`896d5b3`) — no hand-rolled traversal in
+  the runtime.
+- Alternative considered: draw inline while walking the tree — rejected, it would
+  re-bind pipelines per leaf (breaks batching).
+
+### 4.2 Public runtime API (current, and the step-2b delta)
+
+Current surface (post-`4ee1b82`; per-pipeline names kept — see §9 Q2):
+
+```cpp
+model* make_model(std::string_view pipeline_name, model_create_info const& info); // root leaf
+model* make_instanced_model(model const& source, std::span<glm::mat4 const> transforms);
+std::vector<model const*> get_models(std::string_view pipeline_name) const; // DFS by pipeline
+void clear_models(std::string_view pipeline_name);
+scene_import_result import_scene(I first, S last, glm::vec3 const& offset);   // per-drawable today
+void set_scene_transform(glm::mat4 const& transform);  // extra world on top of every root
+void enable_shadows(glm::vec3 const& scene_center, float scene_radius);
+```
+
+Step-2b delta (builds on §5 option A, keeps `import_scene`'s signature):
+
+- `import_scene` walks loader *nodes* (name + `local_transform` + children +
+  per-node drawables) and rebuilds the hierarchy: one `scene_node` per glTF node
+  (root = loader scene root), leaf models attached at their node, scene `offset`
+  moved to the scene root's `local` (or folded into `scene_transform_`).
+- Add `scene_node&`-based handles once real subtrees exist:
+  `set_local_transform(scene_node&, glm::mat4 const&)`, subtree demo in main.
+- Legacy helpers (bounds scan / instancing grid in main.cpp) keep working through
+  `get_models` / `scenes::begin()` — no `leaf_models()` helper was needed.
 
 ### 4.3 Shadow pass
 
-Unchanged structurally: shadow pass iterates `render_lists_` too. Because the
-shadow pipeline shares the vertex layout / push block / scene layout, leaves drawn
-into the shadow map still work via `model->draw()`.
+Unchanged structurally: the shadow pass iterates the same `frame_leaves` collected
+from the tree (step 2a). Because the shadow pipeline shares the vertex layout /
+push block / scene layout, leaves drawn into the shadow map still work via
+`model->draw()`.
 
 ## 5. Loader <-> runtime bridge (the key design decision)
 
@@ -223,74 +264,83 @@ tree concept.
 
 ## 6. Migration plan (stepwise, each step builds + renders + commits)
 
-> **Status** (kept in sync with git history):
-> - ✅ 1 (loader keeps the tree — `87ef7e8`)
-> - ✅ 2a (runtime stores models in a scene tree, render_frame walks it —
->   `ca6769a`, `7a445d5`)
-> - ⏳ 2b (import_scene builds the real hierarchy from the loader tree; today every
->   drawable is a root leaf with its full world matrix, so whole-group transforms
->   of an arbitrary subtree are not available yet)
-> - ✅ 3 (whole-scene transform API + spin demo — `4ee1b82`; a per-node
->   `set_local_transform` for arbitrary subtrees waits for 2b)
-> - ✅ 4 (the flat `models` map is gone — superseded by the tree walk)
-> - ⏳ 5 (future: animation / skinning / mesh sharing)
+Status, kept in sync with git history:
 
-1. **Loader keeps the tree.** ✅ `gltf::node` gains `children` + `local_transform`;
-   `load_scene` builds real roots/children; `scenes::begin()` keeps DFS-flatten
-   semantics (same world matrices, same order) so nothing downstream breaks.
-   Verified: scene bounds / fps unchanged.
-2. **Runtime scene tree storage.** ✅ Storage migrated: `models` map replaced by a
-   `scene_tree::scene`; `make_model` / `make_instanced_model` attach leaves (node
-   name records the pipeline); `render_frame` accumulates world transforms
-   (`update_world` → `drawable::set_world` → `push.model`) and walks the tree for
-   both the main pass (leaves grouped by `model->pipeline`) and the shadow pass;
-   destructor / `clear_models` / `get_models` traverse the tree.
-   ⏳ Still open: `import_scene` imports each drawable as a separate root leaf
-   (world matrix as `local`) — the loader tree's transform-only nodes / shared
-   parents are not reflected yet, so rotating a whole group is not possible. Next:
-   node-level structural iteration from the loader (see §5) and recursive tree
-   building in `import_scene`, keeping the scene offset as the root transform.
-   Verify visually + instancing grid still identical.
-3. **Whole-group transform API.** ⏳ `set_local_transform(scene_node&, ...)` +
-   a demo in main (e.g. slowly spin the imported scene's root / a subtree).
-4. **Remove the flat `models` map.** ✅ No flat model storage remains.
-5. (future, separate pass) animation samplers, skinning, mesh sharing.
+- ✅ **1 — Loader keeps the tree** (`87ef7e8`). `gltf::node` gains `name`,
+  `local_transform`, `children` (indices into a node pool); `gltf::scene` gains
+  `root_indices`. `load_scene` builds real roots/children; `scenes::begin()` keeps
+  DFS-flatten semantics (same world matrices, same order) so nothing downstream
+  breaks. Verified: scene bounds / fps unchanged.
+- ✅ **2a — Runtime scene tree storage** (`ca6769a`, `7a445d5`, `896d5b3`). New
+  `vulkan.runtime.scene_tree` module (scene/scene_node/drawable + update_world +
+  visit_drawables); `vulkan::model` implements `scene_tree::drawable`; the `models`
+  map is replaced by a `scene_tree::scene`; `make_model` / `make_instanced_model`
+  attach leaves; `render_frame` accumulates world transforms (`update_world` →
+  `drawable::set_world` → `push.model`) and walks the tree for both the main pass
+  (leaves grouped by `model->pipeline`) and the shadow pass; destructor /
+  `clear_models` / `get_models` traverse the tree; runtime traversal reuses the
+  module's `visit_drawables` (`896d5b3`). Verified: default scene + spin demo +
+  instancing grid all render, fps unchanged.
+- ⏳ **2b — import_scene builds the real hierarchy** (design §5 option A). Today
+  every drawable imports as a separate root leaf with its full world matrix as
+  `local`, so the loader tree's transform-only nodes / shared parents are not
+  reflected and rotating an arbitrary subtree is not possible. Next: node-level
+  structural iteration from the loader + recursive tree building in `import_scene`
+  (scene offset becomes the root transform). Verify visually + instancing grid
+  still identical.
+- ✅ **3 — Whole-scene transform API** (`4ee1b82`, `74b18bc`).
+  `runtime::set_scene_transform` applies one world matrix on top of every root
+  (identity default = unchanged rendering); main's `argv[3] == "spin"` demo spins
+  the whole scene around its sink. A per-node `set_local_transform` for arbitrary
+  subtrees waits for 2b.
+- ✅ **4 — Remove the flat `models` map.** No flat model storage remains.
+- ⏳ **5 — Future:** animation / skinning / mesh sharing (separate pass, §8).
 
-## 7. Risks / trade-offs
+(Detailed step list below is folded into the status above; this file is the single
+source of truth for what each commit changed.)
+
+## 7. Risks / trade-offs (as realized)
 
 - **glTF mesh sharing stays unmodeled**: two nodes referencing the same glTF mesh
-  still produce two independent leaf models (same as today — no regression, but
-  the tree makes the sharing opportunity visible; addressed later).
-- **Matrix vs TRS**: nodes authored as matrices decompose losslessly only if no
-  shear is present; glTF forbids shear in matrix nodes in practice. Acceptable.
-- **Value-semantics children** (`std::vector<node>`): deep copies are fine at load
-  time; runtime edits go through `scene_node&` handles whose stability must be
-  documented (like today's "vector may reallocate, use index access" caveat).
-- **Render list rebuild cost**: trivial for current scenes; keep the derived list
-  incremental (rebuild on structure change, not per frame) to avoid regressions.
-- **main.cpp churn**: grid stress + bounds scan touch points change; keep a thin
-  compatibility helper (`runtime::leaf_models()`) until step 4.
+  still produce two independent leaf models (no regression — same as before — but
+  the tree now makes the sharing opportunity visible; addressed later, §8).
+- **Matrix vs TRS**: the loader stores the composed local *matrix* (TRS or raw
+  node matrix). Re-decomposing to TRS for animation is deferred (§8); glTF forbids
+  shear in matrix nodes, so the later decomposition is lossless in practice.
+- **Loader children are indices, runtime children are values**: loader keeps a
+  node pool with `children` as indices (stable, reorderable without copying);
+  runtime `scene_node` owns children inline as values and is move-only
+  (`clone()` for deep copies). Runtime edits go through `scene_node&` handles
+  whose stability must be documented (vector may reallocate — use index access or
+  `clone` before structural edits).
+- **Render list rebuild cost**: `render_frame` recollects `frame_leaves` every
+  frame (O(nodes)); trivial for current scenes. A structure-dirty skip can come
+  later with animation if it ever matters.
+- **main.cpp churn**: bounds scan / grid stress re-pointed at `get_models` /
+  `scenes::begin()`; no compatibility helper was needed.
 
 ## 8. Deferred (design hooks left open)
 
 - glTF mesh sharing / GPU dedup: loader keeps `mesh` copies per node for now; a
   future `scenes.meshes[]` pool + node->mesh index enables dedup without changing
   the runtime tree shape (leaves then reference shared geometry).
-- Animation: local TRS + `name` on nodes is the required substrate; samplers
-  (fastgltf `animations`) + per-frame `set_local_transform` land on top.
+- Animation: needs matrix -> TRS decomposition on loader nodes (name + local
+  transform are the substrate); samplers (fastgltf `animations`) + per-frame
+  `set_local_transform` land on top.
 - Skinning: needs joint node naming/indices + per-vertex joint data + bone UBO —
   independent of the tree storage change, tree only provides the skeleton
   hierarchy.
 - Per-instance material overrides: later; today material identity lives in the
   leaf model's material_index.
 
-## 9. Open questions for the maintainer
+## 9. Open questions for the maintainer (answers)
 
-1. Storage module: tree lives in `vulkan.runtime` (like today's `models`) vs a new
-   `vulkan.model`-level type? (Lean: runtime, to avoid touching model.cppm's
-   stable public surface and module count.)
-2. API: keep `make_model`/`get_models` names (now over tree leaves) or rename to
-   scene-oriented names?
-3. Whole-group transform demo: acceptable to add a temporary auto-spin in main
-   (or a keyboard toggle) to verify, or keep main static and test via a unit/API
-   check only?
+1. **Storage module** — answered: a dedicated `vulkan.runtime.scene_tree` module
+   (pure CPU, no Vulkan types) was created; `vulkan.model` imports and implements
+   its `drawable`, so no cycle and no new ICE-prone imports.
+2. **API names** — kept for now: `make_model` / `get_models` / `clear_models`
+   still name the tree-leaf operations (per-pipeline semantics unchanged);
+   scene-oriented renames can come with 2b's handle-based API if wanted.
+3. **Whole-group transform demo** — answered: temporary auto-spin accepted and
+   shipped behind `argv[3] == "spin"` (whole-scene rotation around the sink,
+   `4ee1b82`); a per-subtree demo waits for 2b.
