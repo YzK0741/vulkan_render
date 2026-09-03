@@ -1,5 +1,6 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <imgui.h>
 import std;
 import gltf_loader;
 import utility;
@@ -311,10 +312,12 @@ int main(int argc, char** argv) {
     //                     single-node asset the primitive spins about the scene sink.
     //   "nocull"        — verification: disable frustum culling (force every leaf visible); run
     //                     the same camera path with and without it and compare the cull log + fps.
+    //   "gui"           — enable the Dear ImGui debug overlay (fps text + culling checkbox)
     bool spin_scene = false;
     bool spin_subtree = false;
     bool no_cull = false;
     bool closeup = false;
+    bool use_gui = false;
     char const* const demo = argc > 3 ? argv[3] : (argc > 2 ? argv[2] : nullptr);
     if (demo != nullptr) {
         std::string_view const demo_view(demo);
@@ -322,6 +325,7 @@ int main(int argc, char** argv) {
         spin_subtree = demo_view == "spin-subtree";
         no_cull = demo_view == "nocull";
         closeup = demo_view == "closeup";
+        use_gui = demo_view == "gui";
     }
     if (no_cull) {
         runtime.set_frustum_culling(false);
@@ -372,6 +376,25 @@ int main(int argc, char** argv) {
     double fps_elapsed = 0.0;
     uint32_t fps_frame_count = 0;
 
+    // Optional Dear ImGui debug overlay: the runtime drives new_frame/record inside its frame
+    // steps; main only enables it and registers the UI content (a small overlay window with the
+    // live FPS and the frustum-culling toggle).
+    double gui_fps = 0.0;
+    bool gui_cull_enabled = true;
+    if (use_gui) {
+        runtime.enable_debug_gui();
+        runtime.set_debug_ui_builder([&runtime, &gui_fps, &gui_cull_enabled] {
+            ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
+            ImGui::Begin("vulkan_render debug");
+            ImGui::Text("fps: %.1f", gui_fps);
+            if (ImGui::Checkbox("frustum culling", &gui_cull_enabled)) {
+                runtime.set_frustum_culling(gui_cull_enabled);
+            }
+            ImGui::End();
+        });
+        utility::log("gui: Dear ImGui debug overlay enabled");
+    }
+
     // All per-frame decisions (event polling, ESC/close response, minimize skip, swapchain
     // recreation on restore/resize) live inside runtime::render_frame(); main only reacts to
     // the returned frame_status.
@@ -408,6 +431,9 @@ int main(int argc, char** argv) {
         fps_elapsed += std::chrono::duration<double>(now - last_frame_time).count();
         last_frame_time = now;
         ++fps_frame_count;
+        if (use_gui) {
+            gui_fps = fps_frame_count / fps_elapsed; // smooth per-second value for the overlay
+        }
         if (fps_elapsed >= 1.0) {
             double const fps = fps_frame_count / fps_elapsed;
             utility::log("fps: {:.1f} ({:.2f} ms/frame)", fps, 1000.0 * fps_elapsed / fps_frame_count);

@@ -80,6 +80,7 @@ target_sources(vulkan_lib
         vulkan/runtime.cppm
         vulkan/core/pipeline/spirv_parser.cppm
         vulkan/runtime/scene_tree/scene_tree.cppm
+        vulkan/gui/gui.cppm
     PRIVATE
         vulkan/core/core.cpp
         vulkan/core/filter/filter.cpp
@@ -91,6 +92,7 @@ target_sources(vulkan_lib
         vulkan/core/pipeline/spirv_parser.cpp
         vulkan/runtime.cpp
         vulkan/runtime/scene_tree/scene_tree.cpp
+        vulkan/gui/gui.cpp
         third_party/spirv-reflect/spirv_reflect.c
 )
 add_library(gltf_loader STATIC)
@@ -102,6 +104,34 @@ target_sources(gltf_loader
 
     PRIVATE
         gltf_loader/gltf_loader.cpp
+)
+
+# Dear ImGui (vendored under third_party/imgui, see the sources there): the Vulkan + GLFW
+# backends are compiled as plain C++ (imgui is not a module and does not follow the project's
+# -Werror policy — upstream code triggers warnings we do not own). No clang-format: the
+# PROJECT_FORMAT_SOURCES glob only covers main/gltf_loader/utility/vulkan, never third_party.
+add_library(imgui STATIC)
+
+target_sources(imgui
+    PRIVATE
+        third_party/imgui/imgui.cpp
+        third_party/imgui/imgui_draw.cpp
+        third_party/imgui/imgui_tables.cpp
+        third_party/imgui/imgui_widgets.cpp
+        third_party/imgui/backends/imgui_impl_glfw.cpp
+        third_party/imgui/backends/imgui_impl_vulkan.cpp
+)
+
+target_include_directories(imgui
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/backends
+)
+
+target_link_libraries(imgui
+    PUBLIC
+        Vulkan::Vulkan
+        glfw
 )
 
 target_link_libraries(gltf_loader
@@ -118,6 +148,7 @@ target_link_libraries(vulkan_lib
         glm::glm
         ${CMAKE_DL_LIBS}
         std_lib
+        imgui
 )
 
 add_executable(vulkan_render main.cpp)
@@ -146,6 +177,7 @@ target_link_libraries(${PROJECT_NAME}
         gltf_loader
         std_lib
         glm::glm
+        imgui
 )
 
 target_compile_options(std_lib PRIVATE

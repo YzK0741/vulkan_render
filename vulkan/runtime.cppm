@@ -10,6 +10,7 @@ export import vulkan.core;
 export import vulkan.core.filter;
 export import vulkan.runtime.scene_tree; // scene_tree owns the scene storage + GPU primitives (absorbed vulkan.model)
 import utility;
+import vulkan.gui; // optional debug overlay (gui_content); enabled by the caller via enable_debug_gui()
 
 /**
  * @file runtime.cppm
@@ -165,6 +166,10 @@ namespace vulkan {
         std::vector<primitive const*> frame_leaves = {};  // every scene leaf this frame (shadow + cull input)
         std::vector<primitive const*> frame_visible = {}; // frustum-visible subset (main pass)
         std::size_t frame_culled_count = 0;               // leaves culled this frame (for the log)
+        // optional Dear ImGui debug overlay; inactive until enable_debug_gui() succeeds. The
+        // runtime drives it inside the frame steps (new_frame before recording, record after the
+        // runtime's own draw calls) so callers only register UI content via set_debug_ui_builder.
+        gui_content debug_gui;
         // filtered view over vulkan_core, exposed via operator-> (external code never sees the raw core)
         core_filter filtered_core;
 
@@ -237,6 +242,34 @@ namespace vulkan {
          *      that guarantee even if members are reordered later
          */
         ~runtime();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief initialize the Dear ImGui debug overlay on top of this runtime's window
+         * @return true when the overlay is active afterwards (initialized, or already active)
+         * @note the overlay is drawn inside render_frame() (and the split frame steps): its
+         *       per-frame new_frame/record calls are driven by the runtime once enabled. Call
+         *       after the runtime is fully set up (window/device ready). Safe to call again to
+         *       re-enable after shutdown; no-op when already active.
+         */
+        bool enable_debug_gui();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief true while the Dear ImGui debug overlay is active
+         */
+        [[nodiscard]] bool debug_gui_active() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief register (or replace, or clear with {}) the per-frame UI content builder drawn
+         *        by the debug overlay every rendered frame
+         * @param builder draws the debug windows/widgets using the ImGui API directly; the
+         *        runtime calls it once per frame inside render_frame() (after new_frame, before
+         *        record). Captures whatever runtime state the UI needs to display.
+         * @note ignored while the overlay is inactive; also settable before enable_debug_gui()
+         */
+        void set_debug_ui_builder(std::function<void()> builder);
 
         /**
          * @ingroup vulkan_runtime

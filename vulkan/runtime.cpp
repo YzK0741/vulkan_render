@@ -104,6 +104,11 @@ namespace vulkan {
             this->vulkan_core.vma.free_image(handle);
         }
         this->shadow_image_handles.clear();
+
+        // Shut the debug overlay down explicitly while the VkDevice is still alive (its ImGui
+        // Vulkan backend owns device resources); member destruction would also run it before
+        // vulkan_core, but doing it here keeps the order obvious.
+        this->debug_gui.shutdown();
     }
 
     void runtime::init_scene_resources() {
@@ -634,6 +639,7 @@ namespace vulkan {
             this->was_minimized = false;
             utility::log("window restored, recreating swapchain");
             vk.recreate_swap_chain();
+            this->debug_gui.on_swapchain_recreated();
         }
     }
 
@@ -660,6 +666,7 @@ namespace vulkan {
         if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
             utility::log("swapchain out of date, recreating");
             vk.recreate_swap_chain();
+            this->debug_gui.on_swapchain_recreated();
             return frame_status::skipped;
         }
         if (acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
@@ -717,6 +724,12 @@ namespace vulkan {
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         if (vkBeginCommandBuffer(*command_buffer, &begin_info) != VK_SUCCESS) {
             return frame_status::begin_recording_failed;
+        }
+        // Debug overlay: begin a fresh ImGui frame once per rendered frame (after the acquire,
+        // before any UI content is built; the actual draw is recorded at the end of
+        // record_main_drawcalls() while the main rendering instance is still open).
+        if (this->debug_gui.is_active()) {
+            this->debug_gui.new_frame();
         }
 
         // 6a. Accumulate scene-tree world transforms: every leaf's push.model = scene_transform *
@@ -1021,6 +1034,13 @@ namespace vulkan {
                 }
             }
         }
+
+        // Debug overlay: draw the ImGui frame into the STILL OPEN main rendering instance (the
+        // same MSAA color attachment the scene just rendered into, resolved together at
+        // end_recording()). record() runs the registered UI builder and emits the draw data.
+        if (this->debug_gui.is_active()) {
+            this->debug_gui.record(*command_buffer);
+        }
     }
 
     frame_status runtime::end_recording() {
@@ -1071,6 +1091,7 @@ namespace vulkan {
         if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
             utility::log("present out of date, recreating swapchain");
             vk.recreate_swap_chain();
+            this->debug_gui.on_swapchain_recreated();
         } else if (present_result != VK_SUCCESS) {
             return frame_status::present_failed;
         }
@@ -1102,6 +1123,21 @@ namespace vulkan {
             return end;
         }
         return this->submit_and_present();
+    }
+
+    bool runtime::enable_debug_gui() {
+        if (this->debug_gui.is_active()) {
+            return true;
+        }
+        return this->debug_gui.init(this->vulkan_core);
+    }
+
+    bool runtime::debug_gui_active() const noexcept {
+        return this->debug_gui.is_active();
+    }
+
+    void runtime::set_debug_ui_builder(std::function<void()> builder) {
+        this->debug_gui.set_ui_builder(std::move(builder));
     }
 
     std::expected<void, std::string> runtime::make_pipeline(std::string_view pipeline_name, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code) {
