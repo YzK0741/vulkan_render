@@ -43,14 +43,28 @@ namespace vulkan {
      * @brief outcome of one frame step or of the whole render_frame(); the caller reacts to it
      * @note shared by the split frame steps: each step returns proceed when it succeeded and the
      *       caller may continue to the next step (for render_frame() that means a frame was
-     *       recorded, submitted and presented)
+     *       recorded, submitted and presented). Failures are granular per stage so a caller can
+     *       tell WHERE the frame broke (acquire / command-buffer recording / submit / present).
      */
     export enum class frame_status {
         proceed, // step succeeded / a frame was presented; caller continues
         skipped, // not renderable this iteration (window minimized / swapchain recreated); caller yields and retries
         closed,  // the window was closed (ESC or the native close button); caller exits the loop
-        failed,  // a fatal Vulkan error occurred; caller exits the loop
+        // stage-specific failures: a fatal Vulkan error at that point; caller exits the loop
+        acquire_failed,         // vkAcquireNextImageKHR failed (other than out-of-date)
+        begin_recording_failed, // vkBeginCommandBuffer failed
+        end_recording_failed,   // vkEndCommandBuffer failed
+        submit_failed,          // vkQueueSubmit failed
+        present_failed,         // vkQueuePresentKHR failed (other than out-of-date / suboptimal)
     };
+
+    /**
+     * @ingroup vulkan_runtime
+     * @brief true for any stage-specific failure (not proceed / skipped / closed)
+     */
+    export [[nodiscard]] constexpr bool is_failure(frame_status const status) noexcept {
+        return status != frame_status::proceed && status != frame_status::skipped && status != frame_status::closed;
+    }
 
     /**
      * @ingroup vulkan_runtime
@@ -232,7 +246,8 @@ namespace vulkan {
          *        submit and present one frame when renderable
          * @return frame_status: proceed when a frame was presented; skipped when not renderable
          *         (minimized or swapchain recreated — caller yields and calls again); closed on
-         *         window close; failed on a fatal Vulkan error (caller exits the loop)
+         *         window close; one of the stage-specific *_failed values on a fatal Vulkan error
+         *         (caller exits the loop; is_failure() tests for any of them)
          * @note convenience wrapper that calls the split frame steps below in order
          *       (is_skipable -> try_recreate_swap_chain_if_minimized ->
          *       set_up_frame_environment -> begin_recording -> record_main_drawcalls ->
@@ -267,8 +282,8 @@ namespace vulkan {
          *        image (recreating the swapchain when it is out of date) and write the shared
          *        camera UBO for this frame
          * @return frame_status::skipped when the swapchain was recreated (caller yields and
-         *         retries next iteration); frame_status::failed on a fatal error;
-         *         frame_status::proceed when a frame may be recorded
+         *         retries next iteration); frame_status::acquire_failed when acquiring the image
+         *         failed (other than out-of-date); frame_status::proceed when a frame may be recorded
          * @note part of the split render_frame(); see render_frame() for the full sequence
          */
         frame_status set_up_frame_environment();
@@ -277,10 +292,11 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief step 4 of the frame: begin recording the frame slot's command buffer and run
          *        the CPU-side scene prep (world-matrix accumulation + frustum culling)
-         * @return false on a fatal recording error (caller exits the loop)
+         * @return frame_status::begin_recording_failed when vkBeginCommandBuffer failed
+         *         (caller exits the loop); frame_status::proceed otherwise
          * @note part of the split render_frame(); see render_frame() for the full sequence
          */
-        bool begin_recording();
+        frame_status begin_recording();
 
         /**
          * @ingroup vulkan_runtime
@@ -307,17 +323,19 @@ namespace vulkan {
          * @brief step 6 of the frame: end the main rendering instance (or the classic render
          *        pass), transition the swapchain image to PRESENT_SRC (dynamic rendering only)
          *        and finish recording the command buffer
-         * @return false on a fatal recording error (caller exits the loop)
+         * @return frame_status::end_recording_failed when vkEndCommandBuffer failed (caller
+         *         exits the loop); frame_status::proceed otherwise
          * @note part of the split render_frame(); see render_frame() for the full sequence
          */
-        bool end_recording();
+        frame_status end_recording();
 
         /**
          * @ingroup vulkan_runtime
          * @brief step 7 of the frame: submit the recorded command buffer and present the
          *        swapchain image, recreating the swapchain when presentation reports out of date
          * @return frame_status::proceed when the frame was presented;
-         *         frame_status::failed on a fatal error
+         *         frame_status::submit_failed when vkQueueSubmit failed;
+         *         frame_status::present_failed when presentation failed (other than out-of-date)
          * @note part of the split render_frame(); see render_frame() for the full sequence
          */
         frame_status submit_and_present();

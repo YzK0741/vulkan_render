@@ -392,7 +392,7 @@ int main(int argc, char** argv) {
             runtime.scene_changed(); // edited node.local directly -> culling BVH must track it
         }
         vulkan::frame_status const result = runtime.render_frame();
-        if (result == vulkan::frame_status::closed || result == vulkan::frame_status::failed) {
+        if (result == vulkan::frame_status::closed || vulkan::is_failure(result)) {
             break;
         }
         if (result == vulkan::frame_status::skipped) {

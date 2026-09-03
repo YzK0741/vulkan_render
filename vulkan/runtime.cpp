@@ -663,7 +663,7 @@ namespace vulkan {
             return frame_status::skipped;
         }
         if (acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
-            return frame_status::failed;
+            return frame_status::acquire_failed;
         }
         vkResetFences(vk.device, 1, &vk.in_flight_fences[frame_slot]);
 
@@ -709,14 +709,14 @@ namespace vulkan {
         return frame_status::proceed;
     }
 
-    bool runtime::begin_recording() {
+    frame_status runtime::begin_recording() {
         core& vk = this->vulkan_core;
         // 6. Record the frame into this slot's command buffer
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
         VkCommandBufferBeginInfo begin_info = {};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         if (vkBeginCommandBuffer(*command_buffer, &begin_info) != VK_SUCCESS) {
-            return false;
+            return frame_status::begin_recording_failed;
         }
 
         // 6a. Accumulate scene-tree world transforms: every leaf's push.model = scene_transform *
@@ -821,7 +821,7 @@ namespace vulkan {
         // frame_leaves set, the main pass draws this visible subset)
         this->frame_visible = std::move(visible_leaves);
         this->frame_culled_count = culled_count;
-        return true;
+        return frame_status::proceed;
     }
 
     void runtime::record_main_drawcalls() {
@@ -1023,7 +1023,7 @@ namespace vulkan {
         }
     }
 
-    bool runtime::end_recording() {
+    frame_status runtime::end_recording() {
         core& vk = this->vulkan_core;
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
 
@@ -1053,7 +1053,10 @@ namespace vulkan {
         } else {
             vkCmdEndRenderPass(*command_buffer);
         }
-        return vkEndCommandBuffer(*command_buffer) == VK_SUCCESS;
+        if (vkEndCommandBuffer(*command_buffer) != VK_SUCCESS) {
+            return frame_status::end_recording_failed;
+        }
+        return frame_status::proceed;
     }
 
     frame_status runtime::submit_and_present() {
@@ -1062,14 +1065,14 @@ namespace vulkan {
 
         // 7. Submit + present; recreate the swapchain when presentation reports out of date
         if (vk.submit(*command_buffer, this->current_image_index) != VK_SUCCESS) {
-            return frame_status::failed;
+            return frame_status::submit_failed;
         }
         VkResult const present_result = vk.present(this->current_image_index);
         if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
             utility::log("present out of date, recreating swapchain");
             vk.recreate_swap_chain();
         } else if (present_result != VK_SUCCESS) {
-            return frame_status::failed;
+            return frame_status::present_failed;
         }
         vk.to_next_frame();
         return frame_status::proceed;
@@ -1089,12 +1092,14 @@ namespace vulkan {
         if (env != frame_status::proceed) {
             return env;
         }
-        if (!this->begin_recording()) {
-            return frame_status::failed;
+        frame_status const begin = this->begin_recording();
+        if (begin != frame_status::proceed) {
+            return begin;
         }
         this->record_main_drawcalls();
-        if (!this->end_recording()) {
-            return frame_status::failed;
+        frame_status const end = this->end_recording();
+        if (end != frame_status::proceed) {
+            return end;
         }
         return this->submit_and_present();
     }
