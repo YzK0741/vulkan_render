@@ -667,6 +667,12 @@ namespace vulkan {
         for (scene_tree::scene_node& root : this->scene_.roots) {
             scene_tree::update_world(root, glm::mat4(1.0f));
         }
+        // Collect the drawable leaves once (DFS over the whole scene): the shadow pass draws all
+        // of them, the main pass draws the subset bound to each pipeline
+        std::vector<model const*> frame_leaves;
+        for (scene_tree::scene_node const& root : this->scene_.roots) {
+            this->collect_leaf_models(root, frame_leaves);
+        }
 
         // ---- Shadow pass: render the scene's depth from the light into this slot's shadow map.
         //      Drawn before the main pass; the depth-only pipeline shares the flat scene layout
@@ -732,12 +738,8 @@ namespace vulkan {
                 }
                 this->shadow_pipeline->begin_pipeline(*command_buffer);
                 // draw every scene-tree leaf (the whole scene casts shadows)
-                for (scene_tree::scene_node const& root : this->scene_.roots) {
-                    std::vector<model const*> leaves;
-                    this->collect_leaf_models(root, leaves);
-                    for (model const* m : leaves) {
-                        m->draw(*command_buffer); // depth-only: shadow.vert transforms into light space
-                    }
+                for (model const* m : frame_leaves) {
+                    m->draw(*command_buffer); // depth-only: shadow.vert transforms into light space
                 }
                 vkCmdEndRendering(*command_buffer);
 
@@ -849,12 +851,8 @@ namespace vulkan {
             vkCmdDraw(*command_buffer, 3, 1, 0, 0);
         }
 
-        // Main pass: walk the scene tree once, collect leaves grouped by their pipeline, then
-        // draw each group with its pipeline bound once (same batching as the old flat model list)
-        std::vector<model const*> frame_leaves;
-        for (scene_tree::scene_node const& root : this->scene_.roots) {
-            this->collect_leaf_models(root, frame_leaves);
-        }
+        // Main pass: draw the collected leaves, grouping by their pipeline (each group binds its
+        // pipeline once — same batching as the old flat model list)
         for (auto const& [pipeline_name, pipeline] : this->pipelines) {
             vk_pipeline const* const wanted = &pipeline;
             bool any = false;
