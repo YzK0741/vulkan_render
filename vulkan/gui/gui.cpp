@@ -14,15 +14,15 @@ namespace vulkan {
         this->shutdown();
     }
 
-    bool gui_content::init(core& core) {
+    bool gui_content::init(gui_create_info const& info) {
         if (this->active) {
             return true; // idempotent
         }
         // ImGui draws into the runtime's OPEN main rendering instance. That instance uses
         // dynamic rendering (the runtime's shadow pass already requires Vulkan 1.3 dynamic
         // rendering, so the classic fallback cannot host a usable overlay anyway).
-        if (!core.use_dynamic_rendering) {
-            utility::log("gui_content: disabled (requires dynamic rendering)");
+        if (info.device == VK_NULL_HANDLE || info.graphics_queue == VK_NULL_HANDLE || info.window == nullptr) {
+            utility::log("gui_content: init skipped (incomplete gui_create_info)");
             return false;
         }
 
@@ -34,39 +34,39 @@ namespace vulkan {
 
         // Platform backend. install_callbacks=true makes imgui chain-call the runtime's own
         // GLFW callbacks (mouse/scroll -> orbit camera) which were registered earlier.
-        if (!ImGui_ImplGlfw_InitForVulkan(core.window, /*install_callbacks=*/true)) {
+        if (!ImGui_ImplGlfw_InitForVulkan(info.window, /*install_callbacks=*/true)) {
             utility::log("gui_content: ImGui_ImplGlfw_InitForVulkan failed");
             ImGui::DestroyContext();
             return false;
         }
 
-        ImGui_ImplVulkan_InitInfo info = {};
-        info.ApiVersion = VK_API_VERSION_1_3;
-        info.Instance = core.instance;
-        info.PhysicalDevice = core.physical_device;
-        info.Device = core.device;
-        info.QueueFamily = core.graphics_family_index;
-        info.Queue = core.graphics_queue;
+        ImGui_ImplVulkan_InitInfo backend_info = {};
+        backend_info.ApiVersion = VK_API_VERSION_1_3;
+        backend_info.Instance = info.instance;
+        backend_info.PhysicalDevice = info.physical_device;
+        backend_info.Device = info.device;
+        backend_info.QueueFamily = info.graphics_queue_family;
+        backend_info.Queue = info.graphics_queue;
         // backend creates its own descriptor pool (we must not share the runtime's scene pool)
-        info.DescriptorPoolSize = 8;
-        // the runtime keeps MAX_FRAMES_IN_FLIGHT frames in flight and advances one slot per
-        // rendered frame, matching the backend's per-frame render-buffer ring
-        info.MinImageCount = static_cast<uint32_t>(core::MAX_FRAMES_IN_FLIGHT);
-        info.ImageCount = static_cast<uint32_t>(core::MAX_FRAMES_IN_FLIGHT);
-        info.UseDynamicRendering = true;
-        info.PipelineInfoMain.MSAASamples = core.msaa_samples;
+        backend_info.DescriptorPoolSize = 8;
+        // frames in flight: the runtime advances one slot per rendered frame, matching the
+        // backend's per-frame render-buffer ring
+        backend_info.MinImageCount = info.frames_in_flight;
+        backend_info.ImageCount = info.frames_in_flight;
+        backend_info.UseDynamicRendering = true;
+        backend_info.PipelineInfoMain.MSAASamples = info.msaa_samples;
         VkPipelineRenderingCreateInfo rendering_info = {};
         rendering_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
         rendering_info.colorAttachmentCount = 1;
-        rendering_info.pColorAttachmentFormats = &core.swap_chain_image_format;
-        info.PipelineInfoMain.PipelineRenderingCreateInfo = rendering_info;
-        info.CheckVkResultFn = [](VkResult const err) {
+        rendering_info.pColorAttachmentFormats = &info.color_format;
+        backend_info.PipelineInfoMain.PipelineRenderingCreateInfo = rendering_info;
+        backend_info.CheckVkResultFn = [](VkResult const err) {
             if (err != VK_SUCCESS) {
                 utility::log("imgui vulkan backend error: {}", static_cast<int>(err));
             }
         };
 
-        if (!ImGui_ImplVulkan_Init(&info)) {
+        if (!ImGui_ImplVulkan_Init(&backend_info)) {
             utility::log("gui_content: ImGui_ImplVulkan_Init failed");
             ImGui_ImplGlfw_Shutdown();
             ImGui::DestroyContext();
@@ -74,7 +74,8 @@ namespace vulkan {
         }
 
         this->active = true;
-        utility::log("gui_content: ImGui overlay initialized (dynamic rendering, MSAA {})", static_cast<int>(core.msaa_samples));
+        this->frames_in_flight = info.frames_in_flight;
+        utility::log("gui_content: ImGui overlay initialized (dynamic rendering, MSAA {})", static_cast<int>(info.msaa_samples));
         return true;
     }
 
@@ -122,7 +123,7 @@ namespace vulkan {
             return;
         }
         // swapchain image count may have changed; the backend's per-frame buffers stay sized to
-        // MAX_FRAMES_IN_FLIGHT (we pass that as ImageCount), so only sync the min-image hint.
-        ImGui_ImplVulkan_SetMinImageCount(static_cast<uint32_t>(core::MAX_FRAMES_IN_FLIGHT));
+        // the frames-in-flight count captured at init(), so only sync the min-image hint.
+        ImGui_ImplVulkan_SetMinImageCount(this->frames_in_flight);
     }
 } // namespace vulkan

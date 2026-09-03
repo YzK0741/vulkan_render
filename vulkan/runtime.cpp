@@ -1129,7 +1129,25 @@ namespace vulkan {
         if (this->debug_gui.is_active()) {
             return true;
         }
-        return this->debug_gui.init(this->vulkan_core);
+        // The overlay draws into the runtime's OPEN main rendering instance via dynamic
+        // rendering (the backend is initialized with UseDynamicRendering=true), so it cannot
+        // be enabled on the classic render-pass fallback path.
+        if (!this->vulkan_core.use_dynamic_rendering) {
+            utility::log("enable_debug_gui: requires dynamic rendering (classic fallback active)");
+            return false;
+        }
+        vulkan::core const& vk = this->vulkan_core;
+        gui_create_info info = {};
+        info.window = vk.window;
+        info.instance = vk.instance;
+        info.physical_device = vk.physical_device;
+        info.device = vk.device;
+        info.graphics_queue_family = vk.graphics_family_index;
+        info.graphics_queue = vk.graphics_queue;
+        info.color_format = vk.swap_chain_image_format;
+        info.msaa_samples = vk.msaa_samples;
+        info.frames_in_flight = static_cast<uint32_t>(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        return this->debug_gui.init(info);
     }
 
     bool runtime::debug_gui_active() const noexcept {

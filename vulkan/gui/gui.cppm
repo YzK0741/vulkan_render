@@ -2,9 +2,12 @@ module;
 
 #include <vulkan/vulkan.h>
 
+// GLFWwindow is used as an opaque pointer in gui_create_info; glfw3.h itself is only included
+// in gui.cpp (the platform backend calls). A forward declaration keeps this interface light.
+struct GLFWwindow;
+
 export module vulkan.gui;
 export import std;
-import vulkan.core;
 
 /**
  * @file gui.cppm
@@ -24,7 +27,30 @@ import vulkan.core;
 namespace vulkan {
     /**
      * @ingroup vulkan_gui
-     * @brief owned Dear ImGui overlay for one vulkan::core window
+     * @brief everything gui_content needs to initialize its ImGui backends, decoupled from the
+     *        vulkan::core object (the runtime assembles this from its core)
+     */
+    export struct gui_create_info {
+        // ---- GLFW platform backend ----
+        GLFWwindow* window = nullptr; // the window the overlay attaches to (callbacks chain)
+
+        // ---- Vulkan renderer backend ----
+        VkInstance instance = VK_NULL_HANDLE;
+        VkPhysicalDevice physical_device = VK_NULL_HANDLE;
+        VkDevice device = VK_NULL_HANDLE;
+        uint32_t graphics_queue_family = 0; // queue family of @p graphics_queue
+        VkQueue graphics_queue = VK_NULL_HANDLE;
+        // the overlay draws into the OPEN main rendering instance, so its pipeline must match
+        // the frame's color attachment: swapchain format + the scene's MSAA sample count
+        VkFormat color_format = VK_FORMAT_UNDEFINED;
+        VkSampleCountFlagBits msaa_samples = VK_SAMPLE_COUNT_1_BIT;
+        // frames in flight (the backend sizes its per-frame render-buffer ring to this)
+        uint32_t frames_in_flight = 2;
+    };
+
+    /**
+     * @ingroup vulkan_gui
+     * @brief owned Dear ImGui overlay for one window
      * @note non-copyable (a second copy would fight over the single global ImGui context);
      *       the runtime holds exactly one as a direct member
      */
@@ -37,12 +63,12 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_gui
-         * @brief create the ImGui context and initialize the GLFW + Vulkan backends for @p core
+         * @brief create the ImGui context and initialize the GLFW + Vulkan backends from @p info
          * @return false when initialization failed (the overlay stays inactive)
-         * @note requires the core's window/device/queues to be fully initialized; the core must
-         *       outlive the gui_content (the runtime guarantees this by member order)
+         * @note requires the handles in @p info to be fully initialized and to outlive the
+         *       gui_content (the runtime guarantees this)
          */
-        bool init(core& core);
+        bool init(gui_create_info const& info);
 
         /**
          * @ingroup vulkan_gui
@@ -92,5 +118,7 @@ namespace vulkan {
         // true between a successful init() and shutdown(). The ImGui context and backend data
         // themselves live in ImGui's global storage, not here.
         bool active = false;
+        // frames in flight captured at init() (the backend's min-image hint on recreation)
+        uint32_t frames_in_flight = 2;
     };
 } // namespace vulkan
