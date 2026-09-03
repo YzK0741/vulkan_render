@@ -606,7 +606,7 @@ namespace vulkan {
         vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
     }
 
-    frame_result runtime::is_skipable() {
+    frame_status runtime::is_skipable() {
         core& vk = this->vulkan_core;
         GLFWwindow* window = vk.window;
 
@@ -616,16 +616,16 @@ namespace vulkan {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
         if (glfwWindowShouldClose(window)) {
-            return frame_result::closed;
+            return frame_status::closed;
         }
 
         // 2. Minimized: skip this frame (acquiring from an invalidated / 0-sized swapchain would
         //    fail); the restore transition is handled by try_recreate_swap_chain_if_minimized()
         if (glfwGetWindowAttrib(window, GLFW_ICONIFIED) == GLFW_TRUE) {
             this->was_minimized = true;
-            return frame_result::skipped;
+            return frame_status::skipped;
         }
-        return frame_result::render_success;
+        return frame_status::proceed;
     }
 
     void runtime::try_recreate_swap_chain_if_minimized() {
@@ -637,7 +637,7 @@ namespace vulkan {
         }
     }
 
-    frame_result runtime::set_up_frame_environment() {
+    frame_status runtime::set_up_frame_environment() {
         core& vk = this->vulkan_core;
 
         // 3. The frame slot's fence guards both the command buffer and the acquire semaphore:
@@ -660,10 +660,10 @@ namespace vulkan {
         if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
             utility::log("swapchain out of date, recreating");
             vk.recreate_swap_chain();
-            return frame_result::skipped;
+            return frame_status::skipped;
         }
         if (acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
-            return frame_result::failed;
+            return frame_status::failed;
         }
         vkResetFences(vk.device, 1, &vk.in_flight_fences[frame_slot]);
 
@@ -706,7 +706,7 @@ namespace vulkan {
                 vkUpdateDescriptorSets(vk.device, 1, &shadow_write, 0, nullptr);
             }
         }
-        return frame_result::render_success;
+        return frame_status::proceed;
     }
 
     bool runtime::begin_recording() {
@@ -1056,45 +1056,45 @@ namespace vulkan {
         return vkEndCommandBuffer(*command_buffer) == VK_SUCCESS;
     }
 
-    frame_result runtime::submit_and_present() {
+    frame_status runtime::submit_and_present() {
         core& vk = this->vulkan_core;
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
 
         // 7. Submit + present; recreate the swapchain when presentation reports out of date
         if (vk.submit(*command_buffer, this->current_image_index) != VK_SUCCESS) {
-            return frame_result::failed;
+            return frame_status::failed;
         }
         VkResult const present_result = vk.present(this->current_image_index);
         if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
             utility::log("present out of date, recreating swapchain");
             vk.recreate_swap_chain();
         } else if (present_result != VK_SUCCESS) {
-            return frame_result::failed;
+            return frame_status::failed;
         }
         vk.to_next_frame();
-        return frame_result::render_success;
+        return frame_status::proceed;
     }
 
     VkCommandBuffer runtime::active_command_buffer() const noexcept {
         return *this->command_buffers[static_cast<uint32_t>(this->vulkan_core.current_frame)];
     }
 
-    frame_result runtime::render_frame() {
-        frame_result const skip = this->is_skipable();
-        if (skip != frame_result::render_success) {
+    frame_status runtime::render_frame() {
+        frame_status const skip = this->is_skipable();
+        if (skip != frame_status::proceed) {
             return skip;
         }
         this->try_recreate_swap_chain_if_minimized();
-        frame_result const env = this->set_up_frame_environment();
-        if (env != frame_result::render_success) {
+        frame_status const env = this->set_up_frame_environment();
+        if (env != frame_status::proceed) {
             return env;
         }
         if (!this->begin_recording()) {
-            return frame_result::failed;
+            return frame_status::failed;
         }
         this->record_main_drawcalls();
         if (!this->end_recording()) {
-            return frame_result::failed;
+            return frame_status::failed;
         }
         return this->submit_and_present();
     }

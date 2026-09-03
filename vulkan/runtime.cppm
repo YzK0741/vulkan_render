@@ -40,13 +40,16 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_runtime
-     * @brief result of one runtime::render_frame() call; the caller reacts to it
+     * @brief outcome of one frame step or of the whole render_frame(); the caller reacts to it
+     * @note shared by the split frame steps: each step returns proceed when it succeeded and the
+     *       caller may continue to the next step (for render_frame() that means a frame was
+     *       recorded, submitted and presented)
      */
-    export enum class frame_result {
-        render_success, // a frame was recorded, submitted and presented
-        skipped,        // not renderable this iteration (window minimized / swapchain recreated); caller yields and retries
-        closed,         // the window was closed (ESC or the native close button); caller exits the loop
-        failed,         // a fatal Vulkan error occurred; caller exits the loop
+    export enum class frame_status {
+        proceed, // step succeeded / a frame was presented; caller continues
+        skipped, // not renderable this iteration (window minimized / swapchain recreated); caller yields and retries
+        closed,  // the window was closed (ESC or the native close button); caller exits the loop
+        failed,  // a fatal Vulkan error occurred; caller exits the loop
     };
 
     /**
@@ -227,7 +230,7 @@ namespace vulkan {
          *        skip rendering while the window is minimized, recreate the swapchain on restore
          *        and on resize (VK_ERROR_OUT_OF_DATE_KHR / VK_SUBOPTIMAL_KHR), then record,
          *        submit and present one frame when renderable
-         * @return frame_result: render_success when a frame was presented; skipped when not renderable
+         * @return frame_status: proceed when a frame was presented; skipped when not renderable
          *         (minimized or swapchain recreated — caller yields and calls again); closed on
          *         window close; failed on a fatal Vulkan error (caller exits the loop)
          * @note convenience wrapper that calls the split frame steps below in order
@@ -236,24 +239,24 @@ namespace vulkan {
          *       end_recording -> submit_and_present). External code may call those steps itself
          *       to interleave custom recording (e.g. a debug overlay) between the steps.
          */
-        frame_result render_frame();
+        frame_status render_frame();
 
         /**
          * @ingroup vulkan_runtime
          * @brief step 1 of the frame: poll window events and decide whether this iteration can
          *        render at all
-         * @return frame_result::closed when the window was closed (ESC or native close);
-         *         frame_result::skipped when the window is minimized (rendering would fail);
-         *         frame_result::render_success when the caller may continue the frame
+         * @return frame_status::closed when the window was closed (ESC or native close);
+         *         frame_status::skipped when the window is minimized (rendering would fail);
+         *         frame_status::proceed when the caller may continue the frame
          * @note part of the split render_frame(); see render_frame() for the full sequence
          */
-        frame_result is_skipable();
+        frame_status is_skipable();
 
         /**
          * @ingroup vulkan_runtime
          * @brief step 2 of the frame: if the window was minimized since the last rendered frame,
          *        recreate the swapchain (its extent is 0-sized while minimized). Call only after
-         *        is_skipable() reported render_success.
+         *        is_skipable() reported proceed.
          * @note part of the split render_frame(); see render_frame() for the full sequence
          */
         void try_recreate_swap_chain_if_minimized();
@@ -263,12 +266,12 @@ namespace vulkan {
          * @brief step 3 of the frame: wait the frame slot's fence, acquire the next swapchain
          *        image (recreating the swapchain when it is out of date) and write the shared
          *        camera UBO for this frame
-         * @return frame_result::skipped when the swapchain was recreated (caller yields and
-         *         retries next iteration); frame_result::failed on a fatal error;
-         *         frame_result::render_success when a frame may be recorded
+         * @return frame_status::skipped when the swapchain was recreated (caller yields and
+         *         retries next iteration); frame_status::failed on a fatal error;
+         *         frame_status::proceed when a frame may be recorded
          * @note part of the split render_frame(); see render_frame() for the full sequence
          */
-        frame_result set_up_frame_environment();
+        frame_status set_up_frame_environment();
 
         /**
          * @ingroup vulkan_runtime
@@ -313,11 +316,11 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief step 7 of the frame: submit the recorded command buffer and present the
          *        swapchain image, recreating the swapchain when presentation reports out of date
-         * @return frame_result::render_success when the frame was presented;
-         *         frame_result::failed on a fatal error
+         * @return frame_status::proceed when the frame was presented;
+         *         frame_status::failed on a fatal error
          * @note part of the split render_frame(); see render_frame() for the full sequence
          */
-        frame_result submit_and_present();
+        frame_status submit_and_present();
 
         std::expected<void, std::string> make_pipeline(
             std::string_view pipeline_name,

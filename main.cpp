@@ -374,7 +374,7 @@ int main(int argc, char** argv) {
 
     // All per-frame decisions (event polling, ESC/close response, minimize skip, swapchain
     // recreation on restore/resize) live inside runtime::render_frame(); main only reacts to
-    // the returned frame_result.
+    // the returned frame_status.
     while (true) {
         if (spin_scene) {
             // rotate the whole scene around scene_sink (its own center): shadows stay valid
@@ -391,11 +391,11 @@ int main(int argc, char** argv) {
             subtree_node->local = pivot * glm::rotate(glm::mat4(1.0f), static_cast<float>(spin_angle), glm::vec3(0.0f, 1.0f, 0.0f)) * glm::inverse(pivot) * subtree_local0;
             runtime.scene_changed(); // edited node.local directly -> culling BVH must track it
         }
-        vulkan::frame_result const result = runtime.render_frame();
-        if (result == vulkan::frame_result::closed || result == vulkan::frame_result::failed) {
+        vulkan::frame_status const result = runtime.render_frame();
+        if (result == vulkan::frame_status::closed || result == vulkan::frame_status::failed) {
             break;
         }
-        if (result == vulkan::frame_result::skipped) {
+        if (result == vulkan::frame_status::skipped) {
             // Minimized or swapchain recreated: skip this frame; keep the FPS timer fresh so the
             // pause is not counted as one huge rendered frame.
             last_frame_time = std::chrono::steady_clock::now();
@@ -403,7 +403,7 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        // render_success: frame time = wall time since the previous rendered frame
+        // proceed: frame time = wall time since the previous rendered frame
         auto const now = std::chrono::steady_clock::now();
         fps_elapsed += std::chrono::duration<double>(now - last_frame_time).count();
         last_frame_time = now;
