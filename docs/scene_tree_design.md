@@ -2,8 +2,8 @@
 
 Status: migration in progress — storage, import and the render loop are tree-driven
 (`vulkan.runtime.scene_tree`); import_scene rebuilds the real loader hierarchy
-(step 2b done); remaining work: `vulkan.model` becomes a scene_tree primitive
-and per-node `set_local_transform` handle APIs on top of the real subtrees.
+(2b) and per-node transforms work through `runtime::scene()` + the `spin-subtree`
+demo; remaining work: `vulkan.model` becomes a scene_tree primitive.
 
 ## 1. Motivation
 
@@ -289,11 +289,14 @@ Status, kept in sync with git history:
   attach-as-root-leaf. Verified: default + Hierarchy assets show the runtime tree
   mirroring the loader tree (`node_group_root -> 2 helmet leaves`), fps unchanged,
   instancing grid + spin demo still render.
-- ✅ **3 — Whole-scene transform API** (`4ee1b82`, `74b18bc`).
+- ✅ **3 — Whole-scene + per-node transform API** (`4ee1b82`, `74b18bc`, `9cc791a`).
   `runtime::set_scene_transform` applies one world matrix on top of every root
-  (identity default = unchanged rendering); main's `argv[3] == "spin"` demo spins
-  the whole scene around its sink. A per-node `set_local_transform` for arbitrary
-  subtrees can now build on 2b's real hierarchy (next step if wanted).
+  (identity default = unchanged rendering); main's `argv[2]/argv[3] == "spin"`
+  demo spins the whole scene around its sink. `runtime::scene()` exposes the tree
+  so callers edit per-node `local` in place (structure is fixed after import);
+  `argv[2]/argv[3] == "spin-subtree"` rotates one drawable-leaf node about its own
+  position — on the Hierarchy asset a single helmet spins while its sibling stays
+  put (per-node transform over the 2b hierarchy).
 - ✅ **4 — Remove the flat `models` map.** No flat model storage remains.
 - ⏳ **5 — Future:** animation / skinning / mesh sharing (separate pass, §8).
 
@@ -343,5 +346,6 @@ source of truth for what each commit changed.)
    still name the tree-leaf operations (per-pipeline semantics unchanged);
    scene-oriented renames can come with 2b's handle-based API if wanted.
 3. **Whole-group transform demo** — answered: temporary auto-spin accepted and
-   shipped behind `argv[3] == "spin"` (whole-scene rotation around the sink,
+   shipped (`argv[2]/argv[3] == "spin"` whole-scene rotation around the sink,
+   `spin-subtree` per-node rotation — `9cc791a`);
    `4ee1b82`); a per-subtree demo waits for 2b.
