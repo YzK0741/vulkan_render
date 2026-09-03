@@ -120,6 +120,9 @@ namespace vulkan {
         // leaf (drawable::set_world -> push.model), then each pipeline draws the leaves bound to
         // it (model::draw stays polymorphic). This replaces the old flat per-pipeline model list.
         scene_tree::scene scene_ = {}; // single scene; roots own every model leaf
+        // optional whole-scene transform applied on top of every root before local transforms
+        // (programmatic grouping / demo rotation; identity by default = no visual change)
+        glm::mat4 scene_transform_ = glm::mat4(1.0f);
         // one command buffer per frame slot, used and reused by render_frame()
         std::vector<vk_command_buffer> command_buffers;
         // filtered view over vulkan_core, exposed via operator-> (external code never sees the raw core)
@@ -242,6 +245,15 @@ namespace vulkan {
          * @note requires make_shadow_pipeline() to have succeeded; no-op otherwise
          */
         void enable_shadows(glm::vec3 const& scene_center, float scene_radius);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief set an extra whole-scene transform applied on top of every scene-tree root
+         * @param transform world matrix placed before the roots' local transforms
+         * @note identity (the default) leaves rendering untouched; useful for programmatic
+         *       grouping / demo rotation of the whole imported scene
+         */
+        void set_scene_transform(glm::mat4 const& transform);
 
         /**
          * @ingroup vulkan_runtime

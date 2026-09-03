@@ -292,6 +292,11 @@ int main(int argc, char** argv) {
     //     lives inside runtime::render_frame()
     utility::log("rendering '{}' with PBR... left-drag to orbit, wheel to zoom, ESC to exit", model_path);
 
+    // Optional whole-scene spin demo (argv[3] == "spin"): rotates the whole scene tree around
+    // its own center via runtime::set_scene_transform, proving programmatic group transforms.
+    bool const spin_scene = argc > 3 && std::string_view(argv[3]) == "spin";
+    double spin_angle = 0.0;
+
     // FPS statistics: accumulate frame times, report once per second (log + window title)
     std::chrono::steady_clock::time_point last_frame_time = std::chrono::steady_clock::now();
     double fps_elapsed = 0.0;
@@ -301,6 +306,12 @@ int main(int argc, char** argv) {
     // recreation on restore/resize) live inside runtime::render_frame(); main only reacts to
     // the returned frame_result.
     while (true) {
+        if (spin_scene) {
+            // rotate the whole scene around scene_sink (its own center): shadows stay valid
+            spin_angle += 0.6 * std::chrono::duration<double>(std::chrono::steady_clock::now() - last_frame_time).count();
+            glm::mat4 const center = glm::translate(glm::mat4(1.0f), scene_sink);
+            runtime.set_scene_transform(center * glm::rotate(glm::mat4(1.0f), static_cast<float>(spin_angle), glm::vec3(0.0f, 1.0f, 0.0f)) * glm::inverse(center));
+        }
         vulkan::frame_result const result = runtime.render_frame();
         if (result == vulkan::frame_result::closed || result == vulkan::frame_result::failed) {
             break;

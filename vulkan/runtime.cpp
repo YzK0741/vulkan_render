@@ -661,11 +661,12 @@ namespace vulkan {
             return frame_result::failed;
         }
 
-        // 6a. Accumulate scene-tree world transforms: every leaf's push.model = identity * local
-        //     (the old flat list stored the world matrix directly; a root leaf's local holds the
-        //     same matrix, so update_world reproduces it — and later hierarchy/animation just works)
+        // 6a. Accumulate scene-tree world transforms: every leaf's push.model = scene_transform *
+        //     identity * local. With the default scene_transform_ (identity) this reproduces the
+        //     old flat-list world matrices exactly; set_scene_transform() adds programmatic
+        //     whole-scene grouping on top.
         for (scene_tree::scene_node& root : this->scene_.roots) {
-            scene_tree::update_world(root, glm::mat4(1.0f));
+            scene_tree::update_world(root, this->scene_transform_);
         }
         // Collect the drawable leaves once (DFS over the whole scene): the shadow pass draws all
         // of them, the main pass draws the subset bound to each pipeline
@@ -955,6 +956,10 @@ namespace vulkan {
         this->shadows_enabled = true;
         utility::log("shadow mapping enabled: light frustum center ({:.2f}, {:.2f}, {:.2f}), radius {:.2f}",
                      scene_center.x, scene_center.y, scene_center.z, scene_radius);
+    }
+
+    void runtime::set_scene_transform(glm::mat4 const& transform) {
+        this->scene_transform_ = transform;
     }
 
     std::expected<void, std::string> runtime::make_skybox_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code) {
