@@ -606,7 +606,7 @@ namespace vulkan {
         vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
     }
 
-    frame_result runtime::render_frame() {
+    frame_result runtime::is_skipable() {
         core& vk = this->vulkan_core;
         GLFWwindow* window = vk.window;
 
@@ -620,16 +620,25 @@ namespace vulkan {
         }
 
         // 2. Minimized: skip this frame (acquiring from an invalidated / 0-sized swapchain would
-        //    fail); the restore transition below rebuilds the swapchain before the next render
+        //    fail); the restore transition is handled by try_recreate_swap_chain_if_minimized()
         if (glfwGetWindowAttrib(window, GLFW_ICONIFIED) == GLFW_TRUE) {
             this->was_minimized = true;
             return frame_result::skipped;
         }
+        return frame_result::render_success;
+    }
+
+    void runtime::try_recreate_swap_chain_if_minimized() {
+        core& vk = this->vulkan_core;
         if (this->was_minimized) {
             this->was_minimized = false;
             utility::log("window restored, recreating swapchain");
             vk.recreate_swap_chain();
         }
+    }
+
+    frame_result runtime::set_up_frame_environment() {
+        core& vk = this->vulkan_core;
 
         // 3. The frame slot's fence guards both the command buffer and the acquire semaphore:
         //    wait it BEFORE acquiring so the previous submission on this slot (and its semaphore
@@ -642,13 +651,12 @@ namespace vulkan {
         //    rebuild the swapchain and let the caller retry on the next iteration. The fence is
         //    only reset after a successful acquire, so this path never leaves a reset-but-
         //    unsubmitted fence behind (which would deadlock the next frame's wait)
-        uint32_t image_index = 0;
         VkResult const acquire_result = vkAcquireNextImageKHR(vk.device,
                                                               vk.swap_chain,
                                                               UINT64_MAX,
                                                               vk.image_available_semaphores[frame_slot],
                                                               VK_NULL_HANDLE,
-                                                              &image_index);
+                                                              &this->current_image_index);
         if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
             utility::log("swapchain out of date, recreating");
             vk.recreate_swap_chain();
@@ -662,10 +670,10 @@ namespace vulkan {
         // 5. Update the shared camera UBO once: every primitive references these buffers through the
         //    scene set, so one memcpy (+ one update-after-bind descriptor write) replaces the old
         //    per-primitive per-frame UBO updates
-        float const aspect = static_cast<float>(vk.swap_chain_extent.width) / static_cast<float>(vk.swap_chain_extent.height);
-        camera_ubo const ubo = make_orbit_camera_ubo(this->camera.yaw, this->camera.pitch, this->camera.distance, this->camera.target, aspect);
+        this->current_aspect = static_cast<float>(vk.swap_chain_extent.width) / static_cast<float>(vk.swap_chain_extent.height);
+        this->current_ubo = make_orbit_camera_ubo(this->camera.yaw, this->camera.pitch, this->camera.distance, this->camera.target, this->current_aspect);
         if (this->camera_mapped[frame_slot] != nullptr) {
-            std::memcpy(this->camera_mapped[frame_slot], &ubo, sizeof(ubo));
+            std::memcpy(this->camera_mapped[frame_slot], &this->current_ubo, sizeof(camera_ubo));
         }
         if (this->scene_set.get() != VK_NULL_HANDLE) {
             auto const* ubo_detail = vk.vma.get_buffer_detail(this->camera_buffer_handles[frame_slot]);
@@ -698,13 +706,17 @@ namespace vulkan {
                 vkUpdateDescriptorSets(vk.device, 1, &shadow_write, 0, nullptr);
             }
         }
+        return frame_result::render_success;
+    }
 
+    bool runtime::begin_recording() {
+        core& vk = this->vulkan_core;
         // 6. Record the frame into this slot's command buffer
-        vk_command_buffer& command_buffer = this->command_buffers[frame_slot];
+        vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
         VkCommandBufferBeginInfo begin_info = {};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         if (vkBeginCommandBuffer(*command_buffer, &begin_info) != VK_SUCCESS) {
-            return frame_result::failed;
+            return false;
         }
 
         // 6a. Accumulate scene-tree world transforms: every leaf's push.model = scene_transform *
@@ -716,9 +728,9 @@ namespace vulkan {
         }
         // Collect the primitive leaves once (DFS over the whole scene): the shadow pass draws all
         // of them, the main pass draws the subset bound to each pipeline
-        std::vector<primitive const*> frame_leaves;
+        this->frame_leaves.clear();
         for (scene_tree::scene_node const& root : this->scene.roots) {
-            this->collect_leaf_primitives(root, frame_leaves);
+            this->collect_leaf_primitives(root, this->frame_leaves);
         }
 
         // 6b. Frustum culling for the main pass: build a BVH over every leaf that has a single
@@ -731,7 +743,11 @@ namespace vulkan {
         //     when the camera also did not move the culled result is reused as-is (no rebuild, no
         //     frustum_cull). update_world() above rewrites the same world matrices each frame, so
         //     a non-dirty scene keeps identical world AABBs and the cached BVH stays valid.
-        std::vector<primitive const*> visible_leaves = frame_leaves; // fallback: no culling
+        // local aliases into the per-frame state filled above (keeps the cull math unchanged)
+        std::vector<primitive const*> const& frame_leaves = this->frame_leaves;
+        float const& aspect = this->current_aspect;
+        camera_ubo const& ubo = this->current_ubo;
+        std::vector<primitive const*> visible_leaves = this->frame_leaves; // fallback: no culling
         std::size_t culled_count = 0;
         if (this->frustum_culling) {
             // camera key: yaw, pitch, distance, target (the orbit state that shapes the frustum)
@@ -801,6 +817,18 @@ namespace vulkan {
             }
         }
 
+        // persist the cull result for the record steps below (shadow pass draws the full
+        // frame_leaves set, the main pass draws this visible subset)
+        this->frame_visible = std::move(visible_leaves);
+        this->frame_culled_count = culled_count;
+        return true;
+    }
+
+    void runtime::record_main_drawcalls() {
+        core& vk = this->vulkan_core;
+        vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
+        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
+
         // ---- Shadow pass: render the scene's depth from the light into this slot's shadow map.
         //      Drawn before the main pass; the depth-only pipeline shares the flat scene layout
         //      and the primitive draw() path (same vertex buffers / push constants), so the shadow
@@ -865,7 +893,7 @@ namespace vulkan {
                 }
                 this->shadow_pipeline->begin_pipeline(*command_buffer);
                 // draw every scene-tree leaf (the whole scene casts shadows)
-                for (primitive const* m : frame_leaves) {
+                for (primitive const* m : this->frame_leaves) {
                     m->draw(*command_buffer); // depth-only: shadow.vert transforms into light space
                 }
                 vkCmdEndRendering(*command_buffer);
@@ -915,15 +943,15 @@ namespace vulkan {
 
             if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
                 // MSAA color attachment and the swapchain resolve target both render in COLOR_ATTACHMENT_OPTIMAL
-                add_render_barrier(vk.color_images[image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                add_render_barrier(vk.color_images[this->current_image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-                add_render_barrier(vk.swap_chain_images[image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                add_render_barrier(vk.swap_chain_images[this->current_image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
             } else {
-                add_render_barrier(vk.swap_chain_images[image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                add_render_barrier(vk.swap_chain_images[this->current_image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
             }
-            add_render_barrier(vk.depth_images[image_index], VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            add_render_barrier(vk.depth_images[this->current_image_index], VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
 
@@ -934,7 +962,7 @@ namespace vulkan {
             vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
         }
 
-        this->begin_rendering(*command_buffer, image_index);
+        this->begin_rendering(*command_buffer, this->current_image_index);
 
         // Bind the single scene descriptor set once: every pipeline shares the scene layout, so
         // the set stays valid across pipeline binds and only models vary per draw
@@ -983,7 +1011,7 @@ namespace vulkan {
         for (auto const& [pipeline_name, pipeline] : this->pipelines) {
             vk_pipeline const* const wanted = &pipeline;
             bool any = false;
-            for (primitive const* m : visible_leaves) {
+            for (primitive const* m : this->frame_visible) {
                 if (m->pipeline == wanted) {
                     if (!any) {
                         pipeline.begin_pipeline(*command_buffer);
@@ -993,6 +1021,11 @@ namespace vulkan {
                 }
             }
         }
+    }
+
+    bool runtime::end_recording() {
+        core& vk = this->vulkan_core;
+        vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
 
         if (vk.use_dynamic_rendering) {
             vkCmdEndRendering(*command_buffer);
@@ -1009,7 +1042,7 @@ namespace vulkan {
             present_barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
             present_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             present_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            present_barrier.image = vk.swap_chain_images[image_index];
+            present_barrier.image = vk.swap_chain_images[this->current_image_index];
             present_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
             VkDependencyInfo dependency_info = {};
@@ -1020,15 +1053,18 @@ namespace vulkan {
         } else {
             vkCmdEndRenderPass(*command_buffer);
         }
-        if (vkEndCommandBuffer(*command_buffer) != VK_SUCCESS) {
-            return frame_result::failed;
-        }
+        return vkEndCommandBuffer(*command_buffer) == VK_SUCCESS;
+    }
+
+    frame_result runtime::submit_and_present() {
+        core& vk = this->vulkan_core;
+        vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
 
         // 7. Submit + present; recreate the swapchain when presentation reports out of date
-        if (vk.submit(*command_buffer, image_index) != VK_SUCCESS) {
+        if (vk.submit(*command_buffer, this->current_image_index) != VK_SUCCESS) {
             return frame_result::failed;
         }
-        VkResult const present_result = vk.present(image_index);
+        VkResult const present_result = vk.present(this->current_image_index);
         if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
             utility::log("present out of date, recreating swapchain");
             vk.recreate_swap_chain();
@@ -1037,6 +1073,30 @@ namespace vulkan {
         }
         vk.to_next_frame();
         return frame_result::render_success;
+    }
+
+    VkCommandBuffer runtime::active_command_buffer() const noexcept {
+        return *this->command_buffers[static_cast<uint32_t>(this->vulkan_core.current_frame)];
+    }
+
+    frame_result runtime::render_frame() {
+        frame_result const skip = this->is_skipable();
+        if (skip != frame_result::render_success) {
+            return skip;
+        }
+        this->try_recreate_swap_chain_if_minimized();
+        frame_result const env = this->set_up_frame_environment();
+        if (env != frame_result::render_success) {
+            return env;
+        }
+        if (!this->begin_recording()) {
+            return frame_result::failed;
+        }
+        this->record_main_drawcalls();
+        if (!this->end_recording()) {
+            return frame_result::failed;
+        }
+        return this->submit_and_present();
     }
 
     std::expected<void, std::string> runtime::make_pipeline(std::string_view pipeline_name, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code) {

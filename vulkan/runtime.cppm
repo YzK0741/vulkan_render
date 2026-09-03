@@ -140,6 +140,14 @@ namespace vulkan {
         bool camera_moved = true; // camera key differs from the last cull frame
         // one command buffer per frame slot, used and reused by render_frame()
         std::vector<vk_command_buffer> command_buffers;
+        // per-frame state shared by the split frame steps (render_frame() calls them in order,
+        // so an external caller can interleave its own work between the same steps)
+        uint32_t current_image_index = 0;                 // swapchain image acquired by set_up_frame_environment()
+        float current_aspect = 1.0f;                      // swapchain aspect for the frame's UBO + culling
+        camera_ubo current_ubo = {};                      // camera UBO snapshot written in set_up_frame_environment()
+        std::vector<primitive const*> frame_leaves = {};  // every scene leaf this frame (shadow + cull input)
+        std::vector<primitive const*> frame_visible = {}; // frustum-visible subset (main pass)
+        std::size_t frame_culled_count = 0;               // leaves culled this frame (for the log)
         // filtered view over vulkan_core, exposed via operator-> (external code never sees the raw core)
         core_filter filtered_core;
 
@@ -222,10 +230,94 @@ namespace vulkan {
          * @return frame_result: render_success when a frame was presented; skipped when not renderable
          *         (minimized or swapchain recreated — caller yields and calls again); closed on
          *         window close; failed on a fatal Vulkan error (caller exits the loop)
-         * @note all window-event handling, swapchain recreation and frame management live here,
-         *       so the caller's loop needs no Vulkan or GLFW knowledge
+         * @note convenience wrapper that calls the split frame steps below in order
+         *       (is_skipable -> try_recreate_swap_chain_if_minimized ->
+         *       set_up_frame_environment -> begin_recording -> record_main_drawcalls ->
+         *       end_recording -> submit_and_present). External code may call those steps itself
+         *       to interleave custom recording (e.g. a debug overlay) between the steps.
          */
         frame_result render_frame();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief step 1 of the frame: poll window events and decide whether this iteration can
+         *        render at all
+         * @return frame_result::closed when the window was closed (ESC or native close);
+         *         frame_result::skipped when the window is minimized (rendering would fail);
+         *         frame_result::render_success when the caller may continue the frame
+         * @note part of the split render_frame(); see render_frame() for the full sequence
+         */
+        frame_result is_skipable();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief step 2 of the frame: if the window was minimized since the last rendered frame,
+         *        recreate the swapchain (its extent is 0-sized while minimized). Call only after
+         *        is_skipable() reported render_success.
+         * @note part of the split render_frame(); see render_frame() for the full sequence
+         */
+        void try_recreate_swap_chain_if_minimized();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief step 3 of the frame: wait the frame slot's fence, acquire the next swapchain
+         *        image (recreating the swapchain when it is out of date) and write the shared
+         *        camera UBO for this frame
+         * @return frame_result::skipped when the swapchain was recreated (caller yields and
+         *         retries next iteration); frame_result::failed on a fatal error;
+         *         frame_result::render_success when a frame may be recorded
+         * @note part of the split render_frame(); see render_frame() for the full sequence
+         */
+        frame_result set_up_frame_environment();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief step 4 of the frame: begin recording the frame slot's command buffer and run
+         *        the CPU-side scene prep (world-matrix accumulation + frustum culling)
+         * @return false on a fatal recording error (caller exits the loop)
+         * @note part of the split render_frame(); see render_frame() for the full sequence
+         */
+        bool begin_recording();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief step 5 of the frame: record the runtime's own draw calls — the shadow pass,
+         *        the attachment transitions and the main scene pass (skybox + visible leaves).
+         *        The main rendering instance is left OPEN on purpose so an external caller can
+         *        append extra draws (e.g. an ImGui overlay) into the same pass afterwards.
+         * @note part of the split render_frame(); see render_frame() for the full sequence.
+         *       Callers appending draws must end the rendering instance themselves via
+         *       end_recording() (or vkCmdEndRendering before it, if they opened their own).
+         */
+        void record_main_drawcalls();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the command buffer currently being recorded (between begin_recording() and
+         *        end_recording()); external code may record additional draws into it after
+         *        record_main_drawcalls() while the main rendering instance is still open
+         */
+        [[nodiscard]] VkCommandBuffer active_command_buffer() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief step 6 of the frame: end the main rendering instance (or the classic render
+         *        pass), transition the swapchain image to PRESENT_SRC (dynamic rendering only)
+         *        and finish recording the command buffer
+         * @return false on a fatal recording error (caller exits the loop)
+         * @note part of the split render_frame(); see render_frame() for the full sequence
+         */
+        bool end_recording();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief step 7 of the frame: submit the recorded command buffer and present the
+         *        swapchain image, recreating the swapchain when presentation reports out of date
+         * @return frame_result::render_success when the frame was presented;
+         *         frame_result::failed on a fatal error
+         * @note part of the split render_frame(); see render_frame() for the full sequence
+         */
+        frame_result submit_and_present();
 
         std::expected<void, std::string> make_pipeline(
             std::string_view pipeline_name,
