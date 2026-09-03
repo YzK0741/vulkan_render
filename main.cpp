@@ -249,15 +249,22 @@ int main(int argc, char** argv) {
     // 10. Upload the scene-wide IBL once: shared by every model (bindings 2-4 of the scene set)
     runtime.set_ibl(vulkan::ibl_input{.prefiltered_env = env_bytes, .irradiance = irr_bytes, .brdf_lut = lut_bytes, .env_size = env_size, .env_mip_count = env_mip_count, .irr_size = 32, .lut_size = 256});
 
-    // 11. Batch-import: the runtime drives the traversal itself through the loader's
-    //     drawable_iterator, which models vulkan::scene_drawable_iterator (++ plus
-    //     geometry/material getters). The orbit camera looks at the origin, so center the
-    //     scene and pull it back to fit its radius (same framing as the old single-model fit).
+    // 11. Batch-import: the runtime drives the traversal itself through two aligned loader
+    //     streams — the retained node hierarchy (gltf::scene_node_iterator: DFS pre-order,
+    //     transform-only nodes included, name + local transform per node) and the drawables
+    //     of those nodes (gltf::drawable_iterator: geometry/material getters, node-aligned).
+    //     The runtime rebuilds the scene tree (node per loader node) and attaches each
+    //     drawable as a leaf model under its node, so whole-group transforms work on the
+    //     imported hierarchy. The orbit camera looks at the origin, so center the scene and
+    //     pull it back to fit its radius (same framing as the old single-model fit).
     runtime.camera.distance = scene_radius * 2.75f;
+    gltf::scene_node_iterator const node_first = scenes->nodes_begin();
+    gltf::scene_node_iterator const node_last;
     gltf::drawable_iterator const scene_first(*scenes, materials);
     gltf::drawable_iterator const scene_last;
-    vulkan::scene_import_result const imported = runtime.import_scene(scene_first, scene_last, -scene_center + scene_sink);
+    vulkan::scene_import_result const imported = runtime.import_scene(node_first, node_last, scene_first, scene_last, -scene_center + scene_sink);
     utility::log("imported {} primitives ({} new materials)", imported.primitive_count, imported.material_count);
+    runtime.log_scene_tree();
 
     // 11b. Enable directional shadow mapping over the imported scene: the shadow frustum frames
     //      the sphere around where the models actually sit (they were translated by the import

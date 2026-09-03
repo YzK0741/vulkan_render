@@ -169,6 +169,26 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_model
+     * @brief concept for a scene-tree structural iterator: DFS pre-order over the retained
+     *        node hierarchy (transform-only nodes included), so a consumer can rebuild the
+     *        parent/child edges with an explicit stack. ++ moves to the next node, then the
+     *        node's identity is read through get_name() / get_local_transform() / get_depth()
+     *        and its drawable load through get_drawable_count() (the number of drawables of
+     *        this node; 0 = transform-only node). The paired drawable stream (a
+     *        scene_drawable_iterator over the same pool) stays aligned node-for-node.
+     */
+    export template <class I>
+    concept scene_node_iterator = requires(I& it, I const& end) {
+        { ++it } -> std::same_as<I&>;
+        { it != end } -> std::convertible_to<bool>;
+        { it.get_name() } -> std::convertible_to<std::string_view>;
+        { it.get_local_transform() } -> std::convertible_to<glm::mat4>;
+        { it.get_depth() } -> std::convertible_to<std::size_t>;
+        { it.get_drawable_count() } -> std::convertible_to<std::size_t>;
+    };
+
+    /**
+     * @ingroup vulkan_model
      * @brief everything runtime::make_model() needs: geometry + material textures + factors
      */
     export struct model_create_info {

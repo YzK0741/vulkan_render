@@ -962,6 +962,33 @@ namespace vulkan {
         this->scene_transform_ = transform;
     }
 
+    void runtime::log_scene_tree() const noexcept {
+        size_t total_nodes = 0;
+        size_t leaf_count = 0;
+        size_t max_depth = 0;
+        std::vector<std::string> lines;
+        auto const walk = [&](auto&& self, scene_tree::scene_node const& node, size_t const depth) -> void {
+            ++total_nodes;
+            max_depth = std::max(max_depth, depth);
+            if (node.drawable_leaf != nullptr) {
+                ++leaf_count;
+            }
+            std::string marker = node.drawable_leaf != nullptr ? " [model]" : "";
+            lines.push_back(std::format("{}{}{}", std::string(depth * 2, ' '),
+                                        node.name.empty() ? std::string("<unnamed>") : node.name, marker));
+            for (scene_tree::scene_node const& child : node.children) {
+                self(self, child, depth + 1);
+            }
+        };
+        for (scene_tree::scene_node const& root : this->scene_.roots) {
+            walk(walk, root, 0);
+        }
+        utility::log("runtime scene tree: {} roots, {} nodes ({} leaf models), max depth {}", this->scene_.roots.size(), total_nodes, leaf_count, max_depth);
+        for (std::string const& line : lines) {
+            utility::log("  {}", line);
+        }
+    }
+
     std::expected<void, std::string> runtime::make_skybox_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code) {
         using fail = std::unexpected<std::string>;
         // no depth test / write: the skybox is a background pass drawn before the models
@@ -977,7 +1004,7 @@ namespace vulkan {
         return it == this->pipelines.end() ? nullptr : &it->second;
     }
 
-    model* runtime::make_model(std::string_view const pipeline_name, model_create_info const& info) {
+    std::unique_ptr<model> runtime::create_model(std::string_view const pipeline_name, model_create_info const& info) {
         vk_pipeline const* pipeline = this->get_pipeline(pipeline_name);
         if (pipeline == nullptr) {
             return nullptr;
@@ -1015,16 +1042,24 @@ namespace vulkan {
         result->push.material_index = this->register_material(info);
         result->push.model = info.model_matrix;
         result->double_sided = info.double_sided;
+        return result;
+    }
+
+    model* runtime::make_model(std::string_view const pipeline_name, model_create_info const& info) {
+        std::unique_ptr<model> created = this->create_model(pipeline_name, info);
+        if (created == nullptr) {
+            return nullptr;
+        }
+        model* const result = created.get();
 
         // attach the model as a new root leaf of the scene tree; the node's name records the
         // pipeline it draws with (render_frame groups leaves by node name / pipeline)
         scene_tree::scene_node leaf;
         leaf.name = std::string(pipeline_name);
-        leaf.local = info.model_matrix;         // world = identity * local (root)
-        leaf.drawable_leaf = std::move(result); // model is a scene_tree::drawable
-        model* const created = static_cast<model*>(leaf.drawable_leaf.get());
+        leaf.local = info.model_matrix;          // world = identity * local (root)
+        leaf.drawable_leaf = std::move(created); // model is a scene_tree::drawable
         this->scene_.roots.push_back(std::move(leaf));
-        return created;
+        return result;
     }
 
     model* runtime::make_instanced_model(model const& source, std::span<glm::mat4 const> const transforms) {
@@ -1083,13 +1118,31 @@ namespace vulkan {
         if (unwanted == nullptr) {
             return;
         }
+        // DFS remove: erase every leaf model bound to the pipeline, wherever it sits in the tree
+        // (imported scenes nest leaves under hierarchy nodes; make_model attaches them at roots).
+        // A node whose leaf matches is stripped of that leaf; it (or an ancestor) is dropped only
+        // when nothing remains below it, so models of other pipelines in the subtree survive.
         auto& roots = this->scene_.roots;
         auto const matches = [unwanted](scene_tree::scene_node const& node) {
             return node.drawable_leaf != nullptr && static_cast<model const*>(node.drawable_leaf.get())->pipeline == unwanted;
         };
+        // prune(node) -> true when the node is now empty (no leaf, no children) and should be dropped
+        auto const prune = [&](auto&& self, scene_tree::scene_node& node) -> bool {
+            for (auto it = node.children.begin(); it != node.children.end();) {
+                if (self(self, *it)) {
+                    it = node.children.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            if (matches(node)) {
+                static_cast<model*>(node.drawable_leaf.get())->destroy(this->vulkan_core.vma);
+                node.drawable_leaf.reset();
+            }
+            return node.drawable_leaf == nullptr && node.children.empty();
+        };
         for (auto it = roots.begin(); it != roots.end();) {
-            if (matches(*it)) {
-                this->destroy_leaf_models(*it, this->vulkan_core.vma);
+            if (prune(prune, *it)) {
                 it = roots.erase(it);
             } else {
                 ++it;

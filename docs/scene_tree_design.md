@@ -1,9 +1,9 @@
 # Scene Graph Storage — Design Document
 
-Status: migration in progress — storage + render loop are tree-driven
-(`vulkan.runtime.scene_tree`, commits below); the loader keeps the glTF
-hierarchy; remaining work: import_scene builds the real hierarchy (§5 option A /
-step 2b) and `vulkan.model` becomes a scene_tree primitive.
+Status: migration in progress — storage, import and the render loop are tree-driven
+(`vulkan.runtime.scene_tree`); import_scene rebuilds the real loader hierarchy
+(step 2b done); remaining work: `vulkan.model` becomes a scene_tree primitive
+and per-node `set_local_transform` handle APIs on top of the real subtrees.
 
 ## 1. Motivation
 
@@ -205,30 +205,26 @@ for (scene_node const& root : scene_.roots) collect_leaf_models(root, frame_leav
 - Alternative considered: draw inline while walking the tree — rejected, it would
   re-bind pipelines per leaf (breaks batching).
 
-### 4.2 Public runtime API (current, and the step-2b delta)
+### 4.2 Public runtime API (current)
 
 Current surface (post-`4ee1b82`; per-pipeline names kept — see §9 Q2):
 
 ```cpp
-model* make_model(std::string_view pipeline_name, model_create_info const& info); // root leaf
+model* make_model(std::string_view pipeline_name, model_create_info const& info); // build + attach root leaf
 model* make_instanced_model(model const& source, std::span<glm::mat4 const> transforms);
 std::vector<model const*> get_models(std::string_view pipeline_name) const; // DFS by pipeline
-void clear_models(std::string_view pipeline_name);
-scene_import_result import_scene(I first, S last, glm::vec3 const& offset);   // per-drawable today
+void clear_models(std::string_view pipeline_name);   // DFS: strips matching leaves anywhere in the tree
+scene_import_result import_scene(NI nfirst, NS nlast, DI dfirst, DS dlast, glm::vec3 const& offset);
+//   node stream (scene_node_iterator) + aligned drawable stream (scene_drawable_iterator);
+//   rebuilds the real hierarchy (one scene_node per loader node), offset lands on each root
 void set_scene_transform(glm::mat4 const& transform);  // extra world on top of every root
 void enable_shadows(glm::vec3 const& scene_center, float scene_radius);
+void log_scene_tree() const; // diagnostic: prints the runtime tree (names + [model] leaves)
 ```
 
-Step-2b delta (builds on §5 option A, keeps `import_scene`'s signature):
-
-- `import_scene` walks loader *nodes* (name + `local_transform` + children +
-  per-node drawables) and rebuilds the hierarchy: one `scene_node` per glTF node
-  (root = loader scene root), leaf models attached at their node, scene `offset`
-  moved to the scene root's `local` (or folded into `scene_transform_`).
-- Add `scene_node&`-based handles once real subtrees exist:
-  `set_local_transform(scene_node&, glm::mat4 const&)`, subtree demo in main.
-- Legacy helpers (bounds scan / instancing grid in main.cpp) keep working through
-  `get_models` / `scenes::begin()` — no `leaf_models()` helper was needed.
+(Step-2b is done — see §6. A per-node `set_local_transform` handle API can now be
+added on top of the real subtrees; legacy helpers (bounds scan / instancing grid
+in main.cpp) keep working through `get_models` / `scenes::begin()`.)
 
 ### 4.3 Shadow pass
 
@@ -281,18 +277,23 @@ Status, kept in sync with git history:
   `clear_models` / `get_models` traverse the tree; runtime traversal reuses the
   module's `visit_drawables` (`896d5b3`). Verified: default scene + spin demo +
   instancing grid all render, fps unchanged.
-- ⏳ **2b — import_scene builds the real hierarchy** (design §5 option A). Today
-  every drawable imports as a separate root leaf with its full world matrix as
-  `local`, so the loader tree's transform-only nodes / shared parents are not
-  reflected and rotating an arbitrary subtree is not possible. Next: node-level
-  structural iteration from the loader + recursive tree building in `import_scene`
-  (scene offset becomes the root transform). Verify visually + instancing grid
-  still identical.
+- ✅ **2b — import_scene builds the real hierarchy** (`cba9b3d`, pending final
+  commit). Loader exposes `gltf::scene_node_iterator` (DFS pre-order over the
+  retained tree, transform-only nodes included: name / local_transform / depth /
+  drawable_count); `import_scene` becomes a template over that structural node
+  stream PLUS the aligned drawable stream, and rebuilds the scene tree 1:1 with
+  the loader tree (a gltf node -> a named `scene_node` with its local transform;
+  a node's drawables become leaf models attached at that node — extra primitives
+  of one node become identity-local child leaves). Scene `offset` moves onto each
+  root node's local. `make_model` splits into `create_model` (build) +
+  attach-as-root-leaf. Verified: default + Hierarchy assets show the runtime tree
+  mirroring the loader tree (`node_group_root -> 2 helmet leaves`), fps unchanged,
+  instancing grid + spin demo still render.
 - ✅ **3 — Whole-scene transform API** (`4ee1b82`, `74b18bc`).
   `runtime::set_scene_transform` applies one world matrix on top of every root
   (identity default = unchanged rendering); main's `argv[3] == "spin"` demo spins
   the whole scene around its sink. A per-node `set_local_transform` for arbitrary
-  subtrees waits for 2b.
+  subtrees can now build on 2b's real hierarchy (next step if wanted).
 - ✅ **4 — Remove the flat `models` map.** No flat model storage remains.
 - ⏳ **5 — Future:** animation / skinning / mesh sharing (separate pass, §8).
 

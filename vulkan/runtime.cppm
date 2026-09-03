@@ -140,6 +140,17 @@ namespace vulkan {
          * @brief destroy every drawable leaf model under @p node (recursively) with @p vma
          */
         void destroy_leaf_models(scene_tree::scene_node& node, vma_allocator& vma);
+        /**
+         * @ingroup vulkan_runtime
+         * @brief build a normal_draw_model from @p info WITHOUT attaching it to the scene tree:
+         *        uploads geometry buffers and registers the material (textures + material_record).
+         * @param pipeline_name the pipeline the model draws with (must already exist)
+         * @return the new model (caller attaches it into a scene node), or nullptr if the
+         *         pipeline does not exist
+         * @note make_model() is create_model() + attach-as-root-leaf; the hierarchy import
+         *       (import_scene) attaches leaves to their node instead
+         */
+        std::unique_ptr<model> create_model(std::string_view pipeline_name, model_create_info const& info);
 
         /**
          * @ingroup vulkan_runtime
@@ -257,6 +268,15 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief print the scene tree (names + local-transform marker + leaf model pipeline)
+         *        to the log, one indented line per node, plus a shape summary
+         * @note diagnostic helper: shows whether an import rebuilt the real hierarchy (gltf
+         *       node names and nesting) or a flat list of root leaves (pipeline names)
+         */
+        void log_scene_tree() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief get a cached pipeline by its name
          * @param pipeline_name the name passed to make_pipeline()
          * @return pointer to the cached pipeline, or nullptr if no pipeline with that name exists
@@ -307,20 +327,29 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief batch-import a scene by traversing an iterator of drawables directly.
-         *        The iterator must model vulkan::scene_drawable_iterator: ++ advances to the
-         *        next drawable, and the geometry/material is read through get_vertex() /
-         *        get_index() / get_transform() / get_albedo() ... get_factors(). The runtime
-         *        drives the whole traversal: it uploads buffers, registers materials and
-         *        creates one model per drawable on the "pbr" pipeline. No glTF (or any scene
-         *        format) knowledge lives in the runtime.
-         * @param first,last iterator pair over the scene's drawables
-         * @param offset translation applied before each model's matrix (e.g. -scene_center + sink)
+         * @brief batch-import a scene by traversing the retained node hierarchy (structural
+         *        node stream) and its drawables (geometry stream) together.
+         *        @p nfirst must model vulkan::scene_node_iterator: DFS pre-order over every
+         *        scene node INCLUDING transform-only nodes, exposing get_name() /
+         *        get_local_transform() / get_depth() / get_drawable_count(). @p dfirst must
+         *        model vulkan::scene_drawable_iterator (++ plus geometry/material getters);
+         *        the loader keeps both streams over the same pool in the same order, so each
+         *        node's get_drawable_count() drawables are the next entries of the drawable
+         *        stream. The runtime drives the traversal: it rebuilds the node tree into
+         *        scene_tree::scene (one scene_node per loader node, named, with its local
+         *        transform; a node's drawable becomes a model leaf attached to that node —
+         *        extra primitives of one node become identity-local child leaves), uploads
+         *        buffers and registers materials. No glTF (or any scene format) knowledge
+         *        lives in the runtime.
+         * @param nfirst,nlast iterator pair over the scene's node hierarchy
+         * @param dfirst,dlast iterator pair over the scene's drawables
+         * @param offset translation applied to every scene ROOT node's local transform
+         *        (e.g. -scene_center + sink); children inherit it through update_world
          * @return counts of imported primitives and materials
          */
-        template <class I, class S>
-            requires scene_drawable_iterator<I> && std::same_as<S, I>
-        scene_import_result import_scene(I first, S last, glm::vec3 const& offset) {
+        template <class NI, class NS, class DI, class DS>
+            requires scene_node_iterator<NI> && std::same_as<NS, NI> && scene_drawable_iterator<DI> && std::same_as<DS, DI>
+        scene_import_result import_scene(NI nfirst, NS nlast, DI dfirst, DS dlast, glm::vec3 const& offset) {
             scene_import_result result = {};
             uint32_t const materials_before = this->material_count;
             // converts a pure image_source (e.g. the glTF loader's image_view) into the
@@ -337,33 +366,94 @@ namespace vulkan {
                 }
                 return out;
             };
-            for (; first != last; ++first) {
-                auto const vertex = first.get_vertex();
-                auto const index = first.get_index();
-                model_create_info info = {};
+            // per-node drawable -> model_create_info (reads the next drawable of the stream)
+            auto const fill_info = [&](DI& drawable, model_create_info& info) {
+                auto const vertex = drawable.get_vertex();
+                auto const index = drawable.get_index();
                 info.vertex_data = vertex.data;
                 info.vertex_stride = vertex.stride;
                 info.vertex_count = vertex.count;
                 info.index_data = index.data;
                 info.index_type = index.width == 4 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
                 info.index_count = index.count;
-                info.albedo = to_texture(first.get_albedo(), VK_FORMAT_R8G8B8A8_SRGB);
-                info.metallic_roughness = to_texture(first.get_metallic_roughness(), VK_FORMAT_R8G8B8A8_UNORM);
-                info.normal = to_texture(first.get_normal(), VK_FORMAT_R8G8B8A8_UNORM);
-                info.occlusion = to_texture(first.get_occlusion(), VK_FORMAT_R8G8B8A8_UNORM);
-                info.emissive = to_texture(first.get_emissive(), VK_FORMAT_R8G8B8A8_UNORM);
-                auto const factors = first.get_factors();
+                info.albedo = to_texture(drawable.get_albedo(), VK_FORMAT_R8G8B8A8_SRGB);
+                info.metallic_roughness = to_texture(drawable.get_metallic_roughness(), VK_FORMAT_R8G8B8A8_UNORM);
+                info.normal = to_texture(drawable.get_normal(), VK_FORMAT_R8G8B8A8_UNORM);
+                info.occlusion = to_texture(drawable.get_occlusion(), VK_FORMAT_R8G8B8A8_UNORM);
+                info.emissive = to_texture(drawable.get_emissive(), VK_FORMAT_R8G8B8A8_UNORM);
+                auto const factors = drawable.get_factors();
                 info.factors.base_color_factor = factors.base_color_factor;
                 info.factors.emissive_factor = factors.emissive_factor;
                 info.factors.metallic_factor = factors.metallic_factor;
                 info.factors.roughness_factor = factors.roughness_factor;
                 info.factors.normal_scale = factors.normal_scale;
-                info.double_sided = first.get_double_sided();
-                info.model_matrix = glm::translate(glm::mat4(1.0f), offset) * first.get_transform();
-                if (this->make_model("pbr", info) == nullptr) {
-                    utility::panic(std::source_location::current(), "failed to import drawable (pipeline 'pbr' missing)");
+                info.double_sided = drawable.get_double_sided();
+            };
+            // attach one leaf model to @p node (geometry from the next drawable of the stream);
+            // returns the created model or nullptr if the pipeline is missing
+            auto const attach_leaf = [&](scene_tree::scene_node& node, DI& drawable) -> model* {
+                if (!(drawable != dlast)) {
+                    utility::panic(std::source_location::current(), "drawable stream ended before the node tree did");
                 }
+                model_create_info info = {};
+                fill_info(drawable, info);
+                ++drawable;
                 ++result.primitive_count;
+                std::unique_ptr<model> created = this->create_model("pbr", info);
+                if (created == nullptr) {
+                    return nullptr;
+                }
+                if (node.drawable_leaf == nullptr) {
+                    node.drawable_leaf = std::move(created);
+                } else {
+                    // a glTF node can carry several primitives; scene_node has one leaf slot, so
+                    // extra primitives become identity-local child leaves (world unchanged)
+                    scene_tree::scene_node extra;
+                    extra.name = node.name + "/prim";
+                    extra.drawable_leaf = std::move(created);
+                    node.children.push_back(std::move(extra));
+                }
+                return static_cast<model*>(node.drawable_leaf ? node.drawable_leaf.get() : node.children.back().drawable_leaf.get());
+            };
+
+            // DFS over the loader's node stream, rebuilding parent/child edges with an explicit
+            // stack of ancestors: ancestors[d] holds the scene_node at depth d on the path to
+            // the current node. The loader emits nodes in DFS pre-order, so when a node arrives
+            // at depth d its parent is the ancestor at depth d-1 (pop everything deeper first).
+            std::vector<scene_tree::scene_node*> ancestors = {}; // ancestors[d] = node at depth d
+            for (; nfirst != nlast; ++nfirst) {
+                std::size_t const depth = nfirst.get_depth();
+                // pop ancestors deeper than the arriving node's parent level (their subtrees are done)
+                while (ancestors.size() > depth) {
+                    ancestors.pop_back();
+                }
+                scene_tree::scene_node node;
+                node.name = std::string(nfirst.get_name());
+                node.local = nfirst.get_local_transform();
+                if (depth == 0) {
+                    node.local = glm::translate(glm::mat4(1.0f), offset) * node.local; // scene root gets the offset
+                }
+                // attach under the parent (depth-1) or as a new scene root
+                if (depth == 0) {
+                    this->scene_.roots.push_back(std::move(node));
+                    ancestors.assign(1, &this->scene_.roots.back());
+                } else {
+                    if (ancestors.size() != depth) {
+                        utility::panic(std::source_location::current(), "node tree stream: broken ancestor stack");
+                    }
+                    scene_tree::scene_node* const parent = ancestors[depth - 1];
+                    parent->children.push_back(std::move(node));
+                    ancestors.resize(depth + 1);
+                    ancestors[depth] = &parent->children.back();
+                }
+                scene_tree::scene_node* const current = ancestors[depth];
+                // consume this node's drawables (the stream is aligned node-for-node)
+                std::size_t const drawable_count = nfirst.get_drawable_count();
+                for (std::size_t i = 0; i < drawable_count; ++i) {
+                    if (attach_leaf(*current, dfirst) == nullptr) {
+                        utility::panic(std::source_location::current(), "failed to import drawable (pipeline 'pbr' missing)");
+                    }
+                }
             }
             result.material_count = this->material_count - materials_before;
             return result;
