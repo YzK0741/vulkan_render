@@ -194,15 +194,21 @@ int main(int argc, char** argv) {
         size_t total_nodes = 0;
         size_t mesh_nodes = 0;
         size_t max_depth = 0;
+        std::vector<std::string> tree_lines;
         for (gltf::scene const& scene : scenes->scene) {
             // each node knows its children via indices into scene.nodes; walk from the roots
             auto const walk = [&](auto&& self, size_t const index, size_t const depth) -> void {
                 ++total_nodes;
                 max_depth = std::max(max_depth, depth);
-                if (!scene.nodes[index].meshes.empty()) {
+                bool const has_mesh = !scene.nodes[index].meshes.empty();
+                if (has_mesh) {
                     ++mesh_nodes;
                 }
-                for (size_t const child : scene.nodes[index].children) {
+                gltf::node const& node = scene.nodes[index];
+                tree_lines.push_back(std::format("{}{}{}", std::string(depth * 2, ' '),
+                                                 node.name.empty() ? std::string("<unnamed>") : node.name,
+                                                 has_mesh ? " [mesh]" : ""));
+                for (size_t const child : node.children) {
                     self(self, child, depth + 1);
                 }
             };
@@ -213,6 +219,9 @@ int main(int argc, char** argv) {
         utility::log("scene hierarchy: {} roots, {} nodes total ({} with meshes), max depth {}",
                      scenes->scene.size() > 0 ? scenes->scene.front().root_indices.size() : 0,
                      total_nodes, mesh_nodes, max_depth);
+        for (std::string const& line : tree_lines) {
+            utility::log("  {}", line);
+        }
     }
 
     // Sink the model so it sits near the world horizon (y = 0) and move the camera target with it:
