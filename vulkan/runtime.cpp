@@ -1068,18 +1068,12 @@ namespace vulkan {
         for (scene_tree::scene_node const& root : this->scene_.roots) {
             // collect every leaf whose model binds the requested pipeline (models record their
             // pipeline in model->pipeline; the scene tree just organizes them)
-            auto const collect = [&](auto&& self, scene_tree::scene_node const& node) -> void {
-                if (node.drawable_leaf) {
-                    auto const* m = static_cast<model const*>(node.drawable_leaf.get());
-                    if (m->pipeline == wanted) {
-                        result.push_back(m);
-                    }
+            scene_tree::visit_drawables(root, glm::mat4(1.0f), [&](scene_tree::scene_node const& n, glm::mat4 const&) {
+                auto const* m = static_cast<model const*>(n.drawable_leaf.get());
+                if (m->pipeline == wanted) {
+                    result.push_back(m);
                 }
-                for (scene_tree::scene_node const& child : node.children) {
-                    self(self, child);
-                }
-            };
-            collect(collect, root);
+            });
         }
         return result;
     }
@@ -1104,12 +1098,9 @@ namespace vulkan {
     }
 
     void runtime::collect_leaf_models(scene_tree::scene_node const& node, std::vector<model const*>& out) const {
-        if (node.drawable_leaf) {
-            out.push_back(static_cast<model const*>(node.drawable_leaf.get()));
-        }
-        for (scene_tree::scene_node const& child : node.children) {
-            this->collect_leaf_models(child, out);
-        }
+        scene_tree::visit_drawables(node, glm::mat4(1.0f), [&out](scene_tree::scene_node const& n, glm::mat4 const&) {
+            out.push_back(static_cast<model const*>(n.drawable_leaf.get()));
+        });
     }
 
     void runtime::destroy_leaf_models(scene_tree::scene_node& node, vma_allocator& vma) {
