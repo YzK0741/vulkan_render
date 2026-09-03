@@ -229,8 +229,9 @@ tree concept.
 >   `ca6769a`, `7a445d5`)
 > - ⏳ 2b (import_scene builds the real hierarchy from the loader tree; today every
 >   drawable is a root leaf with its full world matrix, so whole-group transforms
->   are not available yet)
-> - ⏳ 3 (whole-group transform demo)
+>   of an arbitrary subtree are not available yet)
+> - ✅ 3 (whole-scene transform API + spin demo — `4ee1b82`; a per-node
+>   `set_local_transform` for arbitrary subtrees waits for 2b)
 > - ✅ 4 (the flat `models` map is gone — superseded by the tree walk)
 > - ⏳ 5 (future: animation / skinning / mesh sharing)
 
