@@ -125,6 +125,9 @@ namespace vulkan {
         // optional whole-scene transform applied on top of every root before local transforms
         // (programmatic grouping / demo rotation; identity by default = no visual change)
         glm::mat4 scene_transform_ = glm::mat4(1.0f);
+        // frustum culling of the main pass (BVH over per-leaf world AABBs vs the camera frustum);
+        // enabled by default, disable for verification / debugging
+        bool frustum_culling_ = true;
         // one command buffer per frame slot, used and reused by render_frame()
         std::vector<vk_command_buffer> command_buffers;
         // filtered view over vulkan_core, exposed via operator-> (external code never sees the raw core)
@@ -267,6 +270,15 @@ namespace vulkan {
          *       grouping / demo rotation of the whole imported scene
          */
         void set_scene_transform(glm::mat4 const& transform);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief enable or disable main-pass frustum culling (BVH vs camera frustum)
+         * @param enabled true (default) culls leaves outside the view frustum before drawing
+         */
+        void set_frustum_culling(bool enabled) noexcept {
+            this->frustum_culling_ = enabled;
+        }
 
         /**
          * @ingroup vulkan_runtime

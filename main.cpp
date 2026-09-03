@@ -309,13 +309,28 @@ int main(int argc, char** argv) {
     //                     transforms make this possible). On the hierarchy asset this spins a
     //                     single helmet in place while its sibling stays still; on the default
     //                     single-node asset the primitive spins about the scene sink.
+    //   "nocull"        — verification: disable frustum culling (force every leaf visible); run
+    //                     the same camera path with and without it and compare the cull log + fps.
     bool spin_scene = false;
     bool spin_subtree = false;
+    bool no_cull = false;
+    bool closeup = false;
     char const* const demo = argc > 3 ? argv[3] : (argc > 2 ? argv[2] : nullptr);
     if (demo != nullptr) {
         std::string_view const demo_view(demo);
         spin_scene = demo_view == "spin";
         spin_subtree = demo_view == "spin-subtree";
+        no_cull = demo_view == "nocull";
+        closeup = demo_view == "closeup";
+    }
+    if (no_cull) {
+        runtime.set_frustum_culling(false);
+        utility::log("nocull: frustum culling disabled (all leaves drawn every frame)");
+    }
+    if (closeup) {
+        // pull the camera close so only part of the scene fits the frustum -> partial culling
+        runtime.camera.distance *= 0.22f;
+        utility::log("closeup: camera pulled in (partial frustum culling expected)");
     }
     double spin_angle = 0.0;
     if (spin_scene) {

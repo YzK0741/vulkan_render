@@ -721,6 +721,49 @@ namespace vulkan {
             this->collect_leaf_primitives(root, frame_leaves);
         }
 
+        // 6b. Frustum culling for the main pass: build a per-frame BVH over every leaf that has a
+        //     single world AABB (normal draw primitives, whose bounds follow push.model), then
+        //     keep only the leaves inside the camera frustum. Instanced primitives spread over
+        //     many transforms (no single AABB) and primitives without bounds are never culled.
+        //     The shadow pass below still draws the full frame_leaves set so no caster is lost.
+        std::vector<primitive const*> visible_leaves = frame_leaves; // fallback: no culling
+        std::size_t culled_count = 0;
+        if (this->frustum_culling_) {
+            std::vector<utility::aabb_box<primitive>> boxes;
+            boxes.reserve(frame_leaves.size());
+            for (primitive const* leaf : frame_leaves) {
+                if (leaf->has_bounds) {
+                    auto const [wmin, wmax] = leaf->world_aabb();
+                    boxes.push_back(utility::aabb_box<primitive>{.min = wmin, .max = wmax, .extra_data = const_cast<primitive*>(leaf)});
+                }
+            }
+            if (!boxes.empty()) {
+                if (auto const bvh_result = utility::bvh<primitive>::make(boxes); bvh_result) {
+                    utility::frustum const view_frustum = utility::make_frustum(ubo.proj * ubo.view);
+                    auto const inside = bvh_result->frustum_cull(view_frustum);
+                    std::vector<primitive const*> visible;
+                    visible.reserve(frame_leaves.size());
+                    // leaves without bounds (instanced etc.) are always drawn
+                    for (primitive const* leaf : frame_leaves) {
+                        if (!leaf->has_bounds) {
+                            visible.push_back(leaf);
+                        }
+                    }
+                    for (auto const* node : inside) {
+                        visible.push_back(node->extra_data);
+                    }
+                    culled_count = frame_leaves.size() - visible.size();
+                    visible_leaves = std::move(visible);
+                    // log the cull ratio (visible/total) every 30 frames
+                    static uint32_t cull_log_frame = 0;
+                    if (++cull_log_frame >= 30) {
+                        utility::log("frustum cull: {}/{} primitives visible ({} culled)", visible_leaves.size(), frame_leaves.size(), culled_count);
+                        cull_log_frame = 0;
+                    }
+                }
+            }
+        }
+
         // ---- Shadow pass: render the scene's depth from the light into this slot's shadow map.
         //      Drawn before the main pass; the depth-only pipeline shares the flat scene layout
         //      and the primitive draw() path (same vertex buffers / push constants), so the shadow
@@ -898,12 +941,12 @@ namespace vulkan {
             vkCmdDraw(*command_buffer, 3, 1, 0, 0);
         }
 
-        // Main pass: draw the collected leaves, grouping by their pipeline (each group binds its
-        // pipeline once — same batching as the old flat primitive list)
+        // Main pass: draw the frustum-visible leaves, grouping by their pipeline (each group
+        // binds its pipeline once — same batching as the old flat primitive list)
         for (auto const& [pipeline_name, pipeline] : this->pipelines) {
             vk_pipeline const* const wanted = &pipeline;
             bool any = false;
-            for (primitive const* m : frame_leaves) {
+            for (primitive const* m : visible_leaves) {
                 if (m->pipeline == wanted) {
                     if (!any) {
                         pipeline.begin_pipeline(*command_buffer);
@@ -1082,6 +1125,25 @@ namespace vulkan {
         result->index_type = info.index_type;
         result->index_count = info.index_count;
         result->vertex_count = info.vertex_count;
+
+        // ---- local-space AABB for frustum culling: the interleaved vertex layout starts every
+        //      vertex with a vec3 position (see the loader's vertex struct / pbr.vert), so scan
+        //      the CPU copy before it is released by the upload
+        if (info.vertex_count > 0 && info.vertex_stride >= sizeof(glm::vec3) && !info.vertex_data.empty()) {
+            glm::vec3 aabb_min = glm::vec3(std::numeric_limits<float>::infinity());
+            glm::vec3 aabb_max = glm::vec3(-std::numeric_limits<float>::infinity());
+            auto const* cursor = info.vertex_data.data();
+            for (uint32_t v = 0; v < info.vertex_count; ++v) {
+                glm::vec3 position;
+                std::memcpy(&position, cursor, sizeof(position));
+                aabb_min = glm::min(aabb_min, position);
+                aabb_max = glm::max(aabb_max, position);
+                cursor += info.vertex_stride;
+            }
+            result->local_aabb_min = aabb_min;
+            result->local_aabb_max = aabb_max;
+            result->has_bounds = true;
+        }
 
         // ---- material: register textures + append a material record; the primitive only carries
         //         the material index (texture indices / factors / flags live in the GPU table) ----

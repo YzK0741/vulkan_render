@@ -388,6 +388,38 @@ namespace vulkan {
         material_push_constants push = {};
         bool double_sided = false; // glTF doubleSided: disable back-face culling (per draw)
 
+        // local-space AABB of this primitive's geometry (model space, i.e. before push.model);
+        // filled by the runtime when the geometry is uploaded. has_bounds == false means "no
+        // single world AABB" (e.g. an instanced primitive spreads over many transforms) and the
+        // primitive is never frustum-culled.
+        glm::vec3 local_aabb_min = glm::vec3(0.0f);
+        glm::vec3 local_aabb_max = glm::vec3(0.0f);
+        bool has_bounds = false;
+
+        /**
+         * @brief transform the local AABB by the primitive's current world matrix (push.model,
+         *        written by update_world -> set_world) into a world-space AABB
+         * @return world AABB; {0,0,0}..{0,0,0} when has_bounds == false
+         */
+        [[nodiscard]] std::pair<glm::vec3, glm::vec3> world_aabb() const noexcept {
+            if (!this->has_bounds) {
+                return {};
+            }
+            glm::vec3 wmin = glm::vec3(std::numeric_limits<float>::infinity());
+            glm::vec3 wmax = glm::vec3(-std::numeric_limits<float>::infinity());
+            for (int i = 0; i < 8; ++i) {
+                glm::vec3 const corner{
+                    (i & 1) ? this->local_aabb_max.x : this->local_aabb_min.x,
+                    (i & 2) ? this->local_aabb_max.y : this->local_aabb_min.y,
+                    (i & 4) ? this->local_aabb_max.z : this->local_aabb_min.z,
+                };
+                glm::vec4 const world = this->push.model * glm::vec4(corner, 1.0f);
+                wmin = glm::min(wmin, glm::vec3(world));
+                wmax = glm::max(wmax, glm::vec3(world));
+            }
+            return {wmin, wmax};
+        }
+
         /**
          * @brief store the world transform accumulated by the owning scene tree node
          * @param world the node's world matrix (parent_world * local)

@@ -15,8 +15,8 @@ export import utility.data_block;
  * @note
  *      - leaf nodes live in an internal std::vector, internal nodes are heap allocated
  *      - make() builds the tree, rebuild() rebuilds it after leaves change
- *      - <b>reserved for future use</b>: not yet consumed by the renderer (no callers of utility.bvh
- *        exist); kept for upcoming occlusion/frustum culling work
+ *      - consumed by the renderer: the runtime builds a per-frame bvh over scene leaf world
+ *        AABBs and frustum_culls the main pass against the camera frustum
  */
 /**
  * @ingroup bvh
@@ -128,6 +128,13 @@ namespace utility {
                 float const l = this->max.z - this->min.z;
                 return 2.0f * (w * h + w * l + l * h);
             }
+            template <class Box>
+            [[nodiscard]] Box operator|(Box const& other) const noexcept {
+                Box result{};
+                result.min = glm::min(this->min, other.min);
+                result.max = glm::max(this->max, other.max);
+                return result;
+            }
         } aabb;
 
         using data_type = std::conditional_t<std::is_void_v<T>, std::monostate, T>;
@@ -158,6 +165,18 @@ namespace utility {
 
     /**
      * @ingroup bvh
+     * @brief extract the six frustum planes from a combined view-projection matrix
+     * @param view_proj the camera's proj * view (row-major, as built by make_orbit_camera_ubo)
+     * @return frustum whose planes are in world space; plane i has inward-facing normal
+     *         (glm::vec3(plane) = normal, plane.w = signed distance), so a point is inside when
+     *         dot(normal, p) + plane.w >= 0 (matches frustum::in's p-vertex test)
+     * @note Gribb-Hartmann plane extraction; rows of a row-major matrix are the clip-space plane
+     *       coefficients. Corners are not filled (unused by frustum::in).
+     */
+    export frustum make_frustum(glm::mat4 const& view_proj);
+
+    /**
+     * @ingroup bvh
      * @brief bounding volume hierarchy built with morton codes
      * @tparam T type of the user data attached to each leaf
      * @note
@@ -170,15 +189,45 @@ namespace utility {
     class bvh {
         std::vector<bvh_node<T>> leaves;
         std::unique_ptr<bvh_node<T>> root;
+        // normalization for morton coding: world-space midpoints are mapped into [0,1]^3 by
+        // (mid - origin) * scale so the morton quantizer works for AABBs anywhere in space
+        glm::vec3 origin_ = glm::vec3(0.0f);
+        glm::vec3 scale_ = glm::vec3(1.0f);
+
+        /** @brief map a world-space midpoint into [0,1]^3 for morton coding */
+        [[nodiscard]] glm::vec3 normalize(glm::vec3 const& midpoint) const {
+            glm::vec3 const normalized = (midpoint - this->origin_) * this->scale_;
+            return glm::clamp(normalized, glm::vec3(0.0f), glm::vec3(1.0f));
+        }
+        /** @brief compute origin_/scale_ from a set of leaf AABBs (scene extent) */
+        void set_extent(std::vector<bvh_node<T>> const& leaf_nodes) {
+            glm::vec3 min = glm::vec3(std::numeric_limits<float>::infinity());
+            glm::vec3 max = glm::vec3(-std::numeric_limits<float>::infinity());
+            for (bvh_node<T> const& leaf : leaf_nodes) {
+                min = glm::min(min, leaf.aabb.min);
+                max = glm::max(max, leaf.aabb.max);
+            }
+            this->origin_ = min;
+            glm::vec3 const extent = glm::max(max - min, glm::vec3(1e-6f));
+            this->scale_ = 1.0f / extent;
+        }
 
         /**
          * @ingroup bvh
          * @brief build the internal tree bottom-up from the given leaves
          * @param leaves leaf nodes sorted by morton code
+         * @param origin normalization origin (scene AABB min)
+         * @param scale normalization scale (1 / scene extent)
          * @return the root node on success, error message on failure
          */
-        static std::expected<std::unique_ptr<bvh_node<T>>, std::string> build_from_leaves(std::vector<bvh_node<T>> const& leaves) { // NOLINT(*-function-cognitive-complexity)
+        static std::expected<std::unique_ptr<bvh_node<T>>, std::string> build_from_leaves( // NOLINT(*-function-cognitive-complexity)
+            std::vector<bvh_node<T>>& leaves,
+            glm::vec3 const& origin,
+            glm::vec3 const& scale) {
             using fail = std::unexpected<std::string>;
+            auto const normalize = [&origin, &scale](glm::vec3 const& midpoint) {
+                return glm::clamp((midpoint - origin) * scale, glm::vec3(0.0f), glm::vec3(1.0f));
+            };
             auto leave_it = leaves.begin();
 
             std::vector<std::vector<bvh_node<T>*>> layers(1);
@@ -194,7 +243,7 @@ namespace utility {
                     node->right = &*leave_it;
                     ++leave_it;
                     node->aabb = node->left->aabb | node->right->aabb;
-                    auto code = generate_morton_from_midpoint(node->aabb.get_midpoint(), 1.0f);
+                    auto code = generate_morton_from_midpoint(normalize(node->aabb.get_midpoint()), 1.0f);
                     if (!code) {
                         delete node;
                         std::ranges::for_each(layers.back(), [](auto* n) {
@@ -219,12 +268,12 @@ namespace utility {
                         ++layer_it;
                     } else {
                         auto* node = new bvh_node<T>();
-                        node->left = &*layer_it;
+                        node->left = *layer_it;
                         ++layer_it;
-                        node->right = &*layer_it;
+                        node->right = *layer_it;
                         ++layer_it;
                         node->aabb = node->left->aabb | node->right->aabb;
-                        auto code = generate_morton_from_midpoint(node->aabb.get_midpoint(), 1.0f);
+                        auto code = generate_morton_from_midpoint(normalize(node->aabb.get_midpoint()), 1.0f);
                         if (!code) {
                             delete node;
                             std::ranges::for_each(layers.back(), [](auto* n) {
@@ -244,10 +293,10 @@ namespace utility {
                 // With a single element, layers[0][0] points at an element of the leaves vector;
                 // handing it to a unique_ptr would delete it on destruction (it wasn't new'd) -> double-free UB.
                 // Copy it to the heap as the root node instead.
-                return {std::make_unique<bvh_node<T>>(*layers.back()[0])};
+                return std::unique_ptr<bvh_node<T>>(new bvh_node<T>(*layers.back()[0]));
             }
 
-            return {std::move(layers.back()[0])};
+            return std::unique_ptr<bvh_node<T>>(layers.back()[0]);
         }
 
     public:
@@ -267,22 +316,25 @@ namespace utility {
             std::vector<bvh_node<T>> leaves;
             leaves.reserve(datas.size());
             for (auto const& data : datas) {
-                auto morton = generate_morton_from_midpoint(data.get_midpoint(), 1.0f);
                 bvh_node<T> node = {};
                 node.aabb.min = data.min;
                 node.aabb.max = data.max;
                 node.extra_data = data.extra_data;
+                leaves.push_back(node);
+            }
+
+            bvh result;
+            result.set_extent(leaves); // morton normalization needs the scene extent first
+            for (bvh_node<T>& leaf : leaves) {
+                auto morton = generate_morton_from_midpoint(result.normalize(leaf.aabb.get_midpoint()), 1.0f);
                 if (!morton) {
                     return fail(morton.error());
                 }
-                node.code = std::move(morton).value();
-                leaves.push_back(node);
+                leaf.code = std::move(morton).value();
             }
             std::ranges::sort(leaves, [](auto const& a, auto const& b) { return a.code < b.code; });
 
-            bvh result;
-
-            auto build_result = build_from_leaves(leaves);
+            auto build_result = build_from_leaves(leaves, result.origin_, result.scale_);
 
             if (!build_result) {
                 return fail(build_result.error());
@@ -299,8 +351,20 @@ namespace utility {
          * @brief rebuild the tree from the current leaves
          */
         void rebuild() {
+            if (this->leaves.empty()) {
+                this->root = nullptr;
+                return;
+            }
+            this->set_extent(this->leaves);
+            for (bvh_node<T>& leaf : this->leaves) {
+                auto morton = generate_morton_from_midpoint(this->normalize(leaf.aabb.get_midpoint()), 1.0f);
+                if (!morton) {
+                    return;
+                }
+                leaf.code = std::move(morton).value();
+            }
             std::ranges::sort(this->leaves, [](auto const& a, auto const& b) { return a.code < b.code; });
-            auto build_result = build_from_leaves(this->leaves);
+            auto build_result = build_from_leaves(this->leaves, this->origin_, this->scale_);
 
             if (!build_result) {
                 return;
@@ -314,21 +378,15 @@ namespace utility {
          * @brief add an AABB as a new leaf
          * @param box the AABB to add
          * @return {} on success, error message on failure
-         * @note the tree is not rebuilt automatically, call rebuild() afterwards
+         * @note the tree is not rebuilt automatically, call rebuild() afterwards (rebuild
+         *       recomputes the scene extent, so out-of-range boxes added here are fine)
          */
         std::expected<void, std::string> add(aabb_box<T> const& box) {
-            using fail = std::unexpected<std::string>;
-
             bvh_node<T> node = {};
             node.aabb.min = box.min;
             node.aabb.max = box.max;
             node.extra_data = box.extra_data;
-
-            auto morton = generate_morton_from_midpoint(box.get_midpoint(), 1.0f);
-            if (!morton) {
-                return fail(morton.error());
-            }
-            node.code = std::move(morton).value();
+            node.code = {}; // recomputed by rebuild()
 
             this->leaves.push_back(node);
             return {};
@@ -394,7 +452,7 @@ namespace utility {
             }
 
             std::stack<bvh_node<T>*> nodes_to_process;
-            nodes_to_process.push(root);
+            nodes_to_process.push(this->root.get());
 
             while (!nodes_to_process.empty()) {
                 bvh_node<T>* node = nodes_to_process.top();

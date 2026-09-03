@@ -89,4 +89,35 @@ namespace utility {
             return glm::dot(pos, glm::vec3(p.x, p.y, p.z)) + p.w >= 0;
         });
     }
+
+    frustum make_frustum(glm::mat4 const& view_proj) {
+        // view_proj is a column-major glm mat4 meaning v_clip = view_proj * v_world, i.e. the
+        // i-th ROW of the matrix is (view_proj[0][i], view_proj[1][i], view_proj[2][i],
+        // view_proj[3][i]). Grab the four rows first, then combine them Gribb-Hartmann style:
+        //   left   = row3 + row0        right = row3 - row0
+        //   bottom = row3 + row1        top   = row3 - row1
+        //   near   = row2               far   = row3 - row2   (depth [0,1] + RH_ZO: see below)
+        // Planes face inward: point p is inside when dot(xyz, p) + w >= 0 (frustum::in test).
+        glm::vec4 const row0(view_proj[0][0], view_proj[1][0], view_proj[2][0], view_proj[3][0]);
+        glm::vec4 const row1(view_proj[0][1], view_proj[1][1], view_proj[2][1], view_proj[3][1]);
+        glm::vec4 const row2(view_proj[0][2], view_proj[1][2], view_proj[2][2], view_proj[3][2]);
+        glm::vec4 const row3(view_proj[0][3], view_proj[1][3], view_proj[2][3], view_proj[3][3]);
+
+        frustum result = {};
+        auto const inward = [](glm::vec4 const& plane) {
+            // normalize the (a,b,c) part so w becomes a real signed distance; keep orientation
+            float const length = glm::length(glm::vec3(plane));
+            return length > 1e-8f ? plane / length : plane;
+        };
+        result.planes[0] = inward(row3 + row0); // left
+        result.planes[1] = inward(row3 - row0); // right
+        result.planes[2] = inward(row3 + row1); // bottom
+        result.planes[3] = inward(row3 - row1); // top
+        // The renderer uses perspectiveRH_ZO with a y-flip; clip z in [0,1]. For row-major clip
+        // coords with M*v convention, near plane = row2 (z_w = 0 -> row2 dot v = 0) already has
+        // the correct inward orientation for RH_ZO, and far = row3 - row2.
+        result.planes[4] = inward(row2);        // near
+        result.planes[5] = inward(row3 - row2); // far
+        return result;
+    }
 } // namespace utility
