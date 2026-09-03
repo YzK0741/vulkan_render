@@ -41,7 +41,7 @@ namespace vulkan {
      *       skip descriptor / push constant parsing and share one layout object
      */
     export constexpr uint32_t scene_texture_capacity = 128;
-    // material_push_constants: uint material_index + mat4 model = 80 bytes, see vulkan/model.cppm
+    // material_push_constants: uint material_index + mat4 model = 80 bytes, see vulkan/runtime/scene_tree/scene_tree.cppm
     export constexpr uint32_t scene_push_constant_size = 80;
     export struct core : utility::enable_stack_destruct {
         VkInstance instance = VK_NULL_HANDLE;

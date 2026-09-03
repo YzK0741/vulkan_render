@@ -8,8 +8,7 @@ export module vulkan.runtime;
 export import std;
 export import vulkan.core;
 export import vulkan.core.filter;
-export import vulkan.model;
-// scene_tree types are re-exported through vulkan.model (vulkan::primitive implements scene_tree::primitive)
+export import vulkan.runtime.scene_tree; // scene_tree owns the scene storage + GPU primitives (absorbed vulkan.model)
 import utility;
 
 /**

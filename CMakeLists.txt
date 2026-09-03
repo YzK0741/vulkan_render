@@ -76,7 +76,6 @@ target_sources(vulkan_lib
         vulkan/core/handles/handles.cppm
         vulkan/core/init_utils/init_utils.cppm
         vulkan/core/pipeline/pipeline.cppm
-        vulkan/model/model.cppm
         vulkan/math/math.cppm
         vulkan/runtime.cppm
         vulkan/core/pipeline/spirv_parser.cppm
@@ -88,7 +87,6 @@ target_sources(vulkan_lib
         vulkan/core/handles/handles.cpp
         vulkan/core/init_utils/init_util.cpp
         vulkan/core/pipeline/pipeline.cpp
-        vulkan/model/model.cpp
         vulkan/math/math.cpp
         vulkan/core/pipeline/spirv_parser.cpp
         vulkan/runtime.cpp

@@ -1,9 +1,10 @@
 # Scene Graph Storage — Design Document
 
-Status: migration in progress — storage, import and the render loop are tree-driven
-(`vulkan.runtime.scene_tree`); import_scene rebuilds the real loader hierarchy
-(2b) and per-node transforms work through `runtime::scene()` + the `spin-subtree`
-demo; remaining work: `vulkan.model` becomes a scene_tree primitive.
+Status: migration complete — storage, import and the render loop are tree-driven;
+`vulkan.runtime.scene_tree` is the single scene-tree module (scene storage + GPU
+primitives, absorbed the former `vulkan.model`); per-node transforms work through
+`runtime::scene()` + the `spin-subtree` demo. Remaining: animation / skinning /
+mesh sharing (future pass, §8).
 
 ## 1. Motivation
 
@@ -148,11 +149,11 @@ namespace vulkan::scene_tree {
 }
 ```
 
-- `vulkan::primitive` (vulkan.model, GPU side) is `public vulkan::scene_tree::primitive`;
-  `primitive::set_world` writes `push.model = world`, so the existing draw path
-  (`primitive->draw()`) is untouched. (The GPU classes were renamed model ->
-  primitive; the module/header name `vulkan.model` was kept for CMake/import
-  stability.)
+- `vulkan::primitive` (the GPU side of this same module) is
+  `public vulkan::scene_tree::primitive`; `primitive::set_world` writes
+  `push.model = world`, so the existing draw path (`primitive->draw()`) is
+  untouched. (Both live in `vulkan.runtime.scene_tree` — the former separate
+  `vulkan.model` module was merged into it; see step 4c in §6.)
 - Runtime owns primitives inside the tree: `scene_` is a `scene_tree::scene`;
   `~runtime` walks the tree and calls `primitive->destroy(vma)` per leaf before
   the VkDevice goes away.
@@ -162,8 +163,7 @@ namespace vulkan::scene_tree {
 - **Scene offset / whole-scene transform**: `runtime::set_scene_transform(mat4)`
   applies one extra world matrix on top of every root before `update_world`
   (identity default → rendering identical to pre-tree). The `import_scene`
-  `offset` argument is still baked into each leaf's `local` today for back-compat;
-  step 2b will move it onto the root (see §4.2).
+  `offset` is applied to each root node's local (step 2b).
 
 ### 3.3 World accumulation (DONE — `ca6769a`)
 
@@ -301,15 +301,21 @@ Status, kept in sync with git history:
   position — on the Hierarchy asset a single helmet spins while its sibling stays
   put (per-node transform over the 2b hierarchy).
 - ✅ **4 — Remove the flat `models` map.** No flat storage remains.
-- ✅ **4b — Rename model → primitive** (this commit). The GPU classes `vulkan::model`
+- ✅ **4b — Rename model → primitive** (`386c772`). The GPU classes `vulkan::model`
   / `normal_draw_model` / `instanced_draw_model` are now `vulkan::primitive` /
   `normal_draw_primitive` / `instanced_draw_primitive`, the scene-tree leaf
   interface is `scene_tree::primitive` (was `drawable`), and the runtime API is
   `make_primitive` / `make_instanced_primitive` / `get_primitives` /
   `clear_primitives` / `create_primitive`, with `primitive_create_info`. The
-  module/header name `vulkan.model` and the shader-facing `push.model` /
-  `model_matrix` terms (model matrix) are kept. Verified: full regression matrix
-  unchanged.
+  shader-facing `push.model` / `model_matrix` terms (model matrix) are kept.
+  Verified: full regression matrix unchanged.
+- ✅ **4c — Merge vulkan.model into scene_tree** (next commit). The separate
+  `vulkan.model` module (and its files) is gone: its exports now live in
+  `vulkan.runtime.scene_tree` (scene storage + abstract leaf primitive + the GPU
+  primitives + material/UBO records + structural iterator concepts in one module,
+  which imports vulkan.core for the GPU types). `runtime` / `main` import
+  `vulkan.runtime.scene_tree` instead of `vulkan.model`; CMake module list
+  updated. Verified: Release builds (no ICE), full regression matrix unchanged.
 - ⏳ **5 — Future:** animation / skinning / mesh sharing (separate pass, §8).
 
 (Detailed step list below is folded into the status above; this file is the single
@@ -351,15 +357,16 @@ source of truth for what each commit changed.)
 
 ## 9. Open questions for the maintainer (answers)
 
-1. **Storage module** — answered: a dedicated `vulkan.runtime.scene_tree` module
-   (pure CPU, no Vulkan types) was created; `vulkan.model` imports and implements
-   its `scene_tree::primitive`, so no cycle and no new ICE-prone imports.
+1. **Storage module** — answered: `vulkan.runtime.scene_tree` is the single
+   scene-tree module. The former separate `vulkan.model` module was merged into
+   it (step 4c), so scene storage, the abstract leaf `primitive`, the GPU
+   primitives and the material/UBO records all live in one module — no cycle, no
+   module-name juggling left.
 2. **API names** — renamed: the GPU classes and runtime API now use `primitive`
    (`make_primitive` / `make_instanced_primitive` / `get_primitives` /
    `clear_primitives`, `primitive_create_info`), matching the scene-tree leaf
-   concept; the module/header name `vulkan.model` was kept for CMake/import
-   stability, as was the shader-facing `push.model` / `model_matrix` (model
-   matrix) terminology.
+   concept; the shader-facing `push.model` / `model_matrix` (model matrix)
+   terminology is kept.
 3. **Whole-group transform demo** — answered: temporary auto-spin accepted and
    shipped (`argv[2]/argv[3] == "spin"` whole-scene rotation around the sink,
    `spin-subtree` per-node rotation — `9cc791a`).

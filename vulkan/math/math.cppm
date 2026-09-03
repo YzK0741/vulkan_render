@@ -8,7 +8,7 @@ export import std;
  *        irradiance cubemap, BRDF LUT) and half-float conversion
  * @note
  *      - pure CPU math, no Vulkan or GPU resources involved
- *      - moved out of vulkan.model so that module stays focused on GPU resource management
+ *      - a standalone pure-CPU module (the GPU scene/module side lives in vulkan.runtime.scene_tree)
  */
 namespace vulkan {
 

@@ -4,7 +4,7 @@ import std;
 import gltf_loader;
 import utility;
 import vulkan.math;
-import vulkan.model;
+import vulkan.runtime.scene_tree; // scene storage + GPU primitives (was vulkan.model)
 import vulkan.runtime;
 
 namespace {
