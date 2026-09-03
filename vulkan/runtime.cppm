@@ -67,12 +67,15 @@ namespace vulkan {
         // camera UBO: one buffer per frame slot, updated once per frame, shared by every primitive
         std::vector<uint64_t> camera_buffer_handles = {};
         std::vector<void*> camera_mapped = {};
-        // texture registry: flat entries of the set 0 binding 1 array (raw handles; the white
-        // fallback view may repeat); the owning views / vma handles live in the vectors below
+        // texture registry: flat entries of the set 0 binding 1 array (raw handles); the owning
+        // views / vma handles live in the vectors below. texture_slot_cache_ deduplicates uploads:
+        // several materials sharing one glTF texture (same decoded bytes) all point at the same
+        // array slot instead of uploading a copy per material.
         std::vector<VkImageView> texture_array_views = {};
         std::vector<vk_image_view> owned_texture_views = {};
         std::vector<uint64_t> owned_texture_handles = {};
         uint32_t white_texture_index = 0;
+        std::map<std::tuple<unsigned char const*, std::size_t, VkFormat>, uint32_t> texture_slot_cache_ = {};
         // scene-wide IBL (bindings 2-4): prefiltered env / irradiance / BRDF LUT, uploaded once
         std::vector<vk_image_view> ibl_views = {};
         std::vector<uint64_t> ibl_handles = {};

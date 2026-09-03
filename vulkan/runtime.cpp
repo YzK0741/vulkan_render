@@ -414,11 +414,9 @@ namespace vulkan {
     }
 
     uint32_t runtime::register_material(primitive_create_info const& info) {
-        // ---- 1. Upload the 5 texture slots into the shared array; missing ones use the white fallback ----
-        if (this->texture_array_views.size() + 5 > vulkan::scene_texture_capacity) {
-            utility::panic("scene texture array capacity exceeded");
-        }
-
+        // ---- 1. Resolve the 5 texture slots against the shared array: identical texture bytes
+        //         upload once (shared glTF textures decode to one buffer, so the data pointer is
+        //         a stable identity); missing slots point at the white fallback (element 0).
         std::array<std::pair<texture_input const*, VkFormat>, 5> const slots = {
             std::pair{&info.albedo, VK_FORMAT_R8G8B8A8_SRGB},
             std::pair{&info.metallic_roughness, VK_FORMAT_R8G8B8A8_UNORM},
@@ -428,48 +426,96 @@ namespace vulkan {
         };
 
         std::array<uint32_t, 5> texture_indices = {};
+        // one write per slot is enough when the slot is freshly added; a reused slot (cache hit)
+        // was already written when it first appeared
         std::array<VkDescriptorImageInfo, 5> image_infos = {};
         std::array<VkWriteDescriptorSet, 5> writes = {};
         uint32_t write_count = 0;
+        bool white_needed = false;
         VkSampler const sampler = *this->texture_sampler;
         for (int i = 0; i < 5; ++i) {
-            VkImageView view;
-            if (slots[i].first->valid && !slots[i].first->data.empty()) {
-                texture_input const& tex = *slots[i].first;
-                vulkan::image_create_info image_info = {};
-                image_info.width = tex.width;
-                image_info.height = tex.height;
-                image_info.mip_levels = tex.mip_levels; // the caller uploads a full mip-major chain
-                image_info.array_layers = 1;
-                image_info.format = tex.format;
-                uint64_t const handle = this->vulkan_core.vma.create_image(tex.data.data(), tex.data.size_bytes(), image_info, vulkan::image_type::texture_2d);
-                if (handle == 0) {
-                    utility::panic("failed to create material texture");
-                }
-                auto const* detail = this->vulkan_core.vma.get_image_detail(handle);
-                if (detail == nullptr) {
-                    utility::panic("failed to get material texture detail");
-                }
-                this->owned_texture_handles.push_back(handle);
-                this->owned_texture_views.push_back(this->vulkan_core.make_image_view(detail->image, tex.format, VK_IMAGE_VIEW_TYPE_2D));
-                view = *this->owned_texture_views.back();
-            } else {
-                view = this->texture_array_views[this->white_texture_index]; // white fallback
+            texture_input const& tex = *slots[i].first;
+            if (!tex.valid || tex.data.empty()) {
+                texture_indices[i] = this->white_texture_index; // white fallback
+                white_needed = true;
+                continue;
             }
+            auto const key = std::tuple<unsigned char const*, std::size_t, VkFormat>{tex.data.data(), tex.data.size_bytes(), slots[i].second};
+            auto const cached = this->texture_slot_cache_.find(key);
+            if (cached != this->texture_slot_cache_.end()) {
+                texture_indices[i] = cached->second; // shared texture: reuse its slot
+                continue;
+            }
+            if (this->texture_array_views.size() >= vulkan::scene_texture_capacity) {
+                utility::panic("scene texture array capacity exceeded");
+            }
+            vulkan::image_create_info image_info = {};
+            image_info.width = tex.width;
+            image_info.height = tex.height;
+            image_info.mip_levels = tex.mip_levels; // the caller uploads a full mip-major chain
+            image_info.array_layers = 1;
+            image_info.format = slots[i].second;
+            uint64_t const handle = this->vulkan_core.vma.create_image(tex.data.data(), tex.data.size_bytes(), image_info, vulkan::image_type::texture_2d);
+            if (handle == 0) {
+                utility::panic("failed to create material texture");
+            }
+            auto const* detail = this->vulkan_core.vma.get_image_detail(handle);
+            if (detail == nullptr) {
+                utility::panic("failed to get material texture detail");
+            }
+            this->owned_texture_handles.push_back(handle);
+            this->owned_texture_views.push_back(this->vulkan_core.make_image_view(detail->image, slots[i].second, VK_IMAGE_VIEW_TYPE_2D));
+            uint32_t const index = static_cast<uint32_t>(this->texture_array_views.size());
+            this->texture_array_views.push_back(*this->owned_texture_views.back());
+            this->texture_slot_cache_.emplace(key, index);
+            texture_indices[i] = index;
 
-            texture_indices[i] = static_cast<uint32_t>(this->texture_array_views.size());
-            this->texture_array_views.push_back(view);
-            image_infos[i] = {.sampler = sampler, .imageView = view, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[i].dstSet = *this->scene_set;
-            writes[i].dstBinding = 1;
-            writes[i].dstArrayElement = texture_indices[i];
-            writes[i].descriptorCount = 1;
-            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[i].pImageInfo = &image_infos[i];
+            image_infos[write_count] = {.sampler = sampler, .imageView = *this->owned_texture_views.back(), .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[write_count].dstSet = *this->scene_set;
+            writes[write_count].dstBinding = 1;
+            writes[write_count].dstArrayElement = index;
+            writes[write_count].descriptorCount = 1;
+            writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[write_count].pImageInfo = &image_infos[write_count];
             ++write_count;
         }
-        vkUpdateDescriptorSets(this->vulkan_core.device, write_count, writes.data(), 0, nullptr);
+
+        // material slots that fell back to white share element 0; write it once when used
+        if (white_needed) {
+            VkDescriptorImageInfo const white_info{
+                .sampler = sampler,
+                .imageView = this->texture_array_views[this->white_texture_index],
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            };
+            VkWriteDescriptorSet white_write = {};
+            white_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            white_write.dstSet = *this->scene_set;
+            white_write.dstBinding = 1;
+            white_write.dstArrayElement = this->white_texture_index;
+            white_write.descriptorCount = 1;
+            white_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            white_write.pImageInfo = &white_info;
+            if (write_count < writes.size()) {
+                image_infos[write_count] = white_info;
+                writes[write_count] = white_write;
+                ++write_count;
+            } else {
+                std::array<VkWriteDescriptorSet, 6> all = {};
+                std::array<VkDescriptorImageInfo, 6> all_infos = {};
+                for (uint32_t w = 0; w < write_count; ++w) {
+                    all[w] = writes[w];
+                    all_infos[w] = image_infos[w];
+                }
+                all_infos[write_count] = white_info;
+                all[write_count] = white_write;
+                vkUpdateDescriptorSets(this->vulkan_core.device, write_count + 1, all.data(), 0, nullptr);
+                write_count = 0; // already submitted
+            }
+        }
+        if (write_count > 0) {
+            vkUpdateDescriptorSets(this->vulkan_core.device, write_count, writes.data(), 0, nullptr);
+        }
 
         // ---- 2. Append one material record: texture indices + presence flags; factors keep
         //         their identity defaults (extend primitive_create_info to pass custom factors) ----
