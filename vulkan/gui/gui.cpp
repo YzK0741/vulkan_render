@@ -10,6 +10,8 @@ module vulkan.gui;
 import utility;
 
 namespace vulkan {
+    // ---- gui_content lifecycle (see the module docs: ImGui state lives in ImGui's globals) ----
+
     gui_content::~gui_content() {
         this->shutdown();
     }
@@ -18,9 +20,6 @@ namespace vulkan {
         if (this->active) {
             return true; // idempotent
         }
-        // ImGui draws into the runtime's OPEN main rendering instance. That instance uses
-        // dynamic rendering (the runtime's shadow pass already requires Vulkan 1.3 dynamic
-        // rendering, so the classic fallback cannot host a usable overlay anyway).
         if (info.device == VK_NULL_HANDLE || info.graphics_queue == VK_NULL_HANDLE || info.window == nullptr) {
             utility::log("gui_content: init skipped (incomplete gui_create_info)");
             return false;
@@ -49,8 +48,6 @@ namespace vulkan {
         backend_info.Queue = info.graphics_queue;
         // backend creates its own descriptor pool (we must not share the runtime's scene pool)
         backend_info.DescriptorPoolSize = 8;
-        // frames in flight: the runtime advances one slot per rendered frame, matching the
-        // backend's per-frame render-buffer ring
         backend_info.MinImageCount = info.frames_in_flight;
         backend_info.ImageCount = info.frames_in_flight;
         backend_info.UseDynamicRendering = true;
@@ -87,15 +84,36 @@ namespace vulkan {
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
         this->active = false;
-        this->ui_builder = {};
+        this->panels.clear();
     }
 
     bool gui_content::is_active() const noexcept {
         return this->active;
     }
 
-    void gui_content::set_ui_builder(std::function<void()> builder) {
-        this->ui_builder = std::move(builder);
+    // ---- panel management ----
+
+    debug_panel& gui_content::add_panel(std::string title) {
+        this->panels.push_back(std::make_unique<debug_panel>(std::move(title)));
+        return *this->panels.back();
+    }
+
+    void gui_content::remove_panel(debug_panel const& panel) {
+        std::erase_if(this->panels, [&panel](std::unique_ptr<debug_panel> const& p) { return p.get() == &panel; });
+    }
+
+    void gui_content::set_panel_visible(debug_panel const& panel, bool const visible) {
+        // debug_panel stores its open flag in is_open; find the panel and update it
+        for (auto const& p : this->panels) {
+            if (p.get() == &panel) {
+                p->set_open(visible);
+                return;
+            }
+        }
+    }
+
+    std::size_t gui_content::panel_count() const noexcept {
+        return this->panels.size();
     }
 
     void gui_content::new_frame() {
@@ -111,8 +129,10 @@ namespace vulkan {
         if (!this->active) {
             return;
         }
-        if (this->ui_builder) {
-            this->ui_builder(); // app draws its windows/widgets (ImGui API)
+        for (auto const& panel : this->panels) {
+            if (panel->open()) {
+                panel->draw();
+            }
         }
         ImGui::Render();
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
@@ -125,5 +145,108 @@ namespace vulkan {
         // swapchain image count may have changed; the backend's per-frame buffers stay sized to
         // the frames-in-flight count captured at init(), so only sync the min-image hint.
         ImGui_ImplVulkan_SetMinImageCount(this->frames_in_flight);
+    }
+
+    // ---- debug_panel ----
+
+    debug_panel::debug_panel(std::string title)
+        : title{std::move(title)} {
+    }
+
+    void debug_panel::push_back(std::unique_ptr<widget> item) {
+        this->items.push_back(std::move(item));
+    }
+
+    void debug_panel::pop_back() {
+        if (!this->items.empty()) {
+            this->items.pop_back();
+        }
+    }
+
+    void debug_panel::clear() {
+        this->items.clear();
+    }
+
+    bool debug_panel::empty() const noexcept {
+        return this->items.empty();
+    }
+
+    std::size_t debug_panel::size() const noexcept {
+        return this->items.size();
+    }
+
+    std::string const& debug_panel::get_title() const noexcept {
+        return this->title;
+    }
+
+    void debug_panel::set_open(bool const open) noexcept {
+        this->is_open = open;
+    }
+
+    bool debug_panel::open() const noexcept {
+        return this->is_open;
+    }
+
+    void debug_panel::draw() {
+        if (!ImGui::Begin(this->title.c_str(), &this->is_open)) {
+            ImGui::End();
+            return;
+        }
+        for (auto const& item : this->items) {
+            if (item != nullptr) {
+                item->draw();
+            }
+        }
+        ImGui::End();
+    }
+
+    // ---- widgets ----
+
+    label_widget::label_widget(std::string text)
+        : text_fn{[t = std::move(text)]() { return t; }} { // copies per frame (stable text)
+    }
+
+    label_widget::label_widget(std::function<std::string()> text_fn)
+        : text_fn{std::move(text_fn)} {
+    }
+
+    void label_widget::draw() {
+        if (this->text_fn) {
+            ImGui::TextUnformatted(this->text_fn().c_str());
+        }
+    }
+
+    checkbox_widget::checkbox_widget(std::string label, bool* value, std::function<void(bool)> on_change)
+        : label{std::move(label)}
+        , value{value}
+        , on_change{std::move(on_change)} {
+    }
+
+    void checkbox_widget::draw() {
+        if (this->value == nullptr) {
+            return;
+        }
+        bool const before = *this->value;
+        if (ImGui::Checkbox(this->label.c_str(), this->value) && before != *this->value && this->on_change) {
+            this->on_change(*this->value);
+        }
+    }
+
+    slider_widget::slider_widget(std::string label, float* value, float min, float max, std::function<void(float)> on_change)
+        : label{std::move(label)}
+        , value{value}
+        , min{min}
+        , max{max}
+        , on_change{std::move(on_change)} {
+    }
+
+    void slider_widget::draw() {
+        if (this->value == nullptr) {
+            return;
+        }
+        float const before = *this->value;
+        if (ImGui::SliderFloat(this->label.c_str(), this->value, this->min, this->max) && before != *this->value && this->on_change) {
+            this->on_change(*this->value);
+        }
     }
 } // namespace vulkan

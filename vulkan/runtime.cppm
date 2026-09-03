@@ -10,7 +10,7 @@ export import vulkan.core;
 export import vulkan.core.filter;
 export import vulkan.runtime.scene_tree; // scene_tree owns the scene storage + GPU primitives (absorbed vulkan.model)
 import utility;
-import vulkan.gui; // optional debug overlay (gui_content); enabled by the caller via enable_debug_gui()
+export import vulkan.gui; // optional debug overlay (gui_content): exported so callers can manage panels/widgets via debug_gui()
 
 /**
  * @file runtime.cppm
@@ -168,8 +168,8 @@ namespace vulkan {
         std::size_t frame_culled_count = 0;               // leaves culled this frame (for the log)
         // optional Dear ImGui debug overlay; inactive until enable_debug_gui() succeeds. The
         // runtime drives it inside the frame steps (new_frame before recording, record after the
-        // runtime's own draw calls) so callers only register UI content via set_debug_ui_builder.
-        gui_content debug_gui;
+        // runtime's own draw calls) so callers only manage its content via debug_gui().
+        gui_content debug_overlay;
         // filtered view over vulkan_core, exposed via operator-> (external code never sees the raw core)
         core_filter filtered_core;
 
@@ -262,14 +262,13 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief register (or replace, or clear with {}) the per-frame UI content builder drawn
-         *        by the debug overlay every rendered frame
-         * @param builder draws the debug windows/widgets using the ImGui API directly; the
-         *        runtime calls it once per frame inside render_frame() (after new_frame, before
-         *        record). Captures whatever runtime state the UI needs to display.
-         * @note ignored while the overlay is inactive; also settable before enable_debug_gui()
+         * @brief access the debug overlay to manage its content from outside (register panels,
+         *        push widgets, show/hide windows)
+         * @return the runtime's gui_content (non-const: adding/removing panels mutates it)
+         * @note panels added here are drawn every rendered frame by the runtime; add them after
+         *       enable_debug_gui() (or any time — they are only drawn while the overlay is active)
          */
-        void set_debug_ui_builder(std::function<void()> builder);
+        [[nodiscard]] vulkan::gui_content& debug_gui() noexcept;
 
         /**
          * @ingroup vulkan_runtime

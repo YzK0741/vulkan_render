@@ -13,12 +13,16 @@ export import std;
  * @file gui.cppm
  * @defgroup vulkan_gui Vulkan Debug GUI
  * @brief Dear ImGui integration for the vulkan runtime: owns the ImGui context, the GLFW +
- *        Vulkan backends and the per-frame recording slot, and exposes a small layout/content
+ *        Vulkan backends and the per-frame recording slot, and exposes a small widget/panel
  *        API so the application builds its debug UI without touching Vulkan or GLFW directly.
  * @note
- *      - plain class with direct members, like the rest of the vulkan module (no pimpl): the
- *        ImGui context and backend state live in ImGui's own global storage, so this object
- *        only tracks whether the overlay is initialized and which UI content to draw
+ *      - plain classes with direct members, like the rest of the vulkan module (no pimpl): the
+ *        ImGui context and backend state live in ImGui's own global storage, so the gui_content
+ *        only tracks whether the overlay is initialized, the registered panels and their widgets
+ *      - widgets follow the scene_tree::primitive inheritance pattern: a widget base class with
+ *        a virtual draw() and one subclass per control (label / checkbox / slider ...), so a new
+ *        control is just a new subclass; debug_panel holds its widgets in a stack-style vector
+ *        (push_back appends = more space, pop_back removes the top) and draws them in order
  *      - the runtime owns a gui_content member (optional, enabled via enable_debug_gui());
  *        when active, the runtime calls new_frame() before recording and record() after
  *        record_main_drawcalls() while the main rendering instance is still open, so the UI
@@ -50,7 +54,112 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_gui
-     * @brief owned Dear ImGui overlay for one window
+     * @brief base class of every debug widget: declares the draw strategy. Derived classes
+     *        implement one control each (text / checkbox / slider ...), so the panel just does
+     *        "for each widget: widget->draw()" — new controls only add a subclass
+     *        (same pattern as scene_tree::primitive / normal_draw_primitive).
+     * @note draw() is called once per frame inside debug_panel::draw(); implementations call
+     *       the ImGui API directly (see gui.cpp)
+     */
+    export class widget {
+    public:
+        widget() = default;
+        virtual ~widget() = default;
+        widget(widget const&) = delete;
+        widget& operator=(widget const&) = delete;
+        widget(widget&&) noexcept = default;
+        widget& operator=(widget&&) noexcept = default;
+
+        /** @brief draw this widget at the current ImGui cursor position */
+        virtual void draw() = 0;
+    };
+
+    /**
+     * @ingroup vulkan_gui
+     * @brief a text line; the text may be a fixed string or a std::function evaluated every
+     *        frame (for live values such as fps)
+     */
+    export class label_widget final : public widget {
+    public:
+        explicit label_widget(std::string text);
+        explicit label_widget(std::function<std::string()> text_fn);
+        void draw() override;
+
+    private:
+        std::function<std::string()> text_fn; // wraps a fixed string or a per-frame callback
+    };
+
+    /**
+     * @ingroup vulkan_gui
+     * @brief a checkbox bound to an external bool; @p on_change fires when the user toggles it
+     *        (e.g. to forward the new value into the runtime)
+     */
+    export class checkbox_widget final : public widget {
+    public:
+        checkbox_widget(std::string label, bool* value, std::function<void(bool)> on_change = {});
+        void draw() override;
+
+    private:
+        std::string label;
+        bool* value = nullptr; // external state the widget reads/writes
+        std::function<void(bool)> on_change;
+    };
+
+    /**
+     * @ingroup vulkan_gui
+     * @brief a float slider bound to an external float; @p on_change fires on user drags
+     */
+    export class slider_widget final : public widget {
+    public:
+        slider_widget(std::string label, float* value, float min, float max, std::function<void(float)> on_change = {});
+        void draw() override;
+
+    private:
+        std::string label;
+        float* value = nullptr;
+        float min = 0.0f;
+        float max = 1.0f;
+        std::function<void(float)> on_change;
+    };
+
+    /**
+     * @ingroup vulkan_gui
+     * @brief one debug window: a title, an open flag and a stack of widgets. Widgets are stored
+     *        in a stack-style vector — push_back() appends (grows the panel), pop_back() removes
+     *        the last one, so add/remove only ever touch the end. draw() opens the ImGui window
+     *        and draws every widget in order.
+     * @note the window close button flips @p open, so callers can honor it via open() / set_open()
+     */
+    export class debug_panel {
+    public:
+        explicit debug_panel(std::string title);
+
+        // ---- widget stack (add/remove only affects the end) ----
+        void push_back(std::unique_ptr<widget> item);
+        void pop_back();
+        void clear();
+        [[nodiscard]] bool empty() const noexcept;
+        [[nodiscard]] std::size_t size() const noexcept;
+
+        // ---- window state ----
+        [[nodiscard]] std::string const& get_title() const noexcept;
+        void set_open(bool open) noexcept;
+        [[nodiscard]] bool open() const noexcept;
+
+        /** @brief draw the ImGui window and all widgets (called by gui_content::record) */
+        void draw();
+
+    private:
+        std::string title;
+        std::vector<std::unique_ptr<widget>> items; // widget stack (tail = top)
+        bool is_open = true;
+    };
+
+    /**
+     * @ingroup vulkan_gui
+     * @brief owned Dear ImGui overlay for one window. Holds the registered debug panels and
+     *        draws them every frame; external code obtains the instance from the runtime
+     *        (runtime::debug_gui()) and adds/removes its own panels.
      * @note non-copyable (a second copy would fight over the single global ImGui context);
      *       the runtime holds exactly one as a direct member
      */
@@ -80,14 +189,30 @@ namespace vulkan {
         /** @brief true after a successful init() and before shutdown() */
         [[nodiscard]] bool is_active() const noexcept;
 
+        // ---- panel management (the external participation surface) ----
         /**
          * @ingroup vulkan_gui
-         * @brief register the per-frame UI content builder; called every frame right before
-         *        record() so the application may open ImGui windows / draw widgets
-         * @param builder draws the UI (may use the ImGui API directly); empty clears it
-         * @note the builder runs on the render thread inside the frame; keep it cheap
+         * @brief create a debug panel with the given title and register it (drawn every frame
+         *        in registration order)
+         * @return reference to the new panel (stable: panels are heap-held); caller pushes
+         *         widgets onto it and may remove it later via remove_panel()
          */
-        void set_ui_builder(std::function<void()> builder);
+        debug_panel& add_panel(std::string title);
+
+        /**
+         * @ingroup vulkan_gui
+         * @brief unregister and destroy @p panel (must be one returned by add_panel())
+         */
+        void remove_panel(debug_panel const& panel);
+
+        /**
+         * @ingroup vulkan_gui
+         * @brief show / hide @p panel without destroying it
+         */
+        void set_panel_visible(debug_panel const& panel, bool visible);
+
+        /** @brief number of registered panels */
+        [[nodiscard]] std::size_t panel_count() const noexcept;
 
         /**
          * @ingroup vulkan_gui
@@ -98,10 +223,11 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_gui
-         * @brief run the registered UI builder, then render the ImGui draw data into @p cmd
+         * @brief run the registered UI builder (if any), draw every visible panel, then render
+         *        the ImGui draw data into @p cmd
          * @param cmd command buffer currently being recorded, inside an OPEN rendering instance
          *        whose color attachment matches the overlay's pipeline (the runtime's main pass)
-         * @note no-op when inactive or when the UI builder produced nothing
+         * @note no-op when inactive
          */
         void record(VkCommandBuffer cmd);
 
@@ -113,8 +239,7 @@ namespace vulkan {
         void on_swapchain_recreated();
 
     private:
-        // UI content builder (app code, drawn once per frame inside record()).
-        std::function<void()> ui_builder;
+        std::vector<std::unique_ptr<debug_panel>> panels; // registered panels, drawn in order
         // true between a successful init() and shutdown(). The ImGui context and backend data
         // themselves live in ImGui's global storage, not here.
         bool active = false;

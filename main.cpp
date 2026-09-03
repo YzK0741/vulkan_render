@@ -1,6 +1,5 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <imgui.h>
 import std;
 import gltf_loader;
 import utility;
@@ -377,22 +376,20 @@ int main(int argc, char** argv) {
     uint32_t fps_frame_count = 0;
 
     // Optional Dear ImGui debug overlay: the runtime drives new_frame/record inside its frame
-    // steps; main only enables it and registers the UI content (a small overlay window with the
-    // live FPS and the frustum-culling toggle).
+    // steps; main only enables it and manages its content through the panel/widget API (fps
+    // text widget bound to a live lambda + a frustum-culling checkbox that forwards to the
+    // runtime). The checkbox is a slider-free toggle bound to an external bool.
     double gui_fps = 0.0;
     bool gui_cull_enabled = true;
     if (use_gui) {
         runtime.enable_debug_gui();
-        runtime.set_debug_ui_builder([&runtime, &gui_fps, &gui_cull_enabled] {
-            ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
-            ImGui::Begin("vulkan_render debug");
-            ImGui::Text("fps: %.1f", gui_fps);
-            if (ImGui::Checkbox("frustum culling", &gui_cull_enabled)) {
-                runtime.set_frustum_culling(gui_cull_enabled);
-            }
-            ImGui::End();
-        });
-        utility::log("gui: Dear ImGui debug overlay enabled");
+        vulkan::debug_panel& panel = runtime.debug_gui().add_panel("vulkan_render debug");
+        panel.push_back(std::make_unique<vulkan::label_widget>([&gui_fps] { return std::format("fps: {:.1f}", gui_fps); }));
+        panel.push_back(std::make_unique<vulkan::checkbox_widget>(
+            "frustum culling",
+            &gui_cull_enabled,
+            [&runtime](bool const enabled) { runtime.set_frustum_culling(enabled); }));
+        utility::log("gui: Dear ImGui debug overlay enabled (panel + 2 widgets)");
     }
 
     // All per-frame decisions (event polling, ESC/close response, minimize skip, swapchain
