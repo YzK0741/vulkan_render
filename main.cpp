@@ -389,6 +389,7 @@ int main(int argc, char** argv) {
             spin_angle += 0.6 * std::chrono::duration<double>(std::chrono::steady_clock::now() - last_frame_time).count();
             glm::mat4 const pivot = glm::translate(glm::mat4(1.0f), subtree_pivot);
             subtree_node->local = pivot * glm::rotate(glm::mat4(1.0f), static_cast<float>(spin_angle), glm::vec3(0.0f, 1.0f, 0.0f)) * glm::inverse(pivot) * subtree_local0;
+            runtime.scene_changed(); // edited node.local directly -> culling BVH must track it
         }
         vulkan::frame_result const result = runtime.render_frame();
         if (result == vulkan::frame_result::closed || result == vulkan::frame_result::failed) {

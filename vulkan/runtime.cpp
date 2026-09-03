@@ -721,46 +721,83 @@ namespace vulkan {
             this->collect_leaf_primitives(root, frame_leaves);
         }
 
-        // 6b. Frustum culling for the main pass: build a per-frame BVH over every leaf that has a
-        //     single world AABB (normal draw primitives, whose bounds follow push.model), then
-        //     keep only the leaves inside the camera frustum. Instanced primitives spread over
-        //     many transforms (no single AABB) and primitives without bounds are never culled.
-        //     The shadow pass below still draws the full frame_leaves set so no caster is lost.
+        // 6b. Frustum culling for the main pass: build a BVH over every leaf that has a single
+        //     world AABB (normal draw primitives, whose bounds follow push.model), then keep only
+        //     the leaves inside the camera frustum. Instanced primitives spread over many
+        //     transforms (no single AABB) and primitives without bounds are never culled. The
+        //     shadow pass below still draws the full frame_leaves set so no caster is lost.
+        //
+        //     Two-level reuse: the BVH is rebuilt only when the scene changed (bvh_dirty_), and
+        //     when the camera also did not move the culled result is reused as-is (no rebuild, no
+        //     frustum_cull). update_world() above rewrites the same world matrices each frame, so
+        //     a non-dirty scene keeps identical world AABBs and the cached BVH stays valid.
         std::vector<primitive const*> visible_leaves = frame_leaves; // fallback: no culling
         std::size_t culled_count = 0;
         if (this->frustum_culling_) {
-            std::vector<utility::aabb_box<primitive>> boxes;
-            boxes.reserve(frame_leaves.size());
-            for (primitive const* leaf : frame_leaves) {
-                if (leaf->has_bounds) {
-                    auto const [wmin, wmax] = leaf->world_aabb();
-                    boxes.push_back(utility::aabb_box<primitive>{.min = wmin, .max = wmax, .extra_data = const_cast<primitive*>(leaf)});
-                }
-            }
-            if (!boxes.empty()) {
-                if (auto const bvh_result = utility::bvh<primitive>::make(boxes); bvh_result) {
-                    utility::frustum const view_frustum = utility::make_frustum(ubo.proj * ubo.view);
-                    auto const inside = bvh_result->frustum_cull(view_frustum);
-                    std::vector<primitive const*> visible;
-                    visible.reserve(frame_leaves.size());
-                    // leaves without bounds (instanced etc.) are always drawn
-                    for (primitive const* leaf : frame_leaves) {
-                        if (!leaf->has_bounds) {
-                            visible.push_back(leaf);
-                        }
+            // camera key: yaw, pitch, distance, target (the orbit state that shapes the frustum)
+            std::array<float, 7> const key = {
+                this->camera.yaw,
+                this->camera.pitch,
+                this->camera.distance,
+                this->camera.target.x,
+                this->camera.target.y,
+                this->camera.target.z,
+                aspect,
+            };
+            bool const scene_changed_this_frame = this->bvh_dirty_;
+            this->camera_moved_ = key != this->camera_key_;
+
+            if (scene_changed_this_frame || !this->cull_bvh_.has_value()) {
+                // scene changed: rebuild the BVH from current world AABBs (and drop stale leaves)
+                std::vector<utility::aabb_box<primitive>> boxes;
+                boxes.reserve(frame_leaves.size());
+                for (primitive const* leaf : frame_leaves) {
+                    if (leaf->has_bounds) {
+                        auto const [wmin, wmax] = leaf->world_aabb();
+                        boxes.push_back(utility::aabb_box<primitive>{.min = wmin, .max = wmax, .extra_data = const_cast<primitive*>(leaf)});
                     }
+                }
+                if (!boxes.empty()) {
+                    this->cull_bvh_.reset(); // destroy the old tree first (its leaves reference this scene)
+                    auto make_result = utility::bvh<primitive>::make(boxes);
+                    if (make_result) {
+                        this->cull_bvh_ = std::move(make_result).value();
+                    }
+                } else {
+                    this->cull_bvh_ = std::nullopt;
+                }
+                this->bvh_dirty_ = false;
+            }
+
+            if (this->camera_moved_ || scene_changed_this_frame || this->cull_visible_.empty()) {
+                // camera moved or the scene changed: re-run frustum cull against the current BVH
+                std::vector<primitive const*> visible;
+                visible.reserve(frame_leaves.size());
+                // leaves without bounds (instanced etc.) are always drawn
+                for (primitive const* leaf : frame_leaves) {
+                    if (!leaf->has_bounds) {
+                        visible.push_back(leaf);
+                    }
+                }
+                if (this->cull_bvh_.has_value()) {
+                    utility::frustum const view_frustum = utility::make_frustum(ubo.proj * ubo.view);
+                    auto const inside = this->cull_bvh_->frustum_cull(view_frustum);
                     for (auto const* node : inside) {
                         visible.push_back(node->extra_data);
                     }
-                    culled_count = frame_leaves.size() - visible.size();
-                    visible_leaves = std::move(visible);
-                    // log the cull ratio (visible/total) every 30 frames
-                    static uint32_t cull_log_frame = 0;
-                    if (++cull_log_frame >= 30) {
-                        utility::log("frustum cull: {}/{} primitives visible ({} culled)", visible_leaves.size(), frame_leaves.size(), culled_count);
-                        cull_log_frame = 0;
-                    }
                 }
+                this->cull_visible_ = std::move(visible);
+                this->camera_key_ = key;
+            }
+            visible_leaves = this->cull_visible_;
+            culled_count = frame_leaves.size() - visible_leaves.size();
+            // log the cull ratio (visible/total) every 30 frames
+            static uint32_t cull_log_frame = 0;
+            if (++cull_log_frame >= 30) {
+                utility::log("frustum cull: {}/{} primitives visible ({} culled){}{}", visible_leaves.size(), frame_leaves.size(), culled_count,
+                             (this->camera_moved_ || scene_changed_this_frame) ? "" : ", result reused (camera + scene static)",
+                             scene_changed_this_frame ? ", bvh rebuilt" : "");
+                cull_log_frame = 0;
             }
         }
 
@@ -1049,6 +1086,7 @@ namespace vulkan {
 
     void runtime::set_scene_transform(glm::mat4 const& transform) {
         this->scene_transform_ = transform;
+        this->bvh_dirty_ = true; // whole-scene transform changes every leaf's world AABB
     }
 
     void runtime::log_scene_tree() const noexcept {
@@ -1167,6 +1205,7 @@ namespace vulkan {
         leaf.local = info.model_matrix;           // world = identity * local (root)
         leaf.primitive_leaf = std::move(created); // a vulkan::primitive is a scene_tree::primitive
         this->scene_.roots.push_back(std::move(leaf));
+        this->bvh_dirty_ = true; // new leaf -> culling BVH must be rebuilt
         return result;
     }
 
@@ -1199,6 +1238,7 @@ namespace vulkan {
         leaf.primitive_leaf = std::move(result); // a vulkan::primitive is a scene_tree::primitive
         primitive* const created = static_cast<primitive*>(leaf.primitive_leaf.get());
         this->scene_.roots.push_back(std::move(leaf));
+        this->bvh_dirty_ = true; // new leaf -> culling BVH must be rebuilt
         return created;
     }
 
@@ -1256,6 +1296,7 @@ namespace vulkan {
                 ++it;
             }
         }
+        this->bvh_dirty_ = true; // leaves removed -> culling BVH must be rebuilt
     }
 
     void runtime::collect_leaf_primitives(scene_tree::scene_node const& node, std::vector<primitive const*>& out) const {

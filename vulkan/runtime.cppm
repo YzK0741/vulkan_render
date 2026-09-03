@@ -128,6 +128,16 @@ namespace vulkan {
         // frustum culling of the main pass (BVH over per-leaf world AABBs vs the camera frustum);
         // enabled by default, disable for verification / debugging
         bool frustum_culling_ = true;
+        // culling caches: the BVH is rebuilt only when the scene changed (bvh_dirty_), and the
+        // culled result is reused while neither the scene nor the camera moved. bvh_ holds the
+        // last built tree (world AABBs are captured at build time and stay valid as long as the
+        // scene is unchanged: update_world rewrites the same matrices each frame).
+        std::optional<utility::bvh<primitive>> cull_bvh_ = std::nullopt;
+        bool bvh_dirty_ = true;                           // scene structure/transforms changed -> rebuild
+        std::vector<primitive const*> cull_visible_ = {}; // last culled result (main-pass set)
+        // camera identity for result reuse: yaw, pitch, distance, target.xyz (7 floats)
+        std::array<float, 7> camera_key_ = {};
+        bool camera_moved_ = true; // camera key differs from the last cull frame
         // one command buffer per frame slot, used and reused by render_frame()
         std::vector<vk_command_buffer> command_buffers;
         // filtered view over vulkan_core, exposed via operator-> (external code never sees the raw core)
@@ -278,6 +288,17 @@ namespace vulkan {
          */
         void set_frustum_culling(bool enabled) noexcept {
             this->frustum_culling_ = enabled;
+        }
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief mark the scene tree as changed (structure or per-node local transforms edited
+         *        through scene(), e.g. programmatic animation): the culling BVH is rebuilt on
+         *        the next frame. Internal scene mutations (import / make / clear /
+         *        set_scene_transform) invalidate automatically.
+         */
+        void scene_changed() noexcept {
+            this->bvh_dirty_ = true;
         }
 
         /**
@@ -484,6 +505,7 @@ namespace vulkan {
                     }
                 }
             }
+            this->bvh_dirty_ = true; // new leaves attached -> culling BVH must be rebuilt
             result.material_count = this->material_count - materials_before;
             return result;
         }
