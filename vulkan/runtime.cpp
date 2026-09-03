@@ -70,12 +70,12 @@ namespace vulkan {
     // The destructor body runs before member destruction, so vulkan_core (and the VkDevice it
     // holds) is still alive here: destroying cached models and pipelines in this order is
     // guaranteed safe, independent of future member reordering. Members then destruct in reverse
-    // declaration order with scene_/pipelines already empty.
+    // declaration order with scene/pipelines already empty.
     runtime::~runtime() {
-        for (scene_tree::scene_node& root : this->scene_.roots) {
+        for (scene_tree::scene_node& root : this->scene.roots) {
             this->destroy_leaf_primitives(root, this->vulkan_core.vma);
         }
-        this->scene_.roots.clear();
+        this->scene.roots.clear();
         this->pipelines.clear();
 
         // Shared scene resources (views/sets/samplers are RAII and free themselves)
@@ -441,8 +441,8 @@ namespace vulkan {
                 continue;
             }
             auto const key = std::tuple<unsigned char const*, std::size_t, VkFormat>{tex.data.data(), tex.data.size_bytes(), slots[i].second};
-            auto const cached = this->texture_slot_cache_.find(key);
-            if (cached != this->texture_slot_cache_.end()) {
+            auto const cached = this->texture_slot_cache.find(key);
+            if (cached != this->texture_slot_cache.end()) {
                 texture_indices[i] = cached->second; // shared texture: reuse its slot
                 continue;
             }
@@ -467,7 +467,7 @@ namespace vulkan {
             this->owned_texture_views.push_back(this->vulkan_core.make_image_view(detail->image, slots[i].second, VK_IMAGE_VIEW_TYPE_2D));
             uint32_t const index = static_cast<uint32_t>(this->texture_array_views.size());
             this->texture_array_views.push_back(*this->owned_texture_views.back());
-            this->texture_slot_cache_.emplace(key, index);
+            this->texture_slot_cache.emplace(key, index);
             texture_indices[i] = index;
 
             image_infos[write_count] = {.sampler = sampler, .imageView = *this->owned_texture_views.back(), .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -708,16 +708,16 @@ namespace vulkan {
         }
 
         // 6a. Accumulate scene-tree world transforms: every leaf's push.model = scene_transform *
-        //     identity * local. With the default scene_transform_ (identity) this reproduces the
+        //     identity * local. With the default scene_transform (identity) this reproduces the
         //     old flat-list world matrices exactly; set_scene_transform() adds programmatic
         //     whole-scene grouping on top.
-        for (scene_tree::scene_node& root : this->scene_.roots) {
-            scene_tree::update_world(root, this->scene_transform_);
+        for (scene_tree::scene_node& root : this->scene.roots) {
+            scene_tree::update_world(root, this->scene_transform);
         }
         // Collect the primitive leaves once (DFS over the whole scene): the shadow pass draws all
         // of them, the main pass draws the subset bound to each pipeline
         std::vector<primitive const*> frame_leaves;
-        for (scene_tree::scene_node const& root : this->scene_.roots) {
+        for (scene_tree::scene_node const& root : this->scene.roots) {
             this->collect_leaf_primitives(root, frame_leaves);
         }
 
@@ -727,13 +727,13 @@ namespace vulkan {
         //     transforms (no single AABB) and primitives without bounds are never culled. The
         //     shadow pass below still draws the full frame_leaves set so no caster is lost.
         //
-        //     Two-level reuse: the BVH is rebuilt only when the scene changed (bvh_dirty_), and
+        //     Two-level reuse: the BVH is rebuilt only when the scene changed (bvh_dirty), and
         //     when the camera also did not move the culled result is reused as-is (no rebuild, no
         //     frustum_cull). update_world() above rewrites the same world matrices each frame, so
         //     a non-dirty scene keeps identical world AABBs and the cached BVH stays valid.
         std::vector<primitive const*> visible_leaves = frame_leaves; // fallback: no culling
         std::size_t culled_count = 0;
-        if (this->frustum_culling_) {
+        if (this->frustum_culling) {
             // camera key: yaw, pitch, distance, target (the orbit state that shapes the frustum)
             std::array<float, 7> const key = {
                 this->camera.yaw,
@@ -744,10 +744,10 @@ namespace vulkan {
                 this->camera.target.z,
                 aspect,
             };
-            bool const scene_changed_this_frame = this->bvh_dirty_;
-            this->camera_moved_ = key != this->camera_key_;
+            bool const scene_changed_this_frame = this->bvh_dirty;
+            this->camera_moved = key != this->camera_key;
 
-            if (scene_changed_this_frame || !this->cull_bvh_.has_value()) {
+            if (scene_changed_this_frame || !this->cull_bvh.has_value()) {
                 // scene changed: rebuild the BVH from current world AABBs (and drop stale leaves)
                 std::vector<utility::aabb_box<primitive>> boxes;
                 boxes.reserve(frame_leaves.size());
@@ -758,18 +758,18 @@ namespace vulkan {
                     }
                 }
                 if (!boxes.empty()) {
-                    this->cull_bvh_.reset(); // destroy the old tree first (its leaves reference this scene)
+                    this->cull_bvh.reset(); // destroy the old tree first (its leaves reference this scene)
                     auto make_result = utility::bvh<primitive>::make(boxes);
                     if (make_result) {
-                        this->cull_bvh_ = std::move(make_result).value();
+                        this->cull_bvh = std::move(make_result).value();
                     }
                 } else {
-                    this->cull_bvh_ = std::nullopt;
+                    this->cull_bvh = std::nullopt;
                 }
-                this->bvh_dirty_ = false;
+                this->bvh_dirty = false;
             }
 
-            if (this->camera_moved_ || scene_changed_this_frame || this->cull_visible_.empty()) {
+            if (this->camera_moved || scene_changed_this_frame || this->cull_visible.empty()) {
                 // camera moved or the scene changed: re-run frustum cull against the current BVH
                 std::vector<primitive const*> visible;
                 visible.reserve(frame_leaves.size());
@@ -779,23 +779,23 @@ namespace vulkan {
                         visible.push_back(leaf);
                     }
                 }
-                if (this->cull_bvh_.has_value()) {
+                if (this->cull_bvh.has_value()) {
                     utility::frustum const view_frustum = utility::make_frustum(ubo.proj * ubo.view);
-                    auto const inside = this->cull_bvh_->frustum_cull(view_frustum);
+                    auto const inside = this->cull_bvh->frustum_cull(view_frustum);
                     for (auto const* node : inside) {
                         visible.push_back(node->extra_data);
                     }
                 }
-                this->cull_visible_ = std::move(visible);
-                this->camera_key_ = key;
+                this->cull_visible = std::move(visible);
+                this->camera_key = key;
             }
-            visible_leaves = this->cull_visible_;
+            visible_leaves = this->cull_visible;
             culled_count = frame_leaves.size() - visible_leaves.size();
             // log the cull ratio (visible/total) every 30 frames
             static uint32_t cull_log_frame = 0;
             if (++cull_log_frame >= 30) {
                 utility::log("frustum cull: {}/{} primitives visible ({} culled){}{}", visible_leaves.size(), frame_leaves.size(), culled_count,
-                             (this->camera_moved_ || scene_changed_this_frame) ? "" : ", result reused (camera + scene static)",
+                             (this->camera_moved || scene_changed_this_frame) ? "" : ", result reused (camera + scene static)",
                              scene_changed_this_frame ? ", bvh rebuilt" : "");
                 cull_log_frame = 0;
             }
@@ -1085,8 +1085,8 @@ namespace vulkan {
     }
 
     void runtime::set_scene_transform(glm::mat4 const& transform) {
-        this->scene_transform_ = transform;
-        this->bvh_dirty_ = true; // whole-scene transform changes every leaf's world AABB
+        this->scene_transform = transform;
+        this->bvh_dirty = true; // whole-scene transform changes every leaf's world AABB
     }
 
     void runtime::log_scene_tree() const noexcept {
@@ -1107,10 +1107,10 @@ namespace vulkan {
                 self(self, child, depth + 1);
             }
         };
-        for (scene_tree::scene_node const& root : this->scene_.roots) {
+        for (scene_tree::scene_node const& root : this->scene.roots) {
             walk(walk, root, 0);
         }
-        utility::log("runtime scene tree: {} roots, {} nodes ({} leaf primitives), max depth {}", this->scene_.roots.size(), total_nodes, leaf_count, max_depth);
+        utility::log("runtime scene tree: {} roots, {} nodes ({} leaf primitives), max depth {}", this->scene.roots.size(), total_nodes, leaf_count, max_depth);
         for (std::string const& line : lines) {
             utility::log("  {}", line);
         }
@@ -1204,8 +1204,8 @@ namespace vulkan {
         leaf.name = std::string(pipeline_name);
         leaf.local = info.model_matrix;           // world = identity * local (root)
         leaf.primitive_leaf = std::move(created); // a vulkan::primitive is a scene_tree::primitive
-        this->scene_.roots.push_back(std::move(leaf));
-        this->bvh_dirty_ = true; // new leaf -> culling BVH must be rebuilt
+        this->scene.roots.push_back(std::move(leaf));
+        this->bvh_dirty = true; // new leaf -> culling BVH must be rebuilt
         return result;
     }
 
@@ -1237,8 +1237,8 @@ namespace vulkan {
         leaf.name = "pbr";
         leaf.primitive_leaf = std::move(result); // a vulkan::primitive is a scene_tree::primitive
         primitive* const created = static_cast<primitive*>(leaf.primitive_leaf.get());
-        this->scene_.roots.push_back(std::move(leaf));
-        this->bvh_dirty_ = true; // new leaf -> culling BVH must be rebuilt
+        this->scene.roots.push_back(std::move(leaf));
+        this->bvh_dirty = true; // new leaf -> culling BVH must be rebuilt
         return created;
     }
 
@@ -1248,7 +1248,7 @@ namespace vulkan {
             return {};
         }
         std::vector<primitive const*> result;
-        for (scene_tree::scene_node const& root : this->scene_.roots) {
+        for (scene_tree::scene_node const& root : this->scene.roots) {
             // collect every leaf whose primitive binds the requested pipeline (models record their
             // pipeline in primitive->pipeline; the scene tree just organizes them)
             scene_tree::visit_primitives(root, glm::mat4(1.0f), [&](scene_tree::scene_node const& n, glm::mat4 const&) {
@@ -1270,7 +1270,7 @@ namespace vulkan {
         // (imported scenes nest leaves under hierarchy nodes; make_primitive attaches them at roots).
         // A node whose leaf matches is stripped of that leaf; it (or an ancestor) is dropped only
         // when nothing remains below it, so models of other pipelines in the subtree survive.
-        auto& roots = this->scene_.roots;
+        auto& roots = this->scene.roots;
         auto const matches = [unwanted](scene_tree::scene_node const& node) {
             return node.primitive_leaf != nullptr && static_cast<primitive const*>(node.primitive_leaf.get())->pipeline == unwanted;
         };
@@ -1296,7 +1296,7 @@ namespace vulkan {
                 ++it;
             }
         }
-        this->bvh_dirty_ = true; // leaves removed -> culling BVH must be rebuilt
+        this->bvh_dirty = true; // leaves removed -> culling BVH must be rebuilt
     }
 
     void runtime::collect_leaf_primitives(scene_tree::scene_node const& node, std::vector<primitive const*>& out) const {

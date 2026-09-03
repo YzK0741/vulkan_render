@@ -685,21 +685,21 @@ namespace gltf {
     // ---- gltf::scenes iteration: flatten scene -> node -> mesh -> primitive ----
 
     scene_iterator::scene_iterator(scenes const& owner)
-        : scenes_(&owner)
-        , exhausted_(false) {
+        : iterating_scene(&owner)
+        , exhausted(false) {
         this->advance();
     }
 
     scene_iterator::reference scene_iterator::operator*() const noexcept {
-        auto const& owner = *this->scenes_;
+        auto const& owner = *this->iterating_scene;
         auto const& prim = owner.scene[this->scene_i].nodes[this->node_i].meshes[this->mesh_i].primitives[this->prim_i];
-        this->current_.primitive = &prim;
-        this->current_.transform_matrix = owner.scene[this->scene_i].nodes[this->node_i].transform_matrix;
-        return this->current_;
+        this->current.primitive = &prim;
+        this->current.transform_matrix = owner.scene[this->scene_i].nodes[this->node_i].transform_matrix;
+        return this->current;
     }
 
     scene_iterator::pointer scene_iterator::operator->() const noexcept {
-        return &this->current_;
+        return &this->current;
     }
 
     scene_iterator& scene_iterator::operator++() {
@@ -713,11 +713,11 @@ namespace gltf {
     }
 
     void scene_iterator::advance() {
-        if (this->scenes_ == nullptr || this->exhausted_) {
-            this->exhausted_ = true;
+        if (this->iterating_scene == nullptr || this->exhausted) {
+            this->exhausted = true;
             return;
         }
-        auto const& owner = *this->scenes_;
+        auto const& owner = *this->iterating_scene;
         while (this->scene_i < owner.scene.size()) {
             auto const& s = owner.scene[this->scene_i];
             if (this->node_i >= s.nodes.size()) {
@@ -739,7 +739,7 @@ namespace gltf {
             }
             return; // (scene_i, node_i, mesh_i, prim_i) is a valid drawable primitive
         }
-        this->exhausted_ = true;
+        this->exhausted = true;
     }
 
     scene_iterator scenes::begin() const {
@@ -753,46 +753,46 @@ namespace gltf {
     // ---- gltf::scenes node-tree iteration (structural view, includes transform-only nodes) ----
 
     void scene_node_iterator::push_next_root() {
-        while (this->scene_i_ < this->owner_->scene.size()) {
-            gltf::scene const& sc = this->owner_->scene[this->scene_i_];
-            if (this->root_i_ < sc.root_indices.size()) {
-                this->stack_.push_back({sc.root_indices[this->root_i_++], 0});
+        while (this->scene_i < this->iterating_scene->scene.size()) {
+            gltf::scene const& sc = this->iterating_scene->scene[this->scene_i];
+            if (this->root_i < sc.root_indices.size()) {
+                this->stack.push_back({sc.root_indices[this->root_i++], 0});
                 return;
             }
-            ++this->scene_i_;
-            this->root_i_ = 0;
+            ++this->scene_i;
+            this->root_i = 0;
         }
-        this->exhausted_ = true;
+        this->exhausted = true;
     }
 
     void scene_node_iterator::descend() {
-        while (!this->exhausted_) {
-            if (this->stack_.empty()) {
+        while (!this->exhausted) {
+            if (this->stack.empty()) {
                 this->push_next_root();
-                if (this->exhausted_) {
+                if (this->exhausted) {
                     return;
                 }
                 return; // visiting the fresh root now
             }
-            frame& top = this->stack_.back();
-            gltf::node const& node = this->owner_->scene[this->scene_i_].nodes[top.node_i];
+            frame& top = this->stack.back();
+            gltf::node const& node = this->iterating_scene->scene[this->scene_i].nodes[top.node_i];
             if (top.next_child < node.children.size()) {
                 std::size_t const child = node.children[top.next_child++];
-                this->stack_.push_back({child, 0});
+                this->stack.push_back({child, 0});
                 return; // visiting the child now
             }
-            this->stack_.pop_back(); // this node's subtree done; retry its parent / next root
+            this->stack.pop_back(); // this node's subtree done; retry its parent / next root
         }
     }
 
     scene_node_iterator::scene_node_iterator(scenes const& owner)
-        : owner_(&owner)
-        , exhausted_(false) {
+        : iterating_scene(&owner)
+        , exhausted(false) {
         this->push_next_root(); // land on the first root of the first scene (or exhaust)
     }
 
     scene_node_iterator::reference scene_node_iterator::operator*() const noexcept {
-        return &this->owner_->scene[this->scene_i_].nodes[this->stack_.back().node_i];
+        return &this->iterating_scene->scene[this->scene_i].nodes[this->stack.back().node_i];
     }
 
     scene_node_iterator::pointer scene_node_iterator::operator->() const noexcept {
@@ -809,19 +809,19 @@ namespace gltf {
     }
 
     std::string_view scene_node_iterator::get_name() const noexcept {
-        return this->owner_->scene[this->scene_i_].nodes[this->stack_.back().node_i].name;
+        return this->iterating_scene->scene[this->scene_i].nodes[this->stack.back().node_i].name;
     }
 
     glm::mat4 scene_node_iterator::get_local_transform() const noexcept {
-        return this->owner_->scene[this->scene_i_].nodes[this->stack_.back().node_i].local_transform;
+        return this->iterating_scene->scene[this->scene_i].nodes[this->stack.back().node_i].local_transform;
     }
 
     std::size_t scene_node_iterator::get_depth() const noexcept {
-        return this->stack_.size() - 1;
+        return this->stack.size() - 1;
     }
 
     std::size_t scene_node_iterator::get_drawable_count() const noexcept {
-        gltf::node const& node = this->owner_->scene[this->scene_i_].nodes[this->stack_.back().node_i];
+        gltf::node const& node = this->iterating_scene->scene[this->scene_i].nodes[this->stack.back().node_i];
         std::size_t count = 0;
         for (gltf::mesh const& mesh : node.meshes) {
             count += mesh.primitives.size();
@@ -907,43 +907,43 @@ namespace gltf {
     }
 
     drawable_iterator& drawable_iterator::operator++() {
-        ++this->inner_;
-        this->built_ = false; // geometry of the next drawable is rebuilt lazily
+        ++this->inner;
+        this->built = false; // geometry of the next drawable is rebuilt lazily
         return *this;
     }
 
     void drawable_iterator::ensure_built() const {
-        if (this->built_) {
+        if (this->built) {
             return;
         }
-        built_mesh const mesh = build_mesh(*((*this->inner_).primitive));
+        built_mesh const mesh = build_mesh(*((*this->inner).primitive));
         auto const* const first = reinterpret_cast<unsigned char const*>(mesh.vertices.data());
-        this->vertex_bytes_.assign(first, first + mesh.vertices.size() * sizeof(vertex));
-        this->vertex_stride_ = sizeof(vertex);
-        this->vertex_count_ = static_cast<uint32_t>(mesh.vertices.size());
-        this->index_bytes_ = mesh.index_data;
-        this->index_width_ = mesh.index_width;
-        this->index_count_ = mesh.index_count;
-        this->built_ = true;
+        this->vertex_bytes.assign(first, first + mesh.vertices.size() * sizeof(vertex));
+        this->vertex_stride = sizeof(vertex);
+        this->vertex_count = static_cast<uint32_t>(mesh.vertices.size());
+        this->index_bytes = mesh.index_data;
+        this->index_width = mesh.index_width;
+        this->index_count = mesh.index_count;
+        this->built = true;
     }
 
     vertex_view drawable_iterator::get_vertex() const {
         this->ensure_built();
-        return vertex_view{.data = this->vertex_bytes_, .stride = this->vertex_stride_, .count = this->vertex_count_};
+        return vertex_view{.data = this->vertex_bytes, .stride = this->vertex_stride, .count = this->vertex_count};
     }
 
     index_view drawable_iterator::get_index() const {
         this->ensure_built();
-        return index_view{.data = this->index_bytes_, .width = this->index_width_, .count = this->index_count_};
+        return index_view{.data = this->index_bytes, .width = this->index_width, .count = this->index_count};
     }
 
     glm::mat4 drawable_iterator::get_transform() const {
-        return (*this->inner_).transform_matrix;
+        return (*this->inner).transform_matrix;
     }
 
     resolved_material const* drawable_iterator::current_material() const {
-        uint32_t const index = (*this->inner_).primitive->material_index;
-        return index < this->materials_.size() ? &this->materials_[index] : nullptr;
+        uint32_t const index = (*this->inner).primitive->material_index;
+        return index < this->materials.size() ? &this->materials[index] : nullptr;
     }
 
     image_view drawable_iterator::slot(int const i) const {

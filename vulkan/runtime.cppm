@@ -68,14 +68,14 @@ namespace vulkan {
         std::vector<uint64_t> camera_buffer_handles = {};
         std::vector<void*> camera_mapped = {};
         // texture registry: flat entries of the set 0 binding 1 array (raw handles); the owning
-        // views / vma handles live in the vectors below. texture_slot_cache_ deduplicates uploads:
+        // views / vma handles live in the vectors below. texture_slot_cache deduplicates uploads:
         // several materials sharing one glTF texture (same decoded bytes) all point at the same
         // array slot instead of uploading a copy per material.
         std::vector<VkImageView> texture_array_views = {};
         std::vector<vk_image_view> owned_texture_views = {};
         std::vector<uint64_t> owned_texture_handles = {};
         uint32_t white_texture_index = 0;
-        std::map<std::tuple<unsigned char const*, std::size_t, VkFormat>, uint32_t> texture_slot_cache_ = {};
+        std::map<std::tuple<unsigned char const*, std::size_t, VkFormat>, uint32_t> texture_slot_cache = {};
         // scene-wide IBL (bindings 2-4): prefiltered env / irradiance / BRDF LUT, uploaded once
         std::vector<vk_image_view> ibl_views = {};
         std::vector<uint64_t> ibl_handles = {};
@@ -121,23 +121,23 @@ namespace vulkan {
         // walks the tree once per frame: update_world() accumulates world matrices into each
         // leaf (primitive::set_world -> push.model), then each pipeline draws the leaves bound to
         // it (primitive::draw stays polymorphic). This replaces the old flat per-pipeline primitive list.
-        scene_tree::scene scene_ = {}; // single scene; roots own every primitive leaf
+        scene_tree::scene scene = {}; // single scene; roots own every primitive leaf
         // optional whole-scene transform applied on top of every root before local transforms
         // (programmatic grouping / demo rotation; identity by default = no visual change)
-        glm::mat4 scene_transform_ = glm::mat4(1.0f);
+        glm::mat4 scene_transform = glm::mat4(1.0f);
         // frustum culling of the main pass (BVH over per-leaf world AABBs vs the camera frustum);
         // enabled by default, disable for verification / debugging
-        bool frustum_culling_ = true;
-        // culling caches: the BVH is rebuilt only when the scene changed (bvh_dirty_), and the
-        // culled result is reused while neither the scene nor the camera moved. bvh_ holds the
-        // last built tree (world AABBs are captured at build time and stay valid as long as the
-        // scene is unchanged: update_world rewrites the same matrices each frame).
-        std::optional<utility::bvh<primitive>> cull_bvh_ = std::nullopt;
-        bool bvh_dirty_ = true;                           // scene structure/transforms changed -> rebuild
-        std::vector<primitive const*> cull_visible_ = {}; // last culled result (main-pass set)
+        bool frustum_culling = true;
+        // culling caches: the BVH is rebuilt only when the scene changed (bvh_dirty), and the
+        // culled result is reused while neither the scene nor the camera moved. cull_bvh holds
+        // the last built tree (world AABBs are captured at build time and stay valid as long as
+        // the scene is unchanged: update_world rewrites the same matrices each frame).
+        std::optional<utility::bvh<primitive>> cull_bvh = std::nullopt;
+        bool bvh_dirty = true;                           // scene structure/transforms changed -> rebuild
+        std::vector<primitive const*> cull_visible = {}; // last culled result (main-pass set)
         // camera identity for result reuse: yaw, pitch, distance, target.xyz (7 floats)
-        std::array<float, 7> camera_key_ = {};
-        bool camera_moved_ = true; // camera key differs from the last cull frame
+        std::array<float, 7> camera_key = {};
+        bool camera_moved = true; // camera key differs from the last cull frame
         // one command buffer per frame slot, used and reused by render_frame()
         std::vector<vk_command_buffer> command_buffers;
         // filtered view over vulkan_core, exposed via operator-> (external code never sees the raw core)
@@ -287,18 +287,18 @@ namespace vulkan {
          * @param enabled true (default) culls leaves outside the view frustum before drawing
          */
         void set_frustum_culling(bool enabled) noexcept {
-            this->frustum_culling_ = enabled;
+            this->frustum_culling = enabled;
         }
 
         /**
          * @ingroup vulkan_runtime
          * @brief mark the scene tree as changed (structure or per-node local transforms edited
-         *        through scene(), e.g. programmatic animation): the culling BVH is rebuilt on
+         *        through get_scene(), e.g. programmatic animation): the culling BVH is rebuilt on
          *        the next frame. Internal scene mutations (import / make / clear /
          *        set_scene_transform) invalidate automatically.
          */
         void scene_changed() noexcept {
-            this->bvh_dirty_ = true;
+            this->bvh_dirty = true;
         }
 
         /**
@@ -314,15 +314,15 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief access the scene tree (roots + children + per-node local transforms) for
          *        programmatic whole-group / subtree transforms
-         * @note the tree structure is fixed after import (no reallocation of scene_ or the
+         * @note the tree structure is fixed after import (no reallocation of scene or the
          *       children vectors while nodes are only edited in place), so pointers/references
          *       into the tree stay valid until the next make_primitive / import / clear call
          */
-        [[nodiscard]] scene_tree::scene& scene() noexcept {
-            return this->scene_;
+        [[nodiscard]] scene_tree::scene& get_scene() noexcept {
+            return this->scene;
         }
-        [[nodiscard]] scene_tree::scene const& scene() const noexcept {
-            return this->scene_;
+        [[nodiscard]] scene_tree::scene const& get_scene() const noexcept {
+            return this->scene;
         }
 
         /**
@@ -485,8 +485,8 @@ namespace vulkan {
                 }
                 // attach under the parent (depth-1) or as a new scene root
                 if (depth == 0) {
-                    this->scene_.roots.push_back(std::move(node));
-                    ancestors.assign(1, &this->scene_.roots.back());
+                    this->scene.roots.push_back(std::move(node));
+                    ancestors.assign(1, &this->scene.roots.back());
                 } else {
                     if (ancestors.size() != depth) {
                         utility::panic(std::source_location::current(), "node tree stream: broken ancestor stack");
@@ -505,7 +505,7 @@ namespace vulkan {
                     }
                 }
             }
-            this->bvh_dirty_ = true; // new leaves attached -> culling BVH must be rebuilt
+            this->bvh_dirty = true; // new leaves attached -> culling BVH must be rebuilt
             result.material_count = this->material_count - materials_before;
             return result;
         }

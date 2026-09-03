@@ -169,15 +169,15 @@ namespace utility {
         std::unique_ptr<bvh_node<T>> root;
         // normalization for morton coding: world-space midpoints are mapped into [0,1]^3 by
         // (mid - origin) * scale so the morton quantizer works for AABBs anywhere in space
-        glm::vec3 origin_ = glm::vec3(0.0f);
-        glm::vec3 scale_ = glm::vec3(1.0f);
+        glm::vec3 origin = glm::vec3(0.0f);
+        glm::vec3 scale = glm::vec3(1.0f);
 
         /** @brief map a world-space midpoint into [0,1]^3 for morton coding */
         [[nodiscard]] glm::vec3 normalize(glm::vec3 const& midpoint) const {
-            glm::vec3 const normalized = (midpoint - this->origin_) * this->scale_;
+            glm::vec3 const normalized = (midpoint - this->origin) * this->scale;
             return glm::clamp(normalized, glm::vec3(0.0f), glm::vec3(1.0f));
         }
-        /** @brief compute origin_/scale_ from a set of leaf AABBs (scene extent) */
+        /** @brief compute origin/scale from a set of leaf AABBs (scene extent) */
         void set_extent(std::vector<bvh_node<T>> const& leaf_nodes) {
             glm::vec3 min = glm::vec3(std::numeric_limits<float>::infinity());
             glm::vec3 max = glm::vec3(-std::numeric_limits<float>::infinity());
@@ -185,9 +185,9 @@ namespace utility {
                 min = glm::min(min, leaf.aabb.min);
                 max = glm::max(max, leaf.aabb.max);
             }
-            this->origin_ = min;
+            this->origin = min;
             glm::vec3 const extent = glm::max(max - min, glm::vec3(1e-6f));
-            this->scale_ = 1.0f / extent;
+            this->scale = 1.0f / extent;
         }
 
         /**
@@ -312,7 +312,7 @@ namespace utility {
             }
             std::ranges::sort(leaves, [](auto const& a, auto const& b) { return a.code < b.code; });
 
-            auto build_result = build_from_leaves(leaves, result.origin_, result.scale_);
+            auto build_result = build_from_leaves(leaves, result.origin, result.scale);
 
             if (!build_result) {
                 return fail(build_result.error());
@@ -342,7 +342,7 @@ namespace utility {
                 leaf.code = std::move(morton).value();
             }
             std::ranges::sort(this->leaves, [](auto const& a, auto const& b) { return a.code < b.code; });
-            auto build_result = build_from_leaves(this->leaves, this->origin_, this->scale_);
+            auto build_result = build_from_leaves(this->leaves, this->origin, this->scale);
 
             if (!build_result) {
                 return;

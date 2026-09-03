@@ -327,22 +327,22 @@ namespace gltf {
         void operator++(int);
 
         friend bool operator==(scene_iterator const& a, scene_iterator const& b) noexcept {
-            if (a.exhausted_ || b.exhausted_) {
-                return a.exhausted_ == b.exhausted_;
+            if (a.exhausted || b.exhausted) {
+                return a.exhausted == b.exhausted;
             }
-            return a.scenes_ == b.scenes_ && a.scene_i == b.scene_i && a.node_i == b.node_i && a.mesh_i == b.mesh_i && a.prim_i == b.prim_i;
+            return a.iterating_scene == b.iterating_scene && a.scene_i == b.scene_i && a.node_i == b.node_i && a.mesh_i == b.mesh_i && a.prim_i == b.prim_i;
         }
 
     private:
-        void advance(); // move to the next primitive, or set exhausted_
+        void advance(); // move to the next primitive, or set exhausted
 
-        scenes const* scenes_ = nullptr;
+        scenes const* iterating_scene = nullptr;
         size_t scene_i = 0;
         size_t node_i = 0;
         size_t mesh_i = 0;
         size_t prim_i = 0;
-        mutable drawable_ref current_ = {}; // operator* result cache (valid until ++)
-        bool exhausted_ = true;             // default = end(); begin() clears it before advancing
+        mutable drawable_ref current = {}; // operator* result cache (valid until ++)
+        bool exhausted = true;             // default = end(); begin() clears it before advancing
     };
 
     /**
@@ -381,15 +381,15 @@ namespace gltf {
         [[nodiscard]] std::size_t get_drawable_count() const noexcept; // primitives hanging off this node
 
         friend bool operator==(scene_node_iterator const& a, scene_node_iterator const& b) noexcept {
-            if (a.exhausted_ || b.exhausted_) {
-                return a.exhausted_ == b.exhausted_;
+            if (a.exhausted || b.exhausted) {
+                return a.exhausted == b.exhausted;
             }
-            return a.owner_ == b.owner_ && a.scene_i_ == b.scene_i_ && a.stack_ == b.stack_;
+            return a.iterating_scene == b.iterating_scene && a.scene_i == b.scene_i && a.stack == b.stack;
         }
 
     private:
         // DFS state: stack of {node index in the scene's pool, next child position to descend
-        // into}; the top of the stack is the node currently being visited. root_i_ tracks which
+        // into}; the top of the stack is the node currently being visited. root_i tracks which
         // root of the current scene has been pushed last (roots are visited in root_indices order).
         struct frame {
             std::size_t node_i = 0;
@@ -398,14 +398,14 @@ namespace gltf {
                 return a.node_i == b.node_i && a.next_child == b.next_child;
             }
         };
-        void push_next_root(); // advance to the next scene root, or set exhausted_
+        void push_next_root(); // advance to the next scene root, or set exhausted
         void descend();        // move to the next node in DFS pre-order
 
-        scenes const* owner_ = nullptr;
-        std::size_t scene_i_ = 0;
-        std::size_t root_i_ = 0; // next root of the current scene to visit (index into root_indices)
-        std::vector<frame> stack_ = {};
-        bool exhausted_ = true; // default = end(); begin() clears it before advancing
+        scenes const* iterating_scene = nullptr;
+        std::size_t scene_i = 0;
+        std::size_t root_i = 0; // next root of the current scene to visit (index into root_indices)
+        std::vector<frame> stack = {};
+        bool exhausted = true; // default = end(); begin() clears it before advancing
     };
 
     /**
@@ -529,14 +529,14 @@ namespace gltf {
         drawable_iterator() = default; // end
 
         drawable_iterator(gltf::scenes const& scenes, std::span<resolved_material const> materials)
-            : inner_(scenes)
-            , materials_(materials) {
+            : inner(scenes)
+            , materials(materials) {
         }
 
         drawable_iterator& operator++();
 
         friend bool operator!=(drawable_iterator const& a, drawable_iterator const& b) {
-            return a.inner_ != b.inner_;
+            return a.inner != b.inner;
         }
 
         vertex_view get_vertex() const;
@@ -555,15 +555,15 @@ namespace gltf {
         resolved_material const* current_material() const;
         image_view slot(int const i) const;
 
-        gltf::scene_iterator inner_;
-        std::span<resolved_material const> materials_ = {};
+        gltf::scene_iterator inner;
+        std::span<resolved_material const> materials = {};
         // scratch geometry of the current drawable (built lazily, valid until ++)
-        mutable std::vector<unsigned char> vertex_bytes_ = {};
-        mutable std::vector<unsigned char> index_bytes_ = {};
-        mutable uint32_t vertex_stride_ = 0;
-        mutable uint32_t vertex_count_ = 0;
-        mutable unsigned char index_width_ = 2; // 2 or 4 bytes per index
-        mutable uint32_t index_count_ = 0;
-        mutable bool built_ = false;
+        mutable std::vector<unsigned char> vertex_bytes = {};
+        mutable std::vector<unsigned char> index_bytes = {};
+        mutable uint32_t vertex_stride = 0;
+        mutable uint32_t vertex_count = 0;
+        mutable unsigned char index_width = 2; // 2 or 4 bytes per index
+        mutable uint32_t index_count = 0;
+        mutable bool built = false;
     };
 } // namespace gltf

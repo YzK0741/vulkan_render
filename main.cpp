@@ -343,7 +343,7 @@ int main(int argc, char** argv) {
     if (spin_subtree) {
         // find the first node carrying a primitive leaf (DFS pre-order over all roots)
         std::vector<vulkan::scene_tree::scene_node*> stack;
-        for (vulkan::scene_tree::scene_node& root : runtime.scene().roots) {
+        for (vulkan::scene_tree::scene_node& root : runtime.get_scene().roots) {
             stack.push_back(&root);
         }
         while (!stack.empty() && subtree_node == nullptr) {
