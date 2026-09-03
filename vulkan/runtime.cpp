@@ -36,7 +36,7 @@ namespace {
         float const dy = static_cast<float>(y - camera.last_y);
         camera.last_x = x;
         camera.last_y = y;
-        camera.yaw += dx * sensitivity; // drag direction matches the model rotation
+        camera.yaw += dx * sensitivity; // drag direction matches the primitive rotation
         camera.pitch -= dy * sensitivity;
         camera.pitch = std::clamp(camera.pitch, -1.5f, 1.5f); // avoid flipping
     }
@@ -73,7 +73,7 @@ namespace vulkan {
     // declaration order with scene_/pipelines already empty.
     runtime::~runtime() {
         for (scene_tree::scene_node& root : this->scene_.roots) {
-            this->destroy_leaf_models(root, this->vulkan_core.vma);
+            this->destroy_leaf_primitives(root, this->vulkan_core.vma);
         }
         this->scene_.roots.clear();
         this->pipelines.clear();
@@ -109,7 +109,7 @@ namespace vulkan {
     void runtime::init_scene_resources() {
         // Camera UBO: one buffer per frame slot, mapped for direct writes; all models reference
         // these buffers through the shared scene set, so one memcpy per frame replaces the old
-        // per-model per-frame UBO updates
+        // per-primitive per-frame UBO updates
         this->camera_buffer_handles.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         this->camera_mapped.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
@@ -413,7 +413,7 @@ namespace vulkan {
         this->write_ibl_bindings();
     }
 
-    uint32_t runtime::register_material(model_create_info const& info) {
+    uint32_t runtime::register_material(primitive_create_info const& info) {
         // ---- 1. Upload the 5 texture slots into the shared array; missing ones use the white fallback ----
         if (this->texture_array_views.size() + 5 > vulkan::scene_texture_capacity) {
             utility::panic("scene texture array capacity exceeded");
@@ -472,7 +472,7 @@ namespace vulkan {
         vkUpdateDescriptorSets(this->vulkan_core.device, write_count, writes.data(), 0, nullptr);
 
         // ---- 2. Append one material record: texture indices + presence flags; factors keep
-        //         their identity defaults (extend model_create_info to pass custom factors) ----
+        //         their identity defaults (extend primitive_create_info to pass custom factors) ----
         if (this->material_count >= vulkan::material_capacity) {
             utility::panic("material table capacity exceeded");
         }
@@ -613,9 +613,9 @@ namespace vulkan {
         }
         vkResetFences(vk.device, 1, &vk.in_flight_fences[frame_slot]);
 
-        // 5. Update the shared camera UBO once: every model references these buffers through the
+        // 5. Update the shared camera UBO once: every primitive references these buffers through the
         //    scene set, so one memcpy (+ one update-after-bind descriptor write) replaces the old
-        //    per-model per-frame UBO updates
+        //    per-primitive per-frame UBO updates
         float const aspect = static_cast<float>(vk.swap_chain_extent.width) / static_cast<float>(vk.swap_chain_extent.height);
         camera_ubo const ubo = make_orbit_camera_ubo(this->camera.yaw, this->camera.pitch, this->camera.distance, this->camera.target, aspect);
         if (this->camera_mapped[frame_slot] != nullptr) {
@@ -668,16 +668,16 @@ namespace vulkan {
         for (scene_tree::scene_node& root : this->scene_.roots) {
             scene_tree::update_world(root, this->scene_transform_);
         }
-        // Collect the drawable leaves once (DFS over the whole scene): the shadow pass draws all
+        // Collect the primitive leaves once (DFS over the whole scene): the shadow pass draws all
         // of them, the main pass draws the subset bound to each pipeline
-        std::vector<model const*> frame_leaves;
+        std::vector<primitive const*> frame_leaves;
         for (scene_tree::scene_node const& root : this->scene_.roots) {
-            this->collect_leaf_models(root, frame_leaves);
+            this->collect_leaf_primitives(root, frame_leaves);
         }
 
         // ---- Shadow pass: render the scene's depth from the light into this slot's shadow map.
         //      Drawn before the main pass; the depth-only pipeline shares the flat scene layout
-        //      and the model draw() path (same vertex buffers / push constants), so the shadow
+        //      and the primitive draw() path (same vertex buffers / push constants), so the shadow
         //      pass is just "bind the shadow pipeline, then draw the same models".
         //      Dynamic rendering only: depth-only rendering needs no color attachment, which the
         //      classic render-pass fallback cannot express (make_shadow_pipeline already failed
@@ -725,7 +725,7 @@ namespace vulkan {
                 vkCmdBeginRendering(*command_buffer, &shadow_rendering_info);
 
                 // 6c. bind the shared scene set (the light UBO binding 7) and the shadow pipeline,
-                //     then draw every model exactly like the main pass (polymorphic model::draw)
+                //     then draw every primitive exactly like the main pass (polymorphic primitive::draw)
                 if (this->scene_set.get() != VK_NULL_HANDLE) {
                     VkDescriptorSet const scene_set_handle = *this->scene_set;
                     vkCmdBindDescriptorSets(*command_buffer,
@@ -739,7 +739,7 @@ namespace vulkan {
                 }
                 this->shadow_pipeline->begin_pipeline(*command_buffer);
                 // draw every scene-tree leaf (the whole scene casts shadows)
-                for (model const* m : frame_leaves) {
+                for (primitive const* m : frame_leaves) {
                     m->draw(*command_buffer); // depth-only: shadow.vert transforms into light space
                 }
                 vkCmdEndRendering(*command_buffer);
@@ -853,11 +853,11 @@ namespace vulkan {
         }
 
         // Main pass: draw the collected leaves, grouping by their pipeline (each group binds its
-        // pipeline once — same batching as the old flat model list)
+        // pipeline once — same batching as the old flat primitive list)
         for (auto const& [pipeline_name, pipeline] : this->pipelines) {
             vk_pipeline const* const wanted = &pipeline;
             bool any = false;
-            for (model const* m : frame_leaves) {
+            for (primitive const* m : frame_leaves) {
                 if (m->pipeline == wanted) {
                     if (!any) {
                         pipeline.begin_pipeline(*command_buffer);
@@ -970,10 +970,10 @@ namespace vulkan {
         auto const walk = [&](auto&& self, scene_tree::scene_node const& node, size_t const depth) -> void {
             ++total_nodes;
             max_depth = std::max(max_depth, depth);
-            if (node.drawable_leaf != nullptr) {
+            if (node.primitive_leaf != nullptr) {
                 ++leaf_count;
             }
-            std::string marker = node.drawable_leaf != nullptr ? " [model]" : "";
+            std::string marker = node.primitive_leaf != nullptr ? " [primitive]" : "";
             lines.push_back(std::format("{}{}{}", std::string(depth * 2, ' '),
                                         node.name.empty() ? std::string("<unnamed>") : node.name, marker));
             for (scene_tree::scene_node const& child : node.children) {
@@ -983,7 +983,7 @@ namespace vulkan {
         for (scene_tree::scene_node const& root : this->scene_.roots) {
             walk(walk, root, 0);
         }
-        utility::log("runtime scene tree: {} roots, {} nodes ({} leaf models), max depth {}", this->scene_.roots.size(), total_nodes, leaf_count, max_depth);
+        utility::log("runtime scene tree: {} roots, {} nodes ({} leaf primitives), max depth {}", this->scene_.roots.size(), total_nodes, leaf_count, max_depth);
         for (std::string const& line : lines) {
             utility::log("  {}", line);
         }
@@ -1004,14 +1004,14 @@ namespace vulkan {
         return it == this->pipelines.end() ? nullptr : &it->second;
     }
 
-    std::unique_ptr<model> runtime::create_model(std::string_view const pipeline_name, model_create_info const& info) {
+    std::unique_ptr<primitive> runtime::create_primitive(std::string_view const pipeline_name, primitive_create_info const& info) {
         vk_pipeline const* pipeline = this->get_pipeline(pipeline_name);
         if (pipeline == nullptr) {
             return nullptr;
         }
         this->ensure_scene_set();
 
-        auto result = std::make_unique<normal_draw_model>();
+        auto result = std::make_unique<normal_draw_primitive>();
         result->pipeline = pipeline;
 
         // ---- geometry buffers ----
@@ -1037,7 +1037,7 @@ namespace vulkan {
         result->index_count = info.index_count;
         result->vertex_count = info.vertex_count;
 
-        // ---- material: register textures + append a material record; the model only carries
+        // ---- material: register textures + append a material record; the primitive only carries
         //         the material index (texture indices / factors / flags live in the GPU table) ----
         result->push.material_index = this->register_material(info);
         result->push.model = info.model_matrix;
@@ -1045,24 +1045,24 @@ namespace vulkan {
         return result;
     }
 
-    model* runtime::make_model(std::string_view const pipeline_name, model_create_info const& info) {
-        std::unique_ptr<model> created = this->create_model(pipeline_name, info);
+    primitive* runtime::make_primitive(std::string_view const pipeline_name, primitive_create_info const& info) {
+        std::unique_ptr<primitive> created = this->create_primitive(pipeline_name, info);
         if (created == nullptr) {
             return nullptr;
         }
-        model* const result = created.get();
+        primitive* const result = created.get();
 
-        // attach the model as a new root leaf of the scene tree; the node's name records the
+        // attach the primitive as a new root leaf of the scene tree; the node's name records the
         // pipeline it draws with (render_frame groups leaves by node name / pipeline)
         scene_tree::scene_node leaf;
         leaf.name = std::string(pipeline_name);
-        leaf.local = info.model_matrix;          // world = identity * local (root)
-        leaf.drawable_leaf = std::move(created); // model is a scene_tree::drawable
+        leaf.local = info.model_matrix;           // world = identity * local (root)
+        leaf.primitive_leaf = std::move(created); // a vulkan::primitive is a scene_tree::primitive
         this->scene_.roots.push_back(std::move(leaf));
         return result;
     }
 
-    model* runtime::make_instanced_model(model const& source, std::span<glm::mat4 const> const transforms) {
+    primitive* runtime::make_instanced_primitive(primitive const& source, std::span<glm::mat4 const> const transforms) {
         uint32_t const count = std::min<uint32_t>(static_cast<uint32_t>(transforms.size()), vulkan::instance_capacity);
         if (count == 0 || this->instance_mapped == nullptr || !source.is_valid()) {
             return nullptr;
@@ -1077,7 +1077,7 @@ namespace vulkan {
         // submit fence of a previous frame
         std::memcpy(this->instance_mapped, transforms.data(), static_cast<size_t>(count) * sizeof(glm::mat4));
 
-        auto result = std::make_unique<instanced_draw_model>();
+        auto result = std::make_unique<instanced_draw_primitive>();
         result->pipeline = pipeline;
         result->source = &source; // geometry owner; must stay in this runtime's scene tree
         result->instance_count = count;
@@ -1088,23 +1088,23 @@ namespace vulkan {
 
         scene_tree::scene_node leaf;
         leaf.name = "pbr";
-        leaf.drawable_leaf = std::move(result); // model is a scene_tree::drawable
-        model* const created = static_cast<model*>(leaf.drawable_leaf.get());
+        leaf.primitive_leaf = std::move(result); // a vulkan::primitive is a scene_tree::primitive
+        primitive* const created = static_cast<primitive*>(leaf.primitive_leaf.get());
         this->scene_.roots.push_back(std::move(leaf));
         return created;
     }
 
-    std::vector<model const*> runtime::get_models(std::string_view const pipeline_name) const noexcept {
+    std::vector<primitive const*> runtime::get_primitives(std::string_view const pipeline_name) const noexcept {
         vk_pipeline const* const wanted = this->get_pipeline(pipeline_name);
         if (wanted == nullptr) {
             return {};
         }
-        std::vector<model const*> result;
+        std::vector<primitive const*> result;
         for (scene_tree::scene_node const& root : this->scene_.roots) {
-            // collect every leaf whose model binds the requested pipeline (models record their
-            // pipeline in model->pipeline; the scene tree just organizes them)
-            scene_tree::visit_drawables(root, glm::mat4(1.0f), [&](scene_tree::scene_node const& n, glm::mat4 const&) {
-                auto const* m = static_cast<model const*>(n.drawable_leaf.get());
+            // collect every leaf whose primitive binds the requested pipeline (models record their
+            // pipeline in primitive->pipeline; the scene tree just organizes them)
+            scene_tree::visit_primitives(root, glm::mat4(1.0f), [&](scene_tree::scene_node const& n, glm::mat4 const&) {
+                auto const* m = static_cast<primitive const*>(n.primitive_leaf.get());
                 if (m->pipeline == wanted) {
                     result.push_back(m);
                 }
@@ -1113,18 +1113,18 @@ namespace vulkan {
         return result;
     }
 
-    void runtime::clear_models(std::string_view const pipeline_name) {
+    void runtime::clear_primitives(std::string_view const pipeline_name) {
         vk_pipeline const* const unwanted = this->get_pipeline(pipeline_name);
         if (unwanted == nullptr) {
             return;
         }
-        // DFS remove: erase every leaf model bound to the pipeline, wherever it sits in the tree
-        // (imported scenes nest leaves under hierarchy nodes; make_model attaches them at roots).
+        // DFS remove: erase every leaf primitive bound to the pipeline, wherever it sits in the tree
+        // (imported scenes nest leaves under hierarchy nodes; make_primitive attaches them at roots).
         // A node whose leaf matches is stripped of that leaf; it (or an ancestor) is dropped only
         // when nothing remains below it, so models of other pipelines in the subtree survive.
         auto& roots = this->scene_.roots;
         auto const matches = [unwanted](scene_tree::scene_node const& node) {
-            return node.drawable_leaf != nullptr && static_cast<model const*>(node.drawable_leaf.get())->pipeline == unwanted;
+            return node.primitive_leaf != nullptr && static_cast<primitive const*>(node.primitive_leaf.get())->pipeline == unwanted;
         };
         // prune(node) -> true when the node is now empty (no leaf, no children) and should be dropped
         auto const prune = [&](auto&& self, scene_tree::scene_node& node) -> bool {
@@ -1136,10 +1136,10 @@ namespace vulkan {
                 }
             }
             if (matches(node)) {
-                static_cast<model*>(node.drawable_leaf.get())->destroy(this->vulkan_core.vma);
-                node.drawable_leaf.reset();
+                static_cast<primitive*>(node.primitive_leaf.get())->destroy(this->vulkan_core.vma);
+                node.primitive_leaf.reset();
             }
-            return node.drawable_leaf == nullptr && node.children.empty();
+            return node.primitive_leaf == nullptr && node.children.empty();
         };
         for (auto it = roots.begin(); it != roots.end();) {
             if (prune(prune, *it)) {
@@ -1150,19 +1150,19 @@ namespace vulkan {
         }
     }
 
-    void runtime::collect_leaf_models(scene_tree::scene_node const& node, std::vector<model const*>& out) const {
-        scene_tree::visit_drawables(node, glm::mat4(1.0f), [&out](scene_tree::scene_node const& n, glm::mat4 const&) {
-            out.push_back(static_cast<model const*>(n.drawable_leaf.get()));
+    void runtime::collect_leaf_primitives(scene_tree::scene_node const& node, std::vector<primitive const*>& out) const {
+        scene_tree::visit_primitives(node, glm::mat4(1.0f), [&out](scene_tree::scene_node const& n, glm::mat4 const&) {
+            out.push_back(static_cast<primitive const*>(n.primitive_leaf.get()));
         });
     }
 
-    void runtime::destroy_leaf_models(scene_tree::scene_node& node, vma_allocator& vma) {
+    void runtime::destroy_leaf_primitives(scene_tree::scene_node& node, vma_allocator& vma) {
         for (scene_tree::scene_node& child : node.children) {
-            this->destroy_leaf_models(child, vma);
+            this->destroy_leaf_primitives(child, vma);
         }
-        if (node.drawable_leaf) {
-            static_cast<model*>(node.drawable_leaf.get())->destroy(vma);
-            node.drawable_leaf.reset();
+        if (node.primitive_leaf) {
+            static_cast<primitive*>(node.primitive_leaf.get())->destroy(vma);
+            node.primitive_leaf.reset();
         }
     }
 } // namespace vulkan

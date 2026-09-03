@@ -246,7 +246,7 @@ int main(int argc, char** argv) {
     std::vector<unsigned char> const irr_bytes = vulkan::to_half_rgba(irradiance);
     std::vector<unsigned char> const lut_bytes = vulkan::to_half_rg(brdf_lut);
 
-    // 10. Upload the scene-wide IBL once: shared by every model (bindings 2-4 of the scene set)
+    // 10. Upload the scene-wide IBL once: shared by every primitive (bindings 2-4 of the scene set)
     runtime.set_ibl(vulkan::ibl_input{.prefiltered_env = env_bytes, .irradiance = irr_bytes, .brdf_lut = lut_bytes, .env_size = env_size, .env_mip_count = env_mip_count, .irr_size = 32, .lut_size = 256});
 
     // 11. Batch-import: the runtime drives the traversal itself through two aligned loader
@@ -254,7 +254,7 @@ int main(int argc, char** argv) {
     //     transform-only nodes included, name + local transform per node) and the drawables
     //     of those nodes (gltf::drawable_iterator: geometry/material getters, node-aligned).
     //     The runtime rebuilds the scene tree (node per loader node) and attaches each
-    //     drawable as a leaf model under its node, so whole-group transforms work on the
+    //     drawable as a leaf primitive under its node, so whole-group transforms work on the
     //     imported hierarchy. The orbit camera looks at the origin, so center the scene and
     //     pull it back to fit its radius (same framing as the old single-model fit).
     runtime.camera.distance = scene_radius * 2.75f;
@@ -267,19 +267,19 @@ int main(int argc, char** argv) {
     runtime.log_scene_tree();
 
     // 11b. Enable directional shadow mapping over the imported scene: the shadow frustum frames
-    //      the sphere around where the models actually sit (they were translated by the import
+    //      the sphere around where the primitives actually sit (they were translated by the import
     //      offset above, so their world-space center is scene_sink) with their original radius
     runtime.enable_shadows(scene_sink, scene_radius);
 
     // 12. Optional instancing stress: `vulkan_render <model> <grid_side>` draws the first
     //     imported primitive as a grid_side x grid_side grid in ONE instanced draw call
-    //     (an instanced_draw_model appended to the scene tree — the frame loop is untouched)
+    //     (an instanced_draw_primitive appended to the scene tree — the frame loop is untouched)
     if (argc > 2) {
         int const side = std::atoi(argv[2]);
         if (side > 1) {
-            std::vector<vulkan::model const*> const pbr_models = runtime.get_models("pbr");
-            if (!pbr_models.empty()) {
-                vulkan::model const& source = *pbr_models[0];
+            std::vector<vulkan::primitive const*> const pbr_primitives = runtime.get_primitives("pbr");
+            if (!pbr_primitives.empty()) {
+                vulkan::primitive const& source = *pbr_primitives[0];
                 std::vector<glm::mat4> transforms;
                 transforms.reserve(static_cast<size_t>(side) * side);
                 float const spacing = 2.5f * scene_radius; // keep instances apart: measure draw scaling, not overdraw
@@ -290,7 +290,7 @@ int main(int argc, char** argv) {
                         transforms.push_back(glm::translate(glm::mat4(1.0f), glm::vec3(dx, 0.0f, dz)) * source.push.model);
                     }
                 }
-                runtime.make_instanced_model(source, transforms);
+                runtime.make_instanced_primitive(source, transforms);
                 utility::log("instancing stress: {} x {} grid ({} instances, 1 draw call)", side, side, transforms.size());
             }
         }
@@ -304,11 +304,11 @@ int main(int argc, char** argv) {
     // Optional demo transforms (argv[2] when it is not a grid-side number, or argv[3]):
     //   "spin"          — whole-scene rotation via runtime::set_scene_transform (extra world
     //                     matrix on top of every root; the whole tree moves together).
-    //   "spin-subtree"  — per-node local transform: rotate ONE drawable leaf node around its
+    //   "spin-subtree"  — per-node local transform: rotate ONE primitive leaf node around its
     //                     own position in parent space (the scene tree's per-node local
     //                     transforms make this possible). On the hierarchy asset this spins a
     //                     single helmet in place while its sibling stays still; on the default
-    //                     single-node asset the model spins about the scene sink.
+    //                     single-node asset the primitive spins about the scene sink.
     bool spin_scene = false;
     bool spin_subtree = false;
     char const* const demo = argc > 3 ? argv[3] : (argc > 2 ? argv[2] : nullptr);
@@ -326,7 +326,7 @@ int main(int argc, char** argv) {
     glm::mat4 subtree_local0 = glm::mat4(1.0f);
     glm::vec3 subtree_pivot = glm::vec3(0.0f);
     if (spin_subtree) {
-        // find the first node carrying a drawable leaf (DFS pre-order over all roots)
+        // find the first node carrying a primitive leaf (DFS pre-order over all roots)
         std::vector<vulkan::scene_tree::scene_node*> stack;
         for (vulkan::scene_tree::scene_node& root : runtime.scene().roots) {
             stack.push_back(&root);
@@ -334,7 +334,7 @@ int main(int argc, char** argv) {
         while (!stack.empty() && subtree_node == nullptr) {
             vulkan::scene_tree::scene_node* const node = stack.back();
             stack.pop_back();
-            if (node->drawable_leaf != nullptr) {
+            if (node->primitive_leaf != nullptr) {
                 subtree_node = node;
                 subtree_local0 = node->local;
                 // pivot = where this node sits in parent space (translation column of its local)
@@ -346,7 +346,7 @@ int main(int argc, char** argv) {
             }
         }
         if (subtree_node == nullptr) {
-            utility::log("spin-subtree: scene has no drawable leaf node to rotate");
+            utility::log("spin-subtree: scene has no primitive leaf node to rotate");
         } else {
             utility::log("spin-subtree: rotating node '{}' about its own position", subtree_node->name);
         }
@@ -369,7 +369,7 @@ int main(int argc, char** argv) {
         }
         if (spin_subtree && subtree_node != nullptr) {
             // rotate ONE node's local transform about its own position (pivot in parent space):
-            // the leaf model under it spins in place while sibling nodes stay put — the scene
+            // the leaf primitive under it spins in place while sibling nodes stay put — the scene
             // tree's per-node locals make whole-group AND per-primitive transforms possible.
             spin_angle += 0.6 * std::chrono::duration<double>(std::chrono::steady_clock::now() - last_frame_time).count();
             glm::mat4 const pivot = glm::translate(glm::mat4(1.0f), subtree_pivot);
@@ -401,7 +401,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    // 18. Wait for the GPU to finish; models and pipelines are released by the runtime destructor
+    // 18. Wait for the GPU to finish; primitives and pipelines are released by the runtime destructor
     runtime->wait_idle();
     utility::log("render loop finished");
     return 0;

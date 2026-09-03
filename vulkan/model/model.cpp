@@ -8,15 +8,15 @@ module vulkan.model;
 import vulkan.core;
 
 namespace vulkan {
-    void model::set_world(glm::mat4 const& world) {
-        // the accumulated world transform written by a scene tree walk (scene_tree::drawable
+    void primitive::set_world(glm::mat4 const& world) {
+        // the accumulated world transform written by a scene tree walk (scene_tree::primitive
         // interface); draw() pushes push.model verbatim, so this is all the leaf needs
         this->push.model = world;
     }
 
     // shared recording for draw strategies that render this object's own geometry with its
-    // push constants (normal_draw_model; instanced_draw_model overrides both pieces)
-    void model::bind_geometry_and_push(VkCommandBuffer const command_buffer) const {
+    // push constants (normal_draw_primitive; instanced_draw_primitive overrides both pieces)
+    void primitive::bind_geometry_and_push(VkCommandBuffer const command_buffer) const {
         constexpr VkDeviceSize vertex_offset = 0;
         vkCmdBindVertexBuffers(command_buffer, 0, 1, &this->vertex_detail->buffer, &vertex_offset);
         vkCmdBindIndexBuffer(command_buffer, this->index_detail->buffer, 0, this->index_type);
@@ -29,14 +29,14 @@ namespace vulkan {
                            &this->push);
     }
 
-    void normal_draw_model::draw(VkCommandBuffer const command_buffer) const {
+    void normal_draw_primitive::draw(VkCommandBuffer const command_buffer) const {
         // double-sided materials keep back faces (dynamic cull mode, Vulkan 1.3 core)
         vkCmdSetCullMode(command_buffer, this->double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
         this->bind_geometry_and_push(command_buffer);
         vkCmdDrawIndexed(command_buffer, this->index_count, 1, 0, 0, 0);
     }
 
-    void normal_draw_model::destroy(vma_allocator& vma) noexcept {
+    void normal_draw_primitive::destroy(vma_allocator& vma) noexcept {
         if (this->vertex_buffer_handle != 0) {
             vma.free_buffer(this->vertex_buffer_handle);
         }
@@ -51,15 +51,15 @@ namespace vulkan {
         this->vertex_count = 0;
     }
 
-    bool normal_draw_model::is_valid() const noexcept {
+    bool normal_draw_primitive::is_valid() const noexcept {
         return this->vertex_detail != nullptr && this->index_detail != nullptr &&
                this->index_count != 0 && this->pipeline != nullptr;
     }
 
-    void instanced_draw_model::draw(VkCommandBuffer const command_buffer) const {
+    void instanced_draw_primitive::draw(VkCommandBuffer const command_buffer) const {
         // geometry belongs to source: bind ITS buffers, then draw it instance_count times;
         // push flag bit0 makes pbr.vert pick instances[gl_InstanceIndex] per instance
-        model const& geometry_source = *this->source;
+        primitive const& geometry_source = *this->source;
         vkCmdSetCullMode(command_buffer, this->double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
         constexpr VkDeviceSize vertex_offset = 0;
         vkCmdBindVertexBuffers(command_buffer, 0, 1, &geometry_source.vertex_detail->buffer, &vertex_offset);
@@ -74,11 +74,11 @@ namespace vulkan {
         vkCmdDrawIndexed(command_buffer, geometry_source.index_count, this->instance_count, 0, 0, 0);
     }
 
-    void instanced_draw_model::destroy(vma_allocator&) noexcept {
+    void instanced_draw_primitive::destroy(vma_allocator&) noexcept {
         // owns nothing: the instance transform buffer is runtime-owned, geometry is source's
     }
 
-    bool instanced_draw_model::is_valid() const noexcept {
+    bool instanced_draw_primitive::is_valid() const noexcept {
         return this->source != nullptr && this->source->is_valid() && this->instance_count != 0 &&
                this->pipeline != nullptr;
     }
@@ -99,7 +99,7 @@ namespace vulkan {
         glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(45.0f), aspect, 0.1f, 100.0f);
         // glm's projection follows the OpenGL convention (NDC y up), but Vulkan framebuffers are y-down:
         // flip the projection's Y, otherwise glTF's CCW front-face winding becomes CW in the framebuffer
-        // and is culled by the pipeline's CULL_BACK, leaving only the model's interior visible.
+        // and is culled by the pipeline's CULL_BACK, leaving only the object's interior visible.
         proj[1][1] *= -1.0f;
 
         camera_ubo ubo;

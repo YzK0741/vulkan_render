@@ -132,31 +132,33 @@ types) owns the storage; the old private `models` map is gone:
 ```cpp
 // vulkan/runtime/scene_tree/scene_tree.cppm
 namespace vulkan::scene_tree {
-    class drawable {                       // abstract leaf; the future "primitive"
-        virtual ~drawable() = default;
+    class primitive {                      // abstract leaf; GPU primitives implement it
+        virtual ~primitive() = default;
         virtual void set_world(glm::mat4 const& world) = 0;  // push.model = world
     };
     struct scene_node {
-        std::string name = {};             // pipeline name today; glTF node name later
+        std::string name = {};             // glTF node name after import
         glm::mat4 local = mat4(1);         // programmatic transforms land here
         std::vector<scene_node> children;  // value semantics; move-only (clone() for copies)
-        std::unique_ptr<drawable> drawable_leaf = {};  // null for transform-only nodes
+        std::unique_ptr<primitive> primitive_leaf = {};  // null for transform-only nodes
     };
     struct scene { std::string name; std::vector<scene_node> roots; };
     void update_world(scene_node& n, glm::mat4 const& parent_world);   // DFS accumulate
-    template <class F> void visit_drawables(scene_node const&, glm::mat4 const&, F&&); // DFS leaves
+    template <class F> void visit_primitives(scene_node const&, glm::mat4 const&, F&&); // DFS leaves
 }
 ```
 
-- `vulkan::model` (model.cppm) now `public vulkan::scene_tree::drawable`;
-  `model::set_world` writes `push.model = world`, so the existing draw path
-  (`model->draw()`) is untouched.
-- Runtime owns models inside the tree: `scene_` is a `scene_tree::scene`;
-  `~runtime` walks the tree and calls `model->destroy(vma)` per leaf before the
-  VkDevice goes away.
-- `make_model` / `make_instanced_model` attach a **root** leaf whose `name`
-  records the pipeline (models record their pipeline in `model->pipeline`;
-  `instanced_draw_model` gets a tree slot like any model).
+- `vulkan::primitive` (vulkan.model, GPU side) is `public vulkan::scene_tree::primitive`;
+  `primitive::set_world` writes `push.model = world`, so the existing draw path
+  (`primitive->draw()`) is untouched. (The GPU classes were renamed model ->
+  primitive; the module/header name `vulkan.model` was kept for CMake/import
+  stability.)
+- Runtime owns primitives inside the tree: `scene_` is a `scene_tree::scene`;
+  `~runtime` walks the tree and calls `primitive->destroy(vma)` per leaf before
+  the VkDevice goes away.
+- `make_primitive` / `make_instanced_primitive` attach a **root** leaf whose `name`
+  records the pipeline (primitives record their pipeline in `primitive->pipeline`;
+  `instanced_draw_primitive` gets a tree slot like any primitive).
 - **Scene offset / whole-scene transform**: `runtime::set_scene_transform(mat4)`
   applies one extra world matrix on top of every root before `update_world`
   (identity default → rendering identical to pre-tree). The `import_scene`
@@ -171,14 +173,14 @@ Every frame `render_frame()` runs the DFS before recording either pass:
 // scene_tree.cppm (as implemented)
 void update_world(scene_node& n, glm::mat4 const& parent_world) {
     glm::mat4 const world = parent_world * n.local;
-    if (n.drawable_leaf) n.drawable_leaf->set_world(world);  // model: push.model = world
+    if (n.primitive_leaf) n.primitive_leaf->set_world(world);  // primitive: push.model = world
     for (auto& c : n.children) update_world(c, world);
 }
 // render_frame(): scene_transform_ * root.local for each root, then per-leaf
 //   set_world pushes the accumulated matrix into push.model via the vtable
 ```
 
-- Writes only the leaf's `push.model` through `drawable::set_world`; the
+- Writes only the leaf's `push.model` through `primitive::set_world`; the
   push-constant block, vertex layout and draw path are untouched.
 - Cost is O(leaves) per frame with a tiny constant — negligible at current scene
   sizes; a dirty-flag skip can come later with animation.
@@ -193,14 +195,14 @@ frame** — no persistent `render_lists_` map, no explicit cache to invalidate:
 
 ```cpp
 // render_frame(), after update_world:
-std::vector<model const*> frame_leaves;              // DFS collect (once)
-for (scene_node const& root : scene_.roots) collect_leaf_models(root, frame_leaves);
-//   main pass: group frame_leaves by m->pipeline -> begin_pipeline() once, m->draw() per leaf
-//   shadow pass: bind shadow pipeline, m->draw() over the same frame_leaves
+std::vector<primitive const*> frame_leaves;              // DFS collect (once)
+for (scene_node const& root : scene_.roots) collect_leaf_primitives(root, frame_leaves);
+//   main pass: group frame_leaves by p->pipeline -> begin_pipeline() once, p->draw() per leaf
+//   shadow pass: bind shadow pipeline, p->draw() over the same frame_leaves
 ```
 
-- `collect_leaf_models` / `get_models` are thin wrappers over the scene_tree
-  module's own `visit_drawables()` DFS (`896d5b3`) — no hand-rolled traversal in
+- `collect_leaf_primitives` / `get_primitives` are thin wrappers over the scene_tree
+  module's own `visit_primitives()` DFS (`896d5b3`) — no hand-rolled traversal in
   the runtime.
 - Alternative considered: draw inline while walking the tree — rejected, it would
   re-bind pipelines per leaf (breaks batching).
@@ -210,28 +212,28 @@ for (scene_node const& root : scene_.roots) collect_leaf_models(root, frame_leav
 Current surface (post-`4ee1b82`; per-pipeline names kept — see §9 Q2):
 
 ```cpp
-model* make_model(std::string_view pipeline_name, model_create_info const& info); // build + attach root leaf
-model* make_instanced_model(model const& source, std::span<glm::mat4 const> transforms);
-std::vector<model const*> get_models(std::string_view pipeline_name) const; // DFS by pipeline
-void clear_models(std::string_view pipeline_name);   // DFS: strips matching leaves anywhere in the tree
+primitive* make_primitive(std::string_view pipeline_name, primitive_create_info const& info); // build + attach root leaf
+primitive* make_instanced_primitive(primitive const& source, std::span<glm::mat4 const> transforms);
+std::vector<primitive const*> get_primitives(std::string_view pipeline_name) const; // DFS by pipeline
+void clear_primitives(std::string_view pipeline_name);   // DFS: strips matching leaves anywhere in the tree
 scene_import_result import_scene(NI nfirst, NS nlast, DI dfirst, DS dlast, glm::vec3 const& offset);
 //   node stream (scene_node_iterator) + aligned drawable stream (scene_drawable_iterator);
 //   rebuilds the real hierarchy (one scene_node per loader node), offset lands on each root
 void set_scene_transform(glm::mat4 const& transform);  // extra world on top of every root
 void enable_shadows(glm::vec3 const& scene_center, float scene_radius);
-void log_scene_tree() const; // diagnostic: prints the runtime tree (names + [model] leaves)
+void log_scene_tree() const; // diagnostic: prints the runtime tree (names + [primitive] leaves)
 ```
 
 (Step-2b is done — see §6. A per-node `set_local_transform` handle API can now be
 added on top of the real subtrees; legacy helpers (bounds scan / instancing grid
-in main.cpp) keep working through `get_models` / `scenes::begin()`.)
+in main.cpp) keep working through `get_primitives` / `scenes::begin()`.)
 
 ### 4.3 Shadow pass
 
 Unchanged structurally: the shadow pass iterates the same `frame_leaves` collected
 from the tree (step 2a). Because the shadow pipeline shares the vertex layout /
 push block / scene layout, leaves drawn into the shadow map still work via
-`model->draw()`.
+`primitive->draw()`.
 
 ## 5. Loader <-> runtime bridge (the key design decision)
 
@@ -268,36 +270,46 @@ Status, kept in sync with git history:
   DFS-flatten semantics (same world matrices, same order) so nothing downstream
   breaks. Verified: scene bounds / fps unchanged.
 - ✅ **2a — Runtime scene tree storage** (`ca6769a`, `7a445d5`, `896d5b3`). New
-  `vulkan.runtime.scene_tree` module (scene/scene_node/drawable + update_world +
-  visit_drawables); `vulkan::model` implements `scene_tree::drawable`; the `models`
-  map is replaced by a `scene_tree::scene`; `make_model` / `make_instanced_model`
-  attach leaves; `render_frame` accumulates world transforms (`update_world` →
-  `drawable::set_world` → `push.model`) and walks the tree for both the main pass
-  (leaves grouped by `model->pipeline`) and the shadow pass; destructor /
-  `clear_models` / `get_models` traverse the tree; runtime traversal reuses the
-  module's `visit_drawables` (`896d5b3`). Verified: default scene + spin demo +
+  `vulkan.runtime.scene_tree` module (scene/scene_node/primitive + update_world +
+  visit_primitives); `vulkan::primitive` (renamed from `vulkan::model`) implements
+  `scene_tree::primitive`; the `models` map is replaced by a `scene_tree::scene`;
+  `make_primitive` / `make_instanced_primitive` attach leaves; `render_frame`
+  accumulates world transforms (`update_world` → `primitive::set_world` →
+  `push.model`) and walks the tree for both the main pass (leaves grouped by
+  `primitive->pipeline`) and the shadow pass; destructor / `clear_primitives` /
+  `get_primitives` traverse the tree; runtime traversal reuses the module's
+  `visit_primitives` (`896d5b3`). Verified: default scene + spin demo +
   instancing grid all render, fps unchanged.
-- ✅ **2b — import_scene builds the real hierarchy** (`cba9b3d`, pending final
-  commit). Loader exposes `gltf::scene_node_iterator` (DFS pre-order over the
+- ✅ **2b — import_scene builds the real hierarchy** (`cba9b3d`, `dde3498`).
+  Loader exposes `gltf::scene_node_iterator` (DFS pre-order over the
   retained tree, transform-only nodes included: name / local_transform / depth /
   drawable_count); `import_scene` becomes a template over that structural node
   stream PLUS the aligned drawable stream, and rebuilds the scene tree 1:1 with
   the loader tree (a gltf node -> a named `scene_node` with its local transform;
-  a node's drawables become leaf models attached at that node — extra primitives
-  of one node become identity-local child leaves). Scene `offset` moves onto each
-  root node's local. `make_model` splits into `create_model` (build) +
-  attach-as-root-leaf. Verified: default + Hierarchy assets show the runtime tree
-  mirroring the loader tree (`node_group_root -> 2 helmet leaves`), fps unchanged,
-  instancing grid + spin demo still render.
+  a node's drawables become leaf primitives attached at that node — extra
+  primitives of one node become identity-local child leaves). Scene `offset` moves
+  onto each root node's local. `make_primitive` splits into `create_primitive`
+  (build) + attach-as-root-leaf. Verified: default + Hierarchy assets show the
+  runtime tree mirroring the loader tree (`node_group_root -> 2 helmet leaves`),
+  fps unchanged, instancing grid + spin demo still render.
 - ✅ **3 — Whole-scene + per-node transform API** (`4ee1b82`, `74b18bc`, `9cc791a`).
   `runtime::set_scene_transform` applies one world matrix on top of every root
   (identity default = unchanged rendering); main's `argv[2]/argv[3] == "spin"`
   demo spins the whole scene around its sink. `runtime::scene()` exposes the tree
   so callers edit per-node `local` in place (structure is fixed after import);
-  `argv[2]/argv[3] == "spin-subtree"` rotates one drawable-leaf node about its own
+  `argv[2]/argv[3] == "spin-subtree"` rotates one primitive-leaf node about its own
   position — on the Hierarchy asset a single helmet spins while its sibling stays
   put (per-node transform over the 2b hierarchy).
-- ✅ **4 — Remove the flat `models` map.** No flat model storage remains.
+- ✅ **4 — Remove the flat `models` map.** No flat storage remains.
+- ✅ **4b — Rename model → primitive** (this commit). The GPU classes `vulkan::model`
+  / `normal_draw_model` / `instanced_draw_model` are now `vulkan::primitive` /
+  `normal_draw_primitive` / `instanced_draw_primitive`, the scene-tree leaf
+  interface is `scene_tree::primitive` (was `drawable`), and the runtime API is
+  `make_primitive` / `make_instanced_primitive` / `get_primitives` /
+  `clear_primitives` / `create_primitive`, with `primitive_create_info`. The
+  module/header name `vulkan.model` and the shader-facing `push.model` /
+  `model_matrix` terms (model matrix) are kept. Verified: full regression matrix
+  unchanged.
 - ⏳ **5 — Future:** animation / skinning / mesh sharing (separate pass, §8).
 
 (Detailed step list below is folded into the status above; this file is the single
@@ -306,8 +318,8 @@ source of truth for what each commit changed.)
 ## 7. Risks / trade-offs (as realized)
 
 - **glTF mesh sharing stays unmodeled**: two nodes referencing the same glTF mesh
-  still produce two independent leaf models (no regression — same as before — but
-  the tree now makes the sharing opportunity visible; addressed later, §8).
+  still produce two independent leaf primitives (no regression — same as before —
+  but the tree now makes the sharing opportunity visible; addressed later, §8).
 - **Matrix vs TRS**: the loader stores the composed local *matrix* (TRS or raw
   node matrix). Re-decomposing to TRS for animation is deferred (§8); glTF forbids
   shear in matrix nodes, so the later decomposition is lossless in practice.
@@ -320,7 +332,7 @@ source of truth for what each commit changed.)
 - **Render list rebuild cost**: `render_frame` recollects `frame_leaves` every
   frame (O(nodes)); trivial for current scenes. A structure-dirty skip can come
   later with animation if it ever matters.
-- **main.cpp churn**: bounds scan / grid stress re-pointed at `get_models` /
+- **main.cpp churn**: bounds scan / grid stress re-pointed at `get_primitives` /
   `scenes::begin()`; no compatibility helper was needed.
 
 ## 8. Deferred (design hooks left open)
@@ -341,11 +353,13 @@ source of truth for what each commit changed.)
 
 1. **Storage module** — answered: a dedicated `vulkan.runtime.scene_tree` module
    (pure CPU, no Vulkan types) was created; `vulkan.model` imports and implements
-   its `drawable`, so no cycle and no new ICE-prone imports.
-2. **API names** — kept for now: `make_model` / `get_models` / `clear_models`
-   still name the tree-leaf operations (per-pipeline semantics unchanged);
-   scene-oriented renames can come with 2b's handle-based API if wanted.
+   its `scene_tree::primitive`, so no cycle and no new ICE-prone imports.
+2. **API names** — renamed: the GPU classes and runtime API now use `primitive`
+   (`make_primitive` / `make_instanced_primitive` / `get_primitives` /
+   `clear_primitives`, `primitive_create_info`), matching the scene-tree leaf
+   concept; the module/header name `vulkan.model` was kept for CMake/import
+   stability, as was the shader-facing `push.model` / `model_matrix` (model
+   matrix) terminology.
 3. **Whole-group transform demo** — answered: temporary auto-spin accepted and
    shipped (`argv[2]/argv[3] == "spin"` whole-scene rotation around the sink,
-   `spin-subtree` per-node rotation — `9cc791a`);
-   `4ee1b82`); a per-subtree demo waits for 2b.
+   `spin-subtree` per-node rotation — `9cc791a`).

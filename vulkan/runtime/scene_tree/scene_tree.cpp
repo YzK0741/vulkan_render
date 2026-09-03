@@ -7,8 +7,8 @@ module vulkan.runtime.scene_tree;
 namespace vulkan::scene_tree {
     void update_world(scene_node& node, glm::mat4 const& parent_world) {
         glm::mat4 const world = parent_world * node.local;
-        if (node.drawable_leaf) {
-            node.drawable_leaf->set_world(world);
+        if (node.primitive_leaf) {
+            node.primitive_leaf->set_world(world);
         }
         for (scene_node& child : node.children) {
             update_world(child, world);
@@ -23,7 +23,7 @@ namespace vulkan::scene_tree {
         for (scene_node const& child : this->children) {
             copy.children.push_back(child.clone());
         }
-        // drawable leaves are intentionally NOT cloned: their ownership is
+        // primitive leaves are intentionally NOT cloned: their ownership is
         // external (the runtime registers them once); copy preserves null
         return copy;
     }

@@ -11,13 +11,17 @@ export import vulkan.runtime.scene_tree;
 /**
  * @file model.cppm
  * @defgroup vulkan_model Vulkan Model
- * @brief GPU model management: geometry buffers, material push constants, plus camera/MVP
+ * @brief GPU primitive management: geometry buffers, material push constants, plus camera/MVP
  *        helpers (CPU-side IBL precomputation lives in the vulkan.math module)
  * @note
- *      - a model owns its geometry and the material push constants; it does NOT own descriptor
+ *      - a primitive owns its geometry and the material push constants; it does NOT own descriptor
  *        sets — the runtime owns the single flat scene descriptor set (camera UBO + texture
  *        array + IBL, see core::init_scene_layouts) and binds it once per frame
- *      - create via vulkan::runtime::make_model(), release via destroy()
+ *      - a primitive is the GPU-side implementation of the scene tree's leaf concept
+ *        (vulkan::scene_tree::primitive): create via vulkan::runtime::make_primitive(),
+ *        release via destroy()
+ *      - the module/header name still says "model" for historical/CMake reasons; the types it
+ *        exports are primitives (model == primitive, see docs/scene_tree_design.md §3.2)
  */
 namespace vulkan {
     /**
@@ -189,9 +193,9 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_model
-     * @brief everything runtime::make_model() needs: geometry + material textures + factors
+     * @brief everything runtime::make_primitive() needs: geometry + material textures + factors
      */
-    export struct model_create_info {
+    export struct primitive_create_info {
         std::span<unsigned char const> vertex_data = {};
         uint32_t vertex_stride = 0;
         uint32_t vertex_count = 0;
@@ -205,14 +209,14 @@ namespace vulkan {
         texture_input occlusion = {};
         texture_input emissive = {};
 
-        // PBR factors, stored in the model's material_record
+        // PBR factors, stored in the primitive's material_record
         material_factors factors = {};
 
         // glTF doubleSided: render back faces and flip their normals (cull mode + record flag)
         bool double_sided = false;
 
         // world transform applied to the geometry (e.g. fit-scale + centering from the bounding box);
-        // pushed per model (the shared camera UBO carries no model matrix)
+        // pushed per primitive (the shared camera UBO carries no model matrix)
         glm::mat4 model_matrix = glm::mat4(1.0f);
     };
 
@@ -268,22 +272,23 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_model
-     * @brief base class of every drawable: owns geometry buffers + material push constants and
-     *        declares the draw strategy interface. Derived classes implement how the geometry
-     *        is drawn (single draw, instanced grid, ...), so the runtime's frame loop stays a
-     *        generic "for each model: model->draw()" — new strategies only add a subclass.
+     * @brief base class of every GPU primitive: owns geometry buffers + material push constants
+     *        and declares the draw strategy interface. Derived classes implement how the
+     *        geometry is drawn (single draw, instanced grid, ...), so the runtime's frame loop
+     *        stays a generic "for each primitive: primitive->draw()" — new strategies only add
+     *        a subclass. Implements the scene tree's leaf concept (vulkan::scene_tree::primitive).
      * @note
      *      - owns only its geometry (vma buffers); textures live in the runtime's shared texture
      *        array and descriptor sets are owned by the runtime (single scene set, bound once)
      *      - the runtime binds the pipeline and the scene set before calling draw()
      *      - destroy() frees whatever the instance owns (vma buffers); call it before teardown
-     *      - implements scene_tree::drawable: a scene tree node can hold a model as its leaf and
-     *        update_world() feeds the accumulated world matrix straight into push.model (the
-     *        push block layout is shared, so draw() keeps working unchanged)
+     *      - a scene tree node holds one of these as its primitive_leaf and update_world() feeds
+     *        the accumulated world matrix straight into push.model (the push block layout is
+     *        shared, so draw() keeps working unchanged)
      */
-    export class model : public vulkan::scene_tree::drawable {
+    export class primitive : public vulkan::scene_tree::primitive {
     public:
-        virtual ~model() = default;
+        virtual ~primitive() = default;
 
         // geometry: vma handles for release, detail pointers for access (no raw Vulkan objects)
         uint64_t vertex_buffer_handle = 0;
@@ -294,8 +299,8 @@ namespace vulkan {
         uint32_t index_count = 0;
         uint32_t vertex_count = 0;
 
-        // pipeline the model binds against (points into the runtime's pipeline cache; valid for
-        // the runtime's lifetime) and the material push constants (material_index + model)
+        // pipeline the primitive binds against (points into the runtime's pipeline cache; valid
+        // for the runtime's lifetime) and the material push constants (material_index + model)
         vk_pipeline const* pipeline = nullptr;
         material_push_constants push = {};
         bool double_sided = false; // glTF doubleSided: disable back-face culling (per draw)
@@ -303,13 +308,13 @@ namespace vulkan {
         /**
          * @brief store the world transform accumulated by the owning scene tree node
          * @param world the node's world matrix (parent_world * local)
-         * @note model's world transform lives in push.model, which draw() pushes as-is
+         * @note the primitive's world transform lives in push.model, which draw() pushes as-is
          */
         void set_world(glm::mat4 const& world) override;
 
         /**
-         * @brief record the model's draw commands (the runtime already bound the pipeline and
-         *        the shared scene descriptor set)
+         * @brief record the primitive's draw commands (the runtime already bound the pipeline
+         *        and the shared scene descriptor set)
          * @param command_buffer the command buffer being recorded
          */
         virtual void draw(VkCommandBuffer command_buffer) const = 0;
@@ -323,9 +328,9 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_model
-     * @brief the standard drawable: one indexed draw of its own geometry (push.model places it)
+     * @brief the standard primitive: one indexed draw of its own geometry (push.model places it)
      */
-    export class normal_draw_model final : public model {
+    export class normal_draw_primitive final : public primitive {
     public:
         void draw(VkCommandBuffer command_buffer) const override;
         void destroy(vma_allocator& vma) noexcept override;
@@ -334,14 +339,14 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_model
-     * @brief instanced drawable: draws the geometry of another model (source) instance_count
-     *        times in ONE draw call; per-instance world transforms come from the runtime's
-     *        instance transform buffer (scene set binding 6, push flag bit0). Owns nothing:
-     *        geometry belongs to source, destroy() is a no-op, source must outlive this model.
+     * @brief instanced primitive: draws the geometry of another primitive (source)
+     *        instance_count times in ONE draw call; per-instance world transforms come from the
+     *        runtime's instance transform buffer (scene set binding 6, push flag bit0). Owns
+     *        nothing: geometry belongs to source, destroy() is a no-op, source must outlive it.
      */
-    export class instanced_draw_model final : public model {
+    export class instanced_draw_primitive final : public primitive {
     public:
-        model const* source = nullptr;
+        primitive const* source = nullptr;
         uint32_t instance_count = 0;
 
         void draw(VkCommandBuffer command_buffer) const override;

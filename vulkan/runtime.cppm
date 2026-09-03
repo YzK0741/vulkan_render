@@ -9,7 +9,7 @@ export import std;
 export import vulkan.core;
 export import vulkan.core.filter;
 export import vulkan.model;
-// scene_tree types are re-exported through vulkan.model (model implements scene_tree::drawable)
+// scene_tree types are re-exported through vulkan.model (vulkan::primitive implements scene_tree::primitive)
 import utility;
 
 /**
@@ -31,11 +31,11 @@ namespace vulkan {
         bool dragging = false;
         float yaw = 0.0f;
         // level view: the skybox horizon (the direction parallel to the ground plane) then sits
-        // exactly at the screen center, where the model is framed against it
+        // exactly at the screen center, where the primitive is framed against it
         float pitch = 0.0f;
         float distance = 2.2f;
         // point the camera looks at and orbits around (default origin; main may sink it
-        // together with the scene so the camera follows the model)
+        // together with the scene so the camera follows the primitive)
         glm::vec3 target = glm::vec3(0.0f);
     };
 
@@ -65,7 +65,7 @@ namespace vulkan {
         bool was_minimized = false;
 
         // ---- shared scene resources (single flat descriptor set, see core::init_scene_layouts) ----
-        // camera UBO: one buffer per frame slot, updated once per frame, shared by every model
+        // camera UBO: one buffer per frame slot, updated once per frame, shared by every primitive
         std::vector<uint64_t> camera_buffer_handles = {};
         std::vector<void*> camera_mapped = {};
         // texture registry: flat entries of the set 0 binding 1 array (raw handles; the white
@@ -80,13 +80,13 @@ namespace vulkan {
         vk_sampler texture_sampler = {};
         vk_sampler env_sampler = {};
         // GPU material table (set 0 binding 5): one material_record per entry (texture indices +
-        // factors + flags); models only push their material_index. Host-visible, written at
+        // factors + flags); primitives only push their material_index. Host-visible, written at
         // registration, read-only for the GPU.
         uint64_t material_buffer_handle = 0;
         void* material_mapped = nullptr;
         uint32_t material_count = 0;
-        // per-instance transforms for instanced models (scene set binding 6): one mat4 per
-        // instance, host-visible; filled by make_instanced_model()
+        // per-instance transforms for instanced primitives (scene set binding 6): one mat4 per
+        // instance, host-visible; filled by make_instanced_primitive()
         uint64_t instance_buffer_handle = 0;
         void* instance_mapped = nullptr;
         // the single scene descriptor set: all pipelines share the layout, so one set covers them all
@@ -114,12 +114,12 @@ namespace vulkan {
         // lookup, so the string_view-based API (get_pipeline / ...) still works without
         // constructing a std::string per call.
         std::map<std::string, vk_pipeline, std::less<>> pipelines;
-        // Scene storage: a scene tree of nodes with local transforms + children; every model
-        // (normal_draw_model / instanced_draw_model) lives in a node's drawable leaf. render_frame
+        // Scene storage: a scene tree of nodes with local transforms + children; every primitive
+        // (normal_draw_primitive / instanced_draw_primitive) lives in a node's primitive leaf. render_frame
         // walks the tree once per frame: update_world() accumulates world matrices into each
-        // leaf (drawable::set_world -> push.model), then each pipeline draws the leaves bound to
-        // it (model::draw stays polymorphic). This replaces the old flat per-pipeline model list.
-        scene_tree::scene scene_ = {}; // single scene; roots own every model leaf
+        // leaf (primitive::set_world -> push.model), then each pipeline draws the leaves bound to
+        // it (primitive::draw stays polymorphic). This replaces the old flat per-pipeline primitive list.
+        scene_tree::scene scene_ = {}; // single scene; roots own every primitive leaf
         // optional whole-scene transform applied on top of every root before local transforms
         // (programmatic grouping / demo rotation; identity by default = no visual change)
         glm::mat4 scene_transform_ = glm::mat4(1.0f);
@@ -130,27 +130,27 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief collect every drawable leaf model under @p node (DFS pre-order) into @p out
-         * @note leaves are stored as scene_tree::drawable; every leaf this runtime creates is a
-         *       vulkan::model (model implements drawable), so the cast is safe
+         * @brief collect every leaf primitive under @p node (DFS pre-order) into @p out
+         * @note leaves are stored as scene_tree::primitive; every leaf this runtime creates is a
+         *       vulkan::primitive (the GPU primitive implements scene_tree::primitive), so the cast is safe
          */
-        void collect_leaf_models(scene_tree::scene_node const& node, std::vector<model const*>& out) const;
+        void collect_leaf_primitives(scene_tree::scene_node const& node, std::vector<primitive const*>& out) const;
         /**
          * @ingroup vulkan_runtime
-         * @brief destroy every drawable leaf model under @p node (recursively) with @p vma
+         * @brief destroy every leaf primitive under @p node (recursively) with @p vma
          */
-        void destroy_leaf_models(scene_tree::scene_node& node, vma_allocator& vma);
+        void destroy_leaf_primitives(scene_tree::scene_node& node, vma_allocator& vma);
         /**
          * @ingroup vulkan_runtime
-         * @brief build a normal_draw_model from @p info WITHOUT attaching it to the scene tree:
+         * @brief build a normal_draw_primitive from @p info WITHOUT attaching it to the scene tree:
          *        uploads geometry buffers and registers the material (textures + material_record).
-         * @param pipeline_name the pipeline the model draws with (must already exist)
-         * @return the new model (caller attaches it into a scene node), or nullptr if the
+         * @param pipeline_name the pipeline the primitive draws with (must already exist)
+         * @return the new primitive (caller attaches it into a scene node), or nullptr if the
          *         pipeline does not exist
-         * @note make_model() is create_model() + attach-as-root-leaf; the hierarchy import
+         * @note make_primitive() is create_primitive() + attach-as-root-leaf; the hierarchy import
          *       (import_scene) attaches leaves to their node instead
          */
-        std::unique_ptr<model> create_model(std::string_view pipeline_name, model_create_info const& info);
+        std::unique_ptr<primitive> create_primitive(std::string_view pipeline_name, primitive_create_info const& info);
 
         /**
          * @ingroup vulkan_runtime
@@ -164,12 +164,12 @@ namespace vulkan {
         void begin_rendering(VkCommandBuffer command_buffer, uint32_t image_index) const;
 
         // ---- scene resource management (see the members above) ----
-        void init_scene_resources();                               // camera UBO buffers + white fallback texture + texture sampler + material table
-        void init_shadow_resources();                              // shadow map depth image/view/sampler + light UBO buffer
-        void ensure_scene_set();                                   // lazily create the scene set and write camera + IBL + material bindings
-        void write_ibl_bindings() const;                           // (re)write bindings 2-4 with the current IBL views / placeholders
-        void write_light_and_shadow_bindings();                    // (re)write binding 7 (light UBO) + binding 8 (shadow map)
-        uint32_t register_material(model_create_info const& info); // upload textures into the array, append a material_record, return its index
+        void init_scene_resources();                                   // camera UBO buffers + white fallback texture + texture sampler + material table
+        void init_shadow_resources();                                  // shadow map depth image/view/sampler + light UBO buffer
+        void ensure_scene_set();                                       // lazily create the scene set and write camera + IBL + material bindings
+        void write_ibl_bindings() const;                               // (re)write bindings 2-4 with the current IBL views / placeholders
+        void write_light_and_shadow_bindings();                        // (re)write binding 7 (light UBO) + binding 8 (shadow map)
+        uint32_t register_material(primitive_create_info const& info); // upload textures into the array, append a material_record, return its index
 
     public:
         // A non-const runtime exposes a mutable filter (e.g. runtime->get_vma()); a const runtime
@@ -268,7 +268,7 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief print the scene tree (names + local-transform marker + leaf model pipeline)
+         * @brief print the scene tree (names + local-transform marker + leaf primitive pipeline)
          *        to the log, one indented line per node, plus a shape summary
          * @note diagnostic helper: shows whether an import rebuilt the real hierarchy (gltf
          *       node names and nesting) or a flat list of root leaves (pipeline names)
@@ -281,7 +281,7 @@ namespace vulkan {
          *        programmatic whole-group / subtree transforms
          * @note the tree structure is fixed after import (no reallocation of scene_ or the
          *       children vectors while nodes are only edited in place), so pointers/references
-         *       into the tree stay valid until the next make_model / import / clear call
+         *       into the tree stay valid until the next make_primitive / import / clear call
          */
         [[nodiscard]] scene_tree::scene& scene() noexcept {
             return this->scene_;
@@ -303,42 +303,42 @@ namespace vulkan {
          * @brief upload the scene-wide IBL resources (prefiltered env / irradiance / BRDF LUT)
          *        into the shared scene set; call it before creating models that use IBL
          * @param info precomputed split-sum IBL bytes (see vulkan::generate_* helpers)
-         * @note the images are uploaded once and shared by every model (they used to be
-         *       duplicated per model)
+         * @note the images are uploaded once and shared by every primitive (they used to be
+         *       duplicated per primitive)
          */
         void set_ibl(ibl_input const& info);
 
         /**
          * @ingroup vulkan_runtime
-         * @brief create a model and attach it to the scene tree as a new leaf (root node).
-         * @param pipeline_name the pipeline the model draws with (must already exist)
+         * @brief create a primitive and attach it to the scene tree as a new leaf (root node).
+         * @param pipeline_name the pipeline the primitive draws with (must already exist)
          * @param info geometry and material textures
-         * @return pointer to the created model (owned by the scene tree), or nullptr if the
+         * @return pointer to the created primitive (owned by the scene tree), or nullptr if the
          *         pipeline does not exist
          * @note the leaf's local transform is @p info.model_matrix and its world is identity
-         *       (render_frame runs update_world before drawing, so drawable::set_world writes
+         *       (render_frame runs update_world before drawing, so primitive::set_world writes
          *       the same matrix into push.model as before)
          */
-        model* make_model(std::string_view pipeline_name, model_create_info const& info);
+        primitive* make_primitive(std::string_view pipeline_name, primitive_create_info const& info);
 
         /**
          * @ingroup vulkan_runtime
-         * @brief collect every drawable leaf model of the given pipeline (DFS over the scene tree)
-         * @param pipeline_name the pipeline name passed to make_model()
+         * @brief collect every leaf primitive of the given pipeline (DFS over the scene tree)
+         * @param pipeline_name the pipeline name passed to make_primitive()
          * @return models whose leaf node name matches @p pipeline_name, in scene-tree order
          */
-        [[nodiscard]] std::vector<model const*> get_models(std::string_view pipeline_name) const noexcept;
+        [[nodiscard]] std::vector<primitive const*> get_primitives(std::string_view pipeline_name) const noexcept;
 
         /**
          * @ingroup vulkan_runtime
-         * @brief append an instanced_draw_model: draws @p source's geometry once per transform
+         * @brief append an instanced_draw_primitive: draws @p source's geometry once per transform
          *        in ONE draw call per frame (per-instance matrices in scene set binding 6)
-         * @param source any model of this runtime (its geometry is drawn transforms.size() times;
-         *        it must stay in the runtime's model list while the instanced model is drawn)
+         * @param source any primitive of this runtime (its geometry is drawn transforms.size() times;
+         *        it must stay in the runtime's primitive list while the instanced primitive is drawn)
          * @param transforms one world matrix per instance (fully places the source geometry)
-         * @return pointer to the appended instanced model, or nullptr if nothing was appended
+         * @return pointer to the appended instanced primitive, or nullptr if nothing was appended
          */
-        model* make_instanced_model(model const& source, std::span<glm::mat4 const> transforms);
+        primitive* make_instanced_primitive(primitive const& source, std::span<glm::mat4 const> transforms);
 
         /**
          * @ingroup vulkan_runtime
@@ -352,7 +352,7 @@ namespace vulkan {
          *        node's get_drawable_count() drawables are the next entries of the drawable
          *        stream. The runtime drives the traversal: it rebuilds the node tree into
          *        scene_tree::scene (one scene_node per loader node, named, with its local
-         *        transform; a node's drawable becomes a model leaf attached to that node —
+         *        transform; a node's drawable becomes a primitive leaf attached to that node —
          *        extra primitives of one node become identity-local child leaves), uploads
          *        buffers and registers materials. No glTF (or any scene format) knowledge
          *        lives in the runtime.
@@ -381,8 +381,8 @@ namespace vulkan {
                 }
                 return out;
             };
-            // per-node drawable -> model_create_info (reads the next drawable of the stream)
-            auto const fill_info = [&](DI& drawable, model_create_info& info) {
+            // per-node drawable -> primitive_create_info (reads the next drawable of the stream)
+            auto const fill_info = [&](DI& drawable, primitive_create_info& info) {
                 auto const vertex = drawable.get_vertex();
                 auto const index = drawable.get_index();
                 info.vertex_data = vertex.data;
@@ -404,31 +404,31 @@ namespace vulkan {
                 info.factors.normal_scale = factors.normal_scale;
                 info.double_sided = drawable.get_double_sided();
             };
-            // attach one leaf model to @p node (geometry from the next drawable of the stream);
-            // returns the created model or nullptr if the pipeline is missing
-            auto const attach_leaf = [&](scene_tree::scene_node& node, DI& drawable) -> model* {
+            // attach one leaf primitive to @p node (geometry from the next drawable of the stream);
+            // returns the created primitive or nullptr if the pipeline is missing
+            auto const attach_leaf = [&](scene_tree::scene_node& node, DI& drawable) -> primitive* {
                 if (!(drawable != dlast)) {
                     utility::panic(std::source_location::current(), "drawable stream ended before the node tree did");
                 }
-                model_create_info info = {};
+                primitive_create_info info = {};
                 fill_info(drawable, info);
                 ++drawable;
                 ++result.primitive_count;
-                std::unique_ptr<model> created = this->create_model("pbr", info);
+                std::unique_ptr<primitive> created = this->create_primitive("pbr", info);
                 if (created == nullptr) {
                     return nullptr;
                 }
-                if (node.drawable_leaf == nullptr) {
-                    node.drawable_leaf = std::move(created);
+                if (node.primitive_leaf == nullptr) {
+                    node.primitive_leaf = std::move(created);
                 } else {
                     // a glTF node can carry several primitives; scene_node has one leaf slot, so
                     // extra primitives become identity-local child leaves (world unchanged)
                     scene_tree::scene_node extra;
                     extra.name = node.name + "/prim";
-                    extra.drawable_leaf = std::move(created);
+                    extra.primitive_leaf = std::move(created);
                     node.children.push_back(std::move(extra));
                 }
-                return static_cast<model*>(node.drawable_leaf ? node.drawable_leaf.get() : node.children.back().drawable_leaf.get());
+                return static_cast<primitive*>(node.primitive_leaf ? node.primitive_leaf.get() : node.children.back().primitive_leaf.get());
             };
 
             // DFS over the loader's node stream, rebuilding parent/child edges with an explicit
@@ -477,8 +477,8 @@ namespace vulkan {
         /**
          * @ingroup vulkan_runtime
          * @brief destroy and remove all models of a pipeline, no-op if the pipeline has none
-         * @param pipeline_name the pipeline name passed to make_model()
+         * @param pipeline_name the pipeline name passed to make_primitive()
          */
-        void clear_models(std::string_view pipeline_name);
+        void clear_primitives(std::string_view pipeline_name);
     };
 } // namespace vulkan
