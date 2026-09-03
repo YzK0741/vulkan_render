@@ -187,6 +187,34 @@ int main(int argc, char** argv) {
     utility::log("scene loaded: {} textures, {} materials, {} primitives", scenes->textures.size(), scenes->materials.size(), primitive_count);
     utility::log("scene bounds: center ({:.3f}, {:.3f}, {:.3f}), radius {:.3f}", scene_center.x, scene_center.y, scene_center.z, scene_radius);
 
+    // Scene hierarchy summary: the loader retains the node tree (children + local transforms),
+    // so report the tree shape (roots / total nodes / max depth / mesh-bearing nodes) for
+    // diagnostics. The flat drawable iteration used for the bounds scan above is unaffected.
+    {
+        size_t total_nodes = 0;
+        size_t mesh_nodes = 0;
+        size_t max_depth = 0;
+        for (gltf::scene const& scene : scenes->scene) {
+            // each node knows its children via indices into scene.nodes; walk from the roots
+            auto const walk = [&](auto&& self, size_t const index, size_t const depth) -> void {
+                ++total_nodes;
+                max_depth = std::max(max_depth, depth);
+                if (!scene.nodes[index].meshes.empty()) {
+                    ++mesh_nodes;
+                }
+                for (size_t const child : scene.nodes[index].children) {
+                    self(self, child, depth + 1);
+                }
+            };
+            for (size_t const root : scene.root_indices) {
+                walk(walk, root, 0);
+            }
+        }
+        utility::log("scene hierarchy: {} roots, {} nodes total ({} with meshes), max depth {}",
+                     scenes->scene.size() > 0 ? scenes->scene.front().root_indices.size() : 0,
+                     total_nodes, mesh_nodes, max_depth);
+    }
+
     // Sink the model so it sits near the world horizon (y = 0) and move the camera target with it:
     // the camera then orbits/looks at the model's position instead of the scene origin.
     glm::vec3 const scene_sink(0.0f, -scene_radius, 0.0f);
