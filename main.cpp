@@ -264,13 +264,13 @@ int main(int argc, char** argv) {
 
     // 12. Optional instancing stress: `vulkan_render <model> <grid_side>` draws the first
     //     imported primitive as a grid_side x grid_side grid in ONE instanced draw call
-    //     (an instanced_draw_model appended to the normal models — the frame loop is untouched)
+    //     (an instanced_draw_model appended to the scene tree — the frame loop is untouched)
     if (argc > 2) {
         int const side = std::atoi(argv[2]);
         if (side > 1) {
-            auto const* pbr_models = runtime.get_models("pbr");
-            if (pbr_models != nullptr && !pbr_models->empty()) {
-                vulkan::model const& source = *((*pbr_models)[0]);
+            std::vector<vulkan::model const*> const pbr_models = runtime.get_models("pbr");
+            if (!pbr_models.empty()) {
+                vulkan::model const& source = *pbr_models[0];
                 std::vector<glm::mat4> transforms;
                 transforms.reserve(static_cast<size_t>(side) * side);
                 float const spacing = 2.5f * scene_radius; // keep instances apart: measure draw scaling, not overdraw

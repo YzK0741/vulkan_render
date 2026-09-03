@@ -70,14 +70,12 @@ namespace vulkan {
     // The destructor body runs before member destruction, so vulkan_core (and the VkDevice it
     // holds) is still alive here: destroying cached models and pipelines in this order is
     // guaranteed safe, independent of future member reordering. Members then destruct in reverse
-    // declaration order with models/pipelines already empty.
+    // declaration order with scene_/pipelines already empty.
     runtime::~runtime() {
-        for (auto& pipeline_models : this->models | std::views::values) {
-            for (auto& model : pipeline_models) {
-                model->destroy(this->vulkan_core.vma);
-            }
+        for (scene_tree::scene_node& root : this->scene_.roots) {
+            this->destroy_leaf_models(root, this->vulkan_core.vma);
         }
-        this->models.clear();
+        this->scene_.roots.clear();
         this->pipelines.clear();
 
         // Shared scene resources (views/sets/samplers are RAII and free themselves)
@@ -663,6 +661,13 @@ namespace vulkan {
             return frame_result::failed;
         }
 
+        // 6a. Accumulate scene-tree world transforms: every leaf's push.model = identity * local
+        //     (the old flat list stored the world matrix directly; a root leaf's local holds the
+        //     same matrix, so update_world reproduces it — and later hierarchy/animation just works)
+        for (scene_tree::scene_node& root : this->scene_.roots) {
+            scene_tree::update_world(root, glm::mat4(1.0f));
+        }
+
         // ---- Shadow pass: render the scene's depth from the light into this slot's shadow map.
         //      Drawn before the main pass; the depth-only pipeline shares the flat scene layout
         //      and the model draw() path (same vertex buffers / push constants), so the shadow
@@ -726,9 +731,12 @@ namespace vulkan {
                                             nullptr);
                 }
                 this->shadow_pipeline->begin_pipeline(*command_buffer);
-                for (auto const& pipeline_models : this->models | std::views::values) {
-                    for (auto const& model : pipeline_models) {
-                        model->draw(*command_buffer); // depth-only: shadow.vert transforms into light space
+                // draw every scene-tree leaf (the whole scene casts shadows)
+                for (scene_tree::scene_node const& root : this->scene_.roots) {
+                    std::vector<model const*> leaves;
+                    this->collect_leaf_models(root, leaves);
+                    for (model const* m : leaves) {
+                        m->draw(*command_buffer); // depth-only: shadow.vert transforms into light space
                     }
                 }
                 vkCmdEndRendering(*command_buffer);
@@ -841,14 +849,23 @@ namespace vulkan {
             vkCmdDraw(*command_buffer, 3, 1, 0, 0);
         }
 
+        // Main pass: walk the scene tree once, collect leaves grouped by their pipeline, then
+        // draw each group with its pipeline bound once (same batching as the old flat model list)
+        std::vector<model const*> frame_leaves;
+        for (scene_tree::scene_node const& root : this->scene_.roots) {
+            this->collect_leaf_models(root, frame_leaves);
+        }
         for (auto const& [pipeline_name, pipeline] : this->pipelines) {
-            auto const models_it = this->models.find(pipeline_name);
-            if (models_it == this->models.end() || models_it->second.empty()) {
-                continue; // pipeline without models: nothing to draw
-            }
-            pipeline.begin_pipeline(*command_buffer);
-            for (auto const& model : models_it->second) {
-                model->draw(*command_buffer); // polymorphic: normal / instanced / ...
+            vk_pipeline const* const wanted = &pipeline;
+            bool any = false;
+            for (model const* m : frame_leaves) {
+                if (m->pipeline == wanted) {
+                    if (!any) {
+                        pipeline.begin_pipeline(*command_buffer);
+                        any = true;
+                    }
+                    m->draw(*command_buffer); // polymorphic: normal / instanced / ...
+                }
             }
         }
 
@@ -996,10 +1013,15 @@ namespace vulkan {
         result->push.model = info.model_matrix;
         result->double_sided = info.double_sided;
 
-        // operator[] has no heterogeneous overload (unlike find), so construct the key explicitly
-        auto& pipeline_models = this->models[std::string(pipeline_name)];
-        pipeline_models.push_back(std::move(result));
-        return pipeline_models.back().get();
+        // attach the model as a new root leaf of the scene tree; the node's name records the
+        // pipeline it draws with (render_frame groups leaves by node name / pipeline)
+        scene_tree::scene_node leaf;
+        leaf.name = std::string(pipeline_name);
+        leaf.local = info.model_matrix;         // world = identity * local (root)
+        leaf.drawable_leaf = std::move(result); // model is a scene_tree::drawable
+        model* const created = static_cast<model*>(leaf.drawable_leaf.get());
+        this->scene_.roots.push_back(std::move(leaf));
+        return created;
     }
 
     model* runtime::make_instanced_model(model const& source, std::span<glm::mat4 const> const transforms) {
@@ -1019,30 +1041,81 @@ namespace vulkan {
 
         auto result = std::make_unique<instanced_draw_model>();
         result->pipeline = pipeline;
-        result->source = &source; // geometry owner; must stay in this runtime's model list
+        result->source = &source; // geometry owner; must stay in this runtime's scene tree
         result->instance_count = count;
         result->push.material_index = source.push.material_index;
         result->push.flags = 1u; // bit0: pbr.vert picks instances[gl_InstanceIndex]
         result->push.model = glm::mat4(1.0f);
         result->double_sided = source.double_sided;
 
-        auto& pipeline_models = this->models[std::string("pbr")];
-        pipeline_models.push_back(std::move(result));
-        return pipeline_models.back().get();
+        scene_tree::scene_node leaf;
+        leaf.name = "pbr";
+        leaf.drawable_leaf = std::move(result); // model is a scene_tree::drawable
+        model* const created = static_cast<model*>(leaf.drawable_leaf.get());
+        this->scene_.roots.push_back(std::move(leaf));
+        return created;
     }
 
-    std::vector<std::unique_ptr<model>> const* runtime::get_models(std::string_view const pipeline_name) const noexcept {
-        auto const it = this->models.find(pipeline_name);
-        return it == this->models.end() ? nullptr : &it->second;
+    std::vector<model const*> runtime::get_models(std::string_view const pipeline_name) const noexcept {
+        vk_pipeline const* const wanted = this->get_pipeline(pipeline_name);
+        if (wanted == nullptr) {
+            return {};
+        }
+        std::vector<model const*> result;
+        for (scene_tree::scene_node const& root : this->scene_.roots) {
+            // collect every leaf whose model binds the requested pipeline (models record their
+            // pipeline in model->pipeline; the scene tree just organizes them)
+            auto const collect = [&](auto&& self, scene_tree::scene_node const& node) -> void {
+                if (node.drawable_leaf) {
+                    auto const* m = static_cast<model const*>(node.drawable_leaf.get());
+                    if (m->pipeline == wanted) {
+                        result.push_back(m);
+                    }
+                }
+                for (scene_tree::scene_node const& child : node.children) {
+                    self(self, child);
+                }
+            };
+            collect(collect, root);
+        }
+        return result;
     }
 
     void runtime::clear_models(std::string_view const pipeline_name) {
-        auto const it = this->models.find(pipeline_name);
-        if (it != this->models.end()) {
-            for (auto& model : it->second) {
-                model->destroy(this->vulkan_core.vma);
+        vk_pipeline const* const unwanted = this->get_pipeline(pipeline_name);
+        if (unwanted == nullptr) {
+            return;
+        }
+        auto& roots = this->scene_.roots;
+        auto const matches = [unwanted](scene_tree::scene_node const& node) {
+            return node.drawable_leaf != nullptr && static_cast<model const*>(node.drawable_leaf.get())->pipeline == unwanted;
+        };
+        for (auto it = roots.begin(); it != roots.end();) {
+            if (matches(*it)) {
+                this->destroy_leaf_models(*it, this->vulkan_core.vma);
+                it = roots.erase(it);
+            } else {
+                ++it;
             }
-            this->models.erase(it);
+        }
+    }
+
+    void runtime::collect_leaf_models(scene_tree::scene_node const& node, std::vector<model const*>& out) const {
+        if (node.drawable_leaf) {
+            out.push_back(static_cast<model const*>(node.drawable_leaf.get()));
+        }
+        for (scene_tree::scene_node const& child : node.children) {
+            this->collect_leaf_models(child, out);
+        }
+    }
+
+    void runtime::destroy_leaf_models(scene_tree::scene_node& node, vma_allocator& vma) {
+        for (scene_tree::scene_node& child : node.children) {
+            this->destroy_leaf_models(child, vma);
+        }
+        if (node.drawable_leaf) {
+            static_cast<model*>(node.drawable_leaf.get())->destroy(vma);
+            node.drawable_leaf.reset();
         }
     }
 } // namespace vulkan

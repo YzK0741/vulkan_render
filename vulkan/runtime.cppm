@@ -9,6 +9,7 @@ export import std;
 export import vulkan.core;
 export import vulkan.core.filter;
 export import vulkan.model;
+// scene_tree types are re-exported through vulkan.model (model implements scene_tree::drawable)
 import utility;
 
 /**
@@ -108,18 +109,34 @@ namespace vulkan {
         bool shadows_enabled = false;                              // true after enable_shadows() (light UBO filled + pipeline ready)
 
         std::mutex access_mutex;
-        // string keys (not string_view): the runtime owns the pipeline/model names, so lookups
+        // string keys (not string_view): the runtime owns the pipeline names, so lookups
         // stay valid regardless of the caller's storage lifetime. std::less<> enables heterogeneous
-        // lookup, so the string_view-based API (get_pipeline / make_model / ...) still works
-        // without constructing a std::string per call.
+        // lookup, so the string_view-based API (get_pipeline / ...) still works without
+        // constructing a std::string per call.
         std::map<std::string, vk_pipeline, std::less<>> pipelines;
-        // models grouped by the pipeline they bind against: bind the pipeline once, draw them all
-        // polymorphically through model::draw() (normal_draw_model / instanced_draw_model / ...)
-        std::map<std::string, std::vector<std::unique_ptr<model>>, std::less<>> models;
+        // Scene storage: a scene tree of nodes with local transforms + children; every model
+        // (normal_draw_model / instanced_draw_model) lives in a node's drawable leaf. render_frame
+        // walks the tree once per frame: update_world() accumulates world matrices into each
+        // leaf (drawable::set_world -> push.model), then each pipeline draws the leaves bound to
+        // it (model::draw stays polymorphic). This replaces the old flat per-pipeline model list.
+        scene_tree::scene scene_ = {}; // single scene; roots own every model leaf
         // one command buffer per frame slot, used and reused by render_frame()
         std::vector<vk_command_buffer> command_buffers;
         // filtered view over vulkan_core, exposed via operator-> (external code never sees the raw core)
         core_filter filtered_core;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief collect every drawable leaf model under @p node (DFS pre-order) into @p out
+         * @note leaves are stored as scene_tree::drawable; every leaf this runtime creates is a
+         *       vulkan::model (model implements drawable), so the cast is safe
+         */
+        void collect_leaf_models(scene_tree::scene_node const& node, std::vector<model const*>& out) const;
+        /**
+         * @ingroup vulkan_runtime
+         * @brief destroy every drawable leaf model under @p node (recursively) with @p vma
+         */
+        void destroy_leaf_models(scene_tree::scene_node& node, vma_allocator& vma);
 
         /**
          * @ingroup vulkan_runtime
@@ -246,25 +263,24 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief create and cache a model (geometry + texture array registration)
+         * @brief create a model and attach it to the scene tree as a new leaf (root node).
          * @param pipeline_name the pipeline the model draws with (must already exist)
          * @param info geometry and material textures
-         * @return pointer to the appended model, or nullptr if the pipeline does not exist
-         * @note the model is owned by the runtime and released in its destructor (before the VkDevice);
-         *       its textures are appended to the shared scene texture array, its descriptor state
-         *       is the single scene set bound once per frame by render_frame()
-         * @warning appending another model to the same pipeline may reallocate its vector and
-         *          invalidate previously returned pointers; use get_models() for index-based access
+         * @return pointer to the created model (owned by the scene tree), or nullptr if the
+         *         pipeline does not exist
+         * @note the leaf's local transform is @p info.model_matrix and its world is identity
+         *       (render_frame runs update_world before drawing, so drawable::set_world writes
+         *       the same matrix into push.model as before)
          */
         model* make_model(std::string_view pipeline_name, model_create_info const& info);
 
         /**
          * @ingroup vulkan_runtime
-         * @brief get all models cached under a pipeline
+         * @brief collect every drawable leaf model of the given pipeline (DFS over the scene tree)
          * @param pipeline_name the pipeline name passed to make_model()
-         * @return pointer to the model vector, or nullptr if no model uses that pipeline
+         * @return models whose leaf node name matches @p pipeline_name, in scene-tree order
          */
-        [[nodiscard]] std::vector<std::unique_ptr<model>> const* get_models(std::string_view pipeline_name) const noexcept;
+        [[nodiscard]] std::vector<model const*> get_models(std::string_view pipeline_name) const noexcept;
 
         /**
          * @ingroup vulkan_runtime
