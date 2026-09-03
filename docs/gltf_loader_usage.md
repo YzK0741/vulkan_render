@@ -37,8 +37,11 @@ namespace gltf {
                            component_type index_component_type;
                            uint32_t material_index; };   // into scenes::materials, UINT32_MAX = none
     struct mesh          { std::vector<primitive> primitives; };
-    struct node          { std::vector<mesh> meshes; glm::mat4 transform_matrix; };   // world space
-    struct scene         { std::string name; std::vector<node> nodes; };
+    struct node          { std::string name; glm::mat4 local_transform;
+                           std::vector<mesh> meshes; std::vector<std::size_t> children;
+                           glm::mat4 transform_matrix; };   // see semantics below
+    struct scene         { std::string name; std::vector<node> nodes;
+                           std::vector<std::size_t> root_indices; };
     struct scenes        { std::vector<texture_data> textures; std::vector<material> materials;
                            std::vector<scene> scene; };
 
@@ -48,7 +51,17 @@ namespace gltf {
 
 **Semantics**
 
-- The node hierarchy is **already flattened recursively**: `scene.nodes` contains **every** node reachable from the scene root (including transform-only nodes), and `transform_matrix` is the **world-space** column-major matrix (TRS or matrix already composed).
+- The node hierarchy is **kept**: `scene.nodes` holds every node reachable from the scene
+  roots in **DFS pre-order** (roots first, then each subtree), and `root_indices` lists the
+  indices of the scene's roots inside `nodes`. Each node records its direct children as
+  indices into the same `nodes` list (`node.children`, always greater than the node's own
+  index), so the full parent→child structure is recoverable. Transform-only (intermediate)
+  nodes appear too, with empty `meshes`.
+- `local_transform` is the node's **own** transform relative to its parent (TRS-composed
+  matrix, or the raw matrix when the asset stored one). `transform_matrix` keeps the
+  accumulated **world-space** matrix (`parent_world * local_transform`) — same value the
+  loader exposed before the hierarchy was retained, so existing world-space consumers keep
+  working unchanged.
 - Keys of `primitive.vertex` are glTF attribute names (`POSITION` / `NORMAL` / `TEXCOORD_0` / `COLOR_0` …).
 - Vertex and index data are **de-interleaved raw bytes**; their type is described by `component` / `index_component_type` (byteStride and sparse accessors are already handled by fastgltf).
 - `scenes.materials` holds one entry per glTF material (in material order); each `material.texture_indices` uses the fixed roles `albedo` / `metallic_roughness` / `normal` / `occlusion` / `emissive`, and the values index into `scenes::textures` (in glTF texture order). `primitive.material_index` selects the primitive's material (`UINT32_MAX` when the glTF primitive has none).
@@ -83,6 +96,12 @@ int main() {
 
 ## 3. Traversing the Scene Hierarchy
 
+Two ways to visit the scene:
+
+1. **Flat (drawable-oriented)** — iterate `scene.nodes` in order; every node that has meshes
+   is a drawable with a ready world matrix. This is what the renderer's bounds scan and
+   `drawable_iterator` use.
+
 ```cpp
 for (const auto& scene : model.scene) {
     std::println("scene: {}", scene.name);
@@ -94,6 +113,22 @@ for (const auto& scene : model.scene) {
             }
         }
     }
+}
+```
+
+2. **Tree (hierarchy-oriented)** — start at `scene.root_indices` and recurse through
+   `node.children`, composing world matrices from `local_transform` when you need to
+   re-evaluate them (e.g. for animation / programmatic whole-group transforms):
+
+```cpp
+for (const auto& scene : model.scene) {
+    // node is an index into scene.nodes; parent_world is identity at the roots
+    auto walk = [&](auto&& self, std::size_t node, const glm::mat4& parent_world) -> void {
+        const auto& n = scene.nodes[node];
+        const glm::mat4 world = parent_world * n.local_transform;
+        for (std::size_t child : n.children) self(self, child, world);
+    };
+    for (std::size_t root : scene.root_indices) walk(walk, root, glm::mat4(1.0f));
 }
 ```
 

@@ -257,22 +257,37 @@ namespace gltf {
 
     /**
      * @ingroup gltf_loader
-     * @brief a scene node: meshes plus its world transform matrix
-     * @note the scene hierarchy is expanded recursively, so every node reachable
-     *       from a scene root (including intermediate transform-only nodes) appears here
+     * @brief a scene node: local transform + meshes + child links
+     * @note
+     *      - the node hierarchy is KEPT: scene.nodes holds the DFS pre-order of every reachable
+     *        node (including intermediate transform-only nodes), and each node records its
+     *        children as indices into the same scene.nodes list. Callers that need the full
+     *        parent->child structure walk children[]; the drawable iterators (scenes::begin /
+     *        drawable_iterator) simply flatten the same list and skip mesh-less nodes.
+     *      - local_transform is the node's own transform relative to its parent (TRS-composed
+     *        matrix, or the node's matrix when the asset stored a raw matrix); transform_matrix
+     *        keeps the accumulated world matrix for backward compatibility (same value as the
+     *        loader used to expose before the tree was retained)
      */
     export struct node {
-        std::vector<mesh> meshes;
-        glm::mat4 transform_matrix;
+        std::string name = {};                       // glTF node name (empty when unnamed)
+        glm::mat4 local_transform = glm::mat4(1.0f); // transform relative to the parent node
+        std::vector<mesh> meshes = {};               // meshes attached at this node (may be empty)
+        // indices into the owning scene.nodes (DFS pre-order): the direct children of this node
+        std::vector<std::size_t> children = {};       // empty for leaves / transform-only nodes
+        glm::mat4 transform_matrix = glm::mat4(1.0f); // world matrix (parent * local), kept for compatibility
     };
 
     /**
      * @ingroup gltf_loader
      * @brief a named scene containing nodes
+     * @note nodes holds every node reachable from the scene roots in DFS pre-order (roots
+     *       first); root_indices lists the indices of the scene's root nodes inside nodes
      */
     export struct scene {
         std::string name;
         std::vector<node> nodes;
+        std::vector<std::size_t> root_indices = {}; // indices into nodes: the scene roots
     };
 
     export struct scenes; // forward declaration (defined below; scene_iterator only holds a pointer)

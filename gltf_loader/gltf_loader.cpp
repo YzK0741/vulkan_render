@@ -374,20 +374,42 @@ namespace {
         gltf::scene result;
         result.name = asset.scenes[scene_index].name;
 
-        // Recursively walk the scene graph, computing world-space transforms.
-        fastgltf::iterateSceneNodes(asset, scene_index, fastgltf::math::fmat4x4{},
-                                    [&](fastgltf::Node const& node, fastgltf::math::fmat4x4 const& matrix) {
-                                        gltf::node current_node = {};
-                                        current_node.transform_matrix = to_glm_mat4(matrix);
-                                        if (node.meshIndex) {
-                                            gltf::mesh current_mesh = {};
-                                            for (auto const& primitive : asset.meshes[*node.meshIndex].primitives) {
-                                                current_mesh.primitives.push_back(load_primitive(primitive, asset));
-                                            }
-                                            current_node.meshes.push_back(std::move(current_mesh));
-                                        }
-                                        result.nodes.push_back(std::move(current_node));
-                                    });
+        // DFS over the real node hierarchy (scene root -> node -> children), retaining the
+        // parent->child structure. Each node keeps its LOCAL transform (relative to its parent)
+        // plus the accumulated WORLD matrix; the DFS pre-order, the world computation and the
+        // mesh building are identical to the previous iterateSceneNodes-based flattening, so
+        // the drawable iterators (scenes::begin / drawable_iterator) yield exactly the same
+        // primitives in the same order with the same world matrices as before.
+        auto const build_node = [&result, &asset](auto&& self, std::size_t const node_index, fastgltf::math::fmat4x4 const& parent_world) -> void {
+            fastgltf::Node const& fnode = asset.nodes[node_index];
+            fastgltf::math::fmat4x4 const world = fastgltf::getTransformMatrix(fnode, parent_world);
+
+            gltf::node current_node = {};
+            current_node.name = fnode.name;
+            current_node.local_transform = to_glm_mat4(fastgltf::getTransformMatrix(fnode)); // base = identity -> own transform
+            current_node.transform_matrix = to_glm_mat4(world);
+            if (fnode.meshIndex) {
+                gltf::mesh current_mesh = {};
+                for (auto const& primitive : asset.meshes[*fnode.meshIndex].primitives) {
+                    current_mesh.primitives.push_back(load_primitive(primitive, asset));
+                }
+                current_node.meshes.push_back(std::move(current_mesh));
+            }
+
+            result.nodes.push_back(std::move(current_node));
+            std::size_t const self_index = result.nodes.size() - 1;
+            // children are appended right after their parent (DFS pre-order), so child indices
+            // are always greater than self_index
+            for (std::size_t const child : fnode.children) {
+                self(self, child, world);
+                result.nodes[self_index].children.push_back(result.nodes.size() - 1);
+            }
+        };
+
+        for (std::size_t const root : asset.scenes[scene_index].nodeIndices) {
+            result.root_indices.push_back(result.nodes.size());
+            build_node(build_node, root, fastgltf::math::fmat4x4{});
+        }
         return result;
     }
 
