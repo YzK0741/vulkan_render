@@ -223,21 +223,36 @@ tree concept.
 
 ## 6. Migration plan (stepwise, each step builds + renders + commits)
 
-1. **Loader keeps the tree.** Add `children` + local TRS to `gltf::node`;
-   `load_scene` builds real roots/children; keep `scenes::begin()` semantics
-   (DFS flatten, same world matrices, same iteration order) so nothing downstream
-   breaks. Verify: same frame as before (bounds, IBL, render).
-2. **Runtime scene tree storage.** Introduce `scene_node` + roots; re-point
-   `import_scene` to build the tree (transform-only nodes included), keep the
-   offset as root transform; build `render_lists_` derived map; `render_frame`
-   loops the derived lists. All `models` map reads move to tree walks.
-   API: keep `get_models("pbr")`-style access working via the derived list until
-   callers migrate. Verify visually + instancing grid still identical.
-3. **Whole-group transform API.** Add `set_local_transform(root_of_group, ...)`
-   and a demo in main (e.g. slowly spin the imported scene's root / a subtree) to
-   prove group transforms. Verify visually + fps.
-4. **Remove the flat `models` map** entirely once all callers (main bounds? no —
-   loader-side; grid stress) go through the tree/derived lists.
+> **Status** (kept in sync with git history):
+> - ✅ 1 (loader keeps the tree — `87ef7e8`)
+> - ✅ 2a (runtime stores models in a scene tree, render_frame walks it —
+>   `ca6769a`, `7a445d5`)
+> - ⏳ 2b (import_scene builds the real hierarchy from the loader tree; today every
+>   drawable is a root leaf with its full world matrix, so whole-group transforms
+>   are not available yet)
+> - ⏳ 3 (whole-group transform demo)
+> - ✅ 4 (the flat `models` map is gone — superseded by the tree walk)
+> - ⏳ 5 (future: animation / skinning / mesh sharing)
+
+1. **Loader keeps the tree.** ✅ `gltf::node` gains `children` + `local_transform`;
+   `load_scene` builds real roots/children; `scenes::begin()` keeps DFS-flatten
+   semantics (same world matrices, same order) so nothing downstream breaks.
+   Verified: scene bounds / fps unchanged.
+2. **Runtime scene tree storage.** ✅ Storage migrated: `models` map replaced by a
+   `scene_tree::scene`; `make_model` / `make_instanced_model` attach leaves (node
+   name records the pipeline); `render_frame` accumulates world transforms
+   (`update_world` → `drawable::set_world` → `push.model`) and walks the tree for
+   both the main pass (leaves grouped by `model->pipeline`) and the shadow pass;
+   destructor / `clear_models` / `get_models` traverse the tree.
+   ⏳ Still open: `import_scene` imports each drawable as a separate root leaf
+   (world matrix as `local`) — the loader tree's transform-only nodes / shared
+   parents are not reflected yet, so rotating a whole group is not possible. Next:
+   node-level structural iteration from the loader (see §5) and recursive tree
+   building in `import_scene`, keeping the scene offset as the root transform.
+   Verify visually + instancing grid still identical.
+3. **Whole-group transform API.** ⏳ `set_local_transform(scene_node&, ...)` +
+   a demo in main (e.g. slowly spin the imported scene's root / a subtree).
+4. **Remove the flat `models` map.** ✅ No flat model storage remains.
 5. (future, separate pass) animation samplers, skinning, mesh sharing.
 
 ## 7. Risks / trade-offs
