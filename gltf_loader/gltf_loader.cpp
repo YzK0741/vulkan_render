@@ -399,10 +399,13 @@ namespace {
             result.nodes.push_back(std::move(current_node));
             std::size_t const self_index = result.nodes.size() - 1;
             // children are appended right after their parent (DFS pre-order), so child indices
-            // are always greater than self_index
+            // are always greater than self_index. Record the index each child WILL occupy
+            // BEFORE recursing: the recursive call appends the child's whole subtree, so after
+            // it returns the pool's last index is the subtree's last descendant, not the child.
             for (std::size_t const child : fnode.children) {
+                std::size_t const child_index = result.nodes.size(); // child lands here first
                 self(self, child, world);
-                result.nodes[self_index].children.push_back(result.nodes.size() - 1);
+                result.nodes[self_index].children.push_back(child_index);
             }
         };
 
