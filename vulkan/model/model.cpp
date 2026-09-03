@@ -8,6 +8,12 @@ module vulkan.model;
 import vulkan.core;
 
 namespace vulkan {
+    void model::set_world(glm::mat4 const& world) {
+        // the accumulated world transform written by a scene tree walk (scene_tree::drawable
+        // interface); draw() pushes push.model verbatim, so this is all the leaf needs
+        this->push.model = world;
+    }
+
     // shared recording for draw strategies that render this object's own geometry with its
     // push constants (normal_draw_model; instanced_draw_model overrides both pieces)
     void model::bind_geometry_and_push(VkCommandBuffer const command_buffer) const {

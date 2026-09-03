@@ -6,6 +6,7 @@ module;
 export module vulkan.model;
 export import std;
 export import vulkan.core;
+export import vulkan.runtime.scene_tree;
 
 /**
  * @file model.cppm
@@ -256,8 +257,11 @@ namespace vulkan {
      *        array and descriptor sets are owned by the runtime (single scene set, bound once)
      *      - the runtime binds the pipeline and the scene set before calling draw()
      *      - destroy() frees whatever the instance owns (vma buffers); call it before teardown
+     *      - implements scene_tree::drawable: a scene tree node can hold a model as its leaf and
+     *        update_world() feeds the accumulated world matrix straight into push.model (the
+     *        push block layout is shared, so draw() keeps working unchanged)
      */
-    export class model {
+    export class model : public vulkan::scene_tree::drawable {
     public:
         virtual ~model() = default;
 
@@ -275,6 +279,13 @@ namespace vulkan {
         vk_pipeline const* pipeline = nullptr;
         material_push_constants push = {};
         bool double_sided = false; // glTF doubleSided: disable back-face culling (per draw)
+
+        /**
+         * @brief store the world transform accumulated by the owning scene tree node
+         * @param world the node's world matrix (parent_world * local)
+         * @note model's world transform lives in push.model, which draw() pushes as-is
+         */
+        void set_world(glm::mat4 const& world) override;
 
         /**
          * @brief record the model's draw commands (the runtime already bound the pipeline and

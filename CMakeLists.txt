@@ -80,6 +80,7 @@ target_sources(vulkan_lib
         vulkan/math/math.cppm
         vulkan/runtime.cppm
         vulkan/core/pipeline/spirv_parser.cppm
+        vulkan/runtime/scene_tree/scene_tree.cppm
     PRIVATE
         vulkan/core/core.cpp
         vulkan/core/filter/filter.cpp
@@ -91,6 +92,7 @@ target_sources(vulkan_lib
         vulkan/math/math.cpp
         vulkan/core/pipeline/spirv_parser.cpp
         vulkan/runtime.cpp
+        vulkan/runtime/scene_tree/scene_tree.cpp
         third_party/spirv-reflect/spirv_reflect.c
 )
 add_library(gltf_loader STATIC)
