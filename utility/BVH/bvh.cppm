@@ -111,31 +111,9 @@ namespace utility {
         bvh_node* left = nullptr;
         bvh_node* right = nullptr;
         morton_code code = {};
-        struct
-        {
-            glm::vec3 min;
-            glm::vec3 max;
-            [[nodiscard]] glm::vec3 get_midpoint() const noexcept {
-                glm::vec3 midpoint;
-                midpoint.x = (min.x + max.x) * 0.5f;
-                midpoint.y = (min.y + max.y) * 0.5f;
-                midpoint.z = (min.z + max.z) * 0.5f;
-                return midpoint;
-            }
-            [[nodiscard]] float surface_area() const {
-                float const w = this->max.y - this->min.y;
-                float const h = this->max.x - this->min.x;
-                float const l = this->max.z - this->min.z;
-                return 2.0f * (w * h + w * l + l * h);
-            }
-            template <class Box>
-            [[nodiscard]] Box operator|(Box const& other) const noexcept {
-                Box result{};
-                result.min = glm::min(this->min, other.min);
-                result.max = glm::max(this->max, other.max);
-                return result;
-            }
-        } aabb;
+        // bounding volume of this node (leaf or merged subtree); reuses aabb_box so the min/max
+        // accessors, midpoint, surface area and the merge operator live in exactly one place
+        aabb_box<T> aabb = {};
 
         using data_type = std::conditional_t<std::is_void_v<T>, std::monostate, T>;
 
