@@ -347,12 +347,76 @@ namespace gltf {
 
     /**
      * @ingroup gltf_loader
+     * @brief single-pass input iterator over the node TREE of every scene: DFS pre-order
+     *        over the retained hierarchy (same document order as the loader stored the pool),
+     *        INCLUDING transform-only (mesh-less) nodes. Structural view for the runtime's
+     *        scene_node_iterator concept: name + local transform + depth (for rebuilding
+     *        parent/child edges with a stack) + how many drawables hang off this node.
+     * @note pure CPU cursor over the loaded data (no scratch storage); the drawable
+     *       geometry of a node is read through the existing drawable_iterator stream,
+     *       which advances over the same pool in the same order (skipping mesh-less
+     *       nodes), so the two streams stay aligned node-for-node.
+     */
+    export class scene_node_iterator {
+    public:
+        using iterator_concept = std::input_iterator_tag;
+        using iterator_category = std::input_iterator_tag;
+        using value_type = node const*;
+        using difference_type = std::ptrdiff_t;
+        using pointer = node const*;
+        using reference = node const*;
+
+        scene_node_iterator() = default; // end(): the default-constructed iterator is exhausted
+        explicit scene_node_iterator(scenes const& owner);
+
+        reference operator*() const noexcept;
+        pointer operator->() const noexcept;
+        scene_node_iterator& operator++();
+        void operator++(int);
+
+        // ---- structural getters (satisfy the runtime's scene_node_iterator concept) ----
+        [[nodiscard]] std::string_view get_name() const noexcept;
+        [[nodiscard]] glm::mat4 get_local_transform() const noexcept;
+        [[nodiscard]] std::size_t get_depth() const noexcept;          // 0 = scene root
+        [[nodiscard]] std::size_t get_drawable_count() const noexcept; // primitives hanging off this node
+
+        friend bool operator==(scene_node_iterator const& a, scene_node_iterator const& b) noexcept {
+            if (a.exhausted_ || b.exhausted_) {
+                return a.exhausted_ == b.exhausted_;
+            }
+            return a.owner_ == b.owner_ && a.scene_i_ == b.scene_i_ && a.stack_ == b.stack_;
+        }
+
+    private:
+        // DFS state: stack of {node index in the scene's pool, next child position to descend
+        // into}; the top of the stack is the node currently being visited. root_i_ tracks which
+        // root of the current scene has been pushed last (roots are visited in root_indices order).
+        struct frame {
+            std::size_t node_i = 0;
+            std::size_t next_child = 0;
+            friend bool operator==(frame const& a, frame const& b) noexcept {
+                return a.node_i == b.node_i && a.next_child == b.next_child;
+            }
+        };
+        void push_next_root(); // advance to the next scene root, or set exhausted_
+        void descend();        // move to the next node in DFS pre-order
+
+        scenes const* owner_ = nullptr;
+        std::size_t scene_i_ = 0;
+        std::size_t root_i_ = 0; // next root of the current scene to visit (index into root_indices)
+        std::vector<frame> stack_ = {};
+        bool exhausted_ = true; // default = end(); begin() clears it before advancing
+    };
+
+    /**
+     * @ingroup gltf_loader
      * @brief loaded result of a glTF file: textures, materials and scenes
      * @note textures holds one entry per glTF texture (in texture order); material texture_indices
      *       values index into this array; primitive.material_index indexes into materials
      * @note scenes is a range: begin()/end() yield every drawable primitive with its node's
      *       world transform (see gltf::scene_iterator / gltf::drawable_ref), so callers can
      *       iterate the whole scene without manual scene -> node -> mesh -> primitive loops
+     * @note nodes_begin()/nodes_end() yield the retained node tree (see gltf::scene_node_iterator)
      */
     export struct scenes {
         std::vector<texture_data> textures;
@@ -361,6 +425,8 @@ namespace gltf {
 
         [[nodiscard]] scene_iterator begin() const;
         [[nodiscard]] scene_iterator end() const noexcept;
+        [[nodiscard]] scene_node_iterator nodes_begin() const;
+        [[nodiscard]] scene_node_iterator nodes_end() const noexcept;
     };
 
     /**

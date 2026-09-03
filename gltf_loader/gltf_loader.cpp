@@ -747,6 +747,93 @@ namespace gltf {
         return scene_iterator();
     }
 
+    // ---- gltf::scenes node-tree iteration (structural view, includes transform-only nodes) ----
+
+    void scene_node_iterator::push_next_root() {
+        while (this->scene_i_ < this->owner_->scene.size()) {
+            gltf::scene const& sc = this->owner_->scene[this->scene_i_];
+            if (this->root_i_ < sc.root_indices.size()) {
+                this->stack_.push_back({sc.root_indices[this->root_i_++], 0});
+                return;
+            }
+            ++this->scene_i_;
+            this->root_i_ = 0;
+        }
+        this->exhausted_ = true;
+    }
+
+    void scene_node_iterator::descend() {
+        while (!this->exhausted_) {
+            if (this->stack_.empty()) {
+                this->push_next_root();
+                if (this->exhausted_) {
+                    return;
+                }
+                return; // visiting the fresh root now
+            }
+            frame& top = this->stack_.back();
+            gltf::node const& node = this->owner_->scene[this->scene_i_].nodes[top.node_i];
+            if (top.next_child < node.children.size()) {
+                std::size_t const child = node.children[top.next_child++];
+                this->stack_.push_back({child, 0});
+                return; // visiting the child now
+            }
+            this->stack_.pop_back(); // this node's subtree done; retry its parent / next root
+        }
+    }
+
+    scene_node_iterator::scene_node_iterator(scenes const& owner)
+        : owner_(&owner)
+        , exhausted_(false) {
+        this->push_next_root(); // land on the first root of the first scene (or exhaust)
+    }
+
+    scene_node_iterator::reference scene_node_iterator::operator*() const noexcept {
+        return &this->owner_->scene[this->scene_i_].nodes[this->stack_.back().node_i];
+    }
+
+    scene_node_iterator::pointer scene_node_iterator::operator->() const noexcept {
+        return this->operator*();
+    }
+
+    scene_node_iterator& scene_node_iterator::operator++() {
+        this->descend();
+        return *this;
+    }
+
+    void scene_node_iterator::operator++(int) {
+        ++*this;
+    }
+
+    std::string_view scene_node_iterator::get_name() const noexcept {
+        return this->owner_->scene[this->scene_i_].nodes[this->stack_.back().node_i].name;
+    }
+
+    glm::mat4 scene_node_iterator::get_local_transform() const noexcept {
+        return this->owner_->scene[this->scene_i_].nodes[this->stack_.back().node_i].local_transform;
+    }
+
+    std::size_t scene_node_iterator::get_depth() const noexcept {
+        return this->stack_.size() - 1;
+    }
+
+    std::size_t scene_node_iterator::get_drawable_count() const noexcept {
+        gltf::node const& node = this->owner_->scene[this->scene_i_].nodes[this->stack_.back().node_i];
+        std::size_t count = 0;
+        for (gltf::mesh const& mesh : node.meshes) {
+            count += mesh.primitives.size();
+        }
+        return count;
+    }
+
+    scene_node_iterator scenes::nodes_begin() const {
+        return scene_node_iterator(*this);
+    }
+
+    scene_node_iterator scenes::nodes_end() const noexcept {
+        return scene_node_iterator();
+    }
+
     // ---- resolved materials + renderer-ready drawable iteration (pure CPU) ----
 
     std::vector<resolved_material> resolve_materials(gltf::scenes const& scenes) {

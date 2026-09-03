@@ -189,32 +189,25 @@ int main(int argc, char** argv) {
 
     // Scene hierarchy summary: the loader retains the node tree (children + local transforms),
     // so report the tree shape (roots / total nodes / max depth / mesh-bearing nodes) for
-    // diagnostics. The flat drawable iteration used for the bounds scan above is unaffected.
+    // diagnostics. Walks the retained tree through gltf::scene_node_iterator (DFS pre-order,
+    // transform-only nodes included) — the same iterator the runtime's import consumes.
     {
         size_t total_nodes = 0;
         size_t mesh_nodes = 0;
         size_t max_depth = 0;
         std::vector<std::string> tree_lines;
-        for (gltf::scene const& scene : scenes->scene) {
-            // each node knows its children via indices into scene.nodes; walk from the roots
-            auto const walk = [&](auto&& self, size_t const index, size_t const depth) -> void {
-                ++total_nodes;
-                max_depth = std::max(max_depth, depth);
-                bool const has_mesh = !scene.nodes[index].meshes.empty();
-                if (has_mesh) {
-                    ++mesh_nodes;
-                }
-                gltf::node const& node = scene.nodes[index];
-                tree_lines.push_back(std::format("{}{}{}", std::string(depth * 2, ' '),
-                                                 node.name.empty() ? std::string("<unnamed>") : node.name,
-                                                 has_mesh ? " [mesh]" : ""));
-                for (size_t const child : node.children) {
-                    self(self, child, depth + 1);
-                }
-            };
-            for (size_t const root : scene.root_indices) {
-                walk(walk, root, 0);
+        for (gltf::scene_node_iterator it = scenes->nodes_begin(); it != scenes->nodes_end(); ++it) {
+            ++total_nodes;
+            size_t const depth = it.get_depth();
+            max_depth = std::max(max_depth, depth);
+            bool const has_mesh = it.get_drawable_count() > 0;
+            if (has_mesh) {
+                ++mesh_nodes;
             }
+            std::string_view const name = it.get_name();
+            tree_lines.push_back(std::format("{}{}{}", std::string(depth * 2, ' '),
+                                             name.empty() ? std::string("<unnamed>") : std::string(name),
+                                             has_mesh ? " [mesh]" : ""));
         }
         utility::log("scene hierarchy: {} roots, {} nodes total ({} with meshes), max depth {}",
                      scenes->scene.size() > 0 ? scenes->scene.front().root_indices.size() : 0,
