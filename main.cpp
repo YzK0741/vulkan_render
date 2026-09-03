@@ -301,10 +301,56 @@ int main(int argc, char** argv) {
     //     lives inside runtime::render_frame()
     utility::log("rendering '{}' with PBR... left-drag to orbit, wheel to zoom, ESC to exit", model_path);
 
-    // Optional whole-scene spin demo (argv[3] == "spin"): rotates the whole scene tree around
-    // its own center via runtime::set_scene_transform, proving programmatic group transforms.
-    bool const spin_scene = argc > 3 && std::string_view(argv[3]) == "spin";
+    // Optional demo transforms (argv[2] when it is not a grid-side number, or argv[3]):
+    //   "spin"          — whole-scene rotation via runtime::set_scene_transform (extra world
+    //                     matrix on top of every root; the whole tree moves together).
+    //   "spin-subtree"  — per-node local transform: rotate ONE drawable leaf node around its
+    //                     own position in parent space (the scene tree's per-node local
+    //                     transforms make this possible). On the hierarchy asset this spins a
+    //                     single helmet in place while its sibling stays still; on the default
+    //                     single-node asset the model spins about the scene sink.
+    bool spin_scene = false;
+    bool spin_subtree = false;
+    char const* const demo = argc > 3 ? argv[3] : (argc > 2 ? argv[2] : nullptr);
+    if (demo != nullptr) {
+        std::string_view const demo_view(demo);
+        spin_scene = demo_view == "spin";
+        spin_subtree = demo_view == "spin-subtree";
+    }
     double spin_angle = 0.0;
+    if (spin_scene) {
+        utility::log("spin: rotating the whole scene about the scene sink");
+    }
+    // target node + its initial local transform for the subtree demo (found once, before the loop)
+    vulkan::scene_tree::scene_node* subtree_node = nullptr;
+    glm::mat4 subtree_local0 = glm::mat4(1.0f);
+    glm::vec3 subtree_pivot = glm::vec3(0.0f);
+    if (spin_subtree) {
+        // find the first node carrying a drawable leaf (DFS pre-order over all roots)
+        std::vector<vulkan::scene_tree::scene_node*> stack;
+        for (vulkan::scene_tree::scene_node& root : runtime.scene().roots) {
+            stack.push_back(&root);
+        }
+        while (!stack.empty() && subtree_node == nullptr) {
+            vulkan::scene_tree::scene_node* const node = stack.back();
+            stack.pop_back();
+            if (node->drawable_leaf != nullptr) {
+                subtree_node = node;
+                subtree_local0 = node->local;
+                // pivot = where this node sits in parent space (translation column of its local)
+                subtree_pivot = glm::vec3(subtree_local0[3]);
+                break;
+            }
+            for (vulkan::scene_tree::scene_node& child : node->children) {
+                stack.push_back(&child);
+            }
+        }
+        if (subtree_node == nullptr) {
+            utility::log("spin-subtree: scene has no drawable leaf node to rotate");
+        } else {
+            utility::log("spin-subtree: rotating node '{}' about its own position", subtree_node->name);
+        }
+    }
 
     // FPS statistics: accumulate frame times, report once per second (log + window title)
     std::chrono::steady_clock::time_point last_frame_time = std::chrono::steady_clock::now();
@@ -320,6 +366,14 @@ int main(int argc, char** argv) {
             spin_angle += 0.6 * std::chrono::duration<double>(std::chrono::steady_clock::now() - last_frame_time).count();
             glm::mat4 const center = glm::translate(glm::mat4(1.0f), scene_sink);
             runtime.set_scene_transform(center * glm::rotate(glm::mat4(1.0f), static_cast<float>(spin_angle), glm::vec3(0.0f, 1.0f, 0.0f)) * glm::inverse(center));
+        }
+        if (spin_subtree && subtree_node != nullptr) {
+            // rotate ONE node's local transform about its own position (pivot in parent space):
+            // the leaf model under it spins in place while sibling nodes stay put — the scene
+            // tree's per-node locals make whole-group AND per-primitive transforms possible.
+            spin_angle += 0.6 * std::chrono::duration<double>(std::chrono::steady_clock::now() - last_frame_time).count();
+            glm::mat4 const pivot = glm::translate(glm::mat4(1.0f), subtree_pivot);
+            subtree_node->local = pivot * glm::rotate(glm::mat4(1.0f), static_cast<float>(spin_angle), glm::vec3(0.0f, 1.0f, 0.0f)) * glm::inverse(pivot) * subtree_local0;
         }
         vulkan::frame_result const result = runtime.render_frame();
         if (result == vulkan::frame_result::closed || result == vulkan::frame_result::failed) {

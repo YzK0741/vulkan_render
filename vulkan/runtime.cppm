@@ -277,6 +277,21 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief access the scene tree (roots + children + per-node local transforms) for
+         *        programmatic whole-group / subtree transforms
+         * @note the tree structure is fixed after import (no reallocation of scene_ or the
+         *       children vectors while nodes are only edited in place), so pointers/references
+         *       into the tree stay valid until the next make_model / import / clear call
+         */
+        [[nodiscard]] scene_tree::scene& scene() noexcept {
+            return this->scene_;
+        }
+        [[nodiscard]] scene_tree::scene const& scene() const noexcept {
+            return this->scene_;
+        }
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief get a cached pipeline by its name
          * @param pipeline_name the name passed to make_pipeline()
          * @return pointer to the cached pipeline, or nullptr if no pipeline with that name exists
