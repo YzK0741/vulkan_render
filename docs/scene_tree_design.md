@@ -216,7 +216,7 @@ primitive* make_primitive(std::string_view pipeline_name, primitive_create_info 
 primitive* make_instanced_primitive(primitive const& source, std::span<glm::mat4 const> transforms);
 std::vector<primitive const*> get_primitives(std::string_view pipeline_name) const; // DFS by pipeline
 void clear_primitives(std::string_view pipeline_name);   // DFS: strips matching leaves anywhere in the tree
-scene_import_result import_scene(NI nfirst, NS nlast, DI dfirst, DS dlast, glm::vec3 const& offset);
+scene_import_result import_scene(NI nfirst, NI nlast, DI dfirst, DI dlast, glm::vec3 const& offset);
 //   node stream (scene_node_iterator) + aligned drawable stream (scene_drawable_iterator);
 //   rebuilds the real hierarchy (one scene_node per loader node), offset lands on each root
 void set_scene_transform(glm::mat4 const& transform);  // extra world on top of every root

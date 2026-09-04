@@ -587,9 +587,9 @@ namespace vulkan {
          *        (e.g. -scene_center + sink); children inherit it through update_world
          * @return counts of imported primitives and materials
          */
-        template <class NI, class NS, class DI, class DS>
-            requires scene_node_iterator<NI> && std::same_as<NS, NI> && scene_drawable_iterator<DI> && std::same_as<DS, DI>
-        scene_import_result import_scene(NI nfirst, NS nlast, DI dfirst, DS dlast, glm::vec3 const& offset) {
+        template <class NI, class DI>
+            requires scene_node_iterator<NI> && scene_drawable_iterator<DI>
+        scene_import_result import_scene(NI nfirst, NI nlast, DI dfirst, DI dlast, glm::vec3 const& offset) {
             scene_import_result result = {};
             uint32_t const materials_before = this->material_count;
             // converts a pure image_source (e.g. the glTF loader's image_view) into the
