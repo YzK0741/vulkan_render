@@ -17,7 +17,7 @@ import utility;
  *
  * Example config.toml:
  * @code
- * # 顶层：加载的模型与演示模式
+ * # top level: model to load + demo mode
  * model = "gltf_model/DamagedHelmet.gltf"
  * demo  = ""        # spin | spin-subtree | nocull | closeup | gui (empty = none)
  * grid_side = 0     # > 1 enables the instancing stress grid (0 = off)
@@ -33,6 +33,12 @@ import utility;
  * vsync = false    # false = mailbox (current default), true = FIFO
  * msaa  = 0        # 0 = auto (device max), else a fixed sample count (4/8/...)
  * clear_color = [0.02, 0.02, 0.03]  # background clear color, RGB in 0..1
+ * skybox = true    # draw the environment skybox pass each frame
+ * shadow = true    # record the directional shadow pass each frame
+ *
+ * [gui]
+ * panel_width  = 380   # default debug-panel width (0 = auto-size)
+ * panel_height = 140   # default debug-panel height (0 = auto-size)
  *
  * [lighting]
  * env_size     = 256   # environment cubemap size
