@@ -561,7 +561,7 @@ namespace vulkan {
 
     void runtime::begin_rendering(VkCommandBuffer const command_buffer, uint32_t const image_index) const {
         std::array<VkClearValue, 2> clear_values = {};
-        clear_values[0].color = {{0.02f, 0.02f, 0.03f, 1.0f}};
+        clear_values[0].color = {{this->clear_color.r, this->clear_color.g, this->clear_color.b, 1.0f}};
         clear_values[1].depthStencil = {1.0f, 0};
 
         core const& vk = this->vulkan_core;

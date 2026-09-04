@@ -87,10 +87,10 @@ int main(int argc, char** argv) {
     // 2. Shaders directory (holds GLSL sources and compiled SPIR-V): explicit config path when
     //    given, otherwise walk up from the working directory to find shaders/.
     std::filesystem::path shaders_dir;
-    if (!settings.shaders_dir.empty()) {
-        shaders_dir = settings.shaders_dir;
+    if (!settings.paths.shaders_dir.empty()) {
+        shaders_dir = settings.paths.shaders_dir;
         if (!std::filesystem::is_directory(shaders_dir)) {
-            utility::panic(std::source_location::current(), "cannot find configured shaders_dir '{}'.", settings.shaders_dir);
+            utility::panic(std::source_location::current(), "cannot find configured shaders_dir '{}'.", settings.paths.shaders_dir);
         }
     } else if (std::optional<std::filesystem::path> const located = locate_shaders_dir()) {
         shaders_dir = *located;
@@ -99,14 +99,14 @@ int main(int argc, char** argv) {
     }
 
     // 3. Pick the model file: settings.model when configured/argv-given; else the default model
-    //    under settings.model_dir (or the auto-located gltf_model/).
+    //    under settings.paths.model_dir (or the auto-located gltf_model/).
     std::string model_path;
     if (!settings.model.empty()) {
         model_path = settings.model;
-    } else if (!settings.model_dir.empty()) {
-        model_path = (std::filesystem::path(settings.model_dir) / "DamagedHelmet.gltf").string();
+    } else if (!settings.paths.model_dir.empty()) {
+        model_path = (std::filesystem::path(settings.paths.model_dir) / "DamagedHelmet.gltf").string();
         if (!std::filesystem::is_regular_file(model_path)) {
-            utility::panic(std::source_location::current(), "cannot find model '{}' under configured model_dir '{}'.", "DamagedHelmet.gltf", settings.model_dir);
+            utility::panic(std::source_location::current(), "cannot find model '{}' under configured model_dir '{}'.", "DamagedHelmet.gltf", settings.paths.model_dir);
         }
     } else if (std::optional<std::filesystem::path> const located = locate_model_file()) {
         model_path = located->string();
@@ -116,9 +116,12 @@ int main(int argc, char** argv) {
 
     // 4. Kick off the runtime-independent heavy CPU stages BEFORE constructing the (heavy)
     //    Vulkan runtime, so window/instance/device/swapchain init overlaps the model parse +
-    //    texture decode and the base environment cubemap generation.
-    constexpr int env_size = 256;
-    constexpr int env_mip_count = 5;
+    //    texture decode and the base environment cubemap generation. IBL resolutions come from
+    //    the [lighting] config (smaller = faster startup, larger = higher quality).
+    auto const env_size = settings.lighting.env_size;
+    auto const env_mip_count = settings.lighting.env_mip_count;
+    auto const irr_size = settings.lighting.irr_size;
+    auto const lut_size = settings.lighting.lut_size;
     auto const startup_start = std::chrono::steady_clock::now();
     auto env_future = vulkan::generate_environment_cubemap_async(env_size);
     auto load_future = gltf::load_model_async(model_path);
@@ -132,6 +135,7 @@ int main(int argc, char** argv) {
     core_options.vsync = settings.render.vsync;
     core_options.msaa_samples = settings.render.msaa;
     vulkan::runtime runtime{core_options};
+    runtime.clear_color = glm::vec3(settings.render.clear_color[0], settings.render.clear_color[1], settings.render.clear_color[2]);
     auto const runtime_ready = std::chrono::steady_clock::now();
     utility::log("vulkan runtime initialized: {:.1f} ms (async model load + env generation running in background)", std::chrono::duration<double, std::milli>(runtime_ready - startup_start).count());
 
@@ -260,8 +264,8 @@ int main(int argc, char** argv) {
     utility::log("generating IBL (prefilter/irradiance/BRDF LUT) + resolving materials...");
     auto const stage2_start = std::chrono::steady_clock::now();
     auto prefilter_future = vulkan::prefilter_environment_async(env, env_size, env_mip_count);
-    auto irradiance_future = vulkan::generate_irradiance_map_async(env, env_size, 32);
-    auto lut_future = vulkan::generate_brdf_lut_async(256);
+    auto irradiance_future = vulkan::generate_irradiance_map_async(env, env_size, irr_size);
+    auto lut_future = vulkan::generate_brdf_lut_async(lut_size);
     auto resolve_future = gltf::resolve_materials_async(*scenes);
 
     std::vector<float> const prefiltered = prefilter_future.get();
@@ -276,7 +280,7 @@ int main(int argc, char** argv) {
     std::vector<unsigned char> const lut_bytes = vulkan::to_half_rg(brdf_lut);
 
     // 10. Upload the scene-wide IBL once: shared by every primitive (bindings 2-4 of the scene set)
-    runtime.set_ibl(vulkan::ibl_input{.prefiltered_env = env_bytes, .irradiance = irr_bytes, .brdf_lut = lut_bytes, .env_size = env_size, .env_mip_count = env_mip_count, .irr_size = 32, .lut_size = 256});
+    runtime.set_ibl(vulkan::ibl_input{.prefiltered_env = env_bytes, .irradiance = irr_bytes, .brdf_lut = lut_bytes, .env_size = static_cast<uint32_t>(env_size), .env_mip_count = static_cast<uint32_t>(env_mip_count), .irr_size = static_cast<uint32_t>(irr_size), .lut_size = static_cast<uint32_t>(lut_size)});
 
     // 11. Batch-import: the runtime drives the traversal itself through two aligned loader
     //     streams — the retained node hierarchy (gltf::scene_node_iterator: DFS pre-order,

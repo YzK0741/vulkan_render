@@ -37,14 +37,17 @@ namespace app_config {
                 settings.grid_side = static_cast<int>(*value);
             }
         }
-        if (toml::node const* node = table.get("shaders_dir")) {
-            if (std::optional<std::string> const value = node->value<std::string>()) {
-                settings.shaders_dir = *value;
+
+        if (toml::table const* paths = table.get_as<toml::table>("paths")) {
+            if (toml::node const* node = paths->get("shaders_dir")) {
+                if (std::optional<std::string> const value = node->value<std::string>()) {
+                    settings.paths.shaders_dir = *value;
+                }
             }
-        }
-        if (toml::node const* node = table.get("model_dir")) {
-            if (std::optional<std::string> const value = node->value<std::string>()) {
-                settings.model_dir = *value;
+            if (toml::node const* node = paths->get("model_dir")) {
+                if (std::optional<std::string> const value = node->value<std::string>()) {
+                    settings.paths.model_dir = *value;
+                }
             }
         }
 
@@ -72,6 +75,42 @@ namespace app_config {
             if (toml::node const* node = render->get("msaa")) {
                 if (std::optional<int64_t> const value = node->value<int64_t>()) {
                     settings.render.msaa = static_cast<int>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("clear_color")) {
+                if (toml::array const* color = node->as_array()) {
+                    std::size_t i = 0;
+                    for (toml::node const& element : *color) {
+                        if (i >= settings.render.clear_color.size()) {
+                            break;
+                        }
+                        if (std::optional<double> const channel = element.value<double>()) {
+                            settings.render.clear_color[i++] = static_cast<float>(*channel);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (toml::table const* lighting = table.get_as<toml::table>("lighting")) {
+            if (toml::node const* node = lighting->get("env_size")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.lighting.env_size = static_cast<int>(*value);
+                }
+            }
+            if (toml::node const* node = lighting->get("env_mip_count")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.lighting.env_mip_count = static_cast<int>(*value);
+                }
+            }
+            if (toml::node const* node = lighting->get("irr_size")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.lighting.irr_size = static_cast<int>(*value);
+                }
+            }
+            if (toml::node const* node = lighting->get("lut_size")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.lighting.lut_size = static_cast<int>(*value);
                 }
             }
         }

@@ -234,6 +234,13 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief background clear color applied every frame (the skybox is drawn over it, so it
+         *        shows only where the environment pass leaves the background uncovered)
+         */
+        glm::vec3 clear_color = glm::vec3(0.02f, 0.02f, 0.03f);
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief construct the runtime: performs the full core initialization (window / instance /
          *        device / swapchain / resources) from @p options (window size, vsync, MSAA), and
          *        registers the orbit camera mouse callbacks on the window
