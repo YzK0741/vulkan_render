@@ -206,9 +206,7 @@ namespace vulkan {
             shadow_info.mip_levels = 1;
             shadow_info.array_layers = 1;
             shadow_info.format = this->vulkan_core.depth_format;
-            // SAMPLED: sampled by pbr.frag (main pass); TRANSFER_DST: lets set_shadow_enabled
-            // clear the map to "fully lit" via vkCmdClearDepthStencilImage when shadows turn off
-            shadow_info.extra_usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            shadow_info.extra_usage = VK_IMAGE_USAGE_SAMPLED_BIT; // sampled by pbr.frag
             uint64_t const handle = this->vulkan_core.vma.create_image(nullptr, 0, shadow_info, vulkan::image_type::texture_2d_depth);
             if (handle == 0) {
                 utility::panic("failed to create shadow map image");
@@ -1216,110 +1214,14 @@ namespace vulkan {
             return;
         }
         this->shadow_enabled = enabled;
-        // Turning shadows OFF: the main pass still samples binding 8, so clear every frame
-        // slot's shadow map to depth 1.0 ("fully lit") — otherwise the unrendered image content
-        // is undefined. Re-enabling restores the per-frame shadow pass which clears+rewrites it.
-        if (!enabled) {
-            this->clear_shadow_maps_to_lit();
-            utility::log("shadow pass disabled (shadow maps cleared to fully-lit)");
-        } else {
-            utility::log("shadow pass enabled");
+        // The light UBO's shadow_enabled flag drives pbr.frag: when shadows are off the shader
+        // skips calc_shadow entirely (fully lit), so no shadow-map clearing is needed — this
+        // avoids the per-frame-slot double-buffer race that clearing once could not fix.
+        if (this->light_mapped != nullptr) {
+            float const flag = enabled ? 1.0f : 0.0f;
+            std::memcpy(static_cast<unsigned char*>(this->light_mapped) + offsetof(light_ubo, shadow_enabled), &flag, sizeof(flag));
         }
-    }
-
-    void runtime::clear_shadow_maps_to_lit() {
-        core& vk = this->vulkan_core;
-        if (this->shadow_image_handles.empty() || vk.command_pool == VK_NULL_HANDLE) {
-            return;
-        }
-
-        // one-shot command buffer for the clears
-        VkCommandBufferAllocateInfo alloc_info = {};
-        alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        alloc_info.commandPool = vk.command_pool;
-        alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        alloc_info.commandBufferCount = 1;
-        VkCommandBuffer cmd = VK_NULL_HANDLE;
-        if (vkAllocateCommandBuffers(vk.device, &alloc_info, &cmd) != VK_SUCCESS) {
-            utility::log("shadow clear: failed to allocate command buffer");
-            return;
-        }
-        VkCommandBufferBeginInfo begin_info = {};
-        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        if (vkBeginCommandBuffer(cmd, &begin_info) != VK_SUCCESS) {
-            vkFreeCommandBuffers(vk.device, vk.command_pool, 1, &cmd);
-            return;
-        }
-
-        VkImageSubresourceRange const depth_range = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-        for (uint64_t const handle : this->shadow_image_handles) {
-            auto const* detail = vk.vma.get_image_detail(handle);
-            if (detail == nullptr) {
-                continue;
-            }
-            // UNDEFINED -> TRANSFER_DST so the clear overwrites whatever was there
-            VkImageMemoryBarrier2 to_transfer = {};
-            to_transfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-            to_transfer.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-            to_transfer.srcAccessMask = 0;
-            to_transfer.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            to_transfer.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            to_transfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            to_transfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            to_transfer.image = detail->image;
-            to_transfer.subresourceRange = depth_range;
-            VkDependencyInfo dep_to = {};
-            dep_to.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dep_to.imageMemoryBarrierCount = 1;
-            dep_to.pImageMemoryBarriers = &to_transfer;
-            vkCmdPipelineBarrier2(cmd, &dep_to);
-
-            VkClearDepthStencilValue const clear = {1.0f, 0};
-            vkCmdClearDepthStencilImage(cmd, detail->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &depth_range);
-
-            // TRANSFER -> SHADER_READ (the main pass samples it)
-            VkImageMemoryBarrier2 to_shader = {};
-            to_shader.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-            to_shader.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            to_shader.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            to_shader.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-            to_shader.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-            to_shader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            to_shader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            to_shader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            to_shader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            to_shader.image = detail->image;
-            to_shader.subresourceRange = depth_range;
-            VkDependencyInfo dep_to_shader = {};
-            dep_to_shader.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dep_to_shader.imageMemoryBarrierCount = 1;
-            dep_to_shader.pImageMemoryBarriers = &to_shader;
-            vkCmdPipelineBarrier2(cmd, &dep_to_shader);
-        }
-        if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
-            vkFreeCommandBuffers(vk.device, vk.command_pool, 1, &cmd);
-            return;
-        }
-
-        VkFenceCreateInfo fence_info = {};
-        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        VkFence fence = VK_NULL_HANDLE;
-        if (vkCreateFence(vk.device, &fence_info, nullptr, &fence) != VK_SUCCESS) {
-            vkFreeCommandBuffers(vk.device, vk.command_pool, 1, &cmd);
-            return;
-        }
-        VkSubmitInfo submit_info = {};
-        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &cmd;
-        if (vkQueueSubmit(vk.graphics_queue, 1, &submit_info, fence) == VK_SUCCESS) {
-            vkWaitForFences(vk.device, 1, &fence, VK_TRUE, UINT64_MAX);
-        }
-        vkDestroyFence(vk.device, fence, nullptr);
-        vkFreeCommandBuffers(vk.device, vk.command_pool, 1, &cmd);
+        utility::log("shadow pass {}", enabled ? "enabled" : "disabled");
     }
 
     void runtime::set_scene_transform(glm::mat4 const& transform) {

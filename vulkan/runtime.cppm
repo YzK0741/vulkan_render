@@ -220,7 +220,6 @@ namespace vulkan {
         void write_ibl_bindings() const;                               // (re)write bindings 2-4 with the current IBL views / placeholders
         void write_light_and_shadow_bindings();                        // (re)write binding 7 (light UBO) + binding 8 (shadow map)
         uint32_t register_material(primitive_create_info const& info); // upload textures into the array, append a material_record, return its index
-        void clear_shadow_maps_to_lit();                               // one-shot GPU clear of every frame slot's shadow map to depth 1.0
 
     public:
         // A non-const runtime exposes a mutable filter (e.g. runtime->get_vma()); a const runtime

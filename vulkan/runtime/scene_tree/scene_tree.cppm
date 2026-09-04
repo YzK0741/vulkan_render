@@ -131,8 +131,10 @@ namespace vulkan {
     export struct light_ubo {
         glm::mat4 light_view_proj; // world -> light clip space (orthographic)
         glm::vec4 light_dir;       // xyz: normalized light direction (sun)
+        float shadow_enabled;      // 1.0 samples the shadow map, 0.0 skips shadows (std140 pad to 16)
+        float pad[3];
     };
-    static_assert(sizeof(light_ubo) == 80);
+    static_assert(sizeof(light_ubo) == 96);
 
     /**
      * @ingroup vulkan_runtime_scene_tree

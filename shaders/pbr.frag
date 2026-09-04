@@ -47,6 +47,7 @@ layout(push_constant) uniform PushConstants {
 layout(set = 0, binding = 7) uniform LightUBO {
     mat4 light_view_proj;
     vec4 light_dir; // xyz: normalized light direction
+    float shadow_enabled; // 1.0 = sample shadow map, 0.0 = fully lit (runtime::set_shadow_enabled)
 } light;
 
 // Shadow map (scene set binding 8): the scene's depth seen from the light, sampled with manual
@@ -200,7 +201,7 @@ void main() {
 
     vec3 kd = (1.0 - f) * (1.0 - metallic);
     float ndotl = max(dot(n, l), 0.0);
-    float shadow = calc_shadow(v_world_pos);
+    float shadow = (light.shadow_enabled > 0.5) ? calc_shadow(v_world_pos) : 1.0;
     // direct-light radiance is attenuated by the shadow factor; IBL ambient stays unshadowed
     vec3 radiance = vec3(7.5) * ndotl * shadow;
 
