@@ -469,8 +469,9 @@ int main(int argc, char** argv) {
         }
         if (fps_elapsed >= 1.0) {
             double const fps = fps_frame_count / fps_elapsed;
+            // fps is shown inside the ImGui overlay (when enabled); the log line stays for
+            // headless / non-gui runs
             utility::log("fps: {:.1f} ({:.2f} ms/frame)", fps, 1000.0 * fps_elapsed / fps_frame_count);
-            runtime->set_window_title(std::format("{} - {:.1f} fps", settings.render.window_title, fps));
             fps_elapsed = 0.0;
             fps_frame_count = 0;
         }

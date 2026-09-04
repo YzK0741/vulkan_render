@@ -46,7 +46,7 @@ model_dir = ""
 window_width  = 1080
 window_height = 960
 
-# Window title; per-second fps reporting appends as "<title> - <fps> fps".
+# Window title (static; fps is shown in the ImGui overlay when gui is enabled).
 window_title = "vulkan_render"
 
 # vsync: false = prefer Mailbox (low latency, uncapped); true = FIFO (vsync).
