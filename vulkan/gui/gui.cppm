@@ -124,6 +124,26 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_gui
+     * @brief a three-component drag control (x/y/z) bound to three consecutive external
+     *        floats, e.g. a glm::vec3's x member (vec3 stores xyz contiguously). Unlike a
+     *        slider it has no clamped range, so it suits unbounded values such as the camera
+     *        target position. @p on_change fires while the user drags.
+     * @note @p value must point at the first of three consecutive floats.
+     */
+    export class vec3_widget final : public widget {
+    public:
+        vec3_widget(std::string label, float* value, float speed = 0.05f, std::function<void()> on_change = {});
+        void draw() override;
+
+    private:
+        std::string label;
+        float* value = nullptr; // points at x of an xyz triplet
+        float speed = 0.05f;    // DragFloat3 drag speed
+        std::function<void()> on_change;
+    };
+
+    /**
+     * @ingroup vulkan_gui
      * @brief one debug window: a title, an open flag and a stack of widgets. Widgets are stored
      *        in a stack-style vector — push_back() appends (grows the panel), pop_back() removes
      *        the last one, so add/remove only ever touch the end. draw() opens the ImGui window

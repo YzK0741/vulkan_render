@@ -249,4 +249,28 @@ namespace vulkan {
             this->on_change(*this->value);
         }
     }
+
+    vec3_widget::vec3_widget(std::string label, float* value, float const speed, std::function<void()> on_change)
+        : label{std::move(label)}
+        , value{value}
+        , speed{speed}
+        , on_change{std::move(on_change)} {
+    }
+
+    void vec3_widget::draw() {
+        if (this->value == nullptr) {
+            return;
+        }
+        // snapshot the xyz triplet to detect whether the drag actually changed anything
+        std::array<float, 3> const before = {this->value[0], this->value[1], this->value[2]};
+        if (ImGui::DragFloat3(this->label.c_str(), this->value, this->speed)) {
+            bool changed = false;
+            for (int i = 0; i < 3; ++i) {
+                changed = changed || this->value[i] != before[static_cast<std::size_t>(i)];
+            }
+            if (changed && this->on_change) {
+                this->on_change();
+            }
+        }
+    }
 } // namespace vulkan
