@@ -1,0 +1,68 @@
+# ============================================================
+# vulkan_render 启动配置示例
+# ------------------------------------------------------------
+# 用法：把本文件复制为 config.toml（放在工作目录，或任意位置
+# 后用 --config <路径> 指定），按需修改即可。
+#
+#   cp config.example.toml config.toml
+#   vulkan_render                    # 读 config.toml
+#   vulkan_render --config my.toml   # 读指定文件
+#   vulkan_render <模型> gui         # 命令行参数会覆盖文件对应项
+#
+# 注意：TOML 字符串里反斜杠是转义符，Windows 路径请用正斜杠
+# （如 "C:/..."）或双反斜杠（"C:\\..."）。
+# ============================================================
+
+# ---- 顶层：加载的模型与演示模式 ----
+# model：要加载的 glTF/GLB 文件。留空时依次尝试 paths.model_dir 下的
+#   DamagedHelmet.gltf，再自动向上找 gltf_model/。
+model = "gltf_model/DamagedHelmet.gltf"
+
+# demo：演示/验证模式（空 = 静态显示，可拖动环绕/滚轮缩放）
+#   spin          整个场景绕自身中心持续旋转
+#   spin-subtree  只旋转场景树中一个带几何的节点（层级资产最直观）
+#   nocull        关闭视锥剔除（对比 fps 验证剔除）
+#   closeup       相机拉近到局部特写（应看到部分剔除）
+#   gui           启用 Dear ImGui 调试悬浮层
+demo = ""
+
+# grid_side：>1 时把第一个 pbr 模型铺成 grid_side×grid_side 的实例网格
+#   （单次 instanced draw call 压力测试；0 = 关闭）
+grid_side = 0
+
+# ---- [paths] 资源路径（空 = 自动定位）----
+[paths]
+# shaders_dir：shader SPIR-V 目录。空 = 从 cwd 向上找 "shaders/"
+shaders_dir = ""
+
+# model_dir：model 留空时默认模型所在目录（找其下的 DamagedHelmet.gltf）。
+#   空 = 自动向上找 "gltf_model/"
+model_dir = ""
+
+# ---- [render] 窗口 / 呈现 ----
+[render]
+# 窗口初始尺寸（像素）；可缩放，拖动改变会自动重建 swapchain
+window_width  = 1080
+window_height = 960
+
+# 窗口标题；运行时 fps 统计会追加为 "<title> - <fps> fps"
+window_title = "vulkan_render"
+
+# vsync：false = 优先 Mailbox（低延迟，无垂直同步上限）；true = FIFO（垂直同步）
+vsync = false
+
+# msaa：多重采样数。0 = 自动（取设备最大可用，通常 4/8）；或固定 2/4/8/...
+#   请求值超出设备能力时会自动 clamp
+msaa = 0
+
+# clear_color：每帧清屏背景色（RGB，0..1）。天空盒会盖在其上，
+#   通常只有环境贴图未覆盖处能看到
+clear_color = [0.02, 0.02, 0.03]
+
+# ---- [lighting] IBL 预计算分辨率 ----
+# 调低可加速启动（预计算更少像素），调高可提升环境光/反射质量
+[lighting]
+env_size      = 256   # 基础环境立方体贴图尺寸
+env_mip_count = 5     # 预滤波环境 mip 链长度
+irr_size      = 32    # 辐照度图尺寸
+lut_size      = 256   # BRDF LUT 尺寸
