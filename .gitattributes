@@ -10,3 +10,7 @@ gltf_model/** linguist-vendored
 # Non-code folders (docs, screenshots)
 docs/** linguist-vendored
 snapshot/** linguist-vendored
+
+# Shell scripts must keep LF endings in the working tree (core.autocrlf=true
+# would otherwise check them out as CRLF and break the shebang on POSIX).
+*.sh text eol=lf

@@ -27,13 +27,15 @@ A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), implementin
 
 ## Documentation
 
-The project uses **Doxygen** for API documentation; every module, class, and interface is annotated in-source with `@defgroup` / `@brief`. The generated HTML is **not** committed to the repo (it would drown the source tree in generated files) — generate it yourself whenever you need it:
+The project uses **Doxygen** for API documentation; every module, class, and interface is annotated in-source with `@defgroup` / `@brief`. The generated HTML and the LaTeX manual are **not** committed to the repo (they would drown the source tree in generated files) — build them whenever you need them with the wrapper script at the repo root (`build_docs.sh`; POSIX sh — git-bash / MSYS2 / WSL / Linux). It runs `doxygen Doxyfile`, then compiles the LaTeX manual into `docs/latex/refman.pdf`:
 
 ```bash
-doxygen Doxyfile
+sh build_docs.sh
 ```
 
-Output: `docs/html/` (open `docs/html/index.html`) and `docs/latex/` (both gitignored).
+Raw equivalent: `doxygen Doxyfile` (HTML only).
+
+Output: `docs/html/` (open `docs/html/index.html`) and `docs/latex/` + `docs/latex/refman.pdf` (all gitignored). The LaTeX step needs a TeX distribution (`pdflatex`/`makeindex`; `make`, `latexmk`, or bare `pdflatex` all work — MiKTeX's per-user install under `%LOCALAPPDATA%` is found automatically).
 
 Related source docs (tracked in the repo):
 
@@ -43,6 +45,7 @@ Related source docs (tracked in the repo):
 ## Layout
 
 ```
+├── build_docs.sh            # One-shot Doxygen docs: HTML + LaTeX manual -> refman.pdf (POSIX sh)
 ├── main.cpp                 # Demo: config + model load + PBR/IBL render loop + debug GUI panel
 ├── CMakeLists.txt           # CMake 4.3, C++23 modules build
 ├── config.example.toml      # Annotated startup-config reference (copy to config.toml)
@@ -54,7 +57,7 @@ Related source docs (tracked in the repo):
 ├── gltf_loader/             # gltf_loader module (CPU-side glTF/GLB loading)
 ├── std/                     # std / std.compat modules (vendored libc++ module; required by the -fno-exceptions builds,
 │                            #   avoids configuring CMake's experimental C++ modules flags)
-├── shaders/                 # GLSL sources + precompiled SPIR-V (recompile via compile_shaders.ps1)
+├── shaders/                 # GLSL sources + precompiled SPIR-V (recompile via compile_shaders.ps1 / .sh)
 ├── gltf_model/              # Sample model (DamagedHelmet)
 ├── snapshot/                # Screenshots
 ├── docs/                    # Usage guides + reference shaders; Doxygen HTML is generated on demand (gitignored)
@@ -122,8 +125,16 @@ The third positional argument (or `demo = "..."` in the config) selects a mode:
 
 ### Recompile shaders
 
+PowerShell (Windows):
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File shaders/compile_shaders.ps1
+```
+
+POSIX sh (git-bash / MSYS2 / WSL / Linux):
+
+```bash
+sh shaders/compile_shaders.sh
 ```
 
 ## License
