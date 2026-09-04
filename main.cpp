@@ -76,33 +76,45 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) {
-    // 1. Locate the shaders directory (holds GLSL sources and compiled SPIR-V)
-    std::optional<std::filesystem::path> const shaders_dir = locate_shaders_dir();
-    if (!shaders_dir) {
-        utility::panic("cannot find shaders/ directory. run the program from the project root or a cmake-build-* directory.");
-    }
-
-    // 2. Resolve startup settings: config file (config.toml by default, --config <path> to
-    //    override) merged with positional argv overrides. argv[1] = model, argv[2] = grid side
-    //    (numeric) or demo, argv[3] = demo.
+    // 1. Resolve startup settings first: config file (config.toml by default, --config <path>
+    //    to override) merged with positional argv overrides. argv[1] = model, argv[2] = grid
+    //    side (numeric) or demo, argv[3] = demo.
     app_config::app_settings const settings = app_config::resolve_from_argv(argc, argv);
     if (!settings.config_file.empty()) {
         utility::log("app_config: loaded startup settings from '{}'", settings.config_file);
     }
 
-    // Pick the model file: independent of the runtime, needed before kicking off the async load
-    // below (settings.model when configured/argv-given; otherwise default DamagedHelmet under
-    // gltf_model/).
+    // 2. Shaders directory (holds GLSL sources and compiled SPIR-V): explicit config path when
+    //    given, otherwise walk up from the working directory to find shaders/.
+    std::filesystem::path shaders_dir;
+    if (!settings.shaders_dir.empty()) {
+        shaders_dir = settings.shaders_dir;
+        if (!std::filesystem::is_directory(shaders_dir)) {
+            utility::panic(std::source_location::current(), "cannot find configured shaders_dir '{}'.", settings.shaders_dir);
+        }
+    } else if (std::optional<std::filesystem::path> const located = locate_shaders_dir()) {
+        shaders_dir = *located;
+    } else {
+        utility::panic("cannot find shaders/ directory. run the program from the project root, pass shaders_dir in config.toml, or use a cmake-build-* directory.");
+    }
+
+    // 3. Pick the model file: settings.model when configured/argv-given; else the default model
+    //    under settings.model_dir (or the auto-located gltf_model/).
     std::string model_path;
     if (!settings.model.empty()) {
         model_path = settings.model;
+    } else if (!settings.model_dir.empty()) {
+        model_path = (std::filesystem::path(settings.model_dir) / "DamagedHelmet.gltf").string();
+        if (!std::filesystem::is_regular_file(model_path)) {
+            utility::panic(std::source_location::current(), "cannot find model '{}' under configured model_dir '{}'.", "DamagedHelmet.gltf", settings.model_dir);
+        }
     } else if (std::optional<std::filesystem::path> const located = locate_model_file()) {
         model_path = located->string();
     } else {
         utility::panic("cannot find gltf_model/DamagedHelmet.gltf. run the program from the project root or pass a model path as argv[1]");
     }
 
-    // 3. Kick off the runtime-independent heavy CPU stages BEFORE constructing the (heavy)
+    // 4. Kick off the runtime-independent heavy CPU stages BEFORE constructing the (heavy)
     //    Vulkan runtime, so window/instance/device/swapchain init overlaps the model parse +
     //    texture decode and the base environment cubemap generation.
     constexpr int env_size = 256;
@@ -111,11 +123,12 @@ int main(int argc, char** argv) {
     auto env_future = vulkan::generate_environment_cubemap_async(env_size);
     auto load_future = gltf::load_model_async(model_path);
 
-    // 4. Construct vulkan::runtime from the startup render settings (window size / vsync /
-    //    MSAA; the defaults in render_settings mirror the historic hardcoded values)
+    // 5. Construct vulkan::runtime from the startup render settings (window size / title /
+    //    vsync / MSAA; the defaults in render_settings mirror the historic hardcoded values)
     vulkan::core_create_info core_options = {};
     core_options.window_width = settings.render.window_width;
     core_options.window_height = settings.render.window_height;
+    core_options.window_title = settings.render.window_title;
     core_options.vsync = settings.render.vsync;
     core_options.msaa_samples = settings.render.msaa;
     vulkan::runtime runtime{core_options};
@@ -123,13 +136,13 @@ int main(int argc, char** argv) {
     utility::log("vulkan runtime initialized: {:.1f} ms (async model load + env generation running in background)", std::chrono::duration<double, std::milli>(runtime_ready - startup_start).count());
 
     // 5. Pipelines: triangle + standard PBR + skybox background (fullscreen environment pass)
-    load_and_create_pipeline(runtime, *shaders_dir, "triangle", "triangle.vert.spv", "triangle.frag.spv");
-    load_and_create_pipeline(runtime, *shaders_dir, "pbr", "pbr.vert.spv", "pbr.frag.spv");
+    load_and_create_pipeline(runtime, shaders_dir, "triangle", "triangle.vert.spv", "triangle.frag.spv");
+    load_and_create_pipeline(runtime, shaders_dir, "pbr", "pbr.vert.spv", "pbr.frag.spv");
     {
         std::vector<unsigned char> vertex_code;
         std::vector<unsigned char> fragment_code;
-        load_shader(*shaders_dir, "skybox.vert.spv", vertex_code);
-        load_shader(*shaders_dir, "skybox.frag.spv", fragment_code);
+        load_shader(shaders_dir, "skybox.vert.spv", vertex_code);
+        load_shader(shaders_dir, "skybox.frag.spv", fragment_code);
         auto const skybox_result = runtime.make_skybox_pipeline(vertex_code, fragment_code);
         if (!skybox_result) {
             utility::panic(std::source_location::current(), "failed to create skybox pipeline: {}", skybox_result.error());
@@ -141,8 +154,8 @@ int main(int argc, char** argv) {
         // map. Created once; enable_shadows() below activates the pass after the scene import.
         std::vector<unsigned char> vertex_code;
         std::vector<unsigned char> fragment_code;
-        load_shader(*shaders_dir, "shadow.vert.spv", vertex_code);
-        load_shader(*shaders_dir, "shadow.frag.spv", fragment_code);
+        load_shader(shaders_dir, "shadow.vert.spv", vertex_code);
+        load_shader(shaders_dir, "shadow.frag.spv", fragment_code);
         auto const shadow_result = runtime.make_shadow_pipeline(vertex_code, fragment_code);
         if (!shadow_result) {
             utility::log("shadow pipeline disabled: {}", shadow_result.error());
@@ -449,7 +462,7 @@ int main(int argc, char** argv) {
         if (fps_elapsed >= 1.0) {
             double const fps = fps_frame_count / fps_elapsed;
             utility::log("fps: {:.1f} ({:.2f} ms/frame)", fps, 1000.0 * fps_elapsed / fps_frame_count);
-            runtime->set_window_title(std::format("vulkan_render - {:.1f} fps", fps));
+            runtime->set_window_title(std::format("{} - {:.1f} fps", settings.render.window_title, fps));
             fps_elapsed = 0.0;
             fps_frame_count = 0;
         }

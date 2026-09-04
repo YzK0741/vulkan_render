@@ -16,7 +16,7 @@ namespace vulkan {
 
     core::core(core_create_info const& options)
         : create_options{options} {
-        init_window(options.window_width, options.window_height);
+        init_window(options.window_width, options.window_height, options.window_title);
         init_instance();
         init_surface();
         init_device_and_queue();
@@ -54,7 +54,7 @@ namespace vulkan {
         window = glfwCreateWindow(
             width,
             height,
-            (window_name.data() != nullptr) ? window_name.data() : "vulkan",
+            window_name.empty() ? "vulkan" : window_name.data(),
             nullptr,
             nullptr);
 

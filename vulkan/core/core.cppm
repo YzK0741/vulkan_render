@@ -53,6 +53,7 @@ namespace vulkan {
     export struct core_create_info {
         int window_width = 1080;
         int window_height = 960;
+        std::string window_title = "vulkan_render"; // GLFW window title
         // vsync: false (default) prefers VK_PRESENT_MODE_MAILBOX_KHR, true prefers FIFO_KHR
         bool vsync = false;
         // MSAA sample count: 0 (default) = auto (device max usable), otherwise a fixed count

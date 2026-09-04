@@ -20,10 +20,13 @@ import utility;
  * model = "gltf_model/DamagedHelmet.gltf"
  * demo  = ""        # spin | spin-subtree | nocull | closeup | gui (empty = none)
  * grid_side = 0     # > 1 enables the instancing stress grid (0 = off)
+ * shaders_dir = ""  # shader SPIR-V directory (empty = auto-locate "shaders/" upward)
+ * model_dir = ""    # default model dir used when model is empty (empty = auto-locate gltf_model/)
  *
  * [render]
  * window_width  = 1080
  * window_height = 960
+ * window_title  = "vulkan"
  * vsync = false    # false = mailbox (current default), true = FIFO
  * msaa  = 0        # 0 = auto (device max), else a fixed sample count (4/8/...)
  * @endcode
@@ -37,8 +40,9 @@ namespace app_config {
     export struct render_settings {
         int window_width = 1080;
         int window_height = 960;
-        bool vsync = false; // false = mailbox present mode, true = FIFO
-        int msaa = 0;       // 0 = auto (device max usable), otherwise a fixed sample count
+        std::string window_title = "vulkan_render"; // GLFW window title
+        bool vsync = false;                         // false = mailbox present mode, true = FIFO
+        int msaa = 0;                               // 0 = auto (device max usable), otherwise a fixed sample count
     };
 
     /**
@@ -48,9 +52,11 @@ namespace app_config {
      *       built-in defaults, mirroring the pre-config argv behavior.
      */
     export struct app_settings {
-        std::string model = {}; // model file (empty = locate default, e.g. gltf_model/DamagedHelmet.gltf)
-        std::string demo = {};  // spin | spin-subtree | nocull | closeup | gui (empty = none)
-        int grid_side = 0;      // > 1 enables the instancing stress grid
+        std::string model = {};       // model file (empty = locate default, e.g. gltf_model/DamagedHelmet.gltf)
+        std::string demo = {};        // spin | spin-subtree | nocull | closeup | gui (empty = none)
+        int grid_side = 0;            // > 1 enables the instancing stress grid
+        std::string shaders_dir = {}; // shader directory (empty = auto-locate "shaders/" upward from cwd)
+        std::string model_dir = {};   // default model directory (used when model is empty; auto-locate gltf_model/ if empty)
         render_settings render = {};
         std::string config_file = {}; // path actually read (empty = no config file found / used)
     };

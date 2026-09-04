@@ -37,6 +37,16 @@ namespace app_config {
                 settings.grid_side = static_cast<int>(*value);
             }
         }
+        if (toml::node const* node = table.get("shaders_dir")) {
+            if (std::optional<std::string> const value = node->value<std::string>()) {
+                settings.shaders_dir = *value;
+            }
+        }
+        if (toml::node const* node = table.get("model_dir")) {
+            if (std::optional<std::string> const value = node->value<std::string>()) {
+                settings.model_dir = *value;
+            }
+        }
 
         if (toml::table const* render = table.get_as<toml::table>("render")) {
             if (toml::node const* node = render->get("window_width")) {
@@ -47,6 +57,11 @@ namespace app_config {
             if (toml::node const* node = render->get("window_height")) {
                 if (std::optional<int64_t> const value = node->value<int64_t>()) {
                     settings.render.window_height = static_cast<int>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("window_title")) {
+                if (std::optional<std::string> const value = node->value<std::string>()) {
+                    settings.render.window_title = *value;
                 }
             }
             if (toml::node const* node = render->get("vsync")) {
