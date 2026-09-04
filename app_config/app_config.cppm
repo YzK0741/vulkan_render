@@ -59,6 +59,8 @@ namespace app_config {
         bool vsync = false;                                       // false = mailbox present mode, true = FIFO
         int msaa = 0;                                             // 0 = auto (device max usable), otherwise a fixed sample count
         std::array<float, 3> clear_color = {0.02f, 0.02f, 0.03f}; // background clear color (RGB, 0..1)
+        bool skybox = true;                                       // draw the environment skybox pass each frame
+        bool shadow = true;                                       // record the directional shadow pass each frame
     };
 
     /**

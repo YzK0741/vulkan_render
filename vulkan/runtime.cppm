@@ -115,6 +115,11 @@ namespace vulkan {
         bool ibl_ready = false;
         // background pass (fullscreen triangle, no depth test): drawn first every frame
         std::optional<vk_pipeline> skybox_pipeline = std::nullopt;
+        // per-stage render toggles: whether the skybox / shadow pass actually records this frame.
+        // Skybox off leaves just the clear color; shadow off skips the depth pass (the shadow map
+        // is cleared to fully-lit so the main pass samples "no shadow"). Both default on.
+        bool skybox_enabled = true;
+        bool shadow_enabled = true;
 
         // ---- directional shadow mapping (scene set binding 7 light UBO + binding 8 shadow map) ----
         static constexpr uint32_t shadow_map_size = 2048;
@@ -215,6 +220,7 @@ namespace vulkan {
         void write_ibl_bindings() const;                               // (re)write bindings 2-4 with the current IBL views / placeholders
         void write_light_and_shadow_bindings();                        // (re)write binding 7 (light UBO) + binding 8 (shadow map)
         uint32_t register_material(primitive_create_info const& info); // upload textures into the array, append a material_record, return its index
+        void clear_shadow_maps_to_lit();                               // one-shot GPU clear of every frame slot's shadow map to depth 1.0
 
     public:
         // A non-const runtime exposes a mutable filter (e.g. runtime->get_vma()); a const runtime
@@ -454,6 +460,26 @@ namespace vulkan {
         void set_frustum_culling(bool enabled) noexcept {
             this->frustum_culling = enabled;
         }
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief enable or disable drawing the skybox background pass each frame
+         * @param enabled true (default) draws the environment skybox; false leaves the clear color
+         * @note cheap toggle: only affects command recording, no resource rebuild
+         */
+        void set_skybox_enabled(bool enabled) noexcept {
+            this->skybox_enabled = enabled;
+        }
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief enable or disable recording the directional shadow pass each frame
+         * @param enabled true (default) renders the shadow map; false skips the depth pass and
+         *        clears the shadow map to fully-lit so the main pass shows no shadows
+         * @note requires enable_shadows() to have succeeded; turning it off clears the shadow maps
+         *       (a one-shot GPU command), re-enabling restores per-frame rendering
+         */
+        void set_shadow_enabled(bool enabled);
 
         /**
          * @ingroup vulkan_runtime

@@ -136,6 +136,9 @@ int main(int argc, char** argv) {
     core_options.msaa_samples = settings.render.msaa;
     vulkan::runtime runtime{core_options};
     runtime.clear_color = glm::vec3(settings.render.clear_color[0], settings.render.clear_color[1], settings.render.clear_color[2]);
+    // render-stage toggles from config: skybox applies immediately (only affects recording);
+    // shadow is applied after enable_shadows() below (it needs the shadow maps to exist)
+    runtime.set_skybox_enabled(settings.render.skybox);
     auto const runtime_ready = std::chrono::steady_clock::now();
     utility::log("vulkan runtime initialized: {:.1f} ms (async model load + env generation running in background)", std::chrono::duration<double, std::milli>(runtime_ready - startup_start).count());
 
@@ -303,6 +306,10 @@ int main(int argc, char** argv) {
     //      the sphere around where the primitives actually sit (they were translated by the import
     //      offset above, so their world-space center is scene_sink) with their original radius
     runtime.enable_shadows(scene_sink, scene_radius);
+    // apply the config shadow toggle now that the shadow maps exist (turning it off clears them)
+    if (!settings.render.shadow) {
+        runtime.set_shadow_enabled(false);
+    }
 
     // 12. Optional instancing stress: grid_side > 1 (config or argv) draws the first imported
     //     primitive as a grid_side x grid_side grid in ONE instanced draw call
@@ -413,6 +420,8 @@ int main(int argc, char** argv) {
     // runtime). The checkbox is a slider-free toggle bound to an external bool.
     double gui_fps = 0.0;
     bool gui_cull_enabled = true;
+    bool gui_skybox_enabled = settings.render.skybox;
+    bool gui_shadow_enabled = settings.render.shadow;
     if (use_gui) {
         runtime.enable_debug_gui();
         vulkan::gui::debug_panel& panel = runtime.debug_gui().add_panel("vulkan_render debug");
@@ -421,11 +430,19 @@ int main(int argc, char** argv) {
             "frustum culling",
             &gui_cull_enabled,
             [&runtime](bool const enabled) { runtime.set_frustum_culling(enabled); }));
+        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
+            "skybox",
+            &gui_skybox_enabled,
+            [&runtime](bool const enabled) { runtime.set_skybox_enabled(enabled); }));
+        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
+            "shadow",
+            &gui_shadow_enabled,
+            [&runtime](bool const enabled) { runtime.set_shadow_enabled(enabled); }));
         // camera orbit target: dragging it moves what the camera looks at / orbits around
         // (camera.target is a glm::vec3, i.e. three contiguous floats; the runtime rebuilds the
         // camera UBO from it every frame, so no on_change callback is needed)
         panel.push_back(std::make_unique<vulkan::gui::vec3_widget>("camera target", &runtime.camera.target.x, 0.05f));
-        utility::log("gui: Dear ImGui debug overlay enabled (panel + 3 widgets)");
+        utility::log("gui: Dear ImGui debug overlay enabled (panel + 5 widgets)");
     }
 
     // All per-frame decisions (event polling, ESC/close response, minimize skip, swapchain

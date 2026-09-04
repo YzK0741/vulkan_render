@@ -90,6 +90,16 @@ namespace app_config {
                     }
                 }
             }
+            if (toml::node const* node = render->get("skybox")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.skybox = *value;
+                }
+            }
+            if (toml::node const* node = render->get("shadow")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.shadow = *value;
+                }
+            }
         }
 
         if (toml::table const* lighting = table.get_as<toml::table>("lighting")) {

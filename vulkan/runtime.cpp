@@ -854,7 +854,7 @@ namespace vulkan {
         //      Dynamic rendering only: depth-only rendering needs no color attachment, which the
         //      classic render-pass fallback cannot express (make_shadow_pipeline already failed
         //      there, so this block is skipped together with shadows_enabled).
-        if (vk.use_dynamic_rendering && this->shadow_pipeline && this->shadows_enabled) {
+        if (vk.use_dynamic_rendering && this->shadow_pipeline && this->shadows_enabled && this->shadow_enabled) {
             auto const* shadow_detail = vk.vma.get_image_detail(this->shadow_image_handles[frame_slot]);
             if (shadow_detail != nullptr) {
                 // 6a. transition the shadow image to a renderable depth attachment (loadOp CLEAR
@@ -1012,14 +1012,15 @@ namespace vulkan {
             pipeline.viewport = full_viewport;
             pipeline.scissor = full_scissor;
         }
-        if (this->skybox_pipeline) {
+        if (this->skybox_pipeline && this->skybox_enabled) {
             this->skybox_pipeline->viewport = full_viewport;
             this->skybox_pipeline->scissor = full_scissor;
         }
 
         // Background pass first: the skybox draws a fullscreen triangle (no vertex/index buffers)
-        // with depth test/write disabled, then the models render over it
-        if (this->skybox_pipeline) {
+        // with depth test/write disabled, then the models render over it. Skipped when the skybox
+        // stage is toggled off — the frame then just shows the clear color behind the models.
+        if (this->skybox_pipeline && this->skybox_enabled) {
             this->skybox_pipeline->begin_pipeline(*command_buffer);
             vkCmdDraw(*command_buffer, 3, 1, 0, 0);
         }
@@ -1206,6 +1207,117 @@ namespace vulkan {
         this->shadows_enabled = true;
         utility::log("shadow mapping enabled: light frustum center ({:.2f}, {:.2f}, {:.2f}), radius {:.2f}",
                      scene_center.x, scene_center.y, scene_center.z, scene_radius);
+    }
+
+    void runtime::set_shadow_enabled(bool const enabled) {
+        if (this->shadow_enabled == enabled) {
+            return;
+        }
+        this->shadow_enabled = enabled;
+        // Turning shadows OFF: the main pass still samples binding 8, so clear every frame
+        // slot's shadow map to depth 1.0 ("fully lit") — otherwise the unrendered image content
+        // is undefined. Re-enabling restores the per-frame shadow pass which clears+rewrites it.
+        if (!enabled) {
+            this->clear_shadow_maps_to_lit();
+            utility::log("shadow pass disabled (shadow maps cleared to fully-lit)");
+        } else {
+            utility::log("shadow pass enabled");
+        }
+    }
+
+    void runtime::clear_shadow_maps_to_lit() {
+        core& vk = this->vulkan_core;
+        if (this->shadow_image_handles.empty() || vk.command_pool == VK_NULL_HANDLE) {
+            return;
+        }
+
+        // one-shot command buffer for the clears
+        VkCommandBufferAllocateInfo alloc_info = {};
+        alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        alloc_info.commandPool = vk.command_pool;
+        alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        alloc_info.commandBufferCount = 1;
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        if (vkAllocateCommandBuffers(vk.device, &alloc_info, &cmd) != VK_SUCCESS) {
+            utility::log("shadow clear: failed to allocate command buffer");
+            return;
+        }
+        VkCommandBufferBeginInfo begin_info = {};
+        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(cmd, &begin_info) != VK_SUCCESS) {
+            vkFreeCommandBuffers(vk.device, vk.command_pool, 1, &cmd);
+            return;
+        }
+
+        VkImageSubresourceRange const depth_range = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        for (uint64_t const handle : this->shadow_image_handles) {
+            auto const* detail = vk.vma.get_image_detail(handle);
+            if (detail == nullptr) {
+                continue;
+            }
+            // UNDEFINED -> TRANSFER_DST so the clear overwrites whatever was there
+            VkImageMemoryBarrier2 to_transfer = {};
+            to_transfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            to_transfer.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+            to_transfer.srcAccessMask = 0;
+            to_transfer.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            to_transfer.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            to_transfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            to_transfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            to_transfer.image = detail->image;
+            to_transfer.subresourceRange = depth_range;
+            VkDependencyInfo dep_to = {};
+            dep_to.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dep_to.imageMemoryBarrierCount = 1;
+            dep_to.pImageMemoryBarriers = &to_transfer;
+            vkCmdPipelineBarrier2(cmd, &dep_to);
+
+            VkClearDepthStencilValue const clear = {1.0f, 0};
+            vkCmdClearDepthStencilImage(cmd, detail->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &depth_range);
+
+            // TRANSFER -> SHADER_READ (the main pass samples it)
+            VkImageMemoryBarrier2 to_shader = {};
+            to_shader.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            to_shader.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            to_shader.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            to_shader.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            to_shader.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+            to_shader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            to_shader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            to_shader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            to_shader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            to_shader.image = detail->image;
+            to_shader.subresourceRange = depth_range;
+            VkDependencyInfo dep_to_shader = {};
+            dep_to_shader.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dep_to_shader.imageMemoryBarrierCount = 1;
+            dep_to_shader.pImageMemoryBarriers = &to_shader;
+            vkCmdPipelineBarrier2(cmd, &dep_to_shader);
+        }
+        if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+            vkFreeCommandBuffers(vk.device, vk.command_pool, 1, &cmd);
+            return;
+        }
+
+        VkFenceCreateInfo fence_info = {};
+        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VkFence fence = VK_NULL_HANDLE;
+        if (vkCreateFence(vk.device, &fence_info, nullptr, &fence) != VK_SUCCESS) {
+            vkFreeCommandBuffers(vk.device, vk.command_pool, 1, &cmd);
+            return;
+        }
+        VkSubmitInfo submit_info = {};
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &cmd;
+        if (vkQueueSubmit(vk.graphics_queue, 1, &submit_info, fence) == VK_SUCCESS) {
+            vkWaitForFences(vk.device, 1, &fence, VK_TRUE, UINT64_MAX);
+        }
+        vkDestroyFence(vk.device, fence, nullptr);
+        vkFreeCommandBuffers(vk.device, vk.command_pool, 1, &cmd);
     }
 
     void runtime::set_scene_transform(glm::mat4 const& transform) {

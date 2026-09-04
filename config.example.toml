@@ -60,6 +60,12 @@ msaa = 0
 #   over it, so it only shows where the environment pass leaves the background.
 clear_color = [0.02, 0.02, 0.03]
 
+# skybox: draw the environment skybox background pass each frame (false = clear color only)
+skybox = true
+
+# shadow: record the directional shadow pass each frame (false = no shadows, fully lit)
+shadow = true
+
 # ---- [lighting] IBL precompute resolutions ----
 # Lower values speed up startup (fewer pixels precomputed); higher values improve
 # ambient / reflection quality.
