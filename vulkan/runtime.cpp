@@ -8,6 +8,12 @@ module vulkan.runtime;
 
 import utility;
 
+// Route std::pmr allocations through mimalloc for this TU (utility.better_pmr). Idempotent:
+// init_pmr() returns the same process-wide singleton no matter which TU calls it first, so
+// main.cpp's keep-alive and this one coexist safely. The reference itself is never read; it
+// only forces the (dynamic) initialization before any pmr container in this TU is constructed.
+[[maybe_unused]] static auto& pmr = utility::init_pmr(); // NOLINT(keep-alive)
+
 namespace {
     vulkan::runtime* runtime_from_window(GLFWwindow* window) {
         return static_cast<vulkan::runtime*>(glfwGetWindowUserPointer(window));
@@ -762,10 +768,10 @@ namespace vulkan {
         //     frustum_cull). update_world() above rewrites the same world matrices each frame, so
         //     a non-dirty scene keeps identical world AABBs and the cached BVH stays valid.
         // local aliases into the per-frame state filled above (keeps the cull math unchanged)
-        std::vector<primitive const*> const& frame_leaves = this->frame_leaves;
+        std::pmr::vector<primitive const*> const& frame_leaves = this->frame_leaves;
         float const& aspect = this->current_aspect;
         camera_ubo const& ubo = this->current_ubo;
-        std::vector<primitive const*> visible_leaves = this->frame_leaves; // fallback: no culling
+        std::pmr::vector<primitive const*> visible_leaves = this->frame_leaves; // fallback: no culling
         std::size_t culled_count = 0;
         if (this->frustum_culling) {
             // camera key: yaw, pitch, distance, target (the orbit state that shapes the frustum)
@@ -805,7 +811,7 @@ namespace vulkan {
 
             if (this->camera_moved || scene_changed_this_frame || this->cull_visible.empty()) {
                 // camera moved or the scene changed: re-run frustum cull against the current BVH
-                std::vector<primitive const*> visible;
+                std::pmr::vector<primitive const*> visible;
                 visible.reserve(frame_leaves.size());
                 // leaves without bounds (instanced etc.) are always drawn
                 for (primitive const* leaf : frame_leaves) {
@@ -1439,7 +1445,7 @@ namespace vulkan {
         this->bvh_dirty = true; // leaves removed -> culling BVH must be rebuilt
     }
 
-    void runtime::collect_leaf_primitives(scene_tree::scene_node const& node, std::vector<primitive const*>& out) const {
+    void runtime::collect_leaf_primitives(scene_tree::scene_node const& node, std::pmr::vector<primitive const*>& out) const {
         scene_tree::visit_primitives(node, glm::mat4(1.0f), [&out](scene_tree::scene_node const& n, glm::mat4 const&) {
             out.push_back(static_cast<primitive const*>(n.primitive_leaf.get()));
         });

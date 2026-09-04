@@ -156,8 +156,8 @@ namespace vulkan {
         // the last built tree (world AABBs are captured at build time and stay valid as long as
         // the scene is unchanged: update_world rewrites the same matrices each frame).
         std::optional<utility::bvh<primitive>> cull_bvh = std::nullopt;
-        bool bvh_dirty = true;                           // scene structure/transforms changed -> rebuild
-        std::vector<primitive const*> cull_visible = {}; // last culled result (main-pass set)
+        bool bvh_dirty = true;                                // scene structure/transforms changed -> rebuild
+        std::pmr::vector<primitive const*> cull_visible = {}; // last culled result (main-pass set)
         // camera identity for result reuse: yaw, pitch, distance, target.xyz (7 floats)
         std::array<float, 7> camera_key = {};
         bool camera_moved = true; // camera key differs from the last cull frame
@@ -165,12 +165,12 @@ namespace vulkan {
         std::vector<vk_command_buffer> command_buffers;
         // per-frame state shared by the split frame steps (render_frame() calls them in order,
         // so an external caller can interleave its own work between the same steps)
-        uint32_t current_image_index = 0;                 // swapchain image acquired by set_up_frame_environment()
-        float current_aspect = 1.0f;                      // swapchain aspect for the frame's UBO + culling
-        camera_ubo current_ubo = {};                      // camera UBO snapshot written in set_up_frame_environment()
-        std::vector<primitive const*> frame_leaves = {};  // every scene leaf this frame (shadow + cull input)
-        std::vector<primitive const*> frame_visible = {}; // frustum-visible subset (main pass)
-        std::size_t frame_culled_count = 0;               // leaves culled this frame (for the log)
+        uint32_t current_image_index = 0;                      // swapchain image acquired by set_up_frame_environment()
+        float current_aspect = 1.0f;                           // swapchain aspect for the frame's UBO + culling
+        camera_ubo current_ubo = {};                           // camera UBO snapshot written in set_up_frame_environment()
+        std::pmr::vector<primitive const*> frame_leaves = {};  // every scene leaf this frame (shadow + cull input)
+        std::pmr::vector<primitive const*> frame_visible = {}; // frustum-visible subset (main pass)
+        std::size_t frame_culled_count = 0;                    // leaves culled this frame (for the log)
         // optional Dear ImGui debug overlay; inactive until enable_debug_gui() succeeds. The
         // runtime drives it inside the frame steps (new_frame before recording, record after the
         // runtime's own draw calls) so callers only manage its content via debug_gui().
@@ -184,7 +184,7 @@ namespace vulkan {
          * @note leaves are stored as scene_tree::primitive; every leaf this runtime creates is a
          *       vulkan::primitive (the GPU primitive implements scene_tree::primitive), so the cast is safe
          */
-        void collect_leaf_primitives(scene_tree::scene_node const& node, std::vector<primitive const*>& out) const;
+        void collect_leaf_primitives(scene_tree::scene_node const& node, std::pmr::vector<primitive const*>& out) const;
         /**
          * @ingroup vulkan_runtime
          * @brief destroy every leaf primitive under @p node (recursively) with @p vma

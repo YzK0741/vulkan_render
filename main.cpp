@@ -8,6 +8,12 @@ import vulkan.math;
 import vulkan.runtime.scene_tree; // scene storage + GPU primitives (was vulkan.model)
 import vulkan.runtime;
 
+// Route std::pmr allocations through mimalloc (utility.better_pmr) before main(): this
+// file-scope reference's dynamic initialization runs at startup, so every runtime/scene
+// object built below already allocates its std::pmr vectors from mimalloc. Idempotent —
+// other TUs (vulkan/runtime.cpp) keep their own copy of the same singleton.
+[[maybe_unused]] static auto& pmr = utility::init_pmr(); // NOLINT(keep-alive)
+
 namespace {
     // Read a single shader SPIR-V file and print info; panic on failure
     void load_shader(std::filesystem::path const& dir, std::string_view file_name, std::vector<unsigned char>& out) {

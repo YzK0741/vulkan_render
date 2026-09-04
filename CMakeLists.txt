@@ -177,9 +177,12 @@ set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE $<$<CONFIG:Rel
 # dependency is declared here, on the library that actually uses the EVP_* symbols. It propagates
 # to consumers (vulkan_lib / gltf_loader / vulkan_render) at link time, so the executable no
 # longer needs to link OpenSSL itself.
+# better_pmr (utility.better_pmr) routes std::pmr allocations through mimalloc;
+# the library lives in the clang64 default lib path, so the bare name links it
 target_link_libraries(utility
         std_lib
         OpenSSL::Crypto
+        mimalloc
 )
 
 target_link_libraries(thread_pool
