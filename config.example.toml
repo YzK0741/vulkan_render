@@ -1,68 +1,70 @@
 # ============================================================
-# vulkan_render 启动配置示例
+# vulkan_render startup configuration (example)
 # ------------------------------------------------------------
-# 用法：把本文件复制为 config.toml（放在工作目录，或任意位置
-# 后用 --config <路径> 指定），按需修改即可。
+# Copy this file to config.toml (in the working directory, or anywhere
+# and point to it with --config <path>), then adjust as needed.
 #
 #   cp config.example.toml config.toml
-#   vulkan_render                    # 读 config.toml
-#   vulkan_render --config my.toml   # 读指定文件
-#   vulkan_render <模型> gui         # 命令行参数会覆盖文件对应项
+#   vulkan_render                    # reads config.toml
+#   vulkan_render --config my.toml   # reads the given file
+#   vulkan_render <model> gui        # argv overrides the file entries
 #
-# 注意：TOML 字符串里反斜杠是转义符，Windows 路径请用正斜杠
-# （如 "C:/..."）或双反斜杠（"C:\\..."）。
+# Note: backslashes are escapes in TOML strings, so use forward slashes
+# for Windows paths ("C:/...") or double backslashes ("C:\\...").
 # ============================================================
 
-# ---- 顶层：加载的模型与演示模式 ----
-# model：要加载的 glTF/GLB 文件。留空时依次尝试 paths.model_dir 下的
-#   DamagedHelmet.gltf，再自动向上找 gltf_model/。
+# ---- top level: model to load + demo mode ----
+# model: glTF/GLB file to load. When empty, tries DamagedHelmet.gltf under
+#   paths.model_dir, then auto-locates gltf_model/ upward from the cwd.
 model = "gltf_model/DamagedHelmet.gltf"
 
-# demo：演示/验证模式（空 = 静态显示，可拖动环绕/滚轮缩放）
-#   spin          整个场景绕自身中心持续旋转
-#   spin-subtree  只旋转场景树中一个带几何的节点（层级资产最直观）
-#   nocull        关闭视锥剔除（对比 fps 验证剔除）
-#   closeup       相机拉近到局部特写（应看到部分剔除）
-#   gui           启用 Dear ImGui 调试悬浮层
+# demo: demo / verification mode (empty = static view; drag to orbit, wheel to zoom)
+#   spin          rotate the whole scene around its own center continuously
+#   spin-subtree  rotate one geometry-carrying scene-tree node (best on hierarchy assets)
+#   nocull        disable frustum culling (compare fps to verify culling)
+#   closeup       pull the camera into a partial close-up (expect some culling)
+#   gui           enable the Dear ImGui debug overlay
 demo = ""
 
-# grid_side：>1 时把第一个 pbr 模型铺成 grid_side×grid_side 的实例网格
-#   （单次 instanced draw call 压力测试；0 = 关闭）
+# grid_side: when > 1, lays the first pbr model out as a grid_side x grid_side
+#   instanced grid (single instanced draw call stress test; 0 = off)
 grid_side = 0
 
-# ---- [paths] 资源路径（空 = 自动定位）----
+# ---- [paths] resource directories (empty = auto-locate) ----
 [paths]
-# shaders_dir：shader SPIR-V 目录。空 = 从 cwd 向上找 "shaders/"
+# shaders_dir: shader SPIR-V directory. Empty = find "shaders/" upward from cwd.
 shaders_dir = ""
 
-# model_dir：model 留空时默认模型所在目录（找其下的 DamagedHelmet.gltf）。
-#   空 = 自动向上找 "gltf_model/"
+# model_dir: default model directory used when model is empty (looks for
+#   DamagedHelmet.gltf inside). Empty = auto-locate "gltf_model/" upward.
 model_dir = ""
 
-# ---- [render] 窗口 / 呈现 ----
+# ---- [render] window / presentation ----
 [render]
-# 窗口初始尺寸（像素）；可缩放，拖动改变会自动重建 swapchain
+# Initial window size in pixels; the window is resizable, resizing rebuilds the
+# swapchain automatically.
 window_width  = 1080
 window_height = 960
 
-# 窗口标题；运行时 fps 统计会追加为 "<title> - <fps> fps"
+# Window title; per-second fps reporting appends as "<title> - <fps> fps".
 window_title = "vulkan_render"
 
-# vsync：false = 优先 Mailbox（低延迟，无垂直同步上限）；true = FIFO（垂直同步）
+# vsync: false = prefer Mailbox (low latency, uncapped); true = FIFO (vsync).
 vsync = false
 
-# msaa：多重采样数。0 = 自动（取设备最大可用，通常 4/8）；或固定 2/4/8/...
-#   请求值超出设备能力时会自动 clamp
+# msaa: multisample count. 0 = auto (device max usable, usually 4 or 8);
+#   or a fixed 2/4/8/...; clamped to the device max when unsupported.
 msaa = 0
 
-# clear_color：每帧清屏背景色（RGB，0..1）。天空盒会盖在其上，
-#   通常只有环境贴图未覆盖处能看到
+# clear_color: per-frame background clear color (RGB, 0..1). The skybox is drawn
+#   over it, so it only shows where the environment pass leaves the background.
 clear_color = [0.02, 0.02, 0.03]
 
-# ---- [lighting] IBL 预计算分辨率 ----
-# 调低可加速启动（预计算更少像素），调高可提升环境光/反射质量
+# ---- [lighting] IBL precompute resolutions ----
+# Lower values speed up startup (fewer pixels precomputed); higher values improve
+# ambient / reflection quality.
 [lighting]
-env_size      = 256   # 基础环境立方体贴图尺寸
-env_mip_count = 5     # 预滤波环境 mip 链长度
-irr_size      = 32    # 辐照度图尺寸
-lut_size      = 256   # BRDF LUT 尺寸
+env_size      = 256   # base environment cubemap size
+env_mip_count = 5     # prefiltered environment mip chain length
+irr_size      = 32    # irradiance cubemap size
+lut_size      = 256   # BRDF LUT size
