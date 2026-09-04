@@ -166,6 +166,14 @@ namespace vulkan::gui {
         void set_open(bool open) noexcept;
         [[nodiscard]] bool open() const noexcept;
 
+        /**
+         * @ingroup vulkan_gui
+         * @brief set the panel's default window size, applied on first use (ImGuiCond_FirstUseEver)
+         *        so a later user resize or the persisted imgui_layout.ini overrides it
+         * @param width,height desired default size; pass 0 for either to keep ImGui's auto-size
+         */
+        void set_default_size(float width, float height) noexcept;
+
         /** @brief draw the ImGui window and all widgets (called by gui_content::record) */
         void draw();
 
@@ -173,6 +181,8 @@ namespace vulkan::gui {
         std::string title;
         std::vector<std::unique_ptr<widget>> items; // widget stack (tail = top)
         bool is_open = true;
+        float default_width = 0.0f;  // 0 = auto-size
+        float default_height = 0.0f; // 0 = auto-size
     };
 
     /**

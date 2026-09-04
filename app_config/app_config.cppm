@@ -76,6 +76,15 @@ namespace app_config {
 
     /**
      * @ingroup app_config
+     * @brief debug-overlay panel settings ([gui] in the config)
+     */
+    export struct gui_settings {
+        float panel_width = 380.0f;  // default debug-panel width (0 = ImGui auto-size)
+        float panel_height = 140.0f; // default debug-panel height (0 = ImGui auto-size)
+    };
+
+    /**
+     * @ingroup app_config
      * @brief the resolved startup settings after config-file + argv merging.
      * @note empty string / zero fields mean "not specified": the caller falls back to its
      *       built-in defaults, mirroring the pre-config argv behavior.
@@ -87,6 +96,7 @@ namespace app_config {
         path_settings paths = {};
         render_settings render = {};
         lighting_settings lighting = {};
+        gui_settings gui = {};
         std::string config_file = {}; // path actually read (empty = no config file found / used)
     };
 

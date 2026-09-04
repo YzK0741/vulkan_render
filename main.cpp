@@ -425,6 +425,7 @@ int main(int argc, char** argv) {
     if (use_gui) {
         runtime.enable_debug_gui();
         vulkan::gui::debug_panel& panel = runtime.debug_gui().add_panel("vulkan_render debug");
+        panel.set_default_size(settings.gui.panel_width, settings.gui.panel_height);
         panel.push_back(std::make_unique<vulkan::gui::label_widget>([&gui_fps] { return std::format("fps: {:.1f}", gui_fps); }));
         panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
             "frustum culling",

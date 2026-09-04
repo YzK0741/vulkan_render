@@ -206,7 +206,9 @@ namespace vulkan {
             shadow_info.mip_levels = 1;
             shadow_info.array_layers = 1;
             shadow_info.format = this->vulkan_core.depth_format;
-            shadow_info.extra_usage = VK_IMAGE_USAGE_SAMPLED_BIT; // sampled by pbr.frag
+            // SAMPLED: sampled by pbr.frag (main pass); TRANSFER_DST: lets set_shadow_enabled
+            // clear the map to "fully lit" via vkCmdClearDepthStencilImage when shadows turn off
+            shadow_info.extra_usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
             uint64_t const handle = this->vulkan_core.vma.create_image(nullptr, 0, shadow_info, vulkan::image_type::texture_2d_depth);
             if (handle == 0) {
                 utility::panic("failed to create shadow map image");

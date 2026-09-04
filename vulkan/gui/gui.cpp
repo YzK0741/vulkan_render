@@ -29,7 +29,10 @@ namespace vulkan::gui {
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-        io.IniFilename = nullptr; // do not write imgui.ini next to the executable
+        // Persist window layout (position/size/open) to imgui_layout.ini in the working
+        // directory: dragging a panel to a comfortable size records it there, and the recorded
+        // size can be baked into the panel defaults later. DestroyContext() saves on shutdown.
+        io.IniFilename = "imgui_layout.ini";
 
         // Platform backend. install_callbacks=true makes imgui chain-call the runtime's own
         // GLFW callbacks (mouse/scroll -> orbit camera) which were registered earlier.
@@ -79,6 +82,11 @@ namespace vulkan::gui {
     void gui_content::shutdown() {
         if (!this->active) {
             return;
+        }
+        // Save the window layout (position/size/open) before tearing the backends down, so a
+        // dragged panel size survives into imgui_layout.ini for the next run.
+        if (ImGui::GetIO().WantSaveIniSettings) {
+            ImGui::SaveIniSettingsToDisk(ImGui::GetIO().IniFilename);
         }
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
@@ -187,7 +195,15 @@ namespace vulkan::gui {
         return this->is_open;
     }
 
+    void debug_panel::set_default_size(float const width, float const height) noexcept {
+        this->default_width = width;
+        this->default_height = height;
+    }
+
     void debug_panel::draw() {
+        if (this->default_width > 0.0f && this->default_height > 0.0f) {
+            ImGui::SetNextWindowSize(ImVec2(this->default_width, this->default_height), ImGuiCond_FirstUseEver);
+        }
         if (!ImGui::Begin(this->title.c_str(), &this->is_open)) {
             ImGui::End();
             return;

@@ -124,6 +124,19 @@ namespace app_config {
                 }
             }
         }
+
+        if (toml::table const* gui = table.get_as<toml::table>("gui")) {
+            if (toml::node const* node = gui->get("panel_width")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.gui.panel_width = static_cast<float>(*value);
+                }
+            }
+            if (toml::node const* node = gui->get("panel_height")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.gui.panel_height = static_cast<float>(*value);
+                }
+            }
+        }
         return settings;
     }
 

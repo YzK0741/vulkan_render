@@ -66,6 +66,14 @@ skybox = true
 # shadow: record the directional shadow pass each frame (false = no shadows, fully lit)
 shadow = true
 
+# ---- [gui] debug overlay ----
+[gui]
+# Default debug-panel window size (0 = ImGui auto-size). The recorded comfortable size
+# from a manual drag is 380x140; it only applies on first use — later drags / the
+# persisted imgui_layout.ini override it.
+panel_width  = 380
+panel_height = 140
+
 # ---- [lighting] IBL precompute resolutions ----
 # Lower values speed up startup (fewer pixels precomputed); higher values improve
 # ambient / reflection quality.
