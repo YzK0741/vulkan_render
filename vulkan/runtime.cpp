@@ -50,7 +50,12 @@ namespace {
 
 namespace vulkan {
     runtime::runtime()
-        : filtered_core{vulkan_core} {
+        : runtime(core_create_info{}) {
+    }
+
+    runtime::runtime(core_create_info const& options)
+        : vulkan_core{options}
+        , filtered_core{vulkan_core} {
         glfwSetWindowUserPointer(this->vulkan_core.window, this);
         glfwSetMouseButtonCallback(this->vulkan_core.window, mouse_button_callback);
         glfwSetCursorPosCallback(this->vulkan_core.window, cursor_pos_callback);

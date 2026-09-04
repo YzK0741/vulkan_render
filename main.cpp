@@ -111,8 +111,14 @@ int main(int argc, char** argv) {
     auto env_future = vulkan::generate_environment_cubemap_async(env_size);
     auto load_future = gltf::load_model_async(model_path);
 
-    // 4. Construct vulkan::runtime: the default constructor performs all window/instance/device/swapchain initialization
-    vulkan::runtime runtime;
+    // 4. Construct vulkan::runtime from the startup render settings (window size / vsync /
+    //    MSAA; the defaults in render_settings mirror the historic hardcoded values)
+    vulkan::core_create_info core_options = {};
+    core_options.window_width = settings.render.window_width;
+    core_options.window_height = settings.render.window_height;
+    core_options.vsync = settings.render.vsync;
+    core_options.msaa_samples = settings.render.msaa;
+    vulkan::runtime runtime{core_options};
     auto const runtime_ready = std::chrono::steady_clock::now();
     utility::log("vulkan runtime initialized: {:.1f} ms (async model load + env generation running in background)", std::chrono::duration<double, std::milli>(runtime_ready - startup_start).count());
 

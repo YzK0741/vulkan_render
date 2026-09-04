@@ -232,6 +232,19 @@ namespace vulkan {
          */
         orbit_camera camera;
 
+        /**
+         * @ingroup vulkan_runtime
+         * @brief construct the runtime: performs the full core initialization (window / instance /
+         *        device / swapchain / resources) from @p options (window size, vsync, MSAA), and
+         *        registers the orbit camera mouse callbacks on the window
+         */
+        explicit runtime(core_create_info const& options);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief construct the runtime with default core options (1080x960 window, auto MSAA,
+         *        mailbox present mode)
+         */
         runtime();
 
         /**

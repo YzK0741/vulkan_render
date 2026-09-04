@@ -1,4 +1,4 @@
-﻿module;
+module;
 
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
@@ -495,7 +495,11 @@ swap_chain_support_details query_swap_chain_support(VkPhysicalDevice const& devi
     return details;
 }
 
-VkPresentModeKHR choose_swap_present_mode(std::vector<VkPresentModeKHR> const& available_present_modes) noexcept {
+VkPresentModeKHR choose_swap_present_mode(std::vector<VkPresentModeKHR> const& available_present_modes, bool const vsync) noexcept {
+    if (vsync) {
+        // FIFO is mandated by the Vulkan spec, so it is always available for vsync
+        return VK_PRESENT_MODE_FIFO_KHR;
+    }
     // Prefer MAILBOX (low latency), else fall back to FIFO (mandated by the Vulkan spec)
     if (std::ranges::find(available_present_modes, VK_PRESENT_MODE_MAILBOX_KHR) != available_present_modes.end()) {
         return VK_PRESENT_MODE_MAILBOX_KHR;

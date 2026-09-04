@@ -43,7 +43,29 @@ namespace vulkan {
     export constexpr uint32_t scene_texture_capacity = 128;
     // material_push_constants: uint material_index + mat4 model = 80 bytes, see vulkan/runtime/scene_tree/scene_tree.cppm
     export constexpr uint32_t scene_push_constant_size = 80;
+
+    /**
+     * @ingroup vulkan_core
+     * @brief everything the core needs at construction, decoupled from the caller (the runtime
+     *        assembles this, typically from the app's startup config)
+     * @note fields mirror the app_config render settings; defaults keep the historic behavior
+     */
+    export struct core_create_info {
+        int window_width = 1080;
+        int window_height = 960;
+        // vsync: false (default) prefers VK_PRESENT_MODE_MAILBOX_KHR, true prefers FIFO_KHR
+        bool vsync = false;
+        // MSAA sample count: 0 (default) = auto (device max usable), otherwise a fixed count
+        // (2/4/8/...); the core clamps to the device's max usable when the requested count is
+        // not supported
+        int msaa_samples = 0;
+    };
+
     export struct core : utility::enable_stack_destruct {
+        // creation options this core was built with (window size, vsync, msaa); the window is
+        // created from them and the swap chain / MSAA targets honor them
+        core_create_info create_options = {};
+
         VkInstance instance = VK_NULL_HANDLE;
         VkDevice device = VK_NULL_HANDLE;
         VkPhysicalDevice physical_device = VK_NULL_HANDLE;
@@ -147,6 +169,7 @@ namespace vulkan {
         void create_sync_objects();
 
         core();
+        explicit core(core_create_info const& options);
         ~core();
 
         vk_command_buffer make_command_buffer() const;

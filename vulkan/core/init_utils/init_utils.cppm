@@ -1,4 +1,4 @@
-﻿module;
+module;
 
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
@@ -182,9 +182,10 @@ export swap_chain_support_details query_swap_chain_support(VkPhysicalDevice cons
  * @ingroup vulkan_init_utils
  * @brief choose a present mode from the available ones
  * @param available_present_modes modes supported by the swap chain
+ * @param vsync true prefers FIFO_KHR (vsync), false prefers MAILBOX_KHR (low latency)
  * @return the chosen present mode
  */
-export VkPresentModeKHR choose_swap_present_mode(std::vector<VkPresentModeKHR> const& available_present_modes) noexcept;
+export VkPresentModeKHR choose_swap_present_mode(std::vector<VkPresentModeKHR> const& available_present_modes, bool vsync = false) noexcept;
 
 /**
  * @ingroup vulkan_init_utils

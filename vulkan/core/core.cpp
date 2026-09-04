@@ -10,8 +10,13 @@ import vulkan.core.init_utils;
 
 // core
 namespace vulkan {
-    core::core() {
-        init_window(1080, 960);
+    core::core()
+        : core(core_create_info{}) {
+    }
+
+    core::core(core_create_info const& options)
+        : create_options{options} {
+        init_window(options.window_width, options.window_height);
         init_instance();
         init_surface();
         init_device_and_queue();
@@ -252,7 +257,7 @@ namespace vulkan {
         }
 
         auto const [format, color_space] = choose_swap_surface_format(formats);
-        VkPresentModeKHR const present_mode = choose_swap_present_mode(present_modes);
+        VkPresentModeKHR const present_mode = choose_swap_present_mode(present_modes, this->create_options.vsync);
         VkExtent2D const extent = choose_swap_extent(capabilities, this->window);
 
         uint32_t image_count = capabilities.minImageCount + 1;
@@ -405,11 +410,31 @@ namespace vulkan {
     void core::create_depth_resources() noexcept {
 
         depth_format = find_depth_format(this->physical_device);
-        msaa_samples = get_max_usable_sample_count(this->physical_device);
 
         // First test whether the depth format is valid
         if (depth_format == VK_FORMAT_UNDEFINED) {
             utility::panic("can't find supported depth format");
+        }
+
+        // MSAA sample count: fixed count from the create options when requested (clamped to the
+        // device's max usable), otherwise auto = max usable. VkSampleCountFlagBits values equal
+        // their sample counts (1/2/4/8/...), so the flags compare like plain integers.
+        VkSampleCountFlagBits const max_usable = get_max_usable_sample_count(this->physical_device);
+        if (this->create_options.msaa_samples <= 1) {
+            msaa_samples = max_usable; // 0/1 = auto (historic behavior)
+        } else {
+            VkSampleCountFlagBits requested = VK_SAMPLE_COUNT_1_BIT;
+            for (VkSampleCountFlagBits const candidate : {VK_SAMPLE_COUNT_2_BIT, VK_SAMPLE_COUNT_4_BIT, VK_SAMPLE_COUNT_8_BIT, VK_SAMPLE_COUNT_16_BIT, VK_SAMPLE_COUNT_32_BIT, VK_SAMPLE_COUNT_64_BIT}) {
+                if (static_cast<int>(candidate) <= this->create_options.msaa_samples) {
+                    requested = candidate; // largest supported-looking flag <= requested count
+                }
+            }
+            msaa_samples = static_cast<int>(requested) <= static_cast<int>(max_usable) ? requested : max_usable;
+            if (static_cast<int>(requested) > static_cast<int>(max_usable)) {
+                utility::log("core: requested MSAA {}x unsupported, clamped to {}x", static_cast<int>(requested), static_cast<int>(max_usable));
+            } else if (this->create_options.msaa_samples > static_cast<int>(requested)) {
+                utility::log("core: MSAA {}x requested, using {}x", this->create_options.msaa_samples, static_cast<int>(requested));
+            }
         }
 
         depth_images.resize(swap_chain_image_views.size());
