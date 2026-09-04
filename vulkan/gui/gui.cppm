@@ -28,7 +28,7 @@ export import std;
  *        record_main_drawcalls() while the main rendering instance is still open, so the UI
  *        draws on top of the scene inside the same pass (and the same MSAA resolve)
  */
-namespace vulkan {
+namespace vulkan::gui {
     /**
      * @ingroup vulkan_gui
      * @brief everything gui_content needs to initialize its ImGui backends, decoupled from the
@@ -266,4 +266,4 @@ namespace vulkan {
         // frames in flight captured at init() (the backend's min-image hint on recreation)
         uint32_t frames_in_flight = 2;
     };
-} // namespace vulkan
+} // namespace vulkan::gui

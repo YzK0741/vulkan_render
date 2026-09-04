@@ -1142,7 +1142,7 @@ namespace vulkan {
             return false;
         }
         vulkan::core const& vk = this->vulkan_core;
-        gui_create_info info = {};
+        gui::gui_create_info info = {};
         info.window = vk.window;
         info.instance = vk.instance;
         info.physical_device = vk.physical_device;
@@ -1159,7 +1159,7 @@ namespace vulkan {
         return this->debug_overlay.is_active();
     }
 
-    gui_content& runtime::debug_gui() noexcept {
+    gui::gui_content& runtime::debug_gui() noexcept {
         return this->debug_overlay;
     }
 

@@ -9,7 +9,7 @@ module vulkan.gui;
 
 import utility;
 
-namespace vulkan {
+namespace vulkan::gui {
     // ---- gui_content lifecycle (see the module docs: ImGui state lives in ImGui's globals) ----
 
     gui_content::~gui_content() {
@@ -273,4 +273,4 @@ namespace vulkan {
             }
         }
     }
-} // namespace vulkan
+} // namespace vulkan::gui

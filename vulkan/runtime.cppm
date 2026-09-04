@@ -169,7 +169,7 @@ namespace vulkan {
         // optional Dear ImGui debug overlay; inactive until enable_debug_gui() succeeds. The
         // runtime drives it inside the frame steps (new_frame before recording, record after the
         // runtime's own draw calls) so callers only manage its content via debug_gui().
-        gui_content debug_overlay;
+        gui::gui_content debug_overlay;
         // filtered view over vulkan_core, exposed via operator-> (external code never sees the raw core)
         core_filter filtered_core;
 
@@ -288,7 +288,7 @@ namespace vulkan {
          * @note panels added here are drawn every rendered frame by the runtime; add them after
          *       enable_debug_gui() (or any time — they are only drawn while the overlay is active)
          */
-        [[nodiscard]] vulkan::gui_content& debug_gui() noexcept;
+        [[nodiscard]] gui::gui_content& debug_gui() noexcept;
 
         /**
          * @ingroup vulkan_runtime

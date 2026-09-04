@@ -415,16 +415,16 @@ int main(int argc, char** argv) {
     bool gui_cull_enabled = true;
     if (use_gui) {
         runtime.enable_debug_gui();
-        vulkan::debug_panel& panel = runtime.debug_gui().add_panel("vulkan_render debug");
-        panel.push_back(std::make_unique<vulkan::label_widget>([&gui_fps] { return std::format("fps: {:.1f}", gui_fps); }));
-        panel.push_back(std::make_unique<vulkan::checkbox_widget>(
+        vulkan::gui::debug_panel& panel = runtime.debug_gui().add_panel("vulkan_render debug");
+        panel.push_back(std::make_unique<vulkan::gui::label_widget>([&gui_fps] { return std::format("fps: {:.1f}", gui_fps); }));
+        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
             "frustum culling",
             &gui_cull_enabled,
             [&runtime](bool const enabled) { runtime.set_frustum_culling(enabled); }));
         // camera orbit target: dragging it moves what the camera looks at / orbits around
         // (camera.target is a glm::vec3, i.e. three contiguous floats; the runtime rebuilds the
         // camera UBO from it every frame, so no on_change callback is needed)
-        panel.push_back(std::make_unique<vulkan::vec3_widget>("camera target", &runtime.camera.target.x, 0.05f));
+        panel.push_back(std::make_unique<vulkan::gui::vec3_widget>("camera target", &runtime.camera.target.x, 0.05f));
         utility::log("gui: Dear ImGui debug overlay enabled (panel + 3 widgets)");
     }
 
