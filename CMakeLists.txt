@@ -64,6 +64,21 @@ add_library(thread_pool STATIC)
 
 target_sources(thread_pool PRIVATE utility/thread_pool/thread_pool.cpp)
 
+# Startup configuration: parses config.toml (+ --config / argv merging) into app_settings.
+# Uses toml++ (header-only, system package mingw-w64-clang-x86_64-tomlplusplus; its headers
+# live under the clang64 include root, no extra include dirs needed). Pure CPU, no Vulkan.
+add_library(app_config STATIC)
+
+target_sources(app_config
+    PUBLIC
+        FILE_SET CXX_MODULES
+        FILES
+        app_config/app_config.cppm
+
+    PRIVATE
+        app_config/app_config.cpp
+)
+
 add_library(vulkan_lib STATIC)
 
 target_sources(vulkan_lib
@@ -171,10 +186,16 @@ target_link_libraries(thread_pool
         std_lib
 )
 
+target_link_libraries(app_config
+        utility
+        std_lib
+)
+
 target_link_libraries(${PROJECT_NAME}
         utility
         vulkan_lib
         gltf_loader
+        app_config
         std_lib
         glm::glm
         imgui
@@ -204,6 +225,10 @@ target_compile_options(gltf_loader PRIVATE
         ${COMPILE_OPTIONS}
 )
 
+target_compile_options(app_config PRIVATE
+        ${COMPILE_OPTIONS}
+)
+
 target_compile_definitions(vulkan_lib PRIVATE
         $<$<CONFIG:Debug>:
         _DEBUG
@@ -220,6 +245,7 @@ find_program(CLANG_FORMAT_EXECUTABLE clang-format)
 if(CLANG_FORMAT_EXECUTABLE)
     file(GLOB_RECURSE PROJECT_FORMAT_SOURCES CONFIGURE_DEPENDS
             ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/app_config/*.cpp*
             ${CMAKE_CURRENT_SOURCE_DIR}/gltf_loader/*.cpp*
             ${CMAKE_CURRENT_SOURCE_DIR}/utility/*.cpp*
             ${CMAKE_CURRENT_SOURCE_DIR}/vulkan/*.cpp*)
@@ -238,7 +264,7 @@ if(CLANG_FORMAT_EXECUTABLE)
     add_custom_target(clang-format DEPENDS "${CLANG_FORMAT_STAMP}")
 
     # Format all project targets before compiling
-    foreach(_tgt utility thread_pool vulkan_lib gltf_loader vulkan_render)
+    foreach(_tgt utility thread_pool app_config vulkan_lib gltf_loader vulkan_render)
         add_dependencies(${_tgt} clang-format)
     endforeach()
 

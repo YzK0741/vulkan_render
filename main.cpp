@@ -1,6 +1,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 import std;
+import app_config;
 import gltf_loader;
 import utility;
 import vulkan.math;
@@ -81,11 +82,20 @@ int main(int argc, char** argv) {
         utility::panic("cannot find shaders/ directory. run the program from the project root or a cmake-build-* directory.");
     }
 
-    // 2. Pick the model file: independent of the runtime, needed before kicking off the async
-    //    load below (defaults to DamagedHelmet under gltf_model/; other .gltf/.glb via argv)
+    // 2. Resolve startup settings: config file (config.toml by default, --config <path> to
+    //    override) merged with positional argv overrides. argv[1] = model, argv[2] = grid side
+    //    (numeric) or demo, argv[3] = demo.
+    app_config::app_settings const settings = app_config::resolve_from_argv(argc, argv);
+    if (!settings.config_file.empty()) {
+        utility::log("app_config: loaded startup settings from '{}'", settings.config_file);
+    }
+
+    // Pick the model file: independent of the runtime, needed before kicking off the async load
+    // below (settings.model when configured/argv-given; otherwise default DamagedHelmet under
+    // gltf_model/).
     std::string model_path;
-    if (argc > 1) {
-        model_path = argv[1];
+    if (!settings.model.empty()) {
+        model_path = settings.model;
     } else if (std::optional<std::filesystem::path> const located = locate_model_file()) {
         model_path = located->string();
     } else {
@@ -271,11 +281,11 @@ int main(int argc, char** argv) {
     //      offset above, so their world-space center is scene_sink) with their original radius
     runtime.enable_shadows(scene_sink, scene_radius);
 
-    // 12. Optional instancing stress: `vulkan_render <model> <grid_side>` draws the first
-    //     imported primitive as a grid_side x grid_side grid in ONE instanced draw call
+    // 12. Optional instancing stress: grid_side > 1 (config or argv) draws the first imported
+    //     primitive as a grid_side x grid_side grid in ONE instanced draw call
     //     (an instanced_draw_primitive appended to the scene tree — the frame loop is untouched)
-    if (argc > 2) {
-        int const side = std::atoi(argv[2]);
+    if (settings.grid_side > 1) {
+        int const side = settings.grid_side;
         if (side > 1) {
             std::vector<vulkan::primitive const*> const pbr_primitives = runtime.get_primitives("pbr");
             if (!pbr_primitives.empty()) {
@@ -301,7 +311,7 @@ int main(int argc, char** argv) {
     //     lives inside runtime::render_frame()
     utility::log("rendering '{}' with PBR... left-drag to orbit, wheel to zoom, ESC to exit", model_path);
 
-    // Optional demo transforms (argv[2] when it is not a grid-side number, or argv[3]):
+    // Optional demo transforms (settings.demo: config.toml demo = ... or argv):
     //   "spin"          — whole-scene rotation via runtime::set_scene_transform (extra world
     //                     matrix on top of every root; the whole tree moves together).
     //   "spin-subtree"  — per-node local transform: rotate ONE primitive leaf node around its
@@ -317,9 +327,8 @@ int main(int argc, char** argv) {
     bool no_cull = false;
     bool closeup = false;
     bool use_gui = false;
-    char const* const demo = argc > 3 ? argv[3] : (argc > 2 ? argv[2] : nullptr);
-    if (demo != nullptr) {
-        std::string_view const demo_view(demo);
+    if (!settings.demo.empty()) {
+        std::string_view const demo_view(settings.demo);
         spin_scene = demo_view == "spin";
         spin_subtree = demo_view == "spin-subtree";
         no_cull = demo_view == "nocull";
