@@ -15,71 +15,18 @@ import vulkan.runtime;
 // other TUs (vulkan/runtime.cpp) keep their own copy of the same singleton.
 [[maybe_unused]] static auto& pmr = utility::init_pmr(); // NOLINT(keep-alive)
 
+// The helper functions used by main() are forward-declared here so the entry point can appear
+// right after the imports; their definitions live at the bottom of the file (internal linkage
+// via this anonymous namespace).
 namespace {
-    // Read a single shader SPIR-V file and print info; panic on failure
-    void load_shader(std::filesystem::path const& dir, std::string_view file_name, std::vector<unsigned char>& out) {
-        std::filesystem::path const path = dir / file_name;
-        std::optional<std::vector<unsigned char>> const data = utility::read_binary_to_vector(path);
-        if (!data) {
-            utility::panic(std::source_location::current(), "cannot open shader file '{}'", path.string());
-        }
-        out = *data;
-        utility::log("loaded shader: {} ({} bytes)", path.string(), out.size());
-    }
-
-    // Walk up from the working directory to find the shaders/ directory,
-    // so it works when run from the project root or a cmake-build-* directory
-    std::optional<std::filesystem::path> locate_shaders_dir() {
-        std::filesystem::path current = std::filesystem::current_path();
-        for (int depth = 0; depth < 4; ++depth) {
-            std::filesystem::path candidate = current / "shaders";
-            if (std::filesystem::is_directory(candidate)) {
-                return candidate;
-            }
-            std::filesystem::path const parent = current.parent_path();
-            if (parent == current) {
-                break;
-            }
-            current = parent;
-        }
-        return std::nullopt;
-    }
-
-    // Walk up from the working directory to find the default model under gltf_model/
-    std::optional<std::filesystem::path> locate_model_file() {
-        std::filesystem::path current = std::filesystem::current_path();
-        for (int depth = 0; depth < 4; ++depth) {
-            std::filesystem::path candidate = current / "gltf_model" / "DamagedHelmet.gltf";
-            if (std::filesystem::is_regular_file(candidate)) {
-                return candidate;
-            }
-            std::filesystem::path const parent = current.parent_path();
-            if (parent == current) {
-                break;
-            }
-            current = parent;
-        }
-        return std::nullopt;
-    }
-
-    // Load a vertex/fragment SPIR-V pair and create the pipeline via runtime; panic on failure
+    void load_shader(std::filesystem::path const& dir, std::string_view file_name, std::vector<unsigned char>& out);
+    std::optional<std::filesystem::path> locate_shaders_dir();
+    std::optional<std::filesystem::path> locate_model_file();
     void load_and_create_pipeline(vulkan::runtime& runtime,
                                   std::filesystem::path const& shaders_dir,
                                   std::string_view pipeline_name,
                                   std::string_view vertex_file,
-                                  std::string_view fragment_file) {
-        std::vector<unsigned char> vertex_code;
-        std::vector<unsigned char> fragment_code;
-        load_shader(shaders_dir, vertex_file, vertex_code);
-        load_shader(shaders_dir, fragment_file, fragment_code);
-
-        std::expected<void, std::string> const result = runtime.make_pipeline(pipeline_name, vertex_code, fragment_code);
-        if (!result) {
-            utility::panic(std::source_location::current(), "failed to create pipeline '{}': {}", pipeline_name, result.error());
-        }
-        utility::log("SUCCESS: pipeline '{}' created and cached in the runtime", pipeline_name);
-    }
-
+                                  std::string_view fragment_file);
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1090,3 +1037,71 @@ int main(int argc, char** argv) {
     utility::log("render loop finished");
     return 0;
 }
+
+// ---- helper implementations (declared at the top so main() reads first) ----
+
+namespace {
+    // Read a single shader SPIR-V file and print info; panic on failure
+    void load_shader(std::filesystem::path const& dir, std::string_view file_name, std::vector<unsigned char>& out) {
+        std::filesystem::path const path = dir / file_name;
+        std::optional<std::vector<unsigned char>> const data = utility::read_binary_to_vector(path);
+        if (!data) {
+            utility::panic(std::source_location::current(), "cannot open shader file '{}'", path.string());
+        }
+        out = *data;
+        utility::log("loaded shader: {} ({} bytes)", path.string(), out.size());
+    }
+
+    // Walk up from the working directory to find the shaders/ directory,
+    // so it works when run from the project root or a cmake-build-* directory
+    std::optional<std::filesystem::path> locate_shaders_dir() {
+        std::filesystem::path current = std::filesystem::current_path();
+        for (int depth = 0; depth < 4; ++depth) {
+            std::filesystem::path candidate = current / "shaders";
+            if (std::filesystem::is_directory(candidate)) {
+                return candidate;
+            }
+            std::filesystem::path const parent = current.parent_path();
+            if (parent == current) {
+                break;
+            }
+            current = parent;
+        }
+        return std::nullopt;
+    }
+
+    // Walk up from the working directory to find the default model under gltf_model/
+    std::optional<std::filesystem::path> locate_model_file() {
+        std::filesystem::path current = std::filesystem::current_path();
+        for (int depth = 0; depth < 4; ++depth) {
+            std::filesystem::path candidate = current / "gltf_model" / "DamagedHelmet.gltf";
+            if (std::filesystem::is_regular_file(candidate)) {
+                return candidate;
+            }
+            std::filesystem::path const parent = current.parent_path();
+            if (parent == current) {
+                break;
+            }
+            current = parent;
+        }
+        return std::nullopt;
+    }
+
+    // Load a vertex/fragment SPIR-V pair and create the pipeline via runtime; panic on failure
+    void load_and_create_pipeline(vulkan::runtime& runtime,
+                                  std::filesystem::path const& shaders_dir,
+                                  std::string_view pipeline_name,
+                                  std::string_view vertex_file,
+                                  std::string_view fragment_file) {
+        std::vector<unsigned char> vertex_code;
+        std::vector<unsigned char> fragment_code;
+        load_shader(shaders_dir, vertex_file, vertex_code);
+        load_shader(shaders_dir, fragment_file, fragment_code);
+
+        std::expected<void, std::string> const result = runtime.make_pipeline(pipeline_name, vertex_code, fragment_code);
+        if (!result) {
+            utility::panic(std::source_location::current(), "failed to create pipeline '{}': {}", pipeline_name, result.error());
+        }
+        utility::log("SUCCESS: pipeline '{}' created and cached in the runtime", pipeline_name);
+    }
+} // namespace
