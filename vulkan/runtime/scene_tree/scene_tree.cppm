@@ -405,7 +405,7 @@ namespace vulkan {
      */
     export class primitive : public vulkan::scene_tree::primitive {
     public:
-        virtual ~primitive() = default;
+        ~primitive() override = default;
 
         // geometry: vma handles for release, detail pointers for access (no raw Vulkan objects)
         uint64_t vertex_buffer_handle = 0;

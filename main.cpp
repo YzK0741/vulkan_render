@@ -608,7 +608,7 @@ int main(int argc, char** argv) {
             if (mesh_source == std::numeric_limits<std::size_t>::max()) {
                 continue; // the skin is not used by the imported scene
             }
-            bool const all_joints_present = std::all_of(loader_skin.joints.begin(), loader_skin.joints.end(), [&source_nodes](std::size_t const joint) { return source_nodes.contains(joint); });
+            bool const all_joints_present = std::ranges::all_of(loader_skin.joints, [&source_nodes](std::size_t const joint) { return source_nodes.contains(joint); });
             if (!all_joints_present) {
                 std::string_view const sname = loader_skin.name.empty() ? std::string_view("<unnamed>") : std::string_view(loader_skin.name);
                 utility::log("skinning: skin '{}' skipped (joint(s) missing from the imported scene)", sname);
@@ -637,7 +637,7 @@ int main(int argc, char** argv) {
     }
     // identity block for unskinned draws: upload once (the skin buffer starts zeroed)
     {
-        std::array<glm::mat4, 4> const identity_block = {glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f)};
+        constexpr std::array<glm::mat4, 4> identity_block = {glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f)};
         runtime.set_skin_matrices(identity_block);
     }
 
