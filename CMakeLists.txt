@@ -212,6 +212,7 @@ target_link_libraries(${PROJECT_NAME}
         gltf_loader
         app_config
         std_lib
+        thread_pool
         glm::glm
         imgui
 )

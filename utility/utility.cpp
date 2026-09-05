@@ -33,20 +33,27 @@ void utility::enable_stack_destruct::register_cleanup(std::function<void()> cons
 }
 
 void utility::enable_stack_destruct::do_cleanup() noexcept {
-    std::lock_guard guard(this->access_mutex);
-    while (!this->destruct_stack.empty()) {
-        auto destructor = this->destruct_stack.top();
-        destructor();
-        this->destruct_stack.pop();
+    // Swap the stack out under the lock, then run the destructors unlocked: a callback may
+    // itself call register_cleanup() (it takes the same mutex) and would deadlock otherwise.
+    std::stack<destruct_type> pending;
+    {
+        std::lock_guard guard(this->access_mutex);
+        pending.swap(this->destruct_stack); // noexcept
+    }
+    while (!pending.empty()) {
+        pending.top()(); // callbacks run without the lock held
+        pending.pop();
     }
 }
 
 void utility::enable_stack_destruct::pop_destructor() noexcept {
+    std::lock_guard guard(this->access_mutex);
     this->destruct_stack.pop();
 }
 
 void utility::enable_stack_destruct::clear_stack() noexcept {
-    this->destruct_stack = std::stack<destruct_type>();
+    std::lock_guard guard(this->access_mutex);
+    std::stack<destruct_type>{}.swap(this->destruct_stack); // swap (not assign): noexcept
 }
 
 namespace {
@@ -60,15 +67,20 @@ void utility::at_panic(std::function<void()> const& task) {
 }
 
 [[noreturn]] void utility::panic(std::string_view msg, std::source_location source_location) noexcept {
-    std::lock_guard guard(access_mutex);
-    // Route through error(): Debug prints to stderr, Release (GUI subsystem, no console) writes to debug.log
     error("program panic!");
 
     error("processing terminate tasks...");
 
-    while (!tasks.empty()) {
-        tasks.top()();
-        tasks.pop();
+    // Snapshot the registered at_panic tasks under the lock and run them unlocked: a task may
+    // itself call at_panic()/error() (both take this mutex) and would deadlock otherwise.
+    std::stack<std::function<void()>> pending;
+    {
+        std::lock_guard guard(access_mutex);
+        pending.swap(tasks); // noexcept
+    }
+    while (!pending.empty()) {
+        pending.top()();
+        pending.pop();
     }
 
     if (!msg.empty()) {

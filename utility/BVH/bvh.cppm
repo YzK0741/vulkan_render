@@ -92,6 +92,11 @@ namespace utility {
      */
     using morton_code = data_block<12>;
 
+    // Quantization grid for morton codes: normalized midpoints ([0,1] per axis) are scaled by
+    // 2^21 before truncation, so codes carry ~21 bits per axis instead of collapsing to {0,1}
+    // (scale 1.0 would make the morton sort a no-op and the BVH degenerate to insertion order).
+    inline constexpr float morton_quantization = 2097152.0f; // 2^21
+
     /**
      * @ingroup bvh
      * @brief generate a morton code from a normalized midpoint
@@ -221,7 +226,7 @@ namespace utility {
                     node->right = &*leave_it;
                     ++leave_it;
                     node->aabb = node->left->aabb | node->right->aabb;
-                    auto code = generate_morton_from_midpoint(normalize(node->aabb.get_midpoint()), 1.0f);
+                    auto code = generate_morton_from_midpoint(normalize(node->aabb.get_midpoint()), morton_quantization);
                     if (!code) {
                         delete node;
                         std::ranges::for_each(layers.back(), [](auto* n) {
@@ -251,7 +256,7 @@ namespace utility {
                         node->right = *layer_it;
                         ++layer_it;
                         node->aabb = node->left->aabb | node->right->aabb;
-                        auto code = generate_morton_from_midpoint(normalize(node->aabb.get_midpoint()), 1.0f);
+                        auto code = generate_morton_from_midpoint(normalize(node->aabb.get_midpoint()), morton_quantization);
                         if (!code) {
                             delete node;
                             std::ranges::for_each(layers.back(), [](auto* n) {
@@ -304,7 +309,7 @@ namespace utility {
             bvh result;
             result.set_extent(leaves); // morton normalization needs the scene extent first
             for (bvh_node<T>& leaf : leaves) {
-                auto morton = generate_morton_from_midpoint(result.normalize(leaf.aabb.get_midpoint()), 1.0f);
+                auto morton = generate_morton_from_midpoint(result.normalize(leaf.aabb.get_midpoint()), morton_quantization);
                 if (!morton) {
                     return fail(morton.error());
                 }
@@ -335,7 +340,7 @@ namespace utility {
             }
             this->set_extent(this->leaves);
             for (bvh_node<T>& leaf : this->leaves) {
-                auto morton = generate_morton_from_midpoint(this->normalize(leaf.aabb.get_midpoint()), 1.0f);
+                auto morton = generate_morton_from_midpoint(this->normalize(leaf.aabb.get_midpoint()), morton_quantization);
                 if (!morton) {
                     return;
                 }
@@ -377,29 +382,35 @@ namespace utility {
          * @param direction ray direction
          * @param t_min minimum hit distance
          * @param t_max maximum hit distance
+         * @return the hit leaf nodes (unsorted; compute the exact entry distance per hit if needed)
          */
-        void get_hit(glm::vec3 const& start, glm::vec3 const& direction, float t_min = 0.01f, float t_max = std::numeric_limits<float>::infinity()) const {
-            std::stack<bvh_node<T>*> nodes_to_access;
-            std::priority_queue<bvh_node<T>*> hit_list;
+        std::vector<bvh_node<T>*> get_hit(glm::vec3 const& start, glm::vec3 const& direction, float t_min = 0.01f, float t_max = std::numeric_limits<float>::infinity()) const {
+            std::vector<bvh_node<T>*> hits;
             bvh_node<T>* root = this->root.get();
             if (root == nullptr) {
-                return;
+                return hits;
             }
-            if (auto const& aabb = root->aabb; hit(aabb.min, aabb.max, start, direction, t_min, t_max)) {
-                if (root->left != nullptr) {
-                    nodes_to_access.push(root->left);
-                }
-                if (root->right != nullptr) {
-                    nodes_to_access.push(root->right);
-                }
+            if (!hit(root->aabb.min, root->aabb.max, start, direction, t_min, t_max)) {
+                return hits;
+            }
+            if (root->is_leaf()) {
+                hits.push_back(root); // single-leaf tree: the root itself is the hit
+                return hits;
             }
 
+            std::stack<bvh_node<T>*> nodes_to_access;
+            if (root->left != nullptr) {
+                nodes_to_access.push(root->left);
+            }
+            if (root->right != nullptr) {
+                nodes_to_access.push(root->right);
+            }
             while (!nodes_to_access.empty()) {
-                auto* node = nodes_to_access.top();
+                bvh_node<T>* node = nodes_to_access.top();
                 nodes_to_access.pop();
-                if (auto aabb = node->aabb; hit(aabb.min, aabb.max, start, direction, t_min, t_max)) {
+                if (hit(node->aabb.min, node->aabb.max, start, direction, t_min, t_max)) {
                     if (node->is_leaf()) {
-                        hit_list.push(node);
+                        hits.push_back(node);
                     } else {
                         if (node->left != nullptr) {
                             nodes_to_access.push(node->left);
@@ -410,6 +421,7 @@ namespace utility {
                     }
                 }
             }
+            return hits;
         }
 
         /**

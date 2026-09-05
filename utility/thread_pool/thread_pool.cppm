@@ -11,10 +11,9 @@ import std;
  * @brief a module provides raii thread pool (utility::thread_pool)
  * @note due to a clang bug std::jthread can't be used in module, so use the header-style, and requires link
  *     thread_pool separately
- * @note <b>reserved for future use</b>: no target imports this header-style module yet, and the
- *     thread_pool CMake target is not linked by any consumer (it only builds when its own
- *     target or `all` is built); it is kept as a ready-to-use building block for upcoming
- *     parallel work, e.g. async glTF loading or BVH build tasks
+ * @note no target imports this header-style module yet, but the thread_pool CMake target is
+ *     linked into the executable so it stays compiled and ready; it is kept as a ready-to-use
+ *     building block for upcoming parallel work, e.g. async glTF loading or BVH build tasks
  *
  * @code {.cpp}
  * #include "utility/thread_pool/thread_pool.cppm"
@@ -50,13 +49,16 @@ namespace utility {
             bool operator<(task const& other) const noexcept;
         };
 
-        std::vector<std::jthread> threads;
         std::priority_queue<task> tasks;
         std::condition_variable cv;
         std::condition_variable idle;
-        std::mutex access_mutex;
+        mutable std::mutex access_mutex; // mutable: is_free() const reads tasks under the lock
         std::atomic_int active_thread = 0;
         shutdown_policy policy = shutdown_policy::wait;
+        // Declared last so the jthreads are destroyed (auto-joined) FIRST, before the mutex /
+        // condition variables above: worker threads still exiting would otherwise touch
+        // already-destroyed synchronization state.
+        std::vector<std::jthread> threads;
 
         void worker_loop(std::stop_token const& token);
 
@@ -73,8 +75,9 @@ namespace utility {
          * @brief post a task to thread_pool, signature must be void()
          * @param task callable object
          * @param priority @see task::priority
+         * @return false when the pool is shut down and will never run the task (not queued)
          */
-        void post(std::function<void()> task, int priority = 0);
+        bool post(std::function<void()> task, int priority = 0);
         /**
          * @brief request all thread stop after finishing current task
          */

@@ -62,10 +62,15 @@ namespace utility {
         }
     }
 
-    void thread_pool::post(std::function<void()> task, int priority) {
+    bool thread_pool::post(std::function<void()> task, int priority) {
         std::unique_lock lock(this->access_mutex);
-        this->tasks.emplace(priority, task);
+        // after shutdown() every worker is leaving: queuing would sit forever unexecuted
+        if (this->threads.empty() || this->threads.front().get_stop_source().stop_requested()) {
+            return false;
+        }
+        this->tasks.emplace(priority, std::move(task));
         this->cv.notify_one();
+        return true;
     }
 
     void thread_pool::shutdown() {
@@ -80,7 +85,9 @@ namespace utility {
     }
 
     bool thread_pool::is_free() const {
-        return this->active_thread.load() == 0;
+        std::lock_guard lock(this->access_mutex);
+        // same predicate as wait_until_free(): idle workers with queued tasks are not "free"
+        return this->tasks.empty() && this->active_thread.load() == 0;
     }
 
     void thread_pool::wait_until_free() {
