@@ -794,9 +794,10 @@ namespace vulkan {
 
         VkDescriptorSetLayoutCreateInfo layout_info = {};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        // bindings 0/1 carry VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, so the layout must
-        // declare the update-after-bind pool requirement (VUID-VkDescriptorSetLayoutCreateInfo-flags-03000)
-        layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+        // No UPDATE_AFTER_BIND_POOL: the only binding flag left is PARTIALLY_BOUND (binding 1),
+        // which does not require the update-after-bind pool flag. Declaring it anyway would
+        // violate VUID-vkAllocateDescriptorSets-03047, because the descriptor pool this layout
+        // is allocated from carries no UPDATE_AFTER_BIND flag.
         layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
         layout_info.pBindings = bindings.data();
         layout_info.pNext = &flags_info;

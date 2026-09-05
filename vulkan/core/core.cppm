@@ -30,8 +30,9 @@ namespace vulkan {
     /**
      * @ingroup vulkan_core
      * @brief agreed flat scene descriptor set layout, shared by all pipelines (see shaders/pbr.frag):
-     *        set 0 binding 0 = CameraUBO (uniform buffer, update-after-bind),
-     *              binding 1 = sampler2D textures[] (runtime array, partially bound + update-after-bind + non-uniform index),
+     *        set 0 binding 0 = CameraUBO (uniform buffer; one per frame slot, each slot's set
+     *              points at its own - static, no per-frame descriptor writes),
+     *              binding 1 = sampler2D textures[] (runtime array, partially bound + non-uniform index),
      *              binding 2/3/4 = prefiltered env / irradiance / BRDF LUT (combined image samplers),
      *              binding 5 = Material materials[] (storage buffer: per-material texture indices + factors),
      *              binding 6 = mat4 instance transforms[] (storage buffer, per-instance world matrices),
