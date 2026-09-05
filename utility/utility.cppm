@@ -257,17 +257,25 @@ namespace utility {
     /**
      * @defgroup hash
      * @ingroup utility
-     * @brief xxHash-based 64-bit content hash (XXH3_64bits)
+     * @brief xxHash-based 64-bit content hash (XXH3_64bits), returned as a data_block<8>
      * @note
      *     - non-cryptographic, extremely fast (used for content dedup)
-     *     - returns the raw 64-bit fingerprint; cannot fail
+     *     - digest supports operator==/!=/<=> and hex formatting (.to_hex_string())
+     *     - cannot fail (no allocation / error state)
      */
+
+    /**
+     * @typedef xxh3_digest
+     * @relates data_block
+     * @ingroup hash
+     */
+    export using xxh3_digest = data_block<8>;
 
     /**
      * @brief xxh3_64bits hash function
      * @param data_view bytes to fingerprint
-     * @return 64-bit fingerprint of @p data_view
+     * @return 8-byte digest of @p data_view (the raw 64-bit fingerprint)
      * @ingroup hash
      */
-    export uint64_t xxh3_64bits(std::span<unsigned char const> data_view);
+    export xxh3_digest xxh3_64bits(std::span<unsigned char const> data_view);
 } // namespace utility

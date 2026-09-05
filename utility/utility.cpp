@@ -1,5 +1,6 @@
 module;
 
+#include <cstring>
 #include <xxhash.h>
 
 module utility;
@@ -275,6 +276,10 @@ void utility::error_message(std::string message) {
 #endif
 }
 
-uint64_t utility::xxh3_64bits(std::span<unsigned char const> const data_view) {
-    return XXH3_64bits(data_view.data(), data_view.size_bytes());
+utility::xxh3_digest utility::xxh3_64bits(std::span<unsigned char const> const data_view) {
+    // XXH3_64bits returns the fingerprint as a scalar; store its bytes in the digest
+    xxh3_digest digest = {};
+    uint64_t const hash = XXH3_64bits(data_view.data(), data_view.size_bytes());
+    std::memcpy(digest.data.data(), &hash, sizeof(hash));
+    return digest;
 }

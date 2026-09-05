@@ -785,8 +785,8 @@ namespace vulkan {
         // XXH3_64bits is pure CPU work; keep it outside the critical section. It is computed
         // before allocating so a content hit can reuse an existing image without any allocation
         // or upload. Empty images (data == nullptr, e.g. a depth shadow map that is rendered
-        // into, never uploaded) have no content digest (0) and are never deduplicated.
-        uint64_t digest = 0;
+        // into, never uploaded) have no content digest (all-zero) and are never deduplicated.
+        utility::xxh3_digest digest = {};
         if (data != nullptr && size_byte != 0) {
             digest = utility::xxh3_64bits(std::span(data, size_byte));
         }
@@ -796,7 +796,7 @@ namespace vulkan {
         constexpr auto is_dedupable = [](image_type const t) {
             return t == image_type::texture_2d || t == image_type::texture_2d_color || t == image_type::texture_cubemap;
         };
-        if (is_dedupable(type) && digest != 0) {
+        if (is_dedupable(type) && digest != utility::xxh3_digest{}) {
             std::lock_guard guard(this->access_mutex);
             for (auto& [existing_handle, detail] : this->images) {
                 if (detail.type == type && detail.create_info == create_info && detail.digest == digest) {
