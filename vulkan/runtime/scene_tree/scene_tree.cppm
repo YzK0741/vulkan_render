@@ -376,7 +376,7 @@ namespace vulkan {
         // matrices[skin_base + in_joints.x] etc. — set once per primitive after import
         uint32_t skin_base = 0;
         // morph blend (binding 10): float index of this primitive's morph block (deltas first:
-        // per vertex per target posΔ/nrmΔ, then the per-target weights); morph_targets /
+        // per vertex per target pos-delta/nrm-delta, then the per-target weights); morph_targets /
         // morph_vertices describe the block stride. All three stay 0 for non-morphable draws.
         uint32_t morph_base = 0;
         uint32_t morph_targets = 0;  // number of morph targets (0 = no morph)

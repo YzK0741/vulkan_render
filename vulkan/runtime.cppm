@@ -560,7 +560,7 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief host-visible scratch memory of the scene morph buffer (scene set binding 10,
          *        scene_morph_capacity floats). The caller lays out per-primitive morph blocks
-         *        (per vertex per target posΔ/nrmΔ floats, then the per-target weights) and
+         *        (per vertex per target pos-delta/nrm-delta floats, then the per-target weights) and
          *        points primitives at their block through material_push_constants::morph_base /
          *        morph_targets / morph_vertices (see those fields for the layout convention).
          * @return the mapped base, or nullptr when the morph buffer is unavailable
