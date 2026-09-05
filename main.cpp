@@ -473,16 +473,36 @@ int main(int argc, char** argv) {
         vulkan::scene_tree::scene_node* node = nullptr;
         bool scene_root = false;
     };
-    std::unordered_map<std::size_t, std::vector<anim_target>> anim_nodes;
+    std::unordered_map<std::size_t, std::vector<anim_target>> source_nodes;
+    auto const collect = [&source_nodes](auto&& self, vulkan::scene_tree::scene_node& node, bool const scene_root) -> void {
+        source_nodes[node.source_index].push_back(anim_target{&node, scene_root});
+        for (vulkan::scene_tree::scene_node& child : node.children) {
+            self(self, child, false);
+        }
+    };
+    for (vulkan::scene_tree::scene_node& root : runtime.get_scene().roots) {
+        collect(collect, root, true);
+    }
     // TRS base pose per asset node index, from the retained loader tree (matrix nodes cannot be
     // animated per the glTF spec and keep identity here)
     std::unordered_map<std::size_t, gltf::node_pose> anim_base_poses;
+    // loader nodes by asset node index (base-pose / skin lookups; the loader tree stays alive)
+    std::unordered_map<std::size_t, gltf::node const*> loader_nodes;
+    for (gltf::scene const& loader_scene : scenes->scene) {
+        for (gltf::node const& loader_node : loader_scene.nodes) {
+            anim_base_poses.try_emplace(loader_node.source_index,
+                                        gltf::node_pose{.translation = loader_node.translation,
+                                                        .rotation = loader_node.rotation,
+                                                        .scale = loader_node.scale});
+            loader_nodes.try_emplace(loader_node.source_index, &loader_node);
+        }
+    }
     // the node reported per second: prefer a translation channel target (its value is visible
     // in the log), fall back to the first channel target present in the tree
-    auto const pick_debug_source = [&anim_nodes](gltf::animation const& animation) {
+    auto const pick_debug_source = [&source_nodes](gltf::animation const& animation) {
         std::size_t fallback = std::numeric_limits<std::size_t>::max();
         for (gltf::animation_channel const& channel : animation.channels) {
-            if (!anim_nodes.contains(channel.target_node)) {
+            if (!source_nodes.contains(channel.target_node)) {
                 continue;
             }
             if (channel.path == gltf::animation_path::translation) {
@@ -500,24 +520,6 @@ int main(int argc, char** argv) {
                 anim.duration = std::max(anim.duration, sampler.times.back());
             }
         }
-        auto const collect = [&anim_nodes](auto&& self, vulkan::scene_tree::scene_node& node, bool const scene_root) -> void {
-            anim_nodes[node.source_index].push_back(anim_target{&node, scene_root});
-            for (vulkan::scene_tree::scene_node& child : node.children) {
-                self(self, child, false);
-            }
-        };
-        for (vulkan::scene_tree::scene_node& root : runtime.get_scene().roots) {
-            collect(collect, root, true);
-        }
-        for (gltf::scene const& loader_scene : scenes->scene) {
-            for (gltf::node const& loader_node : loader_scene.nodes) {
-                anim_base_poses.try_emplace(loader_node.source_index,
-                                            gltf::node_pose{.translation = loader_node.translation,
-                                                            .rotation = loader_node.rotation,
-                                                            .scale = loader_node.scale});
-            }
-        }
-        // the node reported per second (prefer a translation channel target when present)
         anim.debug_source = pick_debug_source(*anim.animation);
         std::string_view const anim_name = anim.animation->name.empty() ? std::string_view("<unnamed>") : std::string_view(anim.animation->name);
         utility::log("animation: playing '{}' ({} channels, {:.2f}s loop)", anim_name, anim.animation->channels.size(), anim.duration);
@@ -547,6 +549,70 @@ int main(int argc, char** argv) {
     }
     int gui_anim_index = 0;     // selected item of the animation combo (0 = the auto-played one)
     float gui_anim_time = 0.0f; // float mirror of the playback clock (time-slider target)
+
+    // ---- glTF skinning ----
+    // Every exported skin that drives an imported mesh becomes a "rig": its joints resolve onto
+    // live scene nodes (they follow the animation playback above), each skinned primitive points
+    // at a block of the scene skin buffer (indices 0-3 are the identity block for unskinned
+    // draws), and per frame the skin matrices skinMat_j = inv(W_mesh) * W_joint_j * IBM_j are
+    // rebuilt and uploaded. Assumptions typical of glTF assets: one occurrence per skinned node
+    // and a static skinned node (its inverse is taken per frame).
+    struct skin_rig {
+        gltf::skin const* skin = nullptr; // loader skin: joints (asset node indices) + IBM
+        std::size_t mesh_source = 0;      // asset node index of the skinned mesh node
+        uint32_t block_base = 0;          // block start in the skin buffer (after the identity block)
+    };
+    std::vector<skin_rig> skin_rigs;
+    if (!scenes->skins.empty()) {
+        uint32_t next_block = 4; // identity block occupies indices 0-3
+        for (std::size_t skin_id = 0; skin_id < scenes->skins.size(); ++skin_id) {
+            gltf::skin const& loader_skin = scenes->skins[skin_id];
+            // the first loader node referencing this skin that is present in the imported tree
+            std::size_t mesh_source = std::numeric_limits<std::size_t>::max();
+            for (auto const& [source, loader_node] : loader_nodes) {
+                if (loader_node->skin_index && *loader_node->skin_index == skin_id && source_nodes.contains(source)) {
+                    mesh_source = source;
+                    break;
+                }
+            }
+            if (mesh_source == std::numeric_limits<std::size_t>::max()) {
+                continue; // the skin is not used by the imported scene
+            }
+            bool const all_joints_present = std::all_of(loader_skin.joints.begin(), loader_skin.joints.end(), [&source_nodes](std::size_t const joint) { return source_nodes.contains(joint); });
+            if (!all_joints_present) {
+                std::string_view const sname = loader_skin.name.empty() ? std::string_view("<unnamed>") : std::string_view(loader_skin.name);
+                utility::log("skinning: skin '{}' skipped (joint(s) missing from the imported scene)", sname);
+                continue;
+            }
+            uint32_t const block_base = next_block;
+            next_block += static_cast<uint32_t>(loader_skin.joints.size());
+            // point every primitive leaf of the skinned node at the block: the node's own leaf
+            // plus extra-primitive child leaves (import adds them under the node with the
+            // default source_index 0); real child nodes (other source indices) keep skin_base 0
+            vulkan::scene_tree::scene_node* const mesh_node = source_nodes.at(mesh_source).front().node;
+            auto const assign_block = [block_base, mesh_source](auto&& self, vulkan::scene_tree::scene_node& node) -> void {
+                if (node.primitive_leaf != nullptr && (node.source_index == 0 || node.source_index == mesh_source)) {
+                    static_cast<vulkan::primitive*>(node.primitive_leaf.get())->push.skin_base = block_base;
+                }
+                for (vulkan::scene_tree::scene_node& child : node.children) {
+                    self(self, child);
+                }
+            };
+            assign_block(assign_block, *mesh_node);
+            skin_rigs.push_back(skin_rig{&loader_skin, mesh_source, block_base});
+        }
+        if (!skin_rigs.empty()) {
+            utility::log("skinning: {} skin rig(s) active ({} joint matrix block(s) + identity block)", skin_rigs.size(), next_block - 4);
+        }
+    }
+    // identity block for unskinned draws: upload once (the skin buffer starts zeroed)
+    {
+        std::array<glm::mat4, 4> const identity_block = {glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f)};
+        runtime.set_skin_matrices(identity_block);
+    }
+    // per-second skin report (first rig's joint 0 world position, follows the animation)
+    glm::vec3 skin_debug_translation = glm::vec3(0.0f);
+    bool skin_debug_valid = false;
 
     // Optional Dear ImGui debug overlay: the runtime drives new_frame/record inside its frame
     // steps; main only enables it and manages its content through the panel/widget API (fps
@@ -652,7 +718,7 @@ int main(int argc, char** argv) {
             }
             anim.last_tick = anim_now;
             bool changed = false;
-            for (auto const& [source, targets] : anim_nodes) {
+            for (auto const& [source, targets] : source_nodes) {
                 auto const base_it = anim_base_poses.find(source);
                 gltf::node_pose const base = base_it == anim_base_poses.end() ? gltf::node_pose{} : base_it->second;
                 gltf::node_pose const pose = gltf::sample_node(*anim.animation, source, base, static_cast<float>(anim.time));
@@ -674,6 +740,59 @@ int main(int argc, char** argv) {
                 runtime.scene_changed(); // node.locals edited directly -> culling BVH must track them
             }
             gui_anim_time = static_cast<float>(anim.time); // keep the gui time slider in sync
+        }
+
+        // skin matrices: the joint worlds follow the animation applied above, so rebuild every
+        // frame [identity block | per-rig joint blocks] and upload to the scene skin buffer
+        if (!skin_rigs.empty()) {
+            // collect the world matrices of the mesh + joint nodes with one DFS (same
+            // accumulation rule as the runtime's update_world: world = parent_world * local)
+            std::unordered_map<std::size_t, glm::mat4> skin_worlds;
+            auto const collect_worlds = [&skin_worlds, &skin_rigs](auto&& self, vulkan::scene_tree::scene_node& node, glm::mat4 const& parent_world) -> void {
+                glm::mat4 const world = parent_world * node.local;
+                for (skin_rig const& rig : skin_rigs) {
+                    if (node.source_index == rig.mesh_source) {
+                        skin_worlds.try_emplace(node.source_index, world);
+                    }
+                    for (std::size_t const joint : rig.skin->joints) {
+                        if (node.source_index == joint) {
+                            skin_worlds.try_emplace(node.source_index, world);
+                        }
+                    }
+                }
+                for (vulkan::scene_tree::scene_node& child : node.children) {
+                    self(self, child, world);
+                }
+            };
+            for (vulkan::scene_tree::scene_node& root : runtime.get_scene().roots) {
+                collect_worlds(collect_worlds, root, glm::mat4(1.0f));
+            }
+            // skinMat_j = inv(W_mesh) * W_joint_j * IBM_j; joints whose world is missing fall
+            // back to identity so vertex joint ids stay aligned with their block
+            std::vector<glm::mat4> matrices;
+            matrices.reserve(4 + (skin_rigs.size() * 8));
+            matrices.insert(matrices.end(), {glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f)});
+            for (skin_rig const& rig : skin_rigs) {
+                auto const mesh_it = skin_worlds.find(rig.mesh_source);
+                glm::mat4 const mesh_world_inv = glm::inverse(mesh_it == skin_worlds.end() ? glm::mat4(1.0f) : mesh_it->second);
+                for (std::size_t j = 0; j < rig.skin->joints.size(); ++j) {
+                    auto const joint_it = skin_worlds.find(rig.skin->joints[j]);
+                    glm::mat4 const joint_world = joint_it == skin_worlds.end() ? glm::mat4(1.0f) : joint_it->second;
+                    matrices.push_back(mesh_world_inv * joint_world * rig.skin->inverse_bind_matrices[j]);
+                }
+            }
+            runtime.set_skin_matrices(matrices);
+            // per-second report data: first rig's LAST joint world x-axis (rotations change it,
+            // unlike the joint's position which stays fixed under rotation-only animations)
+            skin_debug_valid = false;
+            if (!skin_rigs.empty() && !skin_rigs.front().skin->joints.empty()) {
+                std::size_t const last_joint = skin_rigs.front().skin->joints.back();
+                auto const joint_it = skin_worlds.find(last_joint);
+                if (joint_it != skin_worlds.end()) {
+                    skin_debug_valid = true;
+                    skin_debug_translation = glm::vec3(joint_it->second[0]); // world x axis
+                }
+            }
         }
         vulkan::frame_status const result = runtime.render_frame();
         if (result == vulkan::frame_status::closed || vulkan::is_failure(result)) {
@@ -706,10 +825,15 @@ int main(int argc, char** argv) {
                 std::string_view const anim_name = anim.animation->name.empty() ? std::string_view("<unnamed>") : std::string_view(anim.animation->name);
                 std::string_view const node_name = anim.debug_source == std::numeric_limits<std::size_t>::max()
                                                        ? std::string_view("<no target in scene>")
-                                                       : std::string_view(anim_nodes.at(anim.debug_source).front().node->name);
+                                                       : std::string_view(source_nodes.at(anim.debug_source).front().node->name);
                 utility::log("  anim '{}': t={:.3f}s/{:.2f}s, '{}' at ({:.3f}, {:.3f}, {:.3f})",
                              anim_name, anim.time, anim.duration, node_name,
                              anim.debug_translation.x, anim.debug_translation.y, anim.debug_translation.z);
+            }
+            if (skin_debug_valid) {
+                std::string_view const skin_name = skin_rigs.front().skin->name.empty() ? std::string_view("<unnamed>") : std::string_view(skin_rigs.front().skin->name);
+                utility::log("  skin '{}': last joint world x-axis ({:.3f}, {:.3f}, {:.3f})", skin_name,
+                             skin_debug_translation.x, skin_debug_translation.y, skin_debug_translation.z);
             }
             fps_elapsed = 0.0;
             fps_frame_count = 0;
