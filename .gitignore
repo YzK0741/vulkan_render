@@ -5,3 +5,8 @@ cmake-build-*/
 #doxygen generated output
 docs/html/
 docs/latex/
+
+#runtime artifacts (flushed logs + Dear ImGui panel-layout persistence)
+debug.log
+debug.log.old
+imgui_layout.ini
