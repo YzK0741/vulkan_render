@@ -860,8 +860,20 @@ int main(int argc, char** argv) {
                     "animation",
                     std::move(names),
                     &gui_anim_index,
-                    [&anim, &gui_anim_time, &playable_animations, &animation_duration, &pick_debug_source](int const index) {
+                    [&anim, &gui_anim_time, &playable_animations, &animation_duration, &pick_debug_source, &source_nodes, &anim_base_poses, &runtime, &scene_import_shift](int const index) {
                         gltf::animation const* const next = playable_animations[static_cast<std::size_t>(index)];
+                        // Switching animations: first reset every animated node to its base pose,
+                        // otherwise nodes driven by the PREVIOUS animation but not sampled by the
+                        // new one would keep their last pose (same compose rule as the frame loop)
+                        for (auto const& [source, targets] : source_nodes) {
+                            auto const base_it = anim_base_poses.find(source);
+                            gltf::node_pose const base = base_it == anim_base_poses.end() ? gltf::node_pose{} : base_it->second;
+                            glm::mat4 const trs = glm::translate(glm::mat4(1.0f), base.translation) * glm::mat4_cast(base.rotation) * glm::scale(glm::mat4(1.0f), base.scale);
+                            for (anim_target const& target : targets) {
+                                target.node->local = target.scene_root ? glm::translate(glm::mat4(1.0f), scene_import_shift) * trs : trs;
+                            }
+                        }
+                        runtime.scene_changed();
                         anim.animation = next;
                         anim.time = 0.0;
                         gui_anim_time = 0.0f;

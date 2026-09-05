@@ -142,6 +142,28 @@ namespace app_config {
                 }
             }
         }
+
+        // Sanity-clamp numeric settings: negative/absurd values would break window/swapchain
+        // creation or reserve huge buffers. Non-positive window sizes fall back to the defaults;
+        // grid_side is capped (the instancing stress reserves side*side transforms).
+        if (settings.render.window_width <= 0) {
+            settings.render.window_width = 1080;
+        }
+        if (settings.render.window_height <= 0) {
+            settings.render.window_height = 960;
+        }
+        if (settings.gui.panel_width < 0) {
+            settings.gui.panel_width = 0; // 0 = ImGui auto-size
+        }
+        if (settings.gui.panel_height < 0) {
+            settings.gui.panel_height = 0;
+        }
+        settings.grid_side = std::clamp(settings.grid_side, 0, 90);
+        bool const msaa_valid = settings.render.msaa == 0 || settings.render.msaa == 1 || settings.render.msaa == 2 || settings.render.msaa == 4 || settings.render.msaa == 8 || settings.render.msaa == 16 || settings.render.msaa == 32 || settings.render.msaa == 64;
+        if (!msaa_valid) {
+            utility::log("app_config: invalid msaa {} (use 0/1/2/4/8/16/32/64), falling back to auto", settings.render.msaa);
+            settings.render.msaa = 0;
+        }
         return settings;
     }
 
@@ -185,7 +207,10 @@ namespace app_config {
             char* end = nullptr;
             long const side = std::strtol(arg.c_str(), &end, 10);
             if (end != arg.c_str() && *end == '\0') {
-                settings.grid_side = static_cast<int>(side); // positional[1] is a number
+                // grid side: clamp instead of trusting the raw value - a huge argv number would
+                // otherwise make the instancing stress reserve enormous buffers (and strtol
+                // overflow saturates to LONG_MAX, which the clamp also absorbs)
+                settings.grid_side = static_cast<int>(std::clamp(side, 0L, 90L)); // positional[1] is a number
             } else {
                 settings.demo = arg; // positional[1] is a demo name
             }

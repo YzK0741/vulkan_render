@@ -26,13 +26,15 @@ layout(set = 0, binding = 4) uniform sampler2D brdf_lut_sampler;     // BRDF int
 struct Material {
     uvec4 tex_indices; // albedo, metallic-roughness, normal, occlusion (indices into textures[])
     uint emissive_index;
-    uint _pad[3];
+    float alpha_cutoff;       // alphaMode MASK threshold
+    float occlusion_strength; // mix(1, sampled AO, strength)
+    uint _pad;
     vec4 base_color_factor;
     vec4 emissive_factor;
     float metallic_factor;
     float roughness_factor;
     float normal_scale;
-    uint flags; // bit0: has normal map, bit1: has occlusion map, bit2: has emissive map
+    uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK
 };
 layout(set = 0, binding = 5) readonly buffer Materials { Material materials[]; };
 
@@ -170,21 +172,40 @@ void main() {
 
     // ---- Material parameters: factor * texture (indices come from the material record) ----
     vec4 base_color = mat.base_color_factor * texture(textures[mat.tex_indices.x], v_uv);
+    // alphaMode MASK (record flag bit4): discard fragments below the cutoff (base_color.a is
+    // factor.a * albedo.a) - glTF alphaCutoff semantics
+    if ((mat.flags & 16u) != 0u && base_color.a < mat.alpha_cutoff) {
+        discard;
+    }
     float metallic = mat.metallic_factor * texture(textures[mat.tex_indices.y], v_uv).b;
     float roughness = mat.roughness_factor * texture(textures[mat.tex_indices.y], v_uv).g;
-    float ao = texture(textures[mat.tex_indices.w], v_uv).r;
+    // occlusion: sampled AO modulated by occlusion_strength; without an occlusion map the slot
+    // is the white fallback (ao = 1) and the strength has no effect
+    float ao = mix(1.0, texture(textures[mat.tex_indices.w], v_uv).r, mat.occlusion_strength);
     vec3 emissive = mat.emissive_factor.rgb * texture(textures[mat.emissive_index], v_uv).rgb;
 
     // ---- Normal: optional tangent-space normal map, else interpolated normal ----
+    // The TBN frame is derived from screen-space derivatives of the world position and the UVs,
+    // so mirrored UV layouts (glTF TANGENT.w = -1) are handled implicitly - no per-vertex
+    // tangent sign is needed and the vertex TANGENT attribute is not consumed here.
     vec3 n;
     if ((mat.flags & 1u) != 0u) {
-        vec3 tangent = normalize(v_tangent);
+        const vec3 dp1 = dFdx(v_world_pos);
+        const vec3 dp2 = dFdy(v_world_pos);
+        const vec2 duv1 = dFdx(v_uv);
+        const vec2 duv2 = dFdy(v_uv);
         vec3 normal = normalize(v_normal);
-        vec3 bitangent = normalize(cross(normal, tangent));
-        vec3 tbn_normal = texture(textures[mat.tex_indices.z], v_uv).rgb * 2.0 - 1.0;
-        tbn_normal.xy *= mat.normal_scale;
-        tbn_normal = normalize(tbn_normal);
-        n = normalize(mat3(tangent, bitangent, normal) * tbn_normal);
+        const float denom = duv1.x * duv2.y - duv2.x * duv1.y;
+        if (abs(denom) < 1e-8) {
+            n = normal; // degenerate UV derivatives: fall back to the interpolated normal
+        } else {
+            const vec3 sdir = (duv2.y * dp1 - duv1.y * dp2) / denom; // world tangent direction
+            const vec3 tdir = (duv1.x * dp2 - duv2.x * dp1) / denom; // world bitangent direction
+            vec3 tbn_normal = texture(textures[mat.tex_indices.z], v_uv).rgb * 2.0 - 1.0;
+            tbn_normal.xy *= mat.normal_scale;
+            tbn_normal = normalize(tbn_normal);
+            n = normalize(mat3(normalize(sdir), normalize(tdir), normal) * tbn_normal);
+        }
     } else {
         n = normalize(v_normal);
     }

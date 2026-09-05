@@ -221,6 +221,9 @@ namespace gltf {
         float metallic_factor = 1.0f;
         float roughness_factor = 1.0f;
         float normal_scale = 1.0f;
+        float occlusion_strength = 1.0f; // occlusion map influence: mix(1, sampled AO, strength)
+        float alpha_cutoff = 0.5f;       // alphaMode MASK threshold (default per glTF spec)
+        bool alpha_mask = false;         // alphaMode == MASK: discard fragments below alpha_cutoff
     };
 
     /**
@@ -747,6 +750,9 @@ namespace gltf {
         float metallic_factor = 1.0f;
         float roughness_factor = 1.0f;
         float normal_scale = 1.0f;
+        float occlusion_strength = 1.0f; // mix(1, sampled AO, strength)
+        float alpha_cutoff = 0.5f;       // alphaMode MASK threshold
+        bool alpha_mask = false;         // alphaMode == MASK (alphaMode BLEND stays opaque for now)
     };
 
     /**

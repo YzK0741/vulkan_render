@@ -750,13 +750,16 @@ namespace vulkan {
                 info.metallic_roughness = to_texture(drawable.get_metallic_roughness(), VK_FORMAT_R8G8B8A8_UNORM);
                 info.normal = to_texture(drawable.get_normal(), VK_FORMAT_R8G8B8A8_UNORM);
                 info.occlusion = to_texture(drawable.get_occlusion(), VK_FORMAT_R8G8B8A8_UNORM);
-                info.emissive = to_texture(drawable.get_emissive(), VK_FORMAT_R8G8B8A8_UNORM);
+                info.emissive = to_texture(drawable.get_emissive(), VK_FORMAT_R8G8B8A8_SRGB); // glTF emissive textures are sRGB
                 auto const factors = drawable.get_factors();
                 info.factors.base_color_factor = factors.base_color_factor;
                 info.factors.emissive_factor = factors.emissive_factor;
                 info.factors.metallic_factor = factors.metallic_factor;
                 info.factors.roughness_factor = factors.roughness_factor;
                 info.factors.normal_scale = factors.normal_scale;
+                info.factors.occlusion_strength = factors.occlusion_strength;
+                info.factors.alpha_cutoff = factors.alpha_cutoff;
+                info.factors.alpha_mask = factors.alpha_mask;
                 info.double_sided = drawable.get_double_sided();
             };
             // attach one leaf primitive to @p node (geometry from the next drawable of the stream);

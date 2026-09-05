@@ -182,6 +182,9 @@ namespace vulkan {
         float metallic_factor = 1.0f;
         float roughness_factor = 1.0f;
         float normal_scale = 1.0f;
+        float occlusion_strength = 1.0f; // occlusion map influence: mix(1, sampled AO, strength)
+        float alpha_cutoff = 0.5f;       // alphaMode MASK threshold (fragment discard below it)
+        bool alpha_mask = false;         // alphaMode == MASK
     };
 
     /**
@@ -232,6 +235,9 @@ namespace vulkan {
         { v.metallic_factor } -> std::convertible_to<float>;
         { v.roughness_factor } -> std::convertible_to<float>;
         { v.normal_scale } -> std::convertible_to<float>;
+        { v.occlusion_strength } -> std::convertible_to<float>;
+        { v.alpha_cutoff } -> std::convertible_to<float>;
+        { v.alpha_mask } -> std::convertible_to<bool>;
     };
 
     /**
@@ -319,15 +325,17 @@ namespace vulkan {
      * @note layout matches the Material struct in pbr.frag (std430, 80 bytes)
      */
     export struct material_record {
-        glm::uvec4 tex_indices = {}; // albedo, metallic-roughness, normal, occlusion (indices into the texture array)
-        uint32_t emissive_index = 0; // emissive texture index
-        uint32_t _pad[3] = {};       // keep the vec4 members 16-byte aligned (std430)
+        glm::uvec4 tex_indices = {};     // albedo, metallic-roughness, normal, occlusion (indices into the texture array)
+        uint32_t emissive_index = 0;     // emissive texture index
+        float alpha_cutoff = 0.5f;       // alphaMode MASK threshold (fragment discard below it)
+        float occlusion_strength = 1.0f; // occlusion map influence: mix(1, sampled AO, strength)
+        uint32_t _pad = 0;               // keep the vec4 members 16-byte aligned (std430)
         glm::vec4 base_color_factor = glm::vec4(1.0f);
         glm::vec4 emissive_factor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         float metallic_factor = 1.0f;
         float roughness_factor = 1.0f;
         float normal_scale = 1.0f;
-        uint32_t flags = 0; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided
+        uint32_t flags = 0; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK
     };
     static_assert(sizeof(material_record) == 80);
 

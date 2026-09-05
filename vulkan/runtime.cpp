@@ -529,7 +529,7 @@ namespace vulkan {
             std::pair{&info.metallic_roughness, VK_FORMAT_R8G8B8A8_UNORM},
             std::pair{&info.normal, VK_FORMAT_R8G8B8A8_UNORM},
             std::pair{&info.occlusion, VK_FORMAT_R8G8B8A8_UNORM},
-            std::pair{&info.emissive, VK_FORMAT_R8G8B8A8_UNORM},
+            std::pair{&info.emissive, VK_FORMAT_R8G8B8A8_SRGB}, // glTF emissive textures are sRGB
         };
 
         std::array<uint32_t, 5> texture_indices = {};
@@ -637,6 +637,8 @@ namespace vulkan {
         record.metallic_factor = info.factors.metallic_factor;
         record.roughness_factor = info.factors.roughness_factor;
         record.normal_scale = info.factors.normal_scale;
+        record.alpha_cutoff = info.factors.alpha_cutoff;
+        record.occlusion_strength = info.factors.occlusion_strength;
         record.flags = 0;
         if (info.normal.valid) {
             record.flags |= 1u;
@@ -649,6 +651,9 @@ namespace vulkan {
         }
         if (info.double_sided) {
             record.flags |= 8u; // bit3: back faces are rendered, fragment shader flips normals
+        }
+        if (info.factors.alpha_mask) {
+            record.flags |= 16u; // bit4: alphaMode MASK - fragment shader discards below alpha_cutoff
         }
 
         uint32_t const material_index = this->material_count++;
