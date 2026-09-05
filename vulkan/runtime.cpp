@@ -37,6 +37,10 @@ namespace {
         if (!camera.dragging) {
             return;
         }
+        // an external (glTF/programmatic) camera owns the view: orbit dragging is ignored
+        if (runtime_from_window(window)->using_external_camera()) {
+            return;
+        }
         constexpr float sensitivity = 0.005f;
         float const dx = static_cast<float>(x - camera.last_x);
         float const dy = static_cast<float>(y - camera.last_y);
@@ -48,6 +52,10 @@ namespace {
     }
 
     void scroll_callback(GLFWwindow* window, [[maybe_unused]] double const xoffset, double const yoffset) {
+        // an external (glTF/programmatic) camera owns the view: wheel zoom is ignored
+        if (runtime_from_window(window)->using_external_camera()) {
+            return;
+        }
         auto& camera = runtime_from_window(window)->camera;
         // zoom: wheel up pulls in, wheel down pulls out. The upper bound is generous (scene
         // sizes vary from the tiny default model to e.g. the Fox rig, whose framing distance
@@ -747,9 +755,16 @@ namespace vulkan {
 
         // 5. Update the shared camera UBO once: every primitive references these buffers through the
         //    scene set, so one memcpy (+ one update-after-bind descriptor write) replaces the old
-        //    per-primitive per-frame UBO updates
+        //    per-primitive per-frame UBO updates. An external (glTF/programmatic) camera, when
+        //    active, supplies the view/projection directly instead of the orbit camera.
         this->current_aspect = static_cast<float>(vk.swap_chain_extent.width) / static_cast<float>(vk.swap_chain_extent.height);
-        this->current_ubo = make_orbit_camera_ubo(this->camera.yaw, this->camera.pitch, this->camera.distance, this->camera.target, this->current_aspect);
+        if (this->external_camera_active) {
+            this->current_ubo.view = this->external_view;
+            this->current_ubo.proj = this->external_proj;
+            this->current_ubo.camera_pos = this->external_eye;
+        } else {
+            this->current_ubo = make_orbit_camera_ubo(this->camera.yaw, this->camera.pitch, this->camera.distance, this->camera.target, this->current_aspect);
+        }
         if (this->camera_mapped[frame_slot] != nullptr) {
             std::memcpy(this->camera_mapped[frame_slot], &this->current_ubo, sizeof(camera_ubo));
         }
@@ -834,18 +849,25 @@ namespace vulkan {
         std::pmr::vector<primitive const*> visible_leaves = this->frame_leaves; // fallback: no culling
         std::size_t culled_count = 0;
         if (this->frustum_culling) {
-            // camera key: yaw, pitch, distance, target (the orbit state that shapes the frustum)
-            std::array<float, 7> const key = {
-                this->camera.yaw,
-                this->camera.pitch,
-                this->camera.distance,
-                this->camera.target.x,
-                this->camera.target.y,
-                this->camera.target.z,
-                aspect,
-            };
+            // camera identity: the orbit state that shapes the frustum, or the authored
+            // external camera's view/projection when one is active
+            std::array<float, 7> key = {}; // orbit key; unused while an external camera is active
             bool const scene_changed_this_frame = this->bvh_dirty;
-            this->camera_moved = key != this->camera_key;
+            if (this->external_camera_active) {
+                this->camera_moved = this->external_camera_changed;
+                this->external_camera_changed = false;
+            } else {
+                key = {
+                    this->camera.yaw,
+                    this->camera.pitch,
+                    this->camera.distance,
+                    this->camera.target.x,
+                    this->camera.target.y,
+                    this->camera.target.z,
+                    aspect,
+                };
+                this->camera_moved = key != this->camera_key;
+            }
 
             if (scene_changed_this_frame || !this->cull_bvh.has_value()) {
                 // scene changed: rebuild the BVH from current world AABBs (and drop stale leaves)
@@ -1521,6 +1543,31 @@ namespace vulkan {
 
     void* runtime::morph_scratch() noexcept {
         return this->morph_mapped;
+    }
+
+    void runtime::set_external_camera(glm::vec3 const& eye, glm::mat4 const& view, glm::mat4 const& proj) noexcept {
+        if (!this->external_camera_active || eye != this->external_eye || view != this->external_view || proj != this->external_proj) {
+            this->external_eye = eye;
+            this->external_view = view;
+            this->external_proj = proj;
+            this->external_camera_changed = true;
+        }
+        this->external_camera_active = true;
+    }
+
+    void runtime::clear_external_camera() noexcept {
+        if (this->external_camera_active) {
+            this->external_camera_active = false;
+            this->external_camera_changed = true; // orbit view is different: re-cull next frame
+        }
+    }
+
+    bool runtime::using_external_camera() const noexcept {
+        return this->external_camera_active;
+    }
+
+    float runtime::aspect_ratio() const noexcept {
+        return this->current_aspect;
     }
 
     void runtime::destroy_leaf_primitives(scene_tree::scene_node& node, vma_allocator& vma) {

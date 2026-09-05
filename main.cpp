@@ -751,6 +751,26 @@ int main(int argc, char** argv) {
     glm::vec3 skin_debug_translation = glm::vec3(0.0f);
     bool skin_debug_valid = false;
 
+    // ---- authored (glTF) camera ----
+    // When the imported scene contains a camera-bearing node, it takes over the per-frame
+    // camera UBO: each frame its world transform (which follows the animation playback above)
+    // builds the view/projection, so the model is shown as the author framed it (the orbit
+    // camera mouse controls are ignored while active; clearing the override returns to orbit).
+    gltf::camera const* active_camera = nullptr;
+    std::size_t active_camera_source = std::numeric_limits<std::size_t>::max();
+    for (auto const& [source, loader_node] : loader_nodes) {
+        if (loader_node->camera_index && *loader_node->camera_index < scenes->cameras.size() && source_nodes.contains(source)) {
+            active_camera = &scenes->cameras[*loader_node->camera_index];
+            active_camera_source = source;
+            break;
+        }
+    }
+    if (active_camera != nullptr) {
+        std::string_view const cam_name = active_camera->name.empty() ? std::string_view("<unnamed>") : std::string_view(active_camera->name);
+        utility::log("camera: using glTF camera '{}' ({}) - orbit mouse controls disabled", cam_name,
+                     active_camera->type == gltf::camera_type::perspective ? "perspective" : "orthographic");
+    }
+
     // Optional Dear ImGui debug overlay: the runtime drives new_frame/record inside its frame
     // steps; main only enables it and manages its content through the panel/widget API (fps
     // text widget bound to a live lambda + a frustum-culling checkbox that forwards to the
@@ -941,6 +961,64 @@ int main(int argc, char** argv) {
                     skin_debug_valid = true;
                     skin_debug_translation = glm::vec3(joint_it->second[0]); // world x axis
                 }
+            }
+        }
+        // authored (glTF) camera: rebuild the view/projection from the camera node's world each
+        // frame (the animation applied above may move it). Note: world = parent * local from the
+        // roots — like update_world, but without the optional whole-scene transform (set_scene_
+        // transform / spin demos move the scene, not the authored camera).
+        if (active_camera != nullptr) {
+            glm::mat4 camera_world = glm::mat4(1.0f);
+            bool found = false;
+            auto const find_world = [&](auto&& self, vulkan::scene_tree::scene_node& node, glm::mat4 const& parent_world) -> bool {
+                glm::mat4 const world = parent_world * node.local;
+                if (node.source_index == active_camera_source) {
+                    camera_world = world;
+                    return true;
+                }
+                for (vulkan::scene_tree::scene_node& child : node.children) {
+                    if (self(self, child, world)) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            for (vulkan::scene_tree::scene_node& root : runtime.get_scene().roots) {
+                if (find_world(find_world, root, glm::mat4(1.0f))) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) {
+                // glTF cameras look along the node's local -Z; take translation + rotation only
+                glm::vec3 const eye = glm::vec3(camera_world[3]);
+                glm::vec3 const fwd = -glm::normalize(glm::vec3(camera_world[2]));
+                glm::vec3 const up = glm::normalize(glm::vec3(camera_world[1]));
+                glm::mat4 const view = glm::lookAt(eye, eye + fwd, up);
+                float const window_aspect = runtime.aspect_ratio();
+                glm::mat4 proj = glm::mat4(1.0f);
+                if (active_camera->type == gltf::camera_type::perspective) {
+                    float const cam_aspect = active_camera->aspect_ratio ? *active_camera->aspect_ratio : window_aspect;
+                    if (active_camera->zfar) {
+                        proj = glm::perspectiveRH_ZO(active_camera->yfov, cam_aspect, active_camera->znear, *active_camera->zfar);
+                    } else {
+                        // glTF: missing zfar = infinite far plane. RH + depth [0,1] limit of the
+                        // finite perspective (m22 -> -1, m32 -> -znear), built manually because
+                        // this GLM install has no matrix_projection.hpp
+                        float const f = 1.0f / std::tan(active_camera->yfov * 0.5f);
+                        proj[0][0] = f / cam_aspect;
+                        proj[1][1] = f;
+                        proj[2][2] = -1.0f;
+                        proj[2][3] = -1.0f; // w = -z_eye
+                        proj[3][2] = -active_camera->znear;
+                    }
+                } else {
+                    proj = glm::orthoRH_ZO(-active_camera->xmag, active_camera->xmag, -active_camera->ymag, active_camera->ymag, active_camera->ortho_znear, active_camera->ortho_zfar);
+                }
+                proj[1][1] *= -1.0f; // Vulkan Y flip (same as make_orbit_camera_ubo)
+                runtime.set_external_camera(eye, view, proj);
+            } else {
+                runtime.clear_external_camera();
             }
         }
         vulkan::frame_status const result = runtime.render_frame();

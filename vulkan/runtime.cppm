@@ -172,6 +172,14 @@ namespace vulkan {
         // camera identity for result reuse: yaw, pitch, distance, target.xyz (7 floats)
         std::array<float, 7> camera_key = {};
         bool camera_moved = true; // camera key differs from the last cull frame
+        // optional external (glTF/programmatic) camera: when active, the per-frame camera UBO
+        // uses these matrices directly (the orbit camera + its mouse controls are ignored) and
+        // frustum culling re-runs only when the authored view/projection actually changed
+        glm::mat4 external_view = glm::mat4(1.0f);
+        glm::mat4 external_proj = glm::mat4(1.0f);
+        glm::vec3 external_eye = glm::vec3(0.0f);
+        bool external_camera_active = false;
+        bool external_camera_changed = true; // set when the override differs -> re-cull
         // one command buffer per frame slot, used and reused by render_frame()
         std::vector<vk_command_buffer> command_buffers;
         // per-frame state shared by the split frame steps (render_frame() calls them in order,
@@ -247,6 +255,32 @@ namespace vulkan {
          * @brief orbit camera state; left-drag rotates, wheel zooms
          */
         orbit_camera camera;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief take over the per-frame camera UBO with an externally computed view/projection
+         *        (e.g. a glTF camera, see the demo). While active the orbit camera mouse controls
+         *        are ignored and frustum culling re-runs only when the view/projection changed.
+         * @param eye camera position in world space (written into the UBO for the shaders)
+         * @param view world -> camera space matrix
+         * @param proj camera space -> clip space matrix (Vulkan conventions, i.e. with the Y
+         *        flip already applied, same as make_orbit_camera_ubo)
+         * @note call every frame while the authored camera is in use; identical matrices are
+         *       deduplicated (no cull invalidation when nothing changed)
+         */
+        void set_external_camera(glm::vec3 const& eye, glm::mat4 const& view, glm::mat4 const& proj) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief return to the orbit camera (ignores any previously set external camera)
+         */
+        void clear_external_camera() noexcept;
+
+        /** @brief whether an external (glTF/programmatic) camera currently drives the UBO */
+        [[nodiscard]] bool using_external_camera() const noexcept;
+
+        /** @brief current swapchain aspect ratio (for authored-camera projections) */
+        [[nodiscard]] float aspect_ratio() const noexcept;
 
         /**
          * @ingroup vulkan_runtime
