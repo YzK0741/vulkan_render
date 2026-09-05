@@ -8,7 +8,7 @@ import utility;
 
 namespace app_config {
     app_settings load_settings(std::string const& path) {
-        app_settings settings;
+        app_settings settings = {};
 
         // toml++ parses to a parse_result when exceptions are disabled; operator bool reports
         // success and error() carries the message
@@ -162,7 +162,7 @@ namespace app_config {
             positional.push_back(arg);
         }
 
-        app_settings settings;
+        app_settings settings = {};
         std::error_code ec;
         if (!config_path.empty() && std::filesystem::is_regular_file(config_path, ec)) {
             settings = load_settings(config_path);
