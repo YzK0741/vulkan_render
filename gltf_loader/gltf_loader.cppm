@@ -2,6 +2,7 @@ module;
 
 #include <cstdint>
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 export module gltf_loader;
 export import std;
@@ -255,6 +256,132 @@ namespace gltf {
         std::vector<primitive> primitives;
     };
 
+    // ---- animation (glTF keyframe animation, exported decoded; playback is a consumer concern) ----
+
+    /**
+     * @ingroup gltf_loader
+     * @brief interpolation mode of one animation sampler (glTF "interpolation")
+     */
+    export enum class animation_interpolation : int {
+        linear = 0,       // glTF LINEAR: blend between consecutive keyframes (slerp for rotations)
+        step = 1,         // glTF STEP: hold the previous keyframe's value until the next keyframe
+        cubic_spline = 2, // glTF CUBICSPLINE: Hermite spline with per-key in/out tangents
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief animated node property of one animation channel (glTF "path")
+     * @note "weights" (morph targets) are not exported: morph targets are unsupported
+     */
+    export enum class animation_path : int {
+        translation = 1, // values are xyz triplets (one per keyframe)
+        rotation = 2,    // values are xyzw quaternions (w scalar, one per keyframe)
+        scale = 3,       // values are xyz triplets (one per keyframe)
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief one decoded animation sampler: keyframe times + flat output values
+     * @note
+     *      - times: one float per keyframe, in seconds, monotonically non-decreasing (as stored)
+     *      - values: flat floats. LINEAR / STEP hold key_count * components floats
+     *        (3 for translation/scale, 4 for rotation). CUBICSPLINE holds key_count *
+     *        components * 3 floats, grouped per keyframe in glTF order: in-tangent, value,
+     *        out-tangent. Whether a sampler was decoded from valid accessors is not tracked —
+     *        a broken/unsupported sampler simply has empty times/values and must be skipped.
+     *      - glTF requires float input; other numeric component types are converted to float
+     *        when present (so the loader stays robust against non-conforming files)
+     */
+    export struct animation_sampler {
+        std::vector<float> times = {};
+        std::vector<float> values = {};
+        animation_interpolation interpolation = animation_interpolation::linear;
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief one animation channel: animate one TRS property of a node from a sampler
+     * @note
+     *      - sampler indexes the owning animation's samplers (glTF semantics)
+     *      - target_node is the animated node's index in the glTF asset's node table. Locate
+     *        the matching node of a scene's pool by gltf::node::source_index (animations are
+     *        file-scoped; a node may be reachable from several scenes)
+     */
+    export struct animation_channel {
+        animation_path path = animation_path::translation;
+        std::size_t sampler = 0;
+        std::size_t target_node = 0;
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief one glTF animation: channels over samplers, file-scoped (not tied to one scene)
+     */
+    export struct animation {
+        std::string name = {};
+        std::vector<animation_sampler> samplers = {};
+        std::vector<animation_channel> channels = {};
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief evaluated value of one animation channel at a point in time: a vec3 for the
+     *        translation/scale paths or a quaternion for the rotation path
+     * @note valid == false means the sampler had no keyframes (or broken values); nothing
+     *       could be sampled
+     */
+    export struct channel_sample {
+        bool valid = false;
+        glm::vec3 vec3 = glm::vec3(0.0f);                   // translation / scale paths
+        glm::quat quat = glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // rotation path (normalized, w scalar)
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief evaluate the channel's sampler at @p t seconds (glTF keyframe sampling)
+     * @param sampler the sampler to evaluate (see animation_sampler for the values layout)
+     * @param path the property the sampler's values encode — determines the component count
+     *        per key (3 for translation/scale, 4 for rotation) and which member of the
+     *        returned channel_sample is filled
+     * @param t playback time in seconds; clamped to the sampler's keyframe range
+     * @return channel_sample with valid == false when the sampler has no usable keyframes
+     * @note interpolation follows the sampler's mode: LINEAR lerps translations/scales and
+     *       slerps rotations along the shortest arc; STEP holds the previous keyframe's
+     *       value; CUBICSPLINE evaluates the Hermite spline from the per-key in/out tangents
+     *       (rotation results are normalized afterwards, per the glTF spec)
+     */
+    export channel_sample sample_channel(animation_sampler const& sampler, animation_path path, float t);
+
+    /**
+     * @ingroup gltf_loader
+     * @brief one node's animated local pose at a point in time: the TRS base pose of the node
+     *        (see gltf::node) overridden by every channel of @p animation that targets it
+     * @note the caller picks the animated node(s) per scene by matching
+     *       gltf::node::source_index against animation_channel::target_node, evaluates the
+     *       per-node pose through this function, then composes T * R * S to write the node's
+     *       local transform (see §8 of docs/gltf_loader_usage.md)
+     */
+    export struct node_pose {
+        bool any_channel = false;                // true when at least one channel applied
+        glm::vec3 translation = glm::vec3(0.0f); // base pose, overridden per channel path
+        glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        glm::vec3 scale = glm::vec3(1.0f);
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief evaluate every channel of @p animation targeting @p target_node (an asset node
+     *        index, see animation_channel::target_node) at time @p t and merge the results
+     *        onto the node's TRS base pose
+     * @param animation the animation to play
+     * @param target_node asset node index of the animated node
+     * @param base the node's TRS base pose (gltf::node translation/rotation/scale)
+     * @param t playback time in seconds (clamped per sampler)
+     * @return merged pose: node_pose::any_channel == true when at least one channel of the
+     *         animation targeted this node and evaluated successfully
+     */
+    export node_pose sample_node(animation const& animation, std::size_t target_node, node_pose const& base, float t);
+
     /**
      * @ingroup gltf_loader
      * @brief a scene node: local transform + meshes + child links
@@ -268,6 +395,11 @@ namespace gltf {
      *        matrix, or the node's matrix when the asset stored a raw matrix); transform_matrix
      *        keeps the accumulated world matrix for backward compatibility (same value as the
      *        loader used to expose before the tree was retained)
+     *      - source_index links the pool entry back to the glTF asset's node table (animation
+     *        channels reference nodes by that index). translation / rotation / scale hold the
+     *        TRS base pose when the file declared the node as TRS — the only form the glTF
+     *        spec allows animation to target — and stay identity for matrix nodes (which are
+     *        never animatable)
      */
     export struct node {
         std::string name = {};                       // glTF node name (empty when unnamed)
@@ -276,6 +408,11 @@ namespace gltf {
         // indices into the owning scene.nodes (DFS pre-order): the direct children of this node
         std::vector<std::size_t> children = {};       // empty for leaves / transform-only nodes
         glm::mat4 transform_matrix = glm::mat4(1.0f); // world matrix (parent * local), kept for compatibility
+        // animation substrate: asset node index + TRS base pose (see the @note above)
+        std::size_t source_index = 0;                           // index in the glTF asset's node table
+        glm::vec3 translation = glm::vec3(0.0f);                // TRS base pose; identity for matrix nodes
+        glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // identity quaternion (w scalar)
+        glm::vec3 scale = glm::vec3(1.0f);                      // TRS base pose; identity for matrix nodes
     };
 
     /**
@@ -379,6 +516,7 @@ namespace gltf {
         [[nodiscard]] glm::mat4 get_local_transform() const noexcept;
         [[nodiscard]] std::size_t get_depth() const noexcept;          // 0 = scene root
         [[nodiscard]] std::size_t get_drawable_count() const noexcept; // primitives hanging off this node
+        [[nodiscard]] std::size_t get_source_index() const noexcept;   // asset node index (node::source_index)
 
         friend bool operator==(scene_node_iterator const& a, scene_node_iterator const& b) noexcept {
             if (a.exhausted || b.exhausted) {
@@ -410,9 +548,12 @@ namespace gltf {
 
     /**
      * @ingroup gltf_loader
-     * @brief loaded result of a glTF file: textures, materials and scenes
+     * @brief loaded result of a glTF file: textures, materials, animations and scenes
      * @note textures holds one entry per glTF texture (in texture order); material texture_indices
      *       values index into this array; primitive.material_index indexes into materials
+     * @note animations holds the file's keyframe animations (glTF animation objects in order);
+     *       see gltf::animation — channels target nodes by their asset node index, resolved
+     *       against a scene's pool through gltf::node::source_index
      * @note scenes is a range: begin()/end() yield every drawable primitive with its node's
      *       world transform (see gltf::scene_iterator / gltf::drawable_ref), so callers can
      *       iterate the whole scene without manual scene -> node -> mesh -> primitive loops
@@ -421,6 +562,7 @@ namespace gltf {
     export struct scenes {
         std::vector<texture_data> textures;
         std::vector<material> materials;
+        std::vector<animation> animations = {};
         std::vector<scene> scene;
 
         [[nodiscard]] scene_iterator begin() const;

@@ -4,6 +4,7 @@ module;
 #include <fastgltf/tools.hpp>
 #include <fastgltf/types.hpp>
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
@@ -386,6 +387,22 @@ namespace {
 
             gltf::node current_node = {};
             current_node.name = fnode.name;
+            // Link the pool entry back to the asset's node table (animation channels target
+            // nodes by this index) and keep the declared TRS base pose when the node is TRS:
+            // per the glTF spec animation only ever targets TRS properties, so matrix nodes
+            // (non-animatable) leave translation/rotation/scale at identity.
+            current_node.source_index = node_index;
+            if (auto const* trs = std::get_if<fastgltf::TRS>(&fnode.transform)) {
+                current_node.translation = glm::vec3(trs->translation[0], trs->translation[1], trs->translation[2]);
+                glm::quat rotation = {};
+                // fastgltf stores quaternions as xyzw with w the scalar, same layout as glm
+                rotation.x = trs->rotation[0];
+                rotation.y = trs->rotation[1];
+                rotation.z = trs->rotation[2];
+                rotation.w = trs->rotation[3];
+                current_node.rotation = rotation;
+                current_node.scale = glm::vec3(trs->scale[0], trs->scale[1], trs->scale[2]);
+            }
             current_node.local_transform = to_glm_mat4(fastgltf::getTransformMatrix(fnode)); // base = identity -> own transform
             current_node.transform_matrix = to_glm_mat4(world);
             if (fnode.meshIndex) {
@@ -412,6 +429,150 @@ namespace {
         for (std::size_t const root : asset.scenes[scene_index].nodeIndices) {
             result.root_indices.push_back(result.nodes.size());
             build_node(build_node, root, fastgltf::math::fmat4x4{});
+        }
+        return result;
+    }
+
+    // ---- animation: decode keyframe accessors into flat float arrays ----
+
+    // Read one scalar component (little-endian, element index @p index) of a decoded accessor
+    // byte buffer as a float, converting any supported component type.
+    float read_float_component(unsigned char const* data, gltf::component_type const type, std::size_t const index) {
+        switch (type) {
+        case gltf::component_type::float_t: {
+            float value;
+            std::memcpy(&value, data + index * sizeof(float), sizeof(float));
+            return value;
+        }
+        case gltf::component_type::double_t: {
+            double value;
+            std::memcpy(&value, data + index * sizeof(double), sizeof(double));
+            return static_cast<float>(value);
+        }
+        case gltf::component_type::byte_t:
+            return static_cast<float>(static_cast<std::int8_t>(data[index]));
+        case gltf::component_type::unsigned_byte_t:
+            return static_cast<float>(data[index]);
+        case gltf::component_type::short_t: {
+            std::int16_t value;
+            std::memcpy(&value, data + index * sizeof(std::int16_t), sizeof(std::int16_t));
+            return static_cast<float>(value);
+        }
+        case gltf::component_type::unsigned_short_t: {
+            std::uint16_t value;
+            std::memcpy(&value, data + index * sizeof(std::uint16_t), sizeof(std::uint16_t));
+            return static_cast<float>(value);
+        }
+        case gltf::component_type::int_t: {
+            std::int32_t value;
+            std::memcpy(&value, data + index * sizeof(std::int32_t), sizeof(std::int32_t));
+            return static_cast<float>(value);
+        }
+        case gltf::component_type::unsigned_int_t: {
+            std::uint32_t value;
+            std::memcpy(&value, data + index * sizeof(std::uint32_t), sizeof(std::uint32_t));
+            return static_cast<float>(value);
+        }
+        default:
+            return 0.0f;
+        }
+    }
+
+    // Decode one accessor into a flat float array: Scalar elements -> 1 value each, Vec3 -> 3,
+    // Vec4 -> 4 (any supported component type is converted to float). Returns empty for
+    // element/component combinations that cannot hold animation values (Mat*, vec2, unknown).
+    std::vector<float> flatten_float_accessor(Asset const& asset, fastgltf::Accessor const& accessor) {
+        parsed_data const raw = get_data_from_accessor(asset, accessor);
+        std::size_t components = 0;
+        switch (accessor.type) {
+        case fastgltf::AccessorType::Scalar:
+            components = 1;
+            break;
+        case fastgltf::AccessorType::Vec3:
+            components = 3;
+            break;
+        case fastgltf::AccessorType::Vec4:
+            components = 4;
+            break;
+        default:
+            return {}; // not a valid animation value shape
+        }
+        if (raw.data.empty() || raw.component_type == gltf::component_type::unknown) {
+            return {};
+        }
+        std::vector<float> out;
+        out.reserve(raw.count * components);
+        for (std::size_t i = 0; i < raw.count * components; ++i) {
+            out.push_back(read_float_component(raw.data.data(), raw.component_type, i));
+        }
+        return out;
+    }
+
+    gltf::animation load_animation(Asset const& asset, std::size_t const animation_index) {
+        fastgltf::Animation const& f_anim = asset.animations[animation_index];
+        gltf::animation result;
+        result.name = f_anim.name;
+
+        // Samplers: keyframe times (Scalar input accessor) + output values (Vec3/Vec4 output
+        // accessor). A sampler with an out-of-range accessor or one that decodes to empty is
+        // still pushed (as an empty entry) so channel->sampler indices stay aligned with the
+        // file; consumers skip samplers with empty times.
+        for (fastgltf::AnimationSampler const& f_sampler : f_anim.samplers) {
+            gltf::animation_sampler sampler = {};
+            switch (f_sampler.interpolation) {
+            case fastgltf::AnimationInterpolation::Step:
+                sampler.interpolation = gltf::animation_interpolation::step;
+                break;
+            case fastgltf::AnimationInterpolation::CubicSpline:
+                sampler.interpolation = gltf::animation_interpolation::cubic_spline;
+                break;
+            case fastgltf::AnimationInterpolation::Linear:
+                [[fallthrough]];
+            default:
+                sampler.interpolation = gltf::animation_interpolation::linear;
+                break;
+            }
+            if (f_sampler.inputAccessor < asset.accessors.size()) {
+                sampler.times = flatten_float_accessor(asset, asset.accessors[f_sampler.inputAccessor]);
+            }
+            if (f_sampler.outputAccessor < asset.accessors.size()) {
+                sampler.values = flatten_float_accessor(asset, asset.accessors[f_sampler.outputAccessor]);
+            }
+            result.samplers.push_back(std::move(sampler));
+        }
+
+        // Channels: export TRS paths only. Weights (morph targets, unsupported) and channels
+        // with unresolvable node/sampler references are dropped.
+        std::size_t skipped_weights = 0;
+        for (fastgltf::AnimationChannel const& f_channel : f_anim.channels) {
+            if (f_channel.path == fastgltf::AnimationPath::Weights) {
+                ++skipped_weights;
+                continue;
+            }
+            if (!f_channel.nodeIndex || f_channel.samplerIndex >= result.samplers.size()) {
+                continue; // broken reference: cannot resolve
+            }
+            gltf::animation_channel channel = {};
+            channel.sampler = f_channel.samplerIndex;
+            channel.target_node = *f_channel.nodeIndex;
+            switch (f_channel.path) {
+            case fastgltf::AnimationPath::Translation:
+                channel.path = gltf::animation_path::translation;
+                break;
+            case fastgltf::AnimationPath::Rotation:
+                channel.path = gltf::animation_path::rotation;
+                break;
+            case fastgltf::AnimationPath::Scale:
+                channel.path = gltf::animation_path::scale;
+                break;
+            default:
+                continue;
+            }
+            result.channels.push_back(std::move(channel));
+        }
+        if (skipped_weights > 0) {
+            std::string_view const anim_name = result.name.empty() ? std::string_view("<unnamed>") : std::string_view(result.name);
+            utility::log("gltf: animation '{}': {} morph-target (weights) channel(s) skipped (morph targets unsupported)", anim_name, skipped_weights);
         }
         return result;
     }
@@ -669,6 +830,11 @@ namespace gltf {
             result.scene.push_back(load_scene(asset, i));
         }
 
+        result.animations.reserve(asset.animations.size());
+        for (std::size_t i = 0; i < asset.animations.size(); ++i) {
+            result.animations.push_back(load_animation(asset, i));
+        }
+
         result.textures.reserve(asset.textures.size());
         for (std::size_t i = 0; i < asset.textures.size(); ++i) {
             result.textures.push_back(load_texture(asset, i));
@@ -827,6 +993,10 @@ namespace gltf {
             count += mesh.primitives.size();
         }
         return count;
+    }
+
+    std::size_t scene_node_iterator::get_source_index() const noexcept {
+        return this->iterating_scene->scene[this->scene_i].nodes[this->stack.back().node_i].source_index;
     }
 
     scene_node_iterator scenes::nodes_begin() const {
@@ -991,5 +1161,137 @@ namespace gltf {
 
     std::future<std::vector<resolved_material>> resolve_materials_async(gltf::scenes const& scenes) {
         return std::async(std::launch::async, [&scenes] { return resolve_materials(scenes); });
+    }
+
+    // ---- keyframe sampling (pure CPU; see animation_sampler docs for the values layout) ----
+
+    channel_sample sample_channel(animation_sampler const& sampler, animation_path const path, float const t) {
+        channel_sample out = {};
+        std::size_t const keys = sampler.times.size();
+        if (keys == 0) {
+            return out; // no keyframes: nothing to sample
+        }
+        std::size_t const comps = path == animation_path::rotation ? 4 : 3;
+        bool const cubic = sampler.interpolation == animation_interpolation::cubic_spline;
+        std::size_t const per_key = comps * (cubic ? 3 : 1);
+        if (sampler.values.size() < keys * per_key) {
+            return out; // value count does not match the key count: broken sampler
+        }
+        out.valid = true;
+
+        // read one key's value block (cubic: the middle triplet of the key's 3 * comps floats)
+        auto const read_value = [&](std::size_t const key, std::array<float, 4>& value) {
+            std::size_t const base = key * per_key + (cubic ? comps : 0);
+            for (std::size_t c = 0; c < comps; ++c) {
+                value[c] = sampler.values[base + c];
+            }
+        };
+        // read a cubic-spline tangent of a key (out_tangent selects the trailing triplet)
+        auto const read_tangent = [&](std::size_t const key, bool const out_tangent, std::array<float, 4>& tangent) {
+            std::size_t const base = key * per_key + (out_tangent ? 2 * comps : 0);
+            for (std::size_t c = 0; c < comps; ++c) {
+                tangent[c] = sampler.values[base + c];
+            }
+        };
+        auto const assign_value = [&](std::array<float, 4> const& value) {
+            if (path == animation_path::rotation) {
+                out.quat = glm::quat(value[3], value[0], value[1], value[2]); // glm ctor order is (w, x, y, z)
+            } else {
+                out.vec3 = glm::vec3(value[0], value[1], value[2]);
+            }
+        };
+
+        // clamp t into the keyframe range, then find the left key: times[key] <= t < times[key + 1]
+        float const time = std::clamp(t, sampler.times.front(), sampler.times.back());
+        std::size_t key = 0;
+        while (key + 1 < keys && sampler.times[key + 1] <= time) {
+            ++key;
+        }
+
+        // STEP interpolation and the range end hold the left key's value
+        if (sampler.interpolation == animation_interpolation::step || key + 1 >= keys) {
+            std::array<float, 4> value = {};
+            read_value(key, value);
+            assign_value(value);
+            return out;
+        }
+
+        float const dt = sampler.times[key + 1] - sampler.times[key];
+        if (dt <= 0.0f) { // duplicate timestamps (invalid per the spec): hold the key's value
+            std::array<float, 4> value = {};
+            read_value(key, value);
+            assign_value(value);
+            return out;
+        }
+        float const u = (time - sampler.times[key]) / dt;
+
+        std::array<float, 4> a = {};
+        std::array<float, 4> b = {};
+        read_value(key, a);
+        read_value(key + 1, b);
+
+        if (cubic) {
+            // Hermite spline over the segment; tangents are scaled by the segment duration
+            std::array<float, 4> out_tangent = {};
+            std::array<float, 4> in_tangent = {};
+            read_tangent(key, true, out_tangent);
+            read_tangent(key + 1, false, in_tangent);
+            float const h00 = 2.0f * u * u * u - 3.0f * u * u + 1.0f;
+            float const h10 = u * u * u - 2.0f * u * u + u;
+            float const h01 = -2.0f * u * u * u + 3.0f * u * u;
+            float const h11 = u * u * u - u * u;
+            std::array<float, 4> value = {};
+            for (std::size_t c = 0; c < comps; ++c) {
+                value[c] = h00 * a[c] + h10 * dt * out_tangent[c] + h01 * b[c] + h11 * dt * in_tangent[c];
+            }
+            if (path == animation_path::rotation) {
+                // component-wise spline over the quaternion, then normalize (per the spec)
+                glm::quat const q(value[3], value[0], value[1], value[2]);
+                float const norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+                out.quat = norm > 0.0f ? glm::normalize(q) : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            } else {
+                out.vec3 = glm::vec3(value[0], value[1], value[2]);
+            }
+            return out;
+        }
+
+        // LINEAR
+        if (path == animation_path::rotation) {
+            glm::quat const q0(a[3], a[0], a[1], a[2]);
+            glm::quat q1(b[3], b[0], b[1], b[2]);
+            if (glm::dot(q0, q1) < 0.0f) {
+                q1 = glm::quat(-q1.w, -q1.x, -q1.y, -q1.z); // shortest arc: flip one endpoint
+            }
+            out.quat = glm::normalize(glm::slerp(q0, q1, u));
+        } else {
+            out.vec3 = glm::vec3(a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u);
+        }
+        return out;
+    }
+
+    node_pose sample_node(animation const& animation, std::size_t const target_node, node_pose const& base, float const t) {
+        node_pose pose = base;
+        for (animation_channel const& channel : animation.channels) {
+            if (channel.target_node != target_node || channel.sampler >= animation.samplers.size()) {
+                continue;
+            }
+            channel_sample const sample = sample_channel(animation.samplers[channel.sampler], channel.path, t);
+            if (!sample.valid) {
+                continue;
+            }
+            switch (channel.path) {
+            case animation_path::translation:
+                pose.translation = sample.vec3;
+                break;
+            case animation_path::rotation:
+                pose.rotation = sample.quat;
+                break;
+            case animation_path::scale:
+                pose.scale = sample.vec3;
+                break;
+            }
+            pose.any_channel = true;
+        }
+        return pose;
     }
 } // namespace gltf
