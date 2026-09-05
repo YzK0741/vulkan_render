@@ -345,15 +345,28 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_runtime_scene_tree
+     * @brief max skin matrices of the scene skin buffer (set 0 binding 9 storage buffer), in
+     *        mat4s. Indices 0-3 are the identity block (the fallback for unskinned draws:
+     *        skin_base = 0), the per-skin joint blocks follow at 4.
+     */
+    export constexpr uint32_t scene_skin_capacity = 128;
+
+    /**
+     * @ingroup vulkan_runtime_scene_tree
      * @brief per-draw push constants, layout matches pbr.frag's PushConstants (80 bytes)
      * @note material data (texture indices, factors, flags) lives in the material table
-     *       (set 0 binding 5), so the push block only carries the material reference and the
-     *       per-primitive world transform
+     *       (set 0 binding 5), so the push block only carries the material reference, the
+     *       skin-matrix block start and the per-primitive world transform
      */
     export struct material_push_constants {
         uint32_t material_index = 0; // index into the scene's material table
         uint32_t flags = 0;          // bit0: instanced draw -> model matrix comes from the
                                      //       instance transform buffer (set 0 binding 6)
+        // index into the scene skin-matrix buffer (binding 9) where this primitive's joint
+        // matrices start; 0 = the identity block (unskinned). The vertex shader reads
+        // matrices[skin_base + in_joints.x] etc. — set once per primitive after import
+        uint32_t skin_base = 0;
+        uint32_t _pad = 0; // keep the model matrix 16-byte aligned
         // glm::mat4 is only 4-byte aligned by default, but GLSL std430 aligns mat4 to 16 bytes
         // (offset 16 in the block): align explicitly so the CPU layout matches the shader
         alignas(16) glm::mat4 model = glm::mat4(1.0f);

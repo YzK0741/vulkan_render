@@ -197,6 +197,21 @@ namespace vulkan {
         }
         this->instance_buffer_handle = instance_handle;
         this->instance_mapped = instance_detail->allocation_info.pMappedData;
+
+        // Per-joint skin matrices (set 0 binding 9): scene_skin_capacity mat4s, host-visible;
+        // indices 0-3 are the identity block (unskinned fallback), per-skin joint blocks follow.
+        // Zero-filled initially (identity block is written by the first set_skin_matrices call).
+        std::vector<unsigned char> const zeroed_skins(static_cast<size_t>(vulkan::scene_skin_capacity) * sizeof(glm::mat4), 0);
+        uint64_t const skin_handle = this->vulkan_core.vma.create_buffer(zeroed_skins.data(), zeroed_skins.size(), vulkan::buffer_type::storage_coherent);
+        if (skin_handle == 0) {
+            utility::panic("failed to create skin matrix buffer");
+        }
+        auto const* skin_detail = this->vulkan_core.vma.get_buffer_detail(skin_handle);
+        if (skin_detail == nullptr) {
+            utility::panic("failed to get skin matrix buffer detail");
+        }
+        this->skin_buffer_handle = skin_handle;
+        this->skin_mapped = skin_detail->allocation_info.pMappedData;
     }
 
     void runtime::init_shadow_resources() {
@@ -292,6 +307,22 @@ namespace vulkan {
         instance_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         instance_write.pBufferInfo = &instance_info;
         vkUpdateDescriptorSets(this->vulkan_core.device, 1, &instance_write, 0, nullptr);
+
+        // binding 9: per-joint skin matrices (storage buffer, host-visible; written per frame
+        // by set_skin_matrices; indices 0-3 = identity block for unskinned draws)
+        auto const* skin_detail = this->vulkan_core.vma.get_buffer_detail(this->skin_buffer_handle);
+        if (skin_detail == nullptr) {
+            utility::panic("failed to get skin matrix buffer detail");
+        }
+        VkDescriptorBufferInfo const skin_info{skin_detail->buffer, 0, static_cast<VkDeviceSize>(vulkan::scene_skin_capacity) * sizeof(glm::mat4)};
+        VkWriteDescriptorSet skin_write = {};
+        skin_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        skin_write.dstSet = *this->scene_set;
+        skin_write.dstBinding = 9;
+        skin_write.descriptorCount = 1;
+        skin_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        skin_write.pBufferInfo = &skin_info;
+        vkUpdateDescriptorSets(this->vulkan_core.device, 1, &skin_write, 0, nullptr);
 
         // binding 7 + 8: light UBO + shadow map (created in init_shadow_resources)
         this->write_light_and_shadow_bindings();
@@ -1449,6 +1480,14 @@ namespace vulkan {
         scene_tree::visit_primitives(node, glm::mat4(1.0f), [&out](scene_tree::scene_node const& n, glm::mat4 const&) {
             out.push_back(static_cast<primitive const*>(n.primitive_leaf.get()));
         });
+    }
+
+    void runtime::set_skin_matrices(std::span<glm::mat4 const> const matrices) {
+        if (this->skin_mapped == nullptr) {
+            return;
+        }
+        std::size_t const bytes = std::min(matrices.size_bytes(), static_cast<std::size_t>(vulkan::scene_skin_capacity) * sizeof(glm::mat4));
+        std::memcpy(this->skin_mapped, matrices.data(), bytes);
     }
 
     void runtime::destroy_leaf_primitives(scene_tree::scene_node& node, vma_allocator& vma) {

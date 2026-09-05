@@ -109,6 +109,12 @@ namespace vulkan {
         // instance, host-visible; filled by make_instanced_primitive()
         uint64_t instance_buffer_handle = 0;
         void* instance_mapped = nullptr;
+        // per-joint skin matrices (scene set binding 9): scene_skin_capacity mat4s, host-visible;
+        // indices 0-3 are the identity block (unskinned fallback), per-skin joint blocks follow.
+        // Filled per frame by set_skin_matrices(); primitives reference their block via
+        // material_push_constants::skin_base
+        uint64_t skin_buffer_handle = 0;
+        void* skin_mapped = nullptr;
         // the single scene descriptor set: all pipelines share the layout, so one set covers them all
         vk_descriptor_set scene_set = {};
         bool scene_set_created = false;
@@ -532,6 +538,18 @@ namespace vulkan {
          *       duplicated per primitive)
          */
         void set_ibl(ibl_input const& info);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief upload the scene-wide skin matrices (scene set binding 9): the caller fills the
+         *        buffer layout [identity block (4 mat4s) | per-skin joint blocks] and calls this
+         *        once per frame before render_frame(); primitives reference their block start via
+         *        material_push_constants::skin_base (0 = the identity block: unskinned draws)
+         * @param matrices at most scene_skin_capacity mat4s; anything beyond the capacity is dropped
+         * @note host-visible copy, no Vulkan objects involved; skins without animation keep the
+         *       identity block so unskinned rendering is unaffected
+         */
+        void set_skin_matrices(std::span<glm::mat4 const> matrices);
 
         /**
          * @ingroup vulkan_runtime
