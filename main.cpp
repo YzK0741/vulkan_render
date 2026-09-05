@@ -281,6 +281,38 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Camera / light summary (diagnostics): nodes may reference glTF cameras and punctual
+    // lights (KHR_lights_punctual). Consumption (framing from a glTF camera, punctual
+    // lighting) is a later stage — this logs what the loader exported.
+    if (!scenes->cameras.empty()) {
+        size_t perspective = 0;
+        for (gltf::camera const& cam : scenes->cameras) {
+            if (cam.type == gltf::camera_type::perspective) {
+                ++perspective;
+            }
+        }
+        utility::log("cameras: {} ({} perspective, {} orthographic)", scenes->cameras.size(), perspective, scenes->cameras.size() - perspective);
+    }
+    if (!scenes->lights.empty()) {
+        size_t directional = 0;
+        size_t point = 0;
+        size_t spot = 0;
+        for (gltf::light const& l : scenes->lights) {
+            switch (l.type) {
+            case gltf::light_type::directional:
+                ++directional;
+                break;
+            case gltf::light_type::point:
+                ++point;
+                break;
+            case gltf::light_type::spot:
+                ++spot;
+                break;
+            }
+        }
+        utility::log("lights: {} ({} directional, {} point, {} spot)", scenes->lights.size(), directional, point, spot);
+    }
+
     // Sink the model so it sits near the world horizon (y = 0) and move the camera target with it:
     // the camera then orbits/looks at the model's position instead of the scene origin.
     glm::vec3 const scene_sink(0.0f, -scene_radius, 0.0f);

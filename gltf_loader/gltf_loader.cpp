@@ -420,6 +420,13 @@ namespace {
                 }
                 current_node.weights = std::move(node_weights);
             }
+            // cameras / lights attached to this node (raw property references -> scenes tables)
+            if (fnode.cameraIndex) {
+                current_node.camera_index = *fnode.cameraIndex;
+            }
+            if (fnode.lightIndex) {
+                current_node.light_index = *fnode.lightIndex;
+            }
             if (auto const* trs = std::get_if<fastgltf::TRS>(&fnode.transform)) {
                 current_node.translation = glm::vec3(trs->translation[0], trs->translation[1], trs->translation[2]);
                 glm::quat rotation = {};
@@ -663,6 +670,59 @@ namespace {
             // omitted (glTF default: identity) or broken IBM accessor: fall back to identity
             result.inverse_bind_matrices.clear();
             result.inverse_bind_matrices.assign(result.joints.size(), glm::mat4(1.0f));
+        }
+        return result;
+    }
+
+    // ---- cameras + punctual lights (KHR_lights_punctual): raw property export only ----
+
+    gltf::camera load_camera(fastgltf::Camera const& f_camera) {
+        gltf::camera result;
+        result.name = f_camera.name;
+        if (auto const* perspective = std::get_if<fastgltf::Camera::Perspective>(&f_camera.camera)) {
+            result.type = gltf::camera_type::perspective;
+            result.yfov = static_cast<float>(perspective->yfov);
+            result.znear = static_cast<float>(perspective->znear);
+            if (perspective->aspectRatio) {
+                result.aspect_ratio = static_cast<float>(*perspective->aspectRatio);
+            }
+            if (perspective->zfar) {
+                result.zfar = static_cast<float>(*perspective->zfar);
+            }
+        } else if (auto const* orthographic = std::get_if<fastgltf::Camera::Orthographic>(&f_camera.camera)) {
+            result.type = gltf::camera_type::orthographic;
+            result.xmag = static_cast<float>(orthographic->xmag);
+            result.ymag = static_cast<float>(orthographic->ymag);
+            result.ortho_znear = static_cast<float>(orthographic->znear);
+            result.ortho_zfar = static_cast<float>(orthographic->zfar);
+        }
+        return result;
+    }
+
+    gltf::light load_light(fastgltf::Light const& f_light) {
+        gltf::light result;
+        result.name = f_light.name;
+        switch (f_light.type) {
+        case fastgltf::LightType::Directional:
+            result.type = gltf::light_type::directional;
+            break;
+        case fastgltf::LightType::Point:
+            result.type = gltf::light_type::point;
+            break;
+        case fastgltf::LightType::Spot:
+            result.type = gltf::light_type::spot;
+            break;
+        }
+        result.color = glm::vec3(static_cast<float>(f_light.color[0]), static_cast<float>(f_light.color[1]), static_cast<float>(f_light.color[2]));
+        result.intensity = static_cast<float>(f_light.intensity);
+        if (f_light.range) {
+            result.range = static_cast<float>(*f_light.range);
+        }
+        if (f_light.innerConeAngle) {
+            result.spot_inner_cone = static_cast<float>(*f_light.innerConeAngle);
+        }
+        if (f_light.outerConeAngle) {
+            result.spot_outer_cone = static_cast<float>(*f_light.outerConeAngle);
         }
         return result;
     }
@@ -973,7 +1033,10 @@ namespace gltf {
             return std::unexpected(error_code::file_load_failed);
         }
 
-        fastgltf::Parser parser;
+        // Parser: enable KHR_lights_punctual so asset.lights / node.lightIndex are populated
+        // (cameras are part of the default categories). Files without the extension parse
+        // identically to before.
+        fastgltf::Parser parser(fastgltf::Extensions::KHR_lights_punctual);
         auto asset_exp = parser.loadGltf(buffer_exp.get(), path.parent_path(), load_options());
         if (!asset_exp) {
             utility::error("gltf load err: {}", fastgltf::getErrorMessage(asset_exp.error()));
@@ -996,6 +1059,16 @@ namespace gltf {
         result.skins.reserve(asset.skins.size());
         for (std::size_t i = 0; i < asset.skins.size(); ++i) {
             result.skins.push_back(load_skin(asset, i));
+        }
+
+        result.cameras.reserve(asset.cameras.size());
+        for (fastgltf::Camera const& f_camera : asset.cameras) {
+            result.cameras.push_back(load_camera(f_camera));
+        }
+
+        result.lights.reserve(asset.lights.size());
+        for (fastgltf::Light const& f_light : asset.lights) {
+            result.lights.push_back(load_light(f_light));
         }
 
         result.textures.reserve(asset.textures.size());
@@ -1249,7 +1322,7 @@ namespace gltf {
         if (this->built) {
             return;
         }
-        built_mesh const mesh = build_mesh(*this->inner->primitive);
+        built_mesh const mesh = build_mesh(*((*this->inner).primitive));
         auto const* const first = reinterpret_cast<unsigned char const*>(mesh.vertices.data());
         this->vertex_bytes.assign(first, first + mesh.vertices.size() * sizeof(vertex));
         this->vertex_stride = sizeof(vertex);
@@ -1271,11 +1344,11 @@ namespace gltf {
     }
 
     glm::mat4 drawable_iterator::get_transform() const {
-        return this->inner->transform_matrix;
+        return (*this->inner).transform_matrix;
     }
 
     resolved_material const* drawable_iterator::current_material() const {
-        uint32_t const index = this->inner->primitive->material_index;
+        uint32_t const index = (*this->inner).primitive->material_index;
         return index < this->materials.size() ? &this->materials[index] : nullptr;
     }
 

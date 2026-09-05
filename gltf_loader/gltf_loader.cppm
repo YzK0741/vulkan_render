@@ -364,6 +364,67 @@ namespace gltf {
 
     /**
      * @ingroup gltf_loader
+     * @brief kind of a glTF camera (gltf::node::camera_index -> scenes::cameras)
+     */
+    export enum class camera_type : int {
+        perspective = 0,  // yfov / znear / aspect_ratio? / zfar? (absent zfar = infinite)
+        orthographic = 1, // xmag / ymag / ortho_znear / ortho_zfar
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief a glTF camera attached to a node
+     * @note values are the raw glTF parameters (radians / distances); the camera sits on a
+     *       node, so a consumer builds the view/projection from the node's world transform
+     *       (resolved through gltf::node::source_index, like joints — cameras can be animated)
+     */
+    export struct camera {
+        std::string name = {};
+        camera_type type = camera_type::perspective;
+        // perspective
+        float yfov = glm::radians(45.0f); // vertical field of view (radians)
+        float znear = 0.01f;
+        std::optional<float> aspect_ratio = std::nullopt; // absent = match the render target
+        std::optional<float> zfar = std::nullopt;         // absent = infinite far plane
+        // orthographic
+        float xmag = 1.0f;
+        float ymag = 1.0f;
+        float ortho_znear = 0.0f;
+        float ortho_zfar = 1.0f;
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief kind of a punctual light (KHR_lights_punctual, gltf::node::light_index)
+     */
+    export enum class light_type : int {
+        directional = 0, // infinitely far, direction = -node +Z axis (world)
+        point = 1,       // position = node origin (world)
+        spot = 2,        // position + direction from the node, cone angles below
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief a punctual light (KHR_lights_punctual) referenced by a node's light_index
+     * @note
+     *      - color is linear RGB; intensity is lux (directional) or candela (point/spot);
+     *        range and the spot cone angles are optional (absent = infinite range / default cone)
+     *      - position/direction come from the owning node's world transform (resolved through
+     *        gltf::node::source_index; lights can be animated) — only the light *properties*
+     *        are stored here
+     */
+    export struct light {
+        std::string name = {};
+        light_type type = light_type::point;
+        glm::vec3 color = glm::vec3(1.0f);
+        float intensity = 1.0f;
+        std::optional<float> range = std::nullopt;           // point/spot attenuation cutoff
+        std::optional<float> spot_inner_cone = std::nullopt; // spot only (radians)
+        std::optional<float> spot_outer_cone = std::nullopt; // spot only (radians)
+    };
+
+    /**
+     * @ingroup gltf_loader
      * @brief evaluated value of one animation channel at a point in time: a vec3 for the
      *        translation/scale paths, a quaternion for the rotation path, or a scalar block for
      *        the "weights" (morph) path
@@ -464,6 +525,10 @@ namespace gltf {
         // morph weights override for this node's mesh (glTF node.weights; overrides mesh.weights,
         // empty = fall back to the mesh defaults / animation)
         std::optional<std::vector<float>> weights = std::nullopt;
+        // cameras / lights attached to this node (glTF node.camera / KHR_lights_punctual):
+        // indices into scenes::cameras / scenes::lights
+        std::optional<std::size_t> camera_index = std::nullopt;
+        std::optional<std::size_t> light_index = std::nullopt;
     };
 
     /**
@@ -614,7 +679,9 @@ namespace gltf {
         std::vector<texture_data> textures;
         std::vector<material> materials;
         std::vector<animation> animations = {};
-        std::vector<skin> skins = {}; // file-scoped skins (glTF skin objects in order)
+        std::vector<skin> skins = {};     // file-scoped skins (glTF skin objects in order)
+        std::vector<camera> cameras = {}; // file-scoped cameras (glTF camera objects in order)
+        std::vector<light> lights = {};   // file-scoped punctual lights (KHR_lights_punctual)
         std::vector<scene> scene;
 
         [[nodiscard]] scene_iterator begin() const;
