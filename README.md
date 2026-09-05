@@ -19,7 +19,8 @@ A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), implementin
 - **IBL lighting**: CPU-precomputed environment cubemap → GGX importance-sampled prefiltered environment (mip chain), irradiance map, and BRDF LUT (split-sum), uploaded as `R16G16B16A16_SFLOAT` cubemaps / `R16G16_SFLOAT` LUT. Precompute resolutions are configurable.
 - **Directional shadows**: orthographic shadow pass rendering the scene's depth from the sun (2048² dynamic-rendering depth pass, manual PCF in the shader); enabled over the imported scene's bounds.
 - **Debug GUI (`vulkan.gui`)**: a Dear ImGui overlay driven inside the runtime's frame steps. `vulkan::gui::widget` subclasses (`label_widget` / `checkbox_widget` / `slider_widget` / `vec3_widget`...) stack into `debug_panel`s that register with `gui_content` via `runtime::debug_gui()`. The demo panel shows fps and toggles frustum culling, the skybox pass, the shadow pass, and edits the camera orbit target. Window layout (position / size) persists to `imgui_layout.ini`.
-- **glTF loading (`gltf_loader` module)**: standalone CPU module built on [fastgltf](https://github.com/spnda/fastgltf), supporting `.gltf` / `.glb` / data URIs and exporting both a flattened drawable stream and the retained node hierarchy (name + local transform + children) with raw de-interleaved vertex/index data.
+- **glTF loading (`gltf_loader` module)**: standalone CPU module built on [fastgltf](https://github.com/spnda/fastgltf), supporting `.gltf` / `.glb` / data URIs and exporting both a flattened drawable stream and the retained node hierarchy (name + local transform + children, plus per-node TRS base pose and asset-node index) with raw de-interleaved vertex/index data — and the file's keyframe animations (channels/samplers, times + values decoded to floats, with pure-CPU LINEAR/STEP/CUBICSPLINE sampling).
+- **Keyframe animation playback**: models with channel-bearing animations play automatically on a loop — each frame `main` samples the animation (slerped rotations) and writes the evaluated T·R·S back into the scene tree's node locals (animated roots keep the import offset). The `gui` debug overlay adds play/pause, a time scrubber and an animation dropdown for multi-animation files. Skinning / morph targets are not supported yet.
 - **Orbit camera**: left-drag to rotate, wheel to zoom; one shared camera UBO is updated once per frame, with `MAX_FRAMES_IN_FLIGHT` frames in flight.
 - **Utility library (`utility` module)**: handle distribution, stack-style destructor mixin, thread pool, BVH (used by frustum culling), data block, and more. A mimalloc-backed `pmr` manager (`utility::init_pmr()` via `better_pmr`) routes all `std::pmr` allocations — including the runtime's per-frame cull/visible vectors — through [mimalloc](https://github.com/microsoft/mimalloc); it is idempotent and initialized before `main` from every TU that uses it. Content hashing for GPU-resource dedup is [xxHash](https://github.com/Cyan4973/xxHash) `XXH3_64bits` (`utility::xxh3_64bits`, vendored under `third_party/xxhash`).
 - **Startup configuration (`app_config` module)**: TOML config (`config.toml`, `--config <path>` override) merged with argv, covering model/demo/grid, resource paths, window/render settings (size, title, vsync, MSAA, clear color, skybox/shadow toggles) and IBL resolutions. See `config.example.toml`.
@@ -96,7 +97,7 @@ Run from the project root or any build directory (the program walks upward to lo
 ./build/vulkan_render path/to/model.glb gui
 ```
 
-By default it loads `gltf_model/DamagedHelmet.gltf` and renders it with PBR + IBL. Controls: **left-drag** to orbit, **wheel** to zoom, **drag the window border** to resize (the swapchain is recreated on the fly), **ESC** to quit.
+By default it loads `gltf_model/DamagedHelmet.gltf` and renders it with PBR + IBL. Controls: **left-drag** to orbit, **wheel** to zoom, **drag the window border** to resize (the swapchain is recreated on the fly), **ESC** to quit. Loaded models that carry keyframe animations (e.g. glTF-Sample-Assets `AnimatedCube` / `BoxAnimated`) play automatically on a loop.
 
 #### Startup configuration
 
@@ -119,7 +120,7 @@ The third positional argument (or `demo = "..."` in the config) selects a mode:
 | `spin-subtree` | rotate one geometry-carrying scene-tree node in place |
 | `nocull` | disable frustum culling (compare fps to verify culling) |
 | `closeup` | pull the camera into a partial close-up (expect partial culling) |
-| `gui` | enable the Dear ImGui debug overlay (fps, frustum-culling / skybox / shadow toggles, camera-target drag) |
+| `gui` | enable the Dear ImGui debug overlay (fps, frustum-culling / skybox / shadow toggles, camera-target drag; animated models additionally get play/pause, a time scrubber and an animation dropdown) |
 
 > Release builds are Windows GUI-subsystem executables: no console window appears when running, and the log output goes to `debug.log` in the working directory (the previous session's content is rotated to `debug.log.old` with a session timestamp on startup). Debug builds keep the terminal.
 

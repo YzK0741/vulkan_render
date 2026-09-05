@@ -1,5 +1,6 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 import std;
 import app_config;
 import gltf_loader;
@@ -259,6 +260,19 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Animation summary (diagnostics): gltf::scenes::animations holds the file's decoded
+    // keyframe animations (channels -> samplers, see docs/gltf_loader_usage.md). Playback is
+    // not implemented yet; this logs what the loader exported.
+    if (!scenes->animations.empty()) {
+        utility::log("animations: {}", scenes->animations.size());
+        for (gltf::animation const& anim : scenes->animations) {
+            std::string_view const anim_name = anim.name.empty() ? std::string_view("<unnamed>") : std::string_view(anim.name);
+            // a typical animation shares one keyframe count across its samplers; report the first
+            size_t const keys = anim.samplers.empty() ? 0 : anim.samplers.front().times.size();
+            utility::log("  animation '{}': {} channels, {} samplers, {} keyframes", anim_name, anim.channels.size(), anim.samplers.size(), keys);
+        }
+    }
+
     // Sink the model so it sits near the world horizon (y = 0) and move the camera target with it:
     // the camera then orbits/looks at the model's position instead of the scene origin.
     glm::vec3 const scene_sink(0.0f, -scene_radius, 0.0f);
@@ -304,7 +318,8 @@ int main(int argc, char** argv) {
     gltf::scene_node_iterator const node_last;
     gltf::drawable_iterator const scene_first(*scenes, materials);
     gltf::drawable_iterator const scene_last;
-    vulkan::scene_import_result const imported = runtime.import_scene(node_first, node_last, scene_first, scene_last, -scene_center + scene_sink);
+    glm::vec3 const scene_import_shift = -scene_center + scene_sink;
+    vulkan::scene_import_result const imported = runtime.import_scene(node_first, node_last, scene_first, scene_last, scene_import_shift);
     utility::log("imported {} primitives ({} new materials)", imported.primitive_count, imported.material_count);
     runtime.log_scene_tree();
 
@@ -420,6 +435,109 @@ int main(int argc, char** argv) {
     double fps_elapsed = 0.0;
     uint32_t fps_frame_count = 0;
 
+    // ---- keyframe animation playback (the loader exports keyframes; see docs/gltf_loader_usage.md) ----
+    // The first animation with channels plays on loop against the imported tree. Runtime nodes
+    // record the loader's asset node index (scene_node::source_index, set by import_scene), so
+    // every channel target maps onto the live tree; node locals are re-evaluated each frame from
+    // the node's TRS base pose (kept in the retained loader tree) plus the animation channels.
+    struct anim_playback {
+        gltf::animation const* animation = nullptr; // the animation being played (null = none)
+        double time = 0.0;                          // playback clock, seconds
+        float duration = 1.0f;                      // loop length = max sampler time
+        bool playing = true;
+        std::chrono::steady_clock::time_point last_tick = {};               // real-time anchor of the clock
+        std::size_t debug_source = std::numeric_limits<std::size_t>::max(); // first animated source present (reporting)
+        glm::vec3 debug_translation = glm::vec3(0.0f);
+    } anim;
+    anim.last_tick = std::chrono::steady_clock::now();
+    for (gltf::animation const& candidate : scenes->animations) {
+        if (!candidate.channels.empty()) {
+            anim.animation = &candidate;
+            break;
+        }
+    }
+    // live-tree lookup: asset node index -> runtime scene nodes (a node may be reachable from
+    // several roots) + whether each occurrence sits at a scene root (import_scene applied the
+    // import shift to root locals only, so animated roots must re-apply it)
+    struct anim_target {
+        vulkan::scene_tree::scene_node* node = nullptr;
+        bool scene_root = false;
+    };
+    std::unordered_map<std::size_t, std::vector<anim_target>> anim_nodes;
+    // TRS base pose per asset node index, from the retained loader tree (matrix nodes cannot be
+    // animated per the glTF spec and keep identity here)
+    std::unordered_map<std::size_t, gltf::node_pose> anim_base_poses;
+    // the node reported per second: prefer a translation channel target (its value is visible
+    // in the log), fall back to the first channel target present in the tree
+    auto const pick_debug_source = [&anim_nodes](gltf::animation const& animation) {
+        std::size_t fallback = std::numeric_limits<std::size_t>::max();
+        for (gltf::animation_channel const& channel : animation.channels) {
+            if (!anim_nodes.contains(channel.target_node)) {
+                continue;
+            }
+            if (channel.path == gltf::animation_path::translation) {
+                return channel.target_node;
+            }
+            if (fallback == std::numeric_limits<std::size_t>::max()) {
+                fallback = channel.target_node;
+            }
+        }
+        return fallback;
+    };
+    if (anim.animation != nullptr) {
+        for (gltf::animation_sampler const& sampler : anim.animation->samplers) {
+            if (!sampler.times.empty()) {
+                anim.duration = std::max(anim.duration, sampler.times.back());
+            }
+        }
+        auto const collect = [&anim_nodes](auto&& self, vulkan::scene_tree::scene_node& node, bool const scene_root) -> void {
+            anim_nodes[node.source_index].push_back(anim_target{&node, scene_root});
+            for (vulkan::scene_tree::scene_node& child : node.children) {
+                self(self, child, false);
+            }
+        };
+        for (vulkan::scene_tree::scene_node& root : runtime.get_scene().roots) {
+            collect(collect, root, true);
+        }
+        for (gltf::scene const& loader_scene : scenes->scene) {
+            for (gltf::node const& loader_node : loader_scene.nodes) {
+                anim_base_poses.try_emplace(loader_node.source_index,
+                                            gltf::node_pose{.translation = loader_node.translation,
+                                                            .rotation = loader_node.rotation,
+                                                            .scale = loader_node.scale});
+            }
+        }
+        // the node reported per second (prefer a translation channel target when present)
+        anim.debug_source = pick_debug_source(*anim.animation);
+        std::string_view const anim_name = anim.animation->name.empty() ? std::string_view("<unnamed>") : std::string_view(anim.animation->name);
+        utility::log("animation: playing '{}' ({} channels, {:.2f}s loop)", anim_name, anim.animation->channels.size(), anim.duration);
+    }
+
+    // Playback controls (gui): the animation combo lists every channel-bearing animation, the
+    // time slider needs a float mirror of the clock (slider_widget binds an external float)
+    // whose range covers all playable animations.
+    std::vector<gltf::animation const*> playable_animations;
+    for (gltf::animation const& candidate : scenes->animations) {
+        if (!candidate.channels.empty()) {
+            playable_animations.push_back(&candidate);
+        }
+    }
+    auto const animation_duration = [](gltf::animation const& animation) {
+        float duration = 1.0f; // avoid a zero-length loop
+        for (gltf::animation_sampler const& sampler : animation.samplers) {
+            if (!sampler.times.empty()) {
+                duration = std::max(duration, sampler.times.back());
+            }
+        }
+        return duration;
+    };
+    float gui_anim_max = 1.0f;
+    for (gltf::animation const* playable : playable_animations) {
+        gui_anim_max = std::max(gui_anim_max, animation_duration(*playable));
+    }
+    int gui_anim_index = 0;     // selected item of the animation combo (0 = the auto-played one)
+    float gui_anim_time = 0.0f; // float mirror of the playback clock (time-slider target)
+
     // Optional Dear ImGui debug overlay: the runtime drives new_frame/record inside its frame
     // steps; main only enables it and manages its content through the panel/widget API (fps
     // text widget bound to a live lambda + a frustum-culling checkbox that forwards to the
@@ -449,7 +567,47 @@ int main(int argc, char** argv) {
         // (camera.target is a glm::vec3, i.e. three contiguous floats; the runtime rebuilds the
         // camera UBO from it every frame, so no on_change callback is needed)
         panel.push_back(std::make_unique<vulkan::gui::vec3_widget>("camera target", &runtime.camera.target.x, 0.05f));
-        utility::log("gui: Dear ImGui debug overlay enabled (panel + 5 widgets)");
+        // playback controls (only when the model carries animations): play/pause toggle bound
+        // to the playback state, a time scrubber (pauses on drag so the clock cannot fight the
+        // scrub; the play checkbox resumes), and — for multi-animation assets — a dropdown to
+        // pick which animation plays. All state lives in main's anim struct above.
+        if (anim.animation != nullptr) {
+            panel.push_back(std::make_unique<vulkan::gui::label_widget>([&anim] {
+                std::string_view const name = anim.animation->name.empty() ? std::string_view("<unnamed>") : std::string_view(anim.animation->name);
+                return std::format("animation '{}' ({} channels)", name, anim.animation->channels.size());
+            }));
+            panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("play", &anim.playing));
+            panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
+                "time",
+                &gui_anim_time,
+                0.0f,
+                gui_anim_max,
+                [&anim](float const value) {
+                    anim.time = value;
+                    anim.playing = false; // scrubbing pauses so the clock does not fight the drag
+                }));
+            if (playable_animations.size() > 1) {
+                std::vector<std::string> names;
+                names.reserve(playable_animations.size());
+                for (gltf::animation const* playable : playable_animations) {
+                    names.push_back(playable->name.empty() ? "<unnamed>" : playable->name);
+                }
+                panel.push_back(std::make_unique<vulkan::gui::combo_widget>(
+                    "animation",
+                    std::move(names),
+                    &gui_anim_index,
+                    [&anim, &gui_anim_time, &playable_animations, &animation_duration, &pick_debug_source](int const index) {
+                        gltf::animation const* const next = playable_animations[static_cast<std::size_t>(index)];
+                        anim.animation = next;
+                        anim.time = 0.0;
+                        gui_anim_time = 0.0f;
+                        anim.duration = animation_duration(*next);
+                        anim.debug_source = pick_debug_source(*next);
+                    }));
+            }
+            utility::log("gui: playback controls added ({} animation(s))", playable_animations.size());
+        }
+        utility::log("gui: Dear ImGui debug overlay enabled");
     }
 
     // All per-frame decisions (event polling, ESC/close response, minimize skip, swapchain
@@ -470,6 +628,42 @@ int main(int argc, char** argv) {
             glm::mat4 const pivot = glm::translate(glm::mat4(1.0f), subtree_pivot);
             subtree_node->local = pivot * glm::rotate(glm::mat4(1.0f), static_cast<float>(spin_angle), glm::vec3(0.0f, 1.0f, 0.0f)) * glm::inverse(pivot) * subtree_local0;
             runtime.scene_changed(); // edited node.local directly -> culling BVH must track it
+        }
+
+        // advance the animation clock by real time and re-evaluate the animated node locals
+        // (same "edit node.local, then mark the scene changed" contract the demos above use)
+        if (anim.animation != nullptr) {
+            auto const anim_now = std::chrono::steady_clock::now();
+            if (anim.playing) {
+                anim.time += std::chrono::duration<double>(anim_now - anim.last_tick).count();
+                if (anim.time >= anim.duration) {
+                    anim.time = std::fmod(anim.time, anim.duration);
+                }
+            }
+            anim.last_tick = anim_now;
+            bool changed = false;
+            for (auto const& [source, targets] : anim_nodes) {
+                auto const base_it = anim_base_poses.find(source);
+                gltf::node_pose const base = base_it == anim_base_poses.end() ? gltf::node_pose{} : base_it->second;
+                gltf::node_pose const pose = gltf::sample_node(*anim.animation, source, base, static_cast<float>(anim.time));
+                if (!pose.any_channel) {
+                    continue;
+                }
+                // compose T * R * S; scene-root occurrences also keep the import shift that
+                // placed the model (import_scene applied it to each root's local transform)
+                glm::mat4 const trs = glm::translate(glm::mat4(1.0f), pose.translation) * glm::mat4_cast(pose.rotation) * glm::scale(glm::mat4(1.0f), pose.scale);
+                for (anim_target const& target : targets) {
+                    target.node->local = target.scene_root ? glm::translate(glm::mat4(1.0f), scene_import_shift) * trs : trs;
+                }
+                changed = true;
+                if (source == anim.debug_source) {
+                    anim.debug_translation = pose.translation;
+                }
+            }
+            if (changed) {
+                runtime.scene_changed(); // node.locals edited directly -> culling BVH must track them
+            }
+            gui_anim_time = static_cast<float>(anim.time); // keep the gui time slider in sync
         }
         vulkan::frame_status const result = runtime.render_frame();
         if (result == vulkan::frame_status::closed || vulkan::is_failure(result)) {
@@ -496,6 +690,17 @@ int main(int argc, char** argv) {
             // fps is shown inside the ImGui overlay (when enabled); the log line stays for
             // headless / non-gui runs
             utility::log("fps: {:.1f} ({:.2f} ms/frame)", fps, 1000.0 * fps_elapsed / fps_frame_count);
+            if (anim.animation != nullptr) {
+                // report the playback clock + the first animated node's evaluated translation
+                // (proves the keyframes are actually moving the tree)
+                std::string_view const anim_name = anim.animation->name.empty() ? std::string_view("<unnamed>") : std::string_view(anim.animation->name);
+                std::string_view const node_name = anim.debug_source == std::numeric_limits<std::size_t>::max()
+                                                       ? std::string_view("<no target in scene>")
+                                                       : std::string_view(anim_nodes.at(anim.debug_source).front().node->name);
+                utility::log("  anim '{}': t={:.3f}s/{:.2f}s, '{}' at ({:.3f}, {:.3f}, {:.3f})",
+                             anim_name, anim.time, anim.duration, node_name,
+                             anim.debug_translation.x, anim.debug_translation.y, anim.debug_translation.z);
+            }
             fps_elapsed = 0.0;
             fps_frame_count = 0;
         }

@@ -3,8 +3,9 @@
 Status: migration complete — storage, import and the render loop are tree-driven;
 `vulkan.runtime.scene_tree` is the single scene-tree module (scene storage + GPU
 primitives, absorbed the former `vulkan.model`); per-node transforms work through
-`runtime::scene()` + the `spin-subtree` demo. Remaining: animation / skinning /
-mesh sharing (future pass, §8).
+`runtime::scene()` + the `spin-subtree` demo, and keyframe TRS animation plays
+through the same per-node locals (see §8 — loader sampling in `gltf_loader`,
+per-frame playback in `main`). Remaining: skinning / mesh sharing (future pass, §8).
 
 ## 1. Motivation
 
@@ -316,7 +317,8 @@ Status, kept in sync with git history:
   which imports vulkan.core for the GPU types). `runtime` / `main` import
   `vulkan.runtime.scene_tree` instead of `vulkan.model`; CMake module list
   updated. Verified: Release builds (no ICE), full regression matrix unchanged.
-- ⏳ **5 — Future:** animation / skinning / mesh sharing (separate pass, §8).
+- ⏳ **5 — Future:** skinning / mesh sharing (separate pass, §8); keyframe TRS animation
+  landed outside this migration — see the §8 animation entry.
 
 (Detailed step list below is folded into the status above; this file is the single
 source of truth for what each commit changed.)
@@ -346,9 +348,19 @@ source of truth for what each commit changed.)
 - glTF mesh sharing / GPU dedup: loader keeps `mesh` copies per node for now; a
   future `scenes.meshes[]` pool + node->mesh index enables dedup without changing
   the runtime tree shape (leaves then reference shared geometry).
-- Animation: needs matrix -> TRS decomposition on loader nodes (name + local
-  transform are the substrate); samplers (fastgltf `animations`) + per-frame
-  `set_local_transform` land on top.
+- ✅ **Animation (keyframe TRS)** — landed on the tree substrate: the loader exports the
+  file's keyframe animations and per-node TRS base pose (`gltf::animation` /
+  `gltf::node`; matrix nodes are not animatable per the spec, so no matrix→TRS
+  decomposition was needed) and samples them pure-CPU (`gltf::sample_channel` /
+  `sample_node`, LINEAR / STEP / CUBICSPLINE, slerped rotations). `main.cpp` plays the
+  first channel-bearing animation on a loop: `scene_node::source_index` (recorded by
+  `import_scene`) maps channel targets onto the live tree, and each frame the evaluated
+  T·R·S locals are written back through `runtime::scene_changed()`. The `gui` overlay
+  adds play/pause, a time scrubber and an animation dropdown. See
+  `docs/gltf_loader_usage.md` §8.
+- Skinning: still future — needs the joint naming/indices + per-vertex joint data + bone
+  UBO on top of the skeleton hierarchy; keyframe TRS animation is its prerequisite and is
+  now in place.
 - Skinning: needs joint node naming/indices + per-vertex joint data + bone UBO —
   independent of the tree storage change, tree only provides the skeleton
   hierarchy.

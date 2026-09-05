@@ -45,6 +45,17 @@ namespace gltf {
     struct scenes        { std::vector<texture_data> textures; std::vector<material> materials;
                            std::vector<scene> scene; };
 
+    enum class animation_interpolation { linear, step, cubic_spline };
+    enum class animation_path         { translation, rotation, scale }; // weights (morph) not exported
+    struct animation_sampler  { std::vector<float> times; std::vector<float> values;
+                                animation_interpolation interpolation; };
+    struct animation_channel  { animation_path path; std::size_t sampler; std::size_t target_node; };
+    struct animation          { std::string name;
+                                std::vector<animation_sampler> samplers;
+                                std::vector<animation_channel> channels; };
+    // scenes also carries: std::vector<animation> animations; and each node carries
+    // source_index + translation / rotation / scale (TRS base pose) — see §8
+
     std::expected<scenes, error_code> load_model(std::string_view file_name);
 }
 ```
@@ -65,6 +76,7 @@ namespace gltf {
 - Keys of `primitive.vertex` are glTF attribute names (`POSITION` / `NORMAL` / `TEXCOORD_0` / `COLOR_0` …).
 - Vertex and index data are **de-interleaved raw bytes**; their type is described by `component` / `index_component_type` (byteStride and sparse accessors are already handled by fastgltf).
 - `scenes.materials` holds one entry per glTF material (in material order); each `material.texture_indices` uses the fixed roles `albedo` / `metallic_roughness` / `normal` / `occlusion` / `emissive`, and the values index into `scenes::textures` (in glTF texture order). `primitive.material_index` selects the primitive's material (`UINT32_MAX` when the glTF primitive has none).
+- `scenes.animations` holds the file's keyframe animations in glTF order (see [§8 Animations](#8-animations)). An animation is file-scoped — its channels can target nodes of any scene. Channel targets reference nodes by their **asset node index**, which each scene-pool `node.source_index` records, so a channel is resolved against a scene by scanning that scene's `nodes` for a matching `source_index`.
 
 ---
 
@@ -214,6 +226,96 @@ Vertex buffers can be uploaded by memcpy'ing the raw bytes directly, provided th
 
 - The module is compiled with `-fno-exceptions`: fastgltf reports errors via `Expected` and never throws.
 - Runtime dependencies: `libfastgltf.dll`, `libsimdjson.dll` (both in `C:\msys64\clang64\bin`; must be on PATH).
-- Only static render data is exported: meshes, vertices/indices, textures, and material texture references. Animations, skins, cameras, lights, and morph targets are **not** currently exported into the public interface.
+- Static render data (meshes, vertices/indices, textures, materials) and **keyframe animations** (§8) are exported. Skins, cameras, lights, morph targets, and animation `weights` channels are **not** currently exported into the public interface.
 - All `asset.scenes` are loaded; `asset.defaultScene` is not separately marked yet.
 - Verified samples (in `main.cpp`): the glTF/GLB variants of `glTF-Sample-Assets/Models/{Box, BoxInterleaved, BoxTextured}`, covering ASCII + external bin, binary containers, interleaved byteStride, embedded textures, and the missing-file error code.
+
+---
+
+## 8. Animations
+
+The loader decodes glTF keyframe animation into `scenes.animations` (glTF order, one entry per `animation` object). It is **file-scoped**: animations are not tied to a scene, and their channels can target nodes of any scene. Only static data is exported — evaluating keyframes into transforms is the consumer's job (the renderer's future playback stage).
+
+**Layout per animation**
+
+```cpp
+animation            // name + samplers + channels
+├── samplers[i]      // animation_sampler: decoded keyframes
+│     times          //   one float per keyframe (seconds, non-decreasing as stored)
+│     values         //   flat floats, see below
+│     interpolation  //   linear | step | cubic_spline
+└── channels[j]      // animation_channel: animate one property of one node
+      path           //   translation | rotation | scale
+      sampler        //   index into the owning animation's samplers
+      target_node    //   index in the glTF asset's node table (NOT a scene pool index)
+```
+
+- `values` layout: LINEAR / STEP hold `key_count * components` floats — 3 per key for
+  `translation`/`scale` (xyz triplets), 4 for `rotation` (xyzw, `w` scalar). CUBICSPLINE holds
+  `key_count * components * 3` floats, grouped per keyframe in glTF order: in-tangent, value,
+  out-tangent.
+- glTF only allows float animation accessors, but any numeric component type is converted to
+  float when present (robustness against non-conforming files). A sampler whose accessors are
+  out of range or unsupported stays in the list with **empty** `times`/`values` (its index
+  alignment is preserved); skip empty samplers.
+- `weights` channels (morph targets) are dropped — a count is logged when any are seen.
+
+**Resolving a channel to a scene node**
+
+`target_node` is the node's index in the asset's node table; each pool entry of every scene
+records its source index, so a channel resolves against a scene by scanning:
+
+```cpp
+// animate nodes of scene[0] with animation a0's translation channels
+const auto& anim = model.animations[0];
+const auto& scene = model.scene[0];
+std::vector<std::pair<gltf::node*, const gltf::animation_sampler*>> animated;
+for (const auto& ch : anim.channels) {
+    if (ch.path != gltf::animation_path::translation) continue;
+    const auto& sampler = anim.samplers[ch.sampler];            // skip if times empty
+    for (auto& node : scene.nodes) {
+        if (node.source_index == ch.target_node) {
+            animated.emplace_back(&node, &sampler);
+        }
+    }
+}
+```
+
+**TRS base pose**
+
+`node.translation` / `node.rotation` (`glm::quat`, identity when unset) / `node.scale` hold the
+declared TRS when the node's file transform is TRS — the only form the glTF spec allows
+animation to target. Nodes declared as matrices keep identity TRS (they are never animatable);
+only their composed `local_transform` matters. To evaluate keyframes later, compose
+`T * R * S` per node from the (possibly overridden) TRS components and write the result back as
+the node's local transform.
+
+**Sampling / playback**
+
+The loader also evaluates keyframes (`sample_channel`, and the higher-level `sample_node` that
+merges every channel of one animation targeting one node onto its base pose):
+
+```cpp
+gltf::animation const& anim = model.animations[0];
+// per animated node of the scene (match node.source_index against channel.target_node):
+gltf::node_pose pose{.translation = node.translation, .rotation = node.rotation, .scale = node.scale};
+pose = gltf::sample_node(anim, node.source_index, pose, t); // base pose + channels at t (seconds)
+if (pose.any_channel) {
+    node.local = glm::translate(glm::mat4(1.0f), pose.translation)
+               * glm::mat4_cast(pose.rotation)
+               * glm::scale(glm::mat4(1.0f), pose.scale);
+}
+```
+
+- `sample_channel(sampler, path, t)` returns a `channel_sample` (vec3 for translation/scale,
+  quaternion for rotation). `t` is clamped to the sampler's keyframe range; an empty/broken
+  sampler yields `valid == false`.
+- Interpolation follows the sampler's mode: LINEAR lerps translations/scales and slerps
+  rotations along the shortest arc (one endpoint is flipped when the quaternions are far
+  apart); STEP holds the previous keyframe; CUBICSPLINE evaluates the Hermite spline with the
+  per-key in/out tangents (tangents scaled by the segment duration, rotation results
+  normalized afterwards, as the spec requires).
+- Playback itself is a consumer concern: `main.cpp` plays the first channel-bearing animation
+  of the loaded model on a loop (writes the evaluated `T * R * S` back into the runtime scene
+  tree each frame via `scene_node::source_index`), and the `gui` demo adds play/pause, a time
+  scrubber and an animation dropdown for multi-animation files.
