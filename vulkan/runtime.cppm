@@ -669,6 +669,7 @@ namespace vulkan {
                 }
                 scene_tree::scene_node node;
                 node.name = std::string(nfirst.get_name());
+                node.source_index = nfirst.get_source_index(); // asset node index (e.g. glTF): animation targets map onto the tree through it
                 node.local = nfirst.get_local_transform();
                 if (depth == 0) {
                     node.local = glm::translate(glm::mat4(1.0f), offset) * node.local; // scene root gets the offset

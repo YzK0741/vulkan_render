@@ -57,6 +57,10 @@ namespace vulkan::scene_tree {
     export struct scene_node {
         std::string name = {};             // debugging / future animation lookup
         glm::mat4 local = glm::mat4(1.0f); // local transform (T*R*S or full matrix)
+        // identity of the source node this runtime node was rebuilt from: import_scene records
+        // the structural iterator's get_source_index() here (the glTF loader stores the asset
+        // node index), so callers can map e.g. animation channel targets onto the live tree
+        std::size_t source_index = 0;
         std::vector<scene_node> children = {};
         std::unique_ptr<primitive> primitive_leaf = {}; // null for transform-only nodes
 
@@ -274,6 +278,7 @@ namespace vulkan {
         { it.get_local_transform() } -> std::convertible_to<glm::mat4>;
         { it.get_depth() } -> std::convertible_to<std::size_t>;
         { it.get_drawable_count() } -> std::convertible_to<std::size_t>;
+        { it.get_source_index() } -> std::convertible_to<std::size_t>;
     };
 
     /**
