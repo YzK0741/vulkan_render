@@ -49,8 +49,11 @@ namespace {
 
     void scroll_callback(GLFWwindow* window, [[maybe_unused]] double const xoffset, double const yoffset) {
         auto& camera = runtime_from_window(window)->camera;
+        // zoom: wheel up pulls in, wheel down pulls out. The upper bound is generous (scene
+        // sizes vary from the tiny default model to e.g. the Fox rig, whose framing distance
+        // is ~240); the projection far plane follows the distance (see make_orbit_camera_ubo).
         camera.distance *= std::pow(0.9f, static_cast<float>(yoffset));
-        camera.distance = std::clamp(camera.distance, 0.5f, 20.0f);
+        camera.distance = std::clamp(camera.distance, 0.5f, 5000.0f);
     }
 } // namespace
 

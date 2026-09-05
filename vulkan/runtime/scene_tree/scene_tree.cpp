@@ -120,8 +120,11 @@ namespace vulkan {
                                                distance * std::sin(pitch),
                                                distance * cp * std::cos(yaw)));
 
-        // RH_ZO: right-handed + depth [0,1] (Vulkan convention)
-        glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(45.0f), aspect, 0.1f, 100.0f);
+        // RH_ZO: right-handed + depth [0,1] (Vulkan convention). The far plane follows the
+        // camera distance (max(100, 8 * distance)) so large scenes keep their whole extent
+        // visible after zooming out (e.g. the Fox rig is framed at ~240); small default scenes
+        // keep the historic far plane of 100.
+        glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(45.0f), aspect, 0.1f, std::max(100.0f, 8.0f * distance));
         // glm's projection follows the OpenGL convention (NDC y up), but Vulkan framebuffers are y-down:
         // flip the projection's Y, otherwise glTF's CCW front-face winding becomes CW in the framebuffer
         // and is culled by the pipeline's CULL_BACK, leaving only the object's interior visible.
