@@ -1,7 +1,7 @@
 export module utility.better_pmr;
 export import std;
 /**
- * @defgroup better_pmr
+ * @defgroup better_pmr PMR Allocation Routing
  * @ingroup utility
  * @brief a submodule from utility helps to optimize pmr container's memory performance via mimalloc
  * @note the entry is utility::init_pmr(); call it before creating any std::pmr container

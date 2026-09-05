@@ -255,7 +255,7 @@ namespace utility {
     }
 
     /**
-     * @defgroup hash
+     * @defgroup hash Content Hashing
      * @ingroup utility
      * @brief xxHash-based 64-bit content hash (XXH3_64bits), returned as a data_block<8>
      * @note

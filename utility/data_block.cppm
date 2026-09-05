@@ -8,7 +8,7 @@ module;
 export module utility.data_block;
 namespace utility {
     /**
-     * @defgroup data_block
+     * @defgroup data_block Fixed-Size Byte Container
      * @ingroup utility
      * @brief struct template creates a sized data type provides auto generated operator==/!= (use std::ranges::equal),
      *     operator<=>(use std::lexicographical_compare_three_way) and hex formatter (.to_hex_string())

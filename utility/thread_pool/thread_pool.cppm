@@ -6,7 +6,7 @@ import std;
 
 /**
  * @ingroup utility
- * @defgroup thread_pool
+ * @defgroup thread_pool Thread Pool
  * @file thread_pool.cppm
  * @brief a module provides raii thread pool (utility::thread_pool)
  * @note due to a clang bug std::jthread can't be used in module, so use the header-style, and requires link
