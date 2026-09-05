@@ -289,4 +289,31 @@ namespace vulkan::gui {
             }
         }
     }
+
+    combo_widget::combo_widget(std::string label, std::vector<std::string> items, int* current_item, std::function<void(int)> on_change)
+        : label{std::move(label)}
+        , items{std::move(items)}
+        , current_item{current_item}
+        , on_change{std::move(on_change)} {
+    }
+
+    void combo_widget::draw() {
+        if (this->current_item == nullptr || this->items.empty()) {
+            return;
+        }
+        *this->current_item = std::clamp(*this->current_item, 0, static_cast<int>(this->items.size()) - 1);
+        int const before = *this->current_item;
+        if (ImGui::BeginCombo(this->label.c_str(), this->items[static_cast<std::size_t>(*this->current_item)].c_str())) {
+            for (int i = 0; i < static_cast<int>(this->items.size()); ++i) {
+                bool const selected = i == *this->current_item;
+                if (ImGui::Selectable(this->items[static_cast<std::size_t>(i)].c_str(), selected)) {
+                    *this->current_item = i;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (before != *this->current_item && this->on_change) {
+            this->on_change(*this->current_item);
+        }
+    }
 } // namespace vulkan::gui

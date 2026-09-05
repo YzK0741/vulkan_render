@@ -144,6 +144,24 @@ namespace vulkan::gui {
 
     /**
      * @ingroup vulkan_gui
+     * @brief a dropdown (combo) selecting one of @p items; @p current_item is the external
+     *        index of the selection (clamped into range on draw); @p on_change fires when the
+     *        user picks a different item
+     */
+    export class combo_widget final : public widget {
+    public:
+        combo_widget(std::string label, std::vector<std::string> items, int* current_item, std::function<void(int)> on_change = {});
+        void draw() override;
+
+    private:
+        std::string label;
+        std::vector<std::string> items;
+        int* current_item = nullptr;
+        std::function<void(int)> on_change;
+    };
+
+    /**
+     * @ingroup vulkan_gui
      * @brief one debug window: a title, an open flag and a stack of widgets. Widgets are stored
      *        in a stack-style vector — push_back() appends (grows the panel), pop_back() removes
      *        the last one, so add/remove only ever touch the end. draw() opens the ImGui window
