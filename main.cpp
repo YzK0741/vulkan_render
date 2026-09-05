@@ -608,7 +608,110 @@ int main(int argc, char** argv) {
         std::array<glm::mat4, 4> const identity_block = {glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f)};
         runtime.set_skin_matrices(identity_block);
     }
-    // per-second skin report (first rig's joint 0 world position, follows the animation)
+
+    // ---- glTF morph targets (static bake with the default weights; animated weights land in
+    //      the frame loop) ----
+    // Leaves are grouped by their owning loader node (source index; extra-primitive leaves
+    // belong to their parent) and matched, in order, with that node's loader primitives. A
+    // morphable primitive gets a block in the scene morph buffer (binding 10):
+    //   [ per vertex v: per target t: posΔ(xyz) nrmΔ(xyz) ]  then  [ weights per target ]
+    // and its push morph fields are set once. morph_rigs keeps the per-primitive layout so the
+    // frame loop can rewrite the weights region when a "weights" animation channel is active.
+    struct morph_rig {
+        vulkan::primitive* prim = nullptr;
+        uint32_t vertex_count = 0;
+        uint32_t target_count = 0;
+        uint32_t morph_base = 0; // float index into the morph buffer
+        std::size_t source = 0;  // owning loader node (weights animation target)
+    };
+    std::vector<morph_rig> morph_rigs;
+    float* const morph_scratch_mem = static_cast<float*>(runtime.morph_scratch()); // per-frame weight writes
+    if (morph_scratch_mem != nullptr) {
+        auto const read_delta_vec3 = [](std::map<std::string, gltf::vertex_portion> const& attrs, std::string_view const name, std::size_t const i) -> glm::vec3 {
+            auto const it = attrs.find(std::string(name));
+            if (it == attrs.end() || it->second.component != gltf::component_type::float_t) {
+                return glm::vec3(0.0f); // missing/unsupported delta -> no displacement
+            }
+            return reinterpret_cast<glm::vec3 const*>(it->second.data.data())[i];
+        };
+        // collect leaves per effective source (a "/prim" extra leaf inherits its parent's source)
+        std::unordered_map<std::size_t, std::vector<vulkan::primitive*>> source_leaves;
+        auto const collect_leaves = [&source_leaves](auto&& self, vulkan::scene_tree::scene_node& node, std::size_t const parent_source) -> void {
+            bool const is_extra = node.name.ends_with("/prim");
+            std::size_t const source = is_extra ? parent_source : node.source_index;
+            if (node.primitive_leaf != nullptr) {
+                source_leaves[source].push_back(static_cast<vulkan::primitive*>(node.primitive_leaf.get()));
+            }
+            for (vulkan::scene_tree::scene_node& child : node.children) {
+                self(self, child, source);
+            }
+        };
+        for (vulkan::scene_tree::scene_node& root : runtime.get_scene().roots) {
+            collect_leaves(collect_leaves, root, 0);
+        }
+        std::size_t total_floats = 0;
+        for (auto& [source, leaves] : source_leaves) {
+            auto const loader_it = loader_nodes.find(source);
+            if (loader_it == loader_nodes.end()) {
+                continue;
+            }
+            gltf::node const& loader_node = *loader_it->second;
+            std::vector<gltf::primitive const*> loader_prims;
+            for (gltf::mesh const& mesh : loader_node.meshes) {
+                for (gltf::primitive const& prim : mesh.primitives) {
+                    loader_prims.push_back(&prim);
+                }
+            }
+            // default weights: node.weights override, else the mesh defaults, else zeros
+            std::vector<float> const default_weights = loader_node.weights ? *loader_node.weights
+                                                                           : (!loader_node.meshes.empty() ? loader_node.meshes[0].weights : std::vector<float>{});
+            for (std::size_t i = 0; i < leaves.size() && i < loader_prims.size(); ++i) {
+                gltf::primitive const& loader_prim = *loader_prims[i];
+                if (loader_prim.targets.empty()) {
+                    continue;
+                }
+                auto const pos_portion = loader_prim.vertex.find("POSITION");
+                if (pos_portion == loader_prim.vertex.end()) {
+                    continue;
+                }
+                uint32_t const verts = leaves[i]->vertex_count;
+                uint32_t const target_count = static_cast<uint32_t>(loader_prim.targets.size());
+                if (pos_portion->second.data.size() / sizeof(glm::vec3) != verts) {
+                    utility::log("morph: skipping primitive (vertex count mismatch with its POSITION data)");
+                    continue;
+                }
+                std::size_t const delta_floats = static_cast<std::size_t>(verts) * target_count * 6u;
+                if (total_floats + delta_floats + target_count > vulkan::scene_morph_capacity) {
+                    utility::log("morph: scene morph buffer capacity exceeded, remaining primitives skipped");
+                    break;
+                }
+                float* dst = morph_scratch_mem + total_floats;
+                for (uint32_t v = 0; v < verts; ++v) {
+                    for (uint32_t t = 0; t < target_count; ++t) {
+                        glm::vec3 const dpos = read_delta_vec3(loader_prim.targets[t].attributes, "POSITION", v);
+                        glm::vec3 const dnrm = read_delta_vec3(loader_prim.targets[t].attributes, "NORMAL", v);
+                        *dst++ = dpos.x;
+                        *dst++ = dpos.y;
+                        *dst++ = dpos.z;
+                        *dst++ = dnrm.x;
+                        *dst++ = dnrm.y;
+                        *dst++ = dnrm.z;
+                    }
+                }
+                for (uint32_t t = 0; t < target_count; ++t) {
+                    *dst++ = t < default_weights.size() ? default_weights[t] : 0.0f;
+                }
+                morph_rigs.push_back(morph_rig{leaves[i], verts, target_count, static_cast<uint32_t>(total_floats), source});
+                leaves[i]->push.morph_base = static_cast<uint32_t>(total_floats);
+                leaves[i]->push.morph_targets = target_count;
+                leaves[i]->push.morph_vertices = verts;
+                total_floats += delta_floats + target_count;
+            }
+        }
+        if (!morph_rigs.empty()) {
+            utility::log("morph: baked {} morphable primitive(s) into the scene morph buffer ({} floats)", morph_rigs.size(), total_floats);
+        }
+    }
     glm::vec3 skin_debug_translation = glm::vec3(0.0f);
     bool skin_debug_valid = false;
 
@@ -720,6 +823,18 @@ int main(int argc, char** argv) {
                 auto const base_it = anim_base_poses.find(source);
                 gltf::node_pose const base = base_it == anim_base_poses.end() ? gltf::node_pose{} : base_it->second;
                 gltf::node_pose const pose = gltf::sample_node(*anim.animation, source, base, static_cast<float>(anim.time));
+                // morph weights: write this node's active weights into its morph block(s) so the
+                // vertex shader blends with the animated values (overrides the baked defaults)
+                if (!pose.weights.empty() && morph_scratch_mem != nullptr) {
+                    for (morph_rig const& rig : morph_rigs) {
+                        if (rig.source == source && static_cast<std::size_t>(rig.target_count) == pose.weights.size()) {
+                            std::size_t const weight_offset = static_cast<std::size_t>(rig.morph_base) + static_cast<std::size_t>(rig.vertex_count) * static_cast<std::size_t>(rig.target_count) * 6u;
+                            for (std::size_t t = 0; t < pose.weights.size(); ++t) {
+                                morph_scratch_mem[weight_offset + t] = pose.weights[t];
+                            }
+                        }
+                    }
+                }
                 if (!pose.any_transform) {
                     continue; // weights-only channels don't move the node's local transform
                 }
