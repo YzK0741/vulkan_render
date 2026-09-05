@@ -11,9 +11,10 @@ import std;
  * @brief a module provides raii thread pool (utility::thread_pool)
  * @note due to a clang bug std::jthread can't be used in module, so use the header-style, and requires link
  *     thread_pool separately
- * @note <b>reserved for future use</b>: no target imports this module yet (it is only built and linked
- *     into the executable); it is kept as a ready-to-use building block for upcoming parallel work,
- *     e.g. async glTF loading or BVH build tasks
+ * @note <b>reserved for future use</b>: no target imports this header-style module yet, and the
+ *     thread_pool CMake target is not linked by any consumer (it only builds when its own
+ *     target or `all` is built); it is kept as a ready-to-use building block for upcoming
+ *     parallel work, e.g. async glTF loading or BVH build tasks
  *
  * @code {.cpp}
  * #include "utility/thread_pool/thread_pool.cppm"

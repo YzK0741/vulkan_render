@@ -3,10 +3,10 @@
 Status: migration complete — storage, import and the render loop are tree-driven;
 `vulkan.runtime.scene_tree` is the single scene-tree module (scene storage + GPU
 primitives, absorbed the former `vulkan.model`); per-node transforms work through
-`runtime::scene()` + the `spin-subtree` demo, and keyframe TRS animation and
-skinning play through the same per-node locals (see §8 — loader sampling in
-`gltf_loader`, per-frame playback + skin matrices in `main`). Remaining: mesh
-sharing / morph targets (future pass, §8).
+`runtime::scene()` + the `spin-subtree` demo, and keyframe TRS animation,
+skinning and morph targets play through the same per-node locals (see §8 —
+loader sampling in `gltf_loader`, per-frame playback / skin matrices / morph
+weights in `main`). Remaining: mesh sharing / GPU dedup (future pass, §8).
 
 ## 1. Motivation
 
@@ -318,8 +318,10 @@ Status, kept in sync with git history:
   which imports vulkan.core for the GPU types). `runtime` / `main` import
   `vulkan.runtime.scene_tree` instead of `vulkan.model`; CMake module list
   updated. Verified: Release builds (no ICE), full regression matrix unchanged.
-- ⏳ **5 — Future:** mesh sharing / morph targets (separate pass, §8); keyframe TRS animation
-  and skinning landed outside this migration — see the §8 entries.
+- ✅ **5 — Morph targets landed on the tree substrate** (export `5bea625`, GPU blend
+  `f530889`, weights `60c7c1f`; see §8): per-primitive morph deltas + default weights bake
+  into the scene morph buffer (binding 10) and animated weights are rewritten per frame.
+  Remaining future work: glTF mesh sharing / GPU dedup and per-instance material overrides (§8).
 
 (Detailed step list below is folded into the status above; this file is the single
 source of truth for what each commit changed.)
@@ -372,12 +374,12 @@ source of truth for what each commit changed.)
   morph buffer (binding 10) and rewrites the active weights each frame from the animation.
   `pbr.vert`/`shadow.vert` blend morph deltas before skinning. Verified with
   `AnimatedMorphCube` / `SimpleMorph` / `MorphStressTest`. See `docs/gltf_loader_usage.md` §10.
-- Mesh sharing, per-instance material overrides and cameras/lights remain open (see above).
-- Skinning: needs joint node naming/indices + per-vertex joint data + bone UBO —
-  independent of the tree storage change, tree only provides the skeleton
-  hierarchy.
-- Per-instance material overrides: later; today material identity lives in the
-  leaf model's material_index.
+- Mesh sharing / GPU dedup and per-instance material overrides remain open: two nodes
+  referencing the same glTF mesh still get independent leaf primitives, and material
+  identity lives in the leaf primitive's material_index.
+- Authored glTF cameras are consumed as orbit-camera viewpoint seeds (main + the gui
+  "camera" selector); punctual lights (KHR_lights_punctual) are imported but not used for
+  shading yet — the demo shades with the fixed analytic sun.
 
 ## 9. Open questions for the maintainer (answers)
 

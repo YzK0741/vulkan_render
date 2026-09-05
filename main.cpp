@@ -179,8 +179,9 @@ int main(int argc, char** argv) {
     }
 
     // Animation summary (diagnostics): gltf::scenes::animations holds the file's decoded
-    // keyframe animations (channels -> samplers, see docs/gltf_loader_usage.md). Playback is
-    // not implemented yet; this logs what the loader exported.
+    // keyframe animations (channels -> samplers, see docs/gltf_loader_usage.md §8); playback
+    // of the first channel-bearing animation runs below in the frame loop (gui transport).
+    // This block only logs what the loader exported.
     if (!scenes->animations.empty()) {
         utility::log("animations: {}", scenes->animations.size());
         for (gltf::animation const& anim : scenes->animations) {
@@ -192,7 +193,8 @@ int main(int argc, char** argv) {
     }
 
     // Skin summary (diagnostics): scenes::skins holds the file's skins (joint asset-node
-    // indices + inverse bind matrices); playback of the joint transforms is a later stage.
+    // indices + inverse bind matrices); the skin rigs and per-frame joint matrices are built
+    // below and bound through material_push_constants::skin_base (see the skinning section).
     if (!scenes->skins.empty()) {
         utility::log("skins: {}", scenes->skins.size());
         for (gltf::skin const& skin : scenes->skins) {
@@ -202,8 +204,8 @@ int main(int argc, char** argv) {
     }
 
     // Morph summary (diagnostics): primitives may carry morph targets (POSITION/NORMAL deltas),
-    // meshes/nodes default weights, and "weights" animation channels (see docs §10). The vertex
-    // blending itself is a later stage — morphable models currently render their base shape.
+    // meshes/nodes default weights, and "weights" animation channels (see docs §10). The
+    // per-primitive morph blocks and per-frame weight rewrites are built below (morph rigs).
     {
         size_t morph_prims = 0;
         size_t morph_targets = 0;
@@ -229,8 +231,9 @@ int main(int argc, char** argv) {
     }
 
     // Camera / light summary (diagnostics): nodes may reference glTF cameras and punctual
-    // lights (KHR_lights_punctual). Consumption (framing from a glTF camera, punctual
-    // lighting) is a later stage — this logs what the loader exported.
+    // lights (KHR_lights_punctual). Authored cameras are consumed below as orbit-camera
+    // viewpoint seeds (gui "camera" selector); punctual lights are imported but the demo
+    // still shades with the fixed analytic sun — this block logs what the loader exported.
     if (!scenes->cameras.empty()) {
         size_t perspective = 0;
         for (gltf::camera const& cam : scenes->cameras) {

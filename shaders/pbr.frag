@@ -36,9 +36,18 @@ struct Material {
 };
 layout(set = 0, binding = 5) readonly buffer Materials { Material materials[]; };
 
+// Push constant block: must mirror pbr.vert and material_push_constants in the runtime
+// (six uint fields first, then the aligned mat4) so member offsets agree across stages and
+// with the CPU writes. This fragment stage only reads material_index; the remaining fields
+// exist to keep the block layout identical.
 layout(push_constant) uniform PushConstants {
     uint material_index; // index into the material table (material data lives on the GPU)
-    mat4 model; // per-model world transform (kept out of the shared camera UBO)
+    uint flags;          // bit0: instanced draw -> model from instances[...]; bit3: double-sided
+    uint skin_base;      // start of this primitive's joint block in skins.matrices (0 = identity)
+    uint morph_base;     // float index of this primitive's morph block in morph_data.morphs (0 = none)
+    uint morph_targets;  // number of morph targets (0 = not morphable)
+    uint morph_vertices; // vertex count of this primitive (morph block stride)
+    mat4 model;          // per-model world transform (kept out of the shared camera UBO; unused here)
 } push;
 
 // Directional light UBO (scene set binding 7): the orthographic light view-proj (world -> shadow
@@ -86,7 +95,6 @@ float calc_shadow(vec3 world_pos) {
 }
 
 const float PI = 3.14159265359;
-const float ENV_MIP_COUNT = 5.0; // must match the prefiltered-env mip count generated on the CPU
 
 // Normal distribution function: GGX / Trowbridge-Reitz
 float distribution_ggx(vec3 n, vec3 h, float roughness) {
@@ -144,7 +152,9 @@ vec3 get_ibl_ggx_fresnel(vec3 n, vec3 v, float roughness, vec3 f0, float specula
 }
 
 vec3 get_ibl_radiance_ggx(vec3 n, vec3 v, float roughness) {
-    float lod = roughness * (ENV_MIP_COUNT - 1.0);
+    // roughness -> lod across the prefiltered chain; the level count is queried from the
+    // sampler so it always matches whatever env_mip_count the CPU baked (no hardcoded constant)
+    const float lod = roughness * float(max(textureQueryLevels(env_sampler) - 1, 0));
     vec3 reflection = normalize(reflect(-v, n));
     return get_specular_sample(reflection, lod);
 }
