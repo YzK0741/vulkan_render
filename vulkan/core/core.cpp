@@ -833,33 +833,38 @@ namespace vulkan {
     }
 
     void core::create_sync_objects() {
+        // Per frame slot: one BINARY image-available semaphore (vkAcquireNextImageKHR requires
+        // binary) + one TIMELINE semaphore that replaces the old per-slot fences and counts
+        // completed submissions. vkQueuePresentKHR also requires a binary wait, but present may
+        // run on a separate queue, so the present-ready gates are ONE BINARY PER SWAPCHAIN IMAGE
+        // (an image is only re-acquired after its present finished, which keeps the per-image
+        // gate safe across queues).
         image_available_semaphores.resize(MAX_FRAMES_IN_FLIGHT);
-        in_flight_fences.resize(MAX_FRAMES_IN_FLIGHT);
-        images_in_flight.resize(swap_chain_images.size(), VK_NULL_HANDLE);
+        present_ready_semaphores.resize(swap_chain_images.size());
+        frame_done_semaphores.resize(MAX_FRAMES_IN_FLIGHT);
+        frame_done_values.assign(MAX_FRAMES_IN_FLIGHT, 0);
 
-        // Present semaphores must be allocated per swapchain image index, not per frame slot:
-        // present keeps the semaphore busy until the corresponding image is re-acquired,
-        // and the swapchain image count can exceed the frames in flight, so reusing per slot
-        // would signal the same semaphore again before the image is re-acquired (VUID-vkQueueSubmit-pSignalSemaphores-00067).
-        render_finished_semaphores.resize(swap_chain_images.size());
+        VkSemaphoreTypeCreateInfo timeline_type = {};
+        timeline_type.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+        timeline_type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+        timeline_type.initialValue = 0;
 
-        VkSemaphoreCreateInfo semaphore_info = {};
-        semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        VkSemaphoreCreateInfo binary_info = {};
+        binary_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-        VkFenceCreateInfo fence_info = {};
-        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT; // initially signaled
-
-        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-            if (vkCreateSemaphore(device, &semaphore_info, nullptr, &image_available_semaphores[i]) != VK_SUCCESS ||
-                vkCreateFence(device, &fence_info, nullptr, &in_flight_fences[i]) != VK_SUCCESS) {
-                utility::panic("failed to create synchronization objects for a frame!");
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+            if (vkCreateSemaphore(device, &binary_info, nullptr, &image_available_semaphores[i]) != VK_SUCCESS) {
+                utility::panic("failed to create image-available semaphore");
+            }
+            VkSemaphoreCreateInfo timeline_info = binary_info;
+            timeline_info.pNext = &timeline_type;
+            if (vkCreateSemaphore(device, &timeline_info, nullptr, &frame_done_semaphores[i]) != VK_SUCCESS) {
+                utility::panic("failed to create frame-done timeline semaphore");
             }
         }
-
-        for (size_t i = 0; i < render_finished_semaphores.size(); i++) {
-            if (vkCreateSemaphore(device, &semaphore_info, nullptr, &render_finished_semaphores[i]) != VK_SUCCESS) {
-                utility::panic("failed to create render finished semaphore!");
+        for (auto& semaphore : present_ready_semaphores) {
+            if (vkCreateSemaphore(device, &binary_info, nullptr, &semaphore) != VK_SUCCESS) {
+                utility::panic("failed to create present-ready semaphore");
             }
         }
 
@@ -867,13 +872,11 @@ namespace vulkan {
             for (auto const& semaphore : image_available_semaphores) {
                 vkDestroySemaphore(device, semaphore, nullptr);
             }
-
-            for (auto const& semaphore : render_finished_semaphores) {
+            for (auto const& semaphore : present_ready_semaphores) {
                 vkDestroySemaphore(device, semaphore, nullptr);
             }
-
-            for (auto const& fence : in_flight_fences) {
-                vkDestroyFence(device, fence, nullptr);
+            for (auto const& semaphore : frame_done_semaphores) {
+                vkDestroySemaphore(device, semaphore, nullptr);
             }
         });
     }
@@ -919,50 +922,62 @@ namespace vulkan {
         return ::vulkan::make_shader_module(shader, this->device);
     }
 
-    VkResult core::get_image_index(uint32_t& image_index) const {
-        return vkAcquireNextImageKHR(
-            this->device,
-            this->swap_chain,
-            UINT64_MAX,
-            this->image_available_semaphores[this->current_frame],
-            this->in_flight_fences[this->current_frame],
-            &image_index);
-    }
-
-    void core::wait_usable_image(uint32_t const image_index) {
-        if (images_in_flight[image_index] != VK_NULL_HANDLE) {
-            vkWaitForFences(device, 1, &images_in_flight[image_index], VK_TRUE, UINT64_MAX);
+    void core::wait_frame_slot(uint32_t const slot) const {
+        // Host pacing: wait until this slot's last submission (its timeline value) completed.
+        // Value 0 means the slot was never submitted — nothing to wait for.
+        uint64_t const value = this->frame_done_values[slot];
+        if (value == 0) {
+            return;
         }
-        images_in_flight[image_index] = in_flight_fences[current_frame];
-    }
-
-    void core::reset_fence(uint32_t const frame_index) const {
-        vkResetFences(device, 1, &in_flight_fences[frame_index]);
+        VkSemaphoreWaitInfo wait_info = {};
+        wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+        wait_info.semaphoreCount = 1;
+        wait_info.pSemaphores = &this->frame_done_semaphores[slot];
+        wait_info.pValues = &value;
+        vkWaitSemaphores(this->device, &wait_info, UINT64_MAX);
     }
 
     void core::to_next_frame() noexcept {
         current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
-    VkResult core::submit(VkCommandBuffer const command_buffer, uint32_t const image_index) const {
+    VkResult core::submit(VkCommandBuffer const command_buffer, uint32_t const image_index) {
+        // Signal this frame slot's TIMELINE to the next value (GPU completion + host pacing,
+        // see wait_frame_slot) and the image's binary present-ready semaphore (vkQueuePresentKHR
+        // requires a binary wait; per-image so a separate present queue cannot race a re-signal).
+        // VUID-VkSubmitInfo-pNext-03241: with a timeline in the signal list the value count must
+        // equal the semaphore count (the value for the binary is ignored).
+        uint32_t const slot = static_cast<uint32_t>(this->current_frame);
+        uint64_t const signal_value = ++this->frame_done_values[slot];
+
         constexpr VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        VkSemaphore signal_semaphores[2] = {this->frame_done_semaphores[slot], this->present_ready_semaphores[image_index]};
+        uint64_t signal_values[2] = {signal_value, 0};
+        VkTimelineSemaphoreSubmitInfo timeline_info = {};
+        timeline_info.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+        timeline_info.signalSemaphoreValueCount = 2;
+        timeline_info.pSignalSemaphoreValues = signal_values;
+
         VkSubmitInfo submit_info = {};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.pNext = &timeline_info;
         submit_info.waitSemaphoreCount = 1;
-        submit_info.pWaitSemaphores = &this->image_available_semaphores[this->current_frame];
+        submit_info.pWaitSemaphores = &this->image_available_semaphores[slot];
         submit_info.pWaitDstStageMask = &wait_stage;
         submit_info.commandBufferCount = 1;
         submit_info.pCommandBuffers = &command_buffer;
-        submit_info.signalSemaphoreCount = 1;
-        submit_info.pSignalSemaphores = &this->render_finished_semaphores[image_index];
-        return vkQueueSubmit(this->graphics_queue, 1, &submit_info, this->in_flight_fences[this->current_frame]);
+        submit_info.signalSemaphoreCount = 2;
+        submit_info.pSignalSemaphores = signal_semaphores;
+        return vkQueueSubmit(this->graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
     }
 
     VkResult core::present(uint32_t const image_index) const {
+        // Wait this image's binary present-ready semaphore (signaled by submit() above);
+        // vkQueuePresentKHR requires binary wait semaphores (VUID-vkQueuePresentKHR-pWaitSemaphores-03267).
         VkPresentInfoKHR present_info = {};
         present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         present_info.waitSemaphoreCount = 1;
-        present_info.pWaitSemaphores = &this->render_finished_semaphores[image_index];
+        present_info.pWaitSemaphores = &this->present_ready_semaphores[image_index];
         present_info.swapchainCount = 1;
         present_info.pSwapchains = &this->swap_chain;
         present_info.pImageIndices = &image_index;
@@ -1047,19 +1062,18 @@ namespace vulkan {
             this->create_frame_buffers(); // rebuild framebuffers
         }
 
-        // Rebuild the per-image tracking table for the new image count to keep wait_usable_image in bounds
-        images_in_flight.resize(swap_chain_images.size(), VK_NULL_HANDLE);
-
-        // Present semaphores are allocated per image index; destroy and rebuild when the count changes (device is idle here)
-        for (auto const& semaphore : render_finished_semaphores) {
+        // Present-ready semaphores are allocated per image index; destroy and rebuild when the
+        // count changes (device is idle here). The per-slot timeline + binary acquire
+        // semaphores are independent of the image count and survive untouched.
+        for (auto const& semaphore : present_ready_semaphores) {
             vkDestroySemaphore(device, semaphore, nullptr);
         }
-        render_finished_semaphores.resize(swap_chain_images.size());
-        for (auto& semaphore : render_finished_semaphores) {
-            VkSemaphoreCreateInfo semaphore_info = {};
-            semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-            if (vkCreateSemaphore(device, &semaphore_info, nullptr, &semaphore) != VK_SUCCESS) {
-                utility::panic("failed to recreate render finished semaphore!");
+        present_ready_semaphores.resize(swap_chain_images.size());
+        VkSemaphoreCreateInfo binary_info = {};
+        binary_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        for (auto& semaphore : present_ready_semaphores) {
+            if (vkCreateSemaphore(device, &binary_info, nullptr, &semaphore) != VK_SUCCESS) {
+                utility::panic("failed to recreate present-ready semaphore!");
             }
         }
     }

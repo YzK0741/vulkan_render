@@ -155,17 +155,25 @@ namespace vulkan {
 
         vma_allocator vma = {};
 
-        std::vector<VkSemaphore> image_available_semaphores;
-
-        std::vector<VkSemaphore> render_finished_semaphores;
-
-        std::vector<VkFence> in_flight_fences;
-
-        std::vector<VkFence> images_in_flight;
+        // ---- frame synchronization (timeline semaphores; see create_sync_objects) ----
+        // vkAcquireNextImageKHR and vkQueuePresentKHR both require BINARY semaphores:
+        //   - image_available_semaphores: binary, per frame slot (acquire signal)
+        //   - present_ready_semaphores: binary, ONE PER SWAPCHAIN IMAGE — present may run on a
+        //     separate queue, so a per-slot binary could be re-signaled before the previous
+        //     present consumed it; a swapchain image is only re-acquired after its present
+        //     finished, which keeps this per-image gate safe across queues
+        //   - frame_done_semaphores / frame_done_values: TIMELINE, per frame slot, counting
+        //     submissions — submit() signals it (GPU completion), wait_frame_slot() is the host
+        //     pacing wait that used to be vkWaitForFences
+        std::vector<VkSemaphore> image_available_semaphores = {}; // binary, per frame slot (acquire)
+        std::vector<VkSemaphore> present_ready_semaphores = {};   // binary, per swapchain image (present wait)
+        std::vector<VkSemaphore> frame_done_semaphores = {};      // timeline, per frame slot
+        std::vector<uint64_t> frame_done_values = {};             // last signaled value per slot (host bookkeeping)
 
         size_t current_frame = 0;
 
         void to_next_frame() noexcept;
+        void wait_frame_slot(uint32_t slot) const; // host wait until this slot's last submission completed
 
         static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
@@ -236,23 +244,22 @@ namespace vulkan {
             std::span<unsigned char const> fragment_shader_code,
             VkFormat depth_format) const;
 
-        VkResult get_image_index(uint32_t& image_index) const;
-        void wait_usable_image(uint32_t image_index);
-        void reset_fence(uint32_t frame_index) const;
         void recreate_swap_chain();
 
         /**
          * @ingroup vulkan_core
-         * @brief submit the recorded command buffer for the current frame
+         * @brief submit the recorded command buffer for the current frame slot
          * @param command_buffer the command buffer to submit
-         * @param image_index the acquired swapchain image index (selects the render finished semaphore)
+         * @param image_index the acquired swapchain image index (unused: present waits the same
+         *        per-slot timeline that this submit signals)
          * @return the result of vkQueueSubmit
          */
-        VkResult submit(VkCommandBuffer command_buffer, uint32_t image_index) const;
+        VkResult submit(VkCommandBuffer command_buffer, uint32_t image_index);
 
         /**
          * @ingroup vulkan_core
-         * @brief present the rendered swapchain image
+         * @brief present the rendered swapchain image; waits on the current frame slot's
+         *        timeline (signaled by submit())
          * @param image_index the swapchain image index to present
          * @return the result of vkQueuePresentKHR
          */

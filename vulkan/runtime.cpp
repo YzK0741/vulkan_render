@@ -720,17 +720,15 @@ namespace vulkan {
     frame_status runtime::set_up_frame_environment() {
         core& vk = this->vulkan_core;
 
-        // 3. The frame slot's fence guards both the command buffer and the acquire semaphore:
-        //    wait it BEFORE acquiring so the previous submission on this slot (and its semaphore
-        //    wait operation) has fully completed — acquiring first would reuse a semaphore that
-        //    may still have pending operations (VUID-vkAcquireNextImageKHR-semaphore-01779)
+        // 3. Pace the frame slot: wait until the previous submission on this slot has completed
+        //    (host-side timeline wait on the slot's last signaled value). This guards both the
+        //    command buffer and the acquire semaphore — acquiring first could reuse a binary
+        //    acquire semaphore with pending operations (VUID-vkAcquireNextImageKHR-semaphore-01779)
         uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
-        vkWaitForFences(vk.device, 1, &vk.in_flight_fences[frame_slot], VK_TRUE, UINT64_MAX);
+        vk.wait_frame_slot(frame_slot);
 
         // 4. Acquire the next swapchain image; on out-of-date (e.g. the window was resized)
-        //    rebuild the swapchain and let the caller retry on the next iteration. The fence is
-        //    only reset after a successful acquire, so this path never leaves a reset-but-
-        //    unsubmitted fence behind (which would deadlock the next frame's wait)
+        //    rebuild the swapchain and let the caller retry on the next iteration.
         VkResult const acquire_result = vkAcquireNextImageKHR(vk.device,
                                                               vk.swap_chain,
                                                               UINT64_MAX,
@@ -746,7 +744,6 @@ namespace vulkan {
         if (acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
             return frame_status::acquire_failed;
         }
-        vkResetFences(vk.device, 1, &vk.in_flight_fences[frame_slot]);
 
         // 5. Update the shared camera UBO once: every primitive references these buffers through the
         //    scene set, so one memcpy (+ one update-after-bind descriptor write) replaces the old
