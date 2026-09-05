@@ -758,7 +758,7 @@ namespace vulkan {
 
     void core::init_scene_layouts() noexcept {
         // ---- 1. Fixed flat descriptor set layout (see the convention docs in core.cppm) ----
-        std::array<VkDescriptorSetLayoutBinding, 10> bindings = {};
+        std::array<VkDescriptorSetLayoutBinding, 11> bindings = {};
         bindings[0] = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         bindings[1] = {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = scene_texture_capacity, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         bindings[2] = {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
@@ -775,8 +775,11 @@ namespace vulkan {
         // per-joint skin matrices (mat4 per joint; indices 0-3 are the identity block for
         // unskinned draws; read in pbr.vert / shadow.vert, filled per frame by set_skin_matrices)
         bindings[9] = {.binding = 9, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
+        // morph data (floats): per-morphable-primitive delta + weight blocks; written by the
+        // caller through the runtime's morph scratch memory (set once + per frame for weights)
+        bindings[10] = {.binding = 10, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
 
-        std::array<VkDescriptorBindingFlags, 10> binding_flags = {};
+        std::array<VkDescriptorBindingFlags, 11> binding_flags = {};
         binding_flags[0] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT; // camera UBO rewritten per frame
         // texture array: only written entries are valid, appended while the set may be bound;
         // non-uniform indexing itself is a device feature, not a layout flag

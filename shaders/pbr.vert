@@ -26,11 +26,20 @@ layout(set = 0, binding = 9) readonly buffer SkinMatrices {
     mat4 matrices[];
 } skins;
 
+// Morph data (scene set binding 10): per-morphable-primitive block laid out by the caller as
+//   [ per vertex v: per target t: posDelta(xyz) normalDelta(xyz) ]  [ weights per target ]
+// referenced through push.morph_base (float index) / morph_targets / morph_vertices.
+layout(set = 0, binding = 10) readonly buffer MorphData {
+    float morphs[];
+} morph_data;
+
 layout(push_constant) uniform PushConstants {
     uint material_index; // unused here (vertex stage), declared to keep the block layout identical to pbr.frag
     uint flags;          // bit0: instanced draw -> model comes from instances[gl_InstanceIndex]
     uint skin_base;      // start of this primitive's joint block in skins.matrices (0 = identity)
-    uint _pad;
+    uint morph_base;     // float index of this primitive's morph block in morph_data.morphs (0 = none)
+    uint morph_targets;  // number of morph targets (0 = not morphable)
+    uint morph_vertices; // vertex count of this primitive (morph block stride)
     mat4 model;          // per-model world transform (kept out of the shared camera UBO)
 } push;
 
@@ -40,10 +49,30 @@ layout(location = 2) out vec2 v_uv;
 layout(location = 3) out vec3 v_tangent;
 
 void main() {
-    // skinning: blend the four joint transforms with the vertex weights (the identity block at
-    // skin_base 0 leaves unskinned vertices unchanged). Normals/tangents use the rotation part.
+    // morph blend first (local deltas + active target weights; skipped when not morphable)
     vec4 local_pos = vec4(in_position, 1.0);
-    vec3 skinned_normal = in_normal;
+    vec3 morph_normal = in_normal;
+    if (push.morph_targets > 0u) {
+        const uint vert = gl_VertexIndex;
+        const uint weight_base = push.morph_base + push.morph_targets * push.morph_vertices * 6u;
+        vec3 pos_delta = vec3(0.0);
+        vec3 nrm_delta = vec3(0.0);
+        for (uint t = 0u; t < push.morph_targets; ++t) {
+            const float w = morph_data.morphs[weight_base + t];
+            const uint base = push.morph_base + (vert * push.morph_targets + t) * 6u;
+            const vec3 dpos = vec3(morph_data.morphs[base], morph_data.morphs[base + 1u], morph_data.morphs[base + 2u]);
+            const vec3 dnrm = vec3(morph_data.morphs[base + 3u], morph_data.morphs[base + 4u], morph_data.morphs[base + 5u]);
+            pos_delta += w * dpos;
+            nrm_delta += w * dnrm;
+        }
+        local_pos = vec4(in_position + pos_delta, 1.0);
+        morph_normal = in_normal + nrm_delta;
+    }
+
+    // skinning after morph: blend the four joint transforms with the vertex weights (the
+    // identity block at skin_base 0 leaves unskinned vertices unchanged). Normals/tangents use
+    // the weighted rotation part of the joint matrices.
+    vec3 skinned_normal = morph_normal;
     vec3 skinned_tangent = in_tangent;
     const float wsum = in_weights.x + in_weights.y + in_weights.z + in_weights.w;
     if (wsum > 0.0) {
@@ -54,10 +83,10 @@ void main() {
         pos += in_weights.y * (skins.matrices[push.skin_base + in_joints.y] * local_pos);
         pos += in_weights.z * (skins.matrices[push.skin_base + in_joints.z] * local_pos);
         pos += in_weights.w * (skins.matrices[push.skin_base + in_joints.w] * local_pos);
-        nrm += in_weights.x * mat3(skins.matrices[push.skin_base + in_joints.x]) * in_normal;
-        nrm += in_weights.y * mat3(skins.matrices[push.skin_base + in_joints.y]) * in_normal;
-        nrm += in_weights.z * mat3(skins.matrices[push.skin_base + in_joints.z]) * in_normal;
-        nrm += in_weights.w * mat3(skins.matrices[push.skin_base + in_joints.w]) * in_normal;
+        nrm += in_weights.x * mat3(skins.matrices[push.skin_base + in_joints.x]) * morph_normal;
+        nrm += in_weights.y * mat3(skins.matrices[push.skin_base + in_joints.y]) * morph_normal;
+        nrm += in_weights.z * mat3(skins.matrices[push.skin_base + in_joints.z]) * morph_normal;
+        nrm += in_weights.w * mat3(skins.matrices[push.skin_base + in_joints.w]) * morph_normal;
         tan += in_weights.x * mat3(skins.matrices[push.skin_base + in_joints.x]) * in_tangent;
         tan += in_weights.y * mat3(skins.matrices[push.skin_base + in_joints.y]) * in_tangent;
         tan += in_weights.z * mat3(skins.matrices[push.skin_base + in_joints.z]) * in_tangent;

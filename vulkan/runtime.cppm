@@ -115,6 +115,11 @@ namespace vulkan {
         // material_push_constants::skin_base
         uint64_t skin_buffer_handle = 0;
         void* skin_mapped = nullptr;
+        // morph data (scene set binding 10): scene_morph_capacity floats, host-visible. The
+        // caller writes per-primitive blocks (morph deltas + weights) through morph_scratch()
+        // and points primitives at them via material_push_constants::morph_* fields
+        uint64_t morph_buffer_handle = 0;
+        void* morph_mapped = nullptr;
         // the single scene descriptor set: all pipelines share the layout, so one set covers them all
         vk_descriptor_set scene_set = {};
         bool scene_set_created = false;
@@ -550,6 +555,17 @@ namespace vulkan {
          *       identity block so unskinned rendering is unaffected
          */
         void set_skin_matrices(std::span<glm::mat4 const> matrices);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief host-visible scratch memory of the scene morph buffer (scene set binding 10,
+         *        scene_morph_capacity floats). The caller lays out per-primitive morph blocks
+         *        (per vertex per target posΔ/nrmΔ floats, then the per-target weights) and
+         *        points primitives at their block through material_push_constants::morph_base /
+         *        morph_targets / morph_vertices (see those fields for the layout convention).
+         * @return the mapped base, or nullptr when the morph buffer is unavailable
+         */
+        [[nodiscard]] void* morph_scratch() noexcept;
 
         /**
          * @ingroup vulkan_runtime

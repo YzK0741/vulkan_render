@@ -353,10 +353,19 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_runtime_scene_tree
-     * @brief per-draw push constants, layout matches pbr.frag's PushConstants (80 bytes)
-     * @note material data (texture indices, factors, flags) lives in the material table
-     *       (set 0 binding 5), so the push block only carries the material reference, the
-     *       skin-matrix block start and the per-primitive world transform
+     * @brief byte capacity of the scene morph buffer (set 0 binding 10 storage buffer, floats):
+     *        per-morphable-primitive blocks of vertex deltas + morph weights, laid out by the
+     *        caller (see the material_push_constants morph fields); 0 = no morph buffer
+     */
+    export constexpr std::size_t scene_morph_capacity = 8u * 1024u * 1024u; // 8 MiB of floats
+
+    /**
+     * @ingroup vulkan_runtime_scene_tree
+     * @brief per-draw push constants, layout matches the shaders' PushConstants (96 bytes)
+     * @note material data lives in the material table (set 0 binding 5), so the push block only
+     *       carries the material reference, the skin-matrix block start, the morph block start
+     *       and the per-primitive world transform. morph_targets == 0 means "not morphable" and
+     *       the vertex shader skips the blend; morph_base is a FLOAT index into binding 10.
      */
     export struct material_push_constants {
         uint32_t material_index = 0; // index into the scene's material table
@@ -366,9 +375,14 @@ namespace vulkan {
         // matrices start; 0 = the identity block (unskinned). The vertex shader reads
         // matrices[skin_base + in_joints.x] etc. — set once per primitive after import
         uint32_t skin_base = 0;
-        uint32_t _pad = 0; // keep the model matrix 16-byte aligned
+        // morph blend (binding 10): float index of this primitive's morph block (deltas first:
+        // per vertex per target posΔ/nrmΔ, then the per-target weights); morph_targets /
+        // morph_vertices describe the block stride. All three stay 0 for non-morphable draws.
+        uint32_t morph_base = 0;
+        uint32_t morph_targets = 0;  // number of morph targets (0 = no morph)
+        uint32_t morph_vertices = 0; // vertex count of this primitive (block stride)
         // glm::mat4 is only 4-byte aligned by default, but GLSL std430 aligns mat4 to 16 bytes
-        // (offset 16 in the block): align explicitly so the CPU layout matches the shader
+        // (offset 32 in the block): align explicitly so the CPU layout matches the shader
         alignas(16) glm::mat4 model = glm::mat4(1.0f);
     };
     static_assert(sizeof(material_push_constants) == scene_push_constant_size);

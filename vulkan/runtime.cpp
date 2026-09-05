@@ -215,6 +215,20 @@ namespace vulkan {
         }
         this->skin_buffer_handle = skin_handle;
         this->skin_mapped = skin_detail->allocation_info.pMappedData;
+
+        // Morph data (set 0 binding 10): scene_morph_capacity floats, host-visible; the caller
+        // writes per-primitive morph blocks (deltas + weights) through morph_scratch()
+        std::vector<unsigned char> const zeroed_morphs(vulkan::scene_morph_capacity * sizeof(float), 0);
+        uint64_t const morph_handle = this->vulkan_core.vma.create_buffer(zeroed_morphs.data(), zeroed_morphs.size(), vulkan::buffer_type::storage_coherent);
+        if (morph_handle == 0) {
+            utility::panic("failed to create morph data buffer");
+        }
+        auto const* morph_detail = this->vulkan_core.vma.get_buffer_detail(morph_handle);
+        if (morph_detail == nullptr) {
+            utility::panic("failed to get morph data buffer detail");
+        }
+        this->morph_buffer_handle = morph_handle;
+        this->morph_mapped = morph_detail->allocation_info.pMappedData;
     }
 
     void runtime::init_shadow_resources() {
@@ -326,6 +340,21 @@ namespace vulkan {
         skin_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         skin_write.pBufferInfo = &skin_info;
         vkUpdateDescriptorSets(this->vulkan_core.device, 1, &skin_write, 0, nullptr);
+
+        // binding 10: morph data (storage buffer, host-visible; caller-written blocks)
+        auto const* morph_detail = this->vulkan_core.vma.get_buffer_detail(this->morph_buffer_handle);
+        if (morph_detail == nullptr) {
+            utility::panic("failed to get morph data buffer detail");
+        }
+        VkDescriptorBufferInfo const morph_info{morph_detail->buffer, 0, static_cast<VkDeviceSize>(vulkan::scene_morph_capacity) * sizeof(float)};
+        VkWriteDescriptorSet morph_write = {};
+        morph_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        morph_write.dstSet = *this->scene_set;
+        morph_write.dstBinding = 10;
+        morph_write.descriptorCount = 1;
+        morph_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        morph_write.pBufferInfo = &morph_info;
+        vkUpdateDescriptorSets(this->vulkan_core.device, 1, &morph_write, 0, nullptr);
 
         // binding 7 + 8: light UBO + shadow map (created in init_shadow_resources)
         this->write_light_and_shadow_bindings();
@@ -1491,6 +1520,10 @@ namespace vulkan {
         }
         std::size_t const bytes = std::min(matrices.size_bytes(), static_cast<std::size_t>(vulkan::scene_skin_capacity) * sizeof(glm::mat4));
         std::memcpy(this->skin_mapped, matrices.data(), bytes);
+    }
+
+    void* runtime::morph_scratch() noexcept {
+        return this->morph_mapped;
     }
 
     void runtime::destroy_leaf_primitives(scene_tree::scene_node& node, vma_allocator& vma) {

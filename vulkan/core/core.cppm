@@ -36,13 +36,15 @@ namespace vulkan {
      *              binding 5 = Material materials[] (storage buffer: per-material texture indices + factors),
      *              binding 6 = mat4 instance transforms[] (storage buffer, per-instance world matrices),
      *              binding 7 = LightUBO (uniform buffer: directional light view-proj + direction),
-     *              binding 8 = shadow map (sampler2DShadow, depth comparison + hardware PCF)
+     *              binding 8 = shadow map (sampler2DShadow, depth comparison + hardware PCF),
+     *              binding 9 = mat4 skin matrices[] (storage buffer: identity block + per-skin joints),
+     *              binding 10 = float morph data[] (storage buffer: per-primitive morph deltas + weights)
      * @note hardcoded instead of parsed from SPIR-V: the indexed layout is flat, so pipelines
      *       skip descriptor / push constant parsing and share one layout object
      */
     export constexpr uint32_t scene_texture_capacity = 128;
-    // material_push_constants: uint material_index + mat4 model = 80 bytes, see vulkan/runtime/scene_tree/scene_tree.cppm
-    export constexpr uint32_t scene_push_constant_size = 80;
+    // material_push_constants: 6 uints + aligned mat4 = 96 bytes, see vulkan/runtime/scene_tree/scene_tree.cppm
+    export constexpr uint32_t scene_push_constant_size = 96;
 
     /**
      * @ingroup vulkan_core
