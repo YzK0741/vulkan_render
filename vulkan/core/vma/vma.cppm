@@ -95,7 +95,8 @@ namespace vulkan {
         VkImage image = VK_NULL_HANDLE;
         VmaAllocation allocation = VK_NULL_HANDLE;
         VmaAllocationInfo allocation_info = {};
-        utility::sha256_digest digest = {};
+        // XXH3_64bits fingerprint of the uploaded bytes; 0 = no content digest (never deduplicated)
+        uint64_t digest = 0;
         // creation parameters, kept so a digest hit only reuses an identical image
         image_create_info create_info = {};
         image_type type = image_type::texture_2d;
@@ -109,7 +110,7 @@ namespace vulkan {
             : image(other.image)
             , allocation(other.allocation)
             , allocation_info(other.allocation_info)
-            , digest(std::move(other.digest))
+            , digest(other.digest)
             , create_info(std::move(other.create_info))
             , type(other.type)
             , use_count(other.use_count.load()) {

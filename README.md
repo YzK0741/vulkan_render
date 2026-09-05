@@ -21,7 +21,7 @@ A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), implementin
 - **Debug GUI (`vulkan.gui`)**: a Dear ImGui overlay driven inside the runtime's frame steps. `vulkan::gui::widget` subclasses (`label_widget` / `checkbox_widget` / `slider_widget` / `vec3_widget`...) stack into `debug_panel`s that register with `gui_content` via `runtime::debug_gui()`. The demo panel shows fps and toggles frustum culling, the skybox pass, the shadow pass, and edits the camera orbit target. Window layout (position / size) persists to `imgui_layout.ini`.
 - **glTF loading (`gltf_loader` module)**: standalone CPU module built on [fastgltf](https://github.com/spnda/fastgltf), supporting `.gltf` / `.glb` / data URIs and exporting both a flattened drawable stream and the retained node hierarchy (name + local transform + children) with raw de-interleaved vertex/index data.
 - **Orbit camera**: left-drag to rotate, wheel to zoom; one shared camera UBO is updated once per frame, with `MAX_FRAMES_IN_FLIGHT` frames in flight.
-- **Utility library (`utility` module)**: handle distribution, stack-style destructor mixin, thread pool, BVH (used by frustum culling), data block, and more. A mimalloc-backed `pmr` manager (`utility::init_pmr()` via `better_pmr`) routes all `std::pmr` allocations — including the runtime's per-frame cull/visible vectors — through [mimalloc](https://github.com/microsoft/mimalloc); it is idempotent and initialized before `main` from every TU that uses it.
+- **Utility library (`utility` module)**: handle distribution, stack-style destructor mixin, thread pool, BVH (used by frustum culling), data block, and more. A mimalloc-backed `pmr` manager (`utility::init_pmr()` via `better_pmr`) routes all `std::pmr` allocations — including the runtime's per-frame cull/visible vectors — through [mimalloc](https://github.com/microsoft/mimalloc); it is idempotent and initialized before `main` from every TU that uses it. Content hashing for GPU-resource dedup is [xxHash](https://github.com/Cyan4973/xxHash) `XXH3_64bits` (`utility::xxh3_64bits`, vendored under `third_party/xxhash`).
 - **Startup configuration (`app_config` module)**: TOML config (`config.toml`, `--config <path>` override) merged with argv, covering model/demo/grid, resource paths, window/render settings (size, title, vsync, MSAA, clear color, skybox/shadow toggles) and IBL resolutions. See `config.example.toml`.
 - **Engineering practices**: automatic `clang-format` before every build, `-Wall -Wextra -Werror`, and **exceptions disabled in all build configurations** (`-fno-exceptions`; the vendored `std` module makes this work), plus `-flto -march=native -fno-rtti` in Release builds.
 
@@ -61,7 +61,7 @@ Related source docs (tracked in the repo):
 ├── gltf_model/              # Sample model (DamagedHelmet)
 ├── snapshot/                # Screenshots
 ├── docs/                    # Usage guides + reference shaders; Doxygen HTML is generated on demand (gitignored)
-└── third_party/             # Vendored dependencies (spirv-reflect, imgui)
+└── third_party/             # Vendored dependencies (spirv-reflect, imgui, xxhash)
 ```
 
 ## Dependencies & Build
@@ -70,8 +70,8 @@ Related source docs (tracked in the repo):
 
 - CMake ≥ 4.3 and a compiler with C++23 / C++20 modules support (this project uses MSYS2 clang64's clang)
 - [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) (includes `glslc`)
-- System packages: `glfw3`, `glm`, `OpenSSL`, `fastgltf` (MSYS2 package; `libfastgltf.dll` + `libsimdjson.dll` must be on PATH), Vulkan Memory Allocator (VMA, `vma/vk_mem_alloc.h`), `tomlplusplus` (header-only, MSYS2 `mingw-w64-clang-x86_64-tomlplusplus`)
-- `spirv-reflect` and Dear ImGui (`imgui` core + GLFW/Vulkan backends) are vendored under `third_party/`
+- System packages: `glfw3`, `glm`, `fastgltf` (MSYS2 package; `libfastgltf.dll` + `libsimdjson.dll` must be on PATH), Vulkan Memory Allocator (VMA, `vma/vk_mem_alloc.h`), `tomlplusplus` (header-only, MSYS2 `mingw-w64-clang-x86_64-tomlplusplus`)
+- `spirv-reflect`, Dear ImGui (`imgui` core + GLFW/Vulkan backends) and xxHash (`xxhash`, BSD-2) are vendored under `third_party/`
 
 ### Build
 

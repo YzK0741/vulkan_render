@@ -257,55 +257,17 @@ namespace utility {
     /**
      * @defgroup hash
      * @ingroup utility
-     * @brief hash series functions wrapper of openssl
+     * @brief xxHash-based 64-bit content hash (XXH3_64bits)
      * @note
-     *     - digest supports operator==/!=/<=>, hex formatter (.to_hex_string())
-     *     - returns std::optional wrappered digest
-     *     - returns std::nullopt when failed (virtually impossible)
+     *     - non-cryptographic, extremely fast (used for content dedup)
+     *     - returns the raw 64-bit fingerprint; cannot fail
      */
 
     /**
-     * @typedef md5_digest
-     * @relates data_block
+     * @brief xxh3_64bits hash function
+     * @param data_view bytes to fingerprint
+     * @return 64-bit fingerprint of @p data_view
      * @ingroup hash
      */
-    export using md5_digest = data_block<16>;
-
-    /**
-     * @brief md5 hash function
-     * @param data_view
-     * @return md5 digest
-     * @ingroup hash
-     */
-    export std::optional<md5_digest> md5(std::span<unsigned char const> data_view);
-
-    /**
-     * @typedef sha256_digest
-     * @relates data_block
-     * @ingroup hash
-     */
-    export using sha256_digest = data_block<32>;
-
-    /**
-     * @brief sha256 hash function
-     * @param data_view
-     * @return sha256 digest
-     * @ingroup hash
-     */
-    export std::optional<sha256_digest> sha256(std::span<unsigned char const> data_view);
-
-    /**
-     * @typedef blake2_digest
-     * @relates data_block
-     * @ingroup hash
-     */
-    export using blake2_digest = data_block<64>;
-
-    /**
-     * @brief blake2 hash function
-     * @param data_view
-     * @return blake2 digest
-     * @ingroup hash
-     */
-    export std::optional<blake2_digest> blake2(std::span<unsigned char const> data_view);
+    export uint64_t xxh3_64bits(std::span<unsigned char const> data_view);
 } // namespace utility

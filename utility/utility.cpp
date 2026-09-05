@@ -1,6 +1,6 @@
 module;
 
-#include <openssl/evp.h>
+#include <xxhash.h>
 
 module utility;
 
@@ -275,82 +275,6 @@ void utility::error_message(std::string message) {
 #endif
 }
 
-std::optional<utility::md5_digest> utility::md5(std::span<unsigned char const> const data_view) {
-    md5_digest digest = {};
-    unsigned int size_byte = sizeof(md5_digest);
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-
-    if (!ctx) {
-        return std::nullopt;
-    }
-
-    if (!EVP_DigestInit_ex(ctx, EVP_md5(), nullptr)) {
-        EVP_MD_CTX_destroy(ctx);
-        return std::nullopt;
-    }
-    if (!EVP_DigestUpdate(ctx, data_view.data(), data_view.size_bytes())) {
-        EVP_MD_CTX_destroy(ctx);
-        return std::nullopt;
-    }
-
-    if (int const code = EVP_DigestFinal_ex(ctx, digest.data.data(), &size_byte); code == 1) {
-        EVP_MD_CTX_destroy(ctx);
-        return digest;
-    }
-    EVP_MD_CTX_destroy(ctx);
-    return std::nullopt;
-}
-
-std::optional<utility::sha256_digest> utility::sha256(std::span<unsigned char const> const data_view) {
-    sha256_digest digest = {};
-    unsigned int size_byte = sizeof(sha256_digest);
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-
-    if (!ctx) {
-        return std::nullopt;
-    }
-
-    if (!EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr)) {
-        EVP_MD_CTX_destroy(ctx);
-        return std::nullopt;
-    }
-    if (!EVP_DigestUpdate(ctx, data_view.data(), data_view.size_bytes())) {
-        EVP_MD_CTX_destroy(ctx);
-        return std::nullopt;
-    }
-
-    if (int const code = EVP_DigestFinal_ex(ctx, digest.data.data(), &size_byte); code == 1) {
-        EVP_MD_CTX_destroy(ctx);
-        return digest;
-    }
-    EVP_MD_CTX_destroy(ctx);
-    return std::nullopt;
-}
-
-std::optional<utility::blake2_digest> utility::blake2(std::span<unsigned char const> data_view) {
-    blake2_digest digest = {};
-
-    unsigned int size_byte = blake2_digest::size_byte;
-
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-
-    if (!ctx) {
-        return std::nullopt;
-    }
-
-    if (!EVP_DigestInit_ex(ctx, EVP_blake2b512(), nullptr)) {
-        EVP_MD_CTX_destroy(ctx);
-        return std::nullopt;
-    }
-    if (!EVP_DigestUpdate(ctx, data_view.data(), data_view.size_bytes())) {
-        EVP_MD_CTX_destroy(ctx);
-        return std::nullopt;
-    }
-
-    if (int const code = EVP_DigestFinal_ex(ctx, digest.data.data(), &size_byte); code == 1) {
-        EVP_MD_CTX_destroy(ctx);
-        return digest;
-    }
-    EVP_MD_CTX_destroy(ctx);
-    return std::nullopt;
+uint64_t utility::xxh3_64bits(std::span<unsigned char const> const data_view) {
+    return XXH3_64bits(data_view.data(), data_view.size_bytes());
 }

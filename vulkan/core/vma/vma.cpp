@@ -782,16 +782,13 @@ namespace vulkan {
     }
 
     uint64_t vma_allocator::create_image(unsigned char const* data, uint64_t const size_byte, image_create_info const& create_info, image_type const type) {
-        // sha256 is pure CPU work; keep it outside the critical section. It is computed before
-        // allocating so a content hit can reuse an existing image without any allocation or upload.
-        // Empty images (data == nullptr, e.g. a depth shadow map that is rendered into, never
-        // uploaded) have no content digest; they are never deduplicated (see is_dedupable below).
-        std::optional<utility::sha256_digest> digest;
+        // XXH3_64bits is pure CPU work; keep it outside the critical section. It is computed
+        // before allocating so a content hit can reuse an existing image without any allocation
+        // or upload. Empty images (data == nullptr, e.g. a depth shadow map that is rendered
+        // into, never uploaded) have no content digest (0) and are never deduplicated.
+        uint64_t digest = 0;
         if (data != nullptr && size_byte != 0) {
-            digest = utility::sha256(std::span(data, size_byte));
-            if (!digest) {
-                utility::panic("sha256 failed");
-            }
+            digest = utility::xxh3_64bits(std::span(data, size_byte));
         }
 
         // Only immutable, data-uploaded textures are shareable: depth / staging / render targets
@@ -799,10 +796,10 @@ namespace vulkan {
         constexpr auto is_dedupable = [](image_type const t) {
             return t == image_type::texture_2d || t == image_type::texture_2d_color || t == image_type::texture_cubemap;
         };
-        if (is_dedupable(type)) {
+        if (is_dedupable(type) && digest != 0) {
             std::lock_guard guard(this->access_mutex);
             for (auto& [existing_handle, detail] : this->images) {
-                if (detail.type == type && detail.create_info == create_info && detail.digest == digest.value()) {
+                if (detail.type == type && detail.create_info == create_info && detail.digest == digest) {
                     detail.use_count.fetch_add(1); // shared: bump the reference count and reuse
                     return existing_handle;
                 }
@@ -890,7 +887,7 @@ namespace vulkan {
             detail.image = image;
             detail.allocation = allocation;
             detail.allocation_info = alloc_detail;
-            detail.digest = digest ? digest.value() : utility::sha256_digest{};
+            detail.digest = digest;
             detail.create_info = create_info;
             detail.type = type;
             this->images.emplace(handle, std::move(detail));

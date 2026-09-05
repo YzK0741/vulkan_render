@@ -9,7 +9,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Vulkan REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(glm REQUIRED)
-find_package(OpenSSL REQUIRED)
 
 set(COMPILE_OPTIONS
         $<$<CONFIG:Release>:
@@ -149,6 +148,19 @@ target_link_libraries(imgui
         glfw
 )
 
+# xxHash (vendored under third_party/xxhash, see the LICENSE there): non-cryptographic
+# 64-bit content hashing (XXH3_64bits) used by utility::xxh3_64bits for image/texture
+# dedup. Compiled as its own plain-C target, mirroring the imgui policy above (vendored
+# code does not follow the project's -Werror set). The utility module links it.
+add_library(xxhash STATIC
+        third_party/xxhash/xxhash.c
+)
+
+target_include_directories(xxhash
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xxhash
+)
+
 target_link_libraries(gltf_loader
         PRIVATE
         fastgltf
@@ -173,15 +185,15 @@ add_executable(vulkan_render main.cpp)
 # still calls main(), only the subsystem changes. Debug keeps the console for terminal log output.
 set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE $<$<CONFIG:Release>:ON>)
 
-# utility.cpp implements the hash functions (md5 / sha256 / blake2) on top of OpenSSL, so the
-# dependency is declared here, on the library that actually uses the EVP_* symbols. It propagates
-# to consumers (vulkan_lib / gltf_loader / vulkan_render) at link time, so the executable no
-# longer needs to link OpenSSL itself.
+# utility.cpp implements the xxHash-based hash functions (utility::xxh3_64bits) on top of
+# the vendored xxhash library, so the dependency is declared here, on the library that
+# actually uses the XXH3_64bits symbol. It propagates to consumers (vulkan_lib / gltf_loader
+# / vulkan_render) at link time, so the executable does not need to link xxhash itself.
 # better_pmr (utility.better_pmr) routes std::pmr allocations through mimalloc;
 # the library lives in the clang64 default lib path, so the bare name links it
 target_link_libraries(utility
         std_lib
-        OpenSSL::Crypto
+        xxhash
         mimalloc
 )
 
