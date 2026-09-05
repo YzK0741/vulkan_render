@@ -229,7 +229,7 @@ Vertex buffers can be uploaded by memcpy'ing the raw bytes directly, provided th
 
 - The module is compiled with `-fno-exceptions`: fastgltf reports errors via `Expected` and never throws.
 - Runtime dependencies: `libfastgltf.dll`, `libsimdjson.dll` (both in `C:\msys64\clang64\bin`; must be on PATH).
-- Static render data (meshes, vertices/indices, textures, materials), **keyframe animations** (§8) and **skins** (§9) are exported. Non-indexed glTF primitives are supported: the loader synthesizes a sequential uint32 index buffer. Cameras, lights, morph targets, and animation `weights` channels are **not** currently exported into the public interface.
+- Static render data (meshes, vertices/indices, textures, materials), **keyframe animations** (§8), **skins** (§9) and **morph targets** (§10) are exported. Non-indexed glTF primitives are supported: the loader synthesizes a sequential uint32 index buffer. Cameras and lights are **not** currently exported into the public interface.
 - All `asset.scenes` are loaded; `asset.defaultScene` is not separately marked yet.
 - Verified samples (in `main.cpp`): the glTF/GLB variants of `glTF-Sample-Assets/Models/{Box, BoxInterleaved, BoxTextured}`, covering ASCII + external bin, binary containers, interleaved byteStride, embedded textures, and the missing-file error code.
 
@@ -358,3 +358,32 @@ struct skin {
   unskinned draws), rebuilds the per-skin matrices every frame and uploads them via
   `runtime::set_skin_matrices()`; `pbr.vert` / `shadow.vert` sample them. Verified with
   `glTF-Sample-Assets` `RiggedSimple` (2 joints) and `BrainStem` (18 joints).
+
+---
+
+## 10. Morph targets
+
+Morphable primitives are exported together with their targets and weights:
+
+```cpp
+struct morph_target {                                  // one per target of a primitive
+    std::map<std::string, vertex_portion> attributes;  // POSITION / NORMAL deltas (float vec3,
+                                                       // same vertex count as the base data)
+};
+// primitive.targets            -> the primitive's morph targets
+// mesh.weights                 -> default morph weights (one per target; empty = all zero)
+// node.weights (optional)      -> per-node override of the mesh defaults
+// animation "weights" channels -> drive the node's weights over time (see §8)
+```
+
+- A `weights` animation channel's sampler stores one scalar per keyframe **per morph target** of
+  the node's mesh (`animation_sampler::per_key` = that target count; the loader resolves it from
+  the target node). `sample_node` merges the evaluated values into `node_pose::weights`;
+  `node_pose::any_transform` stays false for weights-only channels, so playback code must not
+  touch the node's local transform for them.
+- Per-vertex the blend is `base + Σ weight_i · delta_i` (positions and normals); the renderer
+  bakes each morphable primitive's deltas plus its **default weights** (`node.weights` >
+  `mesh.weights` > zeros) into the scene morph buffer (set binding 10) and rewrites the weights
+  region every frame when a `weights` channel animates the node. The vertex shaders blend the
+  morph deltas **before** skinning (the glTF order; both are linear on the same local vertex).
+  Verified with `AnimatedMorphCube`, `SimpleMorph` and `MorphStressTest`.

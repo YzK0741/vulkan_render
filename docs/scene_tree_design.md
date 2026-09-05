@@ -366,8 +366,13 @@ source of truth for what each commit changed.)
   a scene skin buffer (binding 9, identity block for unskinned draws) and points each skinned
   primitive at its block via `material_push_constants::skin_base`. Verified with
   `RiggedSimple` / `BrainStem`. See `docs/gltf_loader_usage.md` §9.
-- Morph targets: still future (needs per-vertex morph weights + weight animations); mesh
-  sharing and per-instance material overrides remain open (see above).
+- ✅ **Morph targets** — landed on the same shared vertex layout: the loader exports morph
+  targets (POSITION/NORMAL deltas), mesh/node default weights and `weights` animation channels
+  (sampler `per_key`); the demo bakes per-primitive deltas + default weights into the scene
+  morph buffer (binding 10) and rewrites the active weights each frame from the animation.
+  `pbr.vert`/`shadow.vert` blend morph deltas before skinning. Verified with
+  `AnimatedMorphCube` / `SimpleMorph` / `MorphStressTest`. See `docs/gltf_loader_usage.md` §10.
+- Mesh sharing, per-instance material overrides and cameras/lights remain open (see above).
 - Skinning: needs joint node naming/indices + per-vertex joint data + bone UBO —
   independent of the tree storage change, tree only provides the skeleton
   hierarchy.
