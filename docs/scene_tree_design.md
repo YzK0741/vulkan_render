@@ -3,9 +3,10 @@
 Status: migration complete — storage, import and the render loop are tree-driven;
 `vulkan.runtime.scene_tree` is the single scene-tree module (scene storage + GPU
 primitives, absorbed the former `vulkan.model`); per-node transforms work through
-`runtime::scene()` + the `spin-subtree` demo, and keyframe TRS animation plays
-through the same per-node locals (see §8 — loader sampling in `gltf_loader`,
-per-frame playback in `main`). Remaining: skinning / mesh sharing (future pass, §8).
+`runtime::scene()` + the `spin-subtree` demo, and keyframe TRS animation and
+skinning play through the same per-node locals (see §8 — loader sampling in
+`gltf_loader`, per-frame playback + skin matrices in `main`). Remaining: mesh
+sharing / morph targets (future pass, §8).
 
 ## 1. Motivation
 
@@ -317,8 +318,8 @@ Status, kept in sync with git history:
   which imports vulkan.core for the GPU types). `runtime` / `main` import
   `vulkan.runtime.scene_tree` instead of `vulkan.model`; CMake module list
   updated. Verified: Release builds (no ICE), full regression matrix unchanged.
-- ⏳ **5 — Future:** skinning / mesh sharing (separate pass, §8); keyframe TRS animation
-  landed outside this migration — see the §8 animation entry.
+- ⏳ **5 — Future:** mesh sharing / morph targets (separate pass, §8); keyframe TRS animation
+  and skinning landed outside this migration — see the §8 entries.
 
 (Detailed step list below is folded into the status above; this file is the single
 source of truth for what each commit changed.)
@@ -358,9 +359,15 @@ source of truth for what each commit changed.)
   T·R·S locals are written back through `runtime::scene_changed()`. The `gui` overlay
   adds play/pause, a time scrubber and an animation dropdown. See
   `docs/gltf_loader_usage.md` §8.
-- Skinning: still future — needs the joint naming/indices + per-vertex joint data + bone
-  UBO on top of the skeleton hierarchy; keyframe TRS animation is its prerequisite and is
-  now in place.
+- ✅ **Skinning** — landed on the same substrate: the loader exports skins (joint asset-node
+  indices + inverse bind matrices) and JOINTS_0 / WEIGHTS_0 live in the shared 76-byte vertex
+  layout; `main.cpp` resolves skin joints onto the live tree, rebuilds the per-frame skin
+  matrices (`inv(W_mesh) · W_joint · IBM`, joints following the keyframe animation above) into
+  a scene skin buffer (binding 9, identity block for unskinned draws) and points each skinned
+  primitive at its block via `material_push_constants::skin_base`. Verified with
+  `RiggedSimple` / `BrainStem`. See `docs/gltf_loader_usage.md` §9.
+- Morph targets: still future (needs per-vertex morph weights + weight animations); mesh
+  sharing and per-instance material overrides remain open (see above).
 - Skinning: needs joint node naming/indices + per-vertex joint data + bone UBO —
   independent of the tree storage change, tree only provides the skeleton
   hierarchy.

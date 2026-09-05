@@ -53,8 +53,11 @@ namespace gltf {
     struct animation          { std::string name;
                                 std::vector<animation_sampler> samplers;
                                 std::vector<animation_channel> channels; };
-    // scenes also carries: std::vector<animation> animations; and each node carries
-    // source_index + translation / rotation / scale (TRS base pose) — see §8
+    struct skin               { std::string name; std::vector<std::size_t> joints;   // asset node indices
+                                std::vector<glm::mat4> inverse_bind_matrices; };     // identity fallback
+    // scenes also carries: std::vector<animation> animations; std::vector<skin> skins; and each
+    // node carries source_index + translation/rotation/scale (TRS base pose) + skin_index —
+    // see §8 (animations) and §9 (skinning)
 
     std::expected<scenes, error_code> load_model(std::string_view file_name);
 }
@@ -226,7 +229,7 @@ Vertex buffers can be uploaded by memcpy'ing the raw bytes directly, provided th
 
 - The module is compiled with `-fno-exceptions`: fastgltf reports errors via `Expected` and never throws.
 - Runtime dependencies: `libfastgltf.dll`, `libsimdjson.dll` (both in `C:\msys64\clang64\bin`; must be on PATH).
-- Static render data (meshes, vertices/indices, textures, materials) and **keyframe animations** (§8) are exported. Skins, cameras, lights, morph targets, and animation `weights` channels are **not** currently exported into the public interface.
+- Static render data (meshes, vertices/indices, textures, materials), **keyframe animations** (§8) and **skins** (§9) are exported. Cameras, lights, morph targets, and animation `weights` channels are **not** currently exported into the public interface; meshes without index data are rejected by the loader.
 - All `asset.scenes` are loaded; `asset.defaultScene` is not separately marked yet.
 - Verified samples (in `main.cpp`): the glTF/GLB variants of `glTF-Sample-Assets/Models/{Box, BoxInterleaved, BoxTextured}`, covering ASCII + external bin, binary containers, interleaved byteStride, embedded textures, and the missing-file error code.
 
@@ -319,3 +322,39 @@ if (pose.any_channel) {
   of the loaded model on a loop (writes the evaluated `T * R * S` back into the runtime scene
   tree each frame via `scene_node::source_index`), and the `gui` demo adds play/pause, a time
   scrubber and an animation dropdown for multi-animation files.
+
+---
+
+## 9. Skinning
+
+`scenes.skins` holds the file's skins in glTF order:
+
+```cpp
+struct skin {
+    std::string name;                              // e.g. "Armature"
+    std::vector<std::size_t> joints;               // asset node indices, in joint order
+    std::vector<glm::mat4> inverse_bind_matrices;  // one mat4 per joint (identity when omitted)
+};
+```
+
+- A skinned mesh is attached to a node whose `node.skin_index` selects a skin. Its drawable
+  vertices carry `JOINTS_0` (u8/u16 vec4 → joint indices **into the skin's joint list**) and
+  `WEIGHTS_0` (float or normalized u8/u16 vec4); the interleaved drawable layout keeps both
+  (identity joints + full weight for unskinned meshes), so every pipeline shares one vertex
+  layout.
+- `inverse_bind_matrices` are decoded from the asset's `Mat4` float accessor; when the asset
+  omits them (glTF default) or the accessor is broken, identity matrices are filled in.
+- Joints are asset node indices: resolve them against a scene's pool through
+  `node::source_index` (same as animation channels), then evaluate per frame:
+
+```cpp
+// skinMat_j = inv(W_mesh) * W_joint_j * IBM_j — world matrices of the skinned mesh node and of
+// each joint (the joints follow the animation evaluation of §8); per-vertex the shader blends
+// these matrices by WEIGHTS_0 and the node's own world transform applies afterwards.
+```
+
+- The renderer (`main.cpp`) assigns each skinned primitive a block of the shared skin-matrix
+  buffer (`material_push_constants::skin_base`; indices 0-3 are the identity block used by
+  unskinned draws), rebuilds the per-skin matrices every frame and uploads them via
+  `runtime::set_skin_matrices()`; `pbr.vert` / `shadow.vert` sample them. Verified with
+  `glTF-Sample-Assets` `RiggedSimple` (2 joints) and `BrainStem` (18 joints).
