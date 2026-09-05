@@ -131,7 +131,7 @@ namespace vulkan {
         bool scene_set_created = false;
         // the frame slot paced by the last successful set_up_frame_environment()/begin_frame();
         // per-frame host writes (set_skin_matrices / morph_scratch) target this slot's buffers
-        uint32_t active_frame_slot_ = 0;
+        uint32_t active_slot = 0;
         bool ibl_ready = false;
         // background pass (fullscreen triangle, no depth test): drawn first every frame
         std::optional<vk_pipeline> skybox_pipeline = std::nullopt;
@@ -399,7 +399,7 @@ namespace vulkan {
          *        per-slot buffers
          */
         [[nodiscard]] uint32_t active_frame_slot() const noexcept {
-            return this->active_frame_slot_;
+            return this->active_slot;
         }
 
         /**

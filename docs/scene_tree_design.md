@@ -362,7 +362,7 @@ source of truth for what each commit changed.)
   adds play/pause, a time scrubber and an animation dropdown. See
   `docs/gltf_loader_usage.md` §8.
 - ✅ **Skinning** — landed on the same substrate: the loader exports skins (joint asset-node
-  indices + inverse bind matrices) and JOINTS_0 / WEIGHTS_0 live in the shared 76-byte vertex
+  indices + inverse bind matrices) and JOINTS_0 / WEIGHTS_0 live in the shared 64-byte vertex
   layout; `main.cpp` resolves skin joints onto the live tree, rebuilds the per-frame skin
   matrices (`inv(W_mesh) · W_joint · IBM`, joints following the keyframe animation above) into
   a scene skin buffer (binding 9, identity block for unskinned draws) and points each skinned

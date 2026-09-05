@@ -3,7 +3,6 @@
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
-layout(location = 3) in vec3 in_tangent;
 layout(location = 4) in uvec4 in_joints; // skin joint indices (JOINTS_0); 0 when unskinned
 layout(location = 5) in vec4 in_weights;  // skin weights (WEIGHTS_0); (1,0,0,0) when unskinned
 
@@ -46,7 +45,6 @@ layout(push_constant) uniform PushConstants {
 layout(location = 0) out vec3 v_world_pos;
 layout(location = 1) out vec3 v_normal;
 layout(location = 2) out vec2 v_uv;
-layout(location = 3) out vec3 v_tangent;
 
 void main() {
     // morph blend first (local deltas + active target weights; skipped when not morphable)
@@ -70,15 +68,13 @@ void main() {
     }
 
     // skinning after morph: blend the four joint transforms with the vertex weights (the
-    // identity block at skin_base 0 leaves unskinned vertices unchanged). Normals/tangents use
-    // the weighted rotation part of the joint matrices.
+    // identity block at skin_base 0 leaves unskinned vertices unchanged). Normals use the
+    // weighted rotation part of the joint matrices.
     vec3 skinned_normal = morph_normal;
-    vec3 skinned_tangent = in_tangent;
     const float wsum = in_weights.x + in_weights.y + in_weights.z + in_weights.w;
     if (wsum > 0.0) {
         vec4 pos = vec4(0.0);
         vec3 nrm = vec3(0.0);
-        vec3 tan = vec3(0.0);
         pos += in_weights.x * (skins.matrices[push.skin_base + in_joints.x] * local_pos);
         pos += in_weights.y * (skins.matrices[push.skin_base + in_joints.y] * local_pos);
         pos += in_weights.z * (skins.matrices[push.skin_base + in_joints.z] * local_pos);
@@ -87,13 +83,8 @@ void main() {
         nrm += in_weights.y * mat3(skins.matrices[push.skin_base + in_joints.y]) * morph_normal;
         nrm += in_weights.z * mat3(skins.matrices[push.skin_base + in_joints.z]) * morph_normal;
         nrm += in_weights.w * mat3(skins.matrices[push.skin_base + in_joints.w]) * morph_normal;
-        tan += in_weights.x * mat3(skins.matrices[push.skin_base + in_joints.x]) * in_tangent;
-        tan += in_weights.y * mat3(skins.matrices[push.skin_base + in_joints.y]) * in_tangent;
-        tan += in_weights.z * mat3(skins.matrices[push.skin_base + in_joints.z]) * in_tangent;
-        tan += in_weights.w * mat3(skins.matrices[push.skin_base + in_joints.w]) * in_tangent;
         local_pos = pos / wsum;
         skinned_normal = nrm / wsum;
-        skinned_tangent = tan / wsum;
     }
 
     mat4 world = (push.flags & 1u) != 0u ? instances.transforms[gl_InstanceIndex] : push.model;
@@ -101,6 +92,5 @@ void main() {
     v_world_pos = world_pos.xyz;
     v_normal = normalize(mat3(world) * skinned_normal);
     v_uv = in_uv;
-    v_tangent = normalize(mat3(world) * skinned_tangent);
     gl_Position = camera.proj * camera.view * world_pos;
 }

@@ -740,9 +740,11 @@ namespace vulkan {
 
         VkDescriptorPoolCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        // UPDATE_AFTER_BIND: the scene set's camera binding is rewritten every frame and the
-        // texture array entries are appended while the set may already be bound
-        info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+        // No UPDATE_AFTER_BIND: the scene descriptor sets are static per frame slot (each slot's
+        // set always points at its own camera/shadow/skin/morph resources) and the shared
+        // bindings (textures/IBL/materials/instances/light) are written before the render loop
+        // starts. The texture array keeps PARTIALLY_BOUND so unwritten entries stay valid.
+        info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
         info.maxSets = 64;
         info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
         info.pPoolSizes = pool_sizes.data();
@@ -770,7 +772,8 @@ namespace vulkan {
         bindings[6] = {.binding = 6, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
         // directional light: light-space view-proj + light direction (read by shadow.vert and pbr.frag)
         bindings[7] = {.binding = 7, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
-        // shadow map depth texture (sampled by pbr.frag with a depth-comparison sampler, PCF)
+        // shadow map depth texture (NEAREST sampler; pbr.frag does manual 3x3 PCF, no
+        // depth-comparison / hardware PCF)
         bindings[8] = {.binding = 8, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         // per-joint skin matrices (mat4 per joint; indices 0-3 are the identity block for
         // unskinned draws; read in pbr.vert / shadow.vert, filled per frame by set_skin_matrices)
@@ -780,12 +783,9 @@ namespace vulkan {
         bindings[10] = {.binding = 10, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
 
         std::array<VkDescriptorBindingFlags, 11> binding_flags = {};
-        binding_flags[0] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT; // camera UBO rewritten per frame
-        // texture array: only written entries are valid, appended while the set may be bound;
+        // texture array: only written entries are valid, appended before the render loop starts;
         // non-uniform indexing itself is a device feature, not a layout flag
-        binding_flags[1] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
-        // shadow map: rewritten each frame to point at the current frame slot's depth image
-        binding_flags[8] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+        binding_flags[1] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
 
         VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info = {};
         flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;

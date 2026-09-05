@@ -778,10 +778,11 @@ namespace vulkan {
             return frame_status::acquire_failed;
         }
 
-        // 5. Update the shared camera UBO once: every primitive references these buffers through the
-        //    scene set, so one memcpy (+ one update-after-bind descriptor write) replaces the old
-        //    per-primitive per-frame UBO updates. An external (glTF/programmatic) camera, when
-        //    active, supplies the view/projection directly instead of the orbit camera.
+        // 5. Write this frame's camera UBO into the paced slot's per-slot buffer. The scene
+        //    descriptor sets are static per slot (ensure_scene_set wired bindings 0/8/9/10 to
+        //    each slot's own camera/shadow/skin/morph resources), so one memcpy is the whole
+        //    camera update - no per-frame descriptor write exists anymore. An external
+        //    (glTF/programmatic) camera, when active, supplies the matrices directly.
         this->current_aspect = static_cast<float>(vk.swap_chain_extent.width) / static_cast<float>(vk.swap_chain_extent.height);
         if (this->external_camera_active) {
             this->current_ubo.view = this->external_view;
@@ -793,12 +794,10 @@ namespace vulkan {
         if (this->camera_mapped[frame_slot] != nullptr) {
             std::memcpy(this->camera_mapped[frame_slot], &this->current_ubo, sizeof(camera_ubo));
         }
-        // The scene descriptor sets are static per slot (ensure_scene_set wired bindings 0/8/9/10
-        // to this slot's own camera/shadow/skin/morph resources), so no per-frame descriptor
-        // update is needed here. Remember the paced slot: the caller's per-frame host writes
-        // (set_skin_matrices / morph_scratch) land in this slot's buffers and are safe to make
-        // now that the slot's previous submission has completed.
-        this->active_frame_slot_ = frame_slot;
+        // Remember the paced slot: the caller's per-frame host writes (set_skin_matrices /
+        // morph_scratch) land in this slot's buffers and are safe to make now that the slot's
+        // previous submission has completed.
+        this->active_slot = frame_slot;
         return frame_status::proceed;
     }
 
@@ -1553,7 +1552,7 @@ namespace vulkan {
     }
 
     void runtime::set_skin_matrices(std::span<glm::mat4 const> const matrices) {
-        this->set_skin_matrices(matrices, this->active_frame_slot_);
+        this->set_skin_matrices(matrices, this->active_slot);
     }
 
     void runtime::set_skin_matrices(std::span<glm::mat4 const> const matrices, uint32_t const slot) {
@@ -1565,7 +1564,7 @@ namespace vulkan {
     }
 
     void* runtime::morph_scratch() noexcept {
-        return this->morph_scratch(this->active_frame_slot_);
+        return this->morph_scratch(this->active_slot);
     }
 
     void* runtime::morph_scratch(uint32_t const slot) noexcept {

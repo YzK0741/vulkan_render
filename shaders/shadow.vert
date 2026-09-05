@@ -3,16 +3,15 @@
 // Depth-only vertex shader for the directional shadow pass: transforms the model into the
 // light's orthographic clip space, so rasterization writes the depth seen from the light.
 //
-// The vertex input layout MUST stay identical to pbr.vert (locations 0-5, interleaved 76-byte
-// stride): the shadow pass draws the very same vertex/index buffers, and the pipeline derives
-// its vertex input stride from the shader's inputs. All six inputs are declared and referenced
-// (the skin/morph path uses joints/weights/position; normals/uv/tangent are kept alive by a
-// never-taken branch) purely so a driver/compiler cannot prune them and shrink the stride.
+// The vertex input layout MUST stay identical to pbr.vert (locations 0,1,2,4,5, interleaved
+// 64-byte stride): the shadow pass draws the very same vertex/index buffers, and the pipeline
+// derives its vertex input stride from the shader's inputs. Normals/uv have no role in the
+// depth pass but are declared and kept alive by a never-taken branch below so a
+// driver/compiler cannot prune them and shrink the stride below pbr.vert's.
 
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
-layout(location = 3) in vec3 in_tangent;
 layout(location = 4) in uvec4 in_joints; // skin joint indices (JOINTS_0); 0 when unskinned
 layout(location = 5) in vec4 in_weights;  // skin weights (WEIGHTS_0); (1,0,0,0) when unskinned
 
@@ -77,9 +76,10 @@ void main() {
     vec4 world_pos = world * local_pos;
     gl_Position = light.light_view_proj * world_pos;
 
-    // Keep every unused input alive so the vertex input layout (and thus the bound buffer
-    // stride) matches pbr.vert exactly (76 bytes, locations 0-5). This branch can never run.
-    if (isnan(in_position.x) && isinf(in_normal.x) && in_uv.x > 1e30 && isinf(in_tangent.x)) {
+    // Keep every input without a role in the depth pass alive so the vertex input layout (and
+    // thus the bound buffer stride) matches pbr.vert exactly (64 bytes, locations 0,1,2,4,5).
+    // This branch can never run.
+    if (isnan(in_position.x) && isinf(in_normal.x) && in_uv.x > 1e30) {
         gl_Position = vec4(0.0);
     }
 }

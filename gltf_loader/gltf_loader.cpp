@@ -451,7 +451,7 @@ namespace {
                 std::size_t prim_index = 0;
                 for (auto const& primitive : asset.meshes[*fnode.meshIndex].primitives) {
                     // glTF allows POINTS/LINES/STRIP/FAN modes too; only TRIANGLES is renderable
-                    // by the pipeline (vertex/tangent synthesis below assumes triangles), so
+                    // by the pipeline (the interleaved mesh builder below assumes triangles), so
                     // skip the others with a warning instead of drawing garbage.
                     if (primitive.type != fastgltf::PrimitiveType::Triangles) {
                         utility::log("gltf: skipping primitive {} of mesh '{}': mode {} is not supported (only TRIANGLES render)",
@@ -746,13 +746,13 @@ namespace {
 
     // ---- CPU-side geometry building for drawable_iterator (interleaved pbr.vert layout) ----
 
-    // Interleaved vertex, layout matches pbr.vert / shadow.vert input locations 0-5 (stride 76):
-    //   position(12) normal(12) uv(8) tangent(12) joints(16) weights(16)
+    // Interleaved vertex, layout matches pbr.vert / shadow.vert input locations 0,1,2,4,5
+    // (stride 64): position(12) normal(12) uv(8) joints(16) weights(16). No tangent attribute:
+    // pbr.frag rebuilds the TBN frame from screen-space derivatives (mirrored UVs included).
     struct vertex {
         glm::vec3 position;
         glm::vec3 normal;
         glm::vec2 uv;
-        glm::vec3 tangent;
         glm::uvec4 joints = glm::uvec4(0u);                    // JOINTS_0 (indices into the node's skin)
         glm::vec4 weights = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f); // WEIGHTS_0 (identity when unskinned)
     };
@@ -773,7 +773,6 @@ namespace {
         auto const* position_portion = get_portion("POSITION");
         auto const* normal_portion = get_portion("NORMAL");
         auto const* uv_portion = get_portion("TEXCOORD_0");
-        auto const* tangent_portion = get_portion("TANGENT");
         // skinned attributes (optional): JOINTS_0 is u8/u16 vec4 of joint indices into the
         // node's skin, WEIGHTS_0 is float vec4 (or normalized u8/u16)
         auto const* joints_portion = get_portion("JOINTS_0");
@@ -786,9 +785,9 @@ namespace {
         constexpr glm::vec2 default_uv(0.0f, 0.0f);
 
         // ---- attribute count guard: POSITION's byte length fixes the vertex count, but a
-        //      malformed file with a shorter NORMAL/UV/TANGENT/JOINTS/WEIGHTS accessor would
-        //      make the per-vertex reinterpret loops below read out of bounds. Clamp to the
-        //      shortest attribute and log the mismatch (error-tolerant load).
+        //      malformed file with a shorter NORMAL/UV/JOINTS/WEIGHTS accessor would make the
+        //      per-vertex reinterpret loops below read out of bounds. Clamp to the shortest
+        //      attribute and log the mismatch (error-tolerant load).
         auto const portion_elements = [](gltf::vertex_portion const& portion, std::size_t const vec_size) -> std::size_t {
             std::size_t component_bytes = 4; // float / int / unsigned int
             switch (portion.component) {
@@ -816,7 +815,6 @@ namespace {
         };
         guard_vertex_count(normal_portion, 3);
         guard_vertex_count(uv_portion, 2);
-        guard_vertex_count(tangent_portion, 4);
         guard_vertex_count(joints_portion, 4);
         guard_vertex_count(weights_portion, 4);
         if (vertex_count != position_count) {
@@ -876,46 +874,6 @@ namespace {
                                                             ? widened_indices
                                                             : (prim.index.empty() ? synthesized_indices : prim.index);
         uint32_t const index_count = static_cast<uint32_t>(index_bytes.size() / index_width);
-        auto const read_index = [&index_bytes, index_width](size_t const i) -> uint32_t {
-            if (index_width == 4) {
-                return reinterpret_cast<uint32_t const*>(index_bytes.data())[i];
-            }
-            return reinterpret_cast<uint16_t const*>(index_bytes.data())[i];
-        };
-
-        // tangents: use the model's TANGENT if present, otherwise compute per-triangle from position/uv
-        // (classic approach: accumulate tangents per triangle, then Gram-Schmidt orthogonalize)
-        std::vector<glm::vec3> tangents(vertex_count, glm::vec3(1.0f, 0.0f, 0.0f));
-        if (tangent_portion != nullptr) {
-            for (size_t i = 0; i < vertex_count; ++i) {
-                auto const* t = reinterpret_cast<glm::vec4 const*>(tangent_portion->data.data()) + i;
-                tangents[i] = glm::vec3(t->x, t->y, t->z);
-            }
-        } else {
-            std::vector<glm::vec3> tangent_accumulator(vertex_count, glm::vec3(0.0f));
-            for (uint32_t i = 0; i + 2 < index_count; i += 3) {
-                uint32_t const i0 = read_index(i);
-                uint32_t const i1 = read_index(i + 1);
-                uint32_t const i2 = read_index(i + 2);
-                glm::vec3 const e1 = positions[i1] - positions[i0];
-                glm::vec3 const e2 = positions[i2] - positions[i0];
-                glm::vec2 const duv1 = uvs[i1] - uvs[i0];
-                glm::vec2 const duv2 = uvs[i2] - uvs[i0];
-                float const denom = duv1.x * duv2.y - duv2.x * duv1.y;
-                if (std::abs(denom) < 1e-8f) {
-                    continue; // degenerate UV triangle
-                }
-                float const f = 1.0f / denom;
-                glm::vec3 const tangent = f * duv2.y * e1 - f * duv1.y * e2;
-                tangent_accumulator[i0] += tangent;
-                tangent_accumulator[i1] += tangent;
-                tangent_accumulator[i2] += tangent;
-            }
-            for (size_t i = 0; i < vertex_count; ++i) {
-                glm::vec3 const t = tangent_accumulator[i] - normals[i] * glm::dot(normals[i], tangent_accumulator[i]);
-                tangents[i] = glm::length(t) > 1e-8f ? glm::normalize(t) : glm::vec3(1.0f, 0.0f, 0.0f);
-            }
-        }
 
         // skinned attributes decoded per vertex (portions declared above, default semantics
         // keep non-skinned meshes correct under the shared skinned vertex layout)
@@ -960,10 +918,10 @@ namespace {
             return glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
         };
 
-        // interleave into the single-binding layout the pbr pipeline expects (stride 76)
+        // interleave into the single-binding layout the pbr pipeline expects (stride 64)
         result.vertices.reserve(vertex_count);
         for (size_t i = 0; i < vertex_count; ++i) {
-            result.vertices.push_back(vertex{.position = positions[i], .normal = normals[i], .uv = uvs[i], .tangent = tangents[i], .joints = read_joints(i), .weights = read_weights(i)});
+            result.vertices.push_back(vertex{.position = positions[i], .normal = normals[i], .uv = uvs[i], .joints = read_joints(i), .weights = read_weights(i)});
         }
         if (prim.index.empty()) {
             result.index_data = std::move(synthesized_indices); // non-indexed -> synthesized

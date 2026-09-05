@@ -241,8 +241,8 @@ namespace gltf {
     /**
      * @ingroup gltf_loader
      * @brief one morph target of a primitive: per-vertex displacement attributes (POSITION /
-     *        NORMAL / TANGENT deltas, same shape as primitive::vertex, same vertex count as the
-     *        base attributes)
+     *        NORMAL deltas; the loader keeps other target attributes raw, consumers only blend
+     *        position/normal). Same vertex count as the base attributes
      */
     export struct morph_target {
         std::map<std::string, vertex_portion> attributes = {};
