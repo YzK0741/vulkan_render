@@ -273,6 +273,16 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Skin summary (diagnostics): scenes::skins holds the file's skins (joint asset-node
+    // indices + inverse bind matrices); playback of the joint transforms is a later stage.
+    if (!scenes->skins.empty()) {
+        utility::log("skins: {}", scenes->skins.size());
+        for (gltf::skin const& skin : scenes->skins) {
+            std::string_view const skin_name = skin.name.empty() ? std::string_view("<unnamed>") : std::string_view(skin.name);
+            utility::log("  skin '{}': {} joints", skin_name, skin.joints.size());
+        }
+    }
+
     // Sink the model so it sits near the world horizon (y = 0) and move the camera target with it:
     // the camera then orbits/looks at the model's position instead of the scene origin.
     glm::vec3 const scene_sink(0.0f, -scene_radius, 0.0f);

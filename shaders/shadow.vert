@@ -3,15 +3,17 @@
 // Depth-only vertex shader for the directional shadow pass: transforms the model into the
 // light's orthographic clip space, so rasterization writes the depth seen from the light.
 //
-// The vertex input layout MUST stay identical to pbr.vert (positions 0-3, interleaved 44-byte
+// The vertex input layout MUST stay identical to pbr.vert (positions 0-5, interleaved 76-byte
 // stride): the shadow pass draws the very same vertex/index buffers, and the pipeline derives
-// its vertex input stride from the shader's inputs. All four inputs are declared and referenced
+// its vertex input stride from the shader's inputs. All six inputs are declared and referenced
 // (in a never-taken branch) purely so a driver/compiler cannot prune them and shrink the stride.
 
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
 layout(location = 3) in vec3 in_tangent;
+layout(location = 4) in uvec4 in_joints; // skin joint indices (JOINTS_0); 0 when unskinned
+layout(location = 5) in vec4 in_weights;  // skin weights (WEIGHTS_0); (1,0,0,0) when unskinned
 
 // Per-instance world transforms (same storage as pbr.vert, scene set binding 6)
 layout(set = 0, binding = 6) readonly buffer InstanceTransforms {
@@ -36,8 +38,8 @@ void main() {
     gl_Position = light.light_view_proj * world_pos;
 
     // Keep every input alive so the vertex input layout (and thus the bound buffer stride)
-    // matches pbr.vert exactly. This branch can never run (in_position.x is never NaN/Inf).
-    if (isnan(in_position.x) && isinf(in_normal.x) && in_uv.x > 1e30 && isinf(in_tangent.x)) {
+    // matches pbr.vert exactly (76 bytes, locations 0-5). This branch can never run.
+    if (isnan(in_position.x) && isinf(in_normal.x) && in_uv.x > 1e30 && isinf(in_tangent.x) && in_joints.x > 0xFFFFFDu && in_weights.x > 1e30) {
         gl_Position = vec4(0.0);
     }
 }

@@ -325,6 +325,25 @@ namespace gltf {
 
     /**
      * @ingroup gltf_loader
+     * @brief a glTF skin: the joints driving a skinned mesh and their inverse bind matrices
+     * @note
+     *      - joints are asset node indices (resolve against a scene's pool through
+     *        gltf::node::source_index, like animation_channel::target_node)
+     *      - inverse_bind_matrices holds one mat4 per joint (joint order), decoded from the
+     *        asset's IBM accessor; when the asset omits it (or it is broken) identity matrices
+     *        are filled in — the glTF default
+     *      - a skinned node's mesh vertices carry JOINTS_0 (joint indices into @p joints) and
+     *        WEIGHTS_0 attributes; the drawable vertex layout keeps both (identity for
+     *        non-skinned meshes), so a consumer only needs the per-frame joint matrices
+     */
+    export struct skin {
+        std::string name = {};
+        std::vector<std::size_t> joints = {};              // asset node indices, in joint order
+        std::vector<glm::mat4> inverse_bind_matrices = {}; // one per joint (identity when omitted)
+    };
+
+    /**
+     * @ingroup gltf_loader
      * @brief evaluated value of one animation channel at a point in time: a vec3 for the
      *        translation/scale paths or a quaternion for the rotation path
      * @note valid == false means the sampler had no keyframes (or broken values); nothing
@@ -413,6 +432,9 @@ namespace gltf {
         glm::vec3 translation = glm::vec3(0.0f);                // TRS base pose; identity for matrix nodes
         glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // identity quaternion (w scalar)
         glm::vec3 scale = glm::vec3(1.0f);                      // TRS base pose; identity for matrix nodes
+        // index into scenes::skins when this node's mesh is skinned (glTF node.skin); the
+        // drawable's JOINTS_0 indices reference the skin's joint list
+        std::optional<std::size_t> skin_index = std::nullopt;
     };
 
     /**
@@ -563,6 +585,7 @@ namespace gltf {
         std::vector<texture_data> textures;
         std::vector<material> materials;
         std::vector<animation> animations = {};
+        std::vector<skin> skins = {}; // file-scoped skins (glTF skin objects in order)
         std::vector<scene> scene;
 
         [[nodiscard]] scene_iterator begin() const;

@@ -392,6 +392,9 @@ namespace {
             // per the glTF spec animation only ever targets TRS properties, so matrix nodes
             // (non-animatable) leave translation/rotation/scale at identity.
             current_node.source_index = node_index;
+            if (fnode.skinIndex) {
+                current_node.skin_index = *fnode.skinIndex; // glTF node.skin -> scenes::skins
+            }
             if (auto const* trs = std::get_if<fastgltf::TRS>(&fnode.transform)) {
                 current_node.translation = glm::vec3(trs->translation[0], trs->translation[1], trs->translation[2]);
                 glm::quat rotation = {};
@@ -577,13 +580,53 @@ namespace {
         return result;
     }
 
+    // ---- skins: decode inverse bind matrices (Mat4 float accessor, column-major) ----
+
+    std::vector<glm::mat4> read_mat4_accessor(Asset const& asset, fastgltf::Accessor const& accessor) {
+        std::vector<glm::mat4> out;
+        if (accessor.type != fastgltf::AccessorType::Mat4 || accessor.componentType != fastgltf::ComponentType::Float) {
+            return out;
+        }
+        parsed_data const raw = get_data_from_accessor(asset, accessor);
+        if (raw.data.size() < accessor.count * sizeof(glm::mat4)) {
+            return out;
+        }
+        out.reserve(accessor.count);
+        for (std::size_t i = 0; i < accessor.count; ++i) {
+            glm::mat4 m = {};
+            std::memcpy(&m, raw.data.data() + i * sizeof(glm::mat4), sizeof(glm::mat4));
+            out.push_back(m);
+        }
+        return out;
+    }
+
+    gltf::skin load_skin(Asset const& asset, std::size_t const skin_index) {
+        fastgltf::Skin const& f_skin = asset.skins[skin_index];
+        gltf::skin result;
+        result.name = f_skin.name;
+        result.joints.assign(f_skin.joints.begin(), f_skin.joints.end());
+        if (f_skin.inverseBindMatrices && *f_skin.inverseBindMatrices < asset.accessors.size()) {
+            result.inverse_bind_matrices = read_mat4_accessor(asset, asset.accessors[*f_skin.inverseBindMatrices]);
+        }
+        if (result.inverse_bind_matrices.size() != result.joints.size()) {
+            // omitted (glTF default: identity) or broken IBM accessor: fall back to identity
+            result.inverse_bind_matrices.clear();
+            result.inverse_bind_matrices.assign(result.joints.size(), glm::mat4(1.0f));
+        }
+        return result;
+    }
+
     // ---- CPU-side geometry building for drawable_iterator (interleaved pbr.vert layout) ----
 
+    // Interleaved vertex, layout matches pbr.vert / shadow.vert input locations 0-5 (stride 76):
+    //   position(12) normal(12) uv(8) tangent(12) joints(16) weights(16)
     struct vertex {
         glm::vec3 position;
         glm::vec3 normal;
         glm::vec2 uv;
         glm::vec3 tangent;
+        glm::uvec4 joints = glm::uvec4(0u);                    // JOINTS_0 (indices into the node's skin)
+        glm::vec4 weights = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f); // WEIGHTS_0 (identity when unskinned)
     };
 
     struct built_mesh {
@@ -678,10 +721,53 @@ namespace {
             }
         }
 
-        // interleave into the single-binding layout the pbr pipeline expects (stride 44)
+        // skinned attributes (optional): JOINTS_0 is u8/u16 vec4 of joint indices into the
+        // node's skin, WEIGHTS_0 is float vec4 (or normalized u8/u16). Defaults (joint 0 with
+        // full weight) keep non-skinned meshes correct under the shared skinned vertex layout.
+        auto const* joints_portion = get_portion("JOINTS_0");
+        auto const* weights_portion = get_portion("WEIGHTS_0");
+        auto const read_joints = [joints_portion](size_t const i) -> glm::uvec4 {
+            glm::uvec4 out(0u);
+            if (joints_portion == nullptr) {
+                return out;
+            }
+            if (joints_portion->component == gltf::component_type::unsigned_byte_t) {
+                for (int c = 0; c < 4; ++c) {
+                    out[static_cast<std::size_t>(c)] = joints_portion->data[i * 4 + static_cast<std::size_t>(c)];
+                }
+            } else if (joints_portion->component == gltf::component_type::unsigned_short_t) {
+                auto const* p = reinterpret_cast<std::uint16_t const*>(joints_portion->data.data());
+                for (int c = 0; c < 4; ++c) {
+                    out[static_cast<std::size_t>(c)] = p[i * 4 + static_cast<std::size_t>(c)];
+                }
+            }
+            return out;
+        };
+        auto const read_weights = [weights_portion](size_t const i) -> glm::vec4 {
+            if (weights_portion == nullptr) {
+                return glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+            }
+            if (weights_portion->component == gltf::component_type::float_t) {
+                auto const* p = reinterpret_cast<float const*>(weights_portion->data.data());
+                return glm::vec4(p[i * 4 + 0], p[i * 4 + 1], p[i * 4 + 2], p[i * 4 + 3]);
+            }
+            if (weights_portion->component == gltf::component_type::unsigned_byte_t) { // normalized
+                return glm::vec4(weights_portion->data[i * 4 + 0] / 255.0f,
+                                 weights_portion->data[i * 4 + 1] / 255.0f,
+                                 weights_portion->data[i * 4 + 2] / 255.0f,
+                                 weights_portion->data[i * 4 + 3] / 255.0f);
+            }
+            if (weights_portion->component == gltf::component_type::unsigned_short_t) { // normalized
+                auto const* p = reinterpret_cast<std::uint16_t const*>(weights_portion->data.data());
+                return glm::vec4(p[i * 4 + 0] / 65535.0f, p[i * 4 + 1] / 65535.0f, p[i * 4 + 2] / 65535.0f, p[i * 4 + 3] / 65535.0f);
+            }
+            return glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+        };
+
+        // interleave into the single-binding layout the pbr pipeline expects (stride 76)
         result.vertices.reserve(vertex_count);
         for (size_t i = 0; i < vertex_count; ++i) {
-            result.vertices.push_back(vertex{.position = positions[i], .normal = normals[i], .uv = uvs[i], .tangent = tangents[i]});
+            result.vertices.push_back(vertex{.position = positions[i], .normal = normals[i], .uv = uvs[i], .tangent = tangents[i], .joints = read_joints(i), .weights = read_weights(i)});
         }
         result.index_data = prim.index;
         result.index_width = index_width;
@@ -833,6 +919,11 @@ namespace gltf {
         result.animations.reserve(asset.animations.size());
         for (std::size_t i = 0; i < asset.animations.size(); ++i) {
             result.animations.push_back(load_animation(asset, i));
+        }
+
+        result.skins.reserve(asset.skins.size());
+        for (std::size_t i = 0; i < asset.skins.size(); ++i) {
+            result.skins.push_back(load_skin(asset, i));
         }
 
         result.textures.reserve(asset.textures.size());

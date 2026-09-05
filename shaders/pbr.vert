@@ -4,6 +4,8 @@ layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
 layout(location = 3) in vec3 in_tangent;
+layout(location = 4) in uvec4 in_joints; // skin joint indices (JOINTS_0); 0 when unskinned
+layout(location = 5) in vec4 in_weights;  // skin weights (WEIGHTS_0); (1,0,0,0) when unskinned
 
 layout(set = 0, binding = 0) uniform CameraUBO {
     mat4 view;
@@ -36,4 +38,11 @@ void main() {
     v_uv = in_uv;
     v_tangent = normalize(mat3(world) * in_tangent);
     gl_Position = camera.proj * camera.view * world_pos;
+
+    // Keep the skin inputs alive so the pipeline's derived vertex input layout (and the bound
+    // buffer stride) stays 76 bytes; the real skinning math lands with the skin-matrix buffer.
+    // This branch can never run.
+    if (in_joints.x > 0xFFFFFDu || in_weights.x > 1e30) {
+        gl_Position = vec4(0.0);
+    }
 }
