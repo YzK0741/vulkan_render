@@ -68,6 +68,7 @@ shadow = true
 
 # ---- [gui] debug overlay ----
 [gui]
+show = true   # show the Dear ImGui debug overlay by default
 # Default debug-panel window size (0 = ImGui auto-size). The recorded comfortable size
 # from a manual drag is 380x140; it only applies on first use — later drags / the
 # persisted imgui_layout.ini override it.

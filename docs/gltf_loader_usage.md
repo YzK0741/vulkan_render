@@ -46,7 +46,7 @@ namespace gltf {
                            std::vector<scene> scene; };
 
     enum class animation_interpolation { linear, step, cubic_spline };
-    enum class animation_path         { translation, rotation, scale }; // weights (morph) not exported
+    enum class animation_path         { translation, rotation, scale, weights }; // weights = morph-target channels (see section 10)
     struct animation_sampler  { std::vector<float> times; std::vector<float> values;
                                 animation_interpolation interpolation; };
     struct animation_channel  { animation_path path; std::size_t sampler; std::size_t target_node; };
@@ -229,7 +229,8 @@ Vertex buffers can be uploaded by memcpy'ing the raw bytes directly, provided th
 
 - The module is compiled with `-fno-exceptions`: fastgltf reports errors via `Expected` and never throws.
 - Runtime dependencies: `libfastgltf.dll`, `libsimdjson.dll` (both in `C:\msys64\clang64\bin`; must be on PATH).
-- Static render data (meshes, vertices/indices, textures, materials), **keyframe animations** (§8), **skins** (§9) and **morph targets** (§10) are exported. Non-indexed glTF primitives are supported: the loader synthesizes a sequential uint32 index buffer. Cameras and lights are **not** currently exported into the public interface.
+- Static render data (meshes, vertices/indices, textures, materials), **keyframe animations** (§8), **skins** (§9) and **morph targets** (§10) are exported. Non-indexed glTF primitives are supported: the loader synthesizes a sequential uint32 index buffer.
+- Cameras and punctual lights (KHR_lights_punctual) are exported too: `scenes.cameras` / `scenes.lights` hold the file's cameras and lights in glTF order, and each node records its attachment through `camera_index` / `light_index`. Authored cameras are consumed in `main.cpp` as orbit-camera viewpoint seeds (gui "camera" selector); punctual lights are imported, but the demo still shades with the fixed analytic sun, so they do not drive lighting yet.
 - All `asset.scenes` are loaded; `asset.defaultScene` is not separately marked yet.
 - Verified samples (in `main.cpp`): the glTF/GLB variants of `glTF-Sample-Assets/Models/{Box, BoxInterleaved, BoxTextured}`, covering ASCII + external bin, binary containers, interleaved byteStride, embedded textures, and the missing-file error code.
 
@@ -237,7 +238,7 @@ Vertex buffers can be uploaded by memcpy'ing the raw bytes directly, provided th
 
 ## 8. Animations
 
-The loader decodes glTF keyframe animation into `scenes.animations` (glTF order, one entry per `animation` object). It is **file-scoped**: animations are not tied to a scene, and their channels can target nodes of any scene. Only static data is exported — evaluating keyframes into transforms is the consumer's job (the renderer's future playback stage).
+The loader decodes glTF keyframe animation into `scenes.animations` (glTF order, one entry per `animation` object). It is **file-scoped**: animations are not tied to a scene, and their channels can target nodes of any scene. Only static data is exported - evaluating keyframes into transforms is the consumer's job (playback runs in `main.cpp`, see the end of this section).
 
 **Layout per animation**
 
@@ -248,7 +249,7 @@ animation            // name + samplers + channels
 │     values         //   flat floats, see below
 │     interpolation  //   linear | step | cubic_spline
 └── channels[j]      // animation_channel: animate one property of one node
-      path           //   translation | rotation | scale
+      path           //   translation | rotation | scale | weights (morph)
       sampler        //   index into the owning animation's samplers
       target_node    //   index in the glTF asset's node table (NOT a scene pool index)
 ```
@@ -261,7 +262,7 @@ animation            // name + samplers + channels
   float when present (robustness against non-conforming files). A sampler whose accessors are
   out of range or unsupported stays in the list with **empty** `times`/`values` (its index
   alignment is preserved); skip empty samplers.
-- `weights` channels (morph targets) are dropped — a count is logged when any are seen.
+- `weights` channels (morph targets) are exported like any other path - a channel is dropped (and counted) only when its target/sampler cannot be resolved, or when a weights channel targets a node whose mesh carries no morphable primitives (see section 10).
 
 **Resolving a channel to a scene node**
 
