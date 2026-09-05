@@ -187,48 +187,19 @@ int main(int argc, char** argv) {
     auto const startup_done = std::chrono::steady_clock::now();
     utility::log("model loaded + environment cubemap (startup window incl. runtime init): {:.1f} ms", std::chrono::duration<double, std::milli>(startup_done - startup_start).count());
 
-    // 7. Scene bounds from the raw POSITION attributes (no geometry building): the world AABB
-    //    of every drawable primitive's local AABB transformed by its node's world transform.
-    //    gltf::scenes is iterable (begin()/end() flatten scene -> node -> mesh -> primitive).
-    auto const local_bounds = [](gltf::primitive const& prim) -> std::pair<glm::vec3, glm::vec3> {
-        glm::vec3 min(std::numeric_limits<float>::infinity());
-        glm::vec3 max(-std::numeric_limits<float>::infinity());
-        auto const it = prim.vertex.find("POSITION");
-        if (it != prim.vertex.end()) {
-            size_t const count = it->second.data.size() / sizeof(glm::vec3);
-            for (size_t i = 0; i < count; ++i) {
-                glm::vec3 const p = reinterpret_cast<glm::vec3 const*>(it->second.data.data())[i];
-                min = glm::min(min, p);
-                max = glm::max(max, p);
-            }
-        }
-        return {min, max};
-    };
-    glm::vec3 scene_min(std::numeric_limits<float>::infinity());
-    glm::vec3 scene_max(-std::numeric_limits<float>::infinity());
-    size_t primitive_count = 0;
-    for (gltf::drawable_ref const& drawable : *scenes) {
-        ++primitive_count;
-        auto const [lmin, lmax] = local_bounds(*drawable.primitive);
-        // TRS transforms map an AABB to an AABB, so transforming the 8 corners is exact
-        for (int x = 0; x < 2; ++x) {
-            for (int y = 0; y < 2; ++y) {
-                for (int z = 0; z < 2; ++z) {
-                    glm::vec3 const corner(x ? lmax.x : lmin.x, y ? lmax.y : lmin.y, z ? lmax.z : lmin.z);
-                    glm::vec4 const world = drawable.transform_matrix * glm::vec4(corner, 1.0f);
-                    scene_min = glm::min(scene_min, glm::vec3(world));
-                    scene_max = glm::max(scene_max, glm::vec3(world));
-                }
-            }
-        }
-    }
-    if (primitive_count == 0) {
+    // 7. Whole-model world AABB (loader-side, pure CPU over the retained scene data): frames
+    //    the orbit camera and centers the scene before import (see gltf::compute_scene_bounds).
+    gltf::scene_bounds const bounds = gltf::compute_scene_bounds(*scenes);
+    if (!bounds.valid) {
         utility::panic("model has no drawable primitives");
     }
-    glm::vec3 const scene_center = scene_min * 0.5f + scene_max * 0.5f;
-    float const scene_radius = glm::length(scene_max - scene_min) * 0.5f;
+    glm::vec3 const scene_center = bounds.min * 0.5f + bounds.max * 0.5f;
+    float const scene_radius = glm::length(bounds.max - bounds.min) * 0.5f;
+    std::size_t const primitive_count = bounds.primitive_count;
     utility::log("scene loaded: {} textures, {} materials, {} primitives", scenes->textures.size(), scenes->materials.size(), primitive_count);
-    utility::log("scene bounds: center ({:.3f}, {:.3f}, {:.3f}), radius {:.3f}", scene_center.x, scene_center.y, scene_center.z, scene_radius);
+    utility::log("scene bounds (aabb): min ({:.3f}, {:.3f}, {:.3f}), max ({:.3f}, {:.3f}, {:.3f}), center ({:.3f}, {:.3f}, {:.3f}), radius {:.3f}",
+                 bounds.min.x, bounds.min.y, bounds.min.z, bounds.max.x, bounds.max.y, bounds.max.z,
+                 scene_center.x, scene_center.y, scene_center.z, scene_radius);
 
     // Scene hierarchy summary: the loader retains the node tree (children + local transforms),
     // so report the tree shape (roots / total nodes / max depth / mesh-bearing nodes) for

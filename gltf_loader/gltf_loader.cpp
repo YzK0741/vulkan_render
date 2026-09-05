@@ -1403,4 +1403,47 @@ namespace gltf {
         }
         return pose;
     }
+
+    // ---- whole-model world AABB (pure CPU, over the retained scene data) ----
+
+    scene_bounds compute_scene_bounds(gltf::scenes const& scenes) {
+        scene_bounds result;
+        glm::vec3 scene_min(std::numeric_limits<float>::infinity());
+        glm::vec3 scene_max(-std::numeric_limits<float>::infinity());
+        // scenes is iterable: begin()/end() flatten scene -> node -> mesh -> primitive with the
+        // owning node's world transform (drawable_ref::transform_matrix)
+        for (drawable_ref const& drawable : scenes) {
+            auto const it = drawable.primitive->vertex.find("POSITION");
+            if (it == drawable.primitive->vertex.end()) {
+                continue; // no positions: nothing to bound
+            }
+            ++result.primitive_count;
+            glm::vec3 local_min(std::numeric_limits<float>::infinity());
+            glm::vec3 local_max(-std::numeric_limits<float>::infinity());
+            std::size_t const vertex_count = it->second.data.size() / sizeof(glm::vec3);
+            for (std::size_t i = 0; i < vertex_count; ++i) {
+                glm::vec3 const p = reinterpret_cast<glm::vec3 const*>(it->second.data.data())[i];
+                local_min = glm::min(local_min, p);
+                local_max = glm::max(local_max, p);
+            }
+            // TRS transforms map an AABB to an AABB, so transforming the 8 corners is exact
+            for (int x = 0; x < 2; ++x) {
+                for (int y = 0; y < 2; ++y) {
+                    for (int z = 0; z < 2; ++z) {
+                        glm::vec3 const corner(x ? local_max.x : local_min.x, y ? local_max.y : local_min.y, z ? local_max.z : local_min.z);
+                        glm::vec4 const world = drawable.transform_matrix * glm::vec4(corner, 1.0f);
+                        scene_min = glm::min(scene_min, glm::vec3(world));
+                        scene_max = glm::max(scene_max, glm::vec3(world));
+                    }
+                }
+            }
+        }
+        if (result.primitive_count == 0) {
+            return result; // valid == false
+        }
+        result.valid = true;
+        result.min = scene_min;
+        result.max = scene_max;
+        return result;
+    }
 } // namespace gltf

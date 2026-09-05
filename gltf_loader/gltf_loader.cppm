@@ -731,4 +731,28 @@ namespace gltf {
         mutable uint32_t index_count = 0;
         mutable bool built = false;
     };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief world-space axis-aligned bounding box of a whole loaded model (see
+     *        compute_scene_bounds): the minimal AABB enclosing every drawable primitive of
+     *        every scene, with the glTF node world transforms applied
+     */
+    export struct scene_bounds {
+        bool valid = false;              // false when the model has no position-carrying primitive
+        glm::vec3 min = glm::vec3(0.0f); // AABB min corner
+        glm::vec3 max = glm::vec3(0.0f); // AABB max corner
+        std::size_t primitive_count = 0; // drawable primitives that contributed
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief world AABB of every drawable primitive of the model: each primitive's local AABB
+     *        (from its raw POSITION attribute) is transformed by its node's world transform
+     *        (TRS maps an AABB to an AABB, so transforming the 8 corners is exact) and united.
+     * @note pure CPU over the retained scene data — the renderer uses this to frame the camera
+     *       and center the scene before building anything (see main.cpp); primitives without
+     *       POSITION are skipped
+     */
+    export scene_bounds compute_scene_bounds(gltf::scenes const& scenes);
 } // namespace gltf
