@@ -140,16 +140,19 @@ namespace vulkan {
     light_ubo make_directional_light_ubo(glm::vec3 const& scene_center, float const scene_radius) {
         // The light direction must match the analytic sky sun (see skybox.frag): the PBR direct
         // light, the visible sun disc and the shadow map all share this single fixed direction.
+        // light_dir points TOWARD the sun in the sky (pbr.frag treats it as the surface-to-light
+        // vector), so the sun's rays travel -light_dir and the shadow camera must sit UP-SUN.
         glm::vec3 const light_dir = glm::normalize(glm::vec3(0.3f, 1.0f, 0.5f));
 
         // Orthographic shadow frustum framing the scene's bounding sphere:
-        //  - the light sits at scene_center - dir * 2r, looking back at scene_center
+        //  - the light sits up-sun at scene_center + dir * 2r (above the scene for a sky sun),
+        //    looking down along -dir at scene_center, matching the rays of the real sun
         //  - the sphere spans [r, 3r] along the light direction (center at 2r), so the near/far
         //    planes with a margin around it cover every caster
         //  - the ortho box half-extent is the sphere radius (plus margin): any point of the
         //    sphere projects within it, so nothing casts outside the shadow map
         float const r = scene_radius;
-        glm::vec3 const eye = scene_center - light_dir * (2.0f * r);
+        glm::vec3 const eye = scene_center + light_dir * (2.0f * r);
         glm::mat4 const view = glm::lookAt(eye, scene_center, glm::vec3(0.0f, 1.0f, 0.0f));
 
         float const half = r * 1.1f;
