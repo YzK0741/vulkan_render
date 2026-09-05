@@ -229,7 +229,7 @@ Vertex buffers can be uploaded by memcpy'ing the raw bytes directly, provided th
 
 - The module is compiled with `-fno-exceptions`: fastgltf reports errors via `Expected` and never throws.
 - Runtime dependencies: `libfastgltf.dll`, `libsimdjson.dll` (both in `C:\msys64\clang64\bin`; must be on PATH).
-- Static render data (meshes, vertices/indices, textures, materials), **keyframe animations** (§8) and **skins** (§9) are exported. Cameras, lights, morph targets, and animation `weights` channels are **not** currently exported into the public interface; meshes without index data are rejected by the loader.
+- Static render data (meshes, vertices/indices, textures, materials), **keyframe animations** (§8) and **skins** (§9) are exported. Non-indexed glTF primitives are supported: the loader synthesizes a sequential uint32 index buffer. Cameras, lights, morph targets, and animation `weights` channels are **not** currently exported into the public interface.
 - All `asset.scenes` are loaded; `asset.defaultScene` is not separately marked yet.
 - Verified samples (in `main.cpp`): the glTF/GLB variants of `glTF-Sample-Assets/Models/{Box, BoxInterleaved, BoxTextured}`, covering ASCII + external bin, binary containers, interleaved byteStride, embedded textures, and the missing-file error code.
 

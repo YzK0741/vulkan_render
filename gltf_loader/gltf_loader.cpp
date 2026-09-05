@@ -669,22 +669,36 @@ namespace {
             uvs.push_back(*uv);
         }
 
-        // index data: 2 or 4 bytes per index
-        if (prim.index.empty()) {
-            utility::panic("primitive has no index data");
-        }
-        unsigned char index_width = 2;
-        if (prim.index_component_type == gltf::component_type::unsigned_int_t) {
-            index_width = 4;
-        } else if (prim.index_component_type != gltf::component_type::unsigned_short_t) {
-            utility::panic(std::source_location::current(), "unsupported index component type: {}", static_cast<int>(prim.index_component_type));
-        }
-        uint32_t const index_count = static_cast<uint32_t>(prim.index.size() / index_width);
-        auto const read_index = [&prim, index_width](size_t const i) -> uint32_t {
-            if (index_width == 4) {
-                return reinterpret_cast<uint32_t const*>(prim.index.data())[i];
+        // Index data: 2 or 4 bytes per index. glTF primitives may omit "indices" entirely
+        // (non-indexed triangle soup, e.g. the Fox sample) — synthesize a sequential uint32
+        // index buffer [0, vertex_count) so the rest of the pipeline can stay indexed-only.
+        std::vector<unsigned char> synthesized_indices;
+        unsigned char const index_width = [&] {
+            if (prim.index.empty()) {
+                if (vertex_count > 0) {
+                    synthesized_indices.resize(vertex_count * sizeof(uint32_t));
+                    auto* const dst = reinterpret_cast<uint32_t*>(synthesized_indices.data());
+                    for (std::size_t i = 0; i < vertex_count; ++i) {
+                        dst[i] = static_cast<uint32_t>(i);
+                    }
+                }
+                return static_cast<unsigned char>(4);
             }
-            return reinterpret_cast<uint16_t const*>(prim.index.data())[i];
+            if (prim.index_component_type == gltf::component_type::unsigned_int_t) {
+                return static_cast<unsigned char>(4);
+            }
+            if (prim.index_component_type == gltf::component_type::unsigned_short_t) {
+                return static_cast<unsigned char>(2);
+            }
+            utility::panic(std::source_location::current(), "unsupported index component type: {}", static_cast<int>(prim.index_component_type));
+        }();
+        std::vector<unsigned char> const& index_bytes = prim.index.empty() ? synthesized_indices : prim.index;
+        uint32_t const index_count = static_cast<uint32_t>(index_bytes.size() / index_width);
+        auto const read_index = [&index_bytes, index_width](size_t const i) -> uint32_t {
+            if (index_width == 4) {
+                return reinterpret_cast<uint32_t const*>(index_bytes.data())[i];
+            }
+            return reinterpret_cast<uint16_t const*>(index_bytes.data())[i];
         };
 
         // tangents: use the model's TANGENT if present, otherwise compute per-triangle from position/uv
@@ -769,7 +783,11 @@ namespace {
         for (size_t i = 0; i < vertex_count; ++i) {
             result.vertices.push_back(vertex{.position = positions[i], .normal = normals[i], .uv = uvs[i], .tangent = tangents[i], .joints = read_joints(i), .weights = read_weights(i)});
         }
-        result.index_data = prim.index;
+        if (prim.index.empty()) {
+            result.index_data = std::move(synthesized_indices); // non-indexed -> synthesized
+        } else {
+            result.index_data = prim.index;
+        }
         result.index_width = index_width;
         result.index_count = index_count;
         return result;
