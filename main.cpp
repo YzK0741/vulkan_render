@@ -412,19 +412,22 @@ int main(int argc, char** argv) {
     //                     single-node asset the primitive spins about the scene sink.
     //   "nocull"        — verification: disable frustum culling (force every leaf visible); run
     //                     the same camera path with and without it and compare the cull log + fps.
-    //   "gui"           — enable the Dear ImGui debug overlay (fps text + culling checkbox)
+    //   "gui"           — force-enable the Dear ImGui debug overlay (also the default: the
+    //                     overlay shows unless config sets [gui] show = false)
     bool spin_scene = false;
     bool spin_subtree = false;
     bool no_cull = false;
     bool closeup = false;
-    bool use_gui = false;
+    bool use_gui = settings.gui.show; // overlay defaults on ([gui] show); demo "gui" forces it
     if (!settings.demo.empty()) {
         std::string_view const demo_view(settings.demo);
         spin_scene = demo_view == "spin";
         spin_subtree = demo_view == "spin-subtree";
         no_cull = demo_view == "nocull";
         closeup = demo_view == "closeup";
-        use_gui = demo_view == "gui";
+        if (demo_view == "gui") {
+            use_gui = true;
+        }
     }
     if (no_cull) {
         runtime.set_frustum_culling(false);

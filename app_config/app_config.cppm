@@ -19,7 +19,8 @@ import utility;
  * @code
  * # top level: model to load + demo mode
  * model = "gltf_model/DamagedHelmet.gltf"
- * demo  = ""        # spin | spin-subtree | nocull | closeup | gui (empty = none)
+ * demo  = ""        # spin | spin-subtree | nocull | closeup | gui (empty = none; the gui
+ *                   #   overlay defaults on via [gui] show, "gui" forces it on anyway)
  * grid_side = 0     # > 1 enables the instancing stress grid (0 = off)
  *
  * [paths]
@@ -37,8 +38,9 @@ import utility;
  * shadow = true    # record the directional shadow pass each frame
  *
  * [gui]
- * panel_width  = 380   # default debug-panel width (0 = auto-size)
- * panel_height = 140   # default debug-panel height (0 = auto-size)
+ * show         = true    # show the Dear ImGui debug overlay by default (demo "gui" forces it)
+ * panel_width  = 380     # default debug-panel width (0 = auto-size)
+ * panel_height = 140     # default debug-panel height (0 = auto-size)
  *
  * [lighting]
  * env_size     = 256   # environment cubemap size
@@ -85,6 +87,7 @@ namespace app_config {
      * @brief debug-overlay panel settings ([gui] in the config)
      */
     export struct gui_settings {
+        bool show = true;            // show the Dear ImGui debug overlay by default (demo "gui" forces it on)
         float panel_width = 380.0f;  // default debug-panel width (0 = ImGui auto-size)
         float panel_height = 140.0f; // default debug-panel height (0 = ImGui auto-size)
     };
