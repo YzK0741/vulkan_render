@@ -109,20 +109,29 @@ namespace vulkan {
         // instance, host-visible; filled by make_instanced_primitive()
         uint64_t instance_buffer_handle = 0;
         void* instance_mapped = nullptr;
-        // per-joint skin matrices (scene set binding 9): scene_skin_capacity mat4s, host-visible;
-        // indices 0-3 are the identity block (unskinned fallback), per-skin joint blocks follow.
-        // Filled per frame by set_skin_matrices(); primitives reference their block via
-        // material_push_constants::skin_base
-        uint64_t skin_buffer_handle = 0;
-        void* skin_mapped = nullptr;
-        // morph data (scene set binding 10): scene_morph_capacity floats, host-visible. The
-        // caller writes per-primitive blocks (morph deltas + weights) through morph_scratch()
-        // and points primitives at them via material_push_constants::morph_* fields
-        uint64_t morph_buffer_handle = 0;
-        void* morph_mapped = nullptr;
-        // the single scene descriptor set: all pipelines share the layout, so one set covers them all
-        vk_descriptor_set scene_set = {};
+        // per-joint skin matrices (scene set binding 9): ONE buffer per frame slot, like the
+        // camera UBO — each slot's scene set always points at its own buffer, so a frame being
+        // rendered never shares the buffer the next frame rewrites. scene_skin_capacity mat4s
+        // each, host-visible; indices 0-3 are the identity block (unskinned fallback),
+        // per-skin joint blocks follow. Filled per frame by set_skin_matrices(); primitives
+        // reference their block via material_push_constants::skin_base
+        std::vector<uint64_t> skin_buffer_handles = {};
+        std::vector<void*> skin_mapped = {};
+        // morph data (scene set binding 10): ONE buffer per frame slot, like the skin matrices.
+        // scene_morph_capacity floats each, host-visible. The caller writes per-primitive blocks
+        // (morph deltas + weights) through morph_scratch() and points primitives at them via
+        // material_push_constants::morph_* fields
+        std::vector<uint64_t> morph_buffer_handles = {};
+        std::vector<void*> morph_mapped = {};
+        // per-slot scene descriptor sets: all pipelines share the scene layout, so every frame
+        // slot gets one set from it. A set's per-slot bindings (0 camera / 8 shadow / 9 skin /
+        // 10 morph) always point at that slot's own resources and never change, so an in-flight
+        // frame can never observe the next frame's descriptors (no update-after-bind race).
+        std::array<vk_descriptor_set, vulkan::core::MAX_FRAMES_IN_FLIGHT> scene_sets = {};
         bool scene_set_created = false;
+        // the frame slot paced by the last successful set_up_frame_environment()/begin_frame();
+        // per-frame host writes (set_skin_matrices / morph_scratch) target this slot's buffers
+        uint32_t active_frame_slot_ = 0;
         bool ibl_ready = false;
         // background pass (fullscreen triangle, no depth test): drawn first every frame
         std::optional<vk_pipeline> skybox_pipeline = std::nullopt;
@@ -233,12 +242,13 @@ namespace vulkan {
         void begin_rendering(VkCommandBuffer command_buffer, uint32_t image_index) const;
 
         // ---- scene resource management (see the members above) ----
-        void init_scene_resources();                                   // camera UBO buffers + white fallback texture + texture sampler + material table
-        void init_shadow_resources();                                  // shadow map depth image/view/sampler + light UBO buffer
-        void ensure_scene_set();                                       // lazily create the scene set and write camera + IBL + material bindings
-        void write_ibl_bindings() const;                               // (re)write bindings 2-4 with the current IBL views / placeholders
-        void write_light_and_shadow_bindings();                        // (re)write binding 7 (light UBO) + binding 8 (shadow map)
-        uint32_t register_material(primitive_create_info const& info); // upload textures into the array, append a material_record, return its index
+        void init_scene_resources();                                                          // camera UBO buffers + white fallback texture + texture sampler + material table
+        void init_shadow_resources();                                                         // shadow map depth image/view/sampler + light UBO buffer
+        void ensure_scene_set();                                                              // lazily create one scene set per frame slot and write all bindings
+        void write_ibl_bindings() const;                                                      // (re)write bindings 2-4 on every scene set with the current IBL views / placeholders
+        void write_light_and_shadow_bindings();                                               // (re)write binding 7 (light UBO) + binding 8 (shadow map) on every scene set
+        void update_all_scene_sets(VkWriteDescriptorSet const* writes, uint32_t write_count); // apply one batch of writes to every slot's scene set
+        uint32_t register_material(primitive_create_info const& info);                        // upload textures into the array, append a material_record, return its index
 
     public:
         // A non-const runtime exposes a mutable filter (e.g. runtime->get_vma()); a const runtime
@@ -342,21 +352,55 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief drive one application frame: poll window events, respond to ESC / native close,
-         *        skip rendering while the window is minimized, recreate the swapchain on restore
-         *        and on resize (VK_ERROR_OUT_OF_DATE_KHR / VK_SUBOPTIMAL_KHR), then record,
-         *        submit and present one frame when renderable
+         * @brief drive one application frame: pace + acquire, record, submit and present.
          * @return frame_status: proceed when a frame was presented; skipped when not renderable
          *         (minimized or swapchain recreated — caller yields and calls again); closed on
          *         window close; one of the stage-specific *_failed values on a fatal Vulkan error
          *         (caller exits the loop; is_failure() tests for any of them)
-         * @note convenience wrapper that calls the split frame steps below in order
-         *       (is_skipable -> try_recreate_swap_chain_if_minimized ->
-         *       set_up_frame_environment -> begin_recording -> record_main_drawcalls ->
-         *       end_recording -> submit_and_present). External code may call those steps itself
-         *       to interleave custom recording (e.g. a debug overlay) between the steps.
+         * @note convenience wrapper that calls begin_frame() and end_frame() back to back. Call
+         *       those separately when the caller must update per-frame CPU data (e.g. skin
+         *       matrices / morph weights) between pacing and recording: the runtime's per-slot
+         *       buffers are safe to write only AFTER begin_frame() has waited the frame slot.
          */
         frame_status render_frame();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief pace + acquire the next frame WITHOUT recording: poll window events, skip while
+         *        minimized, recreate the swapchain on restore/resize (out-of-date/suboptimal),
+         *        wait the frame slot's timeline, acquire the next swapchain image and write this
+         *        frame's camera UBO into the slot's buffer.
+         * @return frame_status: proceed when the frame may be recorded; skipped when not
+         *         renderable (minimized or swapchain recreated — caller yields and calls again);
+         *         closed on window close; acquire_failed on a fatal acquire error
+         * @note after a proceed return the caller may write this slot's per-frame resources
+         *       (set_skin_matrices / morph_scratch() — they target active_frame_slot()) and must
+         *       then call end_frame() to record + submit + present.
+         * @note part of the split render_frame(); see render_frame() for the full sequence
+         */
+        frame_status begin_frame();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief record + submit + present the frame whose slot begin_frame() paced: begin the
+         *        slot's command buffer, record the runtime's own draw calls, end recording,
+         *        submit and present.
+         * @return frame_status: proceed when the frame was presented; one of the stage-specific
+         *         *_failed values on a fatal error (caller exits the loop)
+         * @note part of the split render_frame(); call it only after begin_frame() returned
+         *       proceed (optionally with caller per-frame updates in between).
+         */
+        frame_status end_frame();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the frame slot paced by the last successful begin_frame()/set_up_frame_environment();
+         *        per-frame host writes (set_skin_matrices / morph_scratch()) go into this slot's
+         *        per-slot buffers
+         */
+        [[nodiscard]] uint32_t active_frame_slot() const noexcept {
+            return this->active_frame_slot_;
+        }
 
         /**
          * @ingroup vulkan_runtime
@@ -380,9 +424,9 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief step 3 of the frame: wait the frame slot's fence, acquire the next swapchain
-         *        image (recreating the swapchain when it is out of date) and write the shared
-         *        camera UBO for this frame
+         * @brief step 3 of the frame: wait the frame slot's timeline semaphore, acquire the next
+         *        swapchain image (recreating the swapchain when it is out of date) and write this
+         *        frame's camera UBO into the slot's per-slot buffer
          * @return frame_status::skipped when the swapchain was recreated (caller yields and
          *         retries next iteration); frame_status::acquire_failed when acquiring the image
          *         failed (other than out-of-date); frame_status::proceed when a frame may be recorded
@@ -580,26 +624,44 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief upload the scene-wide skin matrices (scene set binding 9): the caller fills the
-         *        buffer layout [identity block (4 mat4s) | per-skin joint blocks] and calls this
-         *        once per frame before render_frame(); primitives reference their block start via
+         * @brief upload the scene-wide skin matrices (scene set binding 9) into the frame slot
+         *        paced by the last begin_frame(): the caller fills the buffer layout
+         *        [identity block (4 mat4s) | per-skin joint blocks] and calls this once per frame
+         *        AFTER begin_frame(); primitives reference their block start via
          *        material_push_constants::skin_base (0 = the identity block: unskinned draws)
          * @param matrices at most scene_skin_capacity mat4s; anything beyond the capacity is dropped
-         * @note host-visible copy, no Vulkan objects involved; skins without animation keep the
-         *       identity block so unskinned rendering is unaffected
+         * @note host-visible copy, no Vulkan objects involved; the per-slot buffers guarantee an
+         *       in-flight frame never shares the buffer being rewritten
          */
         void set_skin_matrices(std::span<glm::mat4 const> matrices);
 
         /**
          * @ingroup vulkan_runtime
-         * @brief host-visible scratch memory of the scene morph buffer (scene set binding 10,
-         *        scene_morph_capacity floats). The caller lays out per-primitive morph blocks
-         *        (per vertex per target pos-delta/nrm-delta floats, then the per-target weights) and
-         *        points primitives at their block through material_push_constants::morph_base /
-         *        morph_targets / morph_vertices (see those fields for the layout convention).
-         * @return the mapped base, or nullptr when the morph buffer is unavailable
+         * @brief like set_skin_matrices() but into an explicit slot buffer (used for setup-time
+         *        uploads that must be visible to every slot, e.g. the identity block before the
+         *        render loop starts)
+         */
+        void set_skin_matrices(std::span<glm::mat4 const> matrices, uint32_t slot);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief host-visible scratch memory of the ACTIVE frame slot's morph buffer (scene set
+         *        binding 10, scene_morph_capacity floats each). The caller lays out per-primitive
+         *        morph blocks (per vertex per target pos-delta/nrm-delta floats, then the
+         *        per-target weights) and points primitives at their block through
+         *        material_push_constants::morph_base / morph_targets / morph_vertices (see those
+         *        fields for the layout convention).
+         * @return the mapped base of the slot paced by the last begin_frame(), or nullptr when
+         *         the morph buffer is unavailable
          */
         [[nodiscard]] void* morph_scratch() noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief like morph_scratch() but for an explicit slot buffer (used for setup-time bakes
+         *        that must be duplicated into every slot's buffer before the render loop starts)
+         */
+        [[nodiscard]] void* morph_scratch(uint32_t slot) noexcept;
 
         /**
          * @ingroup vulkan_runtime

@@ -598,10 +598,13 @@ int main(int argc, char** argv) {
             utility::log("skinning: {} skin rig(s) active ({} joint matrix block(s) + identity block)", skin_rigs.size(), next_block - 4);
         }
     }
-    // identity block for unskinned draws: upload once (the skin buffer starts zeroed)
+    // identity block for unskinned draws: upload once into EVERY slot's skin buffer (each frame
+    // slot reads only its own buffer; set_skin_matrices below rewrites the active slot each frame)
     {
         constexpr std::array<glm::mat4, 4> identity_block = {glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f)};
-        runtime.set_skin_matrices(identity_block);
+        for (uint32_t slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            runtime.set_skin_matrices(identity_block, slot);
+        }
     }
 
     // ---- glTF morph targets (static bake with the default weights; animated weights land in
@@ -620,7 +623,8 @@ int main(int argc, char** argv) {
         std::size_t source = 0;  // owning loader node (weights animation target)
     };
     std::vector<morph_rig> morph_rigs;
-    float* const morph_scratch_mem = static_cast<float*>(runtime.morph_scratch()); // per-frame weight writes
+    // slot 0's morph scratch: the static bake below is duplicated into every other slot's buffer
+    float* const morph_scratch_mem = static_cast<float*>(runtime.morph_scratch(0));
     if (morph_scratch_mem != nullptr) {
         auto const read_delta_vec3 = [](std::map<std::string, gltf::vertex_portion> const& attrs, std::string_view const name, std::size_t const i) -> glm::vec3 {
             auto const it = attrs.find(std::string(name));
@@ -709,6 +713,15 @@ int main(int argc, char** argv) {
         }
         if (!morph_rigs.empty()) {
             utility::log("morph: baked {} morphable primitive(s) into the scene morph buffer ({} floats)", morph_rigs.size(), total_floats);
+            // duplicate the baked blocks (contiguous [0, total_floats)) into every other frame
+            // slot's morph buffer: the deltas are static, only the per-frame weight rewrites
+            // target the active slot's buffer
+            for (uint32_t slot = 1; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+                float* const other = static_cast<float*>(runtime.morph_scratch(slot));
+                if (other != nullptr) {
+                    std::memcpy(other, morph_scratch_mem, total_floats * sizeof(float));
+                }
+            }
         }
     }
     glm::vec3 skin_debug_translation = glm::vec3(0.0f);
@@ -878,9 +891,24 @@ int main(int argc, char** argv) {
     }
 
     // All per-frame decisions (event polling, ESC/close response, minimize skip, swapchain
-    // recreation on restore/resize) live inside runtime::render_frame(); main only reacts to
-    // the returned frame_status.
+    // recreation on restore/resize) live inside runtime::begin_frame()/end_frame(); main only
+    // reacts to the returned frame_status. The runtime's per-slot skin/morph buffers may be
+    // written only between begin_frame() (which paces the frame slot) and end_frame().
     while (true) {
+        // Pace + acquire the next frame slot FIRST: after begin_frame() returns proceed, this
+        // slot's previous submission has completed, so the per-frame host writes below (scene
+        // node locals -> culling, skin matrices, morph weights) cannot race an in-flight frame.
+        vulkan::frame_status const paced = runtime.begin_frame();
+        if (paced == vulkan::frame_status::closed || vulkan::is_failure(paced)) {
+            break;
+        }
+        if (paced == vulkan::frame_status::skipped) {
+            // Minimized or swapchain recreated: skip this frame's CPU work too; keep the FPS
+            // timer fresh so the pause is not counted as one huge rendered frame.
+            last_frame_time = std::chrono::steady_clock::now();
+            std::this_thread::yield();
+            continue;
+        }
         if (spin_scene) {
             // rotate the whole scene around scene_sink (its own center): shadows stay valid
             spin_angle += 0.6 * std::chrono::duration<double>(std::chrono::steady_clock::now() - last_frame_time).count();
@@ -913,14 +941,18 @@ int main(int argc, char** argv) {
                 auto const base_it = anim_base_poses.find(source);
                 gltf::node_pose const base = base_it == anim_base_poses.end() ? gltf::node_pose{} : base_it->second;
                 gltf::node_pose const pose = gltf::sample_node(*anim.animation, source, base, static_cast<float>(anim.time));
-                // morph weights: write this node's active weights into its morph block(s) so the
-                // vertex shader blends with the animated values (overrides the baked defaults)
-                if (!pose.weights.empty() && morph_scratch_mem != nullptr) {
-                    for (morph_rig const& rig : morph_rigs) {
-                        if (rig.source == source && static_cast<std::size_t>(rig.target_count) == pose.weights.size()) {
-                            std::size_t const weight_offset = static_cast<std::size_t>(rig.morph_base) + static_cast<std::size_t>(rig.vertex_count) * static_cast<std::size_t>(rig.target_count) * 6u;
-                            for (std::size_t t = 0; t < pose.weights.size(); ++t) {
-                                morph_scratch_mem[weight_offset + t] = pose.weights[t];
+                // morph weights: write this node's active weights into the ACTIVE frame slot's
+                // morph block(s) so the vertex shader blends with the animated values (overrides
+                // the baked defaults; begin_frame() has already paced that slot)
+                if (!pose.weights.empty()) {
+                    float* const active_scratch = static_cast<float*>(runtime.morph_scratch());
+                    if (active_scratch != nullptr) {
+                        for (morph_rig const& rig : morph_rigs) {
+                            if (rig.source == source && static_cast<std::size_t>(rig.target_count) == pose.weights.size()) {
+                                std::size_t const weight_offset = static_cast<std::size_t>(rig.morph_base) + static_cast<std::size_t>(rig.vertex_count) * static_cast<std::size_t>(rig.target_count) * 6u;
+                                for (std::size_t t = 0; t < pose.weights.size(); ++t) {
+                                    active_scratch[weight_offset + t] = pose.weights[t];
+                                }
                             }
                         }
                     }
@@ -997,13 +1029,12 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        vulkan::frame_status const result = runtime.render_frame();
+        vulkan::frame_status const result = runtime.end_frame(); // record + submit + present the paced frame
         if (result == vulkan::frame_status::closed || vulkan::is_failure(result)) {
             break;
         }
         if (result == vulkan::frame_status::skipped) {
-            // Minimized or swapchain recreated: skip this frame; keep the FPS timer fresh so the
-            // pause is not counted as one huge rendered frame.
+            // present reported the swapchain out of date / recreated it: retry next iteration
             last_frame_time = std::chrono::steady_clock::now();
             std::this_thread::yield();
             continue;

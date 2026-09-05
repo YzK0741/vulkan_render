@@ -94,6 +94,12 @@ namespace vulkan {
     // guaranteed safe, independent of future member reordering. Members then destruct in reverse
     // declaration order with scene/pipelines already empty.
     runtime::~runtime() {
+        // Wait for the GPU to finish BEFORE freeing any buffer/image below: the last submitted
+        // frame may still be executing and vma.free_buffer/free_image on in-use resources would
+        // violate VUID-vkDestroyBuffer-buffer-00922 etc. (~core() also waits, but that runs
+        // after this body — too late for the VMA frees here).
+        this->vulkan_core.wait_idle();
+
         for (scene_tree::scene_node& root : this->scene.roots) {
             this->destroy_leaf_primitives(root, this->vulkan_core.vma);
         }
@@ -102,6 +108,12 @@ namespace vulkan {
 
         // Shared scene resources (views/sets/samplers are RAII and free themselves)
         for (uint64_t const handle : this->camera_buffer_handles) {
+            this->vulkan_core.vma.free_buffer(handle);
+        }
+        for (uint64_t const handle : this->skin_buffer_handles) {
+            this->vulkan_core.vma.free_buffer(handle);
+        }
+        for (uint64_t const handle : this->morph_buffer_handles) {
             this->vulkan_core.vma.free_buffer(handle);
         }
         for (uint64_t const handle : this->owned_texture_handles) {
@@ -209,34 +221,44 @@ namespace vulkan {
         this->instance_buffer_handle = instance_handle;
         this->instance_mapped = instance_detail->allocation_info.pMappedData;
 
-        // Per-joint skin matrices (set 0 binding 9): scene_skin_capacity mat4s, host-visible;
-        // indices 0-3 are the identity block (unskinned fallback), per-skin joint blocks follow.
-        // Zero-filled initially (identity block is written by the first set_skin_matrices call).
+        // Per-joint skin matrices (set 0 binding 9): one buffer PER FRAME SLOT (scene_skin_capacity
+        // mat4s each, host-visible) so an in-flight frame never shares the buffer the next frame
+        // rewrites. Zero-filled initially (the identity block is written by the setup upload).
         std::vector<unsigned char> const zeroed_skins(static_cast<size_t>(vulkan::scene_skin_capacity) * sizeof(glm::mat4), 0);
-        uint64_t const skin_handle = this->vulkan_core.vma.create_buffer(zeroed_skins.data(), zeroed_skins.size(), vulkan::buffer_type::storage_coherent);
-        if (skin_handle == 0) {
-            utility::panic("failed to create skin matrix buffer");
+        this->skin_buffer_handles.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        this->skin_mapped.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            uint64_t const skin_handle = this->vulkan_core.vma.create_buffer(zeroed_skins.data(), zeroed_skins.size(), vulkan::buffer_type::storage_coherent);
+            if (skin_handle == 0) {
+                utility::panic("failed to create skin matrix buffer");
+            }
+            auto const* skin_detail = this->vulkan_core.vma.get_buffer_detail(skin_handle);
+            if (skin_detail == nullptr) {
+                utility::panic("failed to get skin matrix buffer detail");
+            }
+            this->skin_buffer_handles.push_back(skin_handle);
+            this->skin_mapped.push_back(skin_detail->allocation_info.pMappedData);
         }
-        auto const* skin_detail = this->vulkan_core.vma.get_buffer_detail(skin_handle);
-        if (skin_detail == nullptr) {
-            utility::panic("failed to get skin matrix buffer detail");
-        }
-        this->skin_buffer_handle = skin_handle;
-        this->skin_mapped = skin_detail->allocation_info.pMappedData;
 
-        // Morph data (set 0 binding 10): scene_morph_capacity floats, host-visible; the caller
-        // writes per-primitive morph blocks (deltas + weights) through morph_scratch()
-        std::vector<unsigned char> const zeroed_morphs(vulkan::scene_morph_capacity * sizeof(float), 0);
-        uint64_t const morph_handle = this->vulkan_core.vma.create_buffer(zeroed_morphs.data(), zeroed_morphs.size(), vulkan::buffer_type::storage_coherent);
-        if (morph_handle == 0) {
-            utility::panic("failed to create morph data buffer");
+        // Morph data (set 0 binding 10): one buffer PER FRAME SLOT (scene_morph_capacity floats
+        // each, host-visible); the caller bakes per-primitive morph blocks (deltas + weights)
+        // into every slot's buffer at setup, then rewrites only the active slot's weights per frame.
+        // Zero-filled from one shared host vector (each create_buffer copies its own GPU buffer).
+        std::vector<unsigned char> const zeroed_morphs(static_cast<size_t>(vulkan::scene_morph_capacity) * sizeof(float), 0);
+        this->morph_buffer_handles.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        this->morph_mapped.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            uint64_t const morph_handle = this->vulkan_core.vma.create_buffer(zeroed_morphs.data(), zeroed_morphs.size(), vulkan::buffer_type::storage_coherent);
+            if (morph_handle == 0) {
+                utility::panic("failed to create morph data buffer");
+            }
+            auto const* morph_detail = this->vulkan_core.vma.get_buffer_detail(morph_handle);
+            if (morph_detail == nullptr) {
+                utility::panic("failed to get morph data buffer detail");
+            }
+            this->morph_buffer_handles.push_back(morph_handle);
+            this->morph_mapped.push_back(morph_detail->allocation_info.pMappedData);
         }
-        auto const* morph_detail = this->vulkan_core.vma.get_buffer_detail(morph_handle);
-        if (morph_detail == nullptr) {
-            utility::panic("failed to get morph data buffer detail");
-        }
-        this->morph_buffer_handle = morph_handle;
-        this->morph_mapped = morph_detail->allocation_info.pMappedData;
     }
 
     void runtime::init_shadow_resources() {
@@ -284,91 +306,82 @@ namespace vulkan {
         if (this->scene_set_created) {
             return;
         }
-        this->scene_set = this->vulkan_core.make_descriptor_set(this->vulkan_core.scene_descriptor_set_layout);
+        // One scene descriptor set per frame slot: a slot's set always points at that slot's own
+        // camera / shadow / skin / morph resources, so an in-flight frame never observes the next
+        // frame's descriptors and no per-frame update-after-bind writes are needed at all.
+        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            this->scene_sets[static_cast<std::size_t>(slot)] = this->vulkan_core.make_descriptor_set(this->vulkan_core.scene_descriptor_set_layout);
+        }
         this->scene_set_created = true;
 
-        // binding 0: camera UBO -> buffer[0]; render_frame() rewrites it per frame with the
-        // current frame slot's buffer (update-after-bind)
-        auto const* detail = this->vulkan_core.vma.get_buffer_detail(this->camera_buffer_handles[0]);
-        if (detail == nullptr) {
-            utility::panic("failed to get camera ubo buffer detail");
-        }
-        VkDescriptorBufferInfo const camera_info{detail->buffer, 0, sizeof(camera_ubo)};
-        VkWriteDescriptorSet camera_write = {};
-        camera_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        camera_write.dstSet = *this->scene_set;
-        camera_write.dstBinding = 0;
-        camera_write.descriptorCount = 1;
-        camera_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        camera_write.pBufferInfo = &camera_info;
-        vkUpdateDescriptorSets(this->vulkan_core.device, 1, &camera_write, 0, nullptr);
+        auto const write_buffer_binding = [this](VkDescriptorSet const set, uint32_t const binding, VkBuffer const buffer, VkDeviceSize const size, VkDescriptorType const type) {
+            VkDescriptorBufferInfo const info{buffer, 0, size};
+            VkWriteDescriptorSet write = {};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = set;
+            write.dstBinding = binding;
+            write.descriptorCount = 1;
+            write.descriptorType = type;
+            write.pBufferInfo = &info;
+            vkUpdateDescriptorSets(this->vulkan_core.device, 1, &write, 0, nullptr);
+        };
 
-        // binding 5: material table (storage buffer, written once)
-        auto const* material_detail = this->vulkan_core.vma.get_buffer_detail(this->material_buffer_handle);
-        if (material_detail == nullptr) {
-            utility::panic("failed to get material table buffer detail");
-        }
-        VkDescriptorBufferInfo const material_info{material_detail->buffer, 0, static_cast<VkDeviceSize>(vulkan::material_capacity) * sizeof(material_record)};
-        VkWriteDescriptorSet material_write = {};
-        material_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        material_write.dstSet = *this->scene_set;
-        material_write.dstBinding = 5;
-        material_write.descriptorCount = 1;
-        material_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        material_write.pBufferInfo = &material_info;
-        vkUpdateDescriptorSets(this->vulkan_core.device, 1, &material_write, 0, nullptr);
+        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            VkDescriptorSet const set = *this->scene_sets[static_cast<std::size_t>(slot)];
 
-        // binding 6: per-instance transforms (storage buffer, written by set_instanced_draw)
-        auto const* instance_detail = this->vulkan_core.vma.get_buffer_detail(this->instance_buffer_handle);
-        if (instance_detail == nullptr) {
-            utility::panic("failed to get instance transform buffer detail");
-        }
-        VkDescriptorBufferInfo const instance_info{instance_detail->buffer, 0, static_cast<VkDeviceSize>(vulkan::instance_capacity) * sizeof(glm::mat4)};
-        VkWriteDescriptorSet instance_write = {};
-        instance_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        instance_write.dstSet = *this->scene_set;
-        instance_write.dstBinding = 6;
-        instance_write.descriptorCount = 1;
-        instance_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        instance_write.pBufferInfo = &instance_info;
-        vkUpdateDescriptorSets(this->vulkan_core.device, 1, &instance_write, 0, nullptr);
+            // binding 0: THIS slot's camera UBO buffer
+            auto const* camera_detail = this->vulkan_core.vma.get_buffer_detail(this->camera_buffer_handles[static_cast<std::size_t>(slot)]);
+            if (camera_detail == nullptr) {
+                utility::panic("failed to get camera ubo buffer detail");
+            }
+            write_buffer_binding(set, 0, camera_detail->buffer, sizeof(camera_ubo), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 
-        // binding 9: per-joint skin matrices (storage buffer, host-visible; written per frame
-        // by set_skin_matrices; indices 0-3 = identity block for unskinned draws)
-        auto const* skin_detail = this->vulkan_core.vma.get_buffer_detail(this->skin_buffer_handle);
-        if (skin_detail == nullptr) {
-            utility::panic("failed to get skin matrix buffer detail");
-        }
-        VkDescriptorBufferInfo const skin_info{skin_detail->buffer, 0, static_cast<VkDeviceSize>(vulkan::scene_skin_capacity) * sizeof(glm::mat4)};
-        VkWriteDescriptorSet skin_write = {};
-        skin_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        skin_write.dstSet = *this->scene_set;
-        skin_write.dstBinding = 9;
-        skin_write.descriptorCount = 1;
-        skin_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        skin_write.pBufferInfo = &skin_info;
-        vkUpdateDescriptorSets(this->vulkan_core.device, 1, &skin_write, 0, nullptr);
+            // binding 5: material table (shared, written once)
+            auto const* material_detail = this->vulkan_core.vma.get_buffer_detail(this->material_buffer_handle);
+            if (material_detail == nullptr) {
+                utility::panic("failed to get material table buffer detail");
+            }
+            write_buffer_binding(set, 5, material_detail->buffer, static_cast<VkDeviceSize>(vulkan::material_capacity) * sizeof(material_record), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 
-        // binding 10: morph data (storage buffer, host-visible; caller-written blocks)
-        auto const* morph_detail = this->vulkan_core.vma.get_buffer_detail(this->morph_buffer_handle);
-        if (morph_detail == nullptr) {
-            utility::panic("failed to get morph data buffer detail");
-        }
-        VkDescriptorBufferInfo const morph_info{morph_detail->buffer, 0, static_cast<VkDeviceSize>(vulkan::scene_morph_capacity) * sizeof(float)};
-        VkWriteDescriptorSet morph_write = {};
-        morph_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        morph_write.dstSet = *this->scene_set;
-        morph_write.dstBinding = 10;
-        morph_write.descriptorCount = 1;
-        morph_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        morph_write.pBufferInfo = &morph_info;
-        vkUpdateDescriptorSets(this->vulkan_core.device, 1, &morph_write, 0, nullptr);
+            // binding 6: per-instance transforms (shared, written by set_instanced_draw)
+            auto const* instance_detail = this->vulkan_core.vma.get_buffer_detail(this->instance_buffer_handle);
+            if (instance_detail == nullptr) {
+                utility::panic("failed to get instance transform buffer detail");
+            }
+            write_buffer_binding(set, 6, instance_detail->buffer, static_cast<VkDeviceSize>(vulkan::instance_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 
-        // binding 7 + 8: light UBO + shadow map (created in init_shadow_resources)
+            // binding 9: THIS slot's skin matrix buffer
+            auto const* skin_detail = this->vulkan_core.vma.get_buffer_detail(this->skin_buffer_handles[static_cast<std::size_t>(slot)]);
+            if (skin_detail == nullptr) {
+                utility::panic("failed to get skin matrix buffer detail");
+            }
+            write_buffer_binding(set, 9, skin_detail->buffer, static_cast<VkDeviceSize>(vulkan::scene_skin_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+
+            // binding 10: THIS slot's morph data buffer
+            auto const* morph_detail = this->vulkan_core.vma.get_buffer_detail(this->morph_buffer_handles[static_cast<std::size_t>(slot)]);
+            if (morph_detail == nullptr) {
+                utility::panic("failed to get morph data buffer detail");
+            }
+            write_buffer_binding(set, 10, morph_detail->buffer, static_cast<VkDeviceSize>(vulkan::scene_morph_capacity) * sizeof(float), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        }
+
+        // binding 7 (light UBO, shared) + binding 8 (per-slot shadow map) and bindings 2-4 (IBL):
+        // written on every scene set below
         this->write_light_and_shadow_bindings();
-
-        // bindings 2-4: IBL (or white placeholders until set_ibl() is called)
         this->write_ibl_bindings();
+    }
+
+    void runtime::update_all_scene_sets(VkWriteDescriptorSet const* writes, uint32_t const write_count) {
+        if (!this->scene_set_created) {
+            return;
+        }
+        std::vector<VkWriteDescriptorSet> per_set(writes, writes + write_count);
+        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            for (VkWriteDescriptorSet& write : per_set) {
+                write.dstSet = *this->scene_sets[static_cast<std::size_t>(slot)];
+            }
+            vkUpdateDescriptorSets(this->vulkan_core.device, write_count, per_set.data(), 0, nullptr);
+        }
     }
 
     void runtime::write_light_and_shadow_bindings() {
@@ -381,35 +394,36 @@ namespace vulkan {
             utility::panic("failed to get light ubo buffer detail");
         }
         VkDescriptorBufferInfo const light_info{light_detail->buffer, 0, sizeof(light_ubo)};
-        VkWriteDescriptorSet light_write = {};
-        light_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        light_write.dstSet = *this->scene_set;
-        light_write.dstBinding = 7;
-        light_write.descriptorCount = 1;
-        light_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        light_write.pBufferInfo = &light_info;
 
-        // binding 8: shadow map depth texture (view + sampler; the view is re-pointed per frame
-        // to the current frame slot's image in render_frame, update-after-bind)
-        auto const* shadow_detail = this->vulkan_core.vma.get_image_detail(this->shadow_image_handles[0]);
-        if (shadow_detail == nullptr) {
-            utility::panic("failed to get shadow map image detail");
+        // binding 8: THIS slot's shadow map depth texture (each slot's set points at its own
+        // depth image, so no per-frame re-pointing is needed)
+        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            VkDescriptorSet const set = *this->scene_sets[static_cast<std::size_t>(slot)];
+            auto const* shadow_detail = this->vulkan_core.vma.get_image_detail(this->shadow_image_handles[static_cast<std::size_t>(slot)]);
+            if (shadow_detail == nullptr) {
+                utility::panic("failed to get shadow map image detail");
+            }
+            VkDescriptorImageInfo const shadow_info{
+                .sampler = *this->shadow_sampler,
+                .imageView = *this->shadow_image_views[static_cast<std::size_t>(slot)],
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            };
+
+            std::array<VkWriteDescriptorSet, 2> writes = {};
+            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[0].dstSet = set;
+            writes[0].dstBinding = 7;
+            writes[0].descriptorCount = 1;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[0].pBufferInfo = &light_info;
+            writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[1].dstSet = set;
+            writes[1].dstBinding = 8;
+            writes[1].descriptorCount = 1;
+            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[1].pImageInfo = &shadow_info;
+            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         }
-        VkDescriptorImageInfo const shadow_info{
-            .sampler = *this->shadow_sampler,
-            .imageView = *this->shadow_image_views[0],
-            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        };
-        VkWriteDescriptorSet shadow_write = {};
-        shadow_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        shadow_write.dstSet = *this->scene_set;
-        shadow_write.dstBinding = 8;
-        shadow_write.descriptorCount = 1;
-        shadow_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        shadow_write.pImageInfo = &shadow_info;
-
-        std::array<VkWriteDescriptorSet, 2> const writes = {light_write, shadow_write};
-        vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     }
 
     void runtime::write_ibl_bindings() const {
@@ -417,23 +431,29 @@ namespace vulkan {
             return;
         }
         std::array<VkDescriptorImageInfo, 3> image_infos = {};
-        std::array<VkWriteDescriptorSet, 3> writes = {};
         VkImageView const placeholder_view = *this->owned_texture_views[0]; // white
         VkSampler const placeholder_sampler = *this->texture_sampler;
         for (int i = 0; i < 3; ++i) {
-            image_infos[i] = {
+            image_infos[static_cast<std::size_t>(i)] = {
                 .sampler = this->ibl_ready ? *this->env_sampler : placeholder_sampler,
-                .imageView = this->ibl_ready ? *this->ibl_views[i] : placeholder_view,
+                .imageView = this->ibl_ready ? *this->ibl_views[static_cast<std::size_t>(i)] : placeholder_view,
                 .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             };
-            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[i].dstSet = *this->scene_set;
-            writes[i].dstBinding = static_cast<uint32_t>(2 + i);
-            writes[i].descriptorCount = 1;
-            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[i].pImageInfo = &image_infos[i];
         }
-        vkUpdateDescriptorSets(this->vulkan_core.device, 3, writes.data(), 0, nullptr);
+        // write bindings 2-4 on every scene set
+        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            VkDescriptorSet const set = *this->scene_sets[static_cast<std::size_t>(slot)];
+            std::array<VkWriteDescriptorSet, 3> writes = {};
+            for (int i = 0; i < 3; ++i) {
+                writes[static_cast<std::size_t>(i)].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[static_cast<std::size_t>(i)].dstSet = set;
+                writes[static_cast<std::size_t>(i)].dstBinding = static_cast<uint32_t>(2 + i);
+                writes[static_cast<std::size_t>(i)].descriptorCount = 1;
+                writes[static_cast<std::size_t>(i)].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[static_cast<std::size_t>(i)].pImageInfo = &image_infos[static_cast<std::size_t>(i)];
+            }
+            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        }
     }
 
     void runtime::set_ibl(ibl_input const& info) {
@@ -559,7 +579,7 @@ namespace vulkan {
 
             image_infos[write_count] = {.sampler = sampler, .imageView = *this->owned_texture_views.back(), .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
             writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[write_count].dstSet = *this->scene_set;
+            writes[write_count].dstSet = *this->scene_sets[0]; // dstSet is replaced per set by update_all_scene_sets
             writes[write_count].dstBinding = 1;
             writes[write_count].dstArrayElement = index;
             writes[write_count].descriptorCount = 1;
@@ -577,7 +597,7 @@ namespace vulkan {
             };
             VkWriteDescriptorSet white_write = {};
             white_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            white_write.dstSet = *this->scene_set;
+            white_write.dstSet = *this->scene_sets[0]; // dstSet is replaced per set by update_all_scene_sets
             white_write.dstBinding = 1;
             white_write.dstArrayElement = this->white_texture_index;
             white_write.descriptorCount = 1;
@@ -596,12 +616,12 @@ namespace vulkan {
                 }
                 all_infos[write_count] = white_info;
                 all[write_count] = white_write;
-                vkUpdateDescriptorSets(this->vulkan_core.device, write_count + 1, all.data(), 0, nullptr);
+                this->update_all_scene_sets(all.data(), write_count + 1);
                 write_count = 0; // already submitted
             }
         }
         if (write_count > 0) {
-            vkUpdateDescriptorSets(this->vulkan_core.device, write_count, writes.data(), 0, nullptr);
+            this->update_all_scene_sets(writes.data(), write_count);
         }
 
         // ---- 2. Append one material record: texture indices + presence flags; factors keep
@@ -768,37 +788,12 @@ namespace vulkan {
         if (this->camera_mapped[frame_slot] != nullptr) {
             std::memcpy(this->camera_mapped[frame_slot], &this->current_ubo, sizeof(camera_ubo));
         }
-        if (this->scene_set.get() != VK_NULL_HANDLE) {
-            auto const* ubo_detail = vk.vma.get_buffer_detail(this->camera_buffer_handles[frame_slot]);
-            VkDescriptorBufferInfo const camera_info{ubo_detail->buffer, 0, sizeof(camera_ubo)};
-            VkWriteDescriptorSet camera_write = {};
-            camera_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            camera_write.dstSet = *this->scene_set;
-            camera_write.dstBinding = 0;
-            camera_write.descriptorCount = 1;
-            camera_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            camera_write.pBufferInfo = &camera_info;
-            vkUpdateDescriptorSets(vk.device, 1, &camera_write, 0, nullptr);
-
-            // binding 8: point the shadow map binding at this frame slot's depth image (the
-            // shadow pass below renders into it; the main pass samples it, update-after-bind)
-            auto const* shadow_detail = vk.vma.get_image_detail(this->shadow_image_handles[frame_slot]);
-            if (shadow_detail != nullptr) {
-                VkDescriptorImageInfo const shadow_info{
-                    .sampler = *this->shadow_sampler,
-                    .imageView = *this->shadow_image_views[frame_slot],
-                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                };
-                VkWriteDescriptorSet shadow_write = {};
-                shadow_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                shadow_write.dstSet = *this->scene_set;
-                shadow_write.dstBinding = 8;
-                shadow_write.descriptorCount = 1;
-                shadow_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                shadow_write.pImageInfo = &shadow_info;
-                vkUpdateDescriptorSets(vk.device, 1, &shadow_write, 0, nullptr);
-            }
-        }
+        // The scene descriptor sets are static per slot (ensure_scene_set wired bindings 0/8/9/10
+        // to this slot's own camera/shadow/skin/morph resources), so no per-frame descriptor
+        // update is needed here. Remember the paced slot: the caller's per-frame host writes
+        // (set_skin_matrices / morph_scratch) land in this slot's buffers and are safe to make
+        // now that the slot's previous submission has completed.
+        this->active_frame_slot_ = frame_slot;
         return frame_status::proceed;
     }
 
@@ -986,8 +981,8 @@ namespace vulkan {
 
                 // 6c. bind the shared scene set (the light UBO binding 7) and the shadow pipeline,
                 //     then draw every primitive exactly like the main pass (polymorphic primitive::draw)
-                if (this->scene_set.get() != VK_NULL_HANDLE) {
-                    VkDescriptorSet const scene_set_handle = *this->scene_set;
+                if (this->scene_set_created) {
+                    VkDescriptorSet const scene_set_handle = *this->scene_sets[static_cast<std::size_t>(frame_slot)];
                     vkCmdBindDescriptorSets(*command_buffer,
                                             VK_PIPELINE_BIND_POINT_GRAPHICS,
                                             vk.scene_pipeline_layout,
@@ -1070,10 +1065,11 @@ namespace vulkan {
 
         this->begin_rendering(*command_buffer, this->current_image_index);
 
-        // Bind the single scene descriptor set once: every pipeline shares the scene layout, so
-        // the set stays valid across pipeline binds and only models vary per draw
-        if (this->scene_set.get() != VK_NULL_HANDLE) {
-            VkDescriptorSet const scene_set_handle = *this->scene_set;
+        // Bind this frame slot's scene descriptor set once: every pipeline shares the scene
+        // layout, so the set stays valid across pipeline binds and only models vary per draw.
+        // Each slot's set always points at that slot's own camera/shadow/skin/morph resources.
+        if (this->scene_set_created) {
+            VkDescriptorSet const scene_set_handle = *this->scene_sets[static_cast<std::size_t>(vk.current_frame)];
             vkCmdBindDescriptorSets(*command_buffer,
                                     VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     vk.scene_pipeline_layout,
@@ -1197,16 +1193,22 @@ namespace vulkan {
         return *this->command_buffers[static_cast<uint32_t>(this->vulkan_core.current_frame)];
     }
 
-    frame_status runtime::render_frame() {
+    frame_status runtime::begin_frame() {
+        // Steps 1-3 of the frame: poll/skip/close, recreate the swapchain when minimized, then
+        // pace the frame slot (wait its timeline), acquire the next image and write this frame's
+        // camera UBO into the slot's buffer. After a proceed return the caller may write this
+        // slot's per-frame resources (set_skin_matrices / morph_scratch) safely, because the
+        // slot's previous submission has completed and its descriptors are static per slot.
         frame_status const skip = this->is_skipable();
         if (skip != frame_status::proceed) {
             return skip;
         }
         this->try_recreate_swap_chain_if_minimized();
-        frame_status const env = this->set_up_frame_environment();
-        if (env != frame_status::proceed) {
-            return env;
-        }
+        return this->set_up_frame_environment();
+    }
+
+    frame_status runtime::end_frame() {
+        // Steps 4-7 of the frame: record + submit + present what begin_frame() paced.
         frame_status const begin = this->begin_recording();
         if (begin != frame_status::proceed) {
             return begin;
@@ -1217,6 +1219,15 @@ namespace vulkan {
             return end;
         }
         return this->submit_and_present();
+    }
+
+    frame_status runtime::render_frame() {
+        // Convenience wrapper: begin + end with no caller work in between.
+        frame_status const begin = this->begin_frame();
+        if (begin != frame_status::proceed) {
+            return begin;
+        }
+        return this->end_frame();
     }
 
     bool runtime::enable_debug_gui() {
@@ -1537,15 +1548,26 @@ namespace vulkan {
     }
 
     void runtime::set_skin_matrices(std::span<glm::mat4 const> const matrices) {
-        if (this->skin_mapped == nullptr) {
+        this->set_skin_matrices(matrices, this->active_frame_slot_);
+    }
+
+    void runtime::set_skin_matrices(std::span<glm::mat4 const> const matrices, uint32_t const slot) {
+        if (slot >= this->skin_mapped.size() || this->skin_mapped[slot] == nullptr) {
             return;
         }
         std::size_t const bytes = std::min(matrices.size_bytes(), static_cast<std::size_t>(vulkan::scene_skin_capacity) * sizeof(glm::mat4));
-        std::memcpy(this->skin_mapped, matrices.data(), bytes);
+        std::memcpy(this->skin_mapped[slot], matrices.data(), bytes);
     }
 
     void* runtime::morph_scratch() noexcept {
-        return this->morph_mapped;
+        return this->morph_scratch(this->active_frame_slot_);
+    }
+
+    void* runtime::morph_scratch(uint32_t const slot) noexcept {
+        if (slot >= this->morph_mapped.size()) {
+            return nullptr;
+        }
+        return this->morph_mapped[slot];
     }
 
     void runtime::set_external_camera(glm::vec3 const& eye, glm::mat4 const& view, glm::mat4 const& proj) noexcept {
