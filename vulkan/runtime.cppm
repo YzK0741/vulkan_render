@@ -227,6 +227,9 @@ namespace vulkan {
          *         pipeline does not exist
          * @note make_primitive() is create_primitive() + attach-as-root-leaf; the hierarchy import
          *       (import_scene) attaches leaves to their node instead
+         * @note material registration writes every scene set (binding 1), which is only valid
+         *       before the first frame or while the runtime is idle - see make_primitive()'s
+         *       timing note
          */
         std::unique_ptr<primitive> create_primitive(std::string_view pipeline_name, primitive_create_info const& info);
 
@@ -619,6 +622,10 @@ namespace vulkan {
          * @param info precomputed split-sum IBL bytes (see vulkan::generate_* helpers)
          * @note the images are uploaded once and shared by every primitive (they used to be
          *       duplicated per primitive)
+         * @note call before the first frame, or only while the runtime is idle (no frame in
+         *       flight): this rewrites bindings 2-4 on every scene set, and the scene sets are
+         *       no longer update-after-bind - updating a set an in-flight frame may read is a
+         *       spec violation. Mid-loop IBL swaps need wait_idle() first.
          */
         void set_ibl(ibl_input const& info);
 
@@ -673,6 +680,11 @@ namespace vulkan {
          * @note the leaf's local transform is @p info.model_matrix and its world is identity
          *       (render_frame runs update_world before drawing, so primitive::set_world writes
          *       the same matrix into push.model as before)
+         * @note call before the first frame, or only while the runtime is idle (no frame in
+         *       flight): registering a material appends binding-1 texture entries to every scene
+         *       set, and the scene sets are no longer update-after-bind - updating a set an
+         *       in-flight frame may read is a spec violation. Mid-loop creation needs wait_idle()
+         *       first.
          */
         primitive* make_primitive(std::string_view pipeline_name, primitive_create_info const& info);
 
@@ -716,6 +728,11 @@ namespace vulkan {
          * @param offset translation applied to every scene ROOT node's local transform
          *        (e.g. -scene_center + sink); children inherit it through update_world
          * @return counts of imported primitives and materials
+         * @note call before the first frame, or only while the runtime is idle (no frame in
+         *       flight): importing registers materials, which appends binding-1 texture entries
+         *       to every scene set, and the scene sets are no longer update-after-bind -
+         *       updating a set an in-flight frame may read is a spec violation. Mid-loop imports
+         *       need wait_idle() first.
          */
         template <class NI, class DI>
             requires scene_node_iterator<NI> && scene_drawable_iterator<DI>
