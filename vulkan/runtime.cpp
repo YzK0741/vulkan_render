@@ -1264,8 +1264,11 @@ namespace vulkan {
 
     std::expected<void, std::string> runtime::make_shadow_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code) {
         using fail = std::unexpected<std::string>;
-        // depth-only pipeline (no color attachment, single sample); requires dynamic rendering
-        auto make_result = this->vulkan_core.make_depth_pipeline(vertex_shader_code, fragment_shader_code, this->vulkan_core.depth_format);
+        // depth-only pipeline (no color attachment, single sample); requires dynamic rendering.
+        // Slope-scaled rasterization depth bias pushes the stored depths away from the light
+        // proportionally to the surface's depth slope, which removes shadow acne on angled
+        // surfaces (scale-free: units of depth per depth-unit of slope).
+        auto make_result = this->vulkan_core.make_depth_pipeline(vertex_shader_code, fragment_shader_code, this->vulkan_core.depth_format, 0.0f, 1.5f, 0.0f);
         if (!make_result) {
             return fail(std::string(make_result.error()));
         }

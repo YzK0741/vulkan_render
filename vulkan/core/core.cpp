@@ -1142,7 +1142,10 @@ namespace vulkan {
     std::expected<vk_pipeline, std::string_view> core::make_depth_pipeline(
         std::span<unsigned char const> vertex_shader_code,
         std::span<unsigned char const> const fragment_shader_code,
-        VkFormat const depth_format) const {
+        VkFormat const depth_format,
+        float const depth_bias_constant_factor,
+        float const depth_bias_slope_factor,
+        float const depth_bias_clamp) const {
         using fail = std::unexpected<std::string_view>;
         // The depth-only pipeline renders with no color attachment; only the dynamic rendering
         // path can express that (the classic render pass fallback always has color attachments)
@@ -1159,7 +1162,10 @@ namespace vulkan {
             fragment_shader_code,
             VK_SAMPLE_COUNT_1_BIT, // the shadow map is single-sampled
             true,                  // depth test + write
-            false);                // no color attachment
+            false,                 // no color attachment
+            depth_bias_constant_factor,
+            depth_bias_slope_factor,
+            depth_bias_clamp);
         // viewport/scissor are dynamic states set by the caller before drawing (the shadow map
         // is a fixed-size target, so core::make_pipeline's swapchain-size defaults do not apply)
         return result;

@@ -46,5 +46,10 @@ namespace vulkan {
         std::span<unsigned char const> fragment_shader_code,
         VkSampleCountFlagBits msaa_level,
         bool depth_test_enabled = true,
-        bool has_color_attachment = true);
+        bool has_color_attachment = true,
+        // fixed-function rasterization depth bias (only meaningful for depth-writing passes
+        // such as the shadow map): slope-scaled bias removes shadow acne on angled surfaces
+        float depth_bias_constant_factor = 0.0f,
+        float depth_bias_slope_factor = 0.0f,
+        float depth_bias_clamp = 0.0f);
 } // namespace vulkan

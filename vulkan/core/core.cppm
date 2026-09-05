@@ -242,7 +242,10 @@ namespace vulkan {
         std::expected<vk_pipeline, std::string_view> make_depth_pipeline(
             std::span<unsigned char const> vertex_shader_code,
             std::span<unsigned char const> fragment_shader_code,
-            VkFormat depth_format) const;
+            VkFormat depth_format,
+            float depth_bias_constant_factor = 0.0f,
+            float depth_bias_slope_factor = 0.0f,
+            float depth_bias_clamp = 0.0f) const;
 
         void recreate_swap_chain();
 

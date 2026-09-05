@@ -39,7 +39,10 @@ namespace vulkan {
         std::span<unsigned char const> const fragment_shader_code,
         VkSampleCountFlagBits const msaa_level,
         bool const depth_test_enabled,
-        bool const has_color_attachment) {
+        bool const has_color_attachment,
+        float const depth_bias_constant_factor,
+        float const depth_bias_slope_factor,
+        float const depth_bias_clamp) {
         using fail = std::unexpected<std::string_view>;
 
         // ---- 1. Parse the vertex stage interface, filter builtins, build vertex input ----
@@ -136,7 +139,14 @@ namespace vulkan {
         rasterization_state_create_info.lineWidth = 1.0f;
         rasterization_state_create_info.cullMode = VK_CULL_MODE_BACK_BIT;
         rasterization_state_create_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        rasterization_state_create_info.depthBiasEnable = VK_FALSE;
+        // slope-scaled depth bias for depth-writing passes (the shadow map): pushing the stored
+        // depth away from the light by the surface's depth slope removes acne on angled
+        // surfaces; the factor is scale-free (in depth units per depth-unit slope)
+        rasterization_state_create_info.depthBiasEnable =
+            (depth_bias_constant_factor != 0.0f || depth_bias_slope_factor != 0.0f || depth_bias_clamp != 0.0f) ? VK_TRUE : VK_FALSE;
+        rasterization_state_create_info.depthBiasConstantFactor = depth_bias_constant_factor;
+        rasterization_state_create_info.depthBiasSlopeFactor = depth_bias_slope_factor;
+        rasterization_state_create_info.depthBiasClamp = depth_bias_clamp;
 
         VkPipelineDepthStencilStateCreateInfo depth_stencil_state_create_info = {};
         depth_stencil_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;

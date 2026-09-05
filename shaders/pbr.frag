@@ -68,9 +68,10 @@ float calc_shadow(vec3 world_pos) {
         return 1.0;
     }
 
-    // Constant depth bias pushes the comparison away from the surface to hide acne; PCF then
-    // smooths the shadow edges
-    float bias = 0.002;
+    // Constant depth bias pushes the comparison away from the surface to hide quantization
+    // acne on flat receivers; the shadow pass itself applies a slope-scaled rasterization
+    // depth bias for angled surfaces, so this stays small to avoid shadow detachment.
+    float bias = 0.0015;
     vec2 texel_size = 1.0 / vec2(textureSize(shadow_map, 0));
 
     float shadow = 0.0;
