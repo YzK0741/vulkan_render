@@ -237,10 +237,23 @@ namespace gltf {
 
     /**
      * @ingroup gltf_loader
+     * @brief one morph target of a primitive: per-vertex displacement attributes (POSITION /
+     *        NORMAL / TANGENT deltas, same shape as primitive::vertex, same vertex count as the
+     *        base attributes)
+     */
+    export struct morph_target {
+        std::map<std::string, vertex_portion> attributes = {};
+    };
+
+    /**
+     * @ingroup gltf_loader
      * @brief a drawable primitive: vertex attributes, index data and its material reference
+     * @note targets holds the primitive's morph targets (empty when the mesh is not morphable);
+     *       a consumer blends base + sum(weight_i * delta_i) per vertex — see docs §10
      */
     export struct primitive {
         std::map<std::string, vertex_portion> vertex;
+        std::vector<morph_target> targets = {};
         std::vector<unsigned char> index;
         component_type index_component_type;
         // index into scenes::materials; std::numeric_limits<uint32_t>::max() when the primitive
@@ -251,9 +264,13 @@ namespace gltf {
     /**
      * @ingroup gltf_loader
      * @brief a mesh composed of primitives
+     * @note weights are the mesh's default morph weights, one per target of its primitives
+     *       (glTF mesh.weights; empty = all-zero). gltf::node::weights, when present, overrides
+     *       them; a "weights" animation channel drives them over time (see docs §10)
      */
     export struct mesh {
         std::vector<primitive> primitives;
+        std::vector<float> weights = {};
     };
 
     // ---- animation (glTF keyframe animation, exported decoded; playback is a consumer concern) ----
@@ -271,12 +288,13 @@ namespace gltf {
     /**
      * @ingroup gltf_loader
      * @brief animated node property of one animation channel (glTF "path")
-     * @note "weights" (morph targets) are not exported: morph targets are unsupported
      */
     export enum class animation_path : int {
         translation = 1, // values are xyz triplets (one per keyframe)
         rotation = 2,    // values are xyzw quaternions (w scalar, one per keyframe)
         scale = 3,       // values are xyz triplets (one per keyframe)
+        weights = 4,     // morph target weights: per-key scalar block, one value per target of
+                         // the node's mesh (sampler::per_key = target count)
     };
 
     /**
@@ -284,17 +302,19 @@ namespace gltf {
      * @brief one decoded animation sampler: keyframe times + flat output values
      * @note
      *      - times: one float per keyframe, in seconds, monotonically non-decreasing (as stored)
-     *      - values: flat floats. LINEAR / STEP hold key_count * components floats
-     *        (3 for translation/scale, 4 for rotation). CUBICSPLINE holds key_count *
-     *        components * 3 floats, grouped per keyframe in glTF order: in-tangent, value,
-     *        out-tangent. Whether a sampler was decoded from valid accessors is not tracked —
-     *        a broken/unsupported sampler simply has empty times/values and must be skipped.
+     *      - values: flat floats. LINEAR / STEP hold key_count * per_key floats; CUBICSPLINE
+     *        holds key_count * per_key * 3 floats, grouped per keyframe in glTF order:
+     *        in-tangent, value, out-tangent. Whether a sampler was decoded from valid accessors
+     *        is not tracked — a broken/unsupported sampler simply has empty times/values.
+     *      - per_key: values per keyframe — 3 for translation/scale, 4 for rotation, the morph
+     *        target count for the "weights" path (0 = not derivable; the sampler is unusable)
      *      - glTF requires float input; other numeric component types are converted to float
      *        when present (so the loader stays robust against non-conforming files)
      */
     export struct animation_sampler {
         std::vector<float> times = {};
         std::vector<float> values = {};
+        std::size_t per_key = 0; // values per keyframe (see above)
         animation_interpolation interpolation = animation_interpolation::linear;
     };
 
@@ -345,7 +365,8 @@ namespace gltf {
     /**
      * @ingroup gltf_loader
      * @brief evaluated value of one animation channel at a point in time: a vec3 for the
-     *        translation/scale paths or a quaternion for the rotation path
+     *        translation/scale paths, a quaternion for the rotation path, or a scalar block for
+     *        the "weights" (morph) path
      * @note valid == false means the sampler had no keyframes (or broken values); nothing
      *       could be sampled
      */
@@ -353,6 +374,7 @@ namespace gltf {
         bool valid = false;
         glm::vec3 vec3 = glm::vec3(0.0f);                   // translation / scale paths
         glm::quat quat = glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // rotation path (normalized, w scalar)
+        std::vector<float> scalars = {};                    // weights path: one value per morph target
     };
 
     /**
@@ -373,18 +395,22 @@ namespace gltf {
 
     /**
      * @ingroup gltf_loader
-     * @brief one node's animated local pose at a point in time: the TRS base pose of the node
-     *        (see gltf::node) overridden by every channel of @p animation that targets it
+     * @brief one node's animated state at a point in time: the TRS base pose (see gltf::node)
+     *        overridden by every channel of @p animation that targets it, plus the morph target
+     *        weights when a "weights" channel targets it
      * @note the caller picks the animated node(s) per scene by matching
      *       gltf::node::source_index against animation_channel::target_node, evaluates the
      *       per-node pose through this function, then composes T * R * S to write the node's
-     *       local transform (see §8 of docs/gltf_loader_usage.md)
+     *       local transform (see §8 of docs/gltf_loader_usage.md); weights (when non-empty)
+     *       feed the morph blend of the node's mesh (see §10)
      */
     export struct node_pose {
         bool any_channel = false;                // true when at least one channel applied
+        bool any_transform = false;              // true when a T/R/S channel applied (local changes)
         glm::vec3 translation = glm::vec3(0.0f); // base pose, overridden per channel path
         glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
         glm::vec3 scale = glm::vec3(1.0f);
+        std::vector<float> weights = {}; // active morph weights (weights channel); empty = none
     };
 
     /**
@@ -435,6 +461,9 @@ namespace gltf {
         // index into scenes::skins when this node's mesh is skinned (glTF node.skin); the
         // drawable's JOINTS_0 indices reference the skin's joint list
         std::optional<std::size_t> skin_index = std::nullopt;
+        // morph weights override for this node's mesh (glTF node.weights; overrides mesh.weights,
+        // empty = fall back to the mesh defaults / animation)
+        std::optional<std::vector<float>> weights = std::nullopt;
     };
 
     /**

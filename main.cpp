@@ -254,6 +254,33 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Morph summary (diagnostics): primitives may carry morph targets (POSITION/NORMAL deltas),
+    // meshes/nodes default weights, and "weights" animation channels (see docs §10). The vertex
+    // blending itself is a later stage — morphable models currently render their base shape.
+    {
+        size_t morph_prims = 0;
+        size_t morph_targets = 0;
+        size_t weighty_meshes = 0;
+        for (gltf::scene const& loader_scene : scenes->scene) {
+            for (gltf::node const& loader_node : loader_scene.nodes) {
+                for (gltf::mesh const& mesh : loader_node.meshes) {
+                    if (!mesh.weights.empty()) {
+                        ++weighty_meshes;
+                    }
+                    for (gltf::primitive const& prim : mesh.primitives) {
+                        if (!prim.targets.empty()) {
+                            ++morph_prims;
+                            morph_targets += prim.targets.size();
+                        }
+                    }
+                }
+            }
+        }
+        if (morph_prims > 0) {
+            utility::log("morph: {} primitive(s) with morph targets ({} total targets, {} mesh(es) with default weights)", morph_prims, morph_targets, weighty_meshes);
+        }
+    }
+
     // Sink the model so it sits near the world horizon (y = 0) and move the camera target with it:
     // the camera then orbits/looks at the model's position instead of the scene origin.
     glm::vec3 const scene_sink(0.0f, -scene_radius, 0.0f);
@@ -693,8 +720,8 @@ int main(int argc, char** argv) {
                 auto const base_it = anim_base_poses.find(source);
                 gltf::node_pose const base = base_it == anim_base_poses.end() ? gltf::node_pose{} : base_it->second;
                 gltf::node_pose const pose = gltf::sample_node(*anim.animation, source, base, static_cast<float>(anim.time));
-                if (!pose.any_channel) {
-                    continue;
+                if (!pose.any_transform) {
+                    continue; // weights-only channels don't move the node's local transform
                 }
                 // compose T * R * S; scene-root occurrences also keep the import shift that
                 // placed the model (import_scene applied it to each root's local transform)

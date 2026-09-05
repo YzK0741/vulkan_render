@@ -346,6 +346,21 @@ namespace {
             vertex[name].data = std::move(data.data);
         }
 
+        // morph targets: per-target displacement attributes (POSITION/NORMAL deltas), decoded
+        // exactly like the base attributes (same vertex count per target)
+        std::vector<gltf::morph_target> targets;
+        targets.reserve(primitive.targets.size());
+        for (auto const& target_attributes : primitive.targets) {
+            gltf::morph_target target;
+            for (auto const& attribute : target_attributes) {
+                auto data = get_data_from_accessor(asset, asset.accessors[attribute.accessorIndex]);
+                std::string const name(attribute.name);
+                target.attributes[name].component = data.component_type;
+                target.attributes[name].data = std::move(data.data);
+            }
+            targets.push_back(std::move(target));
+        }
+
         parsed_data index_data;
         if (primitive.indicesAccessor) {
             index_data = get_data_from_accessor(asset, asset.accessors[*primitive.indicesAccessor]);
@@ -353,6 +368,7 @@ namespace {
 
         return {
             .vertex = std::move(vertex),
+            .targets = std::move(targets),
             .index = std::move(index_data.data),
             .index_component_type = index_data.component_type,
             .material_index = primitive.materialIndex
@@ -395,6 +411,15 @@ namespace {
             if (fnode.skinIndex) {
                 current_node.skin_index = *fnode.skinIndex; // glTF node.skin -> scenes::skins
             }
+            // glTF node.weights: per-node morph weights, overriding the mesh defaults when present
+            if (!fnode.weights.empty()) {
+                std::vector<float> node_weights;
+                node_weights.reserve(fnode.weights.size());
+                for (fastgltf::num const w : fnode.weights) {
+                    node_weights.push_back(static_cast<float>(w));
+                }
+                current_node.weights = std::move(node_weights);
+            }
             if (auto const* trs = std::get_if<fastgltf::TRS>(&fnode.transform)) {
                 current_node.translation = glm::vec3(trs->translation[0], trs->translation[1], trs->translation[2]);
                 glm::quat rotation = {};
@@ -412,6 +437,10 @@ namespace {
                 gltf::mesh current_mesh = {};
                 for (auto const& primitive : asset.meshes[*fnode.meshIndex].primitives) {
                     current_mesh.primitives.push_back(load_primitive(primitive, asset));
+                }
+                // glTF mesh.weights: default morph weights (one per target of the primitives)
+                for (fastgltf::num const w : asset.meshes[*fnode.meshIndex].weights) {
+                    current_mesh.weights.push_back(static_cast<float>(w));
                 }
                 current_node.meshes.push_back(std::move(current_mesh));
             }
@@ -544,38 +573,60 @@ namespace {
             result.samplers.push_back(std::move(sampler));
         }
 
-        // Channels: export TRS paths only. Weights (morph targets, unsupported) and channels
-        // with unresolvable node/sampler references are dropped.
+        // Channels: export TRS + morph-weights paths. A channel whose target/sampler cannot be
+        // resolved (or a weights channel whose node carries no morphable mesh) is dropped.
         std::size_t skipped_weights = 0;
         for (fastgltf::AnimationChannel const& f_channel : f_anim.channels) {
-            if (f_channel.path == fastgltf::AnimationPath::Weights) {
-                ++skipped_weights;
-                continue;
-            }
             if (!f_channel.nodeIndex || f_channel.samplerIndex >= result.samplers.size()) {
                 continue; // broken reference: cannot resolve
             }
             gltf::animation_channel channel = {};
             channel.sampler = f_channel.samplerIndex;
             channel.target_node = *f_channel.nodeIndex;
+            std::size_t per_key = 0;
             switch (f_channel.path) {
             case fastgltf::AnimationPath::Translation:
                 channel.path = gltf::animation_path::translation;
+                per_key = 3;
                 break;
             case fastgltf::AnimationPath::Rotation:
                 channel.path = gltf::animation_path::rotation;
+                per_key = 4;
                 break;
             case fastgltf::AnimationPath::Scale:
                 channel.path = gltf::animation_path::scale;
+                per_key = 3;
                 break;
+            case fastgltf::AnimationPath::Weights: {
+                // morph weights: one scalar per keyframe per morph target of the node's mesh
+                fastgltf::Node const& fnode = asset.nodes[*f_channel.nodeIndex];
+                if (!fnode.meshIndex || *fnode.meshIndex >= asset.meshes.size() || asset.meshes[*fnode.meshIndex].primitives.empty()) {
+                    ++skipped_weights;
+                    continue;
+                }
+                std::size_t const target_count = asset.meshes[*fnode.meshIndex].primitives[0].targets.size();
+                if (target_count == 0) {
+                    ++skipped_weights;
+                    continue;
+                }
+                channel.path = gltf::animation_path::weights;
+                per_key = target_count;
+                break;
+            }
             default:
                 continue;
+            }
+            // record the per-keyframe shape on the sampler (a sampler shared by several channels
+            // keeps the first shape it was seen with)
+            gltf::animation_sampler& sampler = result.samplers[channel.sampler];
+            if (sampler.per_key == 0) {
+                sampler.per_key = per_key;
             }
             result.channels.push_back(std::move(channel));
         }
         if (skipped_weights > 0) {
             std::string_view const anim_name = result.name.empty() ? std::string_view("<unnamed>") : std::string_view(result.name);
-            utility::log("gltf: animation '{}': {} morph-target (weights) channel(s) skipped (morph targets unsupported)", anim_name, skipped_weights);
+            utility::log("gltf: animation '{}': {} morph-weight channel(s) skipped (node has no morphable mesh)", anim_name, skipped_weights);
         }
         return result;
     }
@@ -1280,33 +1331,32 @@ namespace gltf {
         if (keys == 0) {
             return out; // no keyframes: nothing to sample
         }
-        std::size_t const comps = path == animation_path::rotation ? 4 : 3;
+        // values per keyframe: the sampler records it (morph-weights channels vary per mesh);
+        // fall back to the path rule when a sampler carries no per_key shape
+        std::size_t const comps = sampler.per_key != 0 ? sampler.per_key : (path == animation_path::rotation ? 4 : 3);
         bool const cubic = sampler.interpolation == animation_interpolation::cubic_spline;
-        std::size_t const per_key = comps * (cubic ? 3 : 1);
-        if (sampler.values.size() < keys * per_key) {
+        std::size_t const stored_per_key = comps * (cubic ? 3 : 1);
+        if (sampler.values.size() < keys * stored_per_key) {
             return out; // value count does not match the key count: broken sampler
         }
         out.valid = true;
 
-        // read one key's value block (cubic: the middle triplet of the key's 3 * comps floats)
-        auto const read_value = [&](std::size_t const key, std::array<float, 4>& value) {
-            std::size_t const base = key * per_key + (cubic ? comps : 0);
+        // read one key's block: 'offset' selects the value triplet (0 for linear, comps for the
+        // middle value triplet of a cubic block) or a tangent (comps / 2 * comps of a cubic block)
+        auto const read_block = [&](std::size_t const key, std::size_t const offset, std::vector<float>& block) {
+            block.resize(comps);
+            std::size_t const base = key * stored_per_key + offset;
             for (std::size_t c = 0; c < comps; ++c) {
-                value[c] = sampler.values[base + c];
+                block[c] = sampler.values[base + c];
             }
         };
-        // read a cubic-spline tangent of a key (out_tangent selects the trailing triplet)
-        auto const read_tangent = [&](std::size_t const key, bool const out_tangent, std::array<float, 4>& tangent) {
-            std::size_t const base = key * per_key + (out_tangent ? 2 * comps : 0);
-            for (std::size_t c = 0; c < comps; ++c) {
-                tangent[c] = sampler.values[base + c];
-            }
-        };
-        auto const assign_value = [&](std::array<float, 4> const& value) {
+        auto const assign = [&](std::vector<float> const& block) {
             if (path == animation_path::rotation) {
-                out.quat = glm::quat(value[3], value[0], value[1], value[2]); // glm ctor order is (w, x, y, z)
+                out.quat = glm::quat(block[3], block[0], block[1], block[2]); // glm ctor order (w, x, y, z)
+            } else if (path == animation_path::weights) {
+                out.scalars = block; // one value per morph target
             } else {
-                out.vec3 = glm::vec3(value[0], value[1], value[2]);
+                out.vec3 = glm::vec3(block[0], block[1], block[2]);
             }
         };
 
@@ -1316,40 +1366,41 @@ namespace gltf {
         while (key + 1 < keys && sampler.times[key + 1] <= time) {
             ++key;
         }
+        auto const hold_key = [&] {
+            std::vector<float> value;
+            read_block(key, cubic ? comps : 0, value);
+            assign(value);
+        };
 
         // STEP interpolation and the range end hold the left key's value
         if (sampler.interpolation == animation_interpolation::step || key + 1 >= keys) {
-            std::array<float, 4> value = {};
-            read_value(key, value);
-            assign_value(value);
+            hold_key();
             return out;
         }
 
         float const dt = sampler.times[key + 1] - sampler.times[key];
         if (dt <= 0.0f) { // duplicate timestamps (invalid per the spec): hold the key's value
-            std::array<float, 4> value = {};
-            read_value(key, value);
-            assign_value(value);
+            hold_key();
             return out;
         }
         float const u = (time - sampler.times[key]) / dt;
 
-        std::array<float, 4> a = {};
-        std::array<float, 4> b = {};
-        read_value(key, a);
-        read_value(key + 1, b);
+        std::vector<float> a;
+        std::vector<float> b;
+        read_block(key, cubic ? comps : 0, a);
+        read_block(key + 1, cubic ? comps : 0, b);
 
         if (cubic) {
             // Hermite spline over the segment; tangents are scaled by the segment duration
-            std::array<float, 4> out_tangent = {};
-            std::array<float, 4> in_tangent = {};
-            read_tangent(key, true, out_tangent);
-            read_tangent(key + 1, false, in_tangent);
+            std::vector<float> out_tangent;
+            std::vector<float> in_tangent;
+            read_block(key, 2 * comps, out_tangent);
+            read_block(key + 1, 0, in_tangent);
             float const h00 = 2.0f * u * u * u - 3.0f * u * u + 1.0f;
             float const h10 = u * u * u - 2.0f * u * u + u;
             float const h01 = -2.0f * u * u * u + 3.0f * u * u;
             float const h11 = u * u * u - u * u;
-            std::array<float, 4> value = {};
+            std::vector<float> value(comps);
             for (std::size_t c = 0; c < comps; ++c) {
                 value[c] = h00 * a[c] + h10 * dt * out_tangent[c] + h01 * b[c] + h11 * dt * in_tangent[c];
             }
@@ -1359,7 +1410,7 @@ namespace gltf {
                 float const norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
                 out.quat = norm > 0.0f ? glm::normalize(q) : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
             } else {
-                out.vec3 = glm::vec3(value[0], value[1], value[2]);
+                assign(value);
             }
             return out;
         }
@@ -1373,7 +1424,11 @@ namespace gltf {
             }
             out.quat = glm::normalize(glm::slerp(q0, q1, u));
         } else {
-            out.vec3 = glm::vec3(a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u);
+            std::vector<float> value(comps);
+            for (std::size_t c = 0; c < comps; ++c) {
+                value[c] = a[c] + (b[c] - a[c]) * u;
+            }
+            assign(value);
         }
         return out;
     }
@@ -1391,12 +1446,18 @@ namespace gltf {
             switch (channel.path) {
             case animation_path::translation:
                 pose.translation = sample.vec3;
+                pose.any_transform = true;
                 break;
             case animation_path::rotation:
                 pose.rotation = sample.quat;
+                pose.any_transform = true;
                 break;
             case animation_path::scale:
                 pose.scale = sample.vec3;
+                pose.any_transform = true;
+                break;
+            case animation_path::weights:
+                pose.weights = sample.scalars; // active morph weights for the node's mesh
                 break;
             }
             pose.any_channel = true;
