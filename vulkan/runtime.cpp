@@ -814,7 +814,7 @@ namespace vulkan {
         // of them, the main pass draws the subset bound to each pipeline
         this->frame_leaves.clear();
         for (scene_tree::scene_node const& root : this->scene.roots) {
-            this->collect_leaf_primitives(root, this->frame_leaves);
+            collect_leaf_primitives(root, this->frame_leaves);
         }
 
         // 6b. Frustum culling for the main pass: build a BVH over every leaf that has a single
@@ -1505,7 +1505,7 @@ namespace vulkan {
         this->bvh_dirty = true; // leaves removed -> culling BVH must be rebuilt
     }
 
-    void runtime::collect_leaf_primitives(scene_tree::scene_node const& node, std::pmr::vector<primitive const*>& out) const {
+    void runtime::collect_leaf_primitives(scene_tree::scene_node const& node, std::pmr::vector<primitive const*>& out) {
         scene_tree::visit_primitives(node, glm::mat4(1.0f), [&out](scene_tree::scene_node const& n, glm::mat4 const&) {
             out.push_back(static_cast<primitive const*>(n.primitive_leaf.get()));
         });

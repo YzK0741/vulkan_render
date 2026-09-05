@@ -99,7 +99,7 @@ namespace vulkan {
         vkCmdDrawIndexed(command_buffer, geometry_source.index_count, this->instance_count, 0, 0, 0);
     }
 
-    void instanced_draw_primitive::destroy(vma_allocator&) noexcept {
+    void instanced_draw_primitive::destroy([[maybe_unused]] vma_allocator& vma) noexcept {
         // owns nothing: the instance transform buffer is runtime-owned, geometry is source's
     }
 

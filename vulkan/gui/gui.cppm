@@ -267,7 +267,7 @@ namespace vulkan::gui {
          * @brief begin a new ImGui frame (glfw + vulkan + ImGui NewFrame). Call once per frame
          *        after the frame's swapchain image was acquired and before any ImGui widgets.
          */
-        void new_frame();
+        void new_frame() const;
 
         /**
          * @ingroup vulkan_gui
@@ -284,7 +284,7 @@ namespace vulkan::gui {
          * @brief called by the runtime after a swapchain recreation so the backend can adapt
          *        (e.g. min image count)
          */
-        void on_swapchain_recreated();
+        void on_swapchain_recreated() const;
 
     private:
         std::vector<std::unique_ptr<debug_panel>> panels; // registered panels, drawn in order

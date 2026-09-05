@@ -124,7 +124,7 @@ namespace vulkan::gui {
         return this->panels.size();
     }
 
-    void gui_content::new_frame() {
+    void gui_content::new_frame() const {
         if (!this->active) {
             return;
         }
@@ -146,7 +146,7 @@ namespace vulkan::gui {
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
     }
 
-    void gui_content::on_swapchain_recreated() {
+    void gui_content::on_swapchain_recreated() const {
         if (!this->active) {
             return;
         }

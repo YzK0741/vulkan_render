@@ -618,9 +618,9 @@ namespace gltf {
         std::vector<scene> scene;
 
         [[nodiscard]] scene_iterator begin() const;
-        [[nodiscard]] scene_iterator end() const noexcept;
+        static scene_iterator end() noexcept;
         [[nodiscard]] scene_node_iterator nodes_begin() const;
-        [[nodiscard]] scene_node_iterator nodes_end() const noexcept;
+        static scene_node_iterator nodes_end() noexcept;
     };
 
     /**
@@ -747,7 +747,7 @@ namespace gltf {
     private:
         void ensure_built() const; // build the current drawable's interleaved geometry lazily
         resolved_material const* current_material() const;
-        image_view slot(int const i) const;
+        image_view slot(int i) const;
 
         gltf::scene_iterator inner;
         std::span<resolved_material const> materials = {};

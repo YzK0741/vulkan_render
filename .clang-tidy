@@ -17,6 +17,10 @@
 #   - readability-uppercase-literal-suffix    : 字面量后缀大小写纯风格偏好
 #   - readability-implicit-bool-conversion    : Vulkan 代码习惯（指针/句柄判空）
 #   - readability-math-missing-parentheses    : 数学表达式括号风格
+#   - readability-function-cognitive-complexity / readability-function-size :
+#     复杂度类检查暂不处理（按用户要求）
+#   - clang-analyzer-optin.performance.Padding : vulkan::runtime 成员重排可省 ~48B，
+#     但会大规模搅动外观类代码（待讨论项，暂排除）
 Checks: >
   -*,
   bugprone-*,
@@ -25,6 +29,7 @@ Checks: >
   -bugprone-easily-swappable-parameters,
   -bugprone-signed-bitwise,
   clang-analyzer-*,
+  -clang-analyzer-optin.performance.Padding,
   performance-*,
   -performance-enum-size,
   readability-*,
@@ -34,6 +39,8 @@ Checks: >
   -readability-uppercase-literal-suffix,
   -readability-implicit-bool-conversion,
   -readability-math-missing-parentheses,
+  -readability-function-cognitive-complexity,
+  -readability-function-size,
 
 # 把所有警告视为错误会阻碍迭代，这里先保持警告
 WarningsAsErrors: ''

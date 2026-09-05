@@ -112,7 +112,7 @@ namespace vulkan {
             , allocation(other.allocation)
             , allocation_info(other.allocation_info)
             , digest(other.digest)
-            , create_info(std::move(other.create_info))
+            , create_info(other.create_info)
             , type(other.type)
             , use_count(other.use_count.load()) {
             other.image = VK_NULL_HANDLE;

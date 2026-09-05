@@ -210,7 +210,7 @@ int main(int argc, char** argv) {
         size_t mesh_nodes = 0;
         size_t max_depth = 0;
         std::vector<std::string> tree_lines;
-        for (gltf::scene_node_iterator it = scenes->nodes_begin(); it != scenes->nodes_end(); ++it) {
+        for (gltf::scene_node_iterator it = scenes->nodes_begin(); it != gltf::scenes::nodes_end(); ++it) {
             ++total_nodes;
             size_t const depth = it.get_depth();
             max_depth = std::max(max_depth, depth);
@@ -224,7 +224,7 @@ int main(int argc, char** argv) {
                                              has_mesh ? " [mesh]" : ""));
         }
         utility::log("scene hierarchy: {} roots, {} nodes total ({} with meshes), max depth {}",
-                     scenes->scene.size() > 0 ? scenes->scene.front().root_indices.size() : 0,
+                     !scenes->scene.empty() ? scenes->scene.front().root_indices.size() : 0,
                      total_nodes, mesh_nodes, max_depth);
         for (std::string const& line : tree_lines) {
             utility::log("  {}", line);
@@ -354,8 +354,8 @@ int main(int argc, char** argv) {
                 float const spacing = 2.5f * scene_radius; // keep instances apart: measure draw scaling, not overdraw
                 for (int i = 0; i < side; ++i) {
                     for (int j = 0; j < side; ++j) {
-                        float const dx = (static_cast<float>(i) - (side - 1) * 0.5f) * spacing;
-                        float const dz = (static_cast<float>(j) - (side - 1) * 0.5f) * spacing;
+                        float const dx = (static_cast<float>(i) - static_cast<float>(side - 1) * 0.5f) * spacing;
+                        float const dz = (static_cast<float>(j) - static_cast<float>(side - 1) * 0.5f) * spacing;
                         transforms.push_back(glm::translate(glm::mat4(1.0f), glm::vec3(dx, 0.0f, dz)) * source.push.model);
                     }
                 }
@@ -663,8 +663,12 @@ int main(int argc, char** argv) {
                 }
             }
             // default weights: node.weights override, else the mesh defaults, else zeros
-            std::vector<float> const default_weights = loader_node.weights ? *loader_node.weights
-                                                                           : (!loader_node.meshes.empty() ? loader_node.meshes[0].weights : std::vector<float>{});
+            std::vector<float> default_weights;
+            if (loader_node.weights) {
+                default_weights = *loader_node.weights;
+            } else if (!loader_node.meshes.empty()) {
+                default_weights = loader_node.meshes[0].weights;
+            }
             for (std::size_t i = 0; i < leaves.size() && i < loader_prims.size(); ++i) {
                 gltf::primitive const& loader_prim = *loader_prims[i];
                 if (loader_prim.targets.empty()) {

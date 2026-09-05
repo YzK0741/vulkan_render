@@ -195,7 +195,7 @@ namespace vulkan {
          * @note leaves are stored as scene_tree::primitive; every leaf this runtime creates is a
          *       vulkan::primitive (the GPU primitive implements scene_tree::primitive), so the cast is safe
          */
-        void collect_leaf_primitives(scene_tree::scene_node const& node, std::pmr::vector<primitive const*>& out) const;
+        static void collect_leaf_primitives(scene_tree::scene_node const& node, std::pmr::vector<primitive const*>& out);
         /**
          * @ingroup vulkan_runtime
          * @brief destroy every leaf primitive under @p node (recursively) with @p vma

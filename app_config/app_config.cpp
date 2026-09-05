@@ -172,7 +172,7 @@ namespace app_config {
 
         // 2. Positional argv overrides the file: [0] = model, [1] = grid side (numeric) or demo,
         //    [2] = demo.
-        if (positional.size() > 0 && !positional[0].empty()) {
+        if (!positional.empty() && !positional[0].empty()) {
             settings.model = std::string(positional[0]);
         }
         if (positional.size() > 1 && !positional[1].empty()) {

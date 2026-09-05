@@ -622,7 +622,7 @@ namespace {
             if (sampler.per_key == 0) {
                 sampler.per_key = per_key;
             }
-            result.channels.push_back(std::move(channel));
+            result.channels.push_back(channel);
         }
         if (skipped_weights > 0) {
             std::string_view const anim_name = result.name.empty() ? std::string_view("<unnamed>") : std::string_view(result.name);
@@ -798,12 +798,12 @@ namespace {
             }
             if (joints_portion->component == gltf::component_type::unsigned_byte_t) {
                 for (int c = 0; c < 4; ++c) {
-                    out[static_cast<std::size_t>(c)] = joints_portion->data[i * 4 + static_cast<std::size_t>(c)];
+                    out[c] = joints_portion->data[i * 4 + static_cast<std::size_t>(c)];
                 }
             } else if (joints_portion->component == gltf::component_type::unsigned_short_t) {
                 auto const* p = reinterpret_cast<std::uint16_t const*>(joints_portion->data.data());
                 for (int c = 0; c < 4; ++c) {
-                    out[static_cast<std::size_t>(c)] = p[i * 4 + static_cast<std::size_t>(c)];
+                    out[c] = p[i * 4 + static_cast<std::size_t>(c)];
                 }
             }
             return out;
@@ -817,14 +817,17 @@ namespace {
                 return glm::vec4(p[i * 4 + 0], p[i * 4 + 1], p[i * 4 + 2], p[i * 4 + 3]);
             }
             if (weights_portion->component == gltf::component_type::unsigned_byte_t) { // normalized
-                return glm::vec4(weights_portion->data[i * 4 + 0] / 255.0f,
-                                 weights_portion->data[i * 4 + 1] / 255.0f,
-                                 weights_portion->data[i * 4 + 2] / 255.0f,
-                                 weights_portion->data[i * 4 + 3] / 255.0f);
+                return glm::vec4(static_cast<float>(weights_portion->data[i * 4 + 0]) / 255.0f,
+                                 static_cast<float>(weights_portion->data[i * 4 + 1]) / 255.0f,
+                                 static_cast<float>(weights_portion->data[i * 4 + 2]) / 255.0f,
+                                 static_cast<float>(weights_portion->data[i * 4 + 3]) / 255.0f);
             }
             if (weights_portion->component == gltf::component_type::unsigned_short_t) { // normalized
                 auto const* p = reinterpret_cast<std::uint16_t const*>(weights_portion->data.data());
-                return glm::vec4(p[i * 4 + 0] / 65535.0f, p[i * 4 + 1] / 65535.0f, p[i * 4 + 2] / 65535.0f, p[i * 4 + 3] / 65535.0f);
+                return glm::vec4(static_cast<float>(p[i * 4 + 0]) / 65535.0f,
+                                 static_cast<float>(p[i * 4 + 1]) / 65535.0f,
+                                 static_cast<float>(p[i * 4 + 2]) / 65535.0f,
+                                 static_cast<float>(p[i * 4 + 3]) / 65535.0f);
             }
             return glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
         };
@@ -1072,7 +1075,7 @@ namespace gltf {
         return scene_iterator(*this);
     }
 
-    scene_iterator scenes::end() const noexcept {
+    scene_iterator scenes::end() noexcept {
         return scene_iterator();
     }
 
@@ -1163,7 +1166,7 @@ namespace gltf {
         return scene_node_iterator(*this);
     }
 
-    scene_node_iterator scenes::nodes_end() const noexcept {
+    scene_node_iterator scenes::nodes_end() noexcept {
         return scene_node_iterator();
     }
 
@@ -1190,7 +1193,7 @@ namespace gltf {
                 gltf::texture_data const& tex = scenes.textures[texture_index];
                 std::vector<unsigned char> const rgba = to_rgba(tex);
                 if (!rgba.empty() && tex.width > 0 && tex.height > 0) {
-                    mip_chain const mips = generate_mip_chain(rgba, tex.width, tex.height, srgb);
+                    mip_chain mips = generate_mip_chain(rgba, tex.width, tex.height, srgb);
                     entry->data = std::make_shared<std::vector<unsigned char>>(std::move(mips.data));
                     entry->width = tex.width;
                     entry->height = tex.height;
@@ -1333,7 +1336,10 @@ namespace gltf {
         }
         // values per keyframe: the sampler records it (morph-weights channels vary per mesh);
         // fall back to the path rule when a sampler carries no per_key shape
-        std::size_t const comps = sampler.per_key != 0 ? sampler.per_key : (path == animation_path::rotation ? 4 : 3);
+        std::size_t comps = sampler.per_key;
+        if (comps == 0) {
+            comps = path == animation_path::rotation ? 4 : 3;
+        }
         bool const cubic = sampler.interpolation == animation_interpolation::cubic_spline;
         std::size_t const stored_per_key = comps * (cubic ? 3 : 1);
         if (sampler.values.size() < keys * stored_per_key) {

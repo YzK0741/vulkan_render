@@ -357,7 +357,7 @@ namespace vulkan {
      *        per-morphable-primitive blocks of vertex deltas + morph weights, laid out by the
      *        caller (see the material_push_constants morph fields); 0 = no morph buffer
      */
-    export constexpr std::size_t scene_morph_capacity = 8u * 1024u * 1024u; // 8 MiB of floats
+    export constexpr std::size_t scene_morph_capacity = std::size_t{8u} * 1024u * 1024u; // 8 MiB of floats
 
     /**
      * @ingroup vulkan_runtime_scene_tree
