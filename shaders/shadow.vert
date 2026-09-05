@@ -20,6 +20,11 @@ layout(set = 0, binding = 6) readonly buffer InstanceTransforms {
     mat4 transforms[];
 } instances;
 
+// Per-joint skin matrices (same storage as pbr.vert, scene set binding 9)
+layout(set = 0, binding = 9) readonly buffer SkinMatrices {
+    mat4 matrices[];
+} skins;
+
 // Light UBO (scene set binding 7): the orthographic light view-proj maps world -> shadow map.
 layout(set = 0, binding = 7) uniform LightUBO {
     mat4 light_view_proj;
@@ -29,17 +34,31 @@ layout(set = 0, binding = 7) uniform LightUBO {
 layout(push_constant) uniform PushConstants {
     uint material_index; // unused here (vertex stage), declared to keep the block layout identical to pbr.vert
     uint flags;          // bit0: instanced draw -> model comes from instances[gl_InstanceIndex]
+    uint skin_base;      // start of this primitive's joint block in skins.matrices (0 = identity)
+    uint _pad;
     mat4 model;
 } push;
 
 void main() {
+    // skinning identical to pbr.vert: weighted joint transforms (identity block at skin_base 0)
+    vec4 local_pos = vec4(in_position, 1.0);
+    const float wsum = in_weights.x + in_weights.y + in_weights.z + in_weights.w;
+    if (wsum > 0.0) {
+        vec4 pos = vec4(0.0);
+        pos += in_weights.x * (skins.matrices[push.skin_base + in_joints.x] * local_pos);
+        pos += in_weights.y * (skins.matrices[push.skin_base + in_joints.y] * local_pos);
+        pos += in_weights.z * (skins.matrices[push.skin_base + in_joints.z] * local_pos);
+        pos += in_weights.w * (skins.matrices[push.skin_base + in_joints.w] * local_pos);
+        local_pos = pos / wsum;
+    }
+
     mat4 world = (push.flags & 1u) != 0u ? instances.transforms[gl_InstanceIndex] : push.model;
-    vec4 world_pos = world * vec4(in_position, 1.0);
+    vec4 world_pos = world * local_pos;
     gl_Position = light.light_view_proj * world_pos;
 
     // Keep every input alive so the vertex input layout (and thus the bound buffer stride)
     // matches pbr.vert exactly (76 bytes, locations 0-5). This branch can never run.
-    if (isnan(in_position.x) && isinf(in_normal.x) && in_uv.x > 1e30 && isinf(in_tangent.x) && in_joints.x > 0xFFFFFDu && in_weights.x > 1e30) {
+    if (isnan(in_position.x) && isinf(in_normal.x) && in_uv.x > 1e30 && isinf(in_tangent.x)) {
         gl_Position = vec4(0.0);
     }
 }
