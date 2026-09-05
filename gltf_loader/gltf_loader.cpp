@@ -1249,7 +1249,7 @@ namespace gltf {
         if (this->built) {
             return;
         }
-        built_mesh const mesh = build_mesh(*((*this->inner).primitive));
+        built_mesh const mesh = build_mesh(*this->inner->primitive);
         auto const* const first = reinterpret_cast<unsigned char const*>(mesh.vertices.data());
         this->vertex_bytes.assign(first, first + mesh.vertices.size() * sizeof(vertex));
         this->vertex_stride = sizeof(vertex);
@@ -1271,11 +1271,11 @@ namespace gltf {
     }
 
     glm::mat4 drawable_iterator::get_transform() const {
-        return (*this->inner).transform_matrix;
+        return this->inner->transform_matrix;
     }
 
     resolved_material const* drawable_iterator::current_material() const {
-        uint32_t const index = (*this->inner).primitive->material_index;
+        uint32_t const index = this->inner->primitive->material_index;
         return index < this->materials.size() ? &this->materials[index] : nullptr;
     }
 
