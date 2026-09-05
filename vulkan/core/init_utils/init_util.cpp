@@ -148,7 +148,12 @@ void print_device_capabilities(device_capabilities const& capabilities) {
     utility::log("{}", box_line);
 
     static constexpr std::array<char const*, 5> device_type_names = {
-        "other", "integrated gpu", "discrete gpu", "virtual gpu", "cpu"};
+        "other",
+        "integrated gpu",
+        "discrete gpu",
+        "virtual gpu",
+        "cpu",
+    };
     uint32_t const device_type = static_cast<uint32_t>(capabilities.properties_2.properties.deviceType);
     char const* type_name = device_type < device_type_names.size() ? device_type_names[device_type] : "unknown";
 

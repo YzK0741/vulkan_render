@@ -34,6 +34,9 @@ namespace vulkan {
      * @param depth_test_enabled enable depth test + depth write (false e.g. for the skybox pass)
      * @param has_color_attachment whether the pipeline renders color (false for depth-only
      *        passes like the shadow map: no color attachment, no color blending)
+     * @param depth_bias_constant_factor constant rasterization depth bias added to depth
+     * @param depth_bias_slope_factor slope-scaled depth bias (removes shadow acne on angled surfaces)
+     * @param depth_bias_clamp maximum depth bias magnitude (0 = no clamp)
      * @return vk_pipeline on success, error message on failure
      */
     export std::expected<vk_pipeline, std::string_view> make_pipeline(

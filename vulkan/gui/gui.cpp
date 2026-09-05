@@ -110,7 +110,7 @@ namespace vulkan::gui {
         std::erase_if(this->panels, [&panel](std::unique_ptr<debug_panel> const& p) { return p.get() == &panel; });
     }
 
-    void gui_content::set_panel_visible(debug_panel const& panel, bool const visible) {
+    void gui_content::set_panel_visible(debug_panel const& panel, bool const visible) { // NOLINT
         // debug_panel stores its open flag in is_open; find the panel and update it
         for (auto const& p : this->panels) {
             if (p.get() == &panel) {
@@ -133,7 +133,7 @@ namespace vulkan::gui {
         ImGui::NewFrame();
     }
 
-    void gui_content::record(VkCommandBuffer const cmd) {
+    void gui_content::record(VkCommandBuffer const cmd) { // NOLINT
         if (!this->active) {
             return;
         }

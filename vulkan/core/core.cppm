@@ -235,6 +235,9 @@ namespace vulkan {
          * @param vertex_shader_code raw SPIR-V binary of the vertex shader
          * @param fragment_shader_code raw SPIR-V binary of the fragment shader
          * @param depth_format depth attachment format (dynamic rendering only)
+         * @param depth_bias_constant_factor constant rasterization depth bias added to depth
+         * @param depth_bias_slope_factor slope-scaled depth bias (removes shadow acne on angled surfaces)
+         * @param depth_bias_clamp maximum depth bias magnitude (0 = no clamp)
          * @return vk_pipeline on success, error message on failure
          * @note requires dynamic rendering (Vulkan 1.3); on the classic render-pass fallback
          *       path it returns an error and the caller should disable shadow mapping

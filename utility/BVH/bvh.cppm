@@ -174,7 +174,7 @@ namespace utility {
 
         /** @brief map a world-space midpoint into [0,1]^3 for morton coding */
         [[nodiscard]] glm::vec3 normalize(glm::vec3 const& midpoint) const {
-            glm::vec3 const normalized = (midpoint - this->origin) * this->scale;
+            glm::vec3 const normalized = (midpoint - this->origin) * this->scale; // NOLINT
             return glm::clamp(normalized, glm::vec3(0.0f), glm::vec3(1.0f));
         }
         /** @brief compute origin/scale from a set of leaf AABBs (scene extent) */
@@ -204,7 +204,7 @@ namespace utility {
             glm::vec3 const& scale) {
             using fail = std::unexpected<std::string>;
             auto const normalize = [&origin, &scale](glm::vec3 const& midpoint) {
-                return glm::clamp((midpoint - origin) * scale, glm::vec3(0.0f), glm::vec3(1.0f));
+                return glm::clamp((midpoint - origin) * scale, glm::vec3(0.0f), glm::vec3(1.0f)); // NOLINT
             };
             auto leave_it = leaves.begin();
 

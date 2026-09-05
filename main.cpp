@@ -171,7 +171,7 @@ int main(int argc, char** argv) {
         load_shader(shaders_dir, "shadow.vert.spv", vertex_code);
         load_shader(shaders_dir, "shadow.frag.spv", fragment_code);
         auto const shadow_result = runtime.make_shadow_pipeline(vertex_code, fragment_code);
-        if (!shadow_result) {
+        if (!shadow_result) { // NOLINT(bugprone-branch-clone): CLion FP - the branches log different messages
             utility::log("shadow pipeline disabled: {}", shadow_result.error());
         } else {
             utility::log("SUCCESS: shadow pipeline created (directional shadow map pass)");
@@ -463,7 +463,7 @@ int main(int argc, char** argv) {
                 stack.push_back(&child);
             }
         }
-        if (subtree_node == nullptr) {
+        if (subtree_node == nullptr) { // NOLINT(bugprone-branch-clone): CLion FP - the branches log different messages
             utility::log("spin-subtree: scene has no primitive leaf node to rotate");
         } else {
             utility::log("spin-subtree: rotating node '{}' about its own position", subtree_node->name);
@@ -521,9 +521,11 @@ int main(int argc, char** argv) {
     for (gltf::scene const& loader_scene : scenes->scene) {
         for (gltf::node const& loader_node : loader_scene.nodes) {
             anim_base_poses.try_emplace(loader_node.source_index,
-                                        gltf::node_pose{.translation = loader_node.translation,
-                                                        .rotation = loader_node.rotation,
-                                                        .scale = loader_node.scale});
+                                        gltf::node_pose{
+                                            .translation = loader_node.translation,
+                                            .rotation = loader_node.rotation,
+                                            .scale = loader_node.scale,
+                                        });
             loader_nodes.try_emplace(loader_node.source_index, &loader_node);
         }
     }
