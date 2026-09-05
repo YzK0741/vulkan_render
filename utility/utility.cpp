@@ -1,5 +1,6 @@
 module;
 
+#include <cstdio> // std::print(stderr, ...) below needs the stderr macro (not exportable via modules)
 #include <cstring>
 #include <xxhash.h>
 
