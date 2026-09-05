@@ -569,6 +569,14 @@ int main(int argc, char** argv) {
                 utility::log("skinning: skin '{}' skipped (joint(s) missing from the imported scene)", sname);
                 continue;
             }
+            // the skin buffer holds scene_skin_capacity mat4s (identity block + per-skin blocks);
+            // check before allocating so an oversized file is skipped loudly instead of being
+            // silently truncated (the shader would then read past the block into the next one)
+            if (static_cast<uint32_t>(loader_skin.joints.size()) > vulkan::scene_skin_capacity - next_block) {
+                std::string_view const sname = loader_skin.name.empty() ? std::string_view("<unnamed>") : std::string_view(loader_skin.name);
+                utility::log("skinning: skin '{}' skipped ({} joints, skin matrix buffer capacity {} exceeded)", sname, loader_skin.joints.size(), vulkan::scene_skin_capacity);
+                continue;
+            }
             uint32_t const block_base = next_block;
             next_block += static_cast<uint32_t>(loader_skin.joints.size());
             // point every primitive leaf of the skinned node at the block: the node's own leaf

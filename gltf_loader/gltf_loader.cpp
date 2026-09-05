@@ -442,8 +442,20 @@ namespace {
             current_node.transform_matrix = to_glm_mat4(world);
             if (fnode.meshIndex) {
                 gltf::mesh current_mesh = {};
+                std::string_view const mesh_name = asset.meshes[*fnode.meshIndex].name;
+                std::size_t prim_index = 0;
                 for (auto const& primitive : asset.meshes[*fnode.meshIndex].primitives) {
+                    // glTF allows POINTS/LINES/STRIP/FAN modes too; only TRIANGLES is renderable
+                    // by the pipeline (vertex/tangent synthesis below assumes triangles), so
+                    // skip the others with a warning instead of drawing garbage.
+                    if (primitive.type != fastgltf::PrimitiveType::Triangles) {
+                        utility::log("gltf: skipping primitive {} of mesh '{}': mode {} is not supported (only TRIANGLES render)",
+                                     prim_index, mesh_name, static_cast<int>(primitive.type));
+                        ++prim_index;
+                        continue;
+                    }
                     current_mesh.primitives.push_back(load_primitive(primitive, asset));
+                    ++prim_index;
                 }
                 // glTF mesh.weights: default morph weights (one per target of the primitives)
                 for (fastgltf::num const w : asset.meshes[*fnode.meshIndex].weights) {
@@ -757,13 +769,54 @@ namespace {
         auto const* normal_portion = get_portion("NORMAL");
         auto const* uv_portion = get_portion("TEXCOORD_0");
         auto const* tangent_portion = get_portion("TANGENT");
+        // skinned attributes (optional): JOINTS_0 is u8/u16 vec4 of joint indices into the
+        // node's skin, WEIGHTS_0 is float vec4 (or normalized u8/u16)
+        auto const* joints_portion = get_portion("JOINTS_0");
+        auto const* weights_portion = get_portion("WEIGHTS_0");
         if (position_portion == nullptr) {
             utility::panic("primitive has no POSITION attribute");
         }
 
         constexpr glm::vec3 default_normal(0.0f, 1.0f, 0.0f);
         constexpr glm::vec2 default_uv(0.0f, 0.0f);
-        size_t const vertex_count = position_portion->data.size() / sizeof(glm::vec3);
+
+        // ---- attribute count guard: POSITION's byte length fixes the vertex count, but a
+        //      malformed file with a shorter NORMAL/UV/TANGENT/JOINTS/WEIGHTS accessor would
+        //      make the per-vertex reinterpret loops below read out of bounds. Clamp to the
+        //      shortest attribute and log the mismatch (error-tolerant load).
+        auto const portion_elements = [](gltf::vertex_portion const& portion, std::size_t const vec_size) -> std::size_t {
+            std::size_t component_bytes = 4; // float / int / unsigned int
+            switch (portion.component) {
+            case gltf::component_type::unsigned_byte_t:
+                component_bytes = 1;
+                break;
+            case gltf::component_type::short_t:
+            case gltf::component_type::unsigned_short_t:
+                component_bytes = 2;
+                break;
+            case gltf::component_type::double_t:
+                component_bytes = 8;
+                break;
+            default:
+                break;
+            }
+            return portion.data.size() / (component_bytes * vec_size);
+        };
+        std::size_t const position_count = position_portion->data.size() / sizeof(glm::vec3);
+        std::size_t vertex_count = position_count;
+        auto const guard_vertex_count = [&vertex_count, &portion_elements](gltf::vertex_portion const* portion, std::size_t const vec_size) {
+            if (portion != nullptr) {
+                vertex_count = std::min(vertex_count, portion_elements(*portion, vec_size));
+            }
+        };
+        guard_vertex_count(normal_portion, 3);
+        guard_vertex_count(uv_portion, 2);
+        guard_vertex_count(tangent_portion, 4);
+        guard_vertex_count(joints_portion, 4);
+        guard_vertex_count(weights_portion, 4);
+        if (vertex_count != position_count) {
+            utility::log("gltf: attribute count mismatch (POSITION has {} vertices, another attribute only {}) - rendering the shorter prefix", position_count, vertex_count);
+        }
 
         std::vector<glm::vec3> positions;
         std::vector<glm::vec3> normals;
@@ -780,10 +833,12 @@ namespace {
             uvs.push_back(*uv);
         }
 
-        // Index data: 2 or 4 bytes per index. glTF primitives may omit "indices" entirely
-        // (non-indexed triangle soup, e.g. the Fox sample) — synthesize a sequential uint32
-        // index buffer [0, vertex_count) so the rest of the pipeline can stay indexed-only.
+        // Index data: 2 or 4 bytes per index (u8 indices are widened to u16 below). glTF
+        // primitives may omit "indices" entirely (non-indexed triangle soup, e.g. the Fox
+        // sample) — synthesize a sequential uint32 index buffer [0, vertex_count) so the rest
+        // of the pipeline can stay indexed-only.
         std::vector<unsigned char> synthesized_indices;
+        std::vector<unsigned char> widened_indices; // u8 -> u16 widening result (empty unless used)
         unsigned char const index_width = [&] {
             if (prim.index.empty()) {
                 if (vertex_count > 0) {
@@ -801,9 +856,20 @@ namespace {
             if (prim.index_component_type == gltf::component_type::unsigned_short_t) {
                 return static_cast<unsigned char>(2);
             }
+            if (prim.index_component_type == gltf::component_type::unsigned_byte_t) {
+                // u8 indices are legal glTF (componentType 5121; at most 256 vertices): widen to u16
+                widened_indices.resize(prim.index.size() * sizeof(uint16_t));
+                auto* const dst = reinterpret_cast<uint16_t*>(widened_indices.data());
+                for (std::size_t i = 0; i < prim.index.size(); ++i) {
+                    dst[i] = static_cast<uint16_t>(prim.index[i]);
+                }
+                return static_cast<unsigned char>(2);
+            }
             utility::panic(std::source_location::current(), "unsupported index component type: {}", static_cast<int>(prim.index_component_type));
         }();
-        std::vector<unsigned char> const& index_bytes = prim.index.empty() ? synthesized_indices : prim.index;
+        std::vector<unsigned char> const& index_bytes = !widened_indices.empty()
+                                                            ? widened_indices
+                                                            : (prim.index.empty() ? synthesized_indices : prim.index);
         uint32_t const index_count = static_cast<uint32_t>(index_bytes.size() / index_width);
         auto const read_index = [&index_bytes, index_width](size_t const i) -> uint32_t {
             if (index_width == 4) {
@@ -846,11 +912,8 @@ namespace {
             }
         }
 
-        // skinned attributes (optional): JOINTS_0 is u8/u16 vec4 of joint indices into the
-        // node's skin, WEIGHTS_0 is float vec4 (or normalized u8/u16). Defaults (joint 0 with
-        // full weight) keep non-skinned meshes correct under the shared skinned vertex layout.
-        auto const* joints_portion = get_portion("JOINTS_0");
-        auto const* weights_portion = get_portion("WEIGHTS_0");
+        // skinned attributes decoded per vertex (portions declared above, default semantics
+        // keep non-skinned meshes correct under the shared skinned vertex layout)
         auto const read_joints = [joints_portion](size_t const i) -> glm::uvec4 {
             glm::uvec4 out(0u);
             if (joints_portion == nullptr) {
