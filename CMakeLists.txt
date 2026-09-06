@@ -101,6 +101,7 @@ target_sources(vulkancorekit
         vulkan/runtime/scene_tree/scene_tree.cppm
         vulkan/gui/gui.cppm
         vulkan/animation/animation_controller.cppm
+        vulkan/chores.cppm
     PRIVATE
         vulkan/core/core.cpp
         vulkan/core/filter/filter.cpp

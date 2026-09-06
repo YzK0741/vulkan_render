@@ -3,6 +3,7 @@
 #include <glm/gtc/quaternion.hpp>
 import std;
 import app_config;
+import chores; // demo bootstrap helpers (shader loading / dir locating / pipelines)
 import gltf_loader;
 import utility;
 import utility.frame_clock; // per-frame stamp: cheap time reads for (future) parallel workers / animation
@@ -16,20 +17,6 @@ import vulkan.runtime;
 // object built below already allocates its std::pmr vectors from mimalloc. Idempotent —
 // other TUs (vulkan/runtime.cpp) keep their own copy of the same singleton.
 [[maybe_unused]] static auto& pmr = utility::init_pmr(); // NOLINT(keep-alive)
-
-// The helper functions used by main() are forward-declared here so the entry point can appear
-// right after the imports; their definitions live at the bottom of the file (internal linkage
-// via this anonymous namespace).
-namespace {
-    void load_shader(std::filesystem::path const& dir, std::string_view file_name, std::vector<unsigned char>& out);
-    std::optional<std::filesystem::path> locate_shaders_dir();
-    std::optional<std::filesystem::path> locate_model_file();
-    void load_and_create_pipeline(vulkan::runtime& runtime,
-                                  std::filesystem::path const& shaders_dir,
-                                  std::string_view pipeline_name,
-                                  std::string_view vertex_file,
-                                  std::string_view fragment_file);
-} // namespace
 
 int main(int argc, char** argv) {
     // 1. Resolve startup settings first: config file (config.toml by default, --config <path>
@@ -48,7 +35,7 @@ int main(int argc, char** argv) {
         if (!std::filesystem::is_directory(shaders_dir)) {
             utility::panic(std::source_location::current(), "cannot find configured shaders_dir '{}'.", settings.paths.shaders_dir);
         }
-    } else if (std::optional<std::filesystem::path> const located = locate_shaders_dir()) {
+    } else if (std::optional<std::filesystem::path> const located = chores::locate_shaders_dir()) {
         shaders_dir = *located;
     } else {
         utility::panic("cannot find shaders/ directory. run the program from the project root, pass shaders_dir in config.toml, or use a cmake-build-* directory.");
@@ -64,7 +51,7 @@ int main(int argc, char** argv) {
         if (!std::filesystem::is_regular_file(model_path)) {
             utility::panic(std::source_location::current(), "cannot find model '{}' under configured model_dir '{}'.", "DamagedHelmet.gltf", settings.paths.model_dir);
         }
-    } else if (std::optional<std::filesystem::path> const located = locate_model_file()) {
+    } else if (std::optional<std::filesystem::path> const located = chores::locate_model_file()) {
         model_path = located->string();
     } else {
         utility::panic("cannot find gltf_model/DamagedHelmet.gltf. run the program from the project root or pass a model path as argv[1]");
@@ -100,13 +87,13 @@ int main(int argc, char** argv) {
     utility::log("vulkan runtime initialized: {:.1f} ms (async model load + env generation running in background)", std::chrono::duration<double, std::milli>(runtime_ready - startup_start).count());
 
     // 5. Pipelines: triangle + standard PBR + skybox background (fullscreen environment pass)
-    load_and_create_pipeline(runtime, shaders_dir, "triangle", "triangle.vert.spv", "triangle.frag.spv");
-    load_and_create_pipeline(runtime, shaders_dir, "pbr", "pbr.vert.spv", "pbr.frag.spv");
+    chores::load_and_create_pipeline(runtime, shaders_dir, "triangle", "triangle.vert.spv", "triangle.frag.spv");
+    chores::load_and_create_pipeline(runtime, shaders_dir, "pbr", "pbr.vert.spv", "pbr.frag.spv");
     {
         std::vector<unsigned char> vertex_code;
         std::vector<unsigned char> fragment_code;
-        load_shader(shaders_dir, "skybox.vert.spv", vertex_code);
-        load_shader(shaders_dir, "skybox.frag.spv", fragment_code);
+        chores::load_shader(shaders_dir, "skybox.vert.spv", vertex_code);
+        chores::load_shader(shaders_dir, "skybox.frag.spv", fragment_code);
         auto const skybox_result = runtime.make_skybox_pipeline(vertex_code, fragment_code);
         if (!skybox_result) {
             utility::panic(std::source_location::current(), "failed to create skybox pipeline: {}", skybox_result.error());
@@ -118,8 +105,8 @@ int main(int argc, char** argv) {
         // map. Created once; enable_shadows() below activates the pass after the scene import.
         std::vector<unsigned char> vertex_code;
         std::vector<unsigned char> fragment_code;
-        load_shader(shaders_dir, "shadow.vert.spv", vertex_code);
-        load_shader(shaders_dir, "shadow.frag.spv", fragment_code);
+        chores::load_shader(shaders_dir, "shadow.vert.spv", vertex_code);
+        chores::load_shader(shaders_dir, "shadow.frag.spv", fragment_code);
         auto const shadow_result = runtime.make_shadow_pipeline(vertex_code, fragment_code);
         if (!shadow_result) { // NOLINT(bugprone-branch-clone): CLion FP - the branches log different messages
             utility::log("shadow pipeline disabled: {}", shadow_result.error());
@@ -723,71 +710,3 @@ int main(int argc, char** argv) {
     utility::log("render loop finished");
     return 0;
 }
-
-// ---- helper implementations (declared at the top so main() reads first) ----
-
-namespace {
-    // Read a single shader SPIR-V file and print info; panic on failure
-    void load_shader(std::filesystem::path const& dir, std::string_view file_name, std::vector<unsigned char>& out) {
-        std::filesystem::path const path = dir / file_name;
-        std::optional<std::vector<unsigned char>> const data = utility::read_binary_to_vector(path);
-        if (!data) {
-            utility::panic(std::source_location::current(), "cannot open shader file '{}'", path.string());
-        }
-        out = *data;
-        utility::log("loaded shader: {} ({} bytes)", path.string(), out.size());
-    }
-
-    // Walk up from the working directory to find the shaders/ directory,
-    // so it works when run from the project root or a cmake-build-* directory
-    std::optional<std::filesystem::path> locate_shaders_dir() {
-        std::filesystem::path current = std::filesystem::current_path();
-        for (int depth = 0; depth < 4; ++depth) {
-            std::filesystem::path candidate = current / "shaders";
-            if (std::filesystem::is_directory(candidate)) {
-                return candidate;
-            }
-            std::filesystem::path const parent = current.parent_path();
-            if (parent == current) {
-                break;
-            }
-            current = parent;
-        }
-        return std::nullopt;
-    }
-
-    // Walk up from the working directory to find the default model under gltf_model/
-    std::optional<std::filesystem::path> locate_model_file() {
-        std::filesystem::path current = std::filesystem::current_path();
-        for (int depth = 0; depth < 4; ++depth) {
-            std::filesystem::path candidate = current / "gltf_model" / "DamagedHelmet.gltf";
-            if (std::filesystem::is_regular_file(candidate)) {
-                return candidate;
-            }
-            std::filesystem::path const parent = current.parent_path();
-            if (parent == current) {
-                break;
-            }
-            current = parent;
-        }
-        return std::nullopt;
-    }
-
-    // Load a vertex/fragment SPIR-V pair and create the pipeline via runtime; panic on failure
-    void load_and_create_pipeline(vulkan::runtime& runtime,
-                                  std::filesystem::path const& shaders_dir,
-                                  std::string_view pipeline_name,
-                                  std::string_view vertex_file,
-                                  std::string_view fragment_file) {
-        std::vector<unsigned char> vertex_code;
-        std::vector<unsigned char> fragment_code;
-        load_shader(shaders_dir, vertex_file, vertex_code);
-        load_shader(shaders_dir, fragment_file, fragment_code);
-
-        std::expected<void, std::string> const result = runtime.make_pipeline(pipeline_name, vertex_code, fragment_code);
-        if (!result) {
-            utility::panic(std::source_location::current(), "failed to create pipeline '{}': {}", pipeline_name, result.error());
-        }
-        utility::log("SUCCESS: pipeline '{}' created and cached in the runtime", pipeline_name);
-    }
-} // namespace
