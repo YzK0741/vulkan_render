@@ -28,10 +28,10 @@ A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), implementin
 
 ## Documentation
 
-The project uses **Doxygen** for API documentation; every module, class, and interface is annotated in-source with `@defgroup` / `@brief`. The generated HTML and the LaTeX manual are **not** committed to the repo (they would drown the source tree in generated files) — build them whenever you need them with the wrapper script at the repo root: `build_docs.ps1` (PowerShell / Windows) or `build_docs.sh` (POSIX sh — git-bash / MSYS2 / WSL / Linux). They run `doxygen Doxyfile`, then compile the LaTeX manual into `docs/latex/refman.pdf`:
+The project uses **Doxygen** for API documentation; every module, class, and interface is annotated in-source with `@defgroup` / `@brief`. The generated HTML and the LaTeX manual are **not** committed to the repo (they would drown the source tree in generated files) — build them whenever you need them with the wrapper script under `scripts/`: `build_docs.ps1` (PowerShell / Windows) or `build_docs.sh` (POSIX sh — git-bash / MSYS2 / WSL / Linux). They run `doxygen Doxyfile`, then compile the LaTeX manual into `docs/latex/refman.pdf`:
 
 ```bash
-sh build_docs.sh
+sh scripts/build_docs.sh
 ```
 
 Raw equivalent: `doxygen Doxyfile` (HTML only).
@@ -46,7 +46,6 @@ Related source docs (tracked in the repo):
 ## Layout
 
 ```
-├── build_docs.ps1 / .sh    # One-shot Doxygen docs: HTML + LaTeX manual -> refman.pdf (PowerShell / POSIX sh)
 ├── main.cpp                 # Demo entry point: start async loads -> runtime init -> scene import
 │                            #   -> animation/camera/gui setup -> granular frame-phase render loop
 ├── chores.cppm / chores.cpp # chores module (root-level demo bootstrap): analyse_config (config +
@@ -66,6 +65,8 @@ Related source docs (tracked in the repo):
 ├── gltf_model/              # Sample model (DamagedHelmet)
 ├── snapshot/                # Screenshots
 ├── docs/                    # Usage guides + reference shaders; Doxygen HTML is generated on demand (gitignored)
+├── scripts/                 # Setup/build/run helpers (windows/ + posix/ sh+ps1) and config generators;
+│                            #   build_docs.{ps1,sh} builds the Doxygen HTML + LaTeX manual
 └── third_party/             # Vendored dependencies (spirv-reflect, imgui, xxhash, fastgltf, simdjson, stb_image)
 ```
 
@@ -122,6 +123,10 @@ sh scripts/posix/run.sh path/to/model.glb gui
 ```
 
 Builds land in `build-debug/` and `build-release/`.
+
+The Doxygen HTML + LaTeX manual build with `scripts/build_docs.ps1`
+(Windows) or `scripts/build_docs.sh` (POSIX) — see the
+[Documentation](#documentation) section.
 
 ### Manual build
 
