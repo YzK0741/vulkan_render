@@ -340,27 +340,6 @@ int main(int argc, char** argv) {
             "shadow",
             &gui_shadow_enabled,
             [&runtime](bool const enabled) { runtime.set_shadow_enabled(enabled); }));
-        // shadow depth bias (dynamic state, applied every frame): slope factor removes acne on
-        // angled surfaces, the constant adds a fixed push - tune per model when shadows show
-        // acne (raise slope) or peter-panning (lower / raise constant)
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
-            "shadow bias slope",
-            &gui_shadow_bias_slope,
-            0.0f,
-            10.0f,
-            [&runtime, &gui_shadow_bias_constant, &gui_shadow_bias_slope](float const value) {
-                gui_shadow_bias_slope = value;
-                runtime.set_shadow_depth_bias(gui_shadow_bias_constant, gui_shadow_bias_slope, 0.0f);
-            }));
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
-            "shadow bias constant",
-            &gui_shadow_bias_constant,
-            0.0f,
-            10.0f,
-            [&runtime, &gui_shadow_bias_constant, &gui_shadow_bias_slope](float const value) {
-                gui_shadow_bias_constant = value;
-                runtime.set_shadow_depth_bias(gui_shadow_bias_constant, gui_shadow_bias_slope, 0.0f);
-            }));
         // camera orbit target: dragging it moves what the camera looks at / orbits around
         // (camera.target is a glm::vec3, i.e. three contiguous floats; the runtime rebuilds the
         // camera UBO from it every frame, so no on_change callback is needed)
@@ -415,6 +394,29 @@ int main(int argc, char** argv) {
                 [&seed_orbit_from_camera](int const index) { seed_orbit_from_camera(index); }));
             utility::log("gui: camera selector added ({} camera(s))", authored_cameras.size());
         }
+        // Shadow depth bias (bottom of the panel - a rarely-used tuning aid): the pass's bias
+        // is dynamic state applied every frame; the slope factor removes acne on angled
+        // surfaces, the constant adds a fixed push. Note it cannot fix geometry that is simply
+        // too coarse (e.g. RecursiveSkeletons' sides are large flat triangles - the depth
+        // gradient across them is what it is), it only tunes the bias offset.
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
+            "shadow bias slope",
+            &gui_shadow_bias_slope,
+            0.0f,
+            10.0f,
+            [&runtime, &gui_shadow_bias_constant, &gui_shadow_bias_slope](float const value) {
+                gui_shadow_bias_slope = value;
+                runtime.set_shadow_depth_bias(gui_shadow_bias_constant, gui_shadow_bias_slope, 0.0f);
+            }));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
+            "shadow bias constant",
+            &gui_shadow_bias_constant,
+            0.0f,
+            10.0f,
+            [&runtime, &gui_shadow_bias_constant, &gui_shadow_bias_slope](float const value) {
+                gui_shadow_bias_constant = value;
+                runtime.set_shadow_depth_bias(gui_shadow_bias_constant, gui_shadow_bias_slope, 0.0f);
+            }));
         utility::log("gui: Dear ImGui debug overlay enabled");
     }
 
