@@ -35,8 +35,6 @@ compile() {
     echo "compiled: $src -> $dst"
 }
 
-compile triangle.vert triangle.vert.spv
-compile triangle.frag triangle.frag.spv
 compile pbr.vert pbr.vert.spv
 compile pbr.frag pbr.frag.spv
 compile skybox.vert skybox.vert.spv
