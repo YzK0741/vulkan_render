@@ -215,9 +215,10 @@ target_link_libraries(app_config
 )
 
 # Demo bootstrap chores (root-level module, next to main.cpp): main's shader-loading /
-# directory-locating / pipeline helpers, kept out of main.cpp. Header-only module unit - a
-# split implementation unit trips over the vendored std module's operator-new declarations
-# under -fno-exceptions, so the bodies live inline in chores.cppm (like utility.data_block).
+# directory-locating / pipeline helpers, kept out of main.cpp. Split like the other modules:
+# chores.cppm (export import std pattern) declares, chores.cpp implements. Demo/application
+# layer only - these helpers know about the runtime (vulkan.runtime) and utility log/panic,
+# never about glTF.
 add_library(chores STATIC)
 
 target_sources(chores
@@ -225,6 +226,9 @@ target_sources(chores
         FILE_SET CXX_MODULES
         FILES
         chores.cppm
+
+    PRIVATE
+        chores.cpp
 )
 
 target_link_libraries(chores
