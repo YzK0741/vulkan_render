@@ -10,14 +10,19 @@ import utility;
 
 namespace vulkan {
     namespace {
+        // Loop length of an animation: the latest keyframe time across its samplers. The 1.0s
+        // floor is only a fallback for animations with no usable keyframes (avoids a zero-length
+        // loop / fmod by zero) - a real animation shorter than 1s must keep its own duration
+        // (e.g. Fox's Walk is 0.708s; flooring it to 1.0 would freeze the last 0.29s of every
+        // loop on the end pose before wrapping).
         float animation_duration(gltf::animation const& animation) {
-            float duration = 1.0f; // avoid a zero-length loop
+            float duration = 0.0f;
             for (gltf::animation_sampler const& sampler : animation.samplers) {
                 if (!sampler.times.empty()) {
                     duration = std::max(duration, sampler.times.back());
                 }
             }
-            return duration;
+            return duration > 0.0f ? duration : 1.0f;
         }
 
         std::string_view display_name(std::string_view const name) {
