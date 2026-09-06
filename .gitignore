@@ -1,5 +1,8 @@
 #clion folders
 cmake-build-*/
+build-*-clang64/
+build-debug/
+build-release/
 .idea/
 
 #doxygen generated output
@@ -10,3 +13,5 @@ docs/latex/
 debug.log
 debug.log.old
 imgui_layout.ini
+#local startup config (generated from config.example.toml by the setup scripts)
+config.toml

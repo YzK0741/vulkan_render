@@ -125,6 +125,37 @@ target_sources(gltf_loader
         gltf_loader/gltf_loader.cpp
 )
 
+# fastgltf + simdjson, vendored under third_party/ (the sources ship in the repo, so no
+# network FetchContent is needed and both Windows/MSYS2 and Linux build self-contained).
+# fastgltf's headers deliberately do NOT include simdjson (it is hidden inside the .cpp
+# files), so only this library's own sources need the simdjson include; consumers of
+# gltf_loader only see fastgltf's headers. simdjson is compiled from its amalgamated
+# single-header/single-source pair (simdjson.h + simdjson.cpp), and the three fastgltf
+# translation units are compiled here as plain C++ (vendored code does not follow the
+# project's -Werror set, mirroring the imgui/xxhash policy).
+add_library(fastgltf_vendored STATIC
+        third_party/fastgltf/src/fastgltf.cpp
+        third_party/fastgltf/src/base64.cpp
+        third_party/fastgltf/src/io.cpp
+        third_party/simdjson/singleheader/simdjson.cpp
+)
+
+target_include_directories(fastgltf_vendored
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/fastgltf/include
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/simdjson/singleheader
+)
+
+# stb_image.h (vendored): gltf_loader.cpp decodes embedded/external textures with it
+# (#define STB_IMAGE_IMPLEMENTATION + #include <stb/stb_image.h>).
+add_library(stb_vendored INTERFACE)
+
+target_include_directories(stb_vendored
+    INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+)
+
 # Dear ImGui (vendored under third_party/imgui, see the sources there): the Vulkan + GLFW
 # backends are compiled as plain C++ (imgui is not a module and does not follow the project's
 # -Werror policy — upstream code triggers warnings we do not own). No clang-format: the
@@ -168,7 +199,8 @@ target_include_directories(xxhash
 
 target_link_libraries(gltf_loader
         PRIVATE
-        fastgltf
+        fastgltf_vendored
+        stb_vendored
         std_lib
         utility
 )
@@ -182,6 +214,17 @@ target_link_libraries(vulkancorekit
         std_lib
         imgui
         gltf_loader
+)
+
+# Vendored VMA (third_party/vma/vk_mem_alloc.h): vma.cppm includes <vma/vk_mem_alloc.h>,
+# resolved against this third_party include root. The header also ships in the Vulkan SDK's
+# Include/vma, but Linux distro Vulkan packages do not provide it, so the vendored copy is
+# preferred (it precedes Vulkan::Vulkan's include dirs). Marked SYSTEM so upstream VMA's
+# warnings are suppressed (the SDK copy is an isystem include for the same reason - VMA code
+# trips -Werror on nullability annotations otherwise).
+target_include_directories(vulkancorekit
+    SYSTEM PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 
 add_executable(vulkan_render main.cpp)
@@ -262,6 +305,9 @@ target_compile_options(utility PRIVATE
 
 target_compile_options(gltf_loader PRIVATE
         ${COMPILE_OPTIONS}
+        # vendored fastgltf headers are upstream code: relax one warning their templates trip
+        # under -fno-exceptions (raise() leaves its arguments unused on the abort() path)
+        -Wno-unused-parameter
 )
 
 target_compile_options(app_config PRIVATE

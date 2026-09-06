@@ -66,7 +66,7 @@ Related source docs (tracked in the repo):
 ├── gltf_model/              # Sample model (DamagedHelmet)
 ├── snapshot/                # Screenshots
 ├── docs/                    # Usage guides + reference shaders; Doxygen HTML is generated on demand (gitignored)
-└── third_party/             # Vendored dependencies (spirv-reflect, imgui, xxhash)
+└── third_party/             # Vendored dependencies (spirv-reflect, imgui, xxhash, fastgltf, simdjson, stb_image)
 ```
 
 ## Dependencies & Build
@@ -74,13 +74,51 @@ Related source docs (tracked in the repo):
 ### Requirements
 
 - CMake ≥ 4.3 and a compiler with C++23 / C++20 modules support (this project uses MSYS2 clang64's clang)
-- [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) (includes `glslc`)
-- System packages: `glfw3`, `glm`, `fastgltf` (MSYS2 package; `libfastgltf.dll` + `libsimdjson.dll` must be on PATH), Vulkan Memory Allocator (VMA, `vma/vk_mem_alloc.h`), `tomlplusplus` (header-only, MSYS2 `mingw-w64-clang-x86_64-tomlplusplus`)
-- `spirv-reflect`, Dear ImGui (`imgui` core + GLFW/Vulkan backends) and xxHash (`xxhash`, BSD-2) are vendored under `third_party/`
+- [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) (includes `glslc`; also provides VMA, `vma/vk_mem_alloc.h`, under its `Include/`)
+- System packages: `glfw3`, `glm`, `tomlplusplus` (header-only; MSYS2 `mingw-w64-clang-x86_64-{glfw,glm,tomlplusplus}`)
+- Everything else is vendored under `third_party/`: `spirv-reflect`, Dear ImGui (GLFW/Vulkan backends), xxHash, **fastgltf + simdjson** (the glTF parser and its JSON backend, compiled from source into a `fastgltf_vendored` target) and **stb_image** (texture decode). No system fastgltf/simdjson package and no network fetch is needed — the build is self-contained on both Windows/MSYS2 and Linux.
 
-### Build
+### One-click scripts
 
-Build directories are not committed to the repo, so pick any name — e.g. `build`:
+The repo ships setup / build / run scripts under `scripts/` for the two
+main platforms — **Windows** (MSYS2 clang64; the environment check + package
+install is a POSIX `sh` script run inside MSYS2, configure/build/run are
+PowerShell) and **POSIX** (Linux / WSL / macOS; everything is `sh`):
+
+**Windows (MSYS2)**
+
+```bash
+# 1. in an MSYS2 shell: check clang64, install missing pacman packages,
+#    find the Vulkan SDK, create config.toml from the example
+sh scripts/windows/setup.sh
+
+# 2. build Debug + Release (PowerShell; clang64 bin must be reachable)
+powershell -ExecutionPolicy Bypass -File scripts/windows/build.ps1
+#    or one config / clean:
+powershell -ExecutionPolicy Bypass -File scripts/windows/build.ps1 -Type Release -Clean
+
+# 3. run (PowerShell; forwards extra args to the executable)
+powershell -ExecutionPolicy Bypass -File scripts/windows/run.ps1
+powershell -ExecutionPolicy Bypass -File scripts/windows/run.ps1 -Model path/to/model.glb -Demo gui
+```
+
+Builds land in `build-debug-clang64/` and `build-release-clang64/`.
+
+**POSIX (Linux / WSL / macOS)**
+
+```sh
+sh scripts/posix/setup.sh     # detect distro, install glfw/glm/toml++/Vulkan via apt/dnf/pacman/brew
+sh scripts/posix/build.sh     # Debug + Release
+sh scripts/posix/run.sh       # run; extra args (model / demo) are forwarded
+sh scripts/posix/run.sh path/to/model.glb gui
+```
+
+Builds land in `build-debug/` and `build-release/`.
+
+### Manual build
+
+The scripts above are thin wrappers over the same two commands — configure
+once with Ninja + a C++23-module compiler, then build:
 
 ```bash
 cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release
@@ -94,11 +132,11 @@ cmake --build build
 Run from the project root or any build directory (the program walks upward to locate `shaders/` and `gltf_model/` when they are not configured):
 
 ```bash
-./build/vulkan_render
+./build-release/vulkan_render                # or build-release-clang64/vulkan_render.exe on Windows
 # or load a different model:
-./build/vulkan_render path/to/model.glb
+./build-release/vulkan_render path/to/model.glb
 # or a demo / debug mode (see below):
-./build/vulkan_render path/to/model.glb gui
+./build-release/vulkan_render path/to/model.glb gui
 ```
 
 By default it loads `gltf_model/DamagedHelmet.gltf` and renders it with PBR + IBL. Controls: **left-drag** to orbit, **wheel** to zoom, **drag the window border** to resize (the swapchain is recreated on the fly), **ESC** to quit. Loaded models that carry keyframe animations (e.g. glTF-Sample-Assets `AnimatedCube` / `BoxAnimated`) play automatically on a loop.
@@ -108,7 +146,7 @@ By default it loads `gltf_model/DamagedHelmet.gltf` and renders it with PBR + IB
 Startup is driven by a TOML config file — copy `config.example.toml` to `config.toml` (working directory) or point at one explicitly:
 
 ```bash
-./build/vulkan_render --config my_config.toml
+./build-release/vulkan_render --config my_config.toml
 ```
 
 Positional argv overrides the file: `argv[1]` = model path, `argv[2]` = grid side (a number) or demo, `argv[3]` = demo. Configurable: model / demo / instancing grid, `shaders_dir` / `model_dir` paths, window size / title / vsync / MSAA / clear color, skybox & shadow stage toggles, IBL precompute resolutions, and the debug-panel default size.
