@@ -78,7 +78,7 @@ namespace vulkan {
         glfwSetCursorPosCallback(this->vulkan_core.window, cursor_pos_callback);
         glfwSetScrollCallback(this->vulkan_core.window, scroll_callback);
 
-        // One command buffer per frame slot, owned and reused by render_frame()
+        // One command buffer per frame slot, owned and reused every frame
         this->command_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
             this->command_buffers.push_back(this->vulkan_core.make_command_buffer());
@@ -718,11 +718,11 @@ namespace vulkan {
         vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
     }
 
-    frame_status runtime::is_skipable() {
+    frame_status runtime::poll_events() {
         core& vk = this->vulkan_core;
         GLFWwindow* window = vk.window;
 
-        // 1. Window events first: respond to ESC / native close before any GPU work
+        // Window events first: respond to ESC / native close before any GPU work
         glfwPollEvents();
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -731,8 +731,8 @@ namespace vulkan {
             return frame_status::closed;
         }
 
-        // 2. Minimized: skip this frame (acquiring from an invalidated / 0-sized swapchain would
-        //    fail); the restore transition is handled by try_recreate_swap_chain_if_minimized()
+        // Minimized: skip this frame (acquiring from an invalidated / 0-sized swapchain would
+        //    fail); the restore transition is handled by recreate_if_minimized()
         if (glfwGetWindowAttrib(window, GLFW_ICONIFIED) == GLFW_TRUE) {
             this->was_minimized = true;
             return frame_status::skipped;
@@ -740,7 +740,7 @@ namespace vulkan {
         return frame_status::proceed;
     }
 
-    void runtime::try_recreate_swap_chain_if_minimized() {
+    void runtime::recreate_if_minimized() {
         core& vk = this->vulkan_core;
         if (this->was_minimized) {
             this->was_minimized = false;
@@ -750,17 +750,17 @@ namespace vulkan {
         }
     }
 
-    frame_status runtime::set_up_frame_environment() {
+    frame_status runtime::pace_and_acquire() {
         core& vk = this->vulkan_core;
 
-        // 3. Pace the frame slot: wait until the previous submission on this slot has completed
+        // Pace the frame slot: wait until the previous submission on this slot has completed
         //    (host-side timeline wait on the slot's last signaled value). This guards both the
         //    command buffer and the acquire semaphore — acquiring first could reuse a binary
         //    acquire semaphore with pending operations (VUID-vkAcquireNextImageKHR-semaphore-01779)
         uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
         vk.wait_frame_slot(frame_slot);
 
-        // 4. Acquire the next swapchain image; on out-of-date (e.g. the window was resized)
+        // Acquire the next swapchain image; on out-of-date (e.g. the window was resized)
         //    rebuild the swapchain and let the caller retry on the next iteration.
         VkResult const acquire_result = vkAcquireNextImageKHR(vk.device,
                                                               vk.swap_chain,
@@ -778,7 +778,7 @@ namespace vulkan {
             return frame_status::acquire_failed;
         }
 
-        // 5. Write this frame's camera UBO into the paced slot's per-slot buffer. The scene
+        // Write this frame's camera UBO into the paced slot's per-slot buffer. The scene
         //    descriptor sets are static per slot (ensure_scene_set wired bindings 0/8/9/10 to
         //    each slot's own camera/shadow/skin/morph resources), so one memcpy is the whole
         //    camera update - no per-frame descriptor write exists anymore. An external
@@ -803,7 +803,7 @@ namespace vulkan {
 
     frame_status runtime::begin_recording() {
         core& vk = this->vulkan_core;
-        // 6. Record the frame into this slot's command buffer
+        // Record the frame into this slot's command buffer
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
         VkCommandBufferBeginInfo begin_info = {};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -817,7 +817,7 @@ namespace vulkan {
             this->debug_overlay.new_frame();
         }
 
-        // 6a. Accumulate scene-tree world transforms: every leaf's push.model = scene_transform *
+        // Accumulate scene-tree world transforms: every leaf's push.model = scene_transform *
         //     identity * local. With the default scene_transform (identity) this reproduces the
         //     old flat-list world matrices exactly; set_scene_transform() adds programmatic
         //     whole-scene grouping on top.
@@ -831,7 +831,7 @@ namespace vulkan {
             collect_leaf_primitives(root, this->frame_leaves);
         }
 
-        // 6b. Frustum culling for the main pass: build a BVH over every leaf that has a single
+        // Frustum culling for the main pass: build a BVH over every leaf that has a single
         //     world AABB (normal draw primitives, whose bounds follow push.model), then keep only
         //     the leaves inside the camera frustum. Instanced primitives spread over many
         //     transforms (no single AABB) and primitives without bounds are never culled. The
@@ -944,7 +944,7 @@ namespace vulkan {
         if (vk.use_dynamic_rendering && this->shadow_pipeline && this->shadows_enabled && this->shadow_enabled) {
             auto const* shadow_detail = vk.vma.get_image_detail(this->shadow_image_handles[frame_slot]);
             if (shadow_detail != nullptr) {
-                // 6a. transition the shadow image to a renderable depth attachment (loadOp CLEAR
+                // Transition the shadow image to a renderable depth attachment (loadOp CLEAR
                 //     discards the previous frame's contents, so UNDEFINED as oldLayout is valid)
                 VkImageMemoryBarrier2 shadow_barrier = {};
                 shadow_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
@@ -964,7 +964,7 @@ namespace vulkan {
                 shadow_dependency.pImageMemoryBarriers = &shadow_barrier;
                 vkCmdPipelineBarrier2(*command_buffer, &shadow_dependency);
 
-                // 6b. depth-only rendering into the shadow map (no color attachment)
+                // Depth-only rendering into the shadow map (no color attachment)
                 VkClearValue shadow_clear = {};
                 shadow_clear.depthStencil = {1.0f, 0};
                 VkRenderingAttachmentInfo shadow_depth_attachment = {};
@@ -983,7 +983,7 @@ namespace vulkan {
                 shadow_rendering_info.pDepthAttachment = &shadow_depth_attachment;
                 vkCmdBeginRendering(*command_buffer, &shadow_rendering_info);
 
-                // 6c. bind the shared scene set (the light UBO binding 7) and the shadow pipeline,
+                // Bind the shared scene set (the light UBO binding 7) and the shadow pipeline,
                 //     then draw every primitive exactly like the main pass (polymorphic primitive::draw)
                 if (this->scene_set_created) {
                     VkDescriptorSet const scene_set_handle = *this->scene_sets[static_cast<std::size_t>(frame_slot)];
@@ -1003,7 +1003,7 @@ namespace vulkan {
                 }
                 vkCmdEndRendering(*command_buffer);
 
-                // 6d. hand the shadow map back to the main pass as a sampled texture
+                // Hand the shadow map back to the main pass as a sampled texture
                 VkImageMemoryBarrier2 shadow_read_barrier = {};
                 shadow_read_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
                 shadow_read_barrier.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
@@ -1177,7 +1177,7 @@ namespace vulkan {
         core& vk = this->vulkan_core;
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
 
-        // 7. Submit + present; recreate the swapchain when presentation reports out of date
+        // Submit + present; recreate the swapchain when presentation reports out of date
         if (vk.submit(*command_buffer, this->current_image_index) != VK_SUCCESS) {
             return frame_status::submit_failed;
         }
@@ -1198,21 +1198,21 @@ namespace vulkan {
     }
 
     frame_status runtime::begin_frame() {
-        // Steps 1-3 of the frame: poll/skip/close, recreate the swapchain when minimized, then
-        // pace the frame slot (wait its timeline), acquire the next image and write this frame's
-        // camera UBO into the slot's buffer. After a proceed return the caller may write this
-        // slot's per-frame resources (set_skin_matrices / morph_scratch) safely, because the
-        // slot's previous submission has completed and its descriptors are static per slot.
-        frame_status const skip = this->is_skipable();
+        // Phase 1: poll/skip/close, recreate the swapchain when minimized, then pace the frame
+        // slot (wait its timeline), acquire the next image and write this frame's camera UBO
+        // into the slot's buffer. After a proceed return the caller may write this slot's
+        // per-frame resources (set_skin_matrices / morph_scratch) safely, because the slot's
+        // previous submission has completed and its descriptors are static per slot.
+        frame_status const skip = this->poll_events();
         if (skip != frame_status::proceed) {
             return skip;
         }
-        this->try_recreate_swap_chain_if_minimized();
-        return this->set_up_frame_environment();
+        this->recreate_if_minimized();
+        return this->pace_and_acquire();
     }
 
     frame_status runtime::end_frame() {
-        // Steps 4-7 of the frame: record + submit + present what begin_frame() paced.
+        // Phase 2: record + submit + present what begin_frame() paced.
         frame_status const begin = this->begin_recording();
         if (begin != frame_status::proceed) {
             return begin;
@@ -1226,12 +1226,28 @@ namespace vulkan {
     }
 
     frame_status runtime::render_frame() {
-        // Convenience wrapper: begin + end with no caller work in between.
-        frame_status const begin = this->begin_frame();
+        // Whole frame in one call: run the internal phases directly (the exact sequence the
+        // two-phase begin_frame()/end_frame() form splits), for callers with nothing to
+        // update between pacing and recording.
+        frame_status const skip = this->poll_events();
+        if (skip != frame_status::proceed) {
+            return skip;
+        }
+        this->recreate_if_minimized();
+        frame_status const paced = this->pace_and_acquire();
+        if (paced != frame_status::proceed) {
+            return paced;
+        }
+        frame_status const begin = this->begin_recording();
         if (begin != frame_status::proceed) {
             return begin;
         }
-        return this->end_frame();
+        this->record_main_drawcalls();
+        frame_status const end = this->end_recording();
+        if (end != frame_status::proceed) {
+            return end;
+        }
+        return this->submit_and_present();
     }
 
     bool runtime::enable_debug_gui() {
@@ -1289,7 +1305,7 @@ namespace vulkan {
         }
         this->shadow_pipeline = std::move(make_result).value();
         // The shadow map is a fixed-size depth target: its viewport/scissor do not follow the
-        // swapchain size (render_frame only re-syncs pipelines stored in the pipelines map)
+        // swapchain size (the frame path only re-syncs pipelines stored in the pipelines map)
         this->shadow_pipeline->viewport = {
             0.0f,
             0.0f,
@@ -1445,7 +1461,7 @@ namespace vulkan {
         primitive* const result = created.get();
 
         // attach the primitive as a new root leaf of the scene tree; the node's name records the
-        // pipeline it draws with (render_frame groups leaves by node name / pipeline)
+        // pipeline it draws with (the record path groups leaves by node name / pipeline)
         scene_tree::scene_node leaf;
         leaf.name = std::string(pipeline_name);
         leaf.local = info.model_matrix;           // world = identity * local (root)
