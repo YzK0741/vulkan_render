@@ -1097,17 +1097,21 @@ namespace vulkan {
     }
 
     vk_sampler core::make_shadow_sampler() const {
-        // Shadow map sampler: NEAREST filtering so pbr.frag reads exact stored depths and does
-        // manual percentage-closer filtering (PCF) across neighbor texels. No depth comparison
-        // and no linear filtering on the depth format are required.
+        // Shadow map sampler: depth-compare + LINEAR filtering gives HARDWARE percentage-closer
+        // filtering - one texture() in pbr.frag (sampler2DShadow with a reference depth) returns
+        // the lit fraction of the 2x2 texel neighborhood, so the shader no longer hand-loops a
+        // 3x3 PCF. compareOp matches pbr.frag's test: lit when the fragment is not deeper than
+        // the stored depth (ref <= stored).
         VkSamplerCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        info.magFilter = VK_FILTER_NEAREST;
-        info.minFilter = VK_FILTER_NEAREST;
+        info.magFilter = VK_FILTER_LINEAR;
+        info.minFilter = VK_FILTER_LINEAR;
         info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
         info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.compareEnable = VK_TRUE;
+        info.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
         info.maxAnisotropy = 1.0f;
         info.minLod = 0.0f;
         info.maxLod = 0.0f;

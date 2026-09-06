@@ -60,12 +60,14 @@ layout(set = 0, binding = 7) uniform LightUBO {
     float shadow_enabled; // 1.0 = sample shadow map, 0.0 = fully lit (runtime::set_shadow_enabled)
 } light;
 
-// Shadow map (scene set binding 8): the scene's depth seen from the light, sampled with manual
-// percentage-closer filtering below (NEAREST sampler, no depth comparison required).
-layout(set = 0, binding = 8) uniform sampler2D shadow_map;
+// Shadow map (scene set binding 8): depth-compare sampler (sampler2DShadow) with LINEAR
+// filtering - one texture() call performs HARDWARE percentage-closer filtering: the hardware
+// compares the reference depth against the 2x2 texel neighborhood and returns the lit
+// fraction (no manual 3x3 loop needed).
+layout(set = 0, binding = 8) uniform sampler2DShadow shadow_map;
 
-// Percentage-closer filtering over the shadow map: average the lit/unlit decision of the
-// fragment's light-space depth against a 3x3 neighborhood of stored depths.
+// Percentage-closer filtering over the shadow map (hardware): sample with the fragment's
+// light-space depth as the comparison reference. Lit outside the light frustum.
 float calc_shadow(vec3 world_pos) {
     // Transform the fragment into the light's clip space
     vec4 light_clip = light.light_view_proj * vec4(world_pos, 1.0);
@@ -80,19 +82,10 @@ float calc_shadow(vec3 world_pos) {
 
     // Constant depth bias pushes the comparison away from the surface to hide quantization
     // acne on flat receivers; the shadow pass itself applies a slope-scaled rasterization
-    // depth bias for angled surfaces, so this stays small to avoid shadow detachment.
+    // depth bias for angled surfaces, so this stays small to avoid shadow detachment. The
+    // sampler's compareOp is LESS_OR_EQUAL, so lit = ref (minus bias) <= stored depth.
     float bias = 0.0015;
-    vec2 texel_size = 1.0 / vec2(textureSize(shadow_map, 0));
-
-    float shadow = 0.0;
-    for (int x = -1; x <= 1; ++x) {
-        for (int y = -1; y <= 1; ++y) {
-            float stored = texture(shadow_map, uv + vec2(x, y) * texel_size).r;
-            // lit when this fragment is not deeper than the stored depth (plus bias)
-            shadow += (current_depth - bias <= stored) ? 1.0 : 0.0;
-        }
-    }
-    return shadow / 9.0;
+    return texture(shadow_map, vec3(uv, current_depth - bias));
 }
 
 const float PI = 3.14159265359;
