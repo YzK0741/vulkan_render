@@ -160,6 +160,11 @@ namespace vulkan {
         bool skin_debug_valid = false;
         glm::vec3 skin_debug_translation{};
         std::string skin_debug_name = {};
+        // asset node indices whose world matrix update() must collect each frame: every rig's
+        // mesh node plus every joint it references. Fixed after init(); the per-frame DFS only
+        // tests each visited node against this set (O(1) contains) instead of scanning every
+        // rig x joint pair per node.
+        std::unordered_set<std::size_t> skin_sources = {};
 
         // the node reported per second: prefer a translation channel target, fall back to the
         // first channel target present in the tree

@@ -140,6 +140,14 @@ namespace vulkan {
                 assign_block(assign_block, *mesh_node);
                 this->skin_rigs.push_back(skin_rig{&loader_skin, mesh_source, block_base});
             }
+            // wanted set for the per-frame world collection: every accepted rig's mesh node +
+            // every joint it references (deduplicated; fixed after this init pass)
+            for (skin_rig const& rig : this->skin_rigs) {
+                this->skin_sources.insert(rig.mesh_source);
+                for (std::size_t const joint : rig.skin->joints) {
+                    this->skin_sources.insert(joint);
+                }
+            }
             if (!skin_rigs.empty()) {
                 utility::log("skinning: {} skin rig(s) active ({} joint matrix block(s) + identity block)", this->skin_rigs.size(), next_block - 4);
                 this->skin_debug_name = std::string(display_name(this->skin_rigs.front().skin->name));
@@ -423,17 +431,12 @@ namespace vulkan {
         //    [identity block | per-rig joint blocks] into the active slot's skin buffer
         if (!this->skin_rigs.empty()) {
             std::unordered_map<std::size_t, glm::mat4> skin_worlds;
+            // collect the world matrix of every node the skin rigs need (mesh nodes + joints):
+            // one O(1) set test per visited node instead of scanning rig x joint pairs per node
             auto const collect_worlds = [this, &skin_worlds](auto&& self, vulkan::scene_tree::scene_node& node, glm::mat4 const& parent_world) -> void {
                 glm::mat4 const world = parent_world * node.local;
-                for (skin_rig const& rig : this->skin_rigs) {
-                    if (node.source_index == rig.mesh_source) {
-                        skin_worlds.try_emplace(node.source_index, world);
-                    }
-                    for (std::size_t const joint : rig.skin->joints) {
-                        if (node.source_index == joint) {
-                            skin_worlds.try_emplace(node.source_index, world);
-                        }
-                    }
+                if (this->skin_sources.contains(node.source_index)) {
+                    skin_worlds.try_emplace(node.source_index, world);
                 }
                 for (vulkan::scene_tree::scene_node& child : node.children) {
                     self(self, child, world);
