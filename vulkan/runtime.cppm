@@ -198,7 +198,6 @@ namespace vulkan {
         camera_ubo current_ubo = {};                           // camera UBO snapshot written in pace_and_acquire()
         std::pmr::vector<primitive const*> frame_leaves = {};  // every scene leaf this frame (shadow + cull input)
         std::pmr::vector<primitive const*> frame_visible = {}; // frustum-visible subset (main pass)
-        std::size_t frame_culled_count = 0;                    // leaves culled this frame (for the log)
         // optional Dear ImGui debug overlay; inactive until enable_debug_gui() succeeds. The
         // runtime drives it inside the frame steps (new_frame before recording, record after the
         // runtime's own draw calls) so callers only manage its content via debug_gui().

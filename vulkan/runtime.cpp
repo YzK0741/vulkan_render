@@ -846,7 +846,6 @@ namespace vulkan {
         float const& aspect = this->current_aspect;
         camera_ubo const& ubo = this->current_ubo;
         std::pmr::vector<primitive const*> visible_leaves = this->frame_leaves; // fallback: no culling
-        std::size_t culled_count = 0;
         if (this->frustum_culling) {
             // camera identity: the orbit state that shapes the frustum, or the authored
             // external camera's view/projection when one is active
@@ -911,21 +910,11 @@ namespace vulkan {
                 this->camera_key = key;
             }
             visible_leaves = this->cull_visible;
-            culled_count = frame_leaves.size() - visible_leaves.size();
-            // log the cull ratio (visible/total) every 30 frames
-            static uint32_t cull_log_frame = 0;
-            if (++cull_log_frame >= 30) {
-                utility::log("frustum cull: {}/{} primitives visible ({} culled){}{}", visible_leaves.size(), frame_leaves.size(), culled_count,
-                             (this->camera_moved || scene_changed_this_frame) ? "" : ", result reused (camera + scene static)",
-                             scene_changed_this_frame ? ", bvh rebuilt" : "");
-                cull_log_frame = 0;
-            }
         }
 
         // persist the cull result for the record steps below (shadow pass draws the full
         // frame_leaves set, the main pass draws this visible subset)
         this->frame_visible = std::move(visible_leaves);
-        this->frame_culled_count = culled_count;
         return frame_status::proceed;
     }
 
