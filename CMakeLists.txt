@@ -53,6 +53,7 @@ target_sources(utility
         utility/data_block.cppm
         utility/BVH/bvh.cppm
         utility/better_pmr/better_pmr.cppm
+        utility/frame_clock/frame_clock.cppm
         PRIVATE
         utility/utility.cpp
         utility/BVH/bvh.cpp

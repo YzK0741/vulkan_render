@@ -5,6 +5,7 @@ import std;
 import app_config;
 import gltf_loader;
 import utility;
+import utility.frame_clock; // per-frame stamp: cheap time reads for (future) parallel workers / animation
 import vulkan.math;
 import vulkan.runtime.scene_tree; // scene storage + GPU primitives (was vulkan.model)
 import vulkan.runtime;
@@ -902,6 +903,11 @@ int main(int argc, char** argv) {
         utility::log("gui: Dear ImGui debug overlay enabled");
     }
 
+    // Per-frame cheap clock: stamp() once per presented frame on this (the frame owner) thread,
+    // so any other thread can read the current frame time as a plain atomic load. Animation /
+    // future parallel workers should prefer frame_clock.last_ns()/delta_ns() over now().
+    utility::frame_clock frame_clock;
+
     // All per-frame decisions (event polling, ESC/close response, minimize skip, swapchain
     // recreation on restore/resize) live inside runtime::begin_frame()/end_frame(); main only
     // reacts to the returned frame_status. The runtime's per-slot skin/morph buffers may be
@@ -1051,6 +1057,9 @@ int main(int argc, char** argv) {
             std::this_thread::yield();
             continue;
         }
+
+        // A frame was presented: publish its stamp for cheap readers (frame_clock)
+        frame_clock.stamp();
 
         // proceed: frame time = wall time since the previous rendered frame
         auto const now = std::chrono::steady_clock::now();
