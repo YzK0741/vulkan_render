@@ -66,6 +66,11 @@ skybox = true
 # shadow: record the directional shadow pass each frame (false = no shadows, fully lit)
 shadow = true
 
+# validation_layers: Vulkan validation layers + debug messenger (VK_LAYER_KHRONOS_validation).
+# Debug builds default to true, Release builds to false; override per build as needed (e.g.
+# turn it on in a Release build when tracking a problem, or off in Debug for raw speed).
+validation_layers = true
+
 # ---- [gui] debug overlay ----
 [gui]
 show = true   # show the Dear ImGui debug overlay by default

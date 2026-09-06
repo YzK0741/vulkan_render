@@ -64,6 +64,10 @@ namespace vulkan {
         // (2/4/8/...); the core clamps to the device's max usable when the requested count is
         // not supported
         int msaa_samples = 0;
+        // Vulkan validation layers + debug messenger (instance layer VK_LAYER_KHRONOS_validation
+        // and the VK_EXT_debug_utils messenger); off by default - the caller (app_config) keeps
+        // the historic Debug-on / Release-off default and can override it per build
+        bool validation_layers = false;
     };
 
     export struct core : utility::enable_stack_destruct {

@@ -36,6 +36,7 @@ import utility;
  * clear_color = [0.02, 0.02, 0.03]  # background clear color, RGB in 0..1
  * skybox = true    # draw the environment skybox pass each frame
  * shadow = true    # record the directional shadow pass each frame
+ * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
  *
  * [gui]
  * show         = true    # show the Dear ImGui debug overlay by default (demo "gui" forces it)
@@ -50,6 +51,16 @@ import utility;
  * @endcode
  */
 namespace app_config {
+#ifdef NDEBUG
+    // Release builds default validation layers OFF (historic behavior); enable them when needed
+    // via [render] validation_layers = true (e.g. debugging in a Release build).
+    inline constexpr bool default_validation_layers = false;
+#else
+    // Debug builds keep the validation layers + debug messenger ON by default (historic
+    // behavior); the config can turn them off for raw performance.
+    inline constexpr bool default_validation_layers = true;
+#endif
+
     export struct path_settings {
         std::string shaders_dir = {}; // shader SPIR-V dir (empty = auto-locate "shaders/" upward)
         std::string model_dir = {};   // default model dir used when model is empty (auto-locate gltf_model/ if empty)
@@ -69,6 +80,7 @@ namespace app_config {
         std::array<float, 3> clear_color = {0.02f, 0.02f, 0.03f}; // background clear color (RGB, 0..1)
         bool skybox = true;                                       // draw the environment skybox pass each frame
         bool shadow = true;                                       // record the directional shadow pass each frame
+        bool validation_layers = default_validation_layers;       // Vulkan validation layers + debug messenger ([render])
     };
 
     /**

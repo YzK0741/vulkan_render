@@ -90,6 +90,7 @@ int main(int argc, char** argv) {
     core_options.window_title = settings.render.window_title;
     core_options.vsync = settings.render.vsync;
     core_options.msaa_samples = settings.render.msaa;
+    core_options.validation_layers = settings.render.validation_layers;
     vulkan::runtime runtime{core_options};
     runtime.clear_color = glm::vec3(settings.render.clear_color[0], settings.render.clear_color[1], settings.render.clear_color[2]);
     // render-stage toggles from config: skybox applies immediately (only affects recording);

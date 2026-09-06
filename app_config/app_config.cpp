@@ -100,6 +100,11 @@ namespace app_config {
                     settings.render.shadow = *value;
                 }
             }
+            if (toml::node const* node = render->get("validation_layers")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.validation_layers = *value;
+                }
+            }
         }
 
         if (toml::table const* lighting = table.get_as<toml::table>("lighting")) {

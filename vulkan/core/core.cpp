@@ -84,10 +84,14 @@ namespace vulkan {
 
         std::vector<char const*> extensions(glfw_extensions, glfw_extensions + glfw_extension_count);
 
-#ifdef _DEBUG
-        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-        utility::log("add debug extension: {}", VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-#endif
+        // validation layers + debug messenger: runtime switch from create_options (app_config's
+        // [render] validation_layers; Debug defaults on, Release off - both overridable)
+        bool const enable_validation = this->create_options.validation_layers;
+
+        if (enable_validation) {
+            extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+            utility::log("add debug extension: {}", VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        }
 
         // print all extensions
         utility::log("required instance extension ({}):", extensions.size());
@@ -101,27 +105,27 @@ namespace vulkan {
         // enable validation_layers
         std::vector<char const*> validation_layers;
 
-#ifdef _DEBUG
-        validation_layers = {
-            "VK_LAYER_KHRONOS_validation",
-        };
+        if (enable_validation) {
+            validation_layers = {
+                "VK_LAYER_KHRONOS_validation",
+            };
 
-        // Check validation layer support
-        if (check_validation_layer_support(validation_layers)) {
-            create_info.enabledLayerCount = static_cast<uint32_t>(validation_layers.size());
-            create_info.ppEnabledLayerNames = validation_layers.data();
-            utility::log("validation layers enabled ( {} )", validation_layers.size());
-            for (auto const& layer : validation_layers) {
-                utility::log("  - {}", layer);
+            // Check validation layer support
+            if (check_validation_layer_support(validation_layers)) {
+                create_info.enabledLayerCount = static_cast<uint32_t>(validation_layers.size());
+                create_info.ppEnabledLayerNames = validation_layers.data();
+                utility::log("validation layers enabled ( {} )", validation_layers.size());
+                for (auto const& layer : validation_layers) {
+                    utility::log("  - {}", layer);
+                }
+            } else {
+                utility::log("warning: VK_LAYER_KHRONOS_validation disabled");
+                create_info.enabledLayerCount = 0;
             }
         } else {
-            utility::log("warning: VK_LAYER_KHRONOS_validation disabled");
+            utility::log("validation layers disabled (config [render] validation_layers = false)");
             create_info.enabledLayerCount = 0;
         }
-#else
-        utility::log("in release, validation layers disabled");
-        create_info.enabledLayerCount = 0;
-#endif
 
         if (VkResult result = vkCreateInstance(&create_info, nullptr, &this->instance); result != VK_SUCCESS) {
             // Provide more detailed error info
@@ -154,45 +158,46 @@ namespace vulkan {
         utility::log("instance init succeeded");
         utility::log("instance handler is 0x{:x}", reinterpret_cast<uint64_t>(this->instance));
 
-#ifdef _DEBUG
-        // get function pointer
-        auto vkCreateDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(
-            instance, "vkCreateDebugUtilsMessengerEXT"));
-        auto vkDestroyDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(
-            instance, "vkDestroyDebugUtilsMessengerEXT"));
-
-        if ((vkCreateDebugUtilsMessengerEXT == nullptr) || (vkDestroyDebugUtilsMessengerEXT == nullptr)) {
-            utility::panic("Failed to get debug utils function pointers");
-        }
-        VkDebugUtilsMessengerCreateInfoEXT debug_info = {};
-        debug_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-        debug_info.messageSeverity =
-            VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-            VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
-            VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-            VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-        debug_info.messageType =
-            VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-            VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-            VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-        debug_info.pfnUserCallback = debug_callback;
-        debug_info.pUserData = nullptr;
-
-        if (vkCreateDebugUtilsMessengerEXT(instance, &debug_info, nullptr, &debug_messenger) != VK_SUCCESS) {
-            utility::error("create debug messenger failed");
-        } else {
-            utility::log("create debug messenger succeeded");
-        }
-#endif
+        // register instance destruction first, then the messenger cleanup INSIDE the
+        // validation branch below: cleanup runs LIFO, so the messenger (when created) is
+        // destroyed before the instance it belongs to
         this->register_cleanup([this] {
             vkDestroyInstance(this->instance, nullptr);
         });
 
-#ifdef _DEBUG
-        this->register_cleanup([vkDestroyDebugUtilsMessengerEXT, this] {
-            vkDestroyDebugUtilsMessengerEXT(this->instance, this->debug_messenger, nullptr);
-        });
-#endif
+        if (enable_validation) {
+            // get function pointer
+            auto vkCreateDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(
+                instance, "vkCreateDebugUtilsMessengerEXT"));
+            auto vkDestroyDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(
+                instance, "vkDestroyDebugUtilsMessengerEXT"));
+
+            if ((vkCreateDebugUtilsMessengerEXT == nullptr) || (vkDestroyDebugUtilsMessengerEXT == nullptr)) {
+                utility::panic("Failed to get debug utils function pointers");
+            }
+            VkDebugUtilsMessengerCreateInfoEXT debug_info = {};
+            debug_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+            debug_info.messageSeverity =
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+            debug_info.messageType =
+                VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+            debug_info.pfnUserCallback = debug_callback;
+            debug_info.pUserData = nullptr;
+
+            if (vkCreateDebugUtilsMessengerEXT(instance, &debug_info, nullptr, &debug_messenger) != VK_SUCCESS) {
+                utility::error("create debug messenger failed");
+            } else {
+                utility::log("create debug messenger succeeded");
+            }
+            this->register_cleanup([vkDestroyDebugUtilsMessengerEXT, this] {
+                vkDestroyDebugUtilsMessengerEXT(this->instance, this->debug_messenger, nullptr);
+            });
+        }
     }
 
     void core::init_surface() noexcept {
