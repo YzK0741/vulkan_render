@@ -179,6 +179,28 @@ target_link_libraries(vulkan_lib
         imgui
 )
 
+# Animation controller: bridges glTF animation/skin/morph data (gltf_loader) onto the scene
+# runtime (vulkan_lib). Kept OUT of vulkan_lib so the runtime stays scene-format agnostic -
+# this is the one module that knows how glTF keyframes map onto the runtime scene tree.
+add_library(vulkan_animation STATIC)
+
+target_sources(vulkan_animation
+    PUBLIC
+        FILE_SET CXX_MODULES
+        FILES
+        vulkan/animation/animation_controller.cppm
+
+    PRIVATE
+        vulkan/animation/animation_controller.cpp
+)
+
+target_link_libraries(vulkan_animation
+        vulkan_lib
+        gltf_loader
+        std_lib
+        glm::glm
+)
+
 add_executable(vulkan_render main.cpp)
 
 # Release builds link as a Windows GUI-subsystem executable: no console window appears when
@@ -210,6 +232,7 @@ target_link_libraries(app_config
 target_link_libraries(${PROJECT_NAME}
         utility
         vulkan_lib
+        vulkan_animation
         gltf_loader
         app_config
         std_lib
@@ -255,6 +278,10 @@ target_compile_options(app_config PRIVATE
         ${COMPILE_OPTIONS}
 )
 
+target_compile_options(vulkan_animation PRIVATE
+        ${COMPILE_OPTIONS}
+)
+
 target_compile_definitions(vulkan_lib PRIVATE
         $<$<CONFIG:Debug>:
         _DEBUG
@@ -290,7 +317,7 @@ if(CLANG_FORMAT_EXECUTABLE)
     add_custom_target(clang-format DEPENDS "${CLANG_FORMAT_STAMP}")
 
     # Format all project targets before compiling
-    foreach(_tgt utility thread_pool app_config vulkan_lib gltf_loader vulkan_render)
+    foreach(_tgt utility thread_pool app_config vulkan_lib gltf_loader vulkan_animation vulkan_render)
         add_dependencies(${_tgt} clang-format)
     endforeach()
 

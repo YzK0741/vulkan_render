@@ -6,6 +6,7 @@ import app_config;
 import gltf_loader;
 import utility;
 import utility.frame_clock; // per-frame stamp: cheap time reads for (future) parallel workers / animation
+import vulkan.animation;    // animation_controller: glTF playback / skinning / morphs on the runtime tree
 import vulkan.math;
 import vulkan.runtime.scene_tree; // scene storage + GPU primitives (was vulkan.model)
 import vulkan.runtime;
@@ -429,304 +430,17 @@ int main(int argc, char** argv) {
     double fps_elapsed = 0.0;
     uint32_t fps_frame_count = 0;
 
-    // ---- keyframe animation playback (the loader exports keyframes; see docs/gltf_loader_usage.md) ----
-    // The first animation with channels plays on loop against the imported tree. Runtime nodes
-    // record the loader's asset node index (scene_node::source_index, set by import_scene), so
-    // every channel target maps onto the live tree; node locals are re-evaluated each frame from
-    // the node's TRS base pose (kept in the retained loader tree) plus the animation channels.
-    struct anim_playback {
-        gltf::animation const* animation = nullptr; // the animation being played (null = none)
-        double time = 0.0;                          // playback clock, seconds
-        float duration = 1.0f;                      // loop length = max sampler time
-        bool playing = true;
-        std::chrono::steady_clock::time_point last_tick = {};               // real-time anchor of the clock
-        std::size_t debug_source = std::numeric_limits<std::size_t>::max(); // first animated source present (reporting)
-        glm::vec3 debug_translation = glm::vec3(0.0f);
-    } anim;
-    anim.last_tick = std::chrono::steady_clock::now();
-    for (gltf::animation const& candidate : scenes->animations) {
-        if (!candidate.channels.empty()) {
-            anim.animation = &candidate;
-            break;
-        }
-    }
-    // live-tree lookup: asset node index -> runtime scene nodes (a node may be reachable from
-    // several roots) + whether each occurrence sits at a scene root (import_scene applied the
-    // import shift to root locals only, so animated roots must re-apply it)
-    struct anim_target {
-        vulkan::scene_tree::scene_node* node = nullptr;
-        bool scene_root = false;
-    };
-    std::unordered_map<std::size_t, std::vector<anim_target>> source_nodes;
-    auto const collect = [&source_nodes](auto&& self, vulkan::scene_tree::scene_node& node, bool const scene_root) -> void {
-        source_nodes[node.source_index].push_back(anim_target{&node, scene_root});
-        for (vulkan::scene_tree::scene_node& child : node.children) {
-            self(self, child, false);
-        }
-    };
-    for (vulkan::scene_tree::scene_node& root : runtime.get_scene().roots) {
-        collect(collect, root, true);
-    }
-    // TRS base pose per asset node index, from the retained loader tree (matrix nodes cannot be
-    // animated per the glTF spec and keep identity here)
-    std::unordered_map<std::size_t, gltf::node_pose> anim_base_poses;
-    // loader nodes by asset node index (base-pose / skin lookups; the loader tree stays alive)
-    std::unordered_map<std::size_t, gltf::node const*> loader_nodes;
-    for (gltf::scene const& loader_scene : scenes->scene) {
-        for (gltf::node const& loader_node : loader_scene.nodes) {
-            anim_base_poses.try_emplace(loader_node.source_index,
-                                        gltf::node_pose{
-                                            .translation = loader_node.translation,
-                                            .rotation = loader_node.rotation,
-                                            .scale = loader_node.scale,
-                                        });
-            loader_nodes.try_emplace(loader_node.source_index, &loader_node);
-        }
-    }
-    // the node reported per second: prefer a translation channel target (its value is visible
-    // in the log), fall back to the first channel target present in the tree
-    auto const pick_debug_source = [&source_nodes](gltf::animation const& animation) {
-        std::size_t fallback = std::numeric_limits<std::size_t>::max();
-        for (gltf::animation_channel const& channel : animation.channels) {
-            if (!source_nodes.contains(channel.target_node)) {
-                continue;
-            }
-            if (channel.path == gltf::animation_path::translation) {
-                return channel.target_node;
-            }
-            if (fallback == std::numeric_limits<std::size_t>::max()) {
-                fallback = channel.target_node;
-            }
-        }
-        return fallback;
-    };
-    if (anim.animation != nullptr) {
-        for (gltf::animation_sampler const& sampler : anim.animation->samplers) {
-            if (!sampler.times.empty()) {
-                anim.duration = std::max(anim.duration, sampler.times.back());
-            }
-        }
-        anim.debug_source = pick_debug_source(*anim.animation);
-        std::string_view const anim_name = anim.animation->name.empty() ? std::string_view("<unnamed>") : std::string_view(anim.animation->name);
-        utility::log("animation: playing '{}' ({} channels, {:.2f}s loop)", anim_name, anim.animation->channels.size(), anim.duration);
-    }
-
-    // Playback controls (gui): the animation combo lists every channel-bearing animation, the
-    // time slider needs a float mirror of the clock (slider_widget binds an external float)
-    // whose range covers all playable animations.
-    std::vector<gltf::animation const*> playable_animations;
-    for (gltf::animation const& candidate : scenes->animations) {
-        if (!candidate.channels.empty()) {
-            playable_animations.push_back(&candidate);
-        }
-    }
-    auto const animation_duration = [](gltf::animation const& animation) {
-        float duration = 1.0f; // avoid a zero-length loop
-        for (gltf::animation_sampler const& sampler : animation.samplers) {
-            if (!sampler.times.empty()) {
-                duration = std::max(duration, sampler.times.back());
-            }
-        }
-        return duration;
-    };
-    float gui_anim_max = 1.0f;
-    for (gltf::animation const* playable : playable_animations) {
-        gui_anim_max = std::max(gui_anim_max, animation_duration(*playable));
-    }
-    int gui_anim_index = 0;     // selected item of the animation combo (0 = the auto-played one)
+    // ---- keyframe animation playback + skinning + morph targets (vulkan.animation) ----
+    // The controller owns playback (sampling + writing node locals), the skin rigs (per-frame
+    // joint matrices) and the morph rigs (static deltas + per-frame weights) against the
+    // runtime scene tree; initialize it before the first frame (it bakes morph deltas and the
+    // identity skin block into every frame slot's buffers). A float mirror of the playback
+    // clock feeds the gui time slider (slider_widget binds an external float).
+    vulkan::animation_controller animation;
+    animation.init(*scenes, runtime, scene_import_shift);
     float gui_anim_time = 0.0f; // float mirror of the playback clock (time-slider target)
-
-    // ---- glTF skinning ----
-    // Every exported skin that drives an imported mesh becomes a "rig": its joints resolve onto
-    // live scene nodes (they follow the animation playback above), each skinned primitive points
-    // at a block of the scene skin buffer (indices 0-3 are the identity block for unskinned
-    // draws), and per frame the skin matrices skinMat_j = inv(W_mesh) * W_joint_j * IBM_j are
-    // rebuilt and uploaded. Assumptions typical of glTF assets: one occurrence per skinned node
-    // and a static skinned node (its inverse is taken per frame).
-    struct skin_rig {
-        gltf::skin const* skin = nullptr; // loader skin: joints (asset node indices) + IBM
-        std::size_t mesh_source = 0;      // asset node index of the skinned mesh node
-        uint32_t block_base = 0;          // block start in the skin buffer (after the identity block)
-    };
-    std::vector<skin_rig> skin_rigs;
-    if (!scenes->skins.empty()) {
-        uint32_t next_block = 4; // identity block occupies indices 0-3
-        for (std::size_t skin_id = 0; skin_id < scenes->skins.size(); ++skin_id) {
-            gltf::skin const& loader_skin = scenes->skins[skin_id];
-            // the first loader node referencing this skin that is present in the imported tree
-            std::size_t mesh_source = std::numeric_limits<std::size_t>::max();
-            for (auto const& [source, loader_node] : loader_nodes) {
-                if (loader_node->skin_index && *loader_node->skin_index == skin_id && source_nodes.contains(source)) {
-                    mesh_source = source;
-                    break;
-                }
-            }
-            if (mesh_source == std::numeric_limits<std::size_t>::max()) {
-                continue; // the skin is not used by the imported scene
-            }
-            bool const all_joints_present = std::ranges::all_of(loader_skin.joints, [&source_nodes](std::size_t const joint) { return source_nodes.contains(joint); });
-            if (!all_joints_present) {
-                std::string_view const sname = loader_skin.name.empty() ? std::string_view("<unnamed>") : std::string_view(loader_skin.name);
-                utility::log("skinning: skin '{}' skipped (joint(s) missing from the imported scene)", sname);
-                continue;
-            }
-            // the skin buffer holds scene_skin_capacity mat4s (identity block + per-skin blocks);
-            // check before allocating so an oversized file is skipped loudly instead of being
-            // silently truncated (the shader would then read past the block into the next one)
-            if (static_cast<uint32_t>(loader_skin.joints.size()) > vulkan::scene_skin_capacity - next_block) {
-                std::string_view const sname = loader_skin.name.empty() ? std::string_view("<unnamed>") : std::string_view(loader_skin.name);
-                utility::log("skinning: skin '{}' skipped ({} joints, skin matrix buffer capacity {} exceeded)", sname, loader_skin.joints.size(), vulkan::scene_skin_capacity);
-                continue;
-            }
-            uint32_t const block_base = next_block;
-            next_block += static_cast<uint32_t>(loader_skin.joints.size());
-            // point every primitive leaf of the skinned node at the block: the node's own leaf
-            // plus extra-primitive child leaves (import adds them under the node with the
-            // default source_index 0); real child nodes (other source indices) keep skin_base 0
-            vulkan::scene_tree::scene_node* const mesh_node = source_nodes.at(mesh_source).front().node;
-            auto const assign_block = [block_base, mesh_source](auto&& self, vulkan::scene_tree::scene_node& node) -> void {
-                if (node.primitive_leaf != nullptr && (node.source_index == 0 || node.source_index == mesh_source)) {
-                    static_cast<vulkan::primitive*>(node.primitive_leaf.get())->push.skin_base = block_base;
-                }
-                for (vulkan::scene_tree::scene_node& child : node.children) {
-                    self(self, child);
-                }
-            };
-            assign_block(assign_block, *mesh_node);
-            skin_rigs.push_back(skin_rig{&loader_skin, mesh_source, block_base});
-        }
-        if (!skin_rigs.empty()) {
-            utility::log("skinning: {} skin rig(s) active ({} joint matrix block(s) + identity block)", skin_rigs.size(), next_block - 4);
-        }
-    }
-    // identity block for unskinned draws: upload once into EVERY slot's skin buffer (each frame
-    // slot reads only its own buffer; set_skin_matrices below rewrites the active slot each frame)
-    {
-        constexpr std::array<glm::mat4, 4> identity_block = {glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f)};
-        for (uint32_t slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            runtime.set_skin_matrices(identity_block, slot);
-        }
-    }
-
-    // ---- glTF morph targets (static bake with the default weights; animated weights land in
-    //      the frame loop) ----
-    // Leaves are grouped by their owning loader node (source index; extra-primitive leaves
-    // belong to their parent) and matched, in order, with that node's loader primitives. A
-    // morphable primitive gets a block in the scene morph buffer (binding 10):
-    //   [ per vertex v: per target t: posΔ(xyz) nrmΔ(xyz) ]  then  [ weights per target ]
-    // and its push morph fields are set once. morph_rigs keeps the per-primitive layout so the
-    // frame loop can rewrite the weights region when a "weights" animation channel is active.
-    struct morph_rig {
-        vulkan::primitive* prim = nullptr;
-        uint32_t vertex_count = 0;
-        uint32_t target_count = 0;
-        uint32_t morph_base = 0; // float index into the morph buffer
-        std::size_t source = 0;  // owning loader node (weights animation target)
-    };
-    std::vector<morph_rig> morph_rigs;
-    // slot 0's morph scratch: the static bake below is duplicated into every other slot's buffer
-    float* const morph_scratch_mem = static_cast<float*>(runtime.morph_scratch(0));
-    if (morph_scratch_mem != nullptr) {
-        auto const read_delta_vec3 = [](std::map<std::string, gltf::vertex_portion> const& attrs, std::string_view const name, std::size_t const i) -> glm::vec3 {
-            auto const it = attrs.find(std::string(name));
-            if (it == attrs.end() || it->second.component != gltf::component_type::float_t) {
-                return glm::vec3(0.0f); // missing/unsupported delta -> no displacement
-            }
-            return reinterpret_cast<glm::vec3 const*>(it->second.data.data())[i];
-        };
-        // collect leaves per effective source (a "/prim" extra leaf inherits its parent's source)
-        std::unordered_map<std::size_t, std::vector<vulkan::primitive*>> source_leaves;
-        auto const collect_leaves = [&source_leaves](auto&& self, vulkan::scene_tree::scene_node& node, std::size_t const parent_source) -> void {
-            bool const is_extra = node.name.ends_with("/prim");
-            std::size_t const source = is_extra ? parent_source : node.source_index;
-            if (node.primitive_leaf != nullptr) {
-                source_leaves[source].push_back(static_cast<vulkan::primitive*>(node.primitive_leaf.get()));
-            }
-            for (vulkan::scene_tree::scene_node& child : node.children) {
-                self(self, child, source);
-            }
-        };
-        for (vulkan::scene_tree::scene_node& root : runtime.get_scene().roots) {
-            collect_leaves(collect_leaves, root, 0);
-        }
-        std::size_t total_floats = 0;
-        for (auto& [source, leaves] : source_leaves) {
-            auto const loader_it = loader_nodes.find(source);
-            if (loader_it == loader_nodes.end()) {
-                continue;
-            }
-            gltf::node const& loader_node = *loader_it->second;
-            std::vector<gltf::primitive const*> loader_prims;
-            for (gltf::mesh const& mesh : loader_node.meshes) {
-                for (gltf::primitive const& prim : mesh.primitives) {
-                    loader_prims.push_back(&prim);
-                }
-            }
-            // default weights: node.weights override, else the mesh defaults, else zeros
-            std::vector<float> default_weights;
-            if (loader_node.weights) {
-                default_weights = *loader_node.weights;
-            } else if (!loader_node.meshes.empty()) {
-                default_weights = loader_node.meshes[0].weights;
-            }
-            for (std::size_t i = 0; i < leaves.size() && i < loader_prims.size(); ++i) {
-                gltf::primitive const& loader_prim = *loader_prims[i];
-                if (loader_prim.targets.empty()) {
-                    continue;
-                }
-                auto const pos_portion = loader_prim.vertex.find("POSITION");
-                if (pos_portion == loader_prim.vertex.end()) {
-                    continue;
-                }
-                uint32_t const verts = leaves[i]->vertex_count;
-                uint32_t const target_count = static_cast<uint32_t>(loader_prim.targets.size());
-                if (pos_portion->second.data.size() / sizeof(glm::vec3) != verts) {
-                    utility::log("morph: skipping primitive (vertex count mismatch with its POSITION data)");
-                    continue;
-                }
-                std::size_t const delta_floats = static_cast<std::size_t>(verts) * target_count * 6u;
-                if (total_floats + delta_floats + target_count > vulkan::scene_morph_capacity) {
-                    utility::log("morph: scene morph buffer capacity exceeded, remaining primitives skipped");
-                    break;
-                }
-                float* dst = morph_scratch_mem + total_floats;
-                for (uint32_t v = 0; v < verts; ++v) {
-                    for (uint32_t t = 0; t < target_count; ++t) {
-                        glm::vec3 const dpos = read_delta_vec3(loader_prim.targets[t].attributes, "POSITION", v);
-                        glm::vec3 const dnrm = read_delta_vec3(loader_prim.targets[t].attributes, "NORMAL", v);
-                        *dst++ = dpos.x;
-                        *dst++ = dpos.y;
-                        *dst++ = dpos.z;
-                        *dst++ = dnrm.x;
-                        *dst++ = dnrm.y;
-                        *dst++ = dnrm.z;
-                    }
-                }
-                for (uint32_t t = 0; t < target_count; ++t) {
-                    *dst++ = t < default_weights.size() ? default_weights[t] : 0.0f;
-                }
-                morph_rigs.push_back(morph_rig{leaves[i], verts, target_count, static_cast<uint32_t>(total_floats), source});
-                leaves[i]->push.morph_base = static_cast<uint32_t>(total_floats);
-                leaves[i]->push.morph_targets = target_count;
-                leaves[i]->push.morph_vertices = verts;
-                total_floats += delta_floats + target_count;
-            }
-        }
-        if (!morph_rigs.empty()) {
-            utility::log("morph: baked {} morphable primitive(s) into the scene morph buffer ({} floats)", morph_rigs.size(), total_floats);
-            // duplicate the baked blocks (contiguous [0, total_floats)) into every other frame
-            // slot's morph buffer: the deltas are static, only the per-frame weight rewrites
-            // target the active slot's buffer
-            for (uint32_t slot = 1; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-                float* const other = static_cast<float*>(runtime.morph_scratch(slot));
-                if (other != nullptr) {
-                    std::memcpy(other, morph_scratch_mem, total_floats * sizeof(float));
-                }
-            }
-        }
-    }
-    glm::vec3 skin_debug_translation = glm::vec3(0.0f);
-    bool skin_debug_valid = false;
+    bool gui_anim_playing = animation.playing();
+    int gui_anim_index = 0; // selected item of the animation combo (0 = the auto-played one)
 
     // ---- authored (glTF) camera selection ----
     // A glTF camera is used as a VIEWPOINT SEED for the orbit camera: picking one places the
@@ -742,8 +456,8 @@ int main(int argc, char** argv) {
     std::vector<authored_camera> authored_cameras;
     for (gltf::camera const& cam : scenes->cameras) {
         // find a node referencing this camera that is present in the imported tree
-        for (auto const& [source, loader_node] : loader_nodes) {
-            if (loader_node->camera_index && *loader_node->camera_index == static_cast<std::size_t>(&cam - scenes->cameras.data()) && source_nodes.contains(source)) {
+        for (auto const& [source, loader_node] : animation.loader_nodes()) {
+            if (loader_node->camera_index && *loader_node->camera_index == static_cast<std::size_t>(&cam - scenes->cameras.data()) && animation.has_runtime_node(source)) {
                 authored_cameras.push_back(authored_camera{&cam, source});
                 break;
             }
@@ -835,54 +549,36 @@ int main(int argc, char** argv) {
         // playback controls (only when the model carries animations): play/pause toggle bound
         // to the playback state, a time scrubber (pauses on drag so the clock cannot fight the
         // scrub; the play checkbox resumes), and — for multi-animation assets — a dropdown to
-        // pick which animation plays. All state lives in main's anim struct above.
-        if (anim.animation != nullptr) {
-            panel.push_back(std::make_unique<vulkan::gui::label_widget>([&anim] {
-                std::string_view const name = anim.animation->name.empty() ? std::string_view("<unnamed>") : std::string_view(anim.animation->name);
-                return std::format("animation '{}' ({} channels)", name, anim.animation->channels.size());
+        // pick which animation plays. All playback state lives in the animation_controller.
+        if (animation.has_active()) {
+            panel.push_back(std::make_unique<vulkan::gui::label_widget>([&animation] {
+                return std::format("animation '{}' ({}s)", animation.active_name(), animation.duration());
             }));
-            panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("play", &anim.playing));
+            panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
+                "play",
+                &gui_anim_playing,
+                [&animation](bool const enabled) { animation.set_playing(enabled); }));
             panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
                 "time",
                 &gui_anim_time,
                 0.0f,
-                gui_anim_max,
-                [&anim](float const value) {
-                    anim.time = value;
-                    anim.playing = false; // scrubbing pauses so the clock does not fight the drag
+                animation.playable_max_duration(),
+                [&animation](float const value) {
+                    animation.set_time(value); // scrubbing pauses so the clock does not fight the drag
                 }));
-            if (playable_animations.size() > 1) {
+            if (animation.playable_count() > 1) {
                 std::vector<std::string> names;
-                names.reserve(playable_animations.size());
-                for (gltf::animation const* playable : playable_animations) {
-                    names.push_back(playable->name.empty() ? "<unnamed>" : playable->name);
+                names.reserve(animation.playable_count());
+                for (std::size_t i = 0; i < animation.playable_count(); ++i) {
+                    names.push_back(std::string(animation.playable_name(i)));
                 }
                 panel.push_back(std::make_unique<vulkan::gui::combo_widget>(
                     "animation",
                     std::move(names),
                     &gui_anim_index,
-                    [&anim, &gui_anim_time, &playable_animations, &animation_duration, &pick_debug_source, &source_nodes, &anim_base_poses, &runtime, &scene_import_shift](int const index) {
-                        gltf::animation const* const next = playable_animations[static_cast<std::size_t>(index)];
-                        // Switching animations: first reset every animated node to its base pose,
-                        // otherwise nodes driven by the PREVIOUS animation but not sampled by the
-                        // new one would keep their last pose (same compose rule as the frame loop)
-                        for (auto const& [source, targets] : source_nodes) {
-                            auto const base_it = anim_base_poses.find(source);
-                            gltf::node_pose const base = base_it == anim_base_poses.end() ? gltf::node_pose{} : base_it->second;
-                            glm::mat4 const trs = glm::translate(glm::mat4(1.0f), base.translation) * glm::mat4_cast(base.rotation) * glm::scale(glm::mat4(1.0f), base.scale);
-                            for (anim_target const& target : targets) {
-                                target.node->local = target.scene_root ? glm::translate(glm::mat4(1.0f), scene_import_shift) * trs : trs;
-                            }
-                        }
-                        runtime.scene_changed();
-                        anim.animation = next;
-                        anim.time = 0.0;
-                        gui_anim_time = 0.0f;
-                        anim.duration = animation_duration(*next);
-                        anim.debug_source = pick_debug_source(*next);
-                    }));
+                    [&animation](int const index) { animation.select(static_cast<std::size_t>(index)); }));
             }
-            utility::log("gui: playback controls added ({} animation(s))", playable_animations.size());
+            utility::log("gui: playback controls added ({} animation(s))", animation.playable_count());
         }
         // camera selector: "orbit" (free) or any scene camera (its pose seeds the orbit camera,
         // so the mouse keeps working after switching)
@@ -943,110 +639,13 @@ int main(int argc, char** argv) {
             runtime.scene_changed(); // edited node.local directly -> culling BVH must track it
         }
 
-        // advance the animation clock by real time and re-evaluate the animated node locals
-        // (same "edit node.local, then mark the scene changed" contract the demos above use)
-        if (anim.animation != nullptr) {
-            auto const anim_now = std::chrono::steady_clock::now();
-            if (anim.playing) {
-                anim.time += std::chrono::duration<double>(anim_now - anim.last_tick).count();
-                if (anim.time >= anim.duration) {
-                    anim.time = std::fmod(anim.time, anim.duration);
-                }
-            }
-            anim.last_tick = anim_now;
-            bool changed = false;
-            for (auto const& [source, targets] : source_nodes) {
-                auto const base_it = anim_base_poses.find(source);
-                gltf::node_pose const base = base_it == anim_base_poses.end() ? gltf::node_pose{} : base_it->second;
-                gltf::node_pose const pose = gltf::sample_node(*anim.animation, source, base, static_cast<float>(anim.time));
-                // morph weights: write this node's active weights into the ACTIVE frame slot's
-                // morph block(s) so the vertex shader blends with the animated values (overrides
-                // the baked defaults; begin_frame() has already paced that slot)
-                if (!pose.weights.empty()) {
-                    float* const active_scratch = static_cast<float*>(runtime.morph_scratch());
-                    if (active_scratch != nullptr) {
-                        for (morph_rig const& rig : morph_rigs) {
-                            if (rig.source == source && static_cast<std::size_t>(rig.target_count) == pose.weights.size()) {
-                                std::size_t const weight_offset = static_cast<std::size_t>(rig.morph_base) + static_cast<std::size_t>(rig.vertex_count) * static_cast<std::size_t>(rig.target_count) * 6u;
-                                for (std::size_t t = 0; t < pose.weights.size(); ++t) {
-                                    active_scratch[weight_offset + t] = pose.weights[t];
-                                }
-                            }
-                        }
-                    }
-                }
-                if (!pose.any_transform) {
-                    continue; // weights-only channels don't move the node's local transform
-                }
-                // compose T * R * S; scene-root occurrences also keep the import shift that
-                // placed the model (import_scene applied it to each root's local transform)
-                glm::mat4 const trs = glm::translate(glm::mat4(1.0f), pose.translation) * glm::mat4_cast(pose.rotation) * glm::scale(glm::mat4(1.0f), pose.scale);
-                for (anim_target const& target : targets) {
-                    target.node->local = target.scene_root ? glm::translate(glm::mat4(1.0f), scene_import_shift) * trs : trs;
-                }
-                changed = true;
-                if (source == anim.debug_source) {
-                    anim.debug_translation = pose.translation;
-                }
-            }
-            if (changed) {
-                runtime.scene_changed(); // node.locals edited directly -> culling BVH must track them
-            }
-            gui_anim_time = static_cast<float>(anim.time); // keep the gui time slider in sync
-        }
-
-        // skin matrices: the joint worlds follow the animation applied above, so rebuild every
-        // frame [identity block | per-rig joint blocks] and upload to the scene skin buffer
-        if (!skin_rigs.empty()) {
-            // collect the world matrices of the mesh + joint nodes with one DFS (same
-            // accumulation rule as the runtime's update_world: world = parent_world * local)
-            std::unordered_map<std::size_t, glm::mat4> skin_worlds;
-            auto const collect_worlds = [&skin_worlds, &skin_rigs](auto&& self, vulkan::scene_tree::scene_node& node, glm::mat4 const& parent_world) -> void {
-                glm::mat4 const world = parent_world * node.local;
-                for (skin_rig const& rig : skin_rigs) {
-                    if (node.source_index == rig.mesh_source) {
-                        skin_worlds.try_emplace(node.source_index, world);
-                    }
-                    for (std::size_t const joint : rig.skin->joints) {
-                        if (node.source_index == joint) {
-                            skin_worlds.try_emplace(node.source_index, world);
-                        }
-                    }
-                }
-                for (vulkan::scene_tree::scene_node& child : node.children) {
-                    self(self, child, world);
-                }
-            };
-            for (vulkan::scene_tree::scene_node& root : runtime.get_scene().roots) {
-                collect_worlds(collect_worlds, root, glm::mat4(1.0f));
-            }
-            // skinMat_j = inv(W_mesh) * W_joint_j * IBM_j; joints whose world is missing fall
-            // back to identity so vertex joint ids stay aligned with their block
-            std::vector<glm::mat4> matrices;
-            matrices.reserve(4 + (skin_rigs.size() * 8));
-            matrices.insert(matrices.end(), {glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f)});
-            for (skin_rig const& rig : skin_rigs) {
-                auto const mesh_it = skin_worlds.find(rig.mesh_source);
-                glm::mat4 const mesh_world_inv = glm::inverse(mesh_it == skin_worlds.end() ? glm::mat4(1.0f) : mesh_it->second);
-                for (std::size_t j = 0; j < rig.skin->joints.size(); ++j) {
-                    auto const joint_it = skin_worlds.find(rig.skin->joints[j]);
-                    glm::mat4 const joint_world = joint_it == skin_worlds.end() ? glm::mat4(1.0f) : joint_it->second;
-                    matrices.push_back(mesh_world_inv * joint_world * rig.skin->inverse_bind_matrices[j]);
-                }
-            }
-            runtime.set_skin_matrices(matrices);
-            // per-second report data: first rig's LAST joint world x-axis (rotations change it,
-            // unlike the joint's position which stays fixed under rotation-only animations)
-            skin_debug_valid = false;
-            if (!skin_rigs.empty() && !skin_rigs.front().skin->joints.empty()) {
-                std::size_t const last_joint = skin_rigs.front().skin->joints.back();
-                auto const joint_it = skin_worlds.find(last_joint);
-                if (joint_it != skin_worlds.end()) {
-                    skin_debug_valid = true;
-                    skin_debug_translation = glm::vec3(joint_it->second[0]); // world x axis
-                }
-            }
-        }
+        // drive the animation controller: sample the active animation into node locals (T/R/S +
+        // morph weights) and rebuild the skin matrices, into the frame slot begin_frame() just
+        // paced. dt comes from frame_clock (stamped after the previous presented frame).
+        animation.update(static_cast<float>(frame_clock.delta_seconds()));
+        gui_anim_time = animation.time();       // keep the gui time slider in sync
+        gui_anim_playing = animation.playing(); // reflect controller-side pauses (scrub / select)
+        gui_anim_index = static_cast<int>(animation.current());
         vulkan::frame_status const result = runtime.end_frame(); // record + submit + present the paced frame
         if (result == vulkan::frame_status::closed || vulkan::is_failure(result)) {
             break;
@@ -1074,21 +673,19 @@ int main(int argc, char** argv) {
             // fps is shown inside the ImGui overlay (when enabled); the log line stays for
             // headless / non-gui runs
             utility::log("fps: {:.1f} ({:.2f} ms/frame)", fps, 1000.0 * fps_elapsed / fps_frame_count);
-            if (anim.animation != nullptr) {
+            if (animation.has_active()) {
                 // report the playback clock + the first animated node's evaluated translation
                 // (proves the keyframes are actually moving the tree)
-                std::string_view const anim_name = anim.animation->name.empty() ? std::string_view("<unnamed>") : std::string_view(anim.animation->name);
-                std::string_view const node_name = anim.debug_source == std::numeric_limits<std::size_t>::max()
+                std::string_view const node_name = animation.debug_node_name().empty()
                                                        ? std::string_view("<no target in scene>")
-                                                       : std::string_view(source_nodes.at(anim.debug_source).front().node->name);
+                                                       : animation.debug_node_name();
                 utility::log("  anim '{}': t={:.3f}s/{:.2f}s, '{}' at ({:.3f}, {:.3f}, {:.3f})",
-                             anim_name, anim.time, anim.duration, node_name,
-                             anim.debug_translation.x, anim.debug_translation.y, anim.debug_translation.z);
+                             animation.active_name(), animation.time(), animation.duration(), node_name,
+                             animation.debug_translation().x, animation.debug_translation().y, animation.debug_translation().z);
             }
-            if (skin_debug_valid) {
-                std::string_view const skin_name = skin_rigs.front().skin->name.empty() ? std::string_view("<unnamed>") : std::string_view(skin_rigs.front().skin->name);
-                utility::log("  skin '{}': last joint world x-axis ({:.3f}, {:.3f}, {:.3f})", skin_name,
-                             skin_debug_translation.x, skin_debug_translation.y, skin_debug_translation.z);
+            if (animation.skin_debug_valid()) {
+                utility::log("  skin '{}': last joint world x-axis ({:.3f}, {:.3f}, {:.3f})", animation.skin_debug_name(),
+                             animation.skin_debug_translation().x, animation.skin_debug_translation().y, animation.skin_debug_translation().z);
             }
             fps_elapsed = 0.0;
             fps_frame_count = 0;
