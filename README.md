@@ -47,7 +47,11 @@ Related source docs (tracked in the repo):
 
 ```
 ├── build_docs.ps1 / .sh    # One-shot Doxygen docs: HTML + LaTeX manual -> refman.pdf (PowerShell / POSIX sh)
-├── main.cpp                 # Demo: config + model load + PBR/IBL render loop + debug GUI panel
+├── main.cpp                 # Demo entry point: start async loads -> runtime init -> scene import
+│                            #   -> animation/camera/gui setup -> granular frame-phase render loop
+├── chores.cppm / chores.cpp # chores module (root-level demo bootstrap): analyse_config (config +
+│                            #   argv merge, shaders/model location), setup_pipeline,
+│                            #   add_instancing_grid, shader loading
 ├── CMakeLists.txt           # CMake 4.3, C++23 modules build
 ├── config.example.toml      # Annotated startup-config reference (copy to config.toml)
 ├── Doxyfile                 # Doxygen config (PROJECT_NAME: "vulkan render")

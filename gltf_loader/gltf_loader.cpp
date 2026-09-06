@@ -1615,4 +1615,132 @@ namespace gltf {
         result.max = scene_max;
         return result;
     }
+
+    // ---- diagnostics: log what the loader exported for a loaded model ----
+
+    scene_bounds log_scene_diagnostics(gltf::scenes const& scenes) {
+        scene_bounds const bounds = compute_scene_bounds(scenes);
+        if (!bounds.valid) {
+            utility::panic("model has no drawable primitives");
+        }
+        glm::vec3 const scene_center = bounds.min * 0.5f + bounds.max * 0.5f;
+        float const scene_radius = glm::length(bounds.max - bounds.min) * 0.5f;
+
+        utility::log("scene loaded: {} textures, {} materials, {} primitives", scenes.textures.size(), scenes.materials.size(), bounds.primitive_count);
+        utility::log("scene bounds (aabb): min ({:.3f}, {:.3f}, {:.3f}), max ({:.3f}, {:.3f}, {:.3f}), center ({:.3f}, {:.3f}, {:.3f}), radius {:.3f}",
+                     bounds.min.x, bounds.min.y, bounds.min.z, bounds.max.x, bounds.max.y, bounds.max.z,
+                     scene_center.x, scene_center.y, scene_center.z, scene_radius);
+
+        // Scene hierarchy summary: report the retained tree shape (roots / total nodes / max
+        // depth / mesh-bearing nodes) for diagnostics. Walks the retained tree through
+        // scene_node_iterator (DFS pre-order, transform-only nodes included).
+        {
+            size_t total_nodes = 0;
+            size_t mesh_nodes = 0;
+            size_t max_depth = 0;
+            std::vector<std::string> tree_lines;
+            for (scene_node_iterator it = scenes.nodes_begin(); it != gltf::scenes::nodes_end(); ++it) {
+                ++total_nodes;
+                size_t const depth = it.get_depth();
+                max_depth = std::max(max_depth, depth);
+                bool const has_mesh = it.get_drawable_count() > 0;
+                if (has_mesh) {
+                    ++mesh_nodes;
+                }
+                std::string_view const name = it.get_name();
+                tree_lines.push_back(std::format("{}{}{}", std::string(depth * 2, ' '),
+                                                 name.empty() ? std::string("<unnamed>") : std::string(name),
+                                                 has_mesh ? " [mesh]" : ""));
+            }
+            utility::log("scene hierarchy: {} roots, {} nodes total ({} with meshes), max depth {}",
+                         !scenes.scene.empty() ? scenes.scene.front().root_indices.size() : 0,
+                         total_nodes, mesh_nodes, max_depth);
+            for (std::string const& line : tree_lines) {
+                utility::log("  {}", line);
+            }
+        }
+
+        // Animation summary: scenes.animations holds the decoded keyframe animations
+        // (channels -> samplers); playback of the first channel-bearing animation runs in the
+        // frame loop (gui transport). This block only logs what the loader exported.
+        if (!scenes.animations.empty()) {
+            utility::log("animations: {}", scenes.animations.size());
+            for (animation const& anim : scenes.animations) {
+                std::string_view const anim_name = anim.name.empty() ? std::string_view("<unnamed>") : std::string_view(anim.name);
+                // a typical animation shares one keyframe count across its samplers; report the first
+                size_t const keys = anim.samplers.empty() ? 0 : anim.samplers.front().times.size();
+                utility::log("  animation '{}': {} channels, {} samplers, {} keyframes", anim_name, anim.channels.size(), anim.samplers.size(), keys);
+            }
+        }
+
+        // Skin summary: scenes.skins holds the file's skins (joint asset-node indices + inverse
+        // bind matrices); the skin rigs and per-frame joint matrices are built by the caller.
+        if (!scenes.skins.empty()) {
+            utility::log("skins: {}", scenes.skins.size());
+            for (skin const& s : scenes.skins) {
+                std::string_view const skin_name = s.name.empty() ? std::string_view("<unnamed>") : std::string_view(s.name);
+                utility::log("  skin '{}': {} joints", skin_name, s.joints.size());
+            }
+        }
+
+        // Morph summary: primitives may carry morph targets (POSITION/NORMAL deltas), meshes/
+        // nodes default weights, and "weights" animation channels.
+        {
+            size_t morph_prims = 0;
+            size_t morph_targets = 0;
+            size_t weighty_meshes = 0;
+            for (scene const& loader_scene : scenes.scene) {
+                for (node const& loader_node : loader_scene.nodes) {
+                    for (mesh const& m : loader_node.meshes) {
+                        if (!m.weights.empty()) {
+                            ++weighty_meshes;
+                        }
+                        for (primitive const& prim : m.primitives) {
+                            if (!prim.targets.empty()) {
+                                ++morph_prims;
+                                morph_targets += prim.targets.size();
+                            }
+                        }
+                    }
+                }
+            }
+            if (morph_prims > 0) {
+                utility::log("morph: {} primitive(s) with morph targets ({} total targets, {} mesh(es) with default weights)", morph_prims, morph_targets, weighty_meshes);
+            }
+        }
+
+        // Camera / light summary: nodes may reference glTF cameras and punctual lights
+        // (KHR_lights_punctual). Authored cameras are consumed by the caller as orbit-camera
+        // viewpoint seeds; punctual lights are imported but the demo shades with a fixed
+        // analytic sun - this block logs what the loader exported.
+        if (!scenes.cameras.empty()) {
+            size_t perspective = 0;
+            for (camera const& cam : scenes.cameras) {
+                if (cam.type == camera_type::perspective) {
+                    ++perspective;
+                }
+            }
+            utility::log("cameras: {} ({} perspective, {} orthographic)", scenes.cameras.size(), perspective, scenes.cameras.size() - perspective);
+        }
+        if (!scenes.lights.empty()) {
+            size_t directional = 0;
+            size_t point = 0;
+            size_t spot = 0;
+            for (light const& l : scenes.lights) {
+                switch (l.type) {
+                case light_type::directional:
+                    ++directional;
+                    break;
+                case light_type::point:
+                    ++point;
+                    break;
+                case light_type::spot:
+                    ++spot;
+                    break;
+                }
+            }
+            utility::log("lights: {} ({} directional, {} point, {} spot)", scenes.lights.size(), directional, point, spot);
+        }
+        return bounds;
+    }
 } // namespace gltf

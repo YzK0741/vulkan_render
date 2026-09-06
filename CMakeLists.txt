@@ -214,11 +214,12 @@ target_link_libraries(app_config
         std_lib
 )
 
-# Demo bootstrap chores (root-level module, next to main.cpp): main's shader-loading /
-# directory-locating / pipeline helpers, kept out of main.cpp. Split like the other modules:
-# chores.cppm (export import std pattern) declares, chores.cpp implements. Demo/application
-# layer only - these helpers know about the runtime (vulkan.runtime) and utility log/panic,
-# never about glTF.
+# Demo bootstrap chores (root-level module, next to main.cpp): main's startup-config analysis
+# (analyse_config: config-file + argv merge, shaders/model location) and shader-loading /
+# pipeline helpers, kept out of main.cpp. Split like the other modules: chores.cppm
+# (export import std pattern) declares, chores.cpp implements. Demo/application layer only -
+# these helpers know about app_config (settings), the runtime (vulkan.runtime) and utility
+# log/panic, never about glTF.
 add_library(chores STATIC)
 
 target_sources(chores
@@ -232,6 +233,7 @@ target_sources(chores
 )
 
 target_link_libraries(chores
+        app_config
         vulkancorekit
         utility
         std_lib

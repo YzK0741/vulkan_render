@@ -19,43 +19,14 @@ import vulkan.runtime;
 [[maybe_unused]] static auto& pmr = utility::init_pmr(); // NOLINT(keep-alive)
 
 int main(int argc, char** argv) {
-    // 1. Resolve startup settings first: config file (config.toml by default, --config <path>
-    //    to override) merged with positional argv overrides. argv[1] = model, argv[2] = grid
-    //    side (numeric) or demo, argv[3] = demo.
-    app_config::app_settings const settings = app_config::resolve_from_argv(argc, argv);
-    if (!settings.config_file.empty()) {
-        utility::log("app_config: loaded startup settings from '{}'", settings.config_file);
-    }
-
-    // 2. Shaders directory (holds GLSL sources and compiled SPIR-V): explicit config path when
-    //    given, otherwise walk up from the working directory to find shaders/.
-    std::filesystem::path shaders_dir;
-    if (!settings.paths.shaders_dir.empty()) {
-        shaders_dir = settings.paths.shaders_dir;
-        if (!std::filesystem::is_directory(shaders_dir)) {
-            utility::panic(std::source_location::current(), "cannot find configured shaders_dir '{}'.", settings.paths.shaders_dir);
-        }
-    } else if (std::optional<std::filesystem::path> const located = chores::locate_shaders_dir()) {
-        shaders_dir = *located;
-    } else {
-        utility::panic("cannot find shaders/ directory. run the program from the project root, pass shaders_dir in config.toml, or use a cmake-build-* directory.");
-    }
-
-    // 3. Pick the model file: settings.model when configured/argv-given; else the default model
-    //    under settings.paths.model_dir (or the auto-located gltf_model/).
-    std::string model_path;
-    if (!settings.model.empty()) {
-        model_path = settings.model;
-    } else if (!settings.paths.model_dir.empty()) {
-        model_path = (std::filesystem::path(settings.paths.model_dir) / "DamagedHelmet.gltf").string();
-        if (!std::filesystem::is_regular_file(model_path)) {
-            utility::panic(std::source_location::current(), "cannot find model '{}' under configured model_dir '{}'.", "DamagedHelmet.gltf", settings.paths.model_dir);
-        }
-    } else if (std::optional<std::filesystem::path> const located = chores::locate_model_file()) {
-        model_path = located->string();
-    } else {
-        utility::panic("cannot find gltf_model/DamagedHelmet.gltf. run the program from the project root or pass a model path as argv[1]");
-    }
+    // 1-3. Resolve the startup config in one step (chores): merge the config file (config.toml
+    // by default, --config <path> to override) with positional argv overrides (argv[1] = model,
+    // argv[2] = grid side (numeric) or demo, argv[3] = demo), then locate the shaders/ dir and
+    // pick the model file. Panics on any missing configured/located resource.
+    chores::startup_config const config = chores::analyse_config(argc, argv);
+    app_config::app_settings const& settings = config.settings;
+    std::filesystem::path const& shaders_dir = config.shaders_dir;
+    std::string const& model_path = config.model_path;
 
     // 4. Kick off the runtime-independent heavy CPU stages BEFORE constructing the (heavy)
     //    Vulkan runtime, so window/instance/device/swapchain init overlaps the model parse +
@@ -86,36 +57,12 @@ int main(int argc, char** argv) {
     auto const runtime_ready = std::chrono::steady_clock::now();
     utility::log("vulkan runtime initialized: {:.1f} ms (async model load + env generation running in background)", std::chrono::duration<double, std::milli>(runtime_ready - startup_start).count());
 
-    // 5. Pipelines: triangle + standard PBR + skybox background (fullscreen environment pass)
-    chores::load_and_create_pipeline(runtime, shaders_dir, "triangle", "triangle.vert.spv", "triangle.frag.spv");
-    chores::load_and_create_pipeline(runtime, shaders_dir, "pbr", "pbr.vert.spv", "pbr.frag.spv");
-    {
-        std::vector<unsigned char> vertex_code;
-        std::vector<unsigned char> fragment_code;
-        chores::load_shader(shaders_dir, "skybox.vert.spv", vertex_code);
-        chores::load_shader(shaders_dir, "skybox.frag.spv", fragment_code);
-        auto const skybox_result = runtime.make_skybox_pipeline(vertex_code, fragment_code);
-        if (!skybox_result) {
-            utility::panic(std::source_location::current(), "failed to create skybox pipeline: {}", skybox_result.error());
-        }
-        utility::log("SUCCESS: skybox pipeline created (fullscreen environment background)");
-    }
-    {
-        // Shadow pass pipeline (depth-only): renders the scene from the light into the shadow
-        // map. Created once; enable_shadows() below activates the pass after the scene import.
-        std::vector<unsigned char> vertex_code;
-        std::vector<unsigned char> fragment_code;
-        chores::load_shader(shaders_dir, "shadow.vert.spv", vertex_code);
-        chores::load_shader(shaders_dir, "shadow.frag.spv", fragment_code);
-        auto const shadow_result = runtime.make_shadow_pipeline(vertex_code, fragment_code);
-        if (!shadow_result) { // NOLINT(bugprone-branch-clone): CLion FP - the branches log different messages
-            utility::log("shadow pipeline disabled: {}", shadow_result.error());
-        } else {
-            utility::log("SUCCESS: shadow pipeline created (directional shadow map pass)");
-        }
-    }
+    // 6. Pipelines up front (chores::setup_pipeline): the standard PBR pipeline (used by the
+    //    imported scene) plus the skybox background and the directional shadow pass. The legacy
+    //    triangle demo pipeline is no longer created - nothing draws it.
+    chores::setup_pipeline(runtime, shaders_dir);
 
-    // 6. Collect the async startup results
+    // 7. Collect the async startup results
     auto scenes = load_future.get();
     if (!scenes) {
         utility::panic(std::source_location::current(), "failed to load model '{}': error code {}", model_path, static_cast<int>(scenes.error()));
@@ -124,141 +71,20 @@ int main(int argc, char** argv) {
     auto const startup_done = std::chrono::steady_clock::now();
     utility::log("model loaded + environment cubemap (startup window incl. runtime init): {:.1f} ms", std::chrono::duration<double, std::milli>(startup_done - startup_start).count());
 
-    // 7. Whole-model world AABB (loader-side, pure CPU over the retained scene data): frames
-    //    the orbit camera and centers the scene before import (see gltf::compute_scene_bounds).
-    gltf::scene_bounds const bounds = gltf::compute_scene_bounds(*scenes);
-    if (!bounds.valid) {
-        utility::panic("model has no drawable primitives");
-    }
+    // 8. Whole-model world AABB + loader diagnostics (gltf_loader, pure CPU over the retained
+    //    scene data): logs the scene summary (contents, hierarchy, animations/skins/morphs/
+    //    cameras/lights) and returns the world bounds that frame the orbit camera and center
+    //    the scene before import. Panics when the model has no drawable primitives.
+    gltf::scene_bounds const bounds = gltf::log_scene_diagnostics(*scenes);
     glm::vec3 const scene_center = bounds.min * 0.5f + bounds.max * 0.5f;
     float const scene_radius = glm::length(bounds.max - bounds.min) * 0.5f;
-    std::size_t const primitive_count = bounds.primitive_count;
-    utility::log("scene loaded: {} textures, {} materials, {} primitives", scenes->textures.size(), scenes->materials.size(), primitive_count);
-    utility::log("scene bounds (aabb): min ({:.3f}, {:.3f}, {:.3f}), max ({:.3f}, {:.3f}, {:.3f}), center ({:.3f}, {:.3f}, {:.3f}), radius {:.3f}",
-                 bounds.min.x, bounds.min.y, bounds.min.z, bounds.max.x, bounds.max.y, bounds.max.z,
-                 scene_center.x, scene_center.y, scene_center.z, scene_radius);
-
-    // Scene hierarchy summary: the loader retains the node tree (children + local transforms),
-    // so report the tree shape (roots / total nodes / max depth / mesh-bearing nodes) for
-    // diagnostics. Walks the retained tree through gltf::scene_node_iterator (DFS pre-order,
-    // transform-only nodes included) — the same iterator the runtime's import consumes.
-    {
-        size_t total_nodes = 0;
-        size_t mesh_nodes = 0;
-        size_t max_depth = 0;
-        std::vector<std::string> tree_lines;
-        for (gltf::scene_node_iterator it = scenes->nodes_begin(); it != gltf::scenes::nodes_end(); ++it) {
-            ++total_nodes;
-            size_t const depth = it.get_depth();
-            max_depth = std::max(max_depth, depth);
-            bool const has_mesh = it.get_drawable_count() > 0;
-            if (has_mesh) {
-                ++mesh_nodes;
-            }
-            std::string_view const name = it.get_name();
-            tree_lines.push_back(std::format("{}{}{}", std::string(depth * 2, ' '),
-                                             name.empty() ? std::string("<unnamed>") : std::string(name),
-                                             has_mesh ? " [mesh]" : ""));
-        }
-        utility::log("scene hierarchy: {} roots, {} nodes total ({} with meshes), max depth {}",
-                     !scenes->scene.empty() ? scenes->scene.front().root_indices.size() : 0,
-                     total_nodes, mesh_nodes, max_depth);
-        for (std::string const& line : tree_lines) {
-            utility::log("  {}", line);
-        }
-    }
-
-    // Animation summary (diagnostics): gltf::scenes::animations holds the file's decoded
-    // keyframe animations (channels -> samplers, see docs/gltf_loader_usage.md §8); playback
-    // of the first channel-bearing animation runs below in the frame loop (gui transport).
-    // This block only logs what the loader exported.
-    if (!scenes->animations.empty()) {
-        utility::log("animations: {}", scenes->animations.size());
-        for (gltf::animation const& anim : scenes->animations) {
-            std::string_view const anim_name = anim.name.empty() ? std::string_view("<unnamed>") : std::string_view(anim.name);
-            // a typical animation shares one keyframe count across its samplers; report the first
-            size_t const keys = anim.samplers.empty() ? 0 : anim.samplers.front().times.size();
-            utility::log("  animation '{}': {} channels, {} samplers, {} keyframes", anim_name, anim.channels.size(), anim.samplers.size(), keys);
-        }
-    }
-
-    // Skin summary (diagnostics): scenes::skins holds the file's skins (joint asset-node
-    // indices + inverse bind matrices); the skin rigs and per-frame joint matrices are built
-    // below and bound through material_push_constants::skin_base (see the skinning section).
-    if (!scenes->skins.empty()) {
-        utility::log("skins: {}", scenes->skins.size());
-        for (gltf::skin const& skin : scenes->skins) {
-            std::string_view const skin_name = skin.name.empty() ? std::string_view("<unnamed>") : std::string_view(skin.name);
-            utility::log("  skin '{}': {} joints", skin_name, skin.joints.size());
-        }
-    }
-
-    // Morph summary (diagnostics): primitives may carry morph targets (POSITION/NORMAL deltas),
-    // meshes/nodes default weights, and "weights" animation channels (see docs §10). The
-    // per-primitive morph blocks and per-frame weight rewrites are built below (morph rigs).
-    {
-        size_t morph_prims = 0;
-        size_t morph_targets = 0;
-        size_t weighty_meshes = 0;
-        for (gltf::scene const& loader_scene : scenes->scene) {
-            for (gltf::node const& loader_node : loader_scene.nodes) {
-                for (gltf::mesh const& mesh : loader_node.meshes) {
-                    if (!mesh.weights.empty()) {
-                        ++weighty_meshes;
-                    }
-                    for (gltf::primitive const& prim : mesh.primitives) {
-                        if (!prim.targets.empty()) {
-                            ++morph_prims;
-                            morph_targets += prim.targets.size();
-                        }
-                    }
-                }
-            }
-        }
-        if (morph_prims > 0) {
-            utility::log("morph: {} primitive(s) with morph targets ({} total targets, {} mesh(es) with default weights)", morph_prims, morph_targets, weighty_meshes);
-        }
-    }
-
-    // Camera / light summary (diagnostics): nodes may reference glTF cameras and punctual
-    // lights (KHR_lights_punctual). Authored cameras are consumed below as orbit-camera
-    // viewpoint seeds (gui "camera" selector); punctual lights are imported but the demo
-    // still shades with the fixed analytic sun — this block logs what the loader exported.
-    if (!scenes->cameras.empty()) {
-        size_t perspective = 0;
-        for (gltf::camera const& cam : scenes->cameras) {
-            if (cam.type == gltf::camera_type::perspective) {
-                ++perspective;
-            }
-        }
-        utility::log("cameras: {} ({} perspective, {} orthographic)", scenes->cameras.size(), perspective, scenes->cameras.size() - perspective);
-    }
-    if (!scenes->lights.empty()) {
-        size_t directional = 0;
-        size_t point = 0;
-        size_t spot = 0;
-        for (gltf::light const& l : scenes->lights) {
-            switch (l.type) {
-            case gltf::light_type::directional:
-                ++directional;
-                break;
-            case gltf::light_type::point:
-                ++point;
-                break;
-            case gltf::light_type::spot:
-                ++spot;
-                break;
-            }
-        }
-        utility::log("lights: {} ({} directional, {} point, {} spot)", scenes->lights.size(), directional, point, spot);
-    }
 
     // Sink the model so it sits near the world horizon (y = 0) and move the camera target with it:
     // the camera then orbits/looks at the model's position instead of the scene origin.
     glm::vec3 const scene_sink(0.0f, -scene_radius, 0.0f);
     runtime.camera.target = scene_sink;
 
-    // 8. IBL stage 2 + material resolve run concurrently via their _async wrappers: the
+    // 9. IBL stage 2 + material resolve run concurrently via their _async wrappers: the
     //    prefilter (GGX importance sampling), irradiance map, BRDF LUT and the per-material
     //    texture decode + mip chains only depend on what we already have (env, scenes). The
     //    per-stage times are not reported individually: get() orders the waits, so only the
@@ -303,7 +129,7 @@ int main(int argc, char** argv) {
     utility::log("imported {} primitives ({} new materials)", imported.primitive_count, imported.material_count);
     runtime.log_scene_tree();
 
-    // 11b. Enable directional shadow mapping over the imported scene: the shadow frustum frames
+    // 12. Enable directional shadow mapping over the imported scene: the shadow frustum frames
     //      the sphere around where the primitives actually sit (they were translated by the import
     //      offset above, so their world-space center is scene_sink) with their original radius
     runtime.enable_shadows(scene_sink, scene_radius);
@@ -312,30 +138,10 @@ int main(int argc, char** argv) {
         runtime.set_shadow_enabled(false);
     }
 
-    // 12. Optional instancing stress: grid_side > 1 (config or argv) draws the first imported
-    //     primitive as a grid_side x grid_side grid in ONE instanced draw call
-    //     (an instanced_draw_primitive appended to the scene tree — the frame loop is untouched)
-    if (settings.grid_side > 1) {
-        int const side = settings.grid_side;
-        if (side > 1) {
-            std::vector<vulkan::primitive const*> const pbr_primitives = runtime.get_primitives("pbr");
-            if (!pbr_primitives.empty()) {
-                vulkan::primitive const& source = *pbr_primitives[0];
-                std::vector<glm::mat4> transforms;
-                transforms.reserve(static_cast<size_t>(side) * side);
-                float const spacing = 2.5f * scene_radius; // keep instances apart: measure draw scaling, not overdraw
-                for (int i = 0; i < side; ++i) {
-                    for (int j = 0; j < side; ++j) {
-                        float const dx = (static_cast<float>(i) - static_cast<float>(side - 1) * 0.5f) * spacing;
-                        float const dz = (static_cast<float>(j) - static_cast<float>(side - 1) * 0.5f) * spacing;
-                        transforms.push_back(glm::translate(glm::mat4(1.0f), glm::vec3(dx, 0.0f, dz)) * source.push.model);
-                    }
-                }
-                runtime.make_instanced_primitive(source, transforms);
-                utility::log("instancing stress: {} x {} grid ({} instances, 1 draw call)", side, side, transforms.size());
-            }
-        }
-    }
+    // 13. Optional instancing stress (chores::add_instancing_grid): grid_side > 1 (config or
+    //     argv) draws the first imported primitive as a grid_side x grid_side grid in ONE
+    //     instanced draw call (the frame loop is untouched); no-op otherwise.
+    chores::add_instancing_grid(runtime, settings.grid_side, scene_radius);
 
     // 14. Main render loop: until the window closes or ESC is pressed.
     //     Every Vulkan frame step (fences, acquire, command buffers, render pass, submit, present)
@@ -705,7 +511,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    // 18. Wait for the GPU to finish; primitives and pipelines are released by the runtime destructor
+    // 15. Wait for the GPU to finish; primitives and pipelines are released by the runtime destructor
     runtime->wait_idle();
     utility::log("render loop finished");
     return 0;

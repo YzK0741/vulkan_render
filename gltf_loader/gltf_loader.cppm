@@ -857,4 +857,16 @@ namespace gltf {
      *       POSITION are skipped
      */
     export scene_bounds compute_scene_bounds(gltf::scenes const& scenes);
+
+    /**
+     * @ingroup gltf_loader
+     * @brief diagnostics: log what the loader exported for @p scenes — the contents summary
+     *        (textures/materials/primitives), the world AABB framing numbers (min/max/center/
+     *        radius), the retained hierarchy shape (roots/nodes/max depth, per-node tree lines)
+     *        and the animations/skins/morph targets/cameras/lights present in the file.
+     * @param scenes the loaded model
+     * @return the world scene bounds (see compute_scene_bounds); always valid — panics when the
+     *         model has no drawable primitives (the caller needs geometry to frame the camera)
+     */
+    export scene_bounds log_scene_diagnostics(gltf::scenes const& scenes);
 } // namespace gltf

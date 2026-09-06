@@ -4,12 +4,16 @@ A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), built with
 CMake 4.3 + Ninja on MSYS2 clang64.
 
 - `vulkan.core` - instance / device / swapchain / VMA allocator / pipeline / descriptor plumbing
-- `vulkan.runtime` - the frame facade (per-frame-slot scene resources, split begin/end frame),
+- `vulkan.runtime` - the frame facade (per-frame-slot scene resources, granular frame phases:
+  poll_events -> recreate_if_minimized -> pace_and_acquire -> begin_recording ->
+  record_main_drawcalls -> end_recording -> submit_and_present, plus one-call render_frame()),
   scene tree, GPU primitives, debug GUI overlay
 - `vulkan.animation` - animation_controller: glTF keyframe playback / skinning / morphs on the
   runtime scene tree
 - `gltf_loader` - pure-CPU glTF/GLB loading: meshes, keyframe animation, skins, morph targets,
-  cameras and punctual lights (KHR_lights_punctual)
+  cameras and punctual lights (KHR_lights_punctual); world-AABB + loader diagnostics
+- `chores` - demo bootstrap helpers for main(): startup config analysis (config + argv merge,
+  shaders/model location), pipeline setup, instancing stress grid, shader loading
 - `utility` - log/panic, handle distribution, thread pool, BVH, data blocks, frame_clock,
   pmr routing
 - `app_config` - TOML startup configuration merged with argv
@@ -19,5 +23,5 @@ percentage-closer filtering, skybox, keyframe animation / skinning / morph playb
 Dear ImGui debug overlay that is on by default (`[gui] show = false` in config disables it).
 
 Module reference is grouped under the `vulkan_core`, `vulkan_runtime`, `vulkan_runtime_scene_tree`,
-`vulkan_animation`, `vulkan_gui`, `vulkan_math`, `gltf_loader`, `utility` and `app_config`
+`vulkan_animation`, `vulkan_gui`, `vulkan_math`, `gltf_loader`, `chores`, `utility` and `app_config`
 groups. See the README at the repository root for the demo controls and config reference.
