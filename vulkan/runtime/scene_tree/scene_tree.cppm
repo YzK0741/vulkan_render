@@ -356,8 +356,11 @@ namespace vulkan {
      * @brief max skin matrices of the scene skin buffer (set 0 binding 9 storage buffer), in
      *        mat4s. Indices 0-3 are the identity block (the fallback for unskinned draws:
      *        skin_base = 0), the per-skin joint blocks follow at 4.
+     * @note sized for the heavy recursive-skeleton sample (RecursiveSkeletons: 84 skins x 10
+     *       joints = 840 joint matrices + identity); the buffer is 2048 x 64 B = 128 KiB per
+     *       frame slot, negligible against the 8 MiB morph buffer
      */
-    export constexpr uint32_t scene_skin_capacity = 128;
+    export constexpr uint32_t scene_skin_capacity = 2048;
 
     /**
      * @ingroup vulkan_runtime_scene_tree
