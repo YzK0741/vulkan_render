@@ -45,8 +45,9 @@ namespace vulkan::gui {
         uint32_t graphics_queue_family = 0; // queue family of @p graphics_queue
         VkQueue graphics_queue = VK_NULL_HANDLE;
         // the overlay draws into the OPEN main rendering instance, so its pipeline must match
-        // the frame's color attachment: swapchain format + the scene's MSAA sample count
+        // the frame's attachments: swapchain color format + the scene's depth format + MSAA
         VkFormat color_format = VK_FORMAT_UNDEFINED;
+        VkFormat depth_format = VK_FORMAT_UNDEFINED; // must match the main pass' depth attachment
         VkSampleCountFlagBits msaa_samples = VK_SAMPLE_COUNT_1_BIT;
         // frames in flight (the backend sizes its per-frame render-buffer ring to this)
         uint32_t frames_in_flight = 2;

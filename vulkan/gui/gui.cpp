@@ -59,6 +59,13 @@ namespace vulkan::gui {
         rendering_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
         rendering_info.colorAttachmentCount = 1;
         rendering_info.pColorAttachmentFormats = &info.color_format;
+        // The overlay records into the still-open main rendering instance, which carries the
+        // scene's depth attachment. Dynamic rendering requires a bound pipeline's
+        // depthAttachmentFormat to equal the attachment's format (VUID-vkCmdDrawIndexed-
+        // dynamicRenderingUnusedAttachments-08914) unless dynamicRenderingUnusedAttachments is
+        // enabled, so declare the scene depth format here - the pipeline still does no depth
+        // test/write (the backend's depth stencil state is all-disabled).
+        rendering_info.depthAttachmentFormat = info.depth_format;
         backend_info.PipelineInfoMain.PipelineRenderingCreateInfo = rendering_info;
         backend_info.CheckVkResultFn = [](VkResult const err) {
             if (err != VK_SUCCESS) {

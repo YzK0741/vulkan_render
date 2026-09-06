@@ -1242,6 +1242,7 @@ namespace vulkan {
         info.graphics_queue_family = vk.graphics_family_index;
         info.graphics_queue = vk.graphics_queue;
         info.color_format = vk.swap_chain_image_format;
+        info.depth_format = vk.depth_format;
         info.msaa_samples = vk.msaa_samples;
         info.frames_in_flight = static_cast<uint32_t>(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         return this->debug_overlay.init(info);
