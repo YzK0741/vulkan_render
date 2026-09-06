@@ -152,6 +152,12 @@ namespace vulkan {
         void* light_mapped = nullptr;
         std::optional<vk_pipeline> shadow_pipeline = std::nullopt; // depth-only pass pipeline
         bool shadows_enabled = false;                              // true after enable_shadows() (light UBO filled + pipeline ready)
+        // live-tunable depth bias of the shadow pass (dynamic state, set per frame before the
+        // depth-only draw): slope-scaled bias removes acne on angled surfaces, the constant
+        // factor adds a fixed push; tune from the debug gui when a model shows acne/peter-panning
+        float shadow_depth_bias_constant = 0.0f;
+        float shadow_depth_bias_slope = 1.5f;
+        float shadow_depth_bias_clamp = 0.0f;
 
         std::mutex access_mutex;
         // string keys (not string_view): the runtime owns the pipeline names, so lookups
@@ -489,6 +495,23 @@ namespace vulkan {
          *       (a one-shot GPU command), re-enabling restores per-frame rendering
          */
         void set_shadow_enabled(bool enabled);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief set the live depth bias of the directional shadow pass (applied every frame via
+         *        vkCmdSetDepthBias before the depth-only draw)
+         * @param constant_factor fixed depth bias added to every fragment's depth
+         * @param slope_factor slope-scaled bias (depth units per depth-unit of surface slope) -
+         *        the main acne control for angled surfaces
+         * @param clamp maximum depth bias magnitude (0 = no clamp)
+         * @note cheap: only changes the value recorded into the command buffer, no pipeline or
+         *       resource rebuild; useful to chase shadow acne / peter-panning per model
+         */
+        void set_shadow_depth_bias(float constant_factor, float slope_factor, float clamp) noexcept {
+            this->shadow_depth_bias_constant = constant_factor;
+            this->shadow_depth_bias_slope = slope_factor;
+            this->shadow_depth_bias_clamp = clamp;
+        }
 
         /**
          * @ingroup vulkan_runtime

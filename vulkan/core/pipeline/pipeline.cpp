@@ -120,15 +120,23 @@ namespace vulkan {
         viewport_state_create_info.pScissors = nullptr;
         viewport_state_create_info.pViewports = nullptr;
 
-        std::array<VkDynamicState, 3> dynamic_states = {};
+        // double-sided materials need per-draw cull control (core dynamic state since Vulkan 1.3)
+        std::array<VkDynamicState, 4> dynamic_states = {};
+        uint32_t dynamic_state_count = 3;
         dynamic_states[0] = VK_DYNAMIC_STATE_VIEWPORT;
         dynamic_states[1] = VK_DYNAMIC_STATE_SCISSOR;
-        // double-sided materials need per-draw cull control (core dynamic state since Vulkan 1.3)
         dynamic_states[2] = VK_DYNAMIC_STATE_CULL_MODE;
+        // depth-bias pipelines (the shadow pass) take the three bias factors as dynamic state,
+        // so the values can be tuned live (e.g. from the debug gui) without recreating the
+        // pipeline; depthBiasEnable itself stays static below
+        bool const depth_bias_enabled = depth_bias_constant_factor != 0.0f || depth_bias_slope_factor != 0.0f || depth_bias_clamp != 0.0f;
+        if (depth_bias_enabled) {
+            dynamic_states[dynamic_state_count++] = VK_DYNAMIC_STATE_DEPTH_BIAS;
+        }
 
         VkPipelineDynamicStateCreateInfo dynamic_state_create_info = {};
         dynamic_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-        dynamic_state_create_info.dynamicStateCount = dynamic_states.size();
+        dynamic_state_create_info.dynamicStateCount = dynamic_state_count;
         dynamic_state_create_info.pDynamicStates = dynamic_states.data();
 
         VkPipelineRasterizationStateCreateInfo rasterization_state_create_info = {};
@@ -141,9 +149,10 @@ namespace vulkan {
         rasterization_state_create_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         // slope-scaled depth bias for depth-writing passes (the shadow map): pushing the stored
         // depth away from the light by the surface's depth slope removes acne on angled
-        // surfaces; the factor is scale-free (in depth units per depth-unit slope)
-        rasterization_state_create_info.depthBiasEnable =
-            (depth_bias_constant_factor != 0.0f || depth_bias_slope_factor != 0.0f || depth_bias_clamp != 0.0f) ? VK_TRUE : VK_FALSE;
+        // surfaces; the factor is scale-free (in depth units per depth-unit slope). When the
+        // bias is enabled the factors are dynamic state (set per frame via vkCmdSetDepthBias);
+        // the static values below only matter while the state is never set dynamically.
+        rasterization_state_create_info.depthBiasEnable = depth_bias_enabled ? VK_TRUE : VK_FALSE;
         rasterization_state_create_info.depthBiasConstantFactor = depth_bias_constant_factor;
         rasterization_state_create_info.depthBiasSlopeFactor = depth_bias_slope_factor;
         rasterization_state_create_info.depthBiasClamp = depth_bias_clamp;

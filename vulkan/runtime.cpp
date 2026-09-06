@@ -986,6 +986,9 @@ namespace vulkan {
                                             nullptr);
                 }
                 this->shadow_pipeline->begin_pipeline(*command_buffer);
+                // depth bias is dynamic state on the shadow pipeline: record the live-tunable
+                // values (gui-adjustable) before the depth-only draw
+                vkCmdSetDepthBias(*command_buffer, this->shadow_depth_bias_constant, this->shadow_depth_bias_clamp, this->shadow_depth_bias_slope);
                 // draw every scene-tree leaf (the whole scene casts shadows)
                 for (primitive const* m : this->frame_leaves) {
                     m->draw(*command_buffer); // depth-only: shadow.vert transforms into light space
