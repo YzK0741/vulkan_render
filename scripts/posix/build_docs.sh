@@ -1,16 +1,17 @@
 #!/bin/sh
 # Build the project documentation: Doxygen HTML (docs/html) + the LaTeX manual
 # compiled to PDF (docs/latex/refman.pdf).
-# POSIX sh: run it under git-bash / MSYS2 / WSL / any Linux shell. Usage:
-#     sh scripts/build_docs.sh   (from anywhere; the script resolves the repo root)
+# POSIX sh (Linux / WSL / macOS / MSYS2 shell): run it from anywhere; the
+# script resolves the repo root. Usage:
+#     sh scripts/posix/build_docs.sh
 # Requires: doxygen on PATH (or the standard Windows/Unix install dirs) and a
 # TeX toolchain — make + pdflatex/makeindex, latexmk, or bare pdflatex
 # (MiKTeX's per-user install under %LOCALAPPDATA% is found automatically).
 
 set -eu
 
-# project root = parent of the scripts/ directory holding this script
-root=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
+# project root = two levels up from scripts/<platform>/ holding this script
+root=$(CDPATH= cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
 
 # normalize a (possibly Windows-style) path for POSIX tests

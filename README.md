@@ -28,10 +28,14 @@ A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), implementin
 
 ## Documentation
 
-The project uses **Doxygen** for API documentation; every module, class, and interface is annotated in-source with `@defgroup` / `@brief`. The generated HTML and the LaTeX manual are **not** committed to the repo (they would drown the source tree in generated files) — build them whenever you need them with the wrapper script under `scripts/`: `build_docs.ps1` (PowerShell / Windows) or `build_docs.sh` (POSIX sh — git-bash / MSYS2 / WSL / Linux). They run `doxygen Doxyfile`, then compile the LaTeX manual into `docs/latex/refman.pdf`:
+The project uses **Doxygen** for API documentation; every module, class, and interface is annotated in-source with `@defgroup` / `@brief`. The generated HTML and the LaTeX manual are **not** committed to the repo (they would drown the source tree in generated files) — build them whenever you need them with the platform wrapper script: `scripts/windows/build_docs.ps1` (PowerShell / Windows) or `scripts/posix/build_docs.sh` (POSIX sh — WSL / Linux / macOS / an MSYS2 shell). They run `doxygen Doxyfile`, then compile the LaTeX manual into `docs/latex/refman.pdf`:
 
 ```bash
-sh scripts/build_docs.sh
+# Windows (PowerShell)
+powershell -ExecutionPolicy Bypass -File scripts/windows/build_docs.ps1
+
+# POSIX (Linux / WSL / macOS)
+sh scripts/posix/build_docs.sh
 ```
 
 Raw equivalent: `doxygen Doxyfile` (HTML only).
@@ -65,8 +69,9 @@ Related source docs (tracked in the repo):
 ├── gltf_model/              # Sample model (DamagedHelmet)
 ├── snapshot/                # Screenshots
 ├── docs/                    # Usage guides + reference shaders; Doxygen HTML is generated on demand (gitignored)
-├── scripts/                 # Setup/build/run helpers (windows/ + posix/ sh+ps1) and config generators;
-│                            #   build_docs.{ps1,sh} builds the Doxygen HTML + LaTeX manual
+├── scripts/                 # Platform-split helpers: windows/ (PowerShell build/run/docs; only setup.sh
+│                            #   is sh — it must run inside MSYS2) and posix/ (sh), plus config
+│                            #   generators; build_docs = windows/build_docs.ps1 + posix/build_docs.sh
 └── third_party/             # Vendored dependencies (spirv-reflect, imgui, xxhash, fastgltf, simdjson, stb_image)
 ```
 
@@ -124,8 +129,8 @@ sh scripts/posix/run.sh path/to/model.glb gui
 
 Builds land in `build-debug/` and `build-release/`.
 
-The Doxygen HTML + LaTeX manual build with `scripts/build_docs.ps1`
-(Windows) or `scripts/build_docs.sh` (POSIX) — see the
+The Doxygen HTML + LaTeX manual build with `scripts/windows/build_docs.ps1`
+(Windows / PowerShell) or `scripts/posix/build_docs.sh` (POSIX sh) — see the
 [Documentation](#documentation) section.
 
 ### Manual build

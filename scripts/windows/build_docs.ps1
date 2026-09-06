@@ -1,17 +1,17 @@
 # Build the project documentation: Doxygen HTML (docs/html) + the LaTeX manual
 # compiled to PDF (docs/latex/refman.pdf).
-# PowerShell: run from anywhere (the script resolves the repo root from its own dir):
-#     powershell -ExecutionPolicy Bypass -File scripts/build_docs.ps1
+# PowerShell (Windows): run from anywhere (the script resolves the repo root from its own dir):
+#     powershell -ExecutionPolicy Bypass -File scripts/windows/build_docs.ps1
 # Requires: doxygen on PATH (or the standard Windows install dir) and a TeX
 # toolchain — make + pdflatex/makeindex, latexmk, or bare pdflatex (MiKTeX's
 # per-user install under %LOCALAPPDATA% is found automatically).
 
 $ErrorActionPreference = 'Stop'
 
-# project root = parent of the scripts/ directory holding this script
-$root = Split-Path -Parent $PSScriptRoot
+# project root = two levels up from scripts/<platform>/ holding this script
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 if (-not $root) {
-    $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+    $root = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 }
 Push-Location $root
 
