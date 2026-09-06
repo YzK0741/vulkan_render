@@ -78,12 +78,20 @@ Related source docs (tracked in the repo):
 - System packages: `glfw3`, `glm`, `tomlplusplus` (header-only; MSYS2 `mingw-w64-clang-x86_64-{glfw,glm,tomlplusplus}`)
 - Everything else is vendored under `third_party/`: `spirv-reflect`, Dear ImGui (GLFW/Vulkan backends), xxHash, **fastgltf + simdjson** (the glTF parser and its JSON backend, compiled from source into a `fastgltf_vendored` target) and **stb_image** (texture decode). No system fastgltf/simdjson package and no network fetch is needed — the build is self-contained on both Windows/MSYS2 and Linux.
 
-### One-click scripts
+### Scripts
 
 The repo ships setup / build / run scripts under `scripts/` for the two
 main platforms — **Windows** (MSYS2 clang64; the environment check + package
 install is a POSIX `sh` script run inside MSYS2, configure/build/run are
-PowerShell) and **POSIX** (Linux / WSL / macOS; everything is `sh`):
+PowerShell) and **POSIX** (Linux / WSL / macOS; everything is `sh`).
+Python is used for the config generators (cross-platform, no shell needed):
+
+```bash
+# config.toml helpers (any platform, Python 3.8+):
+python scripts/make_default_config.py     # copy config.example.toml as-is (asks where to put it)
+python scripts/make_config.py             # interactive: asks every setting (types + defaults shown)
+python scripts/make_config.py path/to/dir # write config.toml into an explicit directory
+```
 
 **Windows (MSYS2)**
 
@@ -143,11 +151,17 @@ By default it loads `gltf_model/DamagedHelmet.gltf` and renders it with PBR + IB
 
 #### Startup configuration
 
-Startup is driven by a TOML config file — copy `config.example.toml` to `config.toml` (working directory) or point at one explicitly:
+Startup is driven by a TOML config file — copy `config.example.toml` to
+`config.toml` (working directory) or point at one explicitly:
 
 ```bash
 ./build-release/vulkan_render --config my_config.toml
 ```
+
+Two helpers generate `config.toml` for you: `make_default_config.py`
+(writes the example file as-is; only asks where to put it) and
+`make_config.py` (asks every setting with type hints and defaults) — see
+the [Scripts](#scripts) section.
 
 Positional argv overrides the file: `argv[1]` = model path, `argv[2]` = grid side (a number) or demo, `argv[3]` = demo. Configurable: model / demo / instancing grid, `shaders_dir` / `model_dir` paths, window size / title / vsync / MSAA / clear color, skybox & shadow stage toggles, IBL precompute resolutions, and the debug-panel default size.
 
