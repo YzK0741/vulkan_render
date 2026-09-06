@@ -16,7 +16,6 @@ export import vulkan.core.vma;
 namespace vulkan {
     /**
      * @defgroup vulkan_core Vulkan Core Objects Manager
-     * @ingroup vulkan_core
      * @brief manages core vulkan objects and windows instance init and destroy.
      * @note
      *      - RAII
