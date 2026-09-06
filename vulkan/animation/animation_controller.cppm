@@ -25,7 +25,7 @@ import vulkan.runtime.scene_tree;
  *   - init() registers materials/geometry state and writes every scene set's shared buffers,
  *     so call it before the first frame, or only while the runtime is idle.
  *   - update(dt) writes the paced frame slot's skin/morph buffers and scene node locals, so
- *     call it between begin_frame() and end_frame() (after the slot's timeline wait).
+ *     call it after pace_and_acquire() and before begin_recording() (after the slot's timeline wait).
  */
 namespace vulkan {
     /**
@@ -87,8 +87,8 @@ namespace vulkan {
          *        import shift) and mark the scene changed, write the active frame slot's morph
          *        weights, then rebuild + upload the skin matrices into the active slot.
          * @param dt_seconds clock advance when playing (e.g. frame_clock::delta_seconds())
-         * @note call between runtime.begin_frame() and runtime.end_frame(): the runtime's
-         *       per-slot buffers may only be written after begin_frame() paced the slot.
+         * @note call after runtime.pace_and_acquire() and before runtime.begin_recording(): the runtime's
+         *       per-slot buffers may only be written once pace_and_acquire() paced the slot.
          */
         void update(float dt_seconds);
 

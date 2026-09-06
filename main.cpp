@@ -606,20 +606,34 @@ int main(int argc, char** argv) {
     utility::frame_clock frame_clock;
 
     // All per-frame decisions (event polling, ESC/close response, minimize skip, swapchain
-    // recreation on restore/resize) live inside runtime::begin_frame()/end_frame(); main only
-    // reacts to the returned frame_status. The runtime's per-slot skin/morph buffers may be
-    // written only between begin_frame() (which paces the frame slot) and end_frame().
+    // recreation on restore/resize) live inside the runtime's frame phases, which main calls at
+    // fine granularity so it can write per-frame data (scene node locals -> culling, skin
+    // matrices, morph weights) between pacing and recording.
     while (true) {
-        // Pace + acquire the next frame slot FIRST: after begin_frame() returns proceed, this
-        // slot's previous submission has completed, so the per-frame host writes below (scene
-        // node locals -> culling, skin matrices, morph weights) cannot race an in-flight frame.
-        vulkan::frame_status const paced = runtime.begin_frame();
+        // Phase 1: poll window events (ESC / native close -> closed, minimized -> skipped)
+        vulkan::frame_status const polled = runtime.poll_events();
+        if (polled == vulkan::frame_status::closed || vulkan::is_failure(polled)) {
+            break;
+        }
+        if (polled == vulkan::frame_status::skipped) {
+            // Minimized: skip this frame's CPU work too; keep the FPS timer fresh so the pause
+            // is not counted as one huge rendered frame.
+            last_frame_time = std::chrono::steady_clock::now();
+            std::this_thread::yield();
+            continue;
+        }
+        runtime.recreate_if_minimized();
+
+        // Phase 2: pace + acquire the next frame slot. After pace_and_acquire() returns
+        // proceed, this slot's previous submission has completed, so the per-frame host writes
+        // below (scene node locals -> culling, skin matrices, morph weights) cannot race an
+        // in-flight frame.
+        vulkan::frame_status const paced = runtime.pace_and_acquire();
         if (paced == vulkan::frame_status::closed || vulkan::is_failure(paced)) {
             break;
         }
         if (paced == vulkan::frame_status::skipped) {
-            // Minimized or swapchain recreated: skip this frame's CPU work too; keep the FPS
-            // timer fresh so the pause is not counted as one huge rendered frame.
+            // Swapchain recreated during acquire: retry next iteration
             last_frame_time = std::chrono::steady_clock::now();
             std::this_thread::yield();
             continue;
@@ -641,13 +655,24 @@ int main(int argc, char** argv) {
         }
 
         // drive the animation controller: sample the active animation into node locals (T/R/S +
-        // morph weights) and rebuild the skin matrices, into the frame slot begin_frame() just
-        // paced. dt comes from frame_clock (stamped after the previous presented frame).
+        // morph weights) and rebuild the skin matrices, into the frame slot pace_and_acquire()
+        // just paced. dt comes from frame_clock (stamped after the previous presented frame).
         animation.update(static_cast<float>(frame_clock.delta_seconds()));
         gui_anim_time = animation.time();       // keep the gui time slider in sync
         gui_anim_playing = animation.playing(); // reflect controller-side pauses (scrub / select)
         gui_anim_index = static_cast<int>(animation.current());
-        vulkan::frame_status const result = runtime.end_frame(); // record + submit + present the paced frame
+
+        // Phase 3: record + submit + present the paced frame
+        vulkan::frame_status const rec = runtime.begin_recording();
+        if (rec == vulkan::frame_status::closed || vulkan::is_failure(rec)) {
+            break;
+        }
+        runtime.record_main_drawcalls();
+        vulkan::frame_status const ended = runtime.end_recording();
+        if (ended == vulkan::frame_status::closed || vulkan::is_failure(ended)) {
+            break;
+        }
+        vulkan::frame_status const result = runtime.submit_and_present();
         if (result == vulkan::frame_status::closed || vulkan::is_failure(result)) {
             break;
         }

@@ -302,7 +302,7 @@ namespace vulkan {
         return this->duration_;
     }
 
-    // ---- per-frame drive (between begin_frame() and end_frame()) ----
+    // ---- per-frame drive (after pace_and_acquire(), before begin_recording()) ----
 
     void animation_controller::update(float const dt_seconds) {
         if (this->runtime_ == nullptr) {
@@ -324,7 +324,7 @@ namespace vulkan {
                 gltf::node_pose const base = base_it == this->base_poses_.end() ? gltf::node_pose{} : base_it->second;
                 gltf::node_pose const pose = gltf::sample_node(*this->active_, source, base, this->time_);
                 // morph weights: write this node's weights into the ACTIVE frame slot's morph
-                // block(s) (begin_frame() has already paced that slot)
+                // block(s) (pace_and_acquire() has already paced that slot)
                 if (!pose.weights.empty()) {
                     float* const active_scratch = static_cast<float*>(this->runtime_->morph_scratch());
                     if (active_scratch != nullptr) {

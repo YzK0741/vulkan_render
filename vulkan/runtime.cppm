@@ -41,7 +41,7 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_runtime
-     * @brief outcome of one frame step or of a whole frame (begin_frame()/end_frame()); the caller reacts to it
+     * @brief outcome of one frame step or of a whole frame (the frame phases); the caller reacts to it
      * @note shared by the split frame steps: each step returns proceed when it succeeded and the
      *       caller may continue to the next step (for the frame path that means a frame was
      *       recorded, submitted and presented). Failures are granular per stage so a caller can
@@ -129,7 +129,7 @@ namespace vulkan {
         // frame can never observe the next frame's descriptors (no update-after-bind race).
         std::array<vk_descriptor_set, vulkan::core::MAX_FRAMES_IN_FLIGHT> scene_sets = {};
         bool scene_set_created = false;
-        // the frame slot paced by the last successful pace_and_acquire()/begin_frame();
+        // the frame slot paced by the last successful pace_and_acquire();
         // per-frame host writes (set_skin_matrices / morph_scratch) target this slot's buffers
         uint32_t active_slot = 0;
         bool ibl_ready = false;
@@ -160,7 +160,7 @@ namespace vulkan {
         // constructing a std::string per call.
         std::map<std::string, vk_pipeline, std::less<>> pipelines;
         // Scene storage: a scene tree of nodes with local transforms + children; every primitive
-        // (normal_draw_primitive / instanced_draw_primitive) lives in a node's primitive leaf. end_frame()
+        // (normal_draw_primitive / instanced_draw_primitive) lives in a node's primitive leaf. the frame record phase
         // walks the tree once per frame: update_world() accumulates world matrices into each
         // leaf (primitive::set_world -> push.model), then each pipeline draws the leaves bound to
         // it (primitive::draw stays polymorphic). This replaces the old flat per-pipeline primitive list.
@@ -330,7 +330,7 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief initialize the Dear ImGui debug overlay on top of this runtime's window
          * @return true when the overlay is active afterwards (initialized, or already active)
-         * @note the overlay is drawn inside the runtime frame steps (begin_frame()/end_frame()): its
+         * @note the overlay is drawn inside the runtime frame phases: its
          *       per-frame new_frame/record calls are driven by the runtime once enabled. Call
          *       after the runtime is fully set up (window/device ready). Safe to call again to
          *       re-enable after shutdown; no-op when already active.
@@ -355,76 +355,59 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief phase 1 of one application frame: poll window events (ESC/close, minimized
-         *        skip), recreate the swapchain when needed, then pace + acquire the next frame
-         *        slot: wait the slot's timeline, acquire the next swapchain image and write this
-         *        frame's camera UBO into the slot's per-slot buffer.
-         * @return frame_status::proceed when the frame may be updated and recorded; skipped when
-         *         not renderable (minimized or swapchain recreated - caller yields and calls
-         *         begin_frame() again); closed on window close; acquire_failed on a fatal acquire
-         *         error
-         * @note every frame is begin_frame() ... end_frame(). After a proceed return the caller
-         *       may write this slot's per-frame resources (set_skin_matrices()/morph_scratch()
-         *       target active_frame_slot(), scene node locals via scene()) and must then call
-         *       end_frame() to record + submit + present.
-         */
-        frame_status begin_frame();
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief phase 2 of one application frame: record + submit + present the frame whose
-         *        slot begin_frame() paced: begin the slot's command buffer, accumulate world
-         *        transforms + frustum cull, record the shadow and main passes (and the debug
-         *        overlay), end recording, submit and present.
-         * @return frame_status::proceed when the frame was presented; skipped when present
-         *         reported the swapchain out of date / recreated it (caller retries next
-         *         iteration); one of the stage-specific *_failed values on a fatal error
-         * @note call only after begin_frame() returned proceed (optionally with caller per-frame
-         *       updates in between); see begin_frame() for the full frame contract.
-         */
-        frame_status end_frame();
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief drive one whole application frame in a single call by running the internal
-         *        phases directly: poll/skip/close, recreate-if-minimized, pace + acquire,
+         * @brief drive one whole application frame in a single call by running the frame phases
+         *        directly (see below): poll/skip/close, recreate-if-minimized, pace + acquire,
          *        record (world accumulation / culling / shadow / main pass / overlay) and
-         *        submit + present. This is the same sequence begin_frame()/end_frame() expose
-         *        in two halves, with no opportunity to interleave per-frame host writes.
+         *        submit + present, with no opportunity to interleave per-frame host writes.
          * @return frame_status: proceed when a frame was presented; skipped when not renderable
          *         (minimized or swapchain recreated - caller yields and calls again); closed on
          *         window close; one of the stage-specific *_failed values on a fatal Vulkan
          *         error (is_failure() tests for any of them)
-         * @note prefer the two-phase begin_frame() ... end_frame() form whenever the caller
-         *       must write per-frame data (animation poses, skin matrices, morph weights)
-         *       between pacing and recording: those buffers may only be written after
-         *       begin_frame() has waited the frame slot's timeline.
+         * @note callers that must write per-frame data (animation poses, skin matrices, morph
+         *       weights) between pacing and recording call the granular phases themselves in the
+         *       same order: poll_events -> recreate_if_minimized -> pace_and_acquire, then the
+         *       writes (they may only touch per-slot buffers after pace_and_acquire has waited
+         *       the slot's timeline), then begin_recording -> record_main_drawcalls ->
+         *       end_recording -> submit_and_present.
          */
         frame_status render_frame();
 
         /**
          * @ingroup vulkan_runtime
-         * @brief the frame slot paced by the last successful begin_frame(); per-frame host
+         * @brief the frame slot paced by the last successful pace_and_acquire(); per-frame host
          *        writes (set_skin_matrices / morph_scratch) go into this slot's per-slot buffers
          */
         [[nodiscard]] uint32_t active_frame_slot() const noexcept {
             return this->active_slot;
         }
 
-    private:
-        // ---- frame internals: the public frame API (render_frame(), or the two-phase
-        //      begin_frame()/end_frame() pair) is composed of these phases; they are not part
-        //      of the public API themselves ----
-        frame_status poll_events();                                           // window events; ESC/close -> closed, minimized -> skipped
-        void recreate_if_minimized();                                         // swapchain extent is 0-sized while minimized
-        frame_status pace_and_acquire();                                      // wait slot timeline + acquire image + camera UBO + active slot
-        frame_status begin_recording();                                       // vkBeginCommandBuffer + world-matrix accumulation + culling
-        void record_main_drawcalls();                                         // shadow pass, attachment transitions, main pass (skybox + leaves)
-        [[nodiscard]] VkCommandBuffer active_command_buffer() const noexcept; // command buffer being recorded
-        frame_status end_recording();                                         // end rendering instance / render pass + finish recording
-        frame_status submit_and_present();                                    // vkQueueSubmit + present (recreate when out of date)
+        // ---- frame phases: one frame is these calls in order. render_frame() runs them all
+        //      back to back; callers with per-frame host writes run them at fine granularity
+        //      (writes go between pace_and_acquire() and begin_recording()) ----
+        /** @brief poll window events; returns closed on ESC/native close, skipped while minimized */
+        frame_status poll_events();
+        /** @brief recreate the swapchain if the window was minimized (extent 0) since the last frame */
+        void recreate_if_minimized();
+        /** @brief wait the frame slot's timeline, acquire the next image, write the camera UBO,
+         *         and remember the paced slot in active_frame_slot(); skipped when the swapchain
+         *         was recreated, acquire_failed on a fatal acquire error */
+        frame_status pace_and_acquire();
+        /** @brief begin the slot's command buffer and run the CPU scene prep (world-matrix
+         *         accumulation + frustum culling); begin_recording_failed when vkBeginCommandBuffer fails */
+        frame_status begin_recording();
+        /** @brief record the shadow pass, the attachment transitions and the main scene pass */
+        void record_main_drawcalls();
+        /** @brief the command buffer currently being recorded (between begin_recording() and
+         *         end_recording()); internal use for the runtime's own recording */
+        [[nodiscard]] VkCommandBuffer active_command_buffer() const noexcept;
+        /** @brief end the rendering instance / render pass and finish recording;
+         *         end_recording_failed when vkEndCommandBuffer fails */
+        frame_status end_recording();
+        /** @brief submit the recorded command buffer and present the image (recreating the
+         *         swapchain when presentation reports out of date); submit_failed /
+         *         present_failed on fatal errors */
+        frame_status submit_and_present();
 
-    public:
         std::expected<void, std::string> make_pipeline(
             std::string_view pipeline_name,
             std::span<unsigned char const> vertex_shader_code,
@@ -568,9 +551,9 @@ namespace vulkan {
         /**
          * @ingroup vulkan_runtime
          * @brief upload the scene-wide skin matrices (scene set binding 9) into the frame slot
-         *        paced by the last begin_frame(): the caller fills the buffer layout
+         *        paced by the last pace_and_acquire(): the caller fills the buffer layout
          *        [identity block (4 mat4s) | per-skin joint blocks] and calls this once per frame
-         *        AFTER begin_frame(); primitives reference their block start via
+         *        AFTER pace_and_acquire(); primitives reference their block start via
          *        material_push_constants::skin_base (0 = the identity block: unskinned draws)
          * @param matrices at most scene_skin_capacity mat4s; anything beyond the capacity is dropped
          * @note host-visible copy, no Vulkan objects involved; the per-slot buffers guarantee an
@@ -594,7 +577,7 @@ namespace vulkan {
          *        per-target weights) and points primitives at their block through
          *        material_push_constants::morph_base / morph_targets / morph_vertices (see those
          *        fields for the layout convention).
-         * @return the mapped base of the slot paced by the last begin_frame(), or nullptr when
+         * @return the mapped base of the slot paced by the last pace_and_acquire(), or nullptr when
          *         the morph buffer is unavailable
          */
         [[nodiscard]] void* morph_scratch() noexcept;
@@ -614,7 +597,7 @@ namespace vulkan {
          * @return pointer to the created primitive (owned by the scene tree), or nullptr if the
          *         pipeline does not exist
          * @note the leaf's local transform is @p info.model_matrix and its world is identity
-         *       (end_frame() runs update_world before drawing, so primitive::set_world writes
+         *       (the frame record phase runs update_world before drawing, so primitive::set_world writes
          *       the same matrix into push.model as before)
          * @note call before the first frame, or only while the runtime is idle (no frame in
          *       flight): registering a material appends binding-1 texture entries to every scene

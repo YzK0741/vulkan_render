@@ -1197,38 +1197,10 @@ namespace vulkan {
         return *this->command_buffers[static_cast<uint32_t>(this->vulkan_core.current_frame)];
     }
 
-    frame_status runtime::begin_frame() {
-        // Phase 1: poll/skip/close, recreate the swapchain when minimized, then pace the frame
-        // slot (wait its timeline), acquire the next image and write this frame's camera UBO
-        // into the slot's buffer. After a proceed return the caller may write this slot's
-        // per-frame resources (set_skin_matrices / morph_scratch) safely, because the slot's
-        // previous submission has completed and its descriptors are static per slot.
-        frame_status const skip = this->poll_events();
-        if (skip != frame_status::proceed) {
-            return skip;
-        }
-        this->recreate_if_minimized();
-        return this->pace_and_acquire();
-    }
-
-    frame_status runtime::end_frame() {
-        // Phase 2: record + submit + present what begin_frame() paced.
-        frame_status const begin = this->begin_recording();
-        if (begin != frame_status::proceed) {
-            return begin;
-        }
-        this->record_main_drawcalls();
-        frame_status const end = this->end_recording();
-        if (end != frame_status::proceed) {
-            return end;
-        }
-        return this->submit_and_present();
-    }
-
     frame_status runtime::render_frame() {
-        // Whole frame in one call: run the internal phases directly (the exact sequence the
-        // two-phase begin_frame()/end_frame() form splits), for callers with nothing to
-        // update between pacing and recording.
+        // Whole frame in one call: run the frame phases directly, in order, with no caller
+        // writes interleaved (callers that need per-frame host updates run the phases at fine
+        // granularity themselves, writing between pace_and_acquire() and begin_recording()).
         frame_status const skip = this->poll_events();
         if (skip != frame_status::proceed) {
             return skip;
