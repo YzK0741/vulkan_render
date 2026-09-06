@@ -1010,6 +1010,7 @@ INPUT                  = ./vulkan \
 				./gltf_loader \
 				./app_config \
 				./main.cpp \
+				./chores.cppm \
 				./docs/mainpage.md
 
 # This tag can be used to specify the character encoding of the source files

@@ -101,7 +101,6 @@ target_sources(vulkancorekit
         vulkan/runtime/scene_tree/scene_tree.cppm
         vulkan/gui/gui.cppm
         vulkan/animation/animation_controller.cppm
-        vulkan/chores.cppm
     PRIVATE
         vulkan/core/core.cpp
         vulkan/core/filter/filter.cpp
@@ -215,9 +214,29 @@ target_link_libraries(app_config
         std_lib
 )
 
+# Demo bootstrap chores (root-level module, next to main.cpp): main's shader-loading /
+# directory-locating / pipeline helpers, kept out of main.cpp. Header-only module unit - a
+# split implementation unit trips over the vendored std module's operator-new declarations
+# under -fno-exceptions, so the bodies live inline in chores.cppm (like utility.data_block).
+add_library(chores STATIC)
+
+target_sources(chores
+    PUBLIC
+        FILE_SET CXX_MODULES
+        FILES
+        chores.cppm
+)
+
+target_link_libraries(chores
+        vulkancorekit
+        utility
+        std_lib
+)
+
 target_link_libraries(${PROJECT_NAME}
         utility
         vulkancorekit
+        chores
         gltf_loader
         app_config
         std_lib
@@ -251,6 +270,10 @@ target_compile_options(gltf_loader PRIVATE
 )
 
 target_compile_options(app_config PRIVATE
+        ${COMPILE_OPTIONS}
+)
+
+target_compile_options(chores PRIVATE
         ${COMPILE_OPTIONS}
 )
 
@@ -288,7 +311,10 @@ if(CLANG_FORMAT_EXECUTABLE)
 
     add_custom_target(clang-format DEPENDS "${CLANG_FORMAT_STAMP}")
 
-    # Format all project targets before compiling
+    # Format all project targets before compiling (chores is deliberately NOT in this list: a
+    # root-level module source feeding both the format stamp and a target that depends on other
+    # format-listed targets makes ninja see a cycle; format chores.cppm manually with
+    # 'clang-format -i chores.cppm' - same style, just not automatic)
     foreach(_tgt utility thread_pool app_config vulkancorekit gltf_loader vulkan_render)
         add_dependencies(${_tgt} clang-format)
     endforeach()
