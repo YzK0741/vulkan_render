@@ -9,13 +9,13 @@ CMake 4.3 + Ninja on MSYS2 clang64.
   record_main_drawcalls -> end_recording -> submit_and_present, plus one-call render_frame()),
   scene tree, GPU primitives, debug GUI overlay
 - `vulkan.animation` - animation_controller: glTF keyframe playback / skinning / morphs on the
-  runtime scene tree
+  runtime scene tree (heavy animations fan per-source sampling over a small utility.thread_pool)
 - `gltf_loader` - pure-CPU glTF/GLB loading: meshes, keyframe animation, skins, morph targets,
   cameras and punctual lights (KHR_lights_punctual); world-AABB + loader diagnostics
 - `chores` - demo bootstrap helpers for main(): startup config analysis (config + argv merge,
   shaders/model location), pipeline setup, instancing stress grid, shader loading
-- `utility` - log/panic, handle distribution, thread pool, BVH, data blocks, frame_clock,
-  pmr routing
+- `utility` - log/panic, handle distribution, thread pool (utility.thread_pool), BVH, data blocks,
+  frame_clock, pmr routing
 - `app_config` - TOML startup configuration merged with argv
 
 Rendering: PBR (Cook-Torrance + image-based lighting), directional shadows with manual

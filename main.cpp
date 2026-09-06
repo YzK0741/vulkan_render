@@ -233,7 +233,7 @@ int main(int argc, char** argv) {
     vulkan::animation_controller animation;
     animation.init(*scenes, runtime, scene_import_shift);
     float gui_anim_time = 0.0f; // float mirror of the playback clock (time-slider target)
-    bool gui_anim_playing = animation.playing();
+    bool gui_anim_playing = animation.is_playing();
     int gui_anim_index = 0; // selected item of the animation combo (0 = the auto-played one)
 
     // ---- authored (glTF) camera selection ----
@@ -250,7 +250,7 @@ int main(int argc, char** argv) {
     std::vector<authored_camera> authored_cameras;
     for (gltf::camera const& cam : scenes->cameras) {
         // find a node referencing this camera that is present in the imported tree
-        for (auto const& [source, loader_node] : animation.loader_nodes()) {
+        for (auto const& [source, loader_node] : animation.get_loader_nodes()) {
             if (loader_node->camera_index && *loader_node->camera_index == static_cast<std::size_t>(&cam - scenes->cameras.data()) && animation.has_runtime_node(source)) {
                 authored_cameras.push_back(authored_camera{&cam, source});
                 break;
@@ -346,7 +346,7 @@ int main(int argc, char** argv) {
         // pick which animation plays. All playback state lives in the animation_controller.
         if (animation.has_active()) {
             panel.push_back(std::make_unique<vulkan::gui::label_widget>([&animation] {
-                return std::format("animation '{}' ({}s)", animation.active_name(), animation.duration());
+                return std::format("animation '{}' ({}s)", animation.active_name(), animation.loop_duration());
             }));
             panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
                 "play",
@@ -451,8 +451,8 @@ int main(int argc, char** argv) {
         // morph weights) and rebuild the skin matrices, into the frame slot pace_and_acquire()
         // just paced. dt comes from frame_clock (stamped after the previous presented frame).
         animation.update(static_cast<float>(frame_clock.delta_seconds()));
-        gui_anim_time = animation.time();       // keep the gui time slider in sync
-        gui_anim_playing = animation.playing(); // reflect controller-side pauses (scrub / select)
+        gui_anim_time = animation.current_time();  // keep the gui time slider in sync
+        gui_anim_playing = animation.is_playing(); // reflect controller-side pauses (scrub / select)
         gui_anim_index = static_cast<int>(animation.current());
 
         // Phase 3: record + submit + present the paced frame
@@ -495,16 +495,16 @@ int main(int argc, char** argv) {
             if (animation.has_active()) {
                 // report the playback clock + the first animated node's evaluated translation
                 // (proves the keyframes are actually moving the tree)
-                std::string_view const node_name = animation.debug_node_name().empty()
+                std::string_view const node_name = animation.get_debug_node_name().empty()
                                                        ? std::string_view("<no target in scene>")
-                                                       : animation.debug_node_name();
+                                                       : animation.get_debug_node_name();
                 utility::log("  anim '{}': t={:.3f}s/{:.2f}s, '{}' at ({:.3f}, {:.3f}, {:.3f})",
-                             animation.active_name(), animation.time(), animation.duration(), node_name,
-                             animation.debug_translation().x, animation.debug_translation().y, animation.debug_translation().z);
+                             animation.active_name(), animation.current_time(), animation.loop_duration(), node_name,
+                             animation.get_debug_translation().x, animation.get_debug_translation().y, animation.get_debug_translation().z);
             }
-            if (animation.skin_debug_valid()) {
-                utility::log("  skin '{}': last joint world x-axis ({:.3f}, {:.3f}, {:.3f})", animation.skin_debug_name(),
-                             animation.skin_debug_translation().x, animation.skin_debug_translation().y, animation.skin_debug_translation().z);
+            if (animation.is_skin_debug_valid()) {
+                utility::log("  skin '{}': last joint world x-axis ({:.3f}, {:.3f}, {:.3f})", animation.get_skin_debug_name(),
+                             animation.get_skin_debug_translation().x, animation.get_skin_debug_translation().y, animation.get_skin_debug_translation().z);
             }
             fps_elapsed = 0.0;
             fps_frame_count = 0;

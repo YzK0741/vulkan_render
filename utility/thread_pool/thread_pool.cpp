@@ -1,6 +1,4 @@
-#include "thread_pool.cppm"
-
-import std;
+module utility.thread_pool;
 
 namespace utility {
     bool thread_pool::task::operator<(task const& other) const noexcept {

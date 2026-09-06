@@ -6,6 +6,7 @@ export module vulkan.animation;
 
 import std;
 import gltf_loader;
+import utility.thread_pool; // per-frame sampling fan-out (a small 2-6 thread pool, not full core count)
 import vulkan.runtime;
 import vulkan.runtime.scene_tree;
 
@@ -71,14 +72,14 @@ namespace vulkan {
         /** @brief pause/resume the clock (sampling keeps running while paused) */
         void set_playing(bool playing) noexcept;
         /** @brief whether the clock advances each update() */
-        [[nodiscard]] bool playing() const noexcept;
+        [[nodiscard]] bool is_playing() const noexcept;
         /** @brief scrub to @p t seconds and pause (mirrors the gui time-slider behavior: the
          *         next update() samples the new time without the clock fighting the drag) */
         void set_time(float t);
         /** @brief current playback time in seconds */
-        [[nodiscard]] float time() const noexcept;
+        [[nodiscard]] float current_time() const noexcept;
         /** @brief loop length of the active animation in seconds */
-        [[nodiscard]] float duration() const noexcept;
+        [[nodiscard]] float loop_duration() const noexcept;
 
         /**
          * @ingroup vulkan_animation
@@ -95,7 +96,7 @@ namespace vulkan {
         // ---- read-only bridge for demo-side consumers (e.g. glTF camera seeding) ----
 
         /** @brief loader nodes by asset node index (kept alive by @p scenes) */
-        [[nodiscard]] std::unordered_map<std::size_t, gltf::node const*> const& loader_nodes() const noexcept;
+        [[nodiscard]] std::unordered_map<std::size_t, gltf::node const*> const& get_loader_nodes() const noexcept;
         /** @brief whether an asset node index occurs in the runtime scene tree */
         [[nodiscard]] bool has_runtime_node(std::size_t source) const noexcept;
 
@@ -104,15 +105,15 @@ namespace vulkan {
         /** @brief display name of the active animation ("" when none) */
         [[nodiscard]] std::string_view active_name() const noexcept;
         /** @brief name of the reported animated node ("" when none) */
-        [[nodiscard]] std::string_view debug_node_name() const noexcept;
+        [[nodiscard]] std::string_view get_debug_node_name() const noexcept;
         /** @brief translation of the reported animated node this frame */
-        [[nodiscard]] glm::vec3 debug_translation() const noexcept;
+        [[nodiscard]] glm::vec3 get_debug_translation() const noexcept;
         /** @brief true when the first skin rig's last joint world was resolved this frame */
-        [[nodiscard]] bool skin_debug_valid() const noexcept;
+        [[nodiscard]] bool is_skin_debug_valid() const noexcept;
         /** @brief world x-axis of the first skin rig's LAST joint (rotation debug) */
-        [[nodiscard]] glm::vec3 skin_debug_translation() const noexcept;
+        [[nodiscard]] glm::vec3 get_skin_debug_translation() const noexcept;
         /** @brief display name of the first active skin rig ("" when none) */
-        [[nodiscard]] std::string_view skin_debug_name() const noexcept;
+        [[nodiscard]] std::string_view get_skin_debug_name() const noexcept;
 
     private:
         struct anim_target {
@@ -132,26 +133,33 @@ namespace vulkan {
             std::size_t source = 0;  // owning loader node (weights animation target)
         };
 
-        vulkan::runtime* runtime_ = nullptr;
-        glm::vec3 import_shift_{};
-        std::vector<gltf::animation const*> playable_ = {};
-        std::unordered_map<std::size_t, std::vector<anim_target>> source_nodes_ = {};
-        std::unordered_map<std::size_t, gltf::node_pose> base_poses_ = {};
-        std::unordered_map<std::size_t, gltf::node const*> loader_nodes_ = {};
-        gltf::animation const* active_ = nullptr;
-        std::size_t current_index_ = 0;
-        float time_ = 0.0f;
-        float duration_ = 1.0f;
-        float max_duration_ = 1.0f;
-        bool playing_ = true;
-        std::size_t debug_source_ = std::numeric_limits<std::size_t>::max();
-        glm::vec3 debug_translation_{};
-        std::string debug_node_name_ = {};
-        std::vector<skin_rig> skin_rigs_ = {};
-        std::vector<morph_rig> morph_rigs_ = {};
-        bool skin_debug_valid_ = false;
-        glm::vec3 skin_debug_translation_{};
-        std::string skin_debug_name_ = {};
+        vulkan::runtime* runtime = nullptr;
+        glm::vec3 import_shift{};
+        // small sampling pool (2-6 threads, "lite" fan-out for heavy per-source sampling) +
+        // the worker count it was created with (thread_pool exposes no getter for it)
+        std::unique_ptr<utility::thread_pool> pool = nullptr;
+        unsigned pool_threads = 0;
+        // source keys in stable order for parallel sampling (the source set is fixed after
+        // init(); sample_keys mirrors source_nodes's keys so update() can slice them)
+        std::vector<std::size_t> sample_keys = {};
+        std::vector<gltf::animation const*> playable = {};
+        std::unordered_map<std::size_t, std::vector<anim_target>> source_nodes = {};
+        std::unordered_map<std::size_t, gltf::node_pose> base_poses = {};
+        std::unordered_map<std::size_t, gltf::node const*> loader_nodes = {};
+        gltf::animation const* active = nullptr;
+        std::size_t current_index = 0;
+        float time = 0.0f;
+        float duration = 1.0f;
+        float max_duration = 1.0f;
+        bool playing = true;
+        std::size_t debug_source = std::numeric_limits<std::size_t>::max();
+        glm::vec3 debug_translation{};
+        std::string debug_node_name = {};
+        std::vector<skin_rig> skin_rigs = {};
+        std::vector<morph_rig> morph_rigs = {};
+        bool skin_debug_valid = false;
+        glm::vec3 skin_debug_translation{};
+        std::string skin_debug_name = {};
 
         // the node reported per second: prefer a translation channel target, fall back to the
         // first channel target present in the tree

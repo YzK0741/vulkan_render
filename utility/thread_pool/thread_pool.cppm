@@ -1,22 +1,18 @@
-#ifndef UTILITY_THREAD_POOL_H
-#define UTILITY_THREAD_POOL_H
+module;
 
 #include <cstdint>
-import std;
+
+export module utility.thread_pool;
+export import std;
 
 /**
  * @ingroup utility
  * @defgroup thread_pool Thread Pool
  * @file thread_pool.cppm
  * @brief a module provides raii thread pool (utility::thread_pool)
- * @note due to a clang bug std::jthread can't be used in module, so use the header-style, and requires link
- *     thread_pool separately
- * @note no target imports this header-style module yet, but the thread_pool CMake target is
- *     linked into the executable so it stays compiled and ready; it is kept as a ready-to-use
- *     building block for upcoming parallel work, e.g. async glTF loading or BVH build tasks
  *
  * @code {.cpp}
- * #include "utility/thread_pool/thread_pool.cppm"
+ * import utility.thread_pool;
  *
  * int main{
  *     utility::thread_pool pool(4);
@@ -37,7 +33,7 @@ namespace utility {
     /**
      * @brief thread pool class
      */
-    class thread_pool { // NOLINT
+    export class thread_pool { // NOLINT
         enum class shutdown_policy : uint8_t {
             discard,
             wait,
@@ -98,5 +94,3 @@ namespace utility {
         int get_active_thread() const;
     };
 } // namespace utility
-
-#endif

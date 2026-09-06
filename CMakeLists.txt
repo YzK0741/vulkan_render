@@ -54,15 +54,13 @@ target_sources(utility
         utility/BVH/bvh.cppm
         utility/better_pmr/better_pmr.cppm
         utility/frame_clock/frame_clock.cppm
+        utility/thread_pool/thread_pool.cppm
         PRIVATE
         utility/utility.cpp
         utility/BVH/bvh.cpp
         utility/better_pmr/better_pmr.cpp
+        utility/thread_pool/thread_pool.cpp
 )
-
-add_library(thread_pool STATIC)
-
-target_sources(thread_pool PRIVATE utility/thread_pool/thread_pool.cpp)
 
 # Startup configuration: parses config.toml (+ --config / argv merging) into app_settings.
 # Uses toml++ (header-only, system package mingw-w64-clang-x86_64-tomlplusplus; its headers
@@ -205,10 +203,6 @@ target_link_libraries(utility
         mimalloc
 )
 
-target_link_libraries(thread_pool
-        std_lib
-)
-
 target_link_libraries(app_config
         utility
         std_lib
@@ -246,7 +240,6 @@ target_link_libraries(${PROJECT_NAME}
         gltf_loader
         app_config
         std_lib
-        thread_pool
         glm::glm
         imgui
 )
@@ -264,10 +257,6 @@ target_compile_options(vulkancorekit PRIVATE
 )
 
 target_compile_options(utility PRIVATE
-        ${COMPILE_OPTIONS}
-)
-
-target_compile_options(thread_pool PRIVATE
         ${COMPILE_OPTIONS}
 )
 
@@ -321,7 +310,7 @@ if(CLANG_FORMAT_EXECUTABLE)
     # root-level module source feeding both the format stamp and a target that depends on other
     # format-listed targets makes ninja see a cycle; format chores.cppm manually with
     # 'clang-format -i chores.cppm' - same style, just not automatic)
-    foreach(_tgt utility thread_pool app_config vulkancorekit gltf_loader vulkan_render)
+    foreach(_tgt utility app_config vulkancorekit gltf_loader vulkan_render)
         add_dependencies(${_tgt} clang-format)
     endforeach()
 
