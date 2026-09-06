@@ -225,15 +225,6 @@ target_link_libraries(${PROJECT_NAME}
         imgui
 )
 
-# Micro-benchmark: cheap time reads (steady_clock::now() vs writer-refreshed atomics).
-# Plain C++ (no modules); Release build for meaningful numbers (-O3):
-#   cmake --build cmake-build-release-clang64 --target time_bench
-add_executable(time_bench bench/time_bench.cpp)
-
-target_compile_options(time_bench PRIVATE
-        ${COMPILE_OPTIONS}
-)
-
 target_compile_options(std_lib PRIVATE
         ${COMPILE_OPTIONS}
 )

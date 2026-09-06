@@ -10,10 +10,11 @@ import std;
  * @ingroup utility
  * @defgroup frame_clock Frame Clock
  * @brief per-frame cheap time: one writer thread stamps a couple of atomics each frame, any
- *        number of reader threads get the time as an atomic load (see bench/time_bench.cpp for
- *        the numbers: now() is ~23 ns, an atomic read ~1 ns; a dedicated 1 ms sleeper thread
- *        would lag up to the ~15.6 ms Windows timer granularity, which is why the stamping
- *        writer is the frame/update thread itself - readers are at most one frame behind).
+ *        number of reader threads get the time as an atomic load instead of calling the clock
+ *        directly (steady_clock::now() costs tens of ns per call, an atomic read ~1 ns). The
+ *        stamping writer is deliberately the frame/update thread itself - a dedicated sleeper
+ *        thread would lag by the OS timer granularity (~15.6 ms on Windows) - so readers are
+ *        at most one frame behind.
  *
  * Typical use: the render (or game/update) thread calls stamp() once per frame, parallel
  * workers / animation code read last_ns() or delta_ns() anywhere else. The clock is
