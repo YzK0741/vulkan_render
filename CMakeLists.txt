@@ -79,9 +79,13 @@ target_sources(app_config
         app_config/app_config.cpp
 )
 
-add_library(vulkan_lib STATIC)
+# The engine core library (vulkancorekit): Vulkan object management + math + the runtime
+# facade + scene tree + the debug GUI, plus - merged in - vulkan.animation, the one module
+# that knows how glTF keyframes/skins/morphs map onto the runtime scene. The animation module
+# imports gltf_loader types, so this library links the glTF content layer (gltf_loader).
+add_library(vulkancorekit STATIC)
 
-target_sources(vulkan_lib
+target_sources(vulkancorekit
     PUBLIC
         FILE_SET CXX_MODULES
         FILES
@@ -96,6 +100,7 @@ target_sources(vulkan_lib
         vulkan/core/pipeline/spirv_parser.cppm
         vulkan/runtime/scene_tree/scene_tree.cppm
         vulkan/gui/gui.cppm
+        vulkan/animation/animation_controller.cppm
     PRIVATE
         vulkan/core/core.cpp
         vulkan/core/filter/filter.cpp
@@ -108,6 +113,7 @@ target_sources(vulkan_lib
         vulkan/runtime.cpp
         vulkan/runtime/scene_tree/scene_tree.cpp
         vulkan/gui/gui.cpp
+        vulkan/animation/animation_controller.cpp
         third_party/spirv-reflect/spirv_reflect.c
 )
 add_library(gltf_loader STATIC)
@@ -169,7 +175,7 @@ target_link_libraries(gltf_loader
         utility
 )
 
-target_link_libraries(vulkan_lib
+target_link_libraries(vulkancorekit
         Vulkan::Vulkan
         glfw
         utility
@@ -177,28 +183,7 @@ target_link_libraries(vulkan_lib
         ${CMAKE_DL_LIBS}
         std_lib
         imgui
-)
-
-# Animation controller: bridges glTF animation/skin/morph data (gltf_loader) onto the scene
-# runtime (vulkan_lib). Kept OUT of vulkan_lib so the runtime stays scene-format agnostic -
-# this is the one module that knows how glTF keyframes map onto the runtime scene tree.
-add_library(vulkan_animation STATIC)
-
-target_sources(vulkan_animation
-    PUBLIC
-        FILE_SET CXX_MODULES
-        FILES
-        vulkan/animation/animation_controller.cppm
-
-    PRIVATE
-        vulkan/animation/animation_controller.cpp
-)
-
-target_link_libraries(vulkan_animation
-        vulkan_lib
         gltf_loader
-        std_lib
-        glm::glm
 )
 
 add_executable(vulkan_render main.cpp)
@@ -210,7 +195,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE $<$<CONFIG:Rel
 
 # utility.cpp implements the xxHash-based hash functions (utility::xxh3_64bits) on top of
 # the vendored xxhash library, so the dependency is declared here, on the library that
-# actually uses the XXH3_64bits symbol. It propagates to consumers (vulkan_lib / gltf_loader
+# actually uses the XXH3_64bits symbol. It propagates to consumers (vulkancorekit / gltf_loader
 # / vulkan_render) at link time, so the executable does not need to link xxhash itself.
 # better_pmr (utility.better_pmr) routes std::pmr allocations through mimalloc;
 # the library lives in the clang64 default lib path, so the bare name links it
@@ -231,8 +216,7 @@ target_link_libraries(app_config
 
 target_link_libraries(${PROJECT_NAME}
         utility
-        vulkan_lib
-        vulkan_animation
+        vulkancorekit
         gltf_loader
         app_config
         std_lib
@@ -258,7 +242,7 @@ target_compile_options(vulkan_render PRIVATE
         ${COMPILE_OPTIONS}
 )
 
-target_compile_options(vulkan_lib PRIVATE
+target_compile_options(vulkancorekit PRIVATE
         ${COMPILE_OPTIONS}
 )
 
@@ -278,11 +262,7 @@ target_compile_options(app_config PRIVATE
         ${COMPILE_OPTIONS}
 )
 
-target_compile_options(vulkan_animation PRIVATE
-        ${COMPILE_OPTIONS}
-)
-
-target_compile_definitions(vulkan_lib PRIVATE
+target_compile_definitions(vulkancorekit PRIVATE
         $<$<CONFIG:Debug>:
         _DEBUG
         >
@@ -317,7 +297,7 @@ if(CLANG_FORMAT_EXECUTABLE)
     add_custom_target(clang-format DEPENDS "${CLANG_FORMAT_STAMP}")
 
     # Format all project targets before compiling
-    foreach(_tgt utility thread_pool app_config vulkan_lib gltf_loader vulkan_animation vulkan_render)
+    foreach(_tgt utility thread_pool app_config vulkancorekit gltf_loader vulkan_render)
         add_dependencies(${_tgt} clang-format)
     endforeach()
 
