@@ -352,13 +352,18 @@ namespace {
         }
 
         // morph targets: per-target displacement attributes (POSITION/NORMAL deltas), decoded
-        // exactly like the base attributes (same vertex count per target)
+        // exactly like the base attributes (same vertex count per target). The glTF spec
+        // requires morph-target deltas to be FLOAT; non-float attributes are dropped here so
+        // consumers can read the data as float deltas without a per-portion component check.
         std::vector<gltf::morph_target> targets;
         targets.reserve(primitive.targets.size());
         for (auto const& target_attributes : primitive.targets) {
             gltf::morph_target target;
             for (auto const& attribute : target_attributes) {
                 auto data = get_data_from_accessor(asset, asset.accessors[attribute.accessorIndex]);
+                if (data.component_type != gltf::component_type::float_t) {
+                    continue; // non-conforming morph delta: drop (consumers blend float deltas)
+                }
                 std::string const name(attribute.name);
                 target.attributes[name].component = data.component_type;
                 target.attributes[name].data = std::move(data.data);

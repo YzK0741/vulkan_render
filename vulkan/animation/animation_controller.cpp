@@ -344,10 +344,13 @@ namespace vulkan {
         // ---- morph rigs: bake deltas + default weights into every slot's morph buffer ----
         float* const morph_scratch_mem = this->backend.morph_scratch_slot(0);
         if (morph_scratch_mem != nullptr) {
-            auto const read_delta_vec3 = [](std::map<std::string, gltf::vertex_portion> const& attrs, std::string_view const name, std::size_t const i) -> glm::vec3 {
+            // read one float delta attribute of a morph target. The loader only keeps FLOAT
+            // morph deltas (see gltf_loader: non-float target attributes are dropped), so the
+            // data can be read directly as glm::vec3 without a component-type check.
+            auto const read_delta_vec3 = [](auto const& attrs, std::string_view const name, std::size_t const i) -> glm::vec3 {
                 auto const it = attrs.find(std::string(name));
-                if (it == attrs.end() || it->second.component != gltf::component_type::float_t) {
-                    return glm::vec3(0.0f); // missing/unsupported delta -> no displacement
+                if (it == attrs.end()) {
+                    return glm::vec3(0.0f); // missing delta -> no displacement
                 }
                 return reinterpret_cast<glm::vec3 const*>(it->second.data.data())[i];
             };
