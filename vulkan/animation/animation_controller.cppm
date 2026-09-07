@@ -214,8 +214,8 @@ namespace vulkan {
          * @note a template: the definition is in this interface so any TU that imports the
          *       module can instantiate it at the call site with a concrete source type.
          */
-        template <animation_source Source>
-        void init(Source const& scenes, animation_backend const& backend, glm::vec3 const& import_shift) {
+        template <animation_source S>
+        void init(S const& scenes, animation_backend const& backend, glm::vec3 const& import_shift) {
             this->backend = backend;
             this->import_shift = import_shift;
 
