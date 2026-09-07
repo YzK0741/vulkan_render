@@ -197,6 +197,45 @@ target_include_directories(xxhash
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xxhash
 )
 
+# mimalloc (vendored under third_party/mimalloc, v3.4.4, MIT — see the LICENSE there):
+# allocator backing utility.better_pmr, which routes every std::pmr allocation through it
+# (utility.cppm -> utility.better_pmr -> mi_aligned_alloc / mi_free_aligned). Compiled as
+# its own plain-C static target from the upstream mi_sources set, mirroring the imgui /
+# xxhash policy (vendored code does not follow the project's -Werror set; headers are
+# SYSTEM so the -Werror consumers that include <mimalloc.h> do not see upstream warnings).
+add_library(mimalloc_vendored STATIC
+        third_party/mimalloc/src/alloc.c
+        third_party/mimalloc/src/alloc-aligned.c
+        third_party/mimalloc/src/alloc-posix.c
+        third_party/mimalloc/src/arena.c
+        third_party/mimalloc/src/arena-meta.c
+        third_party/mimalloc/src/bitmap.c
+        third_party/mimalloc/src/heap.c
+        third_party/mimalloc/src/init.c
+        third_party/mimalloc/src/libc.c
+        third_party/mimalloc/src/options.c
+        third_party/mimalloc/src/os.c
+        third_party/mimalloc/src/page.c
+        third_party/mimalloc/src/page-map.c
+        third_party/mimalloc/src/random.c
+        third_party/mimalloc/src/stats.c
+        third_party/mimalloc/src/theap.c
+        third_party/mimalloc/src/threadlocal.c
+        third_party/mimalloc/src/prim/prim.c
+)
+
+target_include_directories(mimalloc_vendored
+    SYSTEM PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mimalloc/include
+)
+
+if(WIN32)
+    # upstream links psapi/shell32/user32/advapi32/bcrypt on Windows (see mimalloc's
+    # CMakeLists.txt mi_libraries); _WIN32_WINNT=0x600 matches the upstream MINGW define
+    target_compile_definitions(mimalloc_vendored PRIVATE _WIN32_WINNT=0x600)
+    target_link_libraries(mimalloc_vendored PUBLIC psapi shell32 user32 advapi32 bcrypt)
+endif()
+
 target_link_libraries(gltf_loader
         PRIVATE
         fastgltf_vendored
@@ -238,12 +277,12 @@ set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE $<$<CONFIG:Rel
 # the vendored xxhash library, so the dependency is declared here, on the library that
 # actually uses the XXH3_64bits symbol. It propagates to consumers (vulkancorekit / gltf_loader
 # / vulkan_render) at link time, so the executable does not need to link xxhash itself.
-# better_pmr (utility.better_pmr) routes std::pmr allocations through mimalloc;
-# the library lives in the clang64 default lib path, so the bare name links it
+# better_pmr (utility.better_pmr) routes std::pmr allocations through the vendored mimalloc
+# (third_party/mimalloc), so the executable no longer needs MSYS2's libmimalloc.dll.
 target_link_libraries(utility
         std_lib
         xxhash
-        mimalloc
+        mimalloc_vendored
 )
 
 target_link_libraries(app_config
