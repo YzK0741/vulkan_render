@@ -421,7 +421,7 @@ namespace vulkan {
                         slice_changed[static_cast<std::size_t>(w)].store(any);
                     });
                 }
-                this->runtime->run_tasks(tasks);
+                this->runtime->run_tasks(tasks, vulkan::task_priority::animation);
                 for (std::atomic<bool> const& c : slice_changed) {
                     changed = changed || c.load();
                 }

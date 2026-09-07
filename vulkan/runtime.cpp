@@ -74,14 +74,16 @@ namespace vulkan {
         return static_cast<int>(hw == 0 ? 2u : std::max(1u, hw / 4u));
     }
 
-    // Run a batch of tasks on the shared pool and wait for exactly this priority group: the
+    // Run a batch of tasks on the shared pool and wait for exactly this stage's group: the
     // frame phases are synchronous (the paced slot is read right after animation sampling),
-    // so run_tasks blocks until every task in the batch finished.
-    void runtime::run_tasks(std::span<std::function<void()>> const tasks, int const priority) {
-        if (tasks.empty() || !this->task_pool.post_batch(tasks, priority)) {
+    // so run_tasks blocks until every task in the batch finished. The enum tier is mapped
+    // onto the pool's integer priority (see task_priority in runtime.cppm).
+    void runtime::run_tasks(std::span<std::function<void()>> const tasks, task_priority const priority) {
+        int const pool_priority = static_cast<int>(priority);
+        if (tasks.empty() || !this->task_pool.post_batch(tasks, pool_priority)) {
             return; // empty batch, or the pool is shut down (never in the running demo)
         }
-        this->task_pool.wait_until_priority_done(priority);
+        this->task_pool.wait_until_priority_done(pool_priority);
     }
 
     runtime::runtime()

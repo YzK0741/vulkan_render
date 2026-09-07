@@ -69,6 +69,20 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_runtime
+     * @brief named tiers for tasks submitted to the runtime's shared task pool (run_tasks).
+     *
+     * Each enumerator names one frame-time parallel stage of the runtime; it maps onto the
+     * underlying pool's integer priority (higher numeric values run earlier) and is ALSO that
+     * stage's wait group, so distinct stages never block on each other's tasks. Add an
+     * enumerator per future stage instead of passing magic ints at call sites.
+     */
+    export enum class task_priority : int {
+        animation = 0, // per-source animation sampling fan-out (animation_controller::update)
+        // future frame-time stages (culling, skin upload, ...) append their own tier here
+    };
+
+    /**
+     * @ingroup vulkan_runtime
      * @brief vulkan runtime facade class
      * @note
      *      - use operator-> to access the filtered core view (core_filter, e.g. runtime->get_device())
@@ -323,12 +337,12 @@ namespace vulkan {
          *        of owning private pools, so all CPU parallelism shares one pool sized to the
          *        machine (hardware_concurrency()/4 threads, floor 1).
          * @param tasks the batch; each task runs exactly once on a pool worker
-         * @param priority group key: tasks of one caller should share a priority so
-         *        wait semantics only cover that group (see utility::thread_pool::wait_until_priority_done)
+         * @param priority the stage this batch belongs to (see task_priority); run_tasks waits
+         *        only for this stage's tasks, so parallel stages can share the pool safely
          * @note synchronous: returns only after every task in the batch finished, which is what
          *       the frame phases need (the paced slot is read right after animation sampling)
          */
-        void run_tasks(std::span<std::function<void()>> tasks, int priority = 0);
+        void run_tasks(std::span<std::function<void()>> tasks, task_priority priority = task_priority::animation);
 
         /**
          * @ingroup vulkan_runtime
