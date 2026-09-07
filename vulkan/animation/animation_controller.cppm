@@ -168,5 +168,12 @@ namespace vulkan {
         // first channel target present in the tree
         std::size_t pick_debug_source(gltf::animation const& animation) const;
         void refresh_debug_name();
+
+        // sample one loader source into its runtime nodes + the active slot's morph weights at
+        // this->time; returns whether any node local moved (morph-only writes are not
+        // "changed": they do not invalidate the culling BVH). A member function so the
+        // sampling fan-out tasks only capture `this` (+ their source range): the task list is
+        // self-contained and can be handed to runtime::run_tasks() for pool execution.
+        bool sample_source(std::size_t source, std::vector<anim_target> const& targets);
     };
 } // namespace vulkan

@@ -340,6 +340,39 @@ namespace vulkan {
 
     // ---- per-frame drive (after pace_and_acquire(), before begin_recording()) ----
 
+    // sample one loader source into its runtime nodes + the active slot's morph weights;
+    // returns whether any node local moved (morph-only writes are not "changed": they do not
+    // invalidate the culling BVH)
+    bool animation_controller::sample_source(std::size_t const source, std::vector<anim_target> const& targets) {
+        auto const base_it = this->base_poses.find(source);
+        gltf::node_pose const base = base_it == this->base_poses.end() ? gltf::node_pose{} : base_it->second;
+        gltf::node_pose const pose = gltf::sample_node(*this->active, source, base, this->time);
+        if (!pose.weights.empty()) {
+            float* const active_scratch = static_cast<float*>(this->runtime->morph_scratch());
+            if (active_scratch != nullptr) {
+                for (morph_rig const& rig : this->morph_rigs) {
+                    if (rig.source == source && static_cast<std::size_t>(rig.target_count) == pose.weights.size()) {
+                        std::size_t const weight_offset = static_cast<std::size_t>(rig.morph_base) + static_cast<std::size_t>(rig.vertex_count) * static_cast<std::size_t>(rig.target_count) * 6u;
+                        for (std::size_t t = 0; t < pose.weights.size(); ++t) {
+                            active_scratch[weight_offset + t] = pose.weights[t];
+                        }
+                    }
+                }
+            }
+        }
+        if (!pose.any_transform) {
+            return false; // weights-only channels don't move the node's local transform
+        }
+        glm::mat4 const trs = glm::translate(glm::mat4(1.0f), pose.translation) * glm::mat4_cast(pose.rotation) * glm::scale(glm::mat4(1.0f), pose.scale);
+        for (anim_target const& target : targets) {
+            target.node->local = target.scene_root ? glm::translate(glm::mat4(1.0f), this->import_shift) * trs : trs;
+        }
+        if (source == this->debug_source) {
+            this->debug_translation = pose.translation;
+        }
+        return true;
+    }
+
     void animation_controller::update(float const dt_seconds) {
         if (this->runtime == nullptr) {
             return;
@@ -357,38 +390,6 @@ namespace vulkan {
                     this->time = std::fmod(this->time, this->duration);
                 }
             }
-            // sample one loader source into its runtime nodes + the active slot's morph
-            // weights; returns whether any node local moved (morph-only writes are not
-            // "changed": they do not invalidate the culling BVH)
-            auto const sample_source = [this](std::size_t const source, std::vector<anim_target> const& targets) -> bool {
-                auto const base_it = this->base_poses.find(source);
-                gltf::node_pose const base = base_it == this->base_poses.end() ? gltf::node_pose{} : base_it->second;
-                gltf::node_pose const pose = gltf::sample_node(*this->active, source, base, this->time);
-                if (!pose.weights.empty()) {
-                    float* const active_scratch = static_cast<float*>(this->runtime->morph_scratch());
-                    if (active_scratch != nullptr) {
-                        for (morph_rig const& rig : this->morph_rigs) {
-                            if (rig.source == source && static_cast<std::size_t>(rig.target_count) == pose.weights.size()) {
-                                std::size_t const weight_offset = static_cast<std::size_t>(rig.morph_base) + static_cast<std::size_t>(rig.vertex_count) * static_cast<std::size_t>(rig.target_count) * 6u;
-                                for (std::size_t t = 0; t < pose.weights.size(); ++t) {
-                                    active_scratch[weight_offset + t] = pose.weights[t];
-                                }
-                            }
-                        }
-                    }
-                }
-                if (!pose.any_transform) {
-                    return false; // weights-only channels don't move the node's local transform
-                }
-                glm::mat4 const trs = glm::translate(glm::mat4(1.0f), pose.translation) * glm::mat4_cast(pose.rotation) * glm::scale(glm::mat4(1.0f), pose.scale);
-                for (anim_target const& target : targets) {
-                    target.node->local = target.scene_root ? glm::translate(glm::mat4(1.0f), this->import_shift) * trs : trs;
-                }
-                if (source == this->debug_source) {
-                    this->debug_translation = pose.translation;
-                }
-                return true;
-            };
 
             bool changed = false;
             if (this->parallel_sampling && !this->sample_keys.empty()) {
@@ -396,8 +397,8 @@ namespace vulkan {
                 // owns a contiguous range and reports whether it moved any node. Different
                 // sources touch different runtime nodes / morph offsets, so no shared state is
                 // written concurrently (debug_translation has one writer: its own source's slice).
-                // run_tasks() is synchronous: this frame's sampling finishes before update()
-                // returns, exactly like the old private pool's post + wait_until_free().
+                // The tasks capture only `this` (+ the slice bounds): self-contained, so the
+                // list can be handed to runtime::run_tasks() and executed on the runtime's pool.
                 std::size_t const total = this->sample_keys.size();
                 unsigned const workers = std::max(1, this->runtime->task_pool_threads());
                 std::vector<std::atomic<bool>> slice_changed(workers);
@@ -409,25 +410,27 @@ namespace vulkan {
                     if (begin >= end) {
                         continue;
                     }
-                    tasks.emplace_back([this, &sample_source, begin, end, &slice_changed, w] {
+                    tasks.emplace_back([this, begin, end, &slice_changed, w] {
                         bool any = false;
                         for (std::size_t i = begin; i < end; ++i) {
                             std::size_t const source = this->sample_keys[i];
                             auto const targets_it = this->source_nodes.find(source);
-                            if (targets_it != this->source_nodes.end() && sample_source(source, targets_it->second)) {
+                            if (targets_it != this->source_nodes.end() && this->sample_source(source, targets_it->second)) {
                                 any = true;
                             }
                         }
                         slice_changed[static_cast<std::size_t>(w)].store(any);
                     });
                 }
+                // forward the task list to the runtime's own pool and wait for this stage's
+                // group: run_tasks() is synchronous, so sampling finishes before update() returns
                 this->runtime->run_tasks(tasks, vulkan::task_priority::animation);
                 for (std::atomic<bool> const& c : slice_changed) {
                     changed = changed || c.load();
                 }
             } else {
                 for (auto const& [source, targets] : this->source_nodes) {
-                    changed = sample_source(source, targets) || changed;
+                    changed = this->sample_source(source, targets) || changed;
                 }
             }
             if (changed) {
