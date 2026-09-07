@@ -121,9 +121,15 @@ namespace vulkan {
         void* material_mapped = nullptr;
         uint32_t material_count = 0;
         // per-instance transforms for instanced primitives (scene set binding 6): one mat4 per
-        // instance, host-visible; filled by make_instanced_primitive()
+        // instance, host-visible. The buffer is ONE shared region split into per-instanced-
+        // primitive slices: make_instanced_primitive() appends its transforms at instance_cursor
+        // (mat4 units), hands the slice start to the new primitive via push.instance_base, and
+        // advances the cursor, so several instanced primitives coexist without overwriting each
+        // other. instance_cursor resets to 0 whenever instanced primitives are cleared (they are
+        // the only writers).
         vk_buffer instance_buffer = {};
         void* instance_mapped = nullptr;
+        uint32_t instance_cursor = 0;
         // per-joint skin matrices (scene set binding 9): ONE buffer per frame slot, like the
         // camera UBO — each slot's scene set always points at its own buffer, so a frame being
         // rendered never shares the buffer the next frame rewrites. scene_skin_capacity mat4s
@@ -209,6 +215,25 @@ namespace vulkan {
         // culled result is reused while neither the scene nor the camera moved. cull_bvh holds
         // the last built tree (world AABBs are captured at build time and stay valid as long as
         // the scene is unchanged: update_world rewrites the same matrices each frame).
+        //
+        // Liveness contract (why the raw primitive const* inside the BVH / cull_visible can
+        // never dangle): every scene mutation that removes or adds leaves - clear_primitives,
+        // make_primitive / make_instanced_primitive, import, set_scene, set_scene_transform,
+        // and scene_changed() for callers editing get_scene() directly - sets bvh_dirty. The
+        // next begin_recording() then (1) recollects frame_leaves from the CURRENT tree, (2)
+        // destroys the old cull_bvh (its stale leaf pointers die with it) and rebuilds from
+        // those fresh leaves, and (3) re-runs the cull so cull_visible also drops dead leaves.
+        // Between frames the caches are never touched, so a leaf removed mid-frame is safe as
+        // long as the removal went through an API that sets bvh_dirty (or the caller invoked
+        // scene_changed()). Callers editing the tree behind the runtime's back must call
+        // scene_changed() after every structural change or the BVH/cull_visible can outlive a
+        // destroyed leaf.
+        //
+        // Known limitation (documented, accepted): the BVH bounds are the STATIC local AABBs
+        // captured at upload/import. Skinned/morphed vertices can move far outside that box
+        // (see set_skin_matrices / morph_scratch), so such a primitive may be frustum-culled
+        // even while its deformed geometry is on screen. Conservative animation rigs stay
+        // inside the authored bounds; culling can also be disabled (frustum_culling = false).
         std::optional<utility::bvh<primitive>> cull_bvh = std::nullopt;
         bool bvh_dirty = true;                                // scene structure/transforms changed -> rebuild
         std::pmr::vector<primitive const*> cull_visible = {}; // last culled result (main-pass set)

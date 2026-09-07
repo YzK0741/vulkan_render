@@ -38,7 +38,7 @@ struct Material {
 layout(set = 0, binding = 5) readonly buffer Materials { Material materials[]; };
 
 // Push constant block: must mirror pbr.vert and material_push_constants in the runtime
-// (six uint fields first, then the aligned mat4) so member offsets agree across stages and
+// (seven uint fields first, then the aligned mat4) so member offsets agree across stages and
 // with the CPU writes. This fragment stage only reads material_index; the remaining fields
 // exist to keep the block layout identical.
 layout(push_constant) uniform PushConstants {
@@ -48,6 +48,7 @@ layout(push_constant) uniform PushConstants {
     uint morph_base;     // float index of this primitive's morph block in morph_data.morphs (0 = none)
     uint morph_targets;  // number of morph targets (0 = not morphable)
     uint morph_vertices; // vertex count of this primitive (morph block stride)
+    uint instance_base;  // mat4 start of this instanced primitive's transforms (unused here)
     mat4 model;          // per-model world transform (kept out of the shared camera UBO; unused here)
 } push;
 

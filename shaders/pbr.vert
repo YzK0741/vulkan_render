@@ -34,11 +34,12 @@ layout(set = 0, binding = 10) readonly buffer MorphData {
 
 layout(push_constant) uniform PushConstants {
     uint material_index; // unused here (vertex stage), declared to keep the block layout identical to pbr.frag
-    uint flags;          // bit0: instanced draw -> model comes from instances[gl_InstanceIndex]
+    uint flags;          // bit0: instanced draw -> model comes from instances[instance_base + gl_InstanceIndex]
     uint skin_base;      // start of this primitive's joint block in skins.matrices (0 = identity)
     uint morph_base;     // float index of this primitive's morph block in morph_data.morphs (0 = none)
     uint morph_targets;  // number of morph targets (0 = not morphable)
     uint morph_vertices; // vertex count of this primitive (morph block stride)
+    uint instance_base;  // mat4 start of this instanced primitive's transforms (binding 6)
     mat4 model;          // per-model world transform (kept out of the shared camera UBO)
 } push;
 
@@ -87,7 +88,7 @@ void main() {
         skinned_normal = nrm / wsum;
     }
 
-    mat4 world = (push.flags & 1u) != 0u ? instances.transforms[gl_InstanceIndex] : push.model;
+    mat4 world = (push.flags & 1u) != 0u ? instances.transforms[push.instance_base + gl_InstanceIndex] : push.model;
     vec4 world_pos = world * local_pos;
     v_world_pos = world_pos.xyz;
     v_normal = normalize(mat3(world) * skinned_normal);

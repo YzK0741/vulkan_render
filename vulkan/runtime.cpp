@@ -1429,7 +1429,7 @@ namespace vulkan {
     }
 
     primitive* runtime::make_instanced_primitive(primitive const& source, std::span<glm::mat4 const> const transforms) {
-        uint32_t const count = std::min<uint32_t>(static_cast<uint32_t>(transforms.size()), vulkan::instance_capacity);
+        uint32_t const count = std::min<uint32_t>(static_cast<uint32_t>(transforms.size()), vulkan::instance_capacity - this->instance_cursor);
         if (count == 0 || this->instance_mapped == nullptr || !source.is_valid()) {
             return nullptr;
         }
@@ -1439,16 +1439,23 @@ namespace vulkan {
         }
         this->ensure_scene_set();
 
-        // host-visible buffer (storage_coherent): no flush needed, the GPU reads it after the
-        // submit fence of a previous frame
-        std::memcpy(this->instance_mapped, transforms.data(), static_cast<size_t>(count) * sizeof(glm::mat4));
+        // The instance buffer is one shared region; THIS primitive gets the slice starting at
+        // instance_cursor (mat4 units). Writing only its own slice keeps several instanced
+        // primitives from overwriting each other - each one addresses its transforms through
+        // push.instance_base in the vertex shaders.
+        uint32_t const base = this->instance_cursor;
+        this->instance_cursor += count;
+        std::memcpy(static_cast<unsigned char*>(this->instance_mapped) + static_cast<size_t>(base) * sizeof(glm::mat4),
+                    transforms.data(),
+                    static_cast<size_t>(count) * sizeof(glm::mat4));
 
         auto result = std::make_unique<instanced_draw_primitive>();
         result->pipeline = pipeline;
         result->source = &source; // geometry owner; must stay in this runtime's scene tree
         result->instance_count = count;
         result->push.material_index = source.push.material_index;
-        result->push.flags = 1u; // bit0: pbr.vert picks instances[gl_InstanceIndex]
+        result->push.flags = 1u; // bit0: pbr.vert picks instances[instance_base + gl_InstanceIndex]
+        result->push.instance_base = base;
         result->push.model = glm::mat4(1.0f);
         result->double_sided = source.double_sided;
 
@@ -1514,6 +1521,20 @@ namespace vulkan {
             } else {
                 ++it;
             }
+        }
+        // Instanced primitives are the only writers of the shared instance transform buffer;
+        // when none survive the removal their slices are dead, so the cursor can recycle the
+        // whole buffer (next make_instanced_primitive starts at 0 again). push.flags bit0 is the
+        // instanced marker - only instanced_draw_primitive ever sets it.
+        bool any_instanced_left = false;
+        for (scene_tree::scene_node const& root : roots) {
+            scene_tree::visit_primitives(root, glm::mat4(1.0f), [&](scene_tree::scene_node const& n, glm::mat4 const&) {
+                auto const* const leaf = static_cast<primitive const*>(n.primitive_leaf.get());
+                any_instanced_left = any_instanced_left || (leaf->push.flags & 1u) != 0u;
+            });
+        }
+        if (!any_instanced_left) {
+            this->instance_cursor = 0;
         }
         this->bvh_dirty = true; // leaves removed -> culling BVH must be rebuilt
     }

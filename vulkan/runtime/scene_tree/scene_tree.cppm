@@ -452,6 +452,10 @@ namespace vulkan {
         uint32_t morph_base = 0;
         uint32_t morph_targets = 0;  // number of morph targets (0 = no morph)
         uint32_t morph_vertices = 0; // vertex count of this primitive (block stride)
+        // mat4 start of THIS instanced primitive's transforms in the shared instance buffer
+        // (set 0 binding 6): the vertex shader reads instances.transforms[instance_base +
+        // gl_InstanceIndex]. Only meaningful when flag bit0 is set; other draw strategies keep 0.
+        uint32_t instance_base = 0;
         // glm::mat4 is only 4-byte aligned by default, but GLSL std430 aligns mat4 to 16 bytes
         // (offset 32 in the block): align explicitly so the CPU layout matches the shader
         alignas(16) glm::mat4 model = glm::mat4(1.0f);
