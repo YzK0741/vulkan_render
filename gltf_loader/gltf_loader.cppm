@@ -686,6 +686,14 @@ namespace gltf {
         std::vector<camera> cameras = {}; // file-scoped cameras (glTF camera objects in order)
         std::vector<light> lights = {};   // file-scoped punctual lights (KHR_lights_punctual)
         std::vector<scene> scene;
+        // asset-level node lookup: glTF asset node table index (node::source_index) -> the
+        // loader's node copy for it. A glTF asset node may be referenced from several scenes,
+        // and the loader stores one copy per scene pool (identical metadata); the first copy
+        // found during loading represents the node. Consumers that need loader metadata for
+        // the nodes that actually live in a runtime scene tree (animation base poses, skin /
+        // morph sources) look nodes up HERE by the tree node's source_index instead of
+        // iterating every scene pool.
+        std::unordered_map<std::size_t, node const*> node_by_source = {};
 
         [[nodiscard]] scene_iterator begin() const;
         static scene_iterator end() noexcept;

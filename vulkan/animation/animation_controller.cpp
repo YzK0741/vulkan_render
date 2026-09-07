@@ -38,20 +38,27 @@ namespace vulkan {
 
         // live-tree lookup: asset node index -> backend scene nodes + root flag (import applied
         // the shift to root locals only, so animated roots must re-apply it). scene_iterator
-        // walks the whole tree in DFS pre-order; roots sit at depth 0.
+        // walks the whole tree in DFS pre-order; roots sit at depth 0. The SCENE TREE is the
+        // authoritative host: only sources that actually live in it are animated.
         for (auto it = vulkan::scene_tree::begin(*this->backend.scene); it != vulkan::scene_tree::end(*this->backend.scene); ++it) {
             this->source_nodes[it->source_index].push_back(anim_target{&*it, /*scene_root=*/it.depth() == 0});
         }
 
-        // TRS base pose + loader node per asset node index (the loader tree stays alive)
-        for (gltf::scene const& loader_scene : scenes.scene) {
-            for (gltf::node const& loader_node : loader_scene.nodes) {
-                this->base_poses.try_emplace(loader_node.source_index,
-                                             gltf::node_pose{.translation = loader_node.translation,
-                                                             .rotation = loader_node.rotation,
-                                                             .scale = loader_node.scale});
-                this->loader_nodes.try_emplace(loader_node.source_index, &loader_node);
+        // TRS base pose + loader node per TREE node: look each tree node's asset source up in
+        // the loader's asset-level node table (scenes::node_by_source) instead of iterating the
+        // loader's per-scene node pools - a node referenced by several scenes has identical
+        // copies, and the tree only contains the nodes that were actually imported.
+        for (auto const& [source, targets] : this->source_nodes) {
+            auto const loader_it = scenes.node_by_source.find(source);
+            if (loader_it == scenes.node_by_source.end()) {
+                continue; // synthesized tree node (e.g. an extra "/prim" leaf) has no loader node
             }
+            gltf::node const& loader_node = *loader_it->second;
+            this->base_poses.try_emplace(source,
+                                         gltf::node_pose{.translation = loader_node.translation,
+                                                         .rotation = loader_node.rotation,
+                                                         .scale = loader_node.scale});
+            this->loader_nodes.try_emplace(source, &loader_node);
         }
 
         // playable table: channel-bearing animations, in glTF order; auto-pick the first

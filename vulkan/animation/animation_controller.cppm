@@ -65,12 +65,15 @@ namespace vulkan {
         /**
          * @ingroup vulkan_animation
          * @brief build the playback table and resolve the skin/morph rigs against the backend's
-         *        scene: collect the playable (channel-bearing) animations and TRS base poses from
-         *        the loader, map asset node indices onto live scene nodes, bake the morph deltas
-         *        with their default weights into every frame slot's morph buffer and upload the
-         *        identity skin block into every slot's skin buffer. Skinned/morphable primitives
-         *        get their push.skin_base / push.morph_* fields set here.
-         * @param scenes the loaded glTF data (loader node pool + animations + skins + meshes)
+         *        scene: collect the playable (channel-bearing) animations, map the scene tree's
+         *        nodes onto their loader metadata (TRS base poses etc. via the loader's asset
+         *        node table), bake the morph deltas with their default weights into every frame
+         *        slot's morph buffer and upload the identity skin block into every slot's skin
+         *        buffer. Skinned/morphable primitives get their push.skin_base / push.morph_*
+         *        fields set here.
+         * @param scenes the loaded glTF data: animation keyframes + skins + mesh (morph) data.
+         *        Only consulted as DATA; the authoritative node host is backend.scene (the
+         *        scene tree the controller animates) - nodes not in that tree are ignored.
          * @param backend the host surface to drive (scene + per-slot callbacks; see animation_backend)
          * @param import_shift translation the import applied to every scene ROOT node's local
          *        (animated roots must re-apply it, like import_scene did)

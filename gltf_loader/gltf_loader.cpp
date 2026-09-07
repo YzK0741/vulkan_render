@@ -1076,6 +1076,14 @@ namespace gltf {
         for (std::size_t i = 0; i < asset.scenes.size(); ++i) {
             result.scene.push_back(load_scene(asset, i));
         }
+        // asset-level node lookup (see scenes::node_by_source): first copy per source_index
+        // wins; a node referenced from several scenes is stored once per scene pool, and all
+        // copies carry the same metadata, so the first found is a fine representative.
+        for (gltf::scene const& loader_scene : result.scene) {
+            for (gltf::node const& loader_node : loader_scene.nodes) {
+                result.node_by_source.try_emplace(loader_node.source_index, &loader_node);
+            }
+        }
 
         result.animations.reserve(asset.animations.size());
         for (std::size_t i = 0; i < asset.animations.size(); ++i) {
