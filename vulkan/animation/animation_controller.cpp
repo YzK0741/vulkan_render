@@ -36,12 +36,11 @@ namespace vulkan {
         this->backend = backend;
         this->import_shift = import_shift;
 
-        // live-tree lookup: asset node index -> backend scene node handles + root flag (import
-        // applied the shift to root locals only, so animated roots must re-apply it). The
-        // backend hands out one opaque handle per node (DFS pre-order snapshot); handles stay
-        // valid while the tree is frozen, which the demo guarantees after import.
-        for (scene_node_info const& info : this->backend.snapshot_nodes()) {
-            this->source_nodes[info.source_index].push_back(anim_target{info.id, /*scene_root=*/info.is_root});
+        // live-tree lookup: asset node index -> backend scene nodes + root flag (import applied
+        // the shift to root locals only, so animated roots must re-apply it). scene_iterator
+        // walks the whole tree in DFS pre-order; roots sit at depth 0.
+        for (auto it = vulkan::scene_tree::begin(*this->backend.scene); it != vulkan::scene_tree::end(*this->backend.scene); ++it) {
+            this->source_nodes[it->source_index].push_back(anim_target{&*it, /*scene_root=*/it.depth() == 0});
         }
 
         // TRS base pose + loader node per asset node index (the loader tree stays alive)
@@ -119,16 +118,25 @@ namespace vulkan {
                     utility::log("skinning: skin '{}' skipped (joint(s) missing from the imported scene)", display_name(loader_skin.name));
                     continue;
                 }
-                if (static_cast<uint32_t>(loader_skin.joints.size()) > this->backend.skin_capacity - next_block) {
-                    utility::log("skinning: skin '{}' skipped ({} joints, skin matrix buffer capacity {} exceeded)", display_name(loader_skin.name), loader_skin.joints.size(), this->backend.skin_capacity);
+                if (static_cast<uint32_t>(loader_skin.joints.size()) > vulkan::scene_skin_capacity - next_block) {
+                    utility::log("skinning: skin '{}' skipped ({} joints, skin matrix buffer capacity {} exceeded)", display_name(loader_skin.name), loader_skin.joints.size(), vulkan::scene_skin_capacity);
                     continue;
                 }
                 uint32_t const block_base = next_block;
                 next_block += static_cast<uint32_t>(loader_skin.joints.size());
-                // point every leaf of the skinned mesh node at the block (the backend walks its
-                // own tree: the node's own leaf plus "/prim" extra leaves; real child nodes
-                // keep skin_base 0)
-                this->backend.assign_skin_block(mesh_source, block_base);
+                // point every primitive leaf of the skinned node at the block: the node's own
+                // leaf plus extra-primitive child leaves (import adds them under the node with
+                // source_index 0); real child nodes keep skin_base 0
+                vulkan::scene_tree::scene_node* const mesh_node = this->source_nodes.at(mesh_source).front().node;
+                auto const assign_block = [block_base, mesh_source](auto&& self, vulkan::scene_tree::scene_node& node) -> void {
+                    if (node.primitive_leaf != nullptr && (node.source_index == 0 || node.source_index == mesh_source)) {
+                        static_cast<vulkan::primitive*>(node.primitive_leaf.get())->push.skin_base = block_base;
+                    }
+                    for (vulkan::scene_tree::scene_node& child : node.children) {
+                        self(self, child);
+                    }
+                };
+                assign_block(assign_block, *mesh_node);
                 this->skin_rigs.push_back(skin_rig{&loader_skin, mesh_source, block_base});
             }
             // wanted set for the per-frame world collection: every accepted rig's mesh node +
@@ -147,7 +155,7 @@ namespace vulkan {
         // identity block for unskinned draws: upload once into EVERY slot's skin buffer
         {
             constexpr std::array<glm::mat4, 4> identity_block = {glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f)};
-            for (uint32_t slot = 0; slot < this->backend.frames_in_flight; ++slot) {
+            for (uint32_t slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
                 this->backend.set_skin_matrices_slot(identity_block, slot);
             }
         }
@@ -162,29 +170,40 @@ namespace vulkan {
                 }
                 return reinterpret_cast<glm::vec3 const*>(it->second.data.data())[i];
             };
-            std::size_t total_floats = 0;
-            // morphable leaves per source come from the backend (it resolves "/prim" extra
-            // leaves and their vertex counts); align them with the loader's mesh primitives
-            for (auto const& [source, loader_node] : this->loader_nodes) {
-                if (!this->source_nodes.contains(source) || loader_node->meshes.empty()) {
-                    continue; // not in the scene, or nothing to morph
+            // collect leaves per effective source (a "/prim" extra leaf inherits its parent's source)
+            std::unordered_map<std::size_t, std::vector<vulkan::primitive*>> source_leaves;
+            auto const collect_leaves = [&source_leaves](auto&& self, vulkan::scene_tree::scene_node& node, std::size_t const parent_source) -> void {
+                bool const is_extra = node.name.ends_with("/prim");
+                std::size_t const source = is_extra ? parent_source : node.source_index;
+                if (node.primitive_leaf != nullptr) {
+                    source_leaves[source].push_back(static_cast<vulkan::primitive*>(node.primitive_leaf.get()));
                 }
-                std::vector<std::pair<std::uint64_t, uint32_t>> const leaves = this->backend.morph_leaves(source);
-                if (leaves.empty()) {
+                for (vulkan::scene_tree::scene_node& child : node.children) {
+                    self(self, child, source);
+                }
+            };
+            for (vulkan::scene_tree::scene_node& root : this->backend.scene->roots) {
+                collect_leaves(collect_leaves, root, 0);
+            }
+            std::size_t total_floats = 0;
+            for (auto& [source, leaves] : source_leaves) {
+                auto const loader_it = this->loader_nodes.find(source);
+                if (loader_it == this->loader_nodes.end()) {
                     continue;
                 }
+                gltf::node const& loader_node = *loader_it->second;
                 std::vector<gltf::primitive const*> loader_prims;
-                for (gltf::mesh const& mesh : loader_node->meshes) {
+                for (gltf::mesh const& mesh : loader_node.meshes) {
                     for (gltf::primitive const& prim : mesh.primitives) {
                         loader_prims.push_back(&prim);
                     }
                 }
                 // default weights: node.weights override, else the mesh defaults, else zeros
                 std::vector<float> default_weights;
-                if (loader_node->weights) {
-                    default_weights = *loader_node->weights;
-                } else if (!loader_node->meshes.empty()) {
-                    default_weights = loader_node->meshes[0].weights;
+                if (loader_node.weights) {
+                    default_weights = *loader_node.weights;
+                } else if (!loader_node.meshes.empty()) {
+                    default_weights = loader_node.meshes[0].weights;
                 }
                 for (std::size_t i = 0; i < leaves.size() && i < loader_prims.size(); ++i) {
                     gltf::primitive const& loader_prim = *loader_prims[i];
@@ -195,14 +214,14 @@ namespace vulkan {
                     if (pos_portion == loader_prim.vertex.end()) {
                         continue;
                     }
-                    uint32_t const verts = leaves[i].second;
+                    uint32_t const verts = leaves[i]->vertex_count;
                     uint32_t const target_count = static_cast<uint32_t>(loader_prim.targets.size());
                     if (pos_portion->second.data.size() / sizeof(glm::vec3) != verts) {
                         utility::log("morph: skipping primitive (vertex count mismatch with its POSITION data)");
                         continue;
                     }
                     std::size_t const delta_floats = static_cast<std::size_t>(verts) * target_count * 6u;
-                    if (total_floats + delta_floats + target_count > this->backend.morph_capacity) {
+                    if (total_floats + delta_floats + target_count > vulkan::scene_morph_capacity) {
                         utility::log("morph: scene morph buffer capacity exceeded, remaining primitives skipped");
                         break;
                     }
@@ -222,9 +241,10 @@ namespace vulkan {
                     for (uint32_t t = 0; t < target_count; ++t) {
                         *dst++ = t < default_weights.size() ? default_weights[t] : 0.0f;
                     }
-                    uint32_t const morph_base = static_cast<uint32_t>(total_floats);
-                    this->morph_rigs.push_back(morph_rig{source, verts, target_count, morph_base});
-                    this->backend.set_morph_block(leaves[i].first, morph_base, target_count, verts);
+                    this->morph_rigs.push_back(morph_rig{leaves[i], verts, target_count, static_cast<uint32_t>(total_floats), source});
+                    leaves[i]->push.morph_base = static_cast<uint32_t>(total_floats);
+                    leaves[i]->push.morph_targets = target_count;
+                    leaves[i]->push.morph_vertices = verts;
                     total_floats += delta_floats + target_count;
                 }
             }
@@ -233,7 +253,7 @@ namespace vulkan {
                 // duplicate the baked blocks (contiguous [0, total_floats)) into every other
                 // frame slot's morph buffer: deltas are static, only the per-frame weight
                 // rewrites target the active slot's buffer
-                for (uint32_t slot = 1; slot < this->backend.frames_in_flight; ++slot) {
+                for (uint32_t slot = 1; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
                     float* const other = this->backend.morph_scratch_slot(slot);
                     if (other != nullptr) {
                         std::memcpy(other, morph_scratch_mem, total_floats * sizeof(float));
@@ -279,8 +299,7 @@ namespace vulkan {
             gltf::node_pose const base = base_it == this->base_poses.end() ? gltf::node_pose{} : base_it->second;
             glm::mat4 const trs = glm::translate(glm::mat4(1.0f), base.translation) * glm::mat4_cast(base.rotation) * glm::scale(glm::mat4(1.0f), base.scale);
             for (anim_target const& target : targets) {
-                glm::mat4 const final_local = target.scene_root ? glm::translate(glm::mat4(1.0f), this->import_shift) * trs : trs;
-                this->backend.set_node_local(target.node, final_local);
+                target.node->local = target.scene_root ? glm::translate(glm::mat4(1.0f), this->import_shift) * trs : trs;
             }
         }
         this->backend.scene_changed();
@@ -341,8 +360,7 @@ namespace vulkan {
         }
         glm::mat4 const trs = glm::translate(glm::mat4(1.0f), pose.translation) * glm::mat4_cast(pose.rotation) * glm::scale(glm::mat4(1.0f), pose.scale);
         for (anim_target const& target : targets) {
-            glm::mat4 const final_local = target.scene_root ? glm::translate(glm::mat4(1.0f), this->import_shift) * trs : trs;
-            this->backend.set_node_local(target.node, final_local);
+            target.node->local = target.scene_root ? glm::translate(glm::mat4(1.0f), this->import_shift) * trs : trs;
         }
         if (source == this->debug_source) {
             this->debug_translation = pose.translation;
@@ -351,7 +369,7 @@ namespace vulkan {
     }
 
     void animation_controller::update(float const dt_seconds) {
-        if (!this->backend.valid()) {
+        if (this->backend.scene == nullptr) {
             return;
         }
 
@@ -418,10 +436,21 @@ namespace vulkan {
         // 2. skin matrices: the joint worlds follow the locals above, so rebuild every frame
         //    [identity block | per-rig joint blocks] into the active slot's skin buffer
         if (!this->skin_rigs.empty()) {
-            // world matrices of every node the skin rigs need (mesh nodes + joints), collected
-            // by the backend in one tree walk (it knows its own node layout)
-            std::vector<std::size_t> wanted(this->skin_sources.begin(), this->skin_sources.end());
-            std::unordered_map<std::size_t, glm::mat4> const skin_worlds = this->backend.collect_worlds(wanted);
+            std::unordered_map<std::size_t, glm::mat4> skin_worlds;
+            // collect the world matrix of every node the skin rigs need (mesh nodes + joints):
+            // one O(1) set test per visited node instead of scanning rig x joint pairs per node
+            auto const collect_worlds = [this, &skin_worlds](auto&& self, vulkan::scene_tree::scene_node& node, glm::mat4 const& parent_world) -> void {
+                glm::mat4 const world = parent_world * node.local;
+                if (this->skin_sources.contains(node.source_index)) {
+                    skin_worlds.try_emplace(node.source_index, world);
+                }
+                for (vulkan::scene_tree::scene_node& child : node.children) {
+                    self(self, child, world);
+                }
+            };
+            for (vulkan::scene_tree::scene_node& root : this->backend.scene->roots) {
+                collect_worlds(collect_worlds, root, glm::mat4(1.0f));
+            }
             std::vector<glm::mat4> matrices;
             matrices.reserve(4 + (this->skin_rigs.size() * 8));
             matrices.insert(matrices.end(), {glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f)});
@@ -512,7 +541,7 @@ namespace vulkan {
         }
         auto const it = this->source_nodes.find(this->debug_source);
         if (it != this->source_nodes.end() && !it->second.empty()) {
-            this->debug_node_name = std::string(this->backend.node_name(it->second.front().node));
+            this->debug_node_name = it->second.front().node->name;
         }
     }
 } // namespace vulkan

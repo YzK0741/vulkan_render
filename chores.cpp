@@ -297,94 +297,12 @@ namespace chores {
         utility::log("gui: Dear ImGui debug overlay enabled");
     }
 
-    // Wire an animation_backend to the runtime: opaque node handles over its scene tree, the
-    // per-frame-slot morph/skin buffers (active slot for per-frame writes, explicit slot for
-    // setup bakes), skin/morph leaf tagging, joint-world collection and its shared task pool.
-    // The controller sees only this surface, never vulkan::runtime / scene types.
+    // Wire an animation_backend to the runtime: the scene tree it drives, its per-frame-slot
+    // morph/skin buffers (active slot for per-frame writes, explicit slot for setup bakes) and
+    // its shared task pool. The controller sees only this surface, never vulkan::runtime.
     vulkan::animation_backend make_animation_backend(vulkan::runtime& runtime) {
-        vulkan::scene_tree::scene& scene = runtime.get_scene();
-
         vulkan::animation_backend backend;
-        backend.morph_capacity = vulkan::scene_morph_capacity;
-        backend.skin_capacity = vulkan::scene_skin_capacity;
-        backend.frames_in_flight = vulkan::core::MAX_FRAMES_IN_FLIGHT;
-
-        // opaque handle = scene_node address (stable while the tree is frozen, which the demo
-        // guarantees after import); the controller only stores and round-trips these
-        backend.snapshot_nodes = [&scene]() -> std::vector<vulkan::scene_node_info> {
-            std::vector<vulkan::scene_node_info> out;
-            for (auto it = vulkan::scene_tree::begin(scene); it != vulkan::scene_tree::end(scene); ++it) {
-                out.push_back(vulkan::scene_node_info{
-                    .id = reinterpret_cast<std::uint64_t>(&*it),
-                    .source_index = it->source_index,
-                    .is_root = it.depth() == 0,
-                });
-            }
-            return out;
-        };
-        backend.set_node_local = [](std::uint64_t const id, glm::mat4 const& local) {
-            auto* node = reinterpret_cast<vulkan::scene_tree::scene_node*>(id);
-            node->local = local;
-        };
-        backend.node_name = [](std::uint64_t const id) -> std::string_view {
-            auto* node = reinterpret_cast<vulkan::scene_tree::scene_node*>(id);
-            return node->name.empty() ? std::string_view{"<unnamed>"} : std::string_view{node->name};
-        };
-
-        // skin/morph leaf tagging: the host walks its own tree (the controller must not know
-        // that "/prim" extra leaves inherit their parent's source, or how leaves are stored)
-        backend.assign_skin_block = [&scene](std::size_t const mesh_source, uint32_t const block_base) {
-            for (auto it = vulkan::scene_tree::begin(scene); it != vulkan::scene_tree::end(scene); ++it) {
-                if (it->primitive_leaf != nullptr && (it->source_index == 0 || it->source_index == mesh_source)) {
-                    static_cast<vulkan::primitive*>(it->primitive_leaf.get())->push.skin_base = block_base;
-                }
-            }
-        };
-        backend.morph_leaves = [&scene](std::size_t const source) -> std::vector<std::pair<std::uint64_t, uint32_t>> {
-            std::vector<std::pair<std::uint64_t, uint32_t>> out;
-            // DFS carrying the effective source: a "/prim" extra leaf inherits its parent's
-            // source (the import appends extra primitives as child leaves of the mesh node)
-            auto const walk = [&](auto&& self, vulkan::scene_tree::scene_node& node, std::size_t const parent_source) -> void {
-                bool const is_extra = node.name.ends_with("/prim");
-                std::size_t const effective = is_extra ? parent_source : node.source_index;
-                if (effective == source && node.primitive_leaf != nullptr) {
-                    auto* prim = static_cast<vulkan::primitive*>(node.primitive_leaf.get());
-                    out.emplace_back(reinterpret_cast<std::uint64_t>(prim), prim->vertex_count);
-                }
-                for (vulkan::scene_tree::scene_node& child : node.children) {
-                    self(self, child, effective);
-                }
-            };
-            for (vulkan::scene_tree::scene_node& root : scene.roots) {
-                walk(walk, root, 0);
-            }
-            return out;
-        };
-        backend.set_morph_block = [](std::uint64_t const id, uint32_t const morph_base, uint32_t const targets, uint32_t const vertices) {
-            auto* prim = reinterpret_cast<vulkan::primitive*>(id);
-            prim->push.morph_base = morph_base;
-            prim->push.morph_targets = targets;
-            prim->push.morph_vertices = vertices;
-        };
-        backend.collect_worlds = [&scene](std::span<std::size_t const> sources) -> std::unordered_map<std::size_t, glm::mat4> {
-            std::unordered_map<std::size_t, glm::mat4> worlds;
-            // only nodes whose asset source index is wanted: one O(1) set test per visited node
-            std::unordered_set<std::size_t> wanted(sources.begin(), sources.end());
-            auto const walk = [&](auto&& self, vulkan::scene_tree::scene_node const& node, glm::mat4 const& parent_world) -> void {
-                glm::mat4 const world = parent_world * node.local;
-                if (wanted.contains(node.source_index)) {
-                    worlds.try_emplace(node.source_index, world);
-                }
-                for (vulkan::scene_tree::scene_node const& child : node.children) {
-                    self(self, child, world);
-                }
-            };
-            for (vulkan::scene_tree::scene_node const& root : scene.roots) {
-                walk(walk, root, glm::mat4(1.0f));
-            }
-            return worlds;
-        };
-
+        backend.scene = &runtime.get_scene();
         backend.morph_scratch_active = [&runtime]() -> float* {
             return static_cast<float*>(runtime.morph_scratch());
         };
