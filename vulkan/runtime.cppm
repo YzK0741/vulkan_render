@@ -189,11 +189,16 @@ namespace vulkan {
         // constructing a std::string per call.
         std::map<std::string, vk_pipeline, std::less<>> pipelines;
         // Scene storage: a scene tree of nodes with local transforms + children; every primitive
-        // (normal_draw_primitive / instanced_draw_primitive) lives in a node's primitive leaf. the frame record phase
-        // walks the tree once per frame: update_world() accumulates world matrices into each
+        // (normal_draw_primitive / instanced_draw_primitive) lives in a node's primitive leaf. The frame
+        // record phase walks the tree once per frame: update_world() accumulates world matrices into each
         // leaf (primitive::set_world -> push.model), then each pipeline draws the leaves bound to
         // it (primitive::draw stays polymorphic). This replaces the old flat per-pipeline primitive list.
-        scene_tree::scene scene = {}; // single scene; roots own every primitive leaf
+        //
+        // NON-OWNING: the tree belongs to the caller (set_scene() binds it). The caller must keep the
+        // tree alive while the runtime is in use and destroy it BEFORE the runtime (the leaves release
+        // their GPU resources through this runtime's vma allocator on destruction). Declaration order in
+        // the caller (scene after runtime) gives that order automatically.
+        scene_tree::scene* bound_scene = nullptr; // user-owned scene the runtime renders
         // optional whole-scene transform applied on top of every root before local transforms
         // (programmatic grouping / demo rotation; identity by default = no visual change)
         glm::mat4 scene_transform = glm::mat4(1.0f);
@@ -241,11 +246,6 @@ namespace vulkan {
          *       vulkan::primitive (the GPU primitive implements scene_tree::primitive), so the cast is safe
          */
         static void collect_leaf_primitives(scene_tree::scene_node const& node, std::pmr::vector<primitive const*>& out);
-        /**
-         * @ingroup vulkan_runtime
-         * @brief destroy every leaf primitive under @p node (recursively) with @p vma
-         */
-        void destroy_leaf_primitives(scene_tree::scene_node& node, vma_allocator& vma);
         /**
          * @ingroup vulkan_runtime
          * @brief build a normal_draw_primitive from @p info WITHOUT attaching it to the scene tree:
@@ -583,6 +583,21 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief bind the scene tree this runtime renders. The tree is owned by the caller
+         *        (never by the runtime): it must stay alive while the runtime is in use and be
+         *        destroyed before the runtime goes away, because the leaves' GPU buffers are
+         *        released through the runtime's vma allocator when the tree is destroyed.
+         * @param scene the caller-owned scene tree to render
+         * @note bind before creating/importing primitives and before the first frame; the
+         *       culling BVH is invalidated so the next frame rebuilds it
+         */
+        void set_scene(scene_tree::scene& scene) noexcept {
+            this->bound_scene = &scene;
+            this->bvh_dirty = true; // a new tree's world AABBs must be (re)collected
+        }
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief access the scene tree (roots + children + per-node local transforms) for
          *        programmatic whole-group / subtree transforms
          * @note the tree structure is fixed after import (no reallocation of scene or the
@@ -590,10 +605,16 @@ namespace vulkan {
          *       into the tree stay valid until the next make_primitive / import / clear call
          */
         [[nodiscard]] scene_tree::scene& get_scene() noexcept {
-            return this->scene;
+            if (this->bound_scene == nullptr) {
+                utility::panic("runtime::get_scene() called before set_scene() bound a scene");
+            }
+            return *this->bound_scene;
         }
         [[nodiscard]] scene_tree::scene const& get_scene() const noexcept {
-            return this->scene;
+            if (this->bound_scene == nullptr) {
+                utility::panic("runtime::get_scene() called before set_scene() bound a scene");
+            }
+            return *this->bound_scene;
         }
 
         /**
@@ -726,6 +747,9 @@ namespace vulkan {
         template <class NI, class DI>
             requires scene_node_iterator<NI> && scene_drawable_iterator<DI>
         scene_import_result import_scene(NI nfirst, NI nlast, DI dfirst, DI dlast, glm::vec3 const& offset) {
+            if (this->bound_scene == nullptr) {
+                utility::panic("runtime::import_scene() called before set_scene() bound a scene");
+            }
             scene_import_result result = {};
             uint32_t const materials_before = this->material_count;
             // converts a pure image_source (e.g. the glTF loader's image_view) into the
@@ -815,8 +839,8 @@ namespace vulkan {
                 }
                 // attach under the parent (depth-1) or as a new scene root
                 if (depth == 0) {
-                    this->scene.roots.push_back(std::move(node));
-                    ancestors.assign(1, &this->scene.roots.back());
+                    this->bound_scene->roots.push_back(std::move(node));
+                    ancestors.assign(1, &this->bound_scene->roots.back());
                 } else {
                     if (ancestors.size() != depth) {
                         utility::panic(std::source_location::current(), "node tree stream: broken ancestor stack");

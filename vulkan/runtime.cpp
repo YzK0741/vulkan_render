@@ -110,20 +110,17 @@ namespace vulkan {
     }
 
     // The destructor body runs before member destruction, so vulkan_core (and the VkDevice it
-    // holds) is still alive here: destroying cached models and pipelines in this order is
-    // guaranteed safe, independent of future member reordering. Members then destruct in reverse
-    // declaration order with scene/pipelines already empty.
+    // holds) is still alive here: destroying cached pipelines in this order is guaranteed safe,
+    // independent of future member reordering. Members then destruct in reverse declaration
+    // order with pipelines already empty. The SCENE TREE is caller-owned (set_scene): the caller
+    // destroys it before this runtime goes away (its leaves release GPU buffers through the vma
+    // allocator while it is still alive), so no tree teardown happens here.
     runtime::~runtime() {
-        // Wait for the GPU to finish BEFORE freeing any buffer/image below: the last submitted
-        // frame may still be executing and vma.free_buffer/free_image on in-use resources would
-        // violate VUID-vkDestroyBuffer-buffer-00922 etc. (~core() also waits, but that runs
-        // after this body — too late for the VMA frees here).
+        // Wait for the GPU to finish BEFORE releasing anything below: the last submitted frame
+        // may still be executing and destroying in-use resources would violate VUIDs (~core()
+        // also waits, but that runs after this body — too late for the VMA frees here).
         this->vulkan_core.wait_idle();
 
-        for (scene_tree::scene_node& root : this->scene.roots) {
-            this->destroy_leaf_primitives(root, this->vulkan_core.vma);
-        }
-        this->scene.roots.clear();
         this->pipelines.clear();
 
         // Shared scene resources: views/sets/samplers/buffers/images are RAII and free
@@ -795,6 +792,9 @@ namespace vulkan {
 
     frame_status runtime::begin_recording() {
         core& vk = this->vulkan_core;
+        if (this->bound_scene == nullptr) {
+            utility::panic("runtime::begin_recording() called before set_scene() bound a scene");
+        }
         // Record the frame into this slot's command buffer
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
         VkCommandBufferBeginInfo begin_info = {};
@@ -813,13 +813,13 @@ namespace vulkan {
         //     identity * local. With the default scene_transform (identity) this reproduces the
         //     old flat-list world matrices exactly; set_scene_transform() adds programmatic
         //     whole-scene grouping on top.
-        for (scene_tree::scene_node& root : this->scene.roots) {
+        for (scene_tree::scene_node& root : this->bound_scene->roots) {
             scene_tree::update_world(root, this->scene_transform);
         }
         // Collect the primitive leaves once (DFS over the whole scene): the shadow pass draws all
         // of them, the main pass draws the subset bound to each pipeline
         this->frame_leaves.clear();
-        for (scene_tree::scene_node const& root : this->scene.roots) {
+        for (scene_tree::scene_node const& root : this->bound_scene->roots) {
             collect_leaf_primitives(root, this->frame_leaves);
         }
 
@@ -1326,10 +1326,10 @@ namespace vulkan {
                 self(self, child, depth + 1);
             }
         };
-        for (scene_tree::scene_node const& root : this->scene.roots) {
+        for (scene_tree::scene_node const& root : this->get_scene().roots) {
             walk(walk, root, 0);
         }
-        utility::log("runtime scene tree: {} roots, {} nodes ({} leaf primitives), max depth {}", this->scene.roots.size(), total_nodes, leaf_count, max_depth);
+        utility::log("runtime scene tree: {} roots, {} nodes ({} leaf primitives), max depth {}", this->get_scene().roots.size(), total_nodes, leaf_count, max_depth);
         for (std::string const& line : lines) {
             utility::log("  {}", line);
         }
@@ -1423,7 +1423,7 @@ namespace vulkan {
         leaf.name = std::string(pipeline_name);
         leaf.local = info.model_matrix;           // world = identity * local (root)
         leaf.primitive_leaf = std::move(created); // a vulkan::primitive is a scene_tree::primitive
-        this->scene.roots.push_back(std::move(leaf));
+        this->get_scene().roots.push_back(std::move(leaf));
         this->bvh_dirty = true; // new leaf -> culling BVH must be rebuilt
         return result;
     }
@@ -1456,7 +1456,7 @@ namespace vulkan {
         leaf.name = "pbr";
         leaf.primitive_leaf = std::move(result); // a vulkan::primitive is a scene_tree::primitive
         primitive* const created = static_cast<primitive*>(leaf.primitive_leaf.get());
-        this->scene.roots.push_back(std::move(leaf));
+        this->get_scene().roots.push_back(std::move(leaf));
         this->bvh_dirty = true; // new leaf -> culling BVH must be rebuilt
         return created;
     }
@@ -1467,7 +1467,7 @@ namespace vulkan {
             return {};
         }
         std::vector<primitive const*> result;
-        for (scene_tree::scene_node const& root : this->scene.roots) {
+        for (scene_tree::scene_node const& root : this->get_scene().roots) {
             // collect every leaf whose primitive binds the requested pipeline (models record their
             // pipeline in primitive->pipeline; the scene tree just organizes them)
             scene_tree::visit_primitives(root, glm::mat4(1.0f), [&](scene_tree::scene_node const& n, glm::mat4 const&) {
@@ -1489,7 +1489,7 @@ namespace vulkan {
         // (imported scenes nest leaves under hierarchy nodes; make_primitive attaches them at roots).
         // A node whose leaf matches is stripped of that leaf; it (or an ancestor) is dropped only
         // when nothing remains below it, so models of other pipelines in the subtree survive.
-        auto& roots = this->scene.roots;
+        auto& roots = this->get_scene().roots;
         auto const matches = [unwanted](scene_tree::scene_node const& node) {
             return node.primitive_leaf != nullptr && static_cast<primitive const*>(node.primitive_leaf.get())->pipeline == unwanted;
         };
@@ -1570,15 +1570,5 @@ namespace vulkan {
 
     float runtime::aspect_ratio() const noexcept {
         return this->current_aspect;
-    }
-
-    void runtime::destroy_leaf_primitives(scene_tree::scene_node& node, vma_allocator& vma) {
-        for (scene_tree::scene_node& child : node.children) {
-            this->destroy_leaf_primitives(child, vma);
-        }
-        if (node.primitive_leaf) {
-            static_cast<primitive*>(node.primitive_leaf.get())->destroy(vma);
-            node.primitive_leaf.reset();
-        }
     }
 } // namespace vulkan

@@ -120,6 +120,13 @@ int main(int argc, char** argv) {
     //     drawable as a leaf primitive under its node, so whole-group transforms work on the
     //     imported hierarchy. The orbit camera looks at the origin, so center the scene and
     //     pull it back to fit its radius (same framing as the old single-model fit).
+    //
+    //     The scene tree is CALLER-OWNED: main declares it (AFTER the runtime, so C++ reverse
+    //     declaration order destroys it BEFORE the runtime — the leaves' GPU buffers release
+    //     through the runtime's vma allocator while it is still alive) and binds it with
+    //     set_scene() before any import.
+    vulkan::scene_tree::scene scene;
+    runtime.set_scene(scene);
     runtime.camera.distance = scene_radius * 2.75f;
     gltf::scene_node_iterator const node_first = scenes->nodes_begin();
     gltf::scene_node_iterator const node_last;

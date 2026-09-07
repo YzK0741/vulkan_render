@@ -3,10 +3,15 @@
 Status: migration complete — storage, import and the render loop are tree-driven;
 `vulkan.runtime.scene_tree` is the single scene-tree module (scene storage + GPU
 primitives, absorbed the former `vulkan.model`); per-node transforms work through
-`runtime::scene()` + the `spin-subtree` demo, and keyframe TRS animation,
+`runtime::get_scene()` + the `spin-subtree` demo, and keyframe TRS animation,
 skinning and morph targets play through the same per-node locals (see §8 —
 loader sampling in `gltf_loader`, per-frame playback / skin matrices / morph
-weights in `main`). Remaining: mesh sharing / GPU dedup (future pass, §8).
+weights in `main`). The scene tree is **caller-owned**: `main` declares the
+`scene_tree::scene` and binds it with `runtime::set_scene(scene&)`; the runtime
+renders it but never owns or destroys it (the tree must be destroyed before the
+runtime so the leaves' GPU buffers release through the still-alive vma
+allocator — declaration order in `main` guarantees this). Remaining: mesh
+sharing / GPU dedup (future pass, §8).
 
 ## 1. Motivation
 
@@ -83,7 +88,7 @@ The flat "before" shapes are replaced by:
 ```
 gltf (loader, pure CPU)               runtime (renderer)
 ----------------------------          ----------------------------
-scene (node pool)                     scene_tree::scene (owned by runtime)
+scene (node pool)                     scene_tree::scene (caller-owned, set_scene)
 └── roots: indices into nodes          └── roots: scene_node { name, local,
     ├── node { name, local_matrix,          children, drawable_leaf }
     │     meshes, children: indices }       ├── ... (transform-only ok)
@@ -156,9 +161,11 @@ namespace vulkan::scene_tree {
   `push.model = world`, so the existing draw path (`primitive->draw()`) is
   untouched. (Both live in `vulkan.runtime.scene_tree` — the former separate
   `vulkan.model` module was merged into it; see step 4c in §6.)
-- Runtime owns primitives inside the tree: `scene_` is a `scene_tree::scene`;
-  `~runtime` walks the tree and calls `primitive->destroy(vma)` per leaf before
-  the VkDevice goes away.
+- The tree is **caller-owned**: the runtime binds it with `set_scene(scene&)`
+  and never owns/destroys it. Leaves release their GPU buffers automatically
+  when the tree is destroyed (`vk_buffer`/`vk_image` RAII members), so the
+  caller must destroy the tree BEFORE the runtime — `main` declares the scene
+  after the runtime, so C++ reverse declaration order provides exactly that.
 - `make_primitive` / `make_instanced_primitive` attach a **root** leaf whose `name`
   records the pipeline (primitives record their pipeline in `primitive->pipeline`;
   `instanced_draw_primitive` gets a tree slot like any primitive).
@@ -322,6 +329,21 @@ Status, kept in sync with git history:
   `f530889`, weights `60c7c1f`; see §8): per-primitive morph deltas + default weights bake
   into the scene morph buffer (binding 10) and animated weights are rewritten per frame.
   Remaining future work: glTF mesh sharing / GPU dedup and per-instance material overrides (§8).
+- ✅ **6 — Scene tree ownership moves to the caller** (vma RAII first — `5abc5db`; then
+  `set_scene`). The runtime's private `scene_tree::scene` member becomes a non-owning
+  `bound_scene` pointer set by `runtime::set_scene(scene&)`: `main` declares the scene
+  (AFTER the runtime, so C++ reverse declaration order destroys it BEFORE the runtime)
+  and binds it before import. The runtime renders the bound tree every frame
+  (`begin_recording` collects leaves from it) but never owns or destroys it; the old
+  `~runtime` leaf-teardown walk and `destroy_leaf_primitives` are gone — leaves release
+  their GPU buffers automatically when the caller destroys the tree (`vk_buffer` /
+  `vk_image` RAII members, allocator still alive because the runtime outlives the tree).
+  The animation backend now also receives the caller's `scene*` directly (the opaque
+  tree-callback decoupling was reverted — with the tree externalized, depending on the
+  pure-CPU scene types is the natural contract). Verified: RecursiveSkeletons render +
+  ESC exit cleanly, fps unchanged.
+  Remaining future work: glTF mesh sharing / GPU dedup and per-instance material
+  overrides (§8).
 
 (Detailed step list below is folded into the status above; this file is the single
 source of truth for what each commit changed.)
