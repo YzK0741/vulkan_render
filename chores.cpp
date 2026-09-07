@@ -186,4 +186,114 @@ namespace chores {
         runtime.make_instanced_primitive(source, transforms);
         utility::log("instancing stress: {} x {} grid ({} instances, 1 draw call)", grid_side, grid_side, transforms.size());
     }
+
+    // Build the demo's Dear ImGui debug overlay (when use_gui): enable it on the runtime and
+    // assemble the "vulkan_render debug" panel. The widgets bind to @p bindings (fps text,
+    // toggles, sliders, animation mirrors, camera selection) - the frame loop keeps the fps
+    // and animation mirrors in sync. The overlay's glTF-side content (authored camera names,
+    // orbit-camera seeding) arrives as display names + a selection callback, so this helper
+    // never touches glTF types.
+    void setup_gui(vulkan::runtime& runtime,
+                   bool const use_gui,
+                   app_config::app_settings const& settings,
+                   gui_bindings& bindings,
+                   vulkan::animation_controller& animation,
+                   std::vector<std::string> const& camera_names,
+                   std::function<void(int)> const& on_camera_selected) {
+        if (!use_gui) {
+            return;
+        }
+        runtime.enable_debug_gui();
+        vulkan::gui::debug_panel& panel = runtime.debug_gui().add_panel("vulkan_render debug");
+        panel.set_default_size(settings.gui.panel_width, settings.gui.panel_height);
+        panel.push_back(std::make_unique<vulkan::gui::label_widget>([&bindings] { return std::format("fps: {:.1f}", bindings.fps); }));
+        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
+            "frustum culling",
+            &bindings.cull_enabled,
+            [&runtime](bool const enabled) { runtime.set_frustum_culling(enabled); }));
+        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
+            "skybox",
+            &bindings.skybox_enabled,
+            [&runtime](bool const enabled) { runtime.set_skybox_enabled(enabled); }));
+        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
+            "shadow",
+            &bindings.shadow_enabled,
+            [&runtime](bool const enabled) { runtime.set_shadow_enabled(enabled); }));
+        // camera orbit target: dragging it moves what the camera looks at / orbits around
+        // (camera.target is a glm::vec3, i.e. three contiguous floats; the runtime rebuilds the
+        // camera UBO from it every frame, so no on_change callback is needed)
+        panel.push_back(std::make_unique<vulkan::gui::vec3_widget>("camera target", &runtime.camera.target.x, 0.05f));
+        // playback controls (only when the model carries animations): play/pause toggle bound
+        // to the playback state, a time scrubber (pauses on drag so the clock cannot fight the
+        // scrub; the play checkbox resumes), and - for multi-animation assets - a dropdown to
+        // pick which animation plays. All playback state lives in the animation_controller.
+        if (animation.has_active()) {
+            panel.push_back(std::make_unique<vulkan::gui::label_widget>([&animation] {
+                return std::format("animation '{}' ({}s)", animation.active_name(), animation.loop_duration());
+            }));
+            panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
+                "play",
+                &bindings.anim_playing,
+                [&animation](bool const enabled) { animation.set_playing(enabled); }));
+            panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
+                "time",
+                &bindings.anim_time,
+                0.0f,
+                animation.playable_max_duration(),
+                [&animation](float const value) {
+                    animation.set_time(value); // scrubbing pauses so the clock does not fight the drag
+                }));
+            if (animation.playable_count() > 1) {
+                std::vector<std::string> names;
+                names.reserve(animation.playable_count());
+                for (std::size_t i = 0; i < animation.playable_count(); ++i) {
+                    names.push_back(std::string(animation.playable_name(i)));
+                }
+                panel.push_back(std::make_unique<vulkan::gui::combo_widget>(
+                    "animation",
+                    std::move(names),
+                    &bindings.anim_index,
+                    [&animation](int const index) { animation.select(static_cast<std::size_t>(index)); }));
+            }
+            utility::log("gui: playback controls added ({} animation(s))", animation.playable_count());
+        }
+        // camera selector: "orbit" (free) or any scene camera (its pose seeds the orbit camera,
+        // so the mouse keeps working after switching)
+        if (!camera_names.empty()) {
+            std::vector<std::string> items;
+            items.reserve(camera_names.size() + 1);
+            items.push_back("orbit");
+            items.insert(items.end(), camera_names.begin(), camera_names.end());
+            panel.push_back(std::make_unique<vulkan::gui::combo_widget>(
+                "camera",
+                std::move(items),
+                &bindings.current_camera,
+                on_camera_selected));
+            utility::log("gui: camera selector added ({} camera(s))", camera_names.size());
+        }
+        // Shadow depth bias (bottom of the panel - a rarely-used tuning aid): the pass's bias
+        // is dynamic state applied every frame; the slope factor removes acne on angled
+        // surfaces, the constant adds a fixed push. Note it cannot fix geometry that is simply
+        // too coarse (e.g. RecursiveSkeletons' sides are large flat triangles - the depth
+        // gradient across them is what it is), it only tunes the bias offset.
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
+            "shadow bias slope",
+            &bindings.shadow_bias_slope,
+            0.0f,
+            10.0f,
+            [&runtime, &bindings](float const value) {
+                bindings.shadow_bias_slope = value;
+                runtime.set_shadow_depth_bias(bindings.shadow_bias_constant, bindings.shadow_bias_slope, 0.0f);
+            }));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
+            "shadow bias constant",
+            &bindings.shadow_bias_constant,
+            0.0f,
+            10.0f,
+            [&runtime, &bindings](float const value) {
+                bindings.shadow_bias_constant = value;
+                runtime.set_shadow_depth_bias(bindings.shadow_bias_constant, bindings.shadow_bias_slope, 0.0f);
+            }));
+        utility::log("gui: Dear ImGui debug overlay enabled");
+    }
 } // namespace chores

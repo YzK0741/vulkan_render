@@ -7,6 +7,7 @@ export module chores;
 export import std;
 import app_config;
 import utility;
+import vulkan.animation; // setup_gui builds the animation playback controls
 import vulkan.runtime;
 
 /**
@@ -14,10 +15,11 @@ import vulkan.runtime;
  * @defgroup chores Demo Bootstrap Chores
  * @brief main()'s startup helper functions, kept out of main.cpp so the entry point reads
  *        first: resolving the startup config (config file + argv merge, shaders/ and
- *        default-model dirs), creating the demo pipelines, loading shader SPIR-V files, and
- *        the optional instancing stress grid. Demo/application layer only - these helpers
- *        know about app_config (settings), vulkan.runtime and the utility log/panic, never
- *        about glTF (the loader's own diagnostics live in gltf_loader).
+ *        default-model dirs), creating the demo pipelines, loading shader SPIR-V files, the
+ *        optional instancing stress grid, and assembling the demo's Dear ImGui debug overlay
+ *        (setup_gui). Demo/application layer only - these helpers know about app_config
+ *        (settings), vulkan.runtime and the utility log/panic, never about glTF (the
+ *        loader's own diagnostics live in gltf_loader).
  * @note interface only - the implementations live in chores.cpp (the module follows the
  *       export import std pattern of the other split modules)
  */
@@ -98,4 +100,54 @@ namespace chores {
      *        instances stay apart: the demo measures draw scaling, not overdraw)
      */
     export void add_instancing_grid(vulkan::runtime& runtime, int grid_side, float scene_radius);
+
+    /**
+     * @ingroup chores
+     * @brief live state the debug-gui widgets bind to. Owned by main (the frame loop keeps the
+     *        fps text and the animation mirrors in sync each frame); setup_gui() wires the
+     *        widgets to these fields.
+     * @note defaults mirror the historic demo values; main overrides the ones that come from
+     *       config ([render] skybox/shadow toggles) or runtime state (animation playing)
+     */
+    export struct gui_bindings {
+        double fps = 0.0;                  // fps text (updated once per second when use_gui)
+        bool cull_enabled = true;          // frustum-culling checkbox (write-through to the runtime)
+        bool skybox_enabled = true;        // skybox checkbox (initial: settings.render.skybox)
+        bool shadow_enabled = true;        // shadow checkbox (initial: settings.render.shadow)
+        float shadow_bias_constant = 0.0f; // shadow depth-bias sliders (constant factor)
+        float shadow_bias_slope = 1.5f;    // shadow depth-bias sliders (slope factor)
+        float anim_time = 0.0f;            // animation time slider (mirror of the controller clock)
+        bool anim_playing = true;          // play/pause checkbox (mirror of controller state)
+        int anim_index = 0;                // animation combo selection (0 = the auto-played one)
+        int current_camera = 0;            // camera combo selection (0 = orbit, 1..N = authored)
+    };
+
+    /**
+     * @ingroup chores
+     * @brief build the demo's Dear ImGui debug overlay when @p use_gui: enable it on the
+     *        runtime and assemble the "vulkan_render debug" panel — fps label, frustum-culling
+     *        / skybox / shadow toggles, the camera-target drag, animation playback controls
+     *        (label + play + time scrubber + animation dropdown when the controller has an
+     *        active animation), the camera selector (when @p camera_names is non-empty) and
+     *        the shadow depth-bias sliders.
+     * @param runtime the initialized runtime (enable_debug_gui() is called here)
+     * @param use_gui whether the overlay is wanted ([gui] show or the "gui" demo); no-op when false
+     * @param settings startup settings: [gui] panel size + [render] initial skybox/shadow states
+     * @param bindings live widget state (see gui_bindings); the frame loop updates fps and the
+     *        animation mirrors each frame
+     * @param animation the animation controller the playback widgets drive (may be idle)
+     * @param camera_names display names of the scene's authored cameras (no "orbit" entry is
+     *        added here — setup_gui prepends it); empty disables the camera selector
+     * @param on_camera_selected called with the combo index (0 = orbit, i = camera_names[i-1])
+     *        when the user picks a camera; empty when the selector is not shown
+     * @note the overlay's glTF-side data (authored camera list, orbit seeding) stays in main:
+     *       chores only ever sees display names and a callback, never glTF types
+     */
+    export void setup_gui(vulkan::runtime& runtime,
+                          bool use_gui,
+                          app_config::app_settings const& settings,
+                          gui_bindings& bindings,
+                          vulkan::animation_controller& animation,
+                          std::vector<std::string> const& camera_names,
+                          std::function<void(int)> const& on_camera_selected);
 } // namespace chores

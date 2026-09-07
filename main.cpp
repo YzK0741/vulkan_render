@@ -232,9 +232,8 @@ int main(int argc, char** argv) {
     // clock feeds the gui time slider (slider_widget binds an external float).
     vulkan::animation_controller animation;
     animation.init(*scenes, runtime, scene_import_shift);
-    float gui_anim_time = 0.0f; // float mirror of the playback clock (time-slider target)
-    bool gui_anim_playing = animation.is_playing();
-    int gui_anim_index = 0; // selected item of the animation combo (0 = the auto-played one)
+    // Live gui widget state (chores::gui_bindings) is declared after the authored-camera
+    // seeding below, right before chores::setup_gui() builds the overlay.
 
     // ---- authored (glTF) camera selection ----
     // A glTF camera is used as a VIEWPOINT SEED for the orbit camera: picking one places the
@@ -311,114 +310,24 @@ int main(int argc, char** argv) {
         seed_orbit_from_camera(current_camera);
     }
 
-    // Optional Dear ImGui debug overlay: the runtime drives new_frame/record inside its frame
-    // steps; main only enables it and manages its content through the panel/widget API (fps
-    // text widget bound to a live lambda + a frustum-culling checkbox that forwards to the
-    // runtime). The checkbox is a slider-free toggle bound to an external bool.
-    double gui_fps = 0.0;
-    bool gui_cull_enabled = true;
-    bool gui_skybox_enabled = settings.render.skybox;
-    bool gui_shadow_enabled = settings.render.shadow;
-    // live shadow depth-bias mirrors: sliders write both the mirror (drag feedback) and the
-    // runtime's per-frame vkCmdSetDepthBias values
-    float gui_shadow_bias_constant = 0.0f;
-    float gui_shadow_bias_slope = 1.5f;
-    if (use_gui) {
-        runtime.enable_debug_gui();
-        vulkan::gui::debug_panel& panel = runtime.debug_gui().add_panel("vulkan_render debug");
-        panel.set_default_size(settings.gui.panel_width, settings.gui.panel_height);
-        panel.push_back(std::make_unique<vulkan::gui::label_widget>([&gui_fps] { return std::format("fps: {:.1f}", gui_fps); }));
-        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
-            "frustum culling",
-            &gui_cull_enabled,
-            [&runtime](bool const enabled) { runtime.set_frustum_culling(enabled); }));
-        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
-            "skybox",
-            &gui_skybox_enabled,
-            [&runtime](bool const enabled) { runtime.set_skybox_enabled(enabled); }));
-        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
-            "shadow",
-            &gui_shadow_enabled,
-            [&runtime](bool const enabled) { runtime.set_shadow_enabled(enabled); }));
-        // camera orbit target: dragging it moves what the camera looks at / orbits around
-        // (camera.target is a glm::vec3, i.e. three contiguous floats; the runtime rebuilds the
-        // camera UBO from it every frame, so no on_change callback is needed)
-        panel.push_back(std::make_unique<vulkan::gui::vec3_widget>("camera target", &runtime.camera.target.x, 0.05f));
-        // playback controls (only when the model carries animations): play/pause toggle bound
-        // to the playback state, a time scrubber (pauses on drag so the clock cannot fight the
-        // scrub; the play checkbox resumes), and — for multi-animation assets — a dropdown to
-        // pick which animation plays. All playback state lives in the animation_controller.
-        if (animation.has_active()) {
-            panel.push_back(std::make_unique<vulkan::gui::label_widget>([&animation] {
-                return std::format("animation '{}' ({}s)", animation.active_name(), animation.loop_duration());
-            }));
-            panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
-                "play",
-                &gui_anim_playing,
-                [&animation](bool const enabled) { animation.set_playing(enabled); }));
-            panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
-                "time",
-                &gui_anim_time,
-                0.0f,
-                animation.playable_max_duration(),
-                [&animation](float const value) {
-                    animation.set_time(value); // scrubbing pauses so the clock does not fight the drag
-                }));
-            if (animation.playable_count() > 1) {
-                std::vector<std::string> names;
-                names.reserve(animation.playable_count());
-                for (std::size_t i = 0; i < animation.playable_count(); ++i) {
-                    names.push_back(std::string(animation.playable_name(i)));
-                }
-                panel.push_back(std::make_unique<vulkan::gui::combo_widget>(
-                    "animation",
-                    std::move(names),
-                    &gui_anim_index,
-                    [&animation](int const index) { animation.select(static_cast<std::size_t>(index)); }));
-            }
-            utility::log("gui: playback controls added ({} animation(s))", animation.playable_count());
-        }
-        // camera selector: "orbit" (free) or any scene camera (its pose seeds the orbit camera,
-        // so the mouse keeps working after switching)
-        if (!authored_cameras.empty()) {
-            std::vector<std::string> camera_names;
-            camera_names.reserve(authored_cameras.size() + 1);
-            camera_names.push_back("orbit");
-            for (authored_camera const& ac : authored_cameras) {
-                camera_names.push_back(ac.camera->name.empty() ? "<unnamed>" : ac.camera->name);
-            }
-            panel.push_back(std::make_unique<vulkan::gui::combo_widget>(
-                "camera",
-                std::move(camera_names),
-                &current_camera,
-                [&seed_orbit_from_camera](int const index) { seed_orbit_from_camera(index); }));
-            utility::log("gui: camera selector added ({} camera(s))", authored_cameras.size());
-        }
-        // Shadow depth bias (bottom of the panel - a rarely-used tuning aid): the pass's bias
-        // is dynamic state applied every frame; the slope factor removes acne on angled
-        // surfaces, the constant adds a fixed push. Note it cannot fix geometry that is simply
-        // too coarse (e.g. RecursiveSkeletons' sides are large flat triangles - the depth
-        // gradient across them is what it is), it only tunes the bias offset.
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
-            "shadow bias slope",
-            &gui_shadow_bias_slope,
-            0.0f,
-            10.0f,
-            [&runtime, &gui_shadow_bias_constant, &gui_shadow_bias_slope](float const value) {
-                gui_shadow_bias_slope = value;
-                runtime.set_shadow_depth_bias(gui_shadow_bias_constant, gui_shadow_bias_slope, 0.0f);
-            }));
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
-            "shadow bias constant",
-            &gui_shadow_bias_constant,
-            0.0f,
-            10.0f,
-            [&runtime, &gui_shadow_bias_constant, &gui_shadow_bias_slope](float const value) {
-                gui_shadow_bias_constant = value;
-                runtime.set_shadow_depth_bias(gui_shadow_bias_constant, gui_shadow_bias_slope, 0.0f);
-            }));
-        utility::log("gui: Dear ImGui debug overlay enabled");
+    // Optional Dear ImGui debug overlay: chores::setup_gui enables it on the runtime (when
+    // use_gui) and assembles the whole panel - fps label, frustum-culling / skybox / shadow
+    // toggles, the camera-target drag, animation playback controls, the camera selector and
+    // the shadow-bias sliders. The widgets bind to the live gui_bindings below (checkbox and
+    // slider mirrors + the animation mirrors, which the frame loop keeps in sync each frame);
+    // authored-camera names and the orbit-seeding callback are passed in, so chores never
+    // touches glTF types.
+    chores::gui_bindings gui;
+    gui.skybox_enabled = settings.render.skybox; // checkbox initial states mirror the config
+    gui.shadow_enabled = settings.render.shadow;
+    gui.anim_playing = animation.is_playing(); // play checkbox initial state
+    gui.current_camera = current_camera;       // combo selection (the pose seeded above)
+    std::vector<std::string> gui_camera_names; // selector items: authored names (orbit added inside)
+    gui_camera_names.reserve(authored_cameras.size());
+    for (authored_camera const& ac : authored_cameras) {
+        gui_camera_names.push_back(ac.camera->name.empty() ? "<unnamed>" : std::string(ac.camera->name));
     }
+    chores::setup_gui(runtime, use_gui, settings, gui, animation, gui_camera_names, seed_orbit_from_camera);
 
     // Per-frame cheap clock: stamp() once per presented frame on this (the frame owner) thread,
     // so any other thread can read the current frame time as a plain atomic load. Animation /
@@ -478,9 +387,9 @@ int main(int argc, char** argv) {
         // morph weights) and rebuild the skin matrices, into the frame slot pace_and_acquire()
         // just paced. dt comes from frame_clock (stamped after the previous presented frame).
         animation.update(static_cast<float>(frame_clock.delta_seconds()));
-        gui_anim_time = animation.current_time();  // keep the gui time slider in sync
-        gui_anim_playing = animation.is_playing(); // reflect controller-side pauses (scrub / select)
-        gui_anim_index = static_cast<int>(animation.current());
+        gui.anim_time = animation.current_time();  // keep the gui time slider in sync
+        gui.anim_playing = animation.is_playing(); // reflect controller-side pauses (scrub / select)
+        gui.anim_index = static_cast<int>(animation.current());
 
         // Phase 3: record + submit + present the paced frame
         vulkan::frame_status const rec = runtime.begin_recording();
@@ -512,7 +421,7 @@ int main(int argc, char** argv) {
         last_frame_time = now;
         ++fps_frame_count;
         if (use_gui) {
-            gui_fps = fps_frame_count / fps_elapsed; // smooth per-second value for the overlay
+            gui.fps = fps_frame_count / fps_elapsed; // smooth per-second value for the overlay
         }
         if (fps_elapsed >= 1.0) {
             double const fps = fps_frame_count / fps_elapsed;
