@@ -231,7 +231,9 @@ int main(int argc, char** argv) {
     // identity skin block into every frame slot's buffers). A float mirror of the playback
     // clock feeds the gui time slider (slider_widget binds an external float).
     vulkan::animation_controller animation;
-    animation.init(*scenes, runtime, scene_import_shift);
+    // the controller drives the runtime through an injected surface (chores wires the scene,
+    // per-slot buffers and task pool), so it never depends on vulkan::runtime itself
+    animation.init(*scenes, chores::make_animation_backend(runtime), scene_import_shift);
     // Live gui widget state (chores::gui_bindings) is declared after the authored-camera
     // seeding below, right before chores::setup_gui() builds the overlay.
 

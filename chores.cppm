@@ -150,4 +150,13 @@ namespace chores {
                           vulkan::animation_controller& animation,
                           std::vector<std::string> const& camera_names,
                           std::function<void(int)> const& on_camera_selected);
+
+    /**
+     * @ingroup chores
+     * @brief assemble an animation_backend for @p runtime: the host surface an
+     *        animation_controller drives (scene + per-slot buffer callbacks + the task pool),
+     *        wired to the runtime's own scene, frame-slot buffers and run_tasks. Pass it to
+     *        animation_controller::init(); the controller itself never depends on vulkan::runtime.
+     */
+    export vulkan::animation_backend make_animation_backend(vulkan::runtime& runtime);
 } // namespace chores

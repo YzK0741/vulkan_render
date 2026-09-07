@@ -6,50 +6,78 @@ export module vulkan.animation;
 
 import std;
 import gltf_loader;
-import vulkan.runtime; // frame-time parallel stages run on the runtime's shared pool (run_tasks)
-import vulkan.runtime.scene_tree;
+import vulkan.runtime.scene_tree; // scene + node/primitive types (the one structural dependency)
 
 /**
  * @file animation_controller.cppm
  * @defgroup vulkan_animation Vulkan Animation Controller
- * @brief bridge between glTF animation/skin/morph data (gltf_loader, pure CPU) and the
- *        scene runtime (vulkan.runtime): plays the file's keyframe animations by sampling
- *        pure CPU, writing the evaluated T/R/S back into scene node locals, and rebuilding
- *        the per-frame skin matrices + morph weights into the runtime's per-slot buffers.
+ * @brief bridge between glTF animation/skin/morph data (gltf_loader, pure CPU) and a scene
+ *        runtime: plays the file's keyframe animations by sampling pure CPU, writing the
+ *        evaluated T/R/S back into scene node locals, and rebuilding the per-frame skin
+ *        matrices + morph weights into the host's per-slot buffers.
  *
- * The controller is the demo/application-facing playback layer, NOT part of vulkan.runtime:
- * the runtime stays scene-format agnostic (see import_scene's docs); this module is the only
- * place that knows how glTF keyframes/skins/morph targets map onto the runtime scene.
+ * The controller never depends on the concrete host class (vulkan::runtime): it talks to
+ * whatever owns the scene through an injected animation_backend (callbacks + a scene&), so
+ * the same controller can drive any host that provides the same surface. This module is the
+ * only place that knows how glTF keyframes/skins/morph targets map onto a scene tree.
  *
  * Contract summary (mirrors make_primitive / import_scene / set_ibl):
  *   - init() registers materials/geometry state and writes every scene set's shared buffers,
  *     so call it before the first frame, or only while the runtime is idle.
  *   - update(dt) writes the paced frame slot's skin/morph buffers and scene node locals, so
- *     call it after pace_and_acquire() and before begin_recording() (after the slot's timeline wait).
+ *     call it after the host paced a frame slot and before it records (after the slot's
+ *     timeline wait).
  */
 namespace vulkan {
     /**
      * @ingroup vulkan_animation
-     * @brief one glTF animation + its playback state, applied to the runtime scene tree
+     * @brief the host surface an animation_controller drives, injected at init(): the scene
+     *        tree it mutates plus callbacks for everything else it needs from the host.
+     *
+     * Kept deliberately narrow: only what per-frame glTF playback touches. The scene is a
+     * direct reference (animation must walk and edit nodes in place); the rest are callbacks
+     * so the controller does not depend on the host class - any object exposing the same
+     * surface can drive animations. assemble via the host side (see chores).
+     */
+    export struct animation_backend {
+        vulkan::scene_tree::scene* scene = nullptr; // tree to animate (nullptr = not bound)
+
+        // ---- per-frame (active slot) access, used by update() ----
+        std::function<float*()> morph_scratch_active;                             // host-visible morph scratch of the paced slot
+        std::function<void(std::span<glm::mat4 const>)> set_skin_matrices_active; // upload skin matrices to the paced slot
+
+        // ---- setup-time (explicit slot) access, used by init() ----
+        std::function<float*(uint32_t)> morph_scratch_slot;                               // morph scratch of one frame slot
+        std::function<void(std::span<glm::mat4 const>, uint32_t)> set_skin_matrices_slot; // upload to one frame slot
+
+        // ---- frame-loop cooperation ----
+        std::function<void()> scene_changed;                             // node locals edited -> caller invalidates caches
+        std::function<void(std::span<std::function<void()>>)> run_tasks; // fan tasks out on the host's worker pool (sync)
+        std::function<int()> task_worker_count;                          // pool workers, for slicing fan-out tasks
+    };
+
+    /**
+     * @ingroup vulkan_animation
+     * @brief one glTF animation + its playback state, applied to the scene tree
      */
     export class animation_controller {
     public:
         /**
          * @ingroup vulkan_animation
-         * @brief build the playback table and resolve the skin/morph rigs against the runtime
+         * @brief build the playback table and resolve the skin/morph rigs against the backend's
          *        scene: collect the playable (channel-bearing) animations and TRS base poses from
          *        the loader, map asset node indices onto live scene nodes, bake the morph deltas
          *        with their default weights into every frame slot's morph buffer and upload the
          *        identity skin block into every slot's skin buffer. Skinned/morphable primitives
          *        get their push.skin_base / push.morph_* fields set here.
          * @param scenes the loaded glTF data (loader node pool + animations + skins + meshes)
-         * @param runtime the scene runtime whose tree the controller drives
+         * @param backend the host surface to drive (scene + per-slot callbacks; see animation_backend)
          * @param import_shift translation the import applied to every scene ROOT node's local
          *        (animated roots must re-apply it, like import_scene did)
-         * @note call before the first frame, or only while the runtime is idle (no frame in
+         * @note call before the first frame, or only while the host is idle (no frame in
          *       flight) - this writes scene buffers/descriptors like make_primitive() does.
          */
-        void init(gltf::scenes const& scenes, vulkan::runtime& runtime, glm::vec3 const& import_shift);
+        void init(gltf::scenes const& scenes, animation_backend const& backend, glm::vec3 const& import_shift);
 
         // ---- playback table / gui binding ----
 
@@ -132,9 +160,9 @@ namespace vulkan {
             std::size_t source = 0;  // owning loader node (weights animation target)
         };
 
-        vulkan::runtime* runtime = nullptr;
+        animation_backend backend; // injected host surface (scene + callbacks); scene == nullptr when unbound
         glm::vec3 import_shift{};
-        // whether this scene's animation is heavy enough to fan sampling out over the runtime's
+        // whether this scene's animation is heavy enough to fan sampling out over the backend's
         // shared task pool (many channels over many sources): decided in init(), used by update()
         bool parallel_sampling = false;
         // source keys in stable order for parallel sampling (the source set is fixed after
@@ -169,11 +197,11 @@ namespace vulkan {
         std::size_t pick_debug_source(gltf::animation const& animation) const;
         void refresh_debug_name();
 
-        // sample one loader source into its runtime nodes + the active slot's morph weights at
+        // sample one loader source into its scene nodes + the active slot's morph weights at
         // this->time; returns whether any node local moved (morph-only writes are not
         // "changed": they do not invalidate the culling BVH). A member function so the
         // sampling fan-out tasks only capture `this` (+ their source range): the task list is
-        // self-contained and can be handed to runtime::run_tasks() for pool execution.
+        // self-contained and can be handed to the backend's run_tasks for pool execution.
         bool sample_source(std::size_t source, std::vector<anim_target> const& targets);
     };
 } // namespace vulkan

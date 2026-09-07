@@ -32,11 +32,11 @@ namespace vulkan {
 
     // ---- init: playback table + rig resolution + static buffer bakes ----
 
-    void animation_controller::init(gltf::scenes const& scenes, vulkan::runtime& runtime, glm::vec3 const& import_shift) {
-        this->runtime = &runtime;
+    void animation_controller::init(gltf::scenes const& scenes, animation_backend const& backend, glm::vec3 const& import_shift) {
+        this->backend = backend;
         this->import_shift = import_shift;
 
-        // live-tree lookup: asset node index -> runtime scene nodes + root flag (import applied
+        // live-tree lookup: asset node index -> backend scene nodes + root flag (import applied
         // the shift to root locals only, so animated roots must re-apply it)
         auto const collect = [this](auto&& self, vulkan::scene_tree::scene_node& node, bool const scene_root) -> void {
             this->source_nodes[node.source_index].push_back(anim_target{&node, scene_root});
@@ -44,7 +44,7 @@ namespace vulkan {
                 self(self, child, false);
             }
         };
-        for (vulkan::scene_tree::scene_node& root : runtime.get_scene().roots) {
+        for (vulkan::scene_tree::scene_node& root : this->backend.scene->roots) {
             collect(collect, root, true);
         }
 
@@ -81,9 +81,9 @@ namespace vulkan {
 
         // Parallel sampling decision ("lite" fan-out, not full core count): only when the
         // animation is heavy enough that per-source sampling (each source scans all channels)
-        // is worth splitting across the runtime's shared task pool. Light animations (a handful
+        // is worth splitting across the backend's shared task pool. Light animations (a handful
         // of channels) stay on the caller thread - the pool sync would cost more than the work.
-        // The pool itself lives in the runtime (vulkan::runtime::run_tasks), so we only record
+        // The pool itself lives on the host (injected as backend.run_tasks), so we only record
         // the decision here + a stable source list to slice update()'s sampling over.
         {
             std::size_t max_channels = 0;
@@ -161,12 +161,12 @@ namespace vulkan {
         {
             constexpr std::array<glm::mat4, 4> identity_block = {glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f)};
             for (uint32_t slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-                runtime.set_skin_matrices(identity_block, slot);
+                this->backend.set_skin_matrices_slot(identity_block, slot);
             }
         }
 
         // ---- morph rigs: bake deltas + default weights into every slot's morph buffer ----
-        float* const morph_scratch_mem = static_cast<float*>(runtime.morph_scratch(0));
+        float* const morph_scratch_mem = this->backend.morph_scratch_slot(0);
         if (morph_scratch_mem != nullptr) {
             auto const read_delta_vec3 = [](std::map<std::string, gltf::vertex_portion> const& attrs, std::string_view const name, std::size_t const i) -> glm::vec3 {
                 auto const it = attrs.find(std::string(name));
@@ -187,7 +187,7 @@ namespace vulkan {
                     self(self, child, source);
                 }
             };
-            for (vulkan::scene_tree::scene_node& root : runtime.get_scene().roots) {
+            for (vulkan::scene_tree::scene_node& root : this->backend.scene->roots) {
                 collect_leaves(collect_leaves, root, 0);
             }
             std::size_t total_floats = 0;
@@ -259,7 +259,7 @@ namespace vulkan {
                 // frame slot's morph buffer: deltas are static, only the per-frame weight
                 // rewrites target the active slot's buffer
                 for (uint32_t slot = 1; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-                    float* const other = static_cast<float*>(runtime.morph_scratch(slot));
+                    float* const other = this->backend.morph_scratch_slot(slot);
                     if (other != nullptr) {
                         std::memcpy(other, morph_scratch_mem, total_floats * sizeof(float));
                     }
@@ -307,7 +307,7 @@ namespace vulkan {
                 target.node->local = target.scene_root ? glm::translate(glm::mat4(1.0f), this->import_shift) * trs : trs;
             }
         }
-        this->runtime->scene_changed();
+        this->backend.scene_changed();
         this->active = this->playable[index];
         this->current_index = index;
         this->time = 0.0f;
@@ -348,7 +348,7 @@ namespace vulkan {
         gltf::node_pose const base = base_it == this->base_poses.end() ? gltf::node_pose{} : base_it->second;
         gltf::node_pose const pose = gltf::sample_node(*this->active, source, base, this->time);
         if (!pose.weights.empty()) {
-            float* const active_scratch = static_cast<float*>(this->runtime->morph_scratch());
+            float* const active_scratch = this->backend.morph_scratch_active();
             if (active_scratch != nullptr) {
                 for (morph_rig const& rig : this->morph_rigs) {
                     if (rig.source == source && static_cast<std::size_t>(rig.target_count) == pose.weights.size()) {
@@ -374,7 +374,7 @@ namespace vulkan {
     }
 
     void animation_controller::update(float const dt_seconds) {
-        if (this->runtime == nullptr) {
+        if (this->backend.scene == nullptr) {
             return;
         }
 
@@ -398,9 +398,9 @@ namespace vulkan {
                 // sources touch different runtime nodes / morph offsets, so no shared state is
                 // written concurrently (debug_translation has one writer: its own source's slice).
                 // The tasks capture only `this` (+ the slice bounds): self-contained, so the
-                // list can be handed to runtime::run_tasks() and executed on the runtime's pool.
+                // list can be handed to the backend's run_tasks and executed on the host pool.
                 std::size_t const total = this->sample_keys.size();
-                unsigned const workers = std::max(1, this->runtime->task_pool_threads());
+                unsigned const workers = std::max(1, this->backend.task_worker_count());
                 std::vector<std::atomic<bool>> slice_changed(workers);
                 std::vector<std::function<void()>> tasks;
                 tasks.reserve(workers);
@@ -422,9 +422,9 @@ namespace vulkan {
                         slice_changed[static_cast<std::size_t>(w)].store(any);
                     });
                 }
-                // forward the task list to the runtime's own pool and wait for this stage's
-                // group: run_tasks() is synchronous, so sampling finishes before update() returns
-                this->runtime->run_tasks(tasks, vulkan::task_priority::animation);
+                // forward the task list to the backend's pool and wait for this stage's
+                // group: run_tasks is synchronous, so sampling finishes before update() returns
+                this->backend.run_tasks(tasks);
                 for (std::atomic<bool> const& c : slice_changed) {
                     changed = changed || c.load();
                 }
@@ -434,7 +434,7 @@ namespace vulkan {
                 }
             }
             if (changed) {
-                this->runtime->scene_changed(); // node.locals edited -> culling BVH must track them
+                this->backend.scene_changed(); // node.locals edited -> culling BVH must track them
             }
         }
 
@@ -453,7 +453,7 @@ namespace vulkan {
                     self(self, child, world);
                 }
             };
-            for (vulkan::scene_tree::scene_node& root : this->runtime->get_scene().roots) {
+            for (vulkan::scene_tree::scene_node& root : this->backend.scene->roots) {
                 collect_worlds(collect_worlds, root, glm::mat4(1.0f));
             }
             std::vector<glm::mat4> matrices;
@@ -468,7 +468,7 @@ namespace vulkan {
                     matrices.push_back(mesh_world_inv * joint_world * rig.skin->inverse_bind_matrices[j]);
                 }
             }
-            this->runtime->set_skin_matrices(matrices);
+            this->backend.set_skin_matrices_active(matrices);
             // per-second report data: first rig's LAST joint world x-axis (rotations change it,
             // unlike the joint's position which stays fixed under rotation-only animations)
             this->skin_debug_valid = false;

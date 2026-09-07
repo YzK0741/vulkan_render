@@ -296,4 +296,34 @@ namespace chores {
             }));
         utility::log("gui: Dear ImGui debug overlay enabled");
     }
+
+    // Wire an animation_backend to the runtime: the scene tree it drives, its per-frame-slot
+    // morph/skin buffers (active slot for per-frame writes, explicit slot for setup bakes) and
+    // its shared task pool. The controller sees only this surface, never vulkan::runtime.
+    vulkan::animation_backend make_animation_backend(vulkan::runtime& runtime) {
+        vulkan::animation_backend backend;
+        backend.scene = &runtime.get_scene();
+        backend.morph_scratch_active = [&runtime]() -> float* {
+            return static_cast<float*>(runtime.morph_scratch());
+        };
+        backend.morph_scratch_slot = [&runtime](uint32_t const slot) -> float* {
+            return static_cast<float*>(runtime.morph_scratch(slot));
+        };
+        backend.set_skin_matrices_active = [&runtime](std::span<glm::mat4 const> matrices) {
+            runtime.set_skin_matrices(matrices);
+        };
+        backend.set_skin_matrices_slot = [&runtime](std::span<glm::mat4 const> matrices, uint32_t const slot) {
+            runtime.set_skin_matrices(matrices, slot);
+        };
+        backend.scene_changed = [&runtime]() {
+            runtime.scene_changed();
+        };
+        backend.run_tasks = [&runtime](std::span<std::function<void()>> tasks) {
+            runtime.run_tasks(tasks, vulkan::task_priority::animation);
+        };
+        backend.task_worker_count = [&runtime]() -> int {
+            return runtime.task_pool_threads();
+        };
+        return backend;
+    }
 } // namespace chores
