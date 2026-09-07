@@ -126,38 +126,10 @@ namespace vulkan {
         this->scene.roots.clear();
         this->pipelines.clear();
 
-        // Shared scene resources (views/sets/samplers are RAII and free themselves)
-        for (uint64_t const handle : this->camera_buffer_handles) {
-            this->vulkan_core.vma.free_buffer(handle);
-        }
-        for (uint64_t const handle : this->skin_buffer_handles) {
-            this->vulkan_core.vma.free_buffer(handle);
-        }
-        for (uint64_t const handle : this->morph_buffer_handles) {
-            this->vulkan_core.vma.free_buffer(handle);
-        }
-        for (uint64_t const handle : this->owned_texture_handles) {
-            this->vulkan_core.vma.free_image(handle);
-        }
-        for (uint64_t const handle : this->ibl_handles) {
-            this->vulkan_core.vma.free_image(handle);
-        }
-        if (this->material_buffer_handle != 0) {
-            this->vulkan_core.vma.free_buffer(this->material_buffer_handle);
-            this->material_buffer_handle = 0;
-        }
-        if (this->instance_buffer_handle != 0) {
-            this->vulkan_core.vma.free_buffer(this->instance_buffer_handle);
-            this->instance_buffer_handle = 0;
-        }
-        if (this->light_buffer_handle != 0) {
-            this->vulkan_core.vma.free_buffer(this->light_buffer_handle);
-            this->light_buffer_handle = 0;
-        }
-        for (uint64_t const handle : this->shadow_image_handles) {
-            this->vulkan_core.vma.free_image(handle);
-        }
-        this->shadow_image_handles.clear();
+        // Shared scene resources: views/sets/samplers/buffers/images are RAII and free
+        // themselves as this runtime's members destruct (after this body; vulkan_core, which
+        // owns the vma allocator, is declared first and destructs last, so every vk_buffer /
+        // vk_image still has a live allocator when it releases).
 
         // Shut the debug overlay down explicitly while the VkDevice is still alive (its ImGui
         // Vulkan backend owns device resources); member destruction would also run it before
@@ -169,19 +141,19 @@ namespace vulkan {
         // Camera UBO: one buffer per frame slot, mapped for direct writes; all models reference
         // these buffers through the shared scene set, so one memcpy per frame replaces the old
         // per-primitive per-frame UBO updates
-        this->camera_buffer_handles.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        this->camera_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         this->camera_mapped.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
             camera_ubo initial = {};
-            uint64_t const handle = this->vulkan_core.vma.create_buffer(std::span(&initial, 1), vulkan::buffer_type::uniform_coherent);
-            if (handle == 0) {
+            vk_buffer buffer = this->vulkan_core.vma.create_buffer(std::span(&initial, 1), vulkan::buffer_type::uniform_coherent);
+            if (!buffer.valid()) {
                 utility::panic("failed to create camera ubo buffer");
             }
-            auto const* detail = this->vulkan_core.vma.get_buffer_detail(handle);
+            auto const* detail = this->vulkan_core.vma.get_buffer_detail(buffer.handle());
             if (detail == nullptr) {
                 utility::panic("failed to get camera ubo buffer detail");
             }
-            this->camera_buffer_handles.push_back(handle);
+            this->camera_buffers.push_back(std::move(buffer));
             this->camera_mapped.push_back(detail->allocation_info.pMappedData);
         }
 
@@ -194,15 +166,15 @@ namespace vulkan {
         white_info.mip_levels = 1;
         white_info.array_layers = 1;
         white_info.format = VK_FORMAT_R8G8B8A8_UNORM;
-        uint64_t const white_handle = this->vulkan_core.vma.create_image(white_pixels.data(), white_pixels.size(), white_info, vulkan::image_type::texture_2d);
-        if (white_handle == 0) {
+        vk_image white_image = this->vulkan_core.vma.create_image(white_pixels.data(), white_pixels.size(), white_info, vulkan::image_type::texture_2d);
+        if (!white_image.valid()) {
             utility::panic("failed to create white fallback texture");
         }
-        auto const* white_detail = this->vulkan_core.vma.get_image_detail(white_handle);
+        auto const* white_detail = this->vulkan_core.vma.get_image_detail(white_image.handle());
         if (white_detail == nullptr) {
             utility::panic("failed to get white texture detail");
         }
-        this->owned_texture_handles.push_back(white_handle);
+        this->owned_textures.push_back(std::move(white_image));
         this->owned_texture_views.push_back(this->vulkan_core.make_image_view(white_detail->image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_VIEW_TYPE_2D));
         this->white_texture_index = static_cast<uint32_t>(this->texture_array_views.size());
         this->texture_array_views.push_back(*this->owned_texture_views.back());
@@ -216,47 +188,47 @@ namespace vulkan {
         // GPU material table: fixed capacity, host-visible (direct mapping); records are appended
         // at registration and read-only for the GPU (set 0 binding 5)
         std::vector<unsigned char> const zeroed_materials(static_cast<size_t>(vulkan::material_capacity) * sizeof(material_record), 0);
-        uint64_t const material_handle = this->vulkan_core.vma.create_buffer(zeroed_materials.data(), zeroed_materials.size(), vulkan::buffer_type::storage_coherent);
-        if (material_handle == 0) {
+        vk_buffer material_buf = this->vulkan_core.vma.create_buffer(zeroed_materials.data(), zeroed_materials.size(), vulkan::buffer_type::storage_coherent);
+        if (!material_buf.valid()) {
             utility::panic("failed to create material table buffer");
         }
-        auto const* material_detail = this->vulkan_core.vma.get_buffer_detail(material_handle);
+        auto const* material_detail = this->vulkan_core.vma.get_buffer_detail(material_buf.handle());
         if (material_detail == nullptr) {
             utility::panic("failed to get material table buffer detail");
         }
-        this->material_buffer_handle = material_handle;
+        this->material_buffer = std::move(material_buf);
         this->material_mapped = material_detail->allocation_info.pMappedData;
 
         // Per-instance transform buffer (set 0 binding 6): one mat4 per instance, host-visible;
         // filled by set_instanced_draw() for instanced stress draws (see pbr.vert)
         std::vector<unsigned char> const zeroed_instances(static_cast<size_t>(vulkan::instance_capacity) * sizeof(glm::mat4), 0);
-        uint64_t const instance_handle = this->vulkan_core.vma.create_buffer(zeroed_instances.data(), zeroed_instances.size(), vulkan::buffer_type::storage_coherent);
-        if (instance_handle == 0) {
+        vk_buffer instance_buf = this->vulkan_core.vma.create_buffer(zeroed_instances.data(), zeroed_instances.size(), vulkan::buffer_type::storage_coherent);
+        if (!instance_buf.valid()) {
             utility::panic("failed to create instance transform buffer");
         }
-        auto const* instance_detail = this->vulkan_core.vma.get_buffer_detail(instance_handle);
+        auto const* instance_detail = this->vulkan_core.vma.get_buffer_detail(instance_buf.handle());
         if (instance_detail == nullptr) {
             utility::panic("failed to get instance transform buffer detail");
         }
-        this->instance_buffer_handle = instance_handle;
+        this->instance_buffer = std::move(instance_buf);
         this->instance_mapped = instance_detail->allocation_info.pMappedData;
 
         // Per-joint skin matrices (set 0 binding 9): one buffer PER FRAME SLOT (scene_skin_capacity
         // mat4s each, host-visible) so an in-flight frame never shares the buffer the next frame
         // rewrites. Zero-filled initially (the identity block is written by the setup upload).
         std::vector<unsigned char> const zeroed_skins(static_cast<size_t>(vulkan::scene_skin_capacity) * sizeof(glm::mat4), 0);
-        this->skin_buffer_handles.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        this->skin_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         this->skin_mapped.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            uint64_t const skin_handle = this->vulkan_core.vma.create_buffer(zeroed_skins.data(), zeroed_skins.size(), vulkan::buffer_type::storage_coherent);
-            if (skin_handle == 0) {
+            vk_buffer skin_buf = this->vulkan_core.vma.create_buffer(zeroed_skins.data(), zeroed_skins.size(), vulkan::buffer_type::storage_coherent);
+            if (!skin_buf.valid()) {
                 utility::panic("failed to create skin matrix buffer");
             }
-            auto const* skin_detail = this->vulkan_core.vma.get_buffer_detail(skin_handle);
+            auto const* skin_detail = this->vulkan_core.vma.get_buffer_detail(skin_buf.handle());
             if (skin_detail == nullptr) {
                 utility::panic("failed to get skin matrix buffer detail");
             }
-            this->skin_buffer_handles.push_back(skin_handle);
+            this->skin_buffers.push_back(std::move(skin_buf));
             this->skin_mapped.push_back(skin_detail->allocation_info.pMappedData);
         }
 
@@ -265,18 +237,18 @@ namespace vulkan {
         // into every slot's buffer at setup, then rewrites only the active slot's weights per frame.
         // Zero-filled from one shared host vector (each create_buffer copies its own GPU buffer).
         std::vector<unsigned char> const zeroed_morphs(static_cast<size_t>(vulkan::scene_morph_capacity) * sizeof(float), 0);
-        this->morph_buffer_handles.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        this->morph_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         this->morph_mapped.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            uint64_t const morph_handle = this->vulkan_core.vma.create_buffer(zeroed_morphs.data(), zeroed_morphs.size(), vulkan::buffer_type::storage_coherent);
-            if (morph_handle == 0) {
+            vk_buffer morph_buf = this->vulkan_core.vma.create_buffer(zeroed_morphs.data(), zeroed_morphs.size(), vulkan::buffer_type::storage_coherent);
+            if (!morph_buf.valid()) {
                 utility::panic("failed to create morph data buffer");
             }
-            auto const* morph_detail = this->vulkan_core.vma.get_buffer_detail(morph_handle);
+            auto const* morph_detail = this->vulkan_core.vma.get_buffer_detail(morph_buf.handle());
             if (morph_detail == nullptr) {
                 utility::panic("failed to get morph data buffer detail");
             }
-            this->morph_buffer_handles.push_back(morph_handle);
+            this->morph_buffers.push_back(std::move(morph_buf));
             this->morph_mapped.push_back(morph_detail->allocation_info.pMappedData);
         }
     }
@@ -285,7 +257,7 @@ namespace vulkan {
         // Shadow map: one depth image per frame slot (see the member docs). Depth-only images
         // carry no uploaded content (vma::create_image with data == nullptr skips the digest /
         // upload path), so each frame can render the scene's depth from the light's view into it.
-        this->shadow_image_handles.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        this->shadow_images.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         this->shadow_image_views.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
             vulkan::image_create_info shadow_info = {};
@@ -295,30 +267,30 @@ namespace vulkan {
             shadow_info.array_layers = 1;
             shadow_info.format = this->vulkan_core.depth_format;
             shadow_info.extra_usage = VK_IMAGE_USAGE_SAMPLED_BIT; // sampled by pbr.frag
-            uint64_t const handle = this->vulkan_core.vma.create_image(nullptr, 0, shadow_info, vulkan::image_type::texture_2d_depth);
-            if (handle == 0) {
+            vk_image shadow_image = this->vulkan_core.vma.create_image(nullptr, 0, shadow_info, vulkan::image_type::texture_2d_depth);
+            if (!shadow_image.valid()) {
                 utility::panic("failed to create shadow map image");
             }
-            auto const* detail = this->vulkan_core.vma.get_image_detail(handle);
+            auto const* detail = this->vulkan_core.vma.get_image_detail(shadow_image.handle());
             if (detail == nullptr) {
                 utility::panic("failed to get shadow map image detail");
             }
-            this->shadow_image_handles.push_back(handle);
+            this->shadow_images.push_back(std::move(shadow_image));
             this->shadow_image_views.push_back(this->vulkan_core.make_depth_image_view(detail->image, this->vulkan_core.depth_format));
         }
         this->shadow_sampler = this->vulkan_core.make_shadow_sampler();
 
         // Light UBO (scene set binding 7): static content, filled by enable_shadows()
         light_ubo initial = {};
-        uint64_t const light_handle = this->vulkan_core.vma.create_buffer(std::span(&initial, 1), vulkan::buffer_type::uniform_coherent);
-        if (light_handle == 0) {
+        vk_buffer light_buf = this->vulkan_core.vma.create_buffer(std::span(&initial, 1), vulkan::buffer_type::uniform_coherent);
+        if (!light_buf.valid()) {
             utility::panic("failed to create light ubo buffer");
         }
-        auto const* light_detail = this->vulkan_core.vma.get_buffer_detail(light_handle);
+        auto const* light_detail = this->vulkan_core.vma.get_buffer_detail(light_buf.handle());
         if (light_detail == nullptr) {
             utility::panic("failed to get light ubo buffer detail");
         }
-        this->light_buffer_handle = light_handle;
+        this->light_buffer = std::move(light_buf);
         this->light_mapped = light_detail->allocation_info.pMappedData;
     }
 
@@ -350,35 +322,35 @@ namespace vulkan {
             VkDescriptorSet const set = *this->scene_sets[static_cast<std::size_t>(slot)];
 
             // binding 0: THIS slot's camera UBO buffer
-            auto const* camera_detail = this->vulkan_core.vma.get_buffer_detail(this->camera_buffer_handles[static_cast<std::size_t>(slot)]);
+            auto const* camera_detail = this->vulkan_core.vma.get_buffer_detail(this->camera_buffers[static_cast<std::size_t>(slot)].handle());
             if (camera_detail == nullptr) {
                 utility::panic("failed to get camera ubo buffer detail");
             }
             write_buffer_binding(set, 0, camera_detail->buffer, sizeof(camera_ubo), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 
             // binding 5: material table (shared, written once)
-            auto const* material_detail = this->vulkan_core.vma.get_buffer_detail(this->material_buffer_handle);
+            auto const* material_detail = this->vulkan_core.vma.get_buffer_detail(this->material_buffer.handle());
             if (material_detail == nullptr) {
                 utility::panic("failed to get material table buffer detail");
             }
             write_buffer_binding(set, 5, material_detail->buffer, static_cast<VkDeviceSize>(vulkan::material_capacity) * sizeof(material_record), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 
             // binding 6: per-instance transforms (shared, written by set_instanced_draw)
-            auto const* instance_detail = this->vulkan_core.vma.get_buffer_detail(this->instance_buffer_handle);
+            auto const* instance_detail = this->vulkan_core.vma.get_buffer_detail(this->instance_buffer.handle());
             if (instance_detail == nullptr) {
                 utility::panic("failed to get instance transform buffer detail");
             }
             write_buffer_binding(set, 6, instance_detail->buffer, static_cast<VkDeviceSize>(vulkan::instance_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 
             // binding 9: THIS slot's skin matrix buffer
-            auto const* skin_detail = this->vulkan_core.vma.get_buffer_detail(this->skin_buffer_handles[static_cast<std::size_t>(slot)]);
+            auto const* skin_detail = this->vulkan_core.vma.get_buffer_detail(this->skin_buffers[static_cast<std::size_t>(slot)].handle());
             if (skin_detail == nullptr) {
                 utility::panic("failed to get skin matrix buffer detail");
             }
             write_buffer_binding(set, 9, skin_detail->buffer, static_cast<VkDeviceSize>(vulkan::scene_skin_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 
             // binding 10: THIS slot's morph data buffer
-            auto const* morph_detail = this->vulkan_core.vma.get_buffer_detail(this->morph_buffer_handles[static_cast<std::size_t>(slot)]);
+            auto const* morph_detail = this->vulkan_core.vma.get_buffer_detail(this->morph_buffers[static_cast<std::size_t>(slot)].handle());
             if (morph_detail == nullptr) {
                 utility::panic("failed to get morph data buffer detail");
             }
@@ -409,7 +381,7 @@ namespace vulkan {
             return;
         }
         // binding 7: light UBO (uniform buffer; light_view_proj + light_dir filled by enable_shadows)
-        auto const* light_detail = this->vulkan_core.vma.get_buffer_detail(this->light_buffer_handle);
+        auto const* light_detail = this->vulkan_core.vma.get_buffer_detail(this->light_buffer.handle());
         if (light_detail == nullptr) {
             utility::panic("failed to get light ubo buffer detail");
         }
@@ -419,7 +391,7 @@ namespace vulkan {
         // depth image, so no per-frame re-pointing is needed)
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
             VkDescriptorSet const set = *this->scene_sets[static_cast<std::size_t>(slot)];
-            auto const* shadow_detail = this->vulkan_core.vma.get_image_detail(this->shadow_image_handles[static_cast<std::size_t>(slot)]);
+            auto const* shadow_detail = this->vulkan_core.vma.get_image_detail(this->shadow_images[static_cast<std::size_t>(slot)].handle());
             if (shadow_detail == nullptr) {
                 utility::panic("failed to get shadow map image detail");
             }
@@ -480,12 +452,12 @@ namespace vulkan {
         if (info.env_size == 0) {
             return;
         }
-        auto const upload = [this](std::span<unsigned char const> const data, image_create_info const& create_info, image_type const type) -> uint64_t {
-            uint64_t const handle = this->vulkan_core.vma.create_image(data.data(), data.size_bytes(), create_info, type);
-            if (handle == 0) {
+        auto const upload = [this](std::span<unsigned char const> const data, image_create_info const& create_info, image_type const type) -> vk_image {
+            vk_image image = this->vulkan_core.vma.create_image(data.data(), data.size_bytes(), create_info, type);
+            if (!image.valid()) {
                 utility::panic("failed to create IBL image");
             }
-            return handle;
+            return image;
         };
 
         // prefiltered environment cubemap (mip chain)
@@ -495,12 +467,12 @@ namespace vulkan {
         env_info.mip_levels = info.env_mip_count;
         env_info.array_layers = 6;
         env_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
-        uint64_t handle = upload(info.prefiltered_env, env_info, vulkan::image_type::texture_cubemap);
-        auto const* env_detail = this->vulkan_core.vma.get_image_detail(handle);
+        vk_image env_image = upload(info.prefiltered_env, env_info, vulkan::image_type::texture_cubemap);
+        auto const* env_detail = this->vulkan_core.vma.get_image_detail(env_image.handle());
         if (env_detail == nullptr) {
             utility::panic("failed to get environment image detail");
         }
-        this->ibl_handles.push_back(handle);
+        this->ibl_images.push_back(std::move(env_image));
         this->ibl_views.push_back(this->vulkan_core.make_image_view(env_detail->image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE));
 
         // irradiance cubemap
@@ -510,12 +482,12 @@ namespace vulkan {
         irr_info.mip_levels = 1;
         irr_info.array_layers = 6;
         irr_info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
-        handle = upload(info.irradiance, irr_info, vulkan::image_type::texture_cubemap);
-        auto const* irr_detail = this->vulkan_core.vma.get_image_detail(handle);
+        vk_image irr_image = upload(info.irradiance, irr_info, vulkan::image_type::texture_cubemap);
+        auto const* irr_detail = this->vulkan_core.vma.get_image_detail(irr_image.handle());
         if (irr_detail == nullptr) {
             utility::panic("failed to get irradiance image detail");
         }
-        this->ibl_handles.push_back(handle);
+        this->ibl_images.push_back(std::move(irr_image));
         this->ibl_views.push_back(this->vulkan_core.make_image_view(irr_detail->image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE));
 
         // BRDF integration LUT
@@ -525,12 +497,12 @@ namespace vulkan {
         lut_info.mip_levels = 1;
         lut_info.array_layers = 1;
         lut_info.format = VK_FORMAT_R16G16_SFLOAT;
-        handle = upload(info.brdf_lut, lut_info, vulkan::image_type::texture_2d);
-        auto const* lut_detail = this->vulkan_core.vma.get_image_detail(handle);
+        vk_image lut_image = upload(info.brdf_lut, lut_info, vulkan::image_type::texture_2d);
+        auto const* lut_detail = this->vulkan_core.vma.get_image_detail(lut_image.handle());
         if (lut_detail == nullptr) {
             utility::panic("failed to get BRDF LUT image detail");
         }
-        this->ibl_handles.push_back(handle);
+        this->ibl_images.push_back(std::move(lut_image));
         this->ibl_views.push_back(this->vulkan_core.make_image_view(lut_detail->image, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_VIEW_TYPE_2D));
 
         this->env_sampler = this->vulkan_core.make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, static_cast<float>(info.env_mip_count - 1));
@@ -582,15 +554,15 @@ namespace vulkan {
             image_info.mip_levels = tex.mip_levels; // the caller uploads a full mip-major chain
             image_info.array_layers = 1;
             image_info.format = slots[i].second;
-            uint64_t const handle = this->vulkan_core.vma.create_image(tex.data.data(), tex.data.size_bytes(), image_info, vulkan::image_type::texture_2d);
-            if (handle == 0) {
+            vk_image tex_image = this->vulkan_core.vma.create_image(tex.data.data(), tex.data.size_bytes(), image_info, vulkan::image_type::texture_2d);
+            if (!tex_image.valid()) {
                 utility::panic("failed to create material texture");
             }
-            auto const* detail = this->vulkan_core.vma.get_image_detail(handle);
+            auto const* detail = this->vulkan_core.vma.get_image_detail(tex_image.handle());
             if (detail == nullptr) {
                 utility::panic("failed to get material texture detail");
             }
-            this->owned_texture_handles.push_back(handle);
+            this->owned_textures.push_back(std::move(tex_image));
             this->owned_texture_views.push_back(this->vulkan_core.make_image_view(detail->image, slots[i].second, VK_IMAGE_VIEW_TYPE_2D));
             uint32_t const index = static_cast<uint32_t>(this->texture_array_views.size());
             this->texture_array_views.push_back(*this->owned_texture_views.back());
@@ -951,7 +923,7 @@ namespace vulkan {
         //      classic render-pass fallback cannot express (make_shadow_pipeline already failed
         //      there, so this block is skipped together with shadows_enabled).
         if (vk.use_dynamic_rendering && this->shadow_pipeline && this->shadows_enabled && this->shadow_enabled) {
-            auto const* shadow_detail = vk.vma.get_image_detail(this->shadow_image_handles[frame_slot]);
+            auto const* shadow_detail = vk.vma.get_image_detail(this->shadow_images[frame_slot].handle());
             if (shadow_detail != nullptr) {
                 // Transition the shadow image to a renderable depth attachment (loadOp CLEAR
                 //     discards the previous frame's contents, so UNDEFINED as oldLayout is valid)
@@ -1389,20 +1361,20 @@ namespace vulkan {
         result->pipeline = pipeline;
 
         // ---- geometry buffers ----
-        result->vertex_buffer_handle = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex);
-        if (result->vertex_buffer_handle == 0) {
+        result->vertex_buffer = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex);
+        if (!result->vertex_buffer.valid()) {
             utility::panic("failed to create vertex buffer");
         }
-        result->vertex_detail = this->vulkan_core.vma.get_buffer_detail(result->vertex_buffer_handle);
+        result->vertex_detail = this->vulkan_core.vma.get_buffer_detail(result->vertex_buffer.handle());
         if (result->vertex_detail == nullptr) {
             utility::panic("failed to get vertex buffer detail");
         }
 
-        result->index_buffer_handle = this->vulkan_core.vma.create_buffer(info.index_data.data(), info.index_data.size_bytes(), vulkan::buffer_type::index);
-        if (result->index_buffer_handle == 0) {
+        result->index_buffer = this->vulkan_core.vma.create_buffer(info.index_data.data(), info.index_data.size_bytes(), vulkan::buffer_type::index);
+        if (!result->index_buffer.valid()) {
             utility::panic("failed to create index buffer");
         }
-        result->index_detail = this->vulkan_core.vma.get_buffer_detail(result->index_buffer_handle);
+        result->index_detail = this->vulkan_core.vma.get_buffer_detail(result->index_buffer.handle());
         if (result->index_detail == nullptr) {
             utility::panic("failed to get index buffer detail");
         }

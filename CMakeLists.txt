@@ -105,6 +105,7 @@ target_sources(vulkancorekit
         vulkan/core/core.cppm
         vulkan/core/filter/filter.cppm
         vulkan/core/vma/vma.cppm
+        vulkan/core/vma/handles/vma_handles.cppm
         vulkan/core/handles/handles.cppm
         vulkan/core/init_utils/init_utils.cppm
         vulkan/core/pipeline/pipeline.cppm

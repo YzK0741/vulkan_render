@@ -94,16 +94,13 @@ namespace vulkan {
         vkCmdDrawIndexed(command_buffer, this->index_count, 1, 0, 0, 0);
     }
 
-    void normal_draw_primitive::destroy(vma_allocator& vma) noexcept {
-        if (this->vertex_buffer_handle != 0) {
-            vma.free_buffer(this->vertex_buffer_handle);
-        }
-        if (this->index_buffer_handle != 0) {
-            vma.free_buffer(this->index_buffer_handle);
-        }
-        this->vertex_buffer_handle = 0;
+    void normal_draw_primitive::destroy(vma_allocator&) noexcept {
+        // geometry is owned by the vk_buffer members and released when this primitive (the tree
+        // node's leaf) is destroyed; here we only drop the cached accessors so a dangling detail
+        // pointer can never be used after the owner went away
+        this->vertex_buffer.reset();
         this->vertex_detail = nullptr;
-        this->index_buffer_handle = 0;
+        this->index_buffer.reset();
         this->index_detail = nullptr;
         this->index_count = 0;
         this->vertex_count = 0;

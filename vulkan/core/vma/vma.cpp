@@ -714,13 +714,21 @@ namespace vulkan {
         return true;
     }
 
-    uint64_t vma_allocator::create_buffer(unsigned char const* data, uint64_t const size_byte, buffer_type const type) {
+    vk_buffer vma_allocator::create_buffer(unsigned char const* data, uint64_t const size_byte, buffer_type const type) {
+        // the returned owner carries lambdas that call back into this allocator; they are
+        // created here (a member function), so they may call the private free/retain below
+        auto const make_owner = [this](uint64_t const handle) {
+            return vk_buffer{handle,
+                             [this](uint64_t const h) { this->retain_buffer(h); },
+                             [this](uint64_t const h) { this->free_buffer(h); }};
+        };
+
         uint64_t handle = 0;
         // distribute() locks internally (enable_handle_distribute::access_mutex); no outer lock needed
         if (auto const result = this->distribute(); result) {
             handle = result.value();
         } else {
-            return handle;
+            return vk_buffer{}; // no handle left to hand out
         }
 
         auto const allocation_create_info = get_allocation_info_from_type(type);
@@ -743,7 +751,7 @@ namespace vulkan {
         if (result != VK_SUCCESS) {
             utility::error("Failed to create buffer: {}", static_cast<int>(result));
             this->recycle(handle);
-            return 0;
+            return vk_buffer{};
         }
 
         bool upload_success = false;
@@ -778,10 +786,18 @@ namespace vulkan {
             detail.allocation_info = alloc_info;
             this->buffers.emplace(handle, std::move(detail));
         }
-        return handle;
+        return make_owner(handle);
     }
 
-    uint64_t vma_allocator::create_image(unsigned char const* data, uint64_t const size_byte, image_create_info const& create_info, image_type const type) {
+    vk_image vma_allocator::create_image(unsigned char const* data, uint64_t const size_byte, image_create_info const& create_info, image_type const type) {
+        // the returned owner carries lambdas that call back into this allocator; they are
+        // created here (a member function), so they may call the private free/retain below
+        auto const make_owner = [this](uint64_t const handle) {
+            return vk_image{handle,
+                            [this](uint64_t const h) { this->retain_image(h); },
+                            [this](uint64_t const h) { this->free_image(h); }};
+        };
+
         // XXH3_64bits is pure CPU work; keep it outside the critical section. It is computed
         // before allocating so a content hit can reuse an existing image without any allocation
         // or upload. Empty images (data == nullptr, e.g. a depth shadow map that is rendered
@@ -801,7 +817,7 @@ namespace vulkan {
             for (auto& [existing_handle, detail] : this->images) {
                 if (detail.type == type && detail.create_info == create_info && detail.digest == digest) {
                     detail.use_count.fetch_add(1); // shared: bump the reference count and reuse
-                    return existing_handle;
+                    return make_owner(existing_handle);
                 }
             }
         }
@@ -811,7 +827,7 @@ namespace vulkan {
         if (auto const result = this->distribute(); result) {
             handle = result.value();
         } else {
-            return handle;
+            return vk_image{}; // no handle left to hand out
         }
 
         VkDeviceSize const image_size = size_byte;
@@ -852,7 +868,7 @@ namespace vulkan {
         if (vk_result != VK_SUCCESS) {
             utility::error("Failed to create image: {}", static_cast<int>(vk_result));
             this->recycle(handle);
-            return 0;
+            return vk_image{};
         }
 
         // Pick the upload path based on the type
@@ -877,7 +893,7 @@ namespace vulkan {
         if (!upload_success) {
             vmaDestroyImage(this->allocator, image, allocation);
             this->recycle(handle);
-            return 0;
+            return vk_image{};
         }
 
         {
@@ -892,7 +908,7 @@ namespace vulkan {
             detail.type = type;
             this->images.emplace(handle, std::move(detail));
         }
-        return handle;
+        return make_owner(handle);
     }
 
     buffer_detail const* vma_allocator::get_buffer_detail(uint64_t const handle) {
@@ -937,6 +953,22 @@ namespace vulkan {
         }
         vmaDestroyImage(this->allocator, it->second.image, it->second.allocation);
         this->images.erase(it);
+    }
+
+    void vma_allocator::retain_buffer(uint64_t const handle) {
+        std::lock_guard guard(this->access_mutex);
+        auto const it = this->buffers.find(handle);
+        if (it != this->buffers.end()) {
+            it->second.use_count.fetch_add(1); // one more shared owner
+        }
+    }
+
+    void vma_allocator::retain_image(uint64_t const handle) {
+        std::lock_guard guard(this->access_mutex);
+        auto const it = this->images.find(handle);
+        if (it != this->images.end()) {
+            it->second.use_count.fetch_add(1); // one more shared owner
+        }
     }
 
     std::pair<VkCommandPool, VkCommandBuffer> vma_allocator::create_command_pair() const {

@@ -97,31 +97,32 @@ namespace vulkan {
 
         // ---- shared scene resources (single flat descriptor set, see core::init_scene_layouts) ----
         // camera UBO: one buffer per frame slot, updated once per frame, shared by every primitive
-        std::vector<uint64_t> camera_buffer_handles = {};
+        std::vector<vk_buffer> camera_buffers = {};
         std::vector<void*> camera_mapped = {};
         // texture registry: flat entries of the set 0 binding 1 array (raw handles); the owning
-        // views / vma handles live in the vectors below. texture_slot_cache deduplicates uploads:
-        // several materials sharing one glTF texture (same decoded bytes) all point at the same
-        // array slot instead of uploading a copy per material.
+        // views / vma images live in the vectors below (vk_image RAII frees the GPU image when
+        // the runtime goes away). texture_slot_cache deduplicates uploads: several materials
+        // sharing one glTF texture (same decoded bytes) all point at the same array slot instead
+        // of uploading a copy per material.
         std::vector<VkImageView> texture_array_views = {};
         std::vector<vk_image_view> owned_texture_views = {};
-        std::vector<uint64_t> owned_texture_handles = {};
+        std::vector<vk_image> owned_textures = {};
         uint32_t white_texture_index = 0;
         std::map<std::tuple<unsigned char const*, std::size_t, VkFormat>, uint32_t> texture_slot_cache = {};
         // scene-wide IBL (bindings 2-4): prefiltered env / irradiance / BRDF LUT, uploaded once
         std::vector<vk_image_view> ibl_views = {};
-        std::vector<uint64_t> ibl_handles = {};
+        std::vector<vk_image> ibl_images = {};
         vk_sampler texture_sampler = {};
         vk_sampler env_sampler = {};
         // GPU material table (set 0 binding 5): one material_record per entry (texture indices +
         // factors + flags); primitives only push their material_index. Host-visible, written at
         // registration, read-only for the GPU.
-        uint64_t material_buffer_handle = 0;
+        vk_buffer material_buffer = {};
         void* material_mapped = nullptr;
         uint32_t material_count = 0;
         // per-instance transforms for instanced primitives (scene set binding 6): one mat4 per
         // instance, host-visible; filled by make_instanced_primitive()
-        uint64_t instance_buffer_handle = 0;
+        vk_buffer instance_buffer = {};
         void* instance_mapped = nullptr;
         // per-joint skin matrices (scene set binding 9): ONE buffer per frame slot, like the
         // camera UBO — each slot's scene set always points at its own buffer, so a frame being
@@ -129,13 +130,13 @@ namespace vulkan {
         // each, host-visible; indices 0-3 are the identity block (unskinned fallback),
         // per-skin joint blocks follow. Filled per frame by set_skin_matrices(); primitives
         // reference their block via material_push_constants::skin_base
-        std::vector<uint64_t> skin_buffer_handles = {};
+        std::vector<vk_buffer> skin_buffers = {};
         std::vector<void*> skin_mapped = {};
         // morph data (scene set binding 10): ONE buffer per frame slot, like the skin matrices.
         // scene_morph_capacity floats each, host-visible. The caller writes per-primitive blocks
         // (morph deltas + weights) through morph_scratch() and points primitives at them via
         // material_push_constants::morph_* fields
-        std::vector<uint64_t> morph_buffer_handles = {};
+        std::vector<vk_buffer> morph_buffers = {};
         std::vector<void*> morph_mapped = {};
         // per-slot scene descriptor sets: all pipelines share the scene layout, so every frame
         // slot gets one set from it. A set's per-slot bindings (0 camera / 8 shadow / 9 skin /
@@ -159,10 +160,10 @@ namespace vulkan {
         static constexpr uint32_t shadow_map_size = 2048;
         // One shadow map per frame slot: while slot A is in flight, slot B already rewrites its
         // own map, so the two never race on the same depth image
-        std::vector<uint64_t> shadow_image_handles = {}; // depth images, rendered into every frame
+        std::vector<vk_image> shadow_images = {}; // depth images, rendered into every frame
         std::vector<vk_image_view> shadow_image_views = {};
-        vk_sampler shadow_sampler = {};   // nearest + clamp-to-edge (manual PCF in pbr.frag)
-        uint64_t light_buffer_handle = 0; // host-visible light UBO (static content)
+        vk_sampler shadow_sampler = {}; // nearest + clamp-to-edge (manual PCF in pbr.frag)
+        vk_buffer light_buffer = {};    // host-visible light UBO (static content)
         void* light_mapped = nullptr;
         std::optional<vk_pipeline> shadow_pipeline = std::nullopt; // depth-only pass pipeline
         bool shadows_enabled = false;                              // true after enable_shadows() (light UBO filled + pipeline ready)

@@ -478,10 +478,11 @@ namespace vulkan {
     public:
         ~primitive() override = default;
 
-        // geometry: vma handles for release, detail pointers for access (no raw Vulkan objects)
-        uint64_t vertex_buffer_handle = 0;
+        // geometry: RAII owners (vk_buffer) release the GPU buffers on destruction; the detail
+        // pointers are cached accessors for binding (the allocator's objects outlive the tree)
+        vk_buffer vertex_buffer = {};
         buffer_detail const* vertex_detail = nullptr;
-        uint64_t index_buffer_handle = 0;
+        vk_buffer index_buffer = {};
         buffer_detail const* index_detail = nullptr;
         VkIndexType index_type = VK_INDEX_TYPE_UINT32;
         uint32_t index_count = 0;

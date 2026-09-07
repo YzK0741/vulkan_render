@@ -5,6 +5,7 @@ module;
 export module vulkan.core.vma;
 export import std;
 import utility;
+import vulkan.core.vma.handles; // vk_buffer / vk_image RAII owners (create_xxx returns these)
 
 /**
  * @file vma.cppm
@@ -157,6 +158,18 @@ namespace vulkan {
         std::mutex staging_mutex = {};
         uint32_t queue_family_index = 0;
 
+        // ---- ownership: release/retain are private - the only public way to release a
+        // buffer/image is to destroy (or reset) the vk_buffer / vk_image RAII owner that
+        // vma_allocator handed out. create_* injects lambdas (created inside this class,
+        // so they may call these) into those owners; raw-handle free calls are impossible
+        // from outside, which removes the leak/over-release paths of the old uint64 API.
+        // Shared (deduplicated) resources are reference-counted: free decrements and really
+        // destroys only the last reference; retain bumps the count for a shared owner.
+        void free_buffer(uint64_t handle);
+        void free_image(uint64_t handle);
+        void retain_buffer(uint64_t handle);
+        void retain_image(uint64_t handle);
+
         [[nodiscard]] VkFence create_fence() const;
         // Called while holding staging_mutex: reuse the cached buffer if large enough, else destroy and rebuild
         bool ensure_staging_buffer(VkDeviceSize size, VkBuffer& buffer, VmaAllocation& allocation, VmaAllocationInfo& info);
@@ -190,9 +203,10 @@ namespace vulkan {
          * @param data source bytes to upload
          * @param size_byte byte size of the data
          * @param type buffer usage type
-         * @return the buffer handle
+         * @return an owning vk_buffer (copying shares the buffer, destroying releases one
+         *         reference); empty when creation failed
          */
-        uint64_t create_buffer(unsigned char const* data, uint64_t size_byte, buffer_type type);
+        vk_buffer create_buffer(unsigned char const* data, uint64_t size_byte, buffer_type type);
 
         /**
          * @ingroup vulkan_vma
@@ -200,10 +214,10 @@ namespace vulkan {
          * @tparam T element type of the span
          * @param data source data to upload
          * @param type buffer usage type
-         * @return the buffer handle
+         * @return an owning vk_buffer (see create_buffer)
          */
         template <typename T>
-        uint64_t create_buffer(std::span<T> data, buffer_type const type) {
+        vk_buffer create_buffer(std::span<T> data, buffer_type const type) {
             return this->create_buffer(reinterpret_cast<unsigned char*>(data.data()), data.size_bytes(), type);
         }
 
@@ -214,10 +228,10 @@ namespace vulkan {
          * @tparam N element count of the span
          * @param data source data to upload
          * @param type buffer usage type
-         * @return the buffer handle
+         * @return an owning vk_buffer (see create_buffer)
          */
         template <typename T, std::size_t N>
-        uint64_t create_buffer(std::span<T, N> data, buffer_type const type) {
+        vk_buffer create_buffer(std::span<T, N> data, buffer_type const type) {
             return this->create_buffer(reinterpret_cast<unsigned char*>(data.data()), data.size_bytes(), type);
         }
 
@@ -228,9 +242,10 @@ namespace vulkan {
          * @param size_byte byte size of the data
          * @param create_info image width/height/format/mip levels etc.
          * @param type image usage type
-         * @return the image handle
+         * @return an owning vk_image (copying shares the image, destroying releases one
+         *         reference); empty when creation failed
          */
-        uint64_t create_image(unsigned char const* data, uint64_t size_byte, image_create_info const& create_info, image_type type);
+        vk_image create_image(unsigned char const* data, uint64_t size_byte, image_create_info const& create_info, image_type type);
 
         /**
          * @ingroup vulkan_vma
@@ -242,7 +257,7 @@ namespace vulkan {
          * @return the image handle
          */
         template <typename T>
-        uint64_t create_image(std::span<T> data, image_create_info create_info, image_type const type) {
+        vk_image create_image(std::span<T> data, image_create_info create_info, image_type const type) {
             return this->create_image(reinterpret_cast<unsigned char*>(data.data()), create_info, data.size_bytes(), type);
         }
 
@@ -254,10 +269,10 @@ namespace vulkan {
          * @param data source data to upload
          * @param create_info image width/height/format/mip levels etc.
          * @param type image usage type
-         * @return the image handle
+         * @return an owning vk_image (see create_image)
          */
         template <typename T, size_t N>
-        uint64_t create_image(std::span<T, N> data, image_create_info create_info, image_type const type) {
+        vk_image create_image(std::span<T, N> data, image_create_info create_info, image_type const type) {
             return this->create_image(reinterpret_cast<unsigned char*>(data.data()), create_info, data.size_bytes(), type);
         }
 
@@ -276,19 +291,5 @@ namespace vulkan {
          * @return pointer to the image detail, or nullptr if the handle is invalid
          */
         [[nodiscard]] image_detail const* get_image_detail(uint64_t handle);
-
-        /**
-         * @ingroup vulkan_vma
-         * @brief free a buffer by its handle, no-op if the handle is invalid
-         * @param handle the buffer handle
-         */
-        void free_buffer(uint64_t handle);
-
-        /**
-         * @ingroup vulkan_vma
-         * @brief free an image by its handle, no-op if the handle is invalid
-         * @param handle the image handle
-         */
-        void free_image(uint64_t handle);
     };
 } // namespace vulkan
