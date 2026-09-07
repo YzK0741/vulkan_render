@@ -6,8 +6,7 @@ export module vulkan.animation;
 
 import std;
 import gltf_loader;
-import utility.thread_pool; // per-frame sampling fan-out (a small 2-6 thread pool, not full core count)
-import vulkan.runtime;
+import vulkan.runtime; // frame-time parallel stages run on the runtime's shared pool (run_tasks)
 import vulkan.runtime.scene_tree;
 
 /**
@@ -135,10 +134,9 @@ namespace vulkan {
 
         vulkan::runtime* runtime = nullptr;
         glm::vec3 import_shift{};
-        // small sampling pool (2-6 threads, "lite" fan-out for heavy per-source sampling) +
-        // the worker count it was created with (thread_pool exposes no getter for it)
-        std::unique_ptr<utility::thread_pool> pool = nullptr;
-        unsigned pool_threads = 0;
+        // whether this scene's animation is heavy enough to fan sampling out over the runtime's
+        // shared task pool (many channels over many sources): decided in init(), used by update()
+        bool parallel_sampling = false;
         // source keys in stable order for parallel sampling (the source set is fixed after
         // init(); sample_keys mirrors source_nodes's keys so update() can slice them)
         std::vector<std::size_t> sample_keys = {};

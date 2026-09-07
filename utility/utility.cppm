@@ -7,6 +7,7 @@ export import std;
 export import utility.data_block;
 export import utility.bvh;
 export import utility.better_pmr;
+export import utility.thread_pool;
 
 /**
  * @file utility.cppm

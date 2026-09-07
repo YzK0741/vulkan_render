@@ -66,6 +66,24 @@ namespace {
 } // namespace
 
 namespace vulkan {
+    // Shared worker-pool sizing: hardware_concurrency()/4 (floor 1; fall back to 2 when the
+    // runtime cannot report the core count). A quarter keeps the pool off the frame thread's
+    // back while still giving heavy CPU stages (animation sampling fan-out) real parallelism.
+    int runtime::default_task_pool_threads() noexcept {
+        unsigned const hw = std::thread::hardware_concurrency();
+        return static_cast<int>(hw == 0 ? 2u : std::max(1u, hw / 4u));
+    }
+
+    // Run a batch of tasks on the shared pool and wait for exactly this priority group: the
+    // frame phases are synchronous (the paced slot is read right after animation sampling),
+    // so run_tasks blocks until every task in the batch finished.
+    void runtime::run_tasks(std::span<std::function<void()>> const tasks, int const priority) {
+        if (tasks.empty() || !this->task_pool.post_batch(tasks, priority)) {
+            return; // empty batch, or the pool is shut down (never in the running demo)
+        }
+        this->task_pool.wait_until_priority_done(priority);
+    }
+
     runtime::runtime()
         : runtime(core_create_info{}) {
     }

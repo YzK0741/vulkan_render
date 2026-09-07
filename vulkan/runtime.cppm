@@ -159,6 +159,14 @@ namespace vulkan {
         float shadow_depth_bias_slope = 1.5f;
         float shadow_depth_bias_clamp = 0.0f;
 
+        // shared CPU worker pool for frame-time parallel stages (run_tasks). Sized to the
+        // machine (hardware_concurrency()/4, floor 1) instead of per-consumer pools; tasks
+        // are grouped by priority so each consumer waits only for its own group. Declared
+        // before the scene/pipeline state so the pool outlives what tasks may touch (destructor
+        // order is reverse declaration: pipelines etc. go first, the pool joins last).
+        static int default_task_pool_threads() noexcept;
+        utility::thread_pool task_pool = utility::thread_pool{default_task_pool_threads()};
+
         std::mutex access_mutex;
         // string keys (not string_view): the runtime owns the pipeline names, so lookups
         // stay valid regardless of the caller's storage lifetime. std::less<> enables heterogeneous
@@ -306,6 +314,31 @@ namespace vulkan {
          *        shows only where the environment pass leaves the background uncovered)
          */
         glm::vec3 clear_color = glm::vec3(0.02f, 0.02f, 0.03f);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief run a batch of tasks on the runtime's shared worker pool and block until that
+         *        priority group finished. Frame-time parallel stages (the animation controller's
+         *        per-source sampling fan-out today, more later) submit their tasks here instead
+         *        of owning private pools, so all CPU parallelism shares one pool sized to the
+         *        machine (hardware_concurrency()/4 threads, floor 1).
+         * @param tasks the batch; each task runs exactly once on a pool worker
+         * @param priority group key: tasks of one caller should share a priority so
+         *        wait semantics only cover that group (see utility::thread_pool::wait_until_priority_done)
+         * @note synchronous: returns only after every task in the batch finished, which is what
+         *       the frame phases need (the paced slot is read right after animation sampling)
+         */
+        void run_tasks(std::span<std::function<void()>> tasks, int priority = 0);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief worker count of the shared task pool (what run_tasks() fans out over); callers
+         *        that need to slice their work across workers (e.g. the animation controller's
+         *        per-source sampling) size their slices to this
+         */
+        [[nodiscard]] int task_pool_threads() const noexcept {
+            return this->task_pool.thread_count();
+        }
 
         /**
          * @ingroup vulkan_runtime

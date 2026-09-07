@@ -79,27 +79,26 @@ namespace vulkan {
             utility::log("animation: playing '{}' ({} channels, {:.2f}s loop)", display_name(this->active->name), this->active->channels.size(), this->duration);
         }
 
-        // Sampling fan-out pool ("lite" version, not full core count): only when the animation
-        // is heavy enough that per-source sampling (each source scans all channels) is worth
-        // splitting across a few workers. 2-6 threads, sized to the machine; light animations
-        // (a handful of channels) stay on the caller thread - the pool sync would cost more
-        // than the work. utility::thread_pool has no thread-count getter, so keep ours.
+        // Parallel sampling decision ("lite" fan-out, not full core count): only when the
+        // animation is heavy enough that per-source sampling (each source scans all channels)
+        // is worth splitting across the runtime's shared task pool. Light animations (a handful
+        // of channels) stay on the caller thread - the pool sync would cost more than the work.
+        // The pool itself lives in the runtime (vulkan::runtime::run_tasks), so we only record
+        // the decision here + a stable source list to slice update()'s sampling over.
         {
             std::size_t max_channels = 0;
             for (gltf::animation const* playable : this->playable) {
                 max_channels = std::max(max_channels, playable->channels.size());
             }
             if (max_channels >= 32 && this->source_nodes.size() >= 64) {
-                unsigned const hw = std::thread::hardware_concurrency();
-                this->pool_threads = std::clamp(hw / 4u, 2u, 6u);
-                this->pool = std::make_unique<utility::thread_pool>(static_cast<int>(this->pool_threads));
-                // stable source list for slicing update()'s sampling across the workers
+                this->parallel_sampling = true;
+                // stable source list for slicing update()'s sampling across the pool workers
                 // (source_nodes is fixed after init; select() only swaps the active animation)
                 this->sample_keys.reserve(this->source_nodes.size());
                 for (auto const& [source, targets] : this->source_nodes) {
                     this->sample_keys.push_back(source);
                 }
-                utility::log("animation: sampling pool started ({} threads, {} channels / {} sources)", this->pool_threads, max_channels, this->sample_keys.size());
+                utility::log("animation: parallel sampling enabled ({} channels / {} sources, runtime task pool)", max_channels, this->sample_keys.size());
             }
         }
 
@@ -350,7 +349,7 @@ namespace vulkan {
         //    the scene node locals + the active slot's morph weights. Each source samples
         //    independently (channels are keyed by target node; only that source's own runtime
         //    nodes are written), so heavy animations fan the per-source sampling out over the
-        //    small pool while light ones stay on this thread.
+        //    runtime's shared task pool while light ones stay on this thread.
         if (this->active != nullptr) {
             if (this->playing) {
                 this->time += dt_seconds;
@@ -392,21 +391,25 @@ namespace vulkan {
             };
 
             bool changed = false;
-            if (this->pool != nullptr && !this->sample_keys.empty()) {
-                // slice the stable source list over the pool; each worker owns a contiguous
-                // range and reports whether it moved any node. Different sources touch
-                // different runtime nodes / morph offsets, so no shared state is written
-                // concurrently (debug_translation has one writer: its own source's slice).
+            if (this->parallel_sampling && !this->sample_keys.empty()) {
+                // slice the stable source list over the runtime's shared task pool; each worker
+                // owns a contiguous range and reports whether it moved any node. Different
+                // sources touch different runtime nodes / morph offsets, so no shared state is
+                // written concurrently (debug_translation has one writer: its own source's slice).
+                // run_tasks() is synchronous: this frame's sampling finishes before update()
+                // returns, exactly like the old private pool's post + wait_until_free().
                 std::size_t const total = this->sample_keys.size();
-                unsigned const workers = this->pool_threads;
+                unsigned const workers = std::max(1, this->runtime->task_pool_threads());
                 std::vector<std::atomic<bool>> slice_changed(workers);
+                std::vector<std::function<void()>> tasks;
+                tasks.reserve(workers);
                 for (unsigned w = 0; w < workers; ++w) {
                     std::size_t const begin = total * w / workers;
                     std::size_t const end = total * (w + 1) / workers;
                     if (begin >= end) {
                         continue;
                     }
-                    this->pool->post([this, &sample_source, begin, end, &slice_changed, w] {
+                    tasks.emplace_back([this, &sample_source, begin, end, &slice_changed, w] {
                         bool any = false;
                         for (std::size_t i = begin; i < end; ++i) {
                             std::size_t const source = this->sample_keys[i];
@@ -418,7 +421,7 @@ namespace vulkan {
                         slice_changed[static_cast<std::size_t>(w)].store(any);
                     });
                 }
-                this->pool->wait_until_free();
+                this->runtime->run_tasks(tasks);
                 for (std::atomic<bool> const& c : slice_changed) {
                     changed = changed || c.load();
                 }
