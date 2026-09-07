@@ -171,6 +171,11 @@ namespace vulkan {
         void retain_image(uint64_t handle);
 
         [[nodiscard]] VkFence create_fence() const;
+        // true when the memory type @p memory_type_index (a memory TYPE INDEX, resolved through
+        // VMA's memory table) is HOST_COHERENT, i.e. host writes need no vmaFlushAllocation.
+        // NOTE: VmaAllocationInfo::memoryType is an index, never a property bit mask - comparing
+        // it against VK_MEMORY_PROPERTY_* bits directly is a bug.
+        [[nodiscard]] bool is_host_coherent(uint32_t memory_type_index) const noexcept;
         // Called while holding staging_mutex: reuse the cached buffer if large enough, else destroy and rebuild
         bool ensure_staging_buffer(VkDeviceSize size, VkBuffer& buffer, VmaAllocation& allocation, VmaAllocationInfo& info);
         bool direct_upload(VmaAllocation const& allocation, VmaAllocationInfo& allocation_info, void const* data, uint64_t size) const;

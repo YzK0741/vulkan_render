@@ -106,8 +106,10 @@ export struct device_creation_info {
     queue_family_indices queue_families = {};
     std::vector<char const*> extensions = {};
     std::vector<char const*> validation_layers = {};
-    VkPhysicalDeviceFeatures device_features = {};
-    void const* pNext = nullptr; // for the Vulkan 1.1+ feature chain
+    // Feature chain head for vkCreateDevice: must be a VkPhysicalDeviceFeatures2 struct (e.g.
+    // device_capabilities::device_pnext()) whose .features carries the Vulkan 1.0 core features
+    // and whose pNext links the 1.1/1.2/... feature structs. pEnabledFeatures stays NULL.
+    void const* pNext = nullptr;
 };
 
 /**

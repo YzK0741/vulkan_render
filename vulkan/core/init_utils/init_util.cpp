@@ -91,7 +91,10 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
 }
 
 void const* device_capabilities::device_pnext() const noexcept {
-    return &this->features_1_1;
+    // Chain head is the VkPhysicalDeviceFeatures2 struct: its .features member carries the
+    // Vulkan 1.0 core features (fullDrawIndexUint32 etc.) that must be enabled via the pNext
+    // chain when pEnabledFeatures is NULL. The 1.1/1.2/... structs hang off its pNext.
+    return &this->features_2;
 }
 
 namespace {
@@ -305,17 +308,19 @@ logical_device create_logical_device(
 
     VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR fifo_latest_ready_features = {};
     fifo_latest_ready_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_MODE_FIFO_LATEST_READY_FEATURES_KHR;
-    VkPhysicalDeviceFeatures2 physical_device_features = {};
-    physical_device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    physical_device_features.pNext = &fifo_latest_ready_features;
-    vkGetPhysicalDeviceFeatures2(physical_device, &physical_device_features);
+    VkPhysicalDeviceFeatures2 probe_features = {};
+    probe_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    probe_features.pNext = &fifo_latest_ready_features;
+    vkGetPhysicalDeviceFeatures2(physical_device, &probe_features);
 
     // Create the device
     VkDeviceCreateInfo device_create_info = {};
     device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     device_create_info.queueCreateInfoCount = static_cast<uint32_t>(queue_create_infos.size());
     device_create_info.pQueueCreateInfos = queue_create_infos.data();
-    // Features go through the pNext chain (headed by VkPhysicalDeviceFeatures2).
+    // Features go through the pNext chain (headed by VkPhysicalDeviceFeatures2, provided by the
+    // caller through create_info.pNext - see device_capabilities::device_pnext(), which carries
+    // the 1.0 core features in features_2.features plus the 1.1/1.2/... structs behind it).
     // pEnabledFeatures must be NULL: with VkPhysicalDeviceFeatures2 / VkPhysicalDeviceVulkan11Features
     // in the chain, setting it violates VUID-VkDeviceCreateInfo-pNext-04748 / -02829.
     device_create_info.pEnabledFeatures = nullptr;
@@ -330,15 +335,16 @@ logical_device create_logical_device(
     device_create_info.ppEnabledLayerNames =
         create_info.validation_layers.empty() ? nullptr : create_info.validation_layers.data();
 
-    // Assemble the pNext chain: VkPhysicalDeviceFeatures2 (head, carries device_features) -> [FifoLatestReady] -> create_info.pNext (Vulkan11Features etc.)
-    physical_device_features.features = create_info.device_features;
+    // Assemble the pNext chain: the caller's feature chain (VkPhysicalDeviceFeatures2 head, which
+    // carries the queried 1.0 core + 1.1/1.2/... features) is the device chain. The optional
+    // FifoLatestReady extension feature (not part of the caller's chain) is prepended when the
+    // device exposes it, keeping the caller's Features2 head in the chain afterwards.
+    void const* chain_head = create_info.pNext;
     if (fifo_latest_ready_features.presentModeFifoLatestReady == VK_TRUE) {
-        fifo_latest_ready_features.pNext = const_cast<void*>(create_info.pNext);
-        physical_device_features.pNext = &fifo_latest_ready_features;
-    } else {
-        physical_device_features.pNext = const_cast<void*>(create_info.pNext);
+        fifo_latest_ready_features.pNext = const_cast<void*>(chain_head);
+        chain_head = &fifo_latest_ready_features;
     }
-    device_create_info.pNext = &physical_device_features;
+    device_create_info.pNext = chain_head;
 
     VkDevice device = {};
     VkResult const result = vkCreateDevice(physical_device, &device_create_info, nullptr, &device);

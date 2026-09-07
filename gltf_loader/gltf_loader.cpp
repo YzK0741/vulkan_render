@@ -401,13 +401,15 @@ namespace {
         gltf::scene result;
         result.name = asset.scenes[scene_index].name;
 
-        // DFS over the real node hierarchy (scene root -> node -> children), retaining the
-        // parent->child structure. Each node keeps its LOCAL transform (relative to its parent)
-        // plus the accumulated WORLD matrix; the DFS pre-order, the world computation and the
-        // mesh building are identical to the previous iterateSceneNodes-based flattening, so
-        // the drawable iterators (scenes::begin / drawable_iterator) yield exactly the same
-        // primitives in the same order with the same world matrices as before.
-        auto const build_node = [&result, &asset](auto&& self, std::size_t const node_index, fastgltf::math::fmat4x4 const& parent_world) -> void {
+        // Build one gltf::node per asset node, keeping the DFS pre-order the pool layout
+        // promises (a node is immediately followed by its whole subtree). The traversal is
+        // ITERATIVE with an explicit stack instead of recursion: a hostile file with a deeply
+        // nested / cyclic node graph must not overflow the call stack, and cycles must not loop
+        // forever. A child index outside asset.nodes is skipped, never dereferenced.
+        //
+        // Per-node conversion (name/TRS/meshes/weights) is identical to the recursive version.
+        // enter_node() appends the converted node to the pool and returns its pool index.
+        auto const enter_node = [&result, &asset](std::size_t const node_index, fastgltf::math::fmat4x4 const& parent_world) -> std::size_t {
             fastgltf::Node const& fnode = asset.nodes[node_index];
             fastgltf::math::fmat4x4 const world = fastgltf::getTransformMatrix(fnode, parent_world);
 
@@ -475,21 +477,65 @@ namespace {
             }
 
             result.nodes.push_back(std::move(current_node));
-            std::size_t const self_index = result.nodes.size() - 1;
-            // children are appended right after their parent (DFS pre-order), so child indices
-            // are always greater than self_index. Record the index each child WILL occupy
-            // BEFORE recursing: the recursive call appends the child's whole subtree, so after
-            // it returns the pool's last index is the subtree's last descendant, not the child.
-            for (std::size_t const child : fnode.children) {
-                std::size_t const child_index = result.nodes.size(); // child lands here first
-                self(self, child, world);
-                result.nodes[self_index].children.push_back(child_index);
+            return result.nodes.size() - 1;
+        };
+
+        // one DFS frame: the asset node being expanded + how many of its children are done.
+        // Its pool index is implicit: parent frames record the pool index each child will start
+        // at BEFORE the child subtree is appended (pre-order), so when a frame pops, the parent
+        // appends that recorded index to its children list.
+        struct frame {
+            std::size_t node_index = 0;      // asset node index
+            std::size_t child_i = 0;         // next child of asset.nodes[node_index].children
+            fastgltf::math::fmat4x4 world{}; // accumulated world of this node (for its children)
+        };
+        std::vector<frame> stack;
+        stack.reserve(64);
+        // asset node index -> its pool index (first occurrence). Guards against revisiting a
+        // node: a valid glTF tree never repeats a node; a cycle would otherwise loop forever.
+        std::unordered_map<std::size_t, std::size_t> node_pool_index;
+
+        // expand one node: append it (as a pool root or as the parent's next child) and push its
+        // frame. Returns the pool index the node occupies.
+        auto const expand = [&](std::size_t const node_index, std::size_t const parent_pool_index, fastgltf::math::fmat4x4 const& parent_world) -> bool {
+            if (node_index >= asset.nodes.size()) {
+                utility::log("gltf: out-of-range node reference {} (asset has {} nodes), skipping", node_index, asset.nodes.size());
+                return false;
             }
+            auto const [it, inserted] = node_pool_index.try_emplace(node_index, 0);
+            if (!inserted) {
+                utility::log("gltf: node {} referenced more than once (cyclic or shared graph), skipping the repeat", node_index);
+                return false;
+            }
+            std::size_t const pool_index = enter_node(node_index, parent_world);
+            it->second = pool_index;
+            if (parent_pool_index != std::numeric_limits<std::size_t>::max()) {
+                // pre-order: this node's pool index is the child slot of its parent
+                result.nodes[parent_pool_index].children.push_back(pool_index);
+            }
+            fastgltf::Node const& fnode = asset.nodes[node_index];
+            fastgltf::math::fmat4x4 const world = fastgltf::getTransformMatrix(fnode, parent_world);
+            stack.push_back(frame{node_index, 0, world});
+            return true;
         };
 
         for (std::size_t const root : asset.scenes[scene_index].nodeIndices) {
-            result.root_indices.push_back(result.nodes.size());
-            build_node(build_node, root, fastgltf::math::fmat4x4{});
+            // world starts from identity for scene roots
+            if (!expand(root, std::numeric_limits<std::size_t>::max(), fastgltf::math::fmat4x4{})) {
+                continue; // bad root reference: skip, keep the scene loadable
+            }
+            result.root_indices.push_back(result.nodes.size() - 1);
+            while (!stack.empty()) {
+                frame& top = stack.back();
+                fastgltf::Node const& fnode = asset.nodes[top.node_index];
+                if (top.child_i >= fnode.children.size()) {
+                    stack.pop_back(); // this node's subtree done
+                    continue;
+                }
+                std::size_t const child = fnode.children[top.child_i++];
+                // expand the child under this node (child's world = parent world * local)
+                expand(child, node_pool_index.at(top.node_index), top.world);
+            }
         }
         return result;
     }
@@ -1075,6 +1121,16 @@ namespace gltf {
         }
 
         Asset asset = std::move(asset_exp.get());
+
+        // Strict structural validation (node/mesh/skin/camera/accessor index bounds, extension
+        // consistency, sampler rules). Parser::loadGltf does NOT run this itself - without it a
+        // malformed file could drive out-of-bounds reads in the index-based loaders below
+        // (load_scene / load_animation / load_skin / load_primitive dereference raw asset
+        // indices). Cost is one O(n) pass over the parsed asset at load time.
+        if (fastgltf::Error const validation_error = fastgltf::validate(asset); validation_error != fastgltf::Error::None) {
+            utility::error("gltf validate err: {}", fastgltf::getErrorMessage(validation_error));
+            return std::unexpected(to_error_code(validation_error));
+        }
 
         scenes result;
         result.scene.reserve(asset.scenes.size());

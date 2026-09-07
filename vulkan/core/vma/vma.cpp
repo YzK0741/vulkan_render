@@ -360,6 +360,12 @@ namespace vulkan {
         this->command_cache.push_back(this->create_command_pair());
     }
 
+    bool vma_allocator::is_host_coherent(uint32_t const memory_type_index) const noexcept {
+        VkMemoryPropertyFlags properties = 0;
+        vmaGetMemoryTypeProperties(this->allocator, memory_type_index, &properties);
+        return (properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+    }
+
     void vma_allocator::destroy() {
         if (this->allocator != VK_NULL_HANDLE) {
             std::lock_guard guard(this->access_mutex);
@@ -458,7 +464,7 @@ namespace vulkan {
         memcpy(mapped_data, data, size);
 
         vmaGetAllocationInfo(this->allocator, allocation, &allocation_info);
-        if ((allocation_info.memoryType & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+        if (!this->is_host_coherent(allocation_info.memoryType)) {
             vmaFlushAllocation(this->allocator, allocation, 0, size);
         }
 
@@ -482,7 +488,7 @@ namespace vulkan {
         // Copy data
         if (staging_info.pMappedData) {
             memcpy(staging_info.pMappedData, data, size);
-            if ((staging_info.memoryType & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+            if (!this->is_host_coherent(staging_info.memoryType)) {
                 vmaFlushAllocation(this->allocator, staging_allocation, 0, size);
             }
         } else {
@@ -557,7 +563,7 @@ namespace vulkan {
 
         VmaAllocationInfo alloc_info;
         vmaGetAllocationInfo(this->allocator, allocation, &alloc_info);
-        if ((alloc_info.memoryType & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+        if (!this->is_host_coherent(alloc_info.memoryType)) {
             vmaFlushAllocation(this->allocator, allocation, 0, size);
         }
 
@@ -581,7 +587,7 @@ namespace vulkan {
         // Copy data into the staging buffer
         if (staging_info.pMappedData) {
             memcpy(staging_info.pMappedData, data, size);
-            if ((staging_info.memoryType & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+            if (!this->is_host_coherent(staging_info.memoryType)) {
                 vmaFlushAllocation(this->allocator, staging_allocation, 0, size);
             }
         } else {
