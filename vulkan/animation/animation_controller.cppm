@@ -6,7 +6,6 @@ export module vulkan.animation;
 
 import std;
 import gltf_loader;
-import vulkan.runtime.scene_tree; // scene + node/primitive types (the one structural dependency)
 
 /**
  * @file animation_controller.cppm
@@ -16,14 +15,18 @@ import vulkan.runtime.scene_tree; // scene + node/primitive types (the one struc
  *        evaluated T/R/S back into scene node locals, and rebuilding the per-frame skin
  *        matrices + morph weights into the host's per-slot buffers.
  *
- * The controller never depends on the concrete host class (vulkan::runtime): it talks to
- * whatever owns the scene through an injected animation_backend (callbacks + a scene&), so
- * the same controller can drive any host that provides the same surface. This module is the
- * only place that knows how glTF keyframes/skins/morph targets map onto a scene tree.
+ * The controller never depends on the concrete host class (vulkan::runtime) NOR on the
+ * host's scene-tree types (scene_node / primitive / push constants): it talks to whatever
+ * owns the scene through an injected animation_backend (opaque node handles, plain-data
+ * snapshots, numeric capacities and callbacks for the few mutations it performs), so the
+ * same controller can drive any host that provides the same surface - gltf_loader is the
+ * only other dependency (the animation data being played). This module is the only place
+ * that knows how glTF keyframes/skins/morph targets map onto a scene.
  *
- * Contract summary (mirrors make_primitive / import_scene / set_ibl):
- *   - init() registers materials/geometry state and writes every scene set's shared buffers,
- *     so call it before the first frame, or only while the runtime is idle.
+ * Contract summary:
+ *   - init() resolves the skin/morph rigs against the backend's scene and bakes static
+ *     data (identity skin block, morph deltas) into every frame slot's buffers; call it
+ *     before the first frame, or only while the host is idle.
  *   - update(dt) writes the paced frame slot's skin/morph buffers and scene node locals, so
  *     call it after the host paced a frame slot and before it records (after the slot's
  *     timeline wait).
@@ -31,16 +34,47 @@ import vulkan.runtime.scene_tree; // scene + node/primitive types (the one struc
 namespace vulkan {
     /**
      * @ingroup vulkan_animation
-     * @brief the host surface an animation_controller drives, injected at init(): the scene
-     *        tree it mutates plus callbacks for everything else it needs from the host.
-     *
-     * Kept deliberately narrow: only what per-frame glTF playback touches. The scene is a
-     * direct reference (animation must walk and edit nodes in place); the rest are callbacks
-     * so the controller does not depend on the host class - any object exposing the same
-     * surface can drive animations. assemble via the host side (see chores).
+     * @brief one node of the host scene as the controller sees it: an opaque handle plus the
+     *        identity bits animation needs (source node index, root flag). The host hands out
+     *        a snapshot of these at init(); handles stay valid while the tree is frozen.
+     */
+    export struct scene_node_info {
+        std::uint64_t id = 0;         // opaque handle; only meaningful to the backend
+        std::size_t source_index = 0; // asset node index this node was rebuilt from
+        bool is_root = false;         // scene root (import shift re-applied on local writes)
+    };
+
+    /**
+     * @ingroup vulkan_animation
+     * @brief the host surface an animation_controller drives, injected at init(). Everything
+     *        the controller needs from the host, expressed without host types: opaque node
+     *        handles, plain-data snapshots, numeric capacities, and callbacks for the few
+     *        mutations it performs (node locals, skin/morph block tags on the mesh leaves,
+     *        per-frame joint world collection). The host wires these to its scene tree +
+     *        frame-slot buffers + worker pool (see chores).
      */
     export struct animation_backend {
-        vulkan::scene_tree::scene* scene = nullptr; // tree to animate (nullptr = not bound)
+        // ---- capacities / constants (host provides; controller checks against them) ----
+        std::size_t morph_capacity = 0; // floats per frame-slot morph buffer
+        uint32_t skin_capacity = 0;     // mat4s per frame-slot skin buffer
+        uint32_t frames_in_flight = 0;  // frame slots (identity block baked into each)
+
+        // ---- scene tree access (opaque handles; valid while the tree stays frozen) ----
+        std::function<std::vector<scene_node_info>()> snapshot_nodes;        // all nodes, DFS pre-order
+        std::function<void(std::uint64_t, glm::mat4 const&)> set_node_local; // write one node's local
+        std::function<std::string_view(std::uint64_t)> node_name;            // debug labels
+
+        // ---- skin / morph block tagging (setup-time; host knows its leaf types) ----
+        // point every leaf of the skinned mesh node (its own leaf + "/prim" extra leaves) at
+        // @p block_base in the skin buffer
+        std::function<void(std::size_t mesh_source, uint32_t block_base)> assign_skin_block;
+        // leaves of one source with their vertex counts (for morph layout; "/prim" extras
+        // inherit their parent's source - resolved by the host)
+        std::function<std::vector<std::pair<std::uint64_t, uint32_t>>(std::size_t source)> morph_leaves;
+        // tag one morphable leaf's morph block start / target count / vertex count
+        std::function<void(std::uint64_t, uint32_t morph_base, uint32_t targets, uint32_t vertices)> set_morph_block;
+        // world matrices of the given asset node indices this frame (host walks its tree)
+        std::function<std::unordered_map<std::size_t, glm::mat4>(std::span<std::size_t const> sources)> collect_worlds;
 
         // ---- per-frame (active slot) access, used by update() ----
         std::function<float*()> morph_scratch_active;                             // host-visible morph scratch of the paced slot
@@ -54,11 +88,17 @@ namespace vulkan {
         std::function<void()> scene_changed;                             // node locals edited -> caller invalidates caches
         std::function<void(std::span<std::function<void()>>)> run_tasks; // fan tasks out on the host's worker pool (sync)
         std::function<int()> task_worker_count;                          // pool workers, for slicing fan-out tasks
+
+        /** @brief whether the backend is fully wired (snapshot + per-frame essentials) */
+        [[nodiscard]] bool valid() const noexcept {
+            return this->snapshot_nodes && this->set_node_local && this->morph_scratch_active &&
+                   this->set_skin_matrices_active && this->run_tasks;
+        }
     };
 
     /**
      * @ingroup vulkan_animation
-     * @brief one glTF animation + its playback state, applied to the scene tree
+     * @brief one glTF animation + its playback state, applied to the host scene
      */
     export class animation_controller {
     public:
@@ -66,12 +106,13 @@ namespace vulkan {
          * @ingroup vulkan_animation
          * @brief build the playback table and resolve the skin/morph rigs against the backend's
          *        scene: collect the playable (channel-bearing) animations and TRS base poses from
-         *        the loader, map asset node indices onto live scene nodes, bake the morph deltas
-         *        with their default weights into every frame slot's morph buffer and upload the
-         *        identity skin block into every slot's skin buffer. Skinned/morphable primitives
-         *        get their push.skin_base / push.morph_* fields set here.
+         *        the loader, map asset node indices onto live scene nodes (via the backend's
+         *        snapshot), bake the morph deltas with their default weights into every frame
+         *        slot's morph buffer and upload the identity skin block into every slot's skin
+         *        buffer. Skinned/morphable leaves get their block tags through the backend
+         *        (assign_skin_block / set_morph_block).
          * @param scenes the loaded glTF data (loader node pool + animations + skins + meshes)
-         * @param backend the host surface to drive (scene + per-slot callbacks; see animation_backend)
+         * @param backend the host surface to drive (snapshot + callbacks; see animation_backend)
          * @param import_shift translation the import applied to every scene ROOT node's local
          *        (animated roots must re-apply it, like import_scene did)
          * @note call before the first frame, or only while the host is idle (no frame in
@@ -115,8 +156,8 @@ namespace vulkan {
          *        import shift) and mark the scene changed, write the active frame slot's morph
          *        weights, then rebuild + upload the skin matrices into the active slot.
          * @param dt_seconds clock advance when playing (e.g. frame_clock::delta_seconds())
-         * @note call after runtime.pace_and_acquire() and before runtime.begin_recording(): the runtime's
-         *       per-slot buffers may only be written once pace_and_acquire() paced the slot.
+         * @note call after the host paced a frame slot and before it records (the host's
+         *       per-slot buffers may only be written once the slot is paced)
          */
         void update(float dt_seconds);
 
@@ -124,7 +165,7 @@ namespace vulkan {
 
         /** @brief loader nodes by asset node index (kept alive by @p scenes) */
         [[nodiscard]] std::unordered_map<std::size_t, gltf::node const*> const& get_loader_nodes() const noexcept;
-        /** @brief whether an asset node index occurs in the runtime scene tree */
+        /** @brief whether an asset node index occurs in the host scene */
         [[nodiscard]] bool has_runtime_node(std::size_t source) const noexcept;
 
         // ---- per-second diagnostics (demo log lines) ----
@@ -144,7 +185,7 @@ namespace vulkan {
 
     private:
         struct anim_target {
-            vulkan::scene_tree::scene_node* node = nullptr;
+            std::uint64_t node = 0; // opaque backend handle of a scene node
             bool scene_root = false;
         };
         struct skin_rig {
@@ -153,14 +194,13 @@ namespace vulkan {
             uint32_t block_base = 0;          // block start in the skin buffer (after identity)
         };
         struct morph_rig {
-            vulkan::primitive* prim = nullptr;
+            std::size_t source = 0; // owning loader node (weights animation target)
             uint32_t vertex_count = 0;
             uint32_t target_count = 0;
             uint32_t morph_base = 0; // float index into the morph buffer
-            std::size_t source = 0;  // owning loader node (weights animation target)
         };
 
-        animation_backend backend; // injected host surface (scene + callbacks); scene == nullptr when unbound
+        animation_backend backend; // injected host surface; valid() == false when unbound
         glm::vec3 import_shift{};
         // whether this scene's animation is heavy enough to fan sampling out over the backend's
         // shared task pool (many channels over many sources): decided in init(), used by update()
@@ -187,9 +227,8 @@ namespace vulkan {
         glm::vec3 skin_debug_translation{};
         std::string skin_debug_name = {};
         // asset node indices whose world matrix update() must collect each frame: every rig's
-        // mesh node plus every joint it references. Fixed after init(); the per-frame DFS only
-        // tests each visited node against this set (O(1) contains) instead of scanning every
-        // rig x joint pair per node.
+        // mesh node plus every joint it references. Fixed after init(); collected in one pass
+        // through the backend each frame (skin_sources is an O(1) membership set).
         std::unordered_set<std::size_t> skin_sources = {};
 
         // the node reported per second: prefer a translation channel target, fall back to the
