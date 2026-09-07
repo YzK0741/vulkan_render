@@ -138,6 +138,85 @@ namespace vulkan {
         return name.empty() ? std::string_view("<unnamed>") : name;
     }
 
+    // The animation_source concept is STRUCTURAL over the member shapes below (mirroring how
+    // scene_tree constrains its iterators): a loader satisfies it with its own pure-CPU types,
+    // no shared type identity required. The init template converts the read values into the
+    // controller's anim:: structures. Element-level shapes are separate *_source concepts so
+    // the top-level one stays readable.
+
+    /** @brief one sampler of a playable clip: keyframe times + flat values + per-key shape */
+    export template <class T>
+    concept animation_sampler_source = requires(T const& s) {
+        requires std::ranges::range<decltype(s.times)>;         // keyframe times
+        typename std::ranges::range_value_t<decltype(s.times)>; //   (float keys)
+        requires std::convertible_to<std::ranges::range_value_t<decltype(s.times)>, float>;
+        requires std::ranges::range<decltype(s.values)>;         // flat keyframe values
+        typename std::ranges::range_value_t<decltype(s.values)>; //   (float values)
+        requires std::convertible_to<std::ranges::range_value_t<decltype(s.values)>, float>;
+        { s.per_key } -> std::convertible_to<std::size_t>;                       // values per keyframe
+        requires std::is_enum_v<std::remove_cvref_t<decltype(s.interpolation)>>; // interpolation mode
+    };
+
+    /** @brief one channel of a playable clip: property path + sampler + target node */
+    export template <class T>
+    concept animation_channel_source = requires(T const& c) {
+        requires std::is_enum_v<std::remove_cvref_t<decltype(c.path)>>; // property path
+        { c.sampler } -> std::convertible_to<std::size_t>;              // sampler index
+        { c.target_node } -> std::convertible_to<std::size_t>;          // animated node
+    };
+
+    /** @brief one playable clip: name + samplers + channels */
+    export template <class T>
+    concept animation_clip_source = requires(T const& a) {
+        { a.name } -> std::convertible_to<std::string_view>; // clip name
+        requires std::ranges::range<decltype(a.samplers)>;
+        typename std::ranges::range_value_t<decltype(a.samplers)>;
+        requires animation_sampler_source<std::ranges::range_value_t<decltype(a.samplers)>>;
+        requires std::ranges::range<decltype(a.channels)>;
+        typename std::ranges::range_value_t<decltype(a.channels)>;
+        requires animation_channel_source<std::ranges::range_value_t<decltype(a.channels)>>;
+    };
+
+    /** @brief one skin: name + joint list + inverse bind matrices */
+    export template <class T>
+    concept animation_skin_source = requires(T const& k) {
+        { k.name } -> std::convertible_to<std::string_view>;
+        requires std::ranges::range<decltype(k.joints)>;
+        typename std::ranges::range_value_t<decltype(k.joints)>;
+        requires std::convertible_to<std::ranges::range_value_t<decltype(k.joints)>, std::size_t>;
+        requires std::ranges::range<decltype(k.inverse_bind_matrices)>;
+        typename std::ranges::range_value_t<decltype(k.inverse_bind_matrices)>;
+        requires std::convertible_to<std::ranges::range_value_t<decltype(k.inverse_bind_matrices)>, glm::mat4>;
+    };
+
+    /** @brief one mesh's primitive: base attributes (POSITION etc.) + morph targets */
+    export template <class T>
+    concept animation_primitive_source = requires(T const& p) {
+        requires std::ranges::range<decltype(p.vertex)>;  // base attribute map (POSITION lookup)
+        requires std::ranges::range<decltype(p.targets)>; // morph targets (may be empty)
+    };
+
+    /** @brief one mesh of a node: primitives (morph deltas) + default morph weights */
+    export template <class T>
+    concept animation_mesh_source = requires(T const& m) {
+        requires std::ranges::range<decltype(m.primitives)>;
+        typename std::ranges::range_value_t<decltype(m.primitives)>;
+        requires animation_primitive_source<std::ranges::range_value_t<decltype(m.primitives)>>;
+        requires std::ranges::range<decltype(m.weights)>; // default morph weights
+    };
+
+    /** @brief one node's metadata: TRS base pose + optional skin ref + attached meshes */
+    export template <class T>
+    concept animation_node_source = requires(T const& n) {
+        { n.translation } -> std::convertible_to<glm::vec3>;
+        { n.rotation } -> std::convertible_to<glm::quat>;
+        { n.scale } -> std::convertible_to<glm::vec3>;
+        n.skin_index;                                    // optional asset-node index of the skin driving this node's mesh
+        requires std::ranges::range<decltype(n.meshes)>; // meshes carry morph delta data
+        typename std::ranges::range_value_t<decltype(n.meshes)>;
+        requires animation_mesh_source<std::ranges::range_value_t<decltype(n.meshes)>>;
+    };
+
     /**
      * @ingroup vulkan_animation
      * @brief an animation data source: what animation_controller::init() needs from a loaded
@@ -151,10 +230,15 @@ namespace vulkan {
      */
     export template <class S>
     concept animation_source = requires(S const& s) {
-        s.animations;     // range of {name, samplers (times/values/per_key/interpolation), channels (path/sampler/target_node)}
-        s.skins;          // range of {name, joints, inverse_bind_matrices}
-        s.node_by_source; // map<asset_node_index, node const*>; node: {translation, rotation, scale,
-                          //   skin_index (optional), meshes: range of {primitives (vertex/targets), weights}}
+        requires std::ranges::range<decltype(s.animations)>; // playable clips
+        typename std::ranges::range_value_t<decltype(s.animations)>;
+        requires animation_clip_source<std::ranges::range_value_t<decltype(s.animations)>>;
+        requires std::ranges::range<decltype(s.skins)>; // skins (may be empty)
+        typename std::ranges::range_value_t<decltype(s.skins)>;
+        requires animation_skin_source<std::ranges::range_value_t<decltype(s.skins)>>;
+        requires std::ranges::range<decltype(s.node_by_source)>;                                  // asset node index -> node*
+        typename std::tuple_element_t<1, std::ranges::range_value_t<decltype(s.node_by_source)>>; // node const*
+        requires animation_node_source<std::remove_pointer_t<std::tuple_element_t<1, std::ranges::range_value_t<decltype(s.node_by_source)>>>>;
     };
 
     /**
