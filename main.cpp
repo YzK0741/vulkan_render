@@ -7,6 +7,7 @@ import chores; // demo bootstrap helpers (shader loading / dir locating / pipeli
 import gltf_loader;
 import utility;
 import utility.frame_clock; // per-frame stamp: cheap time reads for (future) parallel workers / animation
+import utility.frame_stats; // rolling fps window: smoothed overlay value + once-per-second report
 import vulkan.animation;    // animation_controller: glTF playback / skinning / morphs on the runtime tree
 import vulkan.math;
 import vulkan.runtime.scene_tree; // scene storage + GPU primitives (was vulkan.model)
@@ -219,10 +220,10 @@ int main(int argc, char** argv) {
         }
     }
 
-    // FPS statistics: accumulate frame times, report once per second (log + window title)
-    std::chrono::steady_clock::time_point last_frame_time = std::chrono::steady_clock::now();
-    double fps_elapsed = 0.0;
-    uint32_t fps_frame_count = 0;
+    // FPS statistics (utility.frame_stats): a rolling one-second window of frame gaps.
+    // tick() once per presented frame, on_skipped() on minimized/recreate iterations, and
+    // the once-per-second report (log + the overlay's smoothed value) keys off window_rolled().
+    utility::frame_stats frame_stats;
 
     // ---- keyframe animation playback + skinning + morph targets (vulkan.animation) ----
     // The controller owns playback (sampling + writing node locals), the skin rigs (per-frame
@@ -347,9 +348,9 @@ int main(int argc, char** argv) {
             break;
         }
         if (polled == vulkan::frame_status::skipped) {
-            // Minimized: skip this frame's CPU work too; keep the FPS timer fresh so the pause
+            // Minimized: skip this frame's CPU work too; refresh the fps baseline so the pause
             // is not counted as one huge rendered frame.
-            last_frame_time = std::chrono::steady_clock::now();
+            frame_stats.on_skipped();
             std::this_thread::yield();
             continue;
         }
@@ -365,13 +366,14 @@ int main(int argc, char** argv) {
         }
         if (paced == vulkan::frame_status::skipped) {
             // Swapchain recreated during acquire: retry next iteration
-            last_frame_time = std::chrono::steady_clock::now();
+            frame_stats.on_skipped();
             std::this_thread::yield();
             continue;
         }
         if (spin_scene) {
-            // rotate the whole scene around scene_sink (its own center): shadows stay valid
-            spin_angle += 0.6 * std::chrono::duration<double>(std::chrono::steady_clock::now() - last_frame_time).count();
+            // rotate the whole scene around scene_sink (its own center): shadows stay valid.
+            // dt = frame_clock's last stamp gap (one frame of real time)
+            spin_angle += 0.6 * frame_clock.delta_seconds();
             glm::mat4 const center = glm::translate(glm::mat4(1.0f), scene_sink);
             runtime.set_scene_transform(center * glm::rotate(glm::mat4(1.0f), static_cast<float>(spin_angle), glm::vec3(0.0f, 1.0f, 0.0f)) * glm::inverse(center));
         }
@@ -379,7 +381,7 @@ int main(int argc, char** argv) {
             // rotate ONE node's local transform about its own position (pivot in parent space):
             // the leaf primitive under it spins in place while sibling nodes stay put — the scene
             // tree's per-node locals make whole-group AND per-primitive transforms possible.
-            spin_angle += 0.6 * std::chrono::duration<double>(std::chrono::steady_clock::now() - last_frame_time).count();
+            spin_angle += 0.6 * frame_clock.delta_seconds();
             glm::mat4 const pivot = glm::translate(glm::mat4(1.0f), subtree_pivot);
             subtree_node->local = pivot * glm::rotate(glm::mat4(1.0f), static_cast<float>(spin_angle), glm::vec3(0.0f, 1.0f, 0.0f)) * glm::inverse(pivot) * subtree_local0;
             runtime.scene_changed(); // edited node.local directly -> culling BVH must track it
@@ -409,7 +411,7 @@ int main(int argc, char** argv) {
         }
         if (result == vulkan::frame_status::skipped) {
             // present reported the swapchain out of date / recreated it: retry next iteration
-            last_frame_time = std::chrono::steady_clock::now();
+            frame_stats.on_skipped();
             std::this_thread::yield();
             continue;
         }
@@ -417,19 +419,15 @@ int main(int argc, char** argv) {
         // A frame was presented: publish its stamp for cheap readers (frame_clock)
         frame_clock.stamp();
 
-        // proceed: frame time = wall time since the previous rendered frame
-        auto const now = std::chrono::steady_clock::now();
-        fps_elapsed += std::chrono::duration<double>(now - last_frame_time).count();
-        last_frame_time = now;
-        ++fps_frame_count;
+        // fps statistics: accumulate the frame gap into the rolling window
+        frame_stats.tick();
         if (use_gui) {
-            gui.fps = fps_frame_count / fps_elapsed; // smooth per-second value for the overlay
+            gui.fps = frame_stats.smoothed_fps(); // live smoothed value for the overlay
         }
-        if (fps_elapsed >= 1.0) {
-            double const fps = fps_frame_count / fps_elapsed;
-            // fps is shown inside the ImGui overlay (when enabled); the log line stays for
-            // headless / non-gui runs
-            utility::log("fps: {:.1f} ({:.2f} ms/frame)", fps, 1000.0 * fps_elapsed / fps_frame_count);
+        if (frame_stats.window_rolled()) {
+            // once per second: the fps log line stays for headless / non-gui runs; the overlay
+            // shows the same number via smoothed_fps()
+            utility::log("fps: {:.1f} ({:.2f} ms/frame)", frame_stats.window_fps(), frame_stats.window_frame_ms());
             if (animation.has_active()) {
                 // report the playback clock + the first animated node's evaluated translation
                 // (proves the keyframes are actually moving the tree)
@@ -444,8 +442,6 @@ int main(int argc, char** argv) {
                 utility::log("  skin '{}': last joint world x-axis ({:.3f}, {:.3f}, {:.3f})", animation.get_skin_debug_name(),
                              animation.get_skin_debug_translation().x, animation.get_skin_debug_translation().y, animation.get_skin_debug_translation().z);
             }
-            fps_elapsed = 0.0;
-            fps_frame_count = 0;
         }
     }
 

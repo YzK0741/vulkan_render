@@ -68,6 +68,7 @@ target_sources(utility
         utility/BVH/bvh.cppm
         utility/better_pmr/better_pmr.cppm
         utility/frame_clock/frame_clock.cppm
+        utility/frame_stats/frame_stats.cppm
         utility/thread_pool/thread_pool.cppm
         PRIVATE
         utility/utility.cpp
