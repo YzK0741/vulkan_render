@@ -7,8 +7,22 @@ set(CMAKE_CXX_FLAGS "-std=c++23")
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Vulkan REQUIRED)
-find_package(glfw3 REQUIRED)
 find_package(glm REQUIRED)
+
+# GLFW (window + input): linked STATICALLY so the released exe carries no glfw3.dll.
+# The MSYS2 clang64 package's own CMake config exports a SHARED import (libglfw3.dll.a),
+# so we do not use find_package(glfw3): a plain INTERFACE target linking the bare name
+# resolves to the static archive once the executable links with -static (see below), and
+# crucially does NOT define GLFW_DLL (the dynamic-import macro static builds must not see).
+# Headers live on the compiler's implicit include path; an explicit dir is added when found.
+add_library(glfw INTERFACE)
+if(WIN32)
+    target_link_libraries(glfw INTERFACE glfw3 gdi32) # glfw3.pc: Libs.private = -lgdi32
+else()
+    find_package(Threads REQUIRED)
+    find_library(GLFW_LIBRARY NAMES glfw3 REQUIRED)
+    target_link_libraries(glfw INTERFACE ${GLFW_LIBRARY} Threads::Threads)
+endif()
 
 set(COMPILE_OPTIONS
         $<$<CONFIG:Release>:
@@ -324,6 +338,15 @@ target_link_libraries(${PROJECT_NAME}
         std_lib
         glm::glm
         imgui
+)
+
+# Release on Windows (MSYS2 clang64) links fully static (-static): libc++.a / libc++abi.a /
+# libunwind.a and libglfw3.a are resolved by the bare names above, so the shipped exe is a
+# single file (only the OS's own DLLs - kernel32, the UCRT, the Vulkan loader - remain
+# dynamic). Debug stays dynamic for faster dev iteration; POSIX builds stay dynamic (system
+# distro packages are shared objects; static glibc would need extra dev packages).
+target_link_options(${PROJECT_NAME} PRIVATE
+        $<$<AND:$<CONFIG:Release>,$<PLATFORM_ID:Windows>>:-static>
 )
 
 target_compile_options(std_lib PRIVATE

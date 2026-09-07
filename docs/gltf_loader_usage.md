@@ -1,7 +1,7 @@
 # gltf_loader Usage Guide
 
 > CPU-side module for loading glTF / GLB files, with no Vulkan dependency.
-> Backend: [fastgltf](https://github.com/spnda/fastgltf) (installed as an MSYS2 clang64 package on this machine — `libfastgltf.dll` + `libsimdjson.dll`), textures decoded with stb_image.
+> Backend: [fastgltf](https://github.com/spnda/fastgltf) (vendored under `third_party/fastgltf`, compiled from source into a `fastgltf_vendored` static target together with simdjson), textures decoded with stb_image.
 
 - Language standard: C++23 (C++20 module)
 - Public interface: `gltf_loader/gltf_loader.cppm` (`import gltf_loader;`)
@@ -228,7 +228,7 @@ Vertex buffers can be uploaded by memcpy'ing the raw bytes directly, provided th
 ## 7. Notes and Limitations
 
 - The module is compiled with `-fno-exceptions`: fastgltf reports errors via `Expected` and never throws.
-- Runtime dependencies: `libfastgltf.dll`, `libsimdjson.dll` (both in `C:\msys64\clang64\bin`; must be on PATH).
+- Runtime dependencies: none beyond the OS — fastgltf/simdjson are compiled into the executable from `third_party/`, and the Windows Release exe is fully static.
 - Static render data (meshes, vertices/indices, textures, materials), **keyframe animations** (§8), **skins** (§9) and **morph targets** (§10) are exported. Non-indexed glTF primitives are supported: the loader synthesizes a sequential uint32 index buffer.
 - Cameras and punctual lights (KHR_lights_punctual) are exported too: `scenes.cameras` / `scenes.lights` hold the file's cameras and lights in glTF order, and each node records its attachment through `camera_index` / `light_index`. Authored cameras are consumed in `main.cpp` as orbit-camera viewpoint seeds (gui "camera" selector); punctual lights are imported, but the demo still shades with the fixed analytic sun, so they do not drive lighting yet.
 - `log_scene_diagnostics(scenes)` is a one-call diagnostic dump: it logs the contents summary (textures/materials/primitives), the world AABB framing numbers (min/max/center/radius), the retained hierarchy shape (per-node tree lines) and the animations/skins/morph targets/cameras/lights present in the file, and returns the `scene_bounds` (panics when the model has no drawable primitives). `main.cpp` calls it once after loading, before framing the orbit camera.

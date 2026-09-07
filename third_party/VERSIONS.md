@@ -94,3 +94,22 @@ are not listed here.
   the SDK's `Include/vma` because Linux distro Vulkan packages do not ship
   VMA at all.
 - license: MIT (see the header's license comment)
+
+## mimalloc
+
+- version: 3.4.4 (`MI_MALLOC_VERSION 30404` in
+  `third_party/mimalloc/include/mimalloc.h`; release tag `v3.4.4`)
+- upstream: https://github.com/microsoft/mimalloc
+- local changes: none - the release tree is vendored as-is (only `include/`
+  + the upstream `mi_sources` set under `src/`; tests/docs/CMake machinery
+  are not needed for a static target)
+- build: the upstream static-library source set (alloc.c ... threadlocal.c
+  + `src/prim/prim.c`) compiles into a plain-C `mimalloc_vendored` static
+  target; headers are SYSTEM so the `-Werror` consumers that include
+  `<mimalloc.h>` do not see upstream warnings. `utility.better_pmr` routes
+  every `std::pmr` allocation through it (`mi_aligned_alloc` /
+  `mi_free_aligned`).
+- note: vendored so the project needs no system mimalloc (previously the
+  MSYS2 package's `libmimalloc.dll` was linked); the Windows Release exe is
+  fully static, so this dll dependency is gone entirely.
+- license: MIT (`LICENSE` in the subtree)
