@@ -6,6 +6,7 @@ module;
 
 module vulkan.animation;
 
+import std;
 import utility;
 
 namespace vulkan {
@@ -15,9 +16,9 @@ namespace vulkan {
         // loop / fmod by zero) - a real animation shorter than 1s must keep its own duration
         // (e.g. Fox's Walk is 0.708s; flooring it to 1.0 would freeze the last 0.29s of every
         // loop on the end pose before wrapping).
-        float animation_duration(gltf::animation const& animation) {
+        float animation_duration(anim::animation const& animation) {
             float duration = 0.0f;
-            for (gltf::animation_sampler const& sampler : animation.samplers) {
+            for (anim::sampler const& sampler : animation.samplers) {
                 if (!sampler.times.empty()) {
                     duration = std::max(duration, sampler.times.back());
                 }
@@ -29,6 +30,151 @@ namespace vulkan {
             return name.empty() ? std::string_view("<unnamed>") : name;
         }
     } // namespace
+
+    // ---- vulkan::anim sampling (format-neutral keyframe evaluation; glTF rules) ----
+
+    anim::channel_sample anim::sample_channel(anim::sampler const& sampler, anim::channel_path const path, float const t) {
+        anim::channel_sample out = {};
+        std::size_t const keys = sampler.times.size();
+        if (keys == 0) {
+            return out; // no keyframes: nothing to sample
+        }
+        // values per keyframe: the sampler records it (morph-weights channels vary per mesh);
+        // fall back to the path rule when a sampler carries no per_key shape
+        std::size_t comps = sampler.per_key;
+        if (comps == 0) {
+            comps = path == anim::channel_path::rotation ? 4 : 3;
+        }
+        bool const cubic = sampler.interp == anim::interpolation::cubic_spline;
+        std::size_t const stored_per_key = comps * (cubic ? 3 : 1);
+        if (sampler.values.size() < keys * stored_per_key) {
+            return out; // value count does not match the key count: broken sampler
+        }
+        out.valid = true;
+
+        // read one key's block: 'offset' selects the value triplet (0 for linear, comps for the
+        // middle value triplet of a cubic block) or a tangent (comps / 2 * comps of a cubic block)
+        auto const read_block = [&](std::size_t const key, std::size_t const offset, std::vector<float>& block) {
+            block.resize(comps);
+            std::size_t const base = key * stored_per_key + offset;
+            for (std::size_t c = 0; c < comps; ++c) {
+                block[c] = sampler.values[base + c];
+            }
+        };
+        auto const assign = [&](std::vector<float> const& block) {
+            if (path == anim::channel_path::rotation) {
+                out.quat = glm::quat(block[3], block[0], block[1], block[2]); // glm ctor order (w, x, y, z)
+            } else if (path == anim::channel_path::weights) {
+                out.scalars = block; // one value per morph target
+            } else {
+                out.vec3 = glm::vec3(block[0], block[1], block[2]);
+            }
+        };
+
+        // clamp t into the keyframe range, then find the left key: times[key] <= t < times[key + 1]
+        float const time = std::clamp(t, sampler.times.front(), sampler.times.back());
+        std::size_t key = 0;
+        while (key + 1 < keys && sampler.times[key + 1] <= time) {
+            ++key;
+        }
+        auto const hold_key = [&] {
+            std::vector<float> value;
+            read_block(key, cubic ? comps : 0, value);
+            assign(value);
+        };
+
+        // STEP interpolation and the range end hold the left key's value
+        if (sampler.interp == anim::interpolation::step || key + 1 >= keys) {
+            hold_key();
+            return out;
+        }
+
+        float const dt = sampler.times[key + 1] - sampler.times[key];
+        if (dt <= 0.0f) { // duplicate timestamps (invalid per the spec): hold the key's value
+            hold_key();
+            return out;
+        }
+        float const u = (time - sampler.times[key]) / dt;
+
+        std::vector<float> a;
+        std::vector<float> b;
+        read_block(key, cubic ? comps : 0, a);
+        read_block(key + 1, cubic ? comps : 0, b);
+
+        if (cubic) {
+            // Hermite spline over the segment; tangents are scaled by the segment duration
+            std::vector<float> out_tangent;
+            std::vector<float> in_tangent;
+            read_block(key, 2 * comps, out_tangent);
+            read_block(key + 1, 0, in_tangent);
+            float const h00 = 2.0f * u * u * u - 3.0f * u * u + 1.0f;
+            float const h10 = u * u * u - 2.0f * u * u + u;
+            float const h01 = -2.0f * u * u * u + 3.0f * u * u;
+            float const h11 = u * u * u - u * u;
+            std::vector<float> value(comps);
+            for (std::size_t c = 0; c < comps; ++c) {
+                value[c] = h00 * a[c] + h10 * dt * out_tangent[c] + h01 * b[c] + h11 * dt * in_tangent[c];
+            }
+            if (path == anim::channel_path::rotation) {
+                // component-wise spline over the quaternion, then normalize (per the spec)
+                glm::quat const q(value[3], value[0], value[1], value[2]);
+                float const norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+                out.quat = norm > 0.0f ? glm::normalize(q) : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            } else {
+                assign(value);
+            }
+            return out;
+        }
+
+        // LINEAR
+        if (path == anim::channel_path::rotation) {
+            glm::quat const q0(a[3], a[0], a[1], a[2]);
+            glm::quat q1(b[3], b[0], b[1], b[2]);
+            if (glm::dot(q0, q1) < 0.0f) {
+                q1 = glm::quat(-q1.w, -q1.x, -q1.y, -q1.z); // shortest arc: flip one endpoint
+            }
+            out.quat = glm::normalize(glm::slerp(q0, q1, u));
+        } else {
+            std::vector<float> value(comps);
+            for (std::size_t c = 0; c < comps; ++c) {
+                value[c] = a[c] + (b[c] - a[c]) * u;
+            }
+            assign(value);
+        }
+        return out;
+    }
+
+    anim::node_pose anim::sample_node(anim::animation const& animation, std::size_t const target_node, anim::node_pose const& base, float const t) {
+        anim::node_pose pose = base;
+        for (anim::channel const& channel : animation.channels) {
+            if (channel.target_node != target_node || channel.sampler >= animation.samplers.size()) {
+                continue;
+            }
+            anim::channel_sample const sample = sample_channel(animation.samplers[channel.sampler], channel.path, t);
+            if (!sample.valid) {
+                continue;
+            }
+            switch (channel.path) {
+            case anim::channel_path::translation:
+                pose.translation = sample.vec3;
+                pose.any_transform = true;
+                break;
+            case anim::channel_path::rotation:
+                pose.rotation = sample.quat;
+                pose.any_transform = true;
+                break;
+            case anim::channel_path::scale:
+                pose.scale = sample.vec3;
+                pose.any_transform = true;
+                break;
+            case anim::channel_path::weights:
+                pose.weights = sample.scalars; // active morph weights for the node's mesh
+                break;
+            }
+            pose.any_channel = true;
+        }
+        return pose;
+    }
 
     // ---- init: playback table + rig resolution + static buffer bakes ----
 
@@ -44,35 +190,58 @@ namespace vulkan {
             this->source_nodes[it->source_index].push_back(anim_target{&*it, /*scene_root=*/it.depth() == 0});
         }
 
-        // TRS base pose + loader node per TREE node: look each tree node's asset source up in
-        // the loader's asset-level node table (scenes::node_by_source) instead of iterating the
-        // loader's per-scene node pools - a node referenced by several scenes has identical
-        // copies, and the tree only contains the nodes that were actually imported.
+        // TRS base pose per TREE node: look each tree node's asset source up in the loader's
+        // asset-level node table (scenes::node_by_source) instead of iterating the loader's
+        // per-scene node pools - a node referenced by several scenes has identical copies, and
+        // the tree only contains the nodes that were actually imported. The pose is
+        // value-copied into the controller's own anim::node_pose (no glTF type retained).
         for (auto const& [source, targets] : this->source_nodes) {
             auto const loader_it = scenes.node_by_source.find(source);
             if (loader_it == scenes.node_by_source.end()) {
                 continue; // synthesized tree node (e.g. an extra "/prim" leaf) has no loader node
             }
             gltf::node const& loader_node = *loader_it->second;
-            this->base_poses.try_emplace(source,
-                                         gltf::node_pose{.translation = loader_node.translation,
-                                                         .rotation = loader_node.rotation,
-                                                         .scale = loader_node.scale});
-            this->loader_nodes.try_emplace(source, &loader_node);
+            anim::node_pose base = {};
+            base.translation = loader_node.translation;
+            base.rotation = loader_node.rotation;
+            base.scale = loader_node.scale;
+            this->base_poses.try_emplace(source, std::move(base));
         }
 
-        // playable table: channel-bearing animations, in glTF order; auto-pick the first
+        // playable table: channel-bearing animations, in source order, VALUE-COPIED into the
+        // controller's own anim::animation structures (samplers/channels converted once, so
+        // playback never touches the glTF data afterwards); auto-pick the first
         for (gltf::animation const& candidate : scenes.animations) {
-            if (!candidate.channels.empty()) {
-                this->playable.push_back(&candidate);
+            if (candidate.channels.empty()) {
+                continue;
             }
+            anim::animation converted = {};
+            converted.name = candidate.name;
+            converted.samplers.reserve(candidate.samplers.size());
+            for (gltf::animation_sampler const& loader_sampler : candidate.samplers) {
+                anim::sampler s = {};
+                s.times = loader_sampler.times;
+                s.values = loader_sampler.values;
+                s.per_key = loader_sampler.per_key;
+                s.interp = static_cast<anim::interpolation>(loader_sampler.interpolation);
+                converted.samplers.push_back(std::move(s));
+            }
+            converted.channels.reserve(candidate.channels.size());
+            for (gltf::animation_channel const& loader_channel : candidate.channels) {
+                anim::channel c = {};
+                c.path = static_cast<anim::channel_path>(loader_channel.path);
+                c.sampler = loader_channel.sampler;
+                c.target_node = loader_channel.target_node;
+                converted.channels.push_back(c);
+            }
+            this->playable.push_back(std::move(converted));
         }
         this->max_duration = 1.0f;
-        for (gltf::animation const* playable : this->playable) {
-            this->max_duration = std::max(this->max_duration, animation_duration(*playable));
+        for (anim::animation const& playable : this->playable) {
+            this->max_duration = std::max(this->max_duration, animation_duration(playable));
         }
         if (!this->playable.empty()) {
-            this->active = this->playable[0];
+            this->active = &this->playable[0];
             this->current_index = 0;
             this->time = 0.0f;
             this->duration = animation_duration(*this->active);
@@ -89,8 +258,8 @@ namespace vulkan {
         // the decision here + a stable source list to slice update()'s sampling over.
         {
             std::size_t max_channels = 0;
-            for (gltf::animation const* playable : this->playable) {
-                max_channels = std::max(max_channels, playable->channels.size());
+            for (anim::animation const& playable : this->playable) {
+                max_channels = std::max(max_channels, playable.channels.size());
             }
             if (max_channels >= 32 && this->source_nodes.size() >= 64) {
                 this->parallel_sampling = true;
@@ -111,7 +280,7 @@ namespace vulkan {
                 gltf::skin const& loader_skin = scenes.skins[skin_id];
                 // the first loader node referencing this skin that is present in the tree
                 std::size_t mesh_source = std::numeric_limits<std::size_t>::max();
-                for (auto const& [source, loader_node] : this->loader_nodes) {
+                for (auto const& [source, loader_node] : scenes.node_by_source) {
                     if (loader_node->skin_index && *loader_node->skin_index == skin_id && this->source_nodes.contains(source)) {
                         mesh_source = source;
                         break;
@@ -144,19 +313,24 @@ namespace vulkan {
                     }
                 };
                 assign_block(assign_block, *mesh_node);
-                this->skin_rigs.push_back(skin_rig{&loader_skin, mesh_source, block_base});
+                // value-copy the skin (joints + inverse bind matrices) into the rig
+                anim::skin skin = {};
+                skin.name = loader_skin.name;
+                skin.joints = loader_skin.joints;
+                skin.inverse_bind = loader_skin.inverse_bind_matrices;
+                this->skin_rigs.push_back(skin_rig{std::move(skin), mesh_source, block_base});
             }
             // wanted set for the per-frame world collection: every accepted rig's mesh node +
             // every joint it references (deduplicated; fixed after this init pass)
             for (skin_rig const& rig : this->skin_rigs) {
                 this->skin_sources.insert(rig.mesh_source);
-                for (std::size_t const joint : rig.skin->joints) {
+                for (std::size_t const joint : rig.skin.joints) {
                     this->skin_sources.insert(joint);
                 }
             }
             if (!skin_rigs.empty()) {
                 utility::log("skinning: {} skin rig(s) active ({} joint matrix block(s) + identity block)", this->skin_rigs.size(), next_block - 4);
-                this->skin_debug_name = std::string(display_name(this->skin_rigs.front().skin->name));
+                this->skin_debug_name = std::string(display_name(this->skin_rigs.front().skin.name));
             }
         }
         // identity block for unskinned draws: upload once into EVERY slot's skin buffer
@@ -194,8 +368,8 @@ namespace vulkan {
             }
             std::size_t total_floats = 0;
             for (auto& [source, leaves] : source_leaves) {
-                auto const loader_it = this->loader_nodes.find(source);
-                if (loader_it == this->loader_nodes.end()) {
+                auto const loader_it = scenes.node_by_source.find(source);
+                if (loader_it == scenes.node_by_source.end()) {
                     continue;
                 }
                 gltf::node const& loader_node = *loader_it->second;
@@ -280,7 +454,7 @@ namespace vulkan {
         if (index >= this->playable.size()) {
             return {};
         }
-        return display_name(this->playable[index]->name);
+        return display_name(this->playable[index].name);
     }
 
     float animation_controller::playable_max_duration() const noexcept {
@@ -303,14 +477,14 @@ namespace vulkan {
         // moved but the new one does not sample return to rest (same compose rule as update())
         for (auto const& [source, targets] : this->source_nodes) {
             auto const base_it = this->base_poses.find(source);
-            gltf::node_pose const base = base_it == this->base_poses.end() ? gltf::node_pose{} : base_it->second;
+            anim::node_pose const base = base_it == this->base_poses.end() ? anim::node_pose{} : base_it->second;
             glm::mat4 const trs = glm::translate(glm::mat4(1.0f), base.translation) * glm::mat4_cast(base.rotation) * glm::scale(glm::mat4(1.0f), base.scale);
             for (anim_target const& target : targets) {
                 target.node->local = target.scene_root ? glm::translate(glm::mat4(1.0f), this->import_shift) * trs : trs;
             }
         }
         this->backend.scene_changed();
-        this->active = this->playable[index];
+        this->active = &this->playable[index];
         this->current_index = index;
         this->time = 0.0f;
         this->duration = animation_duration(*this->active);
@@ -347,8 +521,8 @@ namespace vulkan {
     // invalidate the culling BVH)
     bool animation_controller::sample_source(std::size_t const source, std::vector<anim_target> const& targets) {
         auto const base_it = this->base_poses.find(source);
-        gltf::node_pose const base = base_it == this->base_poses.end() ? gltf::node_pose{} : base_it->second;
-        gltf::node_pose const pose = gltf::sample_node(*this->active, source, base, this->time);
+        anim::node_pose const base = base_it == this->base_poses.end() ? anim::node_pose{} : base_it->second;
+        anim::node_pose const pose = anim::sample_node(*this->active, source, base, this->time);
         if (!pose.weights.empty()) {
             float* const active_scratch = this->backend.morph_scratch_active();
             if (active_scratch != nullptr) {
@@ -464,18 +638,18 @@ namespace vulkan {
             for (skin_rig const& rig : this->skin_rigs) {
                 auto const mesh_it = skin_worlds.find(rig.mesh_source);
                 glm::mat4 const mesh_world_inv = glm::inverse(mesh_it == skin_worlds.end() ? glm::mat4(1.0f) : mesh_it->second);
-                for (std::size_t j = 0; j < rig.skin->joints.size(); ++j) {
-                    auto const joint_it = skin_worlds.find(rig.skin->joints[j]);
+                for (std::size_t j = 0; j < rig.skin.joints.size(); ++j) {
+                    auto const joint_it = skin_worlds.find(rig.skin.joints[j]);
                     glm::mat4 const joint_world = joint_it == skin_worlds.end() ? glm::mat4(1.0f) : joint_it->second;
-                    matrices.push_back(mesh_world_inv * joint_world * rig.skin->inverse_bind_matrices[j]);
+                    matrices.push_back(mesh_world_inv * joint_world * rig.skin.inverse_bind[j]);
                 }
             }
             this->backend.set_skin_matrices_active(matrices);
             // per-second report data: first rig's LAST joint world x-axis (rotations change it,
             // unlike the joint's position which stays fixed under rotation-only animations)
             this->skin_debug_valid = false;
-            if (!this->skin_rigs.front().skin->joints.empty()) {
-                std::size_t const last_joint = this->skin_rigs.front().skin->joints.back();
+            if (!this->skin_rigs.front().skin.joints.empty()) {
+                std::size_t const last_joint = this->skin_rigs.front().skin.joints.back();
                 auto const joint_it = skin_worlds.find(last_joint);
                 if (joint_it != skin_worlds.end()) {
                     this->skin_debug_valid = true;
@@ -485,11 +659,7 @@ namespace vulkan {
         }
     }
 
-    // ---- read-only bridge (camera seeding etc.) ----
-
-    std::unordered_map<std::size_t, gltf::node const*> const& animation_controller::get_loader_nodes() const noexcept {
-        return this->loader_nodes;
-    }
+    // ---- read-only bridge ----
 
     bool animation_controller::has_runtime_node(std::size_t const source) const noexcept {
         return this->source_nodes.contains(source);
@@ -525,13 +695,13 @@ namespace vulkan {
 
     // the node reported per second: prefer a translation channel target (its value is visible
     // in the log), fall back to the first channel target present in the tree
-    std::size_t animation_controller::pick_debug_source(gltf::animation const& animation) const {
+    std::size_t animation_controller::pick_debug_source(anim::animation const& animation) const {
         std::size_t fallback = std::numeric_limits<std::size_t>::max();
-        for (gltf::animation_channel const& channel : animation.channels) {
+        for (anim::channel const& channel : animation.channels) {
             if (!this->source_nodes.contains(channel.target_node)) {
                 continue;
             }
-            if (channel.path == gltf::animation_path::translation) {
+            if (channel.path == anim::channel_path::translation) {
                 return channel.target_node;
             }
             if (fallback == std::numeric_limits<std::size_t>::max()) {

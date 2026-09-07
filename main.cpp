@@ -258,8 +258,9 @@ int main(int argc, char** argv) {
     };
     std::vector<authored_camera> authored_cameras;
     for (gltf::camera const& cam : scenes->cameras) {
-        // find a node referencing this camera that is present in the imported tree
-        for (auto const& [source, loader_node] : animation.get_loader_nodes()) {
+        // find a node referencing this camera that is present in the imported tree (the loader's
+        // asset-level node table + the controller's tree membership test)
+        for (auto const& [source, loader_node] : scenes->node_by_source) {
             if (loader_node->camera_index && *loader_node->camera_index == static_cast<std::size_t>(&cam - scenes->cameras.data()) && animation.has_runtime_node(source)) {
                 authored_cameras.push_back(authored_camera{&cam, source});
                 break;
