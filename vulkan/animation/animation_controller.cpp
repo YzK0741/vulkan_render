@@ -37,15 +37,10 @@ namespace vulkan {
         this->import_shift = import_shift;
 
         // live-tree lookup: asset node index -> backend scene nodes + root flag (import applied
-        // the shift to root locals only, so animated roots must re-apply it)
-        auto const collect = [this](auto&& self, vulkan::scene_tree::scene_node& node, bool const scene_root) -> void {
-            this->source_nodes[node.source_index].push_back(anim_target{&node, scene_root});
-            for (vulkan::scene_tree::scene_node& child : node.children) {
-                self(self, child, false);
-            }
-        };
-        for (vulkan::scene_tree::scene_node& root : this->backend.scene->roots) {
-            collect(collect, root, true);
+        // the shift to root locals only, so animated roots must re-apply it). scene_iterator
+        // walks the whole tree in DFS pre-order; roots sit at depth 0.
+        for (auto it = vulkan::scene_tree::begin(*this->backend.scene); it != vulkan::scene_tree::end(*this->backend.scene); ++it) {
+            this->source_nodes[it->source_index].push_back(anim_target{&*it, /*scene_root=*/it.depth() == 0});
         }
 
         // TRS base pose + loader node per asset node index (the loader tree stays alive)

@@ -18,6 +18,39 @@ namespace vulkan::scene_tree {
         }
     }
 
+    // DFS pre-order over every root of the scene: the iterator holds an explicit stack of
+    // {node, depth} frames; ++ pops the visited node and pushes its children (reversed so the
+    // first child is visited next). Only valid while the tree structure is frozen (see
+    // scene_iterator in scene_tree.cppm): no make/import/clear / child-vector pushes while
+    // iterators live.
+    scene_iterator::scene_iterator(scene& owner) {
+        for (auto it = owner.roots.rbegin(); it != owner.roots.rend(); ++it) {
+            this->stack.emplace_back(&*it, 0); // roots sit at depth 0
+        }
+        this->exhausted = this->stack.empty();
+    }
+
+    scene_node& scene_iterator::operator*() const noexcept {
+        return *this->stack.back().first;
+    }
+
+    scene_node* scene_iterator::operator->() const noexcept {
+        return this->stack.back().first;
+    }
+
+    scene_iterator& scene_iterator::operator++() {
+        scene_node* const current = this->stack.back().first;
+        std::size_t const child_depth = this->stack.back().second + 1;
+        this->stack.pop_back();
+        for (auto it = current->children.rbegin(); it != current->children.rend(); ++it) {
+            this->stack.emplace_back(&*it, child_depth);
+        }
+        if (this->stack.empty()) {
+            this->exhausted = true;
+        }
+        return *this;
+    }
+
     scene_node scene_node::clone() const {
         scene_node copy;
         copy.name = this->name;

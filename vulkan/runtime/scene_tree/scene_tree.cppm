@@ -108,6 +108,66 @@ namespace vulkan::scene_tree {
             visit_primitives(child, world, visit);
         }
     }
+
+    /**
+     * @ingroup vulkan_runtime_scene_tree
+     * @brief single-pass forward iterator over a scene's node tree: DFS pre-order across every
+     *        root, INCLUDING transform-only (mesh-less) nodes, yielding each scene_node.
+     *
+     * Lets callers walk the live runtime tree with a range-for instead of hand-written
+     * recursive lambdas:
+     * @code {.cpp}
+     * for (scene_node& node : scene) {          // scene.begin()/scene.end()
+     *     // node.name / node.local / node.source_index / node.primitive_leaf
+     * }
+     * @endcode
+     *
+     * @note structural-frozen tree only: the iterator holds a stack of node addresses, so the
+     *       tree must not be restructured (no make/import/clear, no push_back into a
+     *       node's children) while an iterator is alive. Editing node.local or the leaf
+     *       contents in place is fine - that is what the demo's per-frame animation writes do.
+     * @note not a std iterator category (no reference typedefs): deliberately minimal - only
+     *       ++ / != / * / -> , enough for range-for and manual loops
+     */
+    export class scene_iterator {
+    public:
+        scene_iterator() = default; // end()
+        explicit scene_iterator(scene& owner);
+
+        [[nodiscard]] scene_node& operator*() const noexcept;
+        [[nodiscard]] scene_node* operator->() const noexcept;
+        scene_iterator& operator++();
+
+        /** @brief depth of the current node (0 = a scene root); lets callers tell roots apart */
+        [[nodiscard]] std::size_t depth() const noexcept {
+            return this->stack.empty() ? 0 : this->stack.back().second;
+        }
+
+        friend bool operator==(scene_iterator const& a, scene_iterator const& b) noexcept {
+            if (a.exhausted || b.exhausted) {
+                return a.exhausted == b.exhausted;
+            }
+            return a.stack == b.stack;
+        }
+        friend bool operator!=(scene_iterator const& a, scene_iterator const& b) noexcept {
+            return !(a == b);
+        }
+
+    private:
+        void descend(); // move to the next node in DFS pre-order, or set exhausted
+
+        std::vector<std::pair<scene_node*, std::size_t>> stack = {}; // {node, depth}; back() = current
+        bool exhausted = true;                                       // default = end(); begin() clears it
+    };
+
+    /** @brief begin()/end() of a scene's node tree (DFS pre-order, every root) */
+    export inline scene_iterator begin(scene& owner) noexcept {
+        return scene_iterator{owner};
+    }
+    /** @brief end() sentinel of a scene's node-tree range */
+    export inline scene_iterator end(scene&) noexcept {
+        return scene_iterator{};
+    }
 } // namespace vulkan::scene_tree
 
 namespace vulkan {
