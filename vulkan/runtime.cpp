@@ -103,6 +103,18 @@ namespace vulkan {
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
             this->command_buffers.push_back(this->vulkan_core.make_command_buffer());
         }
+        // One shadow-pass + one main-pass secondary command buffer per frame slot (stage 2 of
+        // parallel recording): pre-allocated with the primaries so the GPU can read them while
+        // this slot's primary executes. Recorded sequentially for now (identical rendering);
+        // stage 3 fans the recording out over the task pool.
+        this->secondary_command_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            std::array<vk_command_buffer, static_cast<std::size_t>(secondary_pass::count)> pair = {
+                this->vulkan_core.make_secondary_command_buffer(),
+                this->vulkan_core.make_secondary_command_buffer(),
+            };
+            this->secondary_command_buffers.push_back(std::move(pair));
+        }
 
         // Shared scene resources: camera UBO buffers, white fallback texture, texture sampler
         this->init_scene_resources();
@@ -922,9 +934,39 @@ namespace vulkan {
         //      Dynamic rendering only: depth-only rendering needs no color attachment, which the
         //      classic render-pass fallback cannot express (make_shadow_pipeline already failed
         //      there, so this block is skipped together with shadows_enabled).
+        //
+        //      Stage 2 of parallel recording: the shadow content is recorded into this slot's
+        //      shadow SECONDARY command buffer first, then executed from the primary inside the
+        //      shadow rendering instance (VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT).
+        //      The recording is still sequential on the primary thread - rendering is identical
+        //      to inline; stage 3 fans the recording out over the task pool.
         if (vk.use_dynamic_rendering && this->shadow_pipeline && this->shadows_enabled && this->shadow_enabled) {
             auto const* shadow_detail = vk.vma.get_image_detail(this->shadow_images[frame_slot].handle());
             if (shadow_detail != nullptr) {
+                // Secondary: inherit only the depth attachment (dynamic rendering 1.3). The
+                // shadow map is single-sampled; viewMask 0 = no multiview. The rendering
+                // inheritance struct hangs off VkCommandBufferInheritanceInfo::pNext (NOT the
+                // begin-info pNext), and a secondary buffer must always provide inheritance info.
+                VkCommandBuffer const shadow_secondary = *this->secondary_command_buffers[static_cast<std::size_t>(frame_slot)][static_cast<std::size_t>(secondary_pass::shadow)];
+                VkCommandBufferInheritanceRenderingInfo shadow_inheritance = {};
+                shadow_inheritance.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO;
+                shadow_inheritance.colorAttachmentCount = 0;
+                shadow_inheritance.depthAttachmentFormat = vk.depth_format;
+                shadow_inheritance.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+                VkCommandBufferInheritanceInfo shadow_sec_inherit = {};
+                shadow_sec_inherit.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+                shadow_sec_inherit.pNext = &shadow_inheritance;
+                VkCommandBufferBeginInfo shadow_sec_begin = {};
+                shadow_sec_begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                shadow_sec_begin.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+                shadow_sec_begin.pInheritanceInfo = &shadow_sec_inherit;
+                if (vkBeginCommandBuffer(shadow_secondary, &shadow_sec_begin) != VK_SUCCESS) {
+                    utility::log("runtime: shadow secondary command buffer begin failed - shadow pass skipped this frame");
+                } else {
+                    this->record_shadow_content(shadow_secondary);
+                    vkEndCommandBuffer(shadow_secondary);
+                }
+
                 // Transition the shadow image to a renderable depth attachment (loadOp CLEAR
                 //     discards the previous frame's contents, so UNDEFINED as oldLayout is valid)
                 VkImageMemoryBarrier2 shadow_barrier = {};
@@ -958,16 +1000,15 @@ namespace vulkan {
 
                 VkRenderingInfo shadow_rendering_info = {};
                 shadow_rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+                shadow_rendering_info.flags = VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT;
                 shadow_rendering_info.renderArea = {{0, 0}, {vulkan::runtime::shadow_map_size, vulkan::runtime::shadow_map_size}};
                 shadow_rendering_info.layerCount = 1;
                 shadow_rendering_info.colorAttachmentCount = 0;
                 shadow_rendering_info.pDepthAttachment = &shadow_depth_attachment;
                 vkCmdBeginRendering(*command_buffer, &shadow_rendering_info);
 
-                // Draw the depth-only content into the shadow rendering instance: bind the
-                // shared scene set + shadow pipeline, apply the live depth bias, draw every
-                // scene-tree leaf (the whole scene casts shadows).
-                this->record_shadow_content(*command_buffer);
+                // Run the pre-recorded shadow secondary (the whole scene casts shadows)
+                vkCmdExecuteCommands(*command_buffer, 1, &shadow_secondary);
                 vkCmdEndRendering(*command_buffer);
 
                 // Hand the shadow map back to the main pass as a sampled texture
@@ -1125,8 +1166,11 @@ namespace vulkan {
         // Background pass first: the skybox draws a fullscreen triangle (no vertex/index buffers)
         // with depth test/write disabled, then the models render over it. Skipped when the skybox
         // stage is toggled off — the frame then just shows the clear color behind the models.
+        // Cull mode is dynamic state: set it explicitly (previously it leaked from the shadow
+        // pass's inline draws; with secondaries that leak is gone, so the skybox states itself).
         if (this->skybox_pipeline && this->skybox_enabled) {
             this->skybox_pipeline->begin_pipeline(command_buffer);
+            vkCmdSetCullMode(command_buffer, VK_CULL_MODE_BACK_BIT);
             vkCmdDraw(command_buffer, 3, 1, 0, 0);
         }
 

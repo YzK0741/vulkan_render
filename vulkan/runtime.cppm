@@ -250,6 +250,17 @@ namespace vulkan {
         bool external_camera_changed = true; // set when the override differs -> re-cull
         // one command buffer per frame slot, used and reused every frame
         std::vector<vk_command_buffer> command_buffers;
+        // per-slot secondary command buffers for pass recording (stage 2 of parallel
+        // recording): one shadow-pass CB + one main-pass CB per frame slot, pre-allocated
+        // because secondaries are read by the GPU while the slot's primary executes, so they
+        // share the primary's lifetime (reused after the slot's timeline wait - no per-frame
+        // allocation, no pool lock). Stage 2 records them sequentially on the primary thread
+        // and vkCmdExecuteCommands them (behaviour identical to inline); stage 3 fans the
+        // recording out over the task pool. Indexed by the pass they carry.
+        enum class secondary_pass : std::size_t { shadow = 0,
+                                                  main = 1,
+                                                  count };
+        std::vector<std::array<vk_command_buffer, static_cast<std::size_t>(secondary_pass::count)>> secondary_command_buffers;
         // per-frame state shared by the split frame steps (the frame steps call them in order,
         // so an external caller can interleave its own work between the same steps)
         uint32_t current_image_index = 0;                      // swapchain image acquired by pace_and_acquire()
