@@ -744,27 +744,17 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief append an offset_draw_primitive: draws ONE index sub-range of @p source's
-         *        geometry as its own leaf (own push.model / material). The building block for
-         *        merged/static scenes: many chunks sharing one vertex/index buffer, each chunk a
-         *        single offset draw call instead of its own buffers.
-         * @param source any primitive of this runtime whose geometry this chunk draws from (it
-         *        must stay in the runtime's scene while the offset primitive is drawn); the
-         *        chunk's vertex_offset addresses a merged vertex buffer past the first chunk,
-         *        so source is usually the (first) merged buffer holder
-         * @param first_index first index of this chunk in source's index buffer
-         * @param index_count how many indices this chunk draws
-         * @param vertex_offset base vertex added to every index (merged vertex buffer chunks
-         *        past the first; 0 = draw source's own layout)
-         * @param material_index material this chunk binds (defaults to source's; pass a
-         *        different registered index for per-chunk materials)
-         * @return pointer to the appended offset primitive, or nullptr if nothing was appended
+         * @brief append a static_draw_primitive: OWNS one merged vertex/index buffer and draws
+         *        a chunk table over it — one buffer bind, then one offset draw per chunk with
+         *        each chunk's own material. The primitive-level form of a static scene: N
+         *        static sub-meshes cost 1 bind + N draws instead of N binds + N draws.
+         * @param info merged geometry + chunk table (the packer's output; empty chunks draw the
+         *        whole merged range once, degenerating to a plain normal draw)
+         * @return pointer to the appended static primitive, or nullptr if nothing was appended
+         * @note the whole batch shares one world (push.model from update_world); per-chunk
+         *       placement needs separate batches or baked chunk models
          */
-        primitive* make_offset_primitive(primitive const& source,
-                                         uint32_t first_index,
-                                         uint32_t index_count,
-                                         uint32_t vertex_offset = 0,
-                                         uint32_t material_index = std::numeric_limits<uint32_t>::max());
+        primitive* make_static_draw(static_draw_create_info const& info);
 
         /**
          * @ingroup vulkan_runtime

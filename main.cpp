@@ -1,6 +1,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <vulkan/vulkan.h> // VkFormat / VkIndexType for the static-draw merge demo (texture_input.format)
 import std;
 import app_config;
 import chores; // demo bootstrap helpers (shader loading / dir locating / pipelines)
@@ -166,17 +167,17 @@ int main(int argc, char** argv) {
     //                     single-node asset the primitive spins about the scene sink.
     //   "nocull"        — verification: disable frustum culling (force every leaf visible); run
     //                     the same camera path with and without it and compare the cull log + fps.
-    //   "offset"        — verification: re-draw the first imported primitive as two
-    //                     offset_draw_primitives sharing its vertex/index buffers (each covers
-    //                     a disjoint index half, drawn side by side) — exercises the
-    //                     merged-buffer building block (offset_draw_primitive).
+    //   "static"        — verification: merge the first two loader drawables into ONE static
+    //                     buffer and draw them as two chunks of a static_draw (one bind + two
+    //                     offset draws) — exercises the merged/static-scene building block
+    //                     (static_draw_primitive + make_static_draw).
     //   "gui"           — force-enable the Dear ImGui debug overlay (also the default: the
     //                     overlay shows unless config sets [gui] show = false)
     bool spin_scene = false;
     bool spin_subtree = false;
     bool no_cull = false;
     bool closeup = false;
-    bool offset_split = false;
+    bool static_draw = false;
     bool use_gui = settings.gui.show; // overlay defaults on ([gui] show); demo "gui" forces it
     if (!settings.demo.empty()) {
         std::string_view const demo_view(settings.demo);
@@ -184,7 +185,7 @@ int main(int argc, char** argv) {
         spin_subtree = demo_view == "spin-subtree";
         no_cull = demo_view == "nocull";
         closeup = demo_view == "closeup";
-        offset_split = demo_view == "offset";
+        static_draw = demo_view == "static";
         if (demo_view == "gui") {
             use_gui = true;
         }
@@ -198,8 +199,90 @@ int main(int argc, char** argv) {
         runtime.camera.distance *= 0.22f;
         utility::log("closeup: camera pulled in (partial frustum culling expected)");
     }
-    if (offset_split) {
-        chores::add_offset_split_demo(runtime, scene_radius);
+    if (static_draw) {
+        // merge the first two loader drawables into ONE static buffer (shared stride-64 vertex
+        // layout), then draw them as two chunks of one static_draw: a single buffer bind plus
+        // two offset draws instead of two binds. Each chunk's indices stay relative to its own
+        // vertices; chunk.vertex_offset (base vertex) re-anchors them into the merged buffer,
+        // so the index bytes need no rewriting. Verifies static_draw_primitive + make_static_draw.
+        std::vector<unsigned char> merged_vertices;
+        std::vector<unsigned char> merged_indices;
+        std::vector<vulkan::static_draw_chunk> chunk_table;
+        VkIndexType index_type = VK_INDEX_TYPE_UINT32;
+        gltf::drawable_iterator merge_it(*scenes, materials);
+        uint32_t vertex_count_total = 0;
+        uint32_t index_count_total = 0;
+        int merged = 0;
+        for (; merge_it != scene_last && merged < 2; ++merge_it) {
+            gltf::vertex_view const vertex = merge_it.get_vertex();
+            gltf::index_view const index = merge_it.get_index();
+            // the merged buffer needs ONE index width: only merge drawables sharing the first's
+            if (merged == 0) {
+                index_type = index.width == 4 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+            } else if ((index_type == VK_INDEX_TYPE_UINT32) != (index.width == 4)) {
+                utility::log("static demo: drawable {} index width differs, merging only the first {}", merged, merged);
+                break;
+            }
+            vulkan::static_draw_chunk chunk = {};
+            chunk.first_index = index_count_total; // cumulative index count = offset into the merged buffer
+            chunk.index_count = index.count;
+            chunk.vertex_offset = vertex_count_total; // base vertex into the merged vertex buffer
+            chunk.double_sided = merge_it.get_double_sided();
+            auto const to_tex = [](gltf::image_view const& img, VkFormat const format) {
+                vulkan::texture_input out = {};
+                if (img.valid) {
+                    out.data = img.data;
+                    out.width = img.width;
+                    out.height = img.height;
+                    out.mip_levels = img.mip_levels;
+                    out.format = format;
+                    out.valid = true;
+                }
+                return out;
+            };
+            chunk.albedo = to_tex(merge_it.get_albedo(), VK_FORMAT_R8G8B8A8_SRGB);
+            chunk.metallic_roughness = to_tex(merge_it.get_metallic_roughness(), VK_FORMAT_R8G8B8A8_UNORM);
+            chunk.normal = to_tex(merge_it.get_normal(), VK_FORMAT_R8G8B8A8_UNORM);
+            chunk.occlusion = to_tex(merge_it.get_occlusion(), VK_FORMAT_R8G8B8A8_UNORM);
+            chunk.emissive = to_tex(merge_it.get_emissive(), VK_FORMAT_R8G8B8A8_SRGB);
+            gltf::resolved_factors const factors = merge_it.get_factors();
+            chunk.factors = vulkan::material_factors{};
+            chunk.factors.base_color_factor = factors.base_color_factor;
+            chunk.factors.emissive_factor = factors.emissive_factor;
+            chunk.factors.metallic_factor = factors.metallic_factor;
+            chunk.factors.roughness_factor = factors.roughness_factor;
+            chunk.factors.normal_scale = factors.normal_scale;
+            chunk.factors.occlusion_strength = factors.occlusion_strength;
+            chunk.factors.alpha_cutoff = factors.alpha_cutoff;
+            chunk.factors.alpha_mask = factors.alpha_mask;
+
+            merged_vertices.insert(merged_vertices.end(), vertex.data.begin(), vertex.data.end());
+            merged_indices.insert(merged_indices.end(), index.data.begin(), index.data.end());
+            vertex_count_total += vertex.count;
+            index_count_total += index.count;
+            chunk_table.push_back(chunk);
+            ++merged;
+        }
+        if (merged >= 2) {
+            vulkan::static_draw_create_info info = {};
+            info.vertex_data = merged_vertices;
+            info.vertex_stride = 64; // the loader's interleaved layout is fixed (see pbr.vert)
+            info.vertex_count = vertex_count_total;
+            info.index_data = merged_indices;
+            info.index_type = index_type;
+            info.index_count = index_count_total;
+            info.chunks = chunk_table;
+            // the static batch joins the imported scene as its own root leaf (it draws the same
+            // geometry the import already attached - the demo only verifies the merged path)
+            vulkan::primitive* const created = runtime.make_static_draw(info);
+            if (created == nullptr) {
+                utility::log("static demo: make_static_draw failed");
+            } else {
+                utility::log("static demo: merged {} drawables into 1 buffer, {} chunks (1 bind + {} offset draws)", merged, chunk_table.size(), chunk_table.size());
+            }
+        } else {
+            utility::log("static demo: need >= 2 drawables to merge, found {}", merged);
+        }
     }
     double spin_angle = 0.0;
     if (spin_scene) {

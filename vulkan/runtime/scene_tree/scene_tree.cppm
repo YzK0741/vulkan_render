@@ -644,26 +644,76 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_runtime_scene_tree
-     * @brief offset primitive: draws ONE sub-range of another primitive's (source) index
-     *        buffer — the primitive-level building block for merged/static geometry, where many
-     *        chunks live in ONE shared vertex/index buffer and each chunk is one offset draw
-     *        call (vkCmdDrawIndexed with first_index/vertex_offset) instead of owning its own
-     *        buffers. Owns nothing: geometry belongs to source, destroy() is a no-op, source
-     *        must outlive it. push.model / material_index are this chunk's own (the runtime
-     *        writes the accumulated world into push.model like any leaf), so chunks of one
-     *        merged buffer can sit at different places with the same or different materials.
-     * @note chunk AABB: local_aabb is inherited from source (a sub-range lies inside the whole,
-     *       so frustum culling with the source box is conservative — may keep a chunk visible
-     *       that is fully off-screen, never drops a visible one). Per-chunk AABBs are the
-     *       packer's job once the merged buffer is built from CPU data.
+     * @brief one chunk of a static_draw: an index sub-range of the merged buffer plus the
+     *        material this chunk draws with (each chunk may bind a different material, so one
+     *        merged buffer can hold many sub-meshes with distinct materials)
      */
-    export class offset_draw_primitive final : public primitive {
+    export struct static_draw_chunk {
+        uint32_t first_index = 0;   // first index of this chunk in the merged index buffer
+        uint32_t index_count = 0;   // number of indices this chunk draws
+        uint32_t vertex_offset = 0; // base vertex into the merged vertex buffer (chunks past the
+                                    // first when the packer did not remap indices; 0 otherwise)
+        // per-chunk material (same shape as primitive_create_info's material fields)
+        texture_input albedo = {};
+        texture_input metallic_roughness = {};
+        texture_input normal = {};
+        texture_input occlusion = {};
+        texture_input emissive = {};
+        material_factors factors = {};
+        bool double_sided = false;
+    };
+
+    /**
+     * @ingroup vulkan_runtime_scene_tree
+     * @brief build description for runtime::make_static_draw(): ONE merged vertex/index buffer
+     *        (the packer's output) plus the chunk table over it. Each chunk is drawn as a
+     *        single offset draw call after ONE buffer bind, so N static sub-meshes cost 1 bind
+     *        + N draws instead of N binds + N draws. Empty chunks = draw the whole merged
+     *        range once (static_draw degenerates to a plain normal draw).
+     */
+    export struct static_draw_create_info {
+        std::span<unsigned char const> vertex_data = {};
+        uint32_t vertex_stride = 0;
+        uint32_t vertex_count = 0;
+        std::span<unsigned char const> index_data = {};
+        VkIndexType index_type = VK_INDEX_TYPE_UINT32;
+        uint32_t index_count = 0; // whole merged index count (the chunk table covers a subset)
+        std::vector<static_draw_chunk> chunks = {};
+        glm::mat4 model_matrix = glm::mat4(1.0f);
+    };
+
+    /**
+     * @ingroup vulkan_runtime_scene_tree
+     * @brief static batch primitive: OWNS one merged vertex/index buffer and draws a chunk
+     *        table over it — every chunk shares the single buffer bind, each chunk is one
+     *        offset draw with its own material (push.material_index). Self-contained: no
+     *        source primitive to outlive, destroy() releases the owned buffers like a normal
+     *        draw. This is the primitive-level form of a static scene: one buffer, one bind,
+     *        N offset draws. push.model places the whole batch (all chunks share the world);
+     *        per-chunk placement needs separate batches or per-chunk model baking later.
+     * @note AABB: one local box over the whole merged geometry (batch-level frustum culling);
+     *       per-chunk AABBs would need chunk-level culling, deferred.
+     */
+    export class static_draw_primitive final : public primitive {
     public:
-        primitive const* source = nullptr; // geometry owner; must stay in this runtime's scene
-        uint32_t first_index = 0;          // first index drawn, in source's index buffer (index units)
-        uint32_t index_count = 0;          // number of indices this chunk draws
-        uint32_t vertex_offset = 0;        // base vertex added to every index (merged vertex
-                                           // buffer chunks past the first; 0 = source's own layout)
+        // merged geometry: owned (RAII vk_buffer releases on destroy, like normal_draw)
+        vk_buffer vertex_buffer = {};
+        buffer_detail const* vertex_detail = nullptr;
+        vk_buffer index_buffer = {};
+        buffer_detail const* index_detail = nullptr;
+        VkIndexType index_type = VK_INDEX_TYPE_UINT32;
+        uint32_t index_count = 0; // whole merged index range (chunk table empty = draw this once)
+        uint32_t vertex_count = 0;
+        // chunk table over the merged buffer; each entry draws once after the single bind.
+        // Material identity lives in material_index; double_sided is per chunk (cull mode)
+        struct chunk_record {
+            uint32_t first_index = 0;
+            uint32_t index_count = 0;
+            uint32_t vertex_offset = 0;
+            uint32_t material_index = 0;
+            bool double_sided = false;
+        };
+        std::vector<chunk_record> chunks = {};
 
         void draw(VkCommandBuffer command_buffer) const override;
         void destroy(vma_allocator& vma) noexcept override;

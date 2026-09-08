@@ -187,39 +187,6 @@ namespace chores {
         utility::log("instancing stress: {} x {} grid ({} instances, 1 draw call)", grid_side, grid_side, transforms.size());
     }
 
-    // Optional offset-draw stress (demo "offset"): split the first imported primitive's index
-    // range into two offset_draw_primitives sharing its vertex/index buffers, drawn side by
-    // side — exercises the merged-buffer building block (chunks reading disjoint index
-    // sub-ranges of ONE shared geometry, each with its own world placement).
-    void add_offset_split_demo(vulkan::runtime& runtime, float const scene_radius) {
-        std::vector<vulkan::primitive const*> const pbr_primitives = runtime.get_primitives("pbr");
-        if (pbr_primitives.empty()) {
-            return;
-        }
-        vulkan::primitive const& source = *pbr_primitives[0];
-        uint32_t const total = source.index_count;
-        if (total < 2) {
-            return;
-        }
-        uint32_t const half = total / 2;
-        vulkan::primitive* const left = runtime.make_offset_primitive(source, 0, half, 0);
-        vulkan::primitive* const right = runtime.make_offset_primitive(source, half, total - half, 0);
-        if (left == nullptr || right == nullptr) {
-            utility::log("offset demo: make_offset_primitive failed (source valid? chunk in range?)");
-            return;
-        }
-        // place the two chunks side by side (the source itself still draws at its tree spot)
-        float const spacing = 2.5f * scene_radius;
-        for (vulkan::scene_tree::scene_node& root : runtime.get_scene().roots) {
-            if (root.primitive_leaf.get() == left) {
-                root.local = glm::translate(glm::mat4(1.0f), glm::vec3(-spacing, 0.0f, 0.0f));
-            } else if (root.primitive_leaf.get() == right) {
-                root.local = glm::translate(glm::mat4(1.0f), glm::vec3(spacing, 0.0f, 0.0f));
-            }
-        }
-        utility::log("offset demo: {} indices split into chunk[0,{}) + chunk[{},{}) on shared geometry", total, half, half, total);
-    }
-
     // Build the demo's Dear ImGui debug overlay (when use_gui): enable it on the runtime and
     // assemble the "vulkan_render debug" panel. The widgets bind to @p bindings (fps text,
     // toggles, sliders, animation mirrors, camera selection) - the frame loop keeps the fps

@@ -226,32 +226,69 @@ namespace vulkan {
                this->pipeline != nullptr;
     }
 
-    void offset_draw_primitive::draw(VkCommandBuffer const command_buffer) const {
-        // geometry belongs to source: bind ITS buffers, then draw the chunk's index sub-range;
-        // push.model/material_index are this chunk's own (written by update_world like any leaf)
-        primitive const& geometry_source = *this->source;
-        vkCmdSetCullMode(command_buffer, this->double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
+    void static_draw_primitive::draw(VkCommandBuffer const command_buffer) const {
+        // ONE bind for the whole merged geometry, then one offset draw per chunk (each chunk
+        // pushes its own material_index — the batch shares push.model, set by update_world)
         constexpr VkDeviceSize vertex_offset_bytes = 0;
-        vkCmdBindVertexBuffers(command_buffer, 0, 1, &geometry_source.vertex_detail->buffer, &vertex_offset_bytes);
-        vkCmdBindIndexBuffer(command_buffer, geometry_source.index_detail->buffer, 0, geometry_source.index_type);
+        vkCmdBindVertexBuffers(command_buffer, 0, 1, &this->vertex_detail->buffer, &vertex_offset_bytes);
+        vkCmdBindIndexBuffer(command_buffer, this->index_detail->buffer, 0, this->index_type);
 
-        vkCmdPushConstants(command_buffer,
-                           this->pipeline->get_pipeline_layout(),
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0,
-                           sizeof(this->push),
-                           &this->push);
-        // index sub-range of the shared index buffer + base vertex into the shared vertex buffer
-        vkCmdDrawIndexed(command_buffer, this->index_count, 1, this->first_index, static_cast<int32_t>(this->vertex_offset), 0);
+        if (this->chunks.empty()) {
+            // degenerate: draw the whole merged range once (plain normal draw)
+            vkCmdSetCullMode(command_buffer, this->double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
+            vkCmdPushConstants(command_buffer,
+                               this->pipeline->get_pipeline_layout(),
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0,
+                               sizeof(this->push),
+                               &this->push);
+            vkCmdDrawIndexed(command_buffer, this->index_count, 1, 0, 0, 0);
+            return;
+        }
+
+        // chunked: per chunk set the cull mode + material_index (push.material_index is the
+        // first field, so only that slice needs re-pushing; model stays from the base push)
+        for (chunk_record const& chunk : this->chunks) {
+            vkCmdSetCullMode(command_buffer, chunk.double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
+            material_push_constants const chunk_push = [&] {
+                material_push_constants p = this->push; // model + flags already correct
+                p.material_index = chunk.material_index;
+                return p;
+            }();
+            vkCmdPushConstants(command_buffer,
+                               this->pipeline->get_pipeline_layout(),
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0,
+                               sizeof(chunk_push),
+                               &chunk_push);
+            vkCmdDrawIndexed(command_buffer,
+                             chunk.index_count,
+                             1,
+                             chunk.first_index,
+                             static_cast<int32_t>(chunk.vertex_offset),
+                             0);
+        }
     }
 
-    void offset_draw_primitive::destroy([[maybe_unused]] vma_allocator& vma) noexcept {
-        // owns nothing: geometry is source's (shared merged buffer stays alive through source)
+    void static_draw_primitive::destroy(vma_allocator&) noexcept {
+        // owns the merged buffers: releasing them (and the cached detail pointers) frees the
+        // GPU memory when the last copy of the vk_buffer members goes away
+        this->vertex_buffer.reset();
+        this->vertex_detail = nullptr;
+        this->index_buffer.reset();
+        this->index_detail = nullptr;
+        this->index_count = 0;
+        this->vertex_count = 0;
+        this->chunks.clear();
     }
 
-    bool offset_draw_primitive::is_valid() const noexcept {
-        return this->source != nullptr && this->source->is_valid() && this->index_count != 0 &&
-               this->pipeline != nullptr;
+    bool static_draw_primitive::is_valid() const noexcept {
+        if (this->vertex_detail == nullptr || this->index_detail == nullptr || this->pipeline == nullptr) {
+            return false;
+        }
+        return this->chunks.empty()
+                   ? this->index_count != 0 // degenerate whole-range draw
+                   : std::all_of(this->chunks.begin(), this->chunks.end(), [](chunk_record const& c) { return c.index_count != 0; });
     }
 
     camera_ubo make_orbit_camera_ubo(

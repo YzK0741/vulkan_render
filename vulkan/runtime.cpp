@@ -1465,18 +1465,9 @@ namespace vulkan {
         return created;
     }
 
-    primitive* runtime::make_offset_primitive(primitive const& source,
-                                              uint32_t const first_index,
-                                              uint32_t const index_count,
-                                              uint32_t const vertex_offset,
-                                              uint32_t const material_index) {
-        if (index_count == 0 || !source.is_valid()) {
-            return nullptr;
-        }
-        // the chunk must lie inside source's index buffer (source holds the merged geometry;
-        // a chunk past the end would read out of bounds at draw time)
-        if (first_index > source.index_count || index_count > source.index_count - first_index) {
-            return nullptr;
+    primitive* runtime::make_static_draw(static_draw_create_info const& info) {
+        if (info.vertex_count == 0 || info.index_data.empty() || info.chunks.empty()) {
+            return nullptr; // nothing to draw: no vertices, no indices, or no chunks
         }
         vk_pipeline const* pipeline = this->get_pipeline("pbr");
         if (pipeline == nullptr) {
@@ -1484,23 +1475,75 @@ namespace vulkan {
         }
         this->ensure_scene_set();
 
-        auto result = std::make_unique<offset_draw_primitive>();
+        auto result = std::make_unique<static_draw_primitive>();
         result->pipeline = pipeline;
-        result->source = &source; // geometry owner; must stay in this runtime's scene tree
-        result->first_index = first_index;
-        result->index_count = index_count;
-        result->vertex_offset = vertex_offset;
-        // this chunk's own material (default: source's); model is filled by update_world like
-        // every leaf, so chunks of one merged buffer can be placed independently
-        result->push.material_index = material_index == std::numeric_limits<uint32_t>::max() ? source.push.material_index : material_index;
-        result->push.model = glm::mat4(1.0f);
-        result->double_sided = source.double_sided;
-        // chunk AABB: inherit source's local box - a sub-range lies inside the whole geometry,
-        // so culling with the source box is conservative (may keep an off-screen chunk, never
-        // drops a visible one); per-chunk AABBs arrive with the merged-buffer packer
-        result->local_aabb_min = source.local_aabb_min;
-        result->local_aabb_max = source.local_aabb_max;
-        result->has_bounds = source.has_bounds;
+
+        // ---- merged geometry buffers (owned by this primitive) ----
+        result->vertex_buffer = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex);
+        if (!result->vertex_buffer.valid()) {
+            utility::panic("failed to create static vertex buffer");
+        }
+        result->vertex_detail = this->vulkan_core.vma.get_buffer_detail(result->vertex_buffer.handle());
+        if (result->vertex_detail == nullptr) {
+            utility::panic("failed to get static vertex buffer detail");
+        }
+        result->index_buffer = this->vulkan_core.vma.create_buffer(info.index_data.data(), info.index_data.size_bytes(), vulkan::buffer_type::index);
+        if (!result->index_buffer.valid()) {
+            utility::panic("failed to create static index buffer");
+        }
+        result->index_detail = this->vulkan_core.vma.get_buffer_detail(result->index_buffer.handle());
+        if (result->index_detail == nullptr) {
+            utility::panic("failed to get static index buffer detail");
+        }
+        result->index_type = info.index_type;
+        result->index_count = info.index_count;
+        result->vertex_count = info.vertex_count;
+
+        // ---- local AABB over the whole merged geometry (batch-level culling) ----
+        if (info.vertex_count > 0 && info.vertex_stride >= sizeof(glm::vec3) && !info.vertex_data.empty()) {
+            glm::vec3 aabb_min = glm::vec3(std::numeric_limits<float>::infinity());
+            glm::vec3 aabb_max = glm::vec3(-std::numeric_limits<float>::infinity());
+            auto const* cursor = info.vertex_data.data();
+            for (uint32_t v = 0; v < info.vertex_count; ++v) {
+                glm::vec3 position;
+                std::memcpy(&position, cursor, sizeof(position));
+                aabb_min = glm::min(aabb_min, position);
+                aabb_max = glm::max(aabb_max, position);
+                cursor += info.vertex_stride;
+            }
+            result->local_aabb_min = aabb_min;
+            result->local_aabb_max = aabb_max;
+            result->has_bounds = true;
+        }
+
+        // ---- chunk table: register each chunk's material, record its index range ----
+        result->chunks.reserve(info.chunks.size());
+        for (static_draw_chunk const& chunk : info.chunks) {
+            if (chunk.index_count == 0) {
+                continue; // empty chunk: skip (keeps is_valid simple)
+            }
+            // register this chunk's material (register_material only reads the material
+            // fields of primitive_create_info, so a material-only info is enough)
+            primitive_create_info material_info = {};
+            material_info.albedo = chunk.albedo;
+            material_info.metallic_roughness = chunk.metallic_roughness;
+            material_info.normal = chunk.normal;
+            material_info.occlusion = chunk.occlusion;
+            material_info.emissive = chunk.emissive;
+            material_info.factors = chunk.factors;
+            material_info.double_sided = chunk.double_sided;
+            static_draw_primitive::chunk_record record = {};
+            record.first_index = chunk.first_index;
+            record.index_count = chunk.index_count;
+            record.vertex_offset = chunk.vertex_offset;
+            record.material_index = this->register_material(material_info);
+            record.double_sided = chunk.double_sided;
+            result->chunks.push_back(record);
+        }
+        if (result->chunks.empty()) {
+            return nullptr; // every chunk was empty: nothing drawable
+        }
+        result->push.model = info.model_matrix;
 
         scene_tree::scene_node& leaf = this->get_scene().add_root();
         leaf.name = "pbr";
