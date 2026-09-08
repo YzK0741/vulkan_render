@@ -91,26 +91,28 @@ float calc_shadow(vec3 world_pos) {
 
 const float PI = 3.14159265359;
 
-// Normal distribution function: GGX / Trowbridge-Reitz
+// Normal distribution function: GGX / Trowbridge-Reitz (matches UE's D_GGX)
 float distribution_ggx(vec3 n, vec3 h, float roughness) {
-    float a = roughness * roughness;
-    float a2 = a * a;
+    float a2 = roughness * roughness;
+    a2 = a2 * a2; // perceptual roughness -> alpha^2 (UE passes Pow4(Roughness))
     float ndoth = max(dot(n, h), 0.0);
     float denom = ndoth * ndoth * (a2 - 1.0) + 1.0;
     return a2 / (PI * denom * denom);
 }
 
-// Geometric shadowing: Schlick-GGX (direct-lighting variant)
-float geometry_schlick_ggx(float ndotv, float roughness) {
-    float r = roughness + 1.0;
-    float k = (r * r) / 8.0;
-    return ndotv / (ndotv * (1.0 - k) + k);
-}
-
-float geometry_smith(vec3 n, vec3 v, vec3 l, float roughness) {
+// Geometric shadowing-masking, merged into the visibility term Vis = G / (4 NoV NoL):
+// Heitz's joint Smith approximation for GGX (UE's Vis_SmithJointApprox). One term
+// shadows AND masks in the half-vector sense, so the BRDF is specular = D * Vis * F
+// with no separate 4 NoV NoL denominator (UE's SpecularGGX structure).
+float geometry_vis_smith_joint_approx(vec3 n, vec3 v, vec3 l, float roughness) {
+    float a2 = roughness * roughness;
+    a2 = a2 * a2; // perceptual roughness -> alpha^2 (UE passes Pow4(Roughness))
+    float a = sqrt(a2);
     float ndotv = max(dot(n, v), 0.0);
     float ndotl = max(dot(n, l), 0.0);
-    return geometry_schlick_ggx(ndotv, roughness) * geometry_schlick_ggx(ndotl, roughness);
+    float vis_v = ndotl * (ndotv * (1.0 - a) + a);
+    float vis_l = ndotv * (ndotl * (1.0 - a) + a);
+    return 0.5 / (vis_v + vis_l);
 }
 
 // Fresnel: Schlick approximation
@@ -217,12 +219,11 @@ void main() {
     vec3 f0 = mix(vec3(0.04), base_color.rgb, metallic);
 
     float ndf = distribution_ggx(n, h, roughness);
-    float g = geometry_smith(n, v, l, roughness);
+    float vis = geometry_vis_smith_joint_approx(n, v, l, roughness);
     vec3 f = fresnel_schlick(max(dot(h, v), 0.0), f0);
 
-    vec3 numerator = ndf * g * f;
-    float denominator = 4.0 * max(dot(n, v), 0.0) * max(dot(n, l), 0.0) + 0.0001;
-    vec3 specular = numerator / denominator;
+    // UE structure: specular = D * Vis * F (Vis already folds in G / (4 NoV NoL))
+    vec3 specular = ndf * vis * f;
 
     vec3 kd = (1.0 - f) * (1.0 - metallic);
     float ndotl = max(dot(n, l), 0.0);
