@@ -581,6 +581,34 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_runtime_scene_tree
+     * @brief offset primitive: draws ONE sub-range of another primitive's (source) index
+     *        buffer — the primitive-level building block for merged/static geometry, where many
+     *        chunks live in ONE shared vertex/index buffer and each chunk is one offset draw
+     *        call (vkCmdDrawIndexed with first_index/vertex_offset) instead of owning its own
+     *        buffers. Owns nothing: geometry belongs to source, destroy() is a no-op, source
+     *        must outlive it. push.model / material_index are this chunk's own (the runtime
+     *        writes the accumulated world into push.model like any leaf), so chunks of one
+     *        merged buffer can sit at different places with the same or different materials.
+     * @note chunk AABB: local_aabb is inherited from source (a sub-range lies inside the whole,
+     *       so frustum culling with the source box is conservative — may keep a chunk visible
+     *       that is fully off-screen, never drops a visible one). Per-chunk AABBs are the
+     *       packer's job once the merged buffer is built from CPU data.
+     */
+    export class offset_draw_primitive final : public primitive {
+    public:
+        primitive const* source = nullptr; // geometry owner; must stay in this runtime's scene
+        uint32_t first_index = 0;          // first index drawn, in source's index buffer (index units)
+        uint32_t index_count = 0;          // number of indices this chunk draws
+        uint32_t vertex_offset = 0;        // base vertex added to every index (merged vertex
+                                           // buffer chunks past the first; 0 = source's own layout)
+
+        void draw(VkCommandBuffer command_buffer) const override;
+        void destroy(vma_allocator& vma) noexcept override;
+        [[nodiscard]] bool is_valid() const noexcept override;
+    };
+
+    /**
+     * @ingroup vulkan_runtime_scene_tree
      * @brief build the camera UBO from orbit camera state (the camera orbits the target point)
      * @param yaw yaw angle in radians (see vulkan::runtime::camera)
      * @param pitch pitch angle in radians

@@ -166,12 +166,17 @@ int main(int argc, char** argv) {
     //                     single-node asset the primitive spins about the scene sink.
     //   "nocull"        — verification: disable frustum culling (force every leaf visible); run
     //                     the same camera path with and without it and compare the cull log + fps.
+    //   "offset"        — verification: re-draw the first imported primitive as two
+    //                     offset_draw_primitives sharing its vertex/index buffers (each covers
+    //                     a disjoint index half, drawn side by side) — exercises the
+    //                     merged-buffer building block (offset_draw_primitive).
     //   "gui"           — force-enable the Dear ImGui debug overlay (also the default: the
     //                     overlay shows unless config sets [gui] show = false)
     bool spin_scene = false;
     bool spin_subtree = false;
     bool no_cull = false;
     bool closeup = false;
+    bool offset_split = false;
     bool use_gui = settings.gui.show; // overlay defaults on ([gui] show); demo "gui" forces it
     if (!settings.demo.empty()) {
         std::string_view const demo_view(settings.demo);
@@ -179,6 +184,7 @@ int main(int argc, char** argv) {
         spin_subtree = demo_view == "spin-subtree";
         no_cull = demo_view == "nocull";
         closeup = demo_view == "closeup";
+        offset_split = demo_view == "offset";
         if (demo_view == "gui") {
             use_gui = true;
         }
@@ -191,6 +197,9 @@ int main(int argc, char** argv) {
         // pull the camera close so only part of the scene fits the frustum -> partial culling
         runtime.camera.distance *= 0.22f;
         utility::log("closeup: camera pulled in (partial frustum culling expected)");
+    }
+    if (offset_split) {
+        chores::add_offset_split_demo(runtime, scene_radius);
     }
     double spin_angle = 0.0;
     if (spin_scene) {

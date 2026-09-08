@@ -744,6 +744,30 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief append an offset_draw_primitive: draws ONE index sub-range of @p source's
+         *        geometry as its own leaf (own push.model / material). The building block for
+         *        merged/static scenes: many chunks sharing one vertex/index buffer, each chunk a
+         *        single offset draw call instead of its own buffers.
+         * @param source any primitive of this runtime whose geometry this chunk draws from (it
+         *        must stay in the runtime's scene while the offset primitive is drawn); the
+         *        chunk's vertex_offset addresses a merged vertex buffer past the first chunk,
+         *        so source is usually the (first) merged buffer holder
+         * @param first_index first index of this chunk in source's index buffer
+         * @param index_count how many indices this chunk draws
+         * @param vertex_offset base vertex added to every index (merged vertex buffer chunks
+         *        past the first; 0 = draw source's own layout)
+         * @param material_index material this chunk binds (defaults to source's; pass a
+         *        different registered index for per-chunk materials)
+         * @return pointer to the appended offset primitive, or nullptr if nothing was appended
+         */
+        primitive* make_offset_primitive(primitive const& source,
+                                         uint32_t first_index,
+                                         uint32_t index_count,
+                                         uint32_t vertex_offset = 0,
+                                         uint32_t material_index = std::numeric_limits<uint32_t>::max());
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief batch-import a scene by traversing the retained node hierarchy (structural
          *        node stream) and its drawables (geometry stream) together.
          *        @p nfirst must model vulkan::scene_node_iterator: DFS pre-order over every

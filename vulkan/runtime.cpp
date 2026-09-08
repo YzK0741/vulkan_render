@@ -1468,6 +1468,52 @@ namespace vulkan {
         return created;
     }
 
+    primitive* runtime::make_offset_primitive(primitive const& source,
+                                              uint32_t const first_index,
+                                              uint32_t const index_count,
+                                              uint32_t const vertex_offset,
+                                              uint32_t const material_index) {
+        if (index_count == 0 || !source.is_valid()) {
+            return nullptr;
+        }
+        // the chunk must lie inside source's index buffer (source holds the merged geometry;
+        // a chunk past the end would read out of bounds at draw time)
+        if (first_index > source.index_count || index_count > source.index_count - first_index) {
+            return nullptr;
+        }
+        vk_pipeline const* pipeline = this->get_pipeline("pbr");
+        if (pipeline == nullptr) {
+            return nullptr;
+        }
+        this->ensure_scene_set();
+
+        auto result = std::make_unique<offset_draw_primitive>();
+        result->pipeline = pipeline;
+        result->source = &source; // geometry owner; must stay in this runtime's scene tree
+        result->first_index = first_index;
+        result->index_count = index_count;
+        result->vertex_offset = vertex_offset;
+        // this chunk's own material (default: source's); model is filled by update_world like
+        // every leaf, so chunks of one merged buffer can be placed independently
+        result->push.material_index = material_index == std::numeric_limits<uint32_t>::max() ? source.push.material_index : material_index;
+        result->push.model = glm::mat4(1.0f);
+        result->double_sided = source.double_sided;
+        // chunk AABB: inherit source's local box - a sub-range lies inside the whole geometry,
+        // so culling with the source box is conservative (may keep an off-screen chunk, never
+        // drops a visible one); per-chunk AABBs arrive with the merged-buffer packer
+        result->local_aabb_min = source.local_aabb_min;
+        result->local_aabb_max = source.local_aabb_max;
+        result->has_bounds = source.has_bounds;
+
+        scene_tree::scene_node leaf;
+        leaf.name = "pbr";
+        leaf.primitive_leaf = std::move(result); // a vulkan::primitive is a scene_tree::primitive
+        primitive* const created = static_cast<primitive*>(leaf.primitive_leaf.get());
+        this->get_scene().roots.push_back(std::move(leaf));
+        this->bvh_dirty = true; // new leaf -> culling BVH must be rebuilt
+        return created;
+    }
+
     std::vector<primitive const*> runtime::get_primitives(std::string_view const pipeline_name) const noexcept {
         vk_pipeline const* const wanted = this->get_pipeline(pipeline_name);
         if (wanted == nullptr) {

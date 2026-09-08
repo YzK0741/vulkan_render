@@ -103,6 +103,19 @@ namespace chores {
 
     /**
      * @ingroup chores
+     * @brief optional offset-draw stress (demo "offset"): take the first imported "pbr"
+     *        primitive and draw TWO offset_draw_primitives that share its vertex/index buffers,
+     *        each covering a disjoint half of its index range and placed side by side. Verifies
+     *        the merged-buffer building block (offset_draw_primitive): many chunks drawing from
+     *        ONE shared geometry via index sub-ranges + per-chunk placement. No-op when the
+     *        scene has no pbr primitive.
+     * @param runtime the initialized runtime holding the imported scene
+     * @param scene_radius radius of the imported scene (chunk spacing = 2.5 x radius)
+     */
+    export void add_offset_split_demo(vulkan::runtime& runtime, float scene_radius);
+
+    /**
+     * @ingroup chores
      * @brief live state the debug-gui widgets bind to. Owned by main (the frame loop keeps the
      *        fps text and the animation mirrors in sync each frame); setup_gui() wires the
      *        widgets to these fields.
