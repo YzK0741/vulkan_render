@@ -267,15 +267,15 @@ namespace vulkan {
                                                   main_seg_0 = 2, // main pass segments follow
                                                   count = 2 };    // fixed single-segment slots
         std::vector<std::array<vk_command_buffer, static_cast<std::size_t>(secondary_pass::count)>> secondary_command_buffers;
-        // per-slot main-pass parallel segments (stage 3): one INDEPENDENT command pool per
-        // segment plus the secondary allocated from it. A single VkCommandPool is not thread
-        // safe - its command buffers must not be begun concurrently on different workers, so
-        // every parallel recording thread owns its own pool (the same pool+CB pairing the vma
-        // allocator's command_cache uses). Pool lifetime is tied to the core (registered
-        // cleanup, runs after this runtime's RAII members free the buffers into their pools);
-        // one inner vector per frame slot, index = segment.
-        std::vector<std::vector<VkCommandPool>> main_segment_pools;
-        std::vector<std::vector<vk_command_buffer>> main_segment_buffers;
+        // per-slot main-pass parallel segments (stage 3): one {command pool, secondary buffer}
+        // PAIR per task-pool worker, in the same style as the vma allocator's command_cache -
+        // a VkCommandPool is not thread safe, so every parallel recording thread owns its own
+        // pool and the buffer allocated from it, kept together so they can never drift apart.
+        // The pair's pool is registered on the core (destroyed by its cleanup AFTER this
+        // runtime's RAII vk_command_buffer members free their buffers into those pools). One
+        // inner vector per frame slot (the GPU reads the secondaries while the slot's primary
+        // executes, so they share the primary's lifetime), index = segment.
+        std::vector<std::vector<std::pair<VkCommandPool, vk_command_buffer>>> main_segments;
         // per-frame state shared by the split frame steps (the frame steps call them in order,
         // so an external caller can interleave its own work between the same steps)
         uint32_t current_image_index = 0;                      // swapchain image acquired by pace_and_acquire()

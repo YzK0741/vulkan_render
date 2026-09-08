@@ -106,12 +106,12 @@ namespace vulkan {
         // One shadow-pass + one gui-overlay secondary command buffer per frame slot (stage 2/3
         // of parallel recording): pre-allocated with the primaries so the GPU can read them
         // while this slot's primary executes. Stage 3 additionally gives the main pass one
-        // parallel segment per task-pool worker, EACH with its OWN command pool: a VkCommandPool
-        // is not thread safe, so the workers must never begin buffers of a shared pool
-        // concurrently (recorded in parallel; see sub_render_task).
+        // parallel segment per task-pool worker, each as a {pool, secondary} PAIR (vma-style):
+        // a VkCommandPool is not thread safe, so the workers must never begin buffers of a
+        // shared pool concurrently - every worker owns its own pool + its buffer (recorded in
+        // parallel; see sub_render_task).
         this->secondary_command_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        this->main_segment_pools.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        this->main_segment_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        this->main_segments.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         unsigned const record_workers = static_cast<unsigned>(std::max(1, this->task_pool_threads()));
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
             std::array<vk_command_buffer, static_cast<std::size_t>(secondary_pass::count)> pair = {
@@ -119,17 +119,13 @@ namespace vulkan {
                 this->vulkan_core.make_secondary_command_buffer(), // gui
             };
             this->secondary_command_buffers.push_back(std::move(pair));
-            std::vector<VkCommandPool> pools;
-            std::vector<vk_command_buffer> segments;
-            pools.reserve(record_workers);
+            std::vector<std::pair<VkCommandPool, vk_command_buffer>> segments;
             segments.reserve(record_workers);
             for (unsigned s = 0; s < record_workers; ++s) {
                 VkCommandPool const pool = this->vulkan_core.make_command_pool(); // one per worker
-                pools.push_back(pool);
-                segments.push_back(this->vulkan_core.make_secondary_command_buffer(pool));
+                segments.emplace_back(pool, this->vulkan_core.make_secondary_command_buffer(pool));
             }
-            this->main_segment_pools.push_back(std::move(pools));
-            this->main_segment_buffers.push_back(std::move(segments));
+            this->main_segments.push_back(std::move(segments));
         }
 
         // Shared scene resources: camera UBO buffers, white fallback texture, texture sampler
@@ -1125,7 +1121,9 @@ namespace vulkan {
         // worker as one more task.
         auto const& secondaries = this->secondary_command_buffers[static_cast<std::size_t>(frame_slot)];
         VkCommandBuffer const gui_secondary = *secondaries[static_cast<std::size_t>(secondary_pass::gui)];
-        std::vector<vk_command_buffer>& main_segments = this->main_segment_buffers[static_cast<std::size_t>(frame_slot)];
+        // one {pool, secondary} pair per task-pool worker (see the member docs): a worker never
+        // shares its pool, so parallel recording cannot race on a VkCommandPool
+        std::vector<std::pair<VkCommandPool, vk_command_buffer>>& main_segments = this->main_segments[static_cast<std::size_t>(frame_slot)];
 
         // Main secondaries inherit the color + depth attachments (dynamic rendering 1.3): same
         // formats as begin_rendering() below, rasterization samples follow MSAA. The gui
@@ -1150,7 +1148,7 @@ namespace vulkan {
         if (segment_count == 1 || leaf_count < 4) {
             // Few leaves: parallel recording would cost more than it saves - record the whole
             // main pass on one segment (identical to stage 2) on this thread.
-            VkCommandBuffer const single_main = *main_segments[0];
+            VkCommandBuffer const single_main = *main_segments[0].second;
             if (vkBeginCommandBuffer(single_main, &main_sec_begin) == VK_SUCCESS) {
                 this->record_main_content(single_main);
                 vkEndCommandBuffer(single_main);
@@ -1184,7 +1182,7 @@ namespace vulkan {
             std::size_t const seg_first = leaf_count * s / segment_count;
             std::size_t const seg_last = leaf_count * (s + 1) / segment_count;
             sub_render_task task = {};
-            task.command_buffer = *main_segments[s];
+            task.command_buffer = *main_segments[s].second;
             task.leaves = std::span<primitive const* const>(this->frame_visible.data() + seg_first, seg_last - seg_first);
             task.draw_skybox = s == 0; // the skybox belongs to the first segment
             task.color_format = color_format;
@@ -1209,7 +1207,7 @@ namespace vulkan {
 
         this->begin_rendering(*command_buffer, this->current_image_index, VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT);
         for (std::size_t s = 0; s < segment_count; ++s) {
-            VkCommandBuffer const seg_cb = *main_segments[s];
+            VkCommandBuffer const seg_cb = *main_segments[s].second;
             vkCmdExecuteCommands(*command_buffer, 1, &seg_cb);
         }
         if (this->debug_overlay.is_active()) {
