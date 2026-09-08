@@ -217,10 +217,11 @@ void update_world(scene_node& n, glm::mat4 const& parent_world) {
 ### 4.1 Flat draw list derived from the tree (DONE — `7a445d5`, `896d5b3`)
 
 As of the render_environment refactor (`fed35fe`) the recording walk does NOT group
-by pipeline anymore: each `draw(command_buffer, render_environment&)` binds the
-pipeline it needs itself, through the per-worker environment (deduplicated, so
-consecutive leaves of one pipeline still share a single bind). The flat leaf list
-is still derived from the tree **once per frame** — no persistent `render_lists_`
+by pipeline anymore: each `draw(render_environment&)` binds the pipeline it needs
+itself, through the per-worker environment (deduplicated, so consecutive leaves of
+one pipeline still share a single bind). The environment also carries the session's
+command buffer, so draw has no separate buffer parameter. The flat leaf list is
+still derived from the tree **once per frame** — no persistent `render_lists_`
 map, no explicit cache to invalidate:
 
 ```cpp
@@ -228,11 +229,11 @@ map, no explicit cache to invalidate:
 std::vector<primitive const*> frame_leaves;              // DFS collect (once)
 for (scene_node const& root : scene_.roots) collect_leaf_primitives(root, frame_leaves);
 //   main pass (record_main_segment): one render_environment per recording worker
-//     (available names, default pipeline, injected binder + shared scene layout);
-//     leaves draw via m->draw(cb, env) - default leaves request env.bind_default(),
-//     custom leaves env.bind_pipeline(name)
+//     (command buffer, available names, default pipeline, injected binder +
+//     shared scene layout); leaves draw via m->draw(env) - default leaves request
+//     env.bind_default(), custom leaves env.bind_pipeline(name)
 //   shadow pass (record_shadow_content): its own environment always binds the shadow
-//     pipeline (the binder ignores the requested name), then m->draw(cb, env)
+//     pipeline (the binder ignores the requested name), then m->draw(env)
 ```
 
 (The pre-refactor text below records the earlier design, kept for history.)

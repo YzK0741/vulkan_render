@@ -613,21 +613,22 @@ namespace vulkan {
 
         /**
          * @brief record the primitive's draw commands (the shared scene descriptor set is bound
-         *        by the caller; the pipeline the primitive draws with comes from @p env)
-         * @param command_buffer the command buffer being recorded
-         * @param env the recording session's render environment: default / named pipeline
-         *        binding (deduplicated) + the shared push-constant layout. One instance per
-         *        recording thread, never shared across workers.
+         *        by the caller; the pipeline the primitive draws with and the command buffer to
+         *        record into both come from @p env)
+         * @param env the recording session's render environment: the session command buffer,
+         *        default / named pipeline binding (deduplicated) + the shared push-constant
+         *        layout. One instance per recording thread, never shared across workers.
          */
-        virtual void draw(VkCommandBuffer command_buffer, render_environment& env) const = 0;
+        virtual void draw(render_environment& env) const = 0;
         virtual void destroy(vma_allocator& vma) noexcept = 0;
         [[nodiscard]] virtual bool is_valid() const noexcept = 0;
 
     protected:
         // shared recording: bind this object's geometry buffers and push the push constants
-        // (the push-constant layout is the environment's shared scene layout, valid for every
-        // pipeline - push does not depend on which pipeline is currently bound)
-        void bind_geometry_and_push(VkCommandBuffer command_buffer, render_environment const& env) const;
+        // onto the environment's command buffer (the push-constant layout is the environment's
+        // shared scene layout, valid for every pipeline - push does not depend on which pipeline
+        // is currently bound)
+        void bind_geometry_and_push(render_environment const& env) const;
     };
 
     /**
@@ -636,7 +637,7 @@ namespace vulkan {
      */
     export class normal_draw_primitive final : public primitive {
     public:
-        void draw(VkCommandBuffer command_buffer, render_environment& env) const override;
+        void draw(render_environment& env) const override;
         void destroy(vma_allocator& vma) noexcept override;
         [[nodiscard]] bool is_valid() const noexcept override;
     };
@@ -653,7 +654,7 @@ namespace vulkan {
         primitive const* source = nullptr;
         uint32_t instance_count = 0;
 
-        void draw(VkCommandBuffer command_buffer, render_environment& env) const override;
+        void draw(render_environment& env) const override;
         void destroy(vma_allocator& vma) noexcept override;
         [[nodiscard]] bool is_valid() const noexcept override;
     };
@@ -731,7 +732,7 @@ namespace vulkan {
         };
         std::vector<chunk_record> chunks = {};
 
-        void draw(VkCommandBuffer command_buffer, render_environment& env) const override;
+        void draw(render_environment& env) const override;
         void destroy(vma_allocator& vma) noexcept override;
         [[nodiscard]] bool is_valid() const noexcept override;
     };

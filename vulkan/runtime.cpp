@@ -1286,6 +1286,7 @@ namespace vulkan {
         // whatever a custom leaf would draw in the main pass, its geometry still casts the same
         // shadow. Default-semantics leaves hit bind_default() and land here too.
         render_environment env;
+        env.command_buffer = command_buffer;
         env.default_name = "shadow"; // binder ignores the name; kept for in_default_pipeline()
         env.bind = [this](VkCommandBuffer const cb, std::string_view const /*name*/) {
             this->shadow_pipeline->begin_pipeline(cb);
@@ -1294,7 +1295,7 @@ namespace vulkan {
         // draw only the casters that can throw a shadow into the camera frustum (see
         // shadow_casters in begin_recording); the whole scene only when culling is disabled
         for (primitive const* m : this->shadow_casters) {
-            m->draw(command_buffer, env); // depth-only: shadow.vert transforms into light space
+            m->draw(env); // depth-only: shadow.vert transforms into light space
         }
     }
 
@@ -1352,6 +1353,7 @@ namespace vulkan {
         // environment stays valid because pipeline_names only grows and only outside recording
         // (setup time), matching the make_primitive timing note.
         render_environment env;
+        env.command_buffer = command_buffer;
         {
             std::shared_lock const lock(this->access_mutex);
             env.available = this->pipeline_names;
@@ -1367,7 +1369,7 @@ namespace vulkan {
         };
         env.layout = vk.scene_pipeline_layout;
         for (primitive const* const m : leaves) {
-            m->draw(command_buffer, env); // polymorphic: normal / instanced / static / custom
+            m->draw(env); // polymorphic: normal / instanced / static / custom
         }
     }
 
