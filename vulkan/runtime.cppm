@@ -78,6 +78,7 @@ namespace vulkan {
      */
     export enum class task_priority : int {
         animation = 0, // per-source animation sampling fan-out (animation::controller::update)
+        recording = 1, // parallel pass/secondary command-buffer recording (record_main_drawcalls)
         // future frame-time stages (culling, skin upload, ...) append their own tier here
     };
 
@@ -250,18 +251,31 @@ namespace vulkan {
         bool external_camera_changed = true; // set when the override differs -> re-cull
         // one command buffer per frame slot, used and reused every frame
         std::vector<vk_command_buffer> command_buffers;
-        // per-slot secondary command buffers for pass recording (stage 2 of parallel
-        // recording): one shadow-pass + one main-pass + one gui-overlay CB per frame slot,
-        // pre-allocated because secondaries are read by the GPU while the slot's primary
-        // executes, so they share the primary's lifetime (reused after the slot's timeline
-        // wait - no per-frame allocation, no pool lock). Stage 2 records them sequentially on
-        // the primary thread and vkCmdExecuteCommands them (behaviour identical to inline);
-        // stage 3 fans the recording out over the task pool. Indexed by the pass they carry.
+        // per-slot secondary command buffers for pass recording (stage 2/3 of parallel
+        // recording):
+        //   - shadow: one shadow-pass CB per frame slot (single segment; the depth-only pass
+        //     shares one pipeline, so further splitting buys little - stage 2)
+        //   - gui: one overlay CB per frame slot (stage 2)
+        //   - main: SEGMENT secondaries per frame slot (stage 3): the main pass splits its
+        //     visible leaves into up-to-SEGMENT contiguous ranges, each recorded on a pool
+        //     worker and executed in order. SEGMENT is sized to the task pool (see
+        //     record_main_drawcalls), so the GPU can read all secondaries while the slot's
+        //     primary executes - they share the primary's lifetime (reused after the slot's
+        //     timeline wait, no per-frame allocation, no pool lock).
         enum class secondary_pass : std::size_t { shadow = 0,
-                                                  main = 1,
-                                                  gui = 2,
-                                                  count };
+                                                  gui = 1,
+                                                  main_seg_0 = 2, // main pass segments follow
+                                                  count = 2 };    // fixed single-segment slots
         std::vector<std::array<vk_command_buffer, static_cast<std::size_t>(secondary_pass::count)>> secondary_command_buffers;
+        // per-slot main-pass parallel segments (stage 3): one INDEPENDENT command pool per
+        // segment plus the secondary allocated from it. A single VkCommandPool is not thread
+        // safe - its command buffers must not be begun concurrently on different workers, so
+        // every parallel recording thread owns its own pool (the same pool+CB pairing the vma
+        // allocator's command_cache uses). Pool lifetime is tied to the core (registered
+        // cleanup, runs after this runtime's RAII members free the buffers into their pools);
+        // one inner vector per frame slot, index = segment.
+        std::vector<std::vector<VkCommandPool>> main_segment_pools;
+        std::vector<std::vector<vk_command_buffer>> main_segment_buffers;
         // per-frame state shared by the split frame steps (the frame steps call them in order,
         // so an external caller can interleave its own work between the same steps)
         uint32_t current_image_index = 0;                      // swapchain image acquired by pace_and_acquire()
@@ -511,6 +525,44 @@ namespace vulkan {
          *       parallel recording) - only bind/push/draw commands, no barriers / begin-end.
          */
         void record_main_content(VkCommandBuffer command_buffer) const;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief record one contiguous slice of the main-pass leaves into @p command_buffer:
+         *        bind the shared scene set, then draw the leaves of @p leaves (a sub-range of
+         *        frame_visible). When @p draw_skybox the skybox background is drawn first so
+         *        the background stays ordered before the scene (segment 0 only); later
+         *        segments are pure scene.
+         * @note stage 3 of parallel recording: each task-pool worker records one segment into
+         *       its own secondary command buffer (see sub_render_task), the primary executes
+         *       them in order. Only bind/push/draw commands - caller owns barriers + the
+         *       rendering instance.
+         */
+        void record_main_segment(VkCommandBuffer command_buffer, std::span<primitive const* const> leaves, bool draw_skybox) const;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief one recording job of the parallel main pass (stage 3): records @p leaves (a
+         *        contiguous slice of the frame's visible leaves) into @p command_buffer, a
+         *        per-slot SECONDARY command buffer. operator() begins the secondary (inheriting
+         *        the main instance's color+depth attachments via dynamic rendering 1.3
+         *        inheritance info), records the slice and ends it, so a batch of these can be
+         *        posted straight to the shared task pool and the recording group waited on.
+         * @note value type (span + handle + formats; no owning pointers), safe to copy into
+         *       std::function for the pool; the begin-info is assembled fresh inside operator()
+         *       so copies never share dangling pNext chains.
+         */
+        struct sub_render_task {
+            VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+            std::span<primitive const* const> leaves = {};
+            bool draw_skybox = false;                    // segment 0 draws the skybox before its leaves
+            VkFormat color_format = VK_FORMAT_UNDEFINED; // main color attachment format
+            VkFormat depth_format = VK_FORMAT_UNDEFINED; // main depth attachment format
+            VkSampleCountFlagBits rasterization_samples = VK_SAMPLE_COUNT_1_BIT;
+            runtime const* owner = nullptr; // recording context (scene set / pipeline caches)
+
+            void operator()() const; // defined in runtime.cpp (module-private)
+        };
 
         /** @brief the command buffer currently being recorded (between begin_recording() and
          *         end_recording()); internal use for the runtime's own recording */

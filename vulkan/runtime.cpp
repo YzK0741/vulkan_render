@@ -103,18 +103,33 @@ namespace vulkan {
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
             this->command_buffers.push_back(this->vulkan_core.make_command_buffer());
         }
-        // One shadow-pass + one main-pass + one gui-overlay secondary command buffer per frame
-        // slot (stage 2 of parallel recording): pre-allocated with the primaries so the GPU can
-        // read them while this slot's primary executes. Recorded sequentially for now (identical
-        // rendering); stage 3 fans the recording out over the task pool.
+        // One shadow-pass + one gui-overlay secondary command buffer per frame slot (stage 2/3
+        // of parallel recording): pre-allocated with the primaries so the GPU can read them
+        // while this slot's primary executes. Stage 3 additionally gives the main pass one
+        // parallel segment per task-pool worker, EACH with its OWN command pool: a VkCommandPool
+        // is not thread safe, so the workers must never begin buffers of a shared pool
+        // concurrently (recorded in parallel; see sub_render_task).
         this->secondary_command_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        this->main_segment_pools.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        this->main_segment_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        unsigned const record_workers = static_cast<unsigned>(std::max(1, this->task_pool_threads()));
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
             std::array<vk_command_buffer, static_cast<std::size_t>(secondary_pass::count)> pair = {
                 this->vulkan_core.make_secondary_command_buffer(), // shadow
-                this->vulkan_core.make_secondary_command_buffer(), // main
                 this->vulkan_core.make_secondary_command_buffer(), // gui
             };
             this->secondary_command_buffers.push_back(std::move(pair));
+            std::vector<VkCommandPool> pools;
+            std::vector<vk_command_buffer> segments;
+            pools.reserve(record_workers);
+            segments.reserve(record_workers);
+            for (unsigned s = 0; s < record_workers; ++s) {
+                VkCommandPool const pool = this->vulkan_core.make_command_pool(); // one per worker
+                pools.push_back(pool);
+                segments.push_back(this->vulkan_core.make_secondary_command_buffer(pool));
+            }
+            this->main_segment_pools.push_back(std::move(pools));
+            this->main_segment_buffers.push_back(std::move(segments));
         }
 
         // Shared scene resources: camera UBO buffers, white fallback texture, texture sampler
@@ -1099,16 +1114,20 @@ namespace vulkan {
             this->skybox_pipeline->scissor = full_scissor;
         }
 
-        // Stage 2 of parallel recording: the main-pass scene content (scene set bind + skybox +
-        // per-pipeline draws) and the gui overlay are each recorded into this slot's SECONDARY
-        // command buffers first, then executed from the primary inside the main rendering
-        // instance (VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT). Recording is still
-        // sequential - rendering is identical to inline; stage 3 fans it out over the task pool.
+        // Stage 3 of parallel recording: the main-pass visible leaves are split into up-to-N
+        // contiguous sub_render_tasks (N = task-pool workers), each recording its own per-slot
+        // SECONDARY command buffer; the batch is posted to the task pool and the recording
+        // priority group is waited on. The primary then executes the segments in order inside
+        // the main rendering instance (VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT).
+        // Rendering is identical to inline (same leaves, same order, same batching per
+        // segment); only the recording is parallel. Shadow + attachment barriers stay on the
+        // primary (see above). The gui overlay (same rendering instance) records on the last
+        // worker as one more task.
         auto const& secondaries = this->secondary_command_buffers[static_cast<std::size_t>(frame_slot)];
-        VkCommandBuffer const main_secondary = *secondaries[static_cast<std::size_t>(secondary_pass::main)];
         VkCommandBuffer const gui_secondary = *secondaries[static_cast<std::size_t>(secondary_pass::gui)];
+        std::vector<vk_command_buffer>& main_segments = this->main_segment_buffers[static_cast<std::size_t>(frame_slot)];
 
-        // Main secondary inherits the color + depth attachments (dynamic rendering 1.3): same
+        // Main secondaries inherit the color + depth attachments (dynamic rendering 1.3): same
         // formats as begin_rendering() below, rasterization samples follow MSAA. The gui
         // overlay draws into the same color+depth instance, so it inherits identically.
         VkFormat const color_format = vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT ? vk.color_format : vk.swap_chain_image_format;
@@ -1126,23 +1145,73 @@ namespace vulkan {
         main_sec_begin.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
         main_sec_begin.pInheritanceInfo = &main_sec_inherit;
 
-        if (vkBeginCommandBuffer(main_secondary, &main_sec_begin) == VK_SUCCESS) {
-            this->record_main_content(main_secondary);
-            vkEndCommandBuffer(main_secondary);
-        } else {
-            utility::log("runtime: main secondary command buffer begin failed - scene skipped this frame");
+        std::size_t const leaf_count = this->frame_visible.size();
+        std::size_t const segment_count = std::min<std::size_t>(main_segments.size(), std::max<std::size_t>(1, leaf_count));
+        if (segment_count == 1 || leaf_count < 4) {
+            // Few leaves: parallel recording would cost more than it saves - record the whole
+            // main pass on one segment (identical to stage 2) on this thread.
+            VkCommandBuffer const single_main = *main_segments[0];
+            if (vkBeginCommandBuffer(single_main, &main_sec_begin) == VK_SUCCESS) {
+                this->record_main_content(single_main);
+                vkEndCommandBuffer(single_main);
+            } else {
+                utility::log("runtime: main secondary begin failed - scene skipped this frame");
+            }
+            if (this->debug_overlay.is_active()) {
+                if (vkBeginCommandBuffer(gui_secondary, &main_sec_begin) == VK_SUCCESS) {
+                    this->debug_overlay.record(gui_secondary);
+                    vkEndCommandBuffer(gui_secondary);
+                } else {
+                    utility::log("runtime: gui secondary begin failed - overlay skipped this frame");
+                }
+            }
+            this->begin_rendering(*command_buffer, this->current_image_index, VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT);
+            vkCmdExecuteCommands(*command_buffer, 1, &single_main);
+            if (this->debug_overlay.is_active()) {
+                vkCmdExecuteCommands(*command_buffer, 1, &gui_secondary);
+            }
+            return;
         }
+
+        // Parallel: slice frame_visible into segment_count contiguous spans; one sub_render_task
+        // per segment records its own secondary on a pool worker (segment 0 also draws the
+        // skybox). The tasks only read shared state (scene set / pipeline caches / the leaf
+        // pointers) and write their own command buffer, so they run concurrently; the recording
+        // priority group is waited on before the primary executes the segments in order.
+        std::vector<std::function<void()>> tasks;
+        tasks.reserve(segment_count);
+        for (std::size_t s = 0; s < segment_count; ++s) {
+            std::size_t const seg_first = leaf_count * s / segment_count;
+            std::size_t const seg_last = leaf_count * (s + 1) / segment_count;
+            sub_render_task task = {};
+            task.command_buffer = *main_segments[s];
+            task.leaves = std::span<primitive const* const>(this->frame_visible.data() + seg_first, seg_last - seg_first);
+            task.draw_skybox = s == 0; // the skybox belongs to the first segment
+            task.color_format = color_format;
+            task.depth_format = vk.depth_format;
+            task.rasterization_samples = vk.msaa_samples;
+            task.owner = this;
+            tasks.emplace_back(std::move(task)); // std::function copies the value task
+        }
+        this->run_tasks(tasks, vulkan::task_priority::recording);
+
+        // The gui overlay records on the PRIMARY thread (its recorder touches the Dear ImGui
+        // global state via ImGui::Render()/GetDrawData, which must stay on one thread - the
+        // pool workers above only recorded scene secondaries, so nothing races it).
         if (this->debug_overlay.is_active()) {
             if (vkBeginCommandBuffer(gui_secondary, &main_sec_begin) == VK_SUCCESS) {
                 this->debug_overlay.record(gui_secondary);
                 vkEndCommandBuffer(gui_secondary);
             } else {
-                utility::log("runtime: gui secondary command buffer begin failed - overlay skipped this frame");
+                utility::log("runtime: gui secondary begin failed - overlay skipped this frame");
             }
         }
 
         this->begin_rendering(*command_buffer, this->current_image_index, VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT);
-        vkCmdExecuteCommands(*command_buffer, 1, &main_secondary);
+        for (std::size_t s = 0; s < segment_count; ++s) {
+            VkCommandBuffer const seg_cb = *main_segments[s];
+            vkCmdExecuteCommands(*command_buffer, 1, &seg_cb);
+        }
         if (this->debug_overlay.is_active()) {
             vkCmdExecuteCommands(*command_buffer, 1, &gui_secondary);
         }
@@ -1184,6 +1253,16 @@ namespace vulkan {
     // for parallel pass recording. The debug overlay stays on the primary (it has its own
     // recording path), so this content is the scene only.
     void runtime::record_main_content(VkCommandBuffer const command_buffer) const {
+        this->record_main_segment(command_buffer, this->frame_visible, this->skybox_pipeline && this->skybox_enabled);
+    }
+
+    // One slice of the main-pass leaves (see the declaration); when draw_skybox the skybox is
+    // drawn first so the background always precedes the scene (segment 0 only). Every segment
+    // binds the scene set itself (a secondary does not inherit state from the primary), then
+    // walks ONLY the given leaves and draws each under its pipeline - each segment re-binds
+    // pipelines it meets (bind cost per segment is accepted for the parallel gain; identical
+    // draws as inline).
+    void runtime::record_main_segment(VkCommandBuffer const command_buffer, std::span<primitive const* const> const leaves, bool const draw_skybox) const {
         core const& vk = this->vulkan_core;
         // Bind this frame slot's scene descriptor set once: every pipeline shares the scene
         // layout, so the set stays valid across pipeline binds and only models vary per draw.
@@ -1200,23 +1279,23 @@ namespace vulkan {
                                     nullptr);
         }
 
-        // Background pass first: the skybox draws a fullscreen triangle (no vertex/index buffers)
-        // with depth test/write disabled, then the models render over it. Skipped when the skybox
-        // stage is toggled off — the frame then just shows the clear color behind the models.
-        // Cull mode is dynamic state: set it explicitly (previously it leaked from the shadow
-        // pass's inline draws; with secondaries that leak is gone, so the skybox states itself).
-        if (this->skybox_pipeline && this->skybox_enabled) {
+        // Background pass first (only the segment that carries it): the skybox draws a fullscreen
+        // triangle (no vertex/index buffers) with depth test/write disabled, then the models
+        // render over it. Cull mode is dynamic state: set it explicitly (previously it leaked
+        // from the shadow pass's inline draws; with secondaries that leak is gone).
+        if (draw_skybox && this->skybox_pipeline && this->skybox_enabled) {
             this->skybox_pipeline->begin_pipeline(command_buffer);
             vkCmdSetCullMode(command_buffer, VK_CULL_MODE_BACK_BIT);
             vkCmdDraw(command_buffer, 3, 1, 0, 0);
         }
 
-        // Main pass: draw the frustum-visible leaves, grouping by their pipeline (each group
-        // binds its pipeline once — same batching as the old flat primitive list)
+        // Main pass: draw this segment's leaves, grouping by their pipeline (each group binds
+        // its pipeline once - same batching as the flat primitive list; pipelines repeat across
+        // segments, which is the accepted cost of parallel recording)
         for (auto const& [pipeline_name, pipeline] : this->pipelines) {
             vk_pipeline const* const wanted = &pipeline;
             bool any = false;
-            for (primitive const* m : this->frame_visible) {
+            for (primitive const* const m : leaves) {
                 if (m->pipeline == wanted) {
                     if (!any) {
                         pipeline.begin_pipeline(command_buffer);
@@ -1226,6 +1305,33 @@ namespace vulkan {
                 }
             }
         }
+    }
+
+    // One parallel recording job (see the declaration): begin the secondary command buffer with
+    // dynamic-rendering inheritance (color + depth attachments, MSAA sample count), record the
+    // segment's leaves (skybox on the carrying segment) and end it. Self-contained - built
+    // fresh each call so the pNext chains point at this invocation's stack structs; safe to run
+    // on any pool worker.
+    void runtime::sub_render_task::operator()() const {
+        VkCommandBufferInheritanceRenderingInfo rendering_inherit = {};
+        rendering_inherit.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO;
+        rendering_inherit.colorAttachmentCount = 1;
+        rendering_inherit.pColorAttachmentFormats = &this->color_format;
+        rendering_inherit.depthAttachmentFormat = this->depth_format;
+        rendering_inherit.rasterizationSamples = this->rasterization_samples;
+        VkCommandBufferInheritanceInfo inherit = {};
+        inherit.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+        inherit.pNext = &rendering_inherit;
+        VkCommandBufferBeginInfo begin = {};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+        begin.pInheritanceInfo = &inherit;
+        if (vkBeginCommandBuffer(this->command_buffer, &begin) != VK_SUCCESS) {
+            utility::log("runtime: main segment secondary begin failed - segment skipped this frame");
+            return;
+        }
+        this->owner->record_main_segment(this->command_buffer, this->leaves, this->draw_skybox);
+        vkEndCommandBuffer(this->command_buffer);
     }
 
     frame_status runtime::end_recording() {

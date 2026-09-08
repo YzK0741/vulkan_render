@@ -193,6 +193,17 @@ namespace vulkan {
         /** @brief allocate a SECONDARY command buffer (recorded inside a render pass / dynamic
          *         rendering instance, executed there via vkCmdExecuteCommands) */
         vk_command_buffer make_secondary_command_buffer() const;
+        /** @brief like make_secondary_command_buffer() but allocated from @p pool (a per-thread
+         *         pool from make_command_pool(); the RAII wrapper frees into that same pool) */
+        vk_command_buffer make_secondary_command_buffer(VkCommandPool pool) const;
+        /**
+         * @brief create an extra graphics command pool (RESET flag set, graphics queue family)
+         *        whose lifetime is tied to this core (destroyed by the registered cleanup).
+         *        Parallel recording needs one pool PER RECORDING THREAD - a single pool's
+         *        command buffers must not be begun concurrently on different threads.
+         * @note not const: registers the pool's destruction on this core (like create_command_pool)
+         */
+        VkCommandPool make_command_pool();
         vk_descriptor_set make_descriptor_set(VkDescriptorSetLayout layout) const;
 
         std::optional<vk_shader_module> make_shader_module(std::span<unsigned char> shader) const noexcept;

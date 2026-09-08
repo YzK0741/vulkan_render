@@ -895,6 +895,30 @@ namespace vulkan {
         return ::vulkan::make_secondary_command_buffer(this->device, this->command_pool);
     }
 
+    vk_command_buffer core::make_secondary_command_buffer(VkCommandPool const pool) const {
+        return ::vulkan::make_secondary_command_buffer(this->device, pool);
+    }
+
+    VkCommandPool core::make_command_pool() {
+        VkCommandPoolCreateInfo pool_info = {};
+        pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pool_info.queueFamilyIndex = this->graphics_family_index;
+
+        VkCommandPool pool = VK_NULL_HANDLE;
+        if (vkCreateCommandPool(this->device, &pool_info, nullptr, &pool) != VK_SUCCESS) {
+            utility::panic("failed to create extra command pool");
+        }
+        // lifetime tied to this core: the pool is destroyed by the registered cleanup (LIFO,
+        // after every command buffer allocated from it was freed by its RAII owner)
+        this->register_cleanup([this, pool] {
+            if (pool != VK_NULL_HANDLE) {
+                vkDestroyCommandPool(this->device, pool, nullptr);
+            }
+        });
+        return pool;
+    }
+
     vk_descriptor_set core::make_descriptor_set(VkDescriptorSetLayout const layout) const { // NOLINT(*-misplaced-const)
         return ::vulkan::make_descriptor_set(this->device, this->descriptor_pool, layout);
     }
