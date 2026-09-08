@@ -964,27 +964,10 @@ namespace vulkan {
                 shadow_rendering_info.pDepthAttachment = &shadow_depth_attachment;
                 vkCmdBeginRendering(*command_buffer, &shadow_rendering_info);
 
-                // Bind the shared scene set (the light UBO binding 7) and the shadow pipeline,
-                //     then draw every primitive exactly like the main pass (polymorphic primitive::draw)
-                if (this->scene_set_created) {
-                    VkDescriptorSet const scene_set_handle = *this->scene_sets[static_cast<std::size_t>(frame_slot)];
-                    vkCmdBindDescriptorSets(*command_buffer,
-                                            VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                            vk.scene_pipeline_layout,
-                                            0,
-                                            1,
-                                            &scene_set_handle,
-                                            0,
-                                            nullptr);
-                }
-                this->shadow_pipeline->begin_pipeline(*command_buffer);
-                // depth bias is dynamic state on the shadow pipeline: record the live-tunable
-                // values (gui-adjustable) before the depth-only draw
-                vkCmdSetDepthBias(*command_buffer, this->shadow_depth_bias_constant, this->shadow_depth_bias_clamp, this->shadow_depth_bias_slope);
-                // draw every scene-tree leaf (the whole scene casts shadows)
-                for (primitive const* m : this->frame_leaves) {
-                    m->draw(*command_buffer); // depth-only: shadow.vert transforms into light space
-                }
+                // Draw the depth-only content into the shadow rendering instance: bind the
+                // shared scene set + shadow pipeline, apply the live depth bias, draw every
+                // scene-tree leaf (the whole scene casts shadows).
+                this->record_shadow_content(*command_buffer);
                 vkCmdEndRendering(*command_buffer);
 
                 // Hand the shadow map back to the main pass as a sampled texture
@@ -1053,24 +1036,10 @@ namespace vulkan {
 
         this->begin_rendering(*command_buffer, this->current_image_index);
 
-        // Bind this frame slot's scene descriptor set once: every pipeline shares the scene
-        // layout, so the set stays valid across pipeline binds and only models vary per draw.
-        // Each slot's set always points at that slot's own camera/shadow/skin/morph resources.
-        if (this->scene_set_created) {
-            VkDescriptorSet const scene_set_handle = *this->scene_sets[static_cast<std::size_t>(vk.current_frame)];
-            vkCmdBindDescriptorSets(*command_buffer,
-                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    vk.scene_pipeline_layout,
-                                    0,
-                                    1,
-                                    &scene_set_handle,
-                                    0,
-                                    nullptr);
-        }
-
         // Pipelines cache a fullscreen viewport/scissor at creation; after a resize the swapchain
         // extent changed, so resync them from the current extent before drawing (begin_pipeline
-        // applies the stored values)
+        // applies the stored values). Done here on the primary thread (it mutates the cached
+        // pipeline state), before the scene content below is recorded - inline or in secondaries.
         VkViewport const full_viewport = {
             0.0f,
             0.0f,
@@ -1089,12 +1058,76 @@ namespace vulkan {
             this->skybox_pipeline->scissor = full_scissor;
         }
 
+        // Scene content: bind the scene set, draw the skybox background (when enabled) then
+        // every pipeline's visible leaves (see record_main_content).
+        this->record_main_content(*command_buffer);
+
+        // Debug overlay: draw the ImGui frame into the STILL OPEN main rendering instance (the
+        // same MSAA color attachment the scene just rendered into, resolved together at
+        // end_recording()). record() runs the registered UI builder and emits the draw data.
+        if (this->debug_overlay.is_active()) {
+            this->debug_overlay.record(*command_buffer);
+        }
+    }
+
+    // Depth-only shadow-pass content: bind the shared scene set (the light UBO binding 7) +
+    // the shadow pipeline, apply the live depth bias and draw every scene-tree leaf (the whole
+    // scene casts shadows). Pure bind/push/draw commands - the caller owns the barriers and
+    // the depth-only rendering instance around it. Recorded inline today; stage 2 records the
+    // same content into a per-slot secondary command buffer for parallel pass recording.
+    void runtime::record_shadow_content(VkCommandBuffer const command_buffer) const {
+        core const& vk = this->vulkan_core;
+        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
+        if (this->scene_set_created) {
+            VkDescriptorSet const scene_set_handle = *this->scene_sets[static_cast<std::size_t>(frame_slot)];
+            vkCmdBindDescriptorSets(command_buffer,
+                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    vk.scene_pipeline_layout,
+                                    0,
+                                    1,
+                                    &scene_set_handle,
+                                    0,
+                                    nullptr);
+        }
+        this->shadow_pipeline->begin_pipeline(command_buffer);
+        // depth bias is dynamic state on the shadow pipeline: record the live-tunable values
+        // (gui-adjustable) before the depth-only draw
+        vkCmdSetDepthBias(command_buffer, this->shadow_depth_bias_constant, this->shadow_depth_bias_clamp, this->shadow_depth_bias_slope);
+        for (primitive const* m : this->frame_leaves) {
+            m->draw(command_buffer); // depth-only: shadow.vert transforms into light space
+        }
+    }
+
+    // Main-pass scene content: bind this frame slot's scene set, draw the skybox background
+    // (when enabled) then every pipeline's visible leaves. Pure bind/push/draw commands - the
+    // caller owns the barriers + the color/depth rendering instance around it (and the
+    // viewport/scissor resync, which updates the cached pipeline state on the CPU). Recorded
+    // inline today; stage 2 records the same content into a per-slot secondary command buffer
+    // for parallel pass recording. The debug overlay stays on the primary (it has its own
+    // recording path), so this content is the scene only.
+    void runtime::record_main_content(VkCommandBuffer const command_buffer) const {
+        core const& vk = this->vulkan_core;
+        // Bind this frame slot's scene descriptor set once: every pipeline shares the scene
+        // layout, so the set stays valid across pipeline binds and only models vary per draw.
+        // Each slot's set always points at that slot's own camera/shadow/skin/morph resources.
+        if (this->scene_set_created) {
+            VkDescriptorSet const scene_set_handle = *this->scene_sets[static_cast<std::size_t>(vk.current_frame)];
+            vkCmdBindDescriptorSets(command_buffer,
+                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    vk.scene_pipeline_layout,
+                                    0,
+                                    1,
+                                    &scene_set_handle,
+                                    0,
+                                    nullptr);
+        }
+
         // Background pass first: the skybox draws a fullscreen triangle (no vertex/index buffers)
         // with depth test/write disabled, then the models render over it. Skipped when the skybox
         // stage is toggled off — the frame then just shows the clear color behind the models.
         if (this->skybox_pipeline && this->skybox_enabled) {
-            this->skybox_pipeline->begin_pipeline(*command_buffer);
-            vkCmdDraw(*command_buffer, 3, 1, 0, 0);
+            this->skybox_pipeline->begin_pipeline(command_buffer);
+            vkCmdDraw(command_buffer, 3, 1, 0, 0);
         }
 
         // Main pass: draw the frustum-visible leaves, grouping by their pipeline (each group
@@ -1105,19 +1138,12 @@ namespace vulkan {
             for (primitive const* m : this->frame_visible) {
                 if (m->pipeline == wanted) {
                     if (!any) {
-                        pipeline.begin_pipeline(*command_buffer);
+                        pipeline.begin_pipeline(command_buffer);
                         any = true;
                     }
-                    m->draw(*command_buffer); // polymorphic: normal / instanced / ...
+                    m->draw(command_buffer); // polymorphic: normal / instanced / ...
                 }
             }
-        }
-
-        // Debug overlay: draw the ImGui frame into the STILL OPEN main rendering instance (the
-        // same MSAA color attachment the scene just rendered into, resolved together at
-        // end_recording()). record() runs the registered UI builder and emits the draw data.
-        if (this->debug_overlay.is_active()) {
-            this->debug_overlay.record(*command_buffer);
         }
     }
 

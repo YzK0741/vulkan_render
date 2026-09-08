@@ -77,6 +77,24 @@ namespace vulkan {
 
         return vk_command_buffer(buffer, device, command_pool);
     }
+
+    vk_command_buffer make_secondary_command_buffer(VkDevice const device, VkCommandPool const command_pool) noexcept {
+        VkCommandBuffer buffer = VK_NULL_HANDLE;
+
+        VkCommandBufferAllocateInfo allocate_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .commandPool = command_pool,
+            .level = VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+            .commandBufferCount = 1,
+        };
+
+        if (vkAllocateCommandBuffers(device, &allocate_info, &buffer) != VK_SUCCESS) {
+            utility::panic("failed to allocate secondary command buffer");
+        }
+
+        return vk_command_buffer(buffer, device, command_pool);
+    }
 } // namespace vulkan
 
 // vk_descriptor_set

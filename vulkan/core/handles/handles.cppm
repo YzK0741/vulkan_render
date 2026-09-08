@@ -46,6 +46,15 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_handles
+     * @param device valid VkDevice
+     * @param command_pool valid VkCommandPool
+     * @return raii secondary VkCommandBuffer wrapper (level SECONDARY; recorded inside a render
+     *         pass / dynamic rendering instance and executed there via vkCmdExecuteCommands)
+     */
+    export vk_command_buffer make_secondary_command_buffer(VkDevice device, VkCommandPool command_pool) noexcept;
+
+    /**
+     * @ingroup vulkan_handles
      * @brief raii wrapper of VkDescriptorSet
      * @note
      *     - use operator* or get() to get naked handle

@@ -475,6 +475,31 @@ namespace vulkan {
         frame_status begin_recording();
         /** @brief record the shadow pass, the attachment transitions and the main scene pass */
         void record_main_drawcalls();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief record the depth-only shadow-pass drawing content into @p command_buffer:
+         *        bind the shared scene set + shadow pipeline, set the live depth bias, draw
+         *        every scene leaf. The caller frames it (already inside the shadow rendering
+         *        instance, depth-only).
+         * @note extracted from record_main_drawcalls() so the same content can be recorded
+         *       inline (stage 1) or into a per-slot secondary command buffer (stage 2,
+         *       parallel recording) - only bind/push/draw commands, no barriers / begin-end.
+         */
+        void record_shadow_content(VkCommandBuffer command_buffer) const;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief record the main-pass scene content into @p command_buffer: bind the shared
+         *        scene set, draw the skybox background (when enabled) then every pipeline's
+         *        visible leaves. The caller frames it (already inside the main rendering
+         *        instance with color+depth attachments).
+         * @note extracted from record_main_drawcalls() so the same content can be recorded
+         *       inline (stage 1) or into a per-slot secondary command buffer (stage 2,
+         *       parallel recording) - only bind/push/draw commands, no barriers / begin-end.
+         */
+        void record_main_content(VkCommandBuffer command_buffer) const;
+
         /** @brief the command buffer currently being recorded (between begin_recording() and
          *         end_recording()); internal use for the runtime's own recording */
         [[nodiscard]] VkCommandBuffer active_command_buffer() const noexcept;

@@ -891,6 +891,10 @@ namespace vulkan {
         return ::vulkan::make_command_buffer(this->device, this->command_pool);
     }
 
+    vk_command_buffer core::make_secondary_command_buffer() const {
+        return ::vulkan::make_secondary_command_buffer(this->device, this->command_pool);
+    }
+
     vk_descriptor_set core::make_descriptor_set(VkDescriptorSetLayout const layout) const { // NOLINT(*-misplaced-const)
         return ::vulkan::make_descriptor_set(this->device, this->descriptor_pool, layout);
     }

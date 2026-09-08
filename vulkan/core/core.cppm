@@ -190,6 +190,9 @@ namespace vulkan {
         ~core();
 
         vk_command_buffer make_command_buffer() const;
+        /** @brief allocate a SECONDARY command buffer (recorded inside a render pass / dynamic
+         *         rendering instance, executed there via vkCmdExecuteCommands) */
+        vk_command_buffer make_secondary_command_buffer() const;
         vk_descriptor_set make_descriptor_set(VkDescriptorSetLayout layout) const;
 
         std::optional<vk_shader_module> make_shader_module(std::span<unsigned char> shader) const noexcept;
