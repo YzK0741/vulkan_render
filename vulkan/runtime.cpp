@@ -1273,14 +1273,23 @@ namespace vulkan {
                                     0,
                                     nullptr);
         }
-        this->shadow_pipeline->begin_pipeline(command_buffer);
         // depth bias is dynamic state on the shadow pipeline: record the live-tunable values
         // (gui-adjustable) before the depth-only draw
         vkCmdSetDepthBias(command_buffer, this->shadow_depth_bias_constant, this->shadow_depth_bias_clamp, this->shadow_depth_bias_slope);
+        // Shadow pass render_environment: every leaf draws into the DEPTH-ONLY shadow map, so
+        // the binder ignores the requested pipeline name and always binds the shadow pipeline -
+        // whatever a custom leaf would draw in the main pass, its geometry still casts the same
+        // shadow. Default-semantics leaves hit bind_default() and land here too.
+        render_environment env;
+        env.default_name = "shadow"; // binder ignores the name; kept for in_default_pipeline()
+        env.bind = [this](VkCommandBuffer const cb, std::string_view const /*name*/) {
+            this->shadow_pipeline->begin_pipeline(cb);
+        };
+        env.layout = vk.scene_pipeline_layout;
         // draw only the casters that can throw a shadow into the camera frustum (see
         // shadow_casters in begin_recording); the whole scene only when culling is disabled
         for (primitive const* m : this->shadow_casters) {
-            m->draw(command_buffer); // depth-only: shadow.vert transforms into light space
+            m->draw(command_buffer, env); // depth-only: shadow.vert transforms into light space
         }
     }
 
@@ -1298,9 +1307,10 @@ namespace vulkan {
     // One slice of the main-pass leaves (see the declaration); when draw_skybox the skybox is
     // drawn first so the background always precedes the scene (segment 0 only). Every segment
     // binds the scene set itself (a secondary does not inherit state from the primary), then
-    // walks ONLY the given leaves and draws each under its pipeline - each segment re-binds
-    // pipelines it meets (bind cost per segment is accepted for the parallel gain; identical
-    // draws as inline).
+    // walks ONLY the given leaves, drawing each through its render_environment: default-semantics
+    // leaves request the runtime's default pipeline (bind_default, deduplicated), custom leaves
+    // request theirs by name - so leaves of several pipelines mix freely in one segment and
+    // each pipeline is bound only when the current one differs.
     void runtime::record_main_segment(VkCommandBuffer const command_buffer, std::span<primitive const* const> const leaves, bool const draw_skybox) const {
         core const& vk = this->vulkan_core;
         // Bind this frame slot's scene descriptor set once: every pipeline shares the scene
@@ -1328,21 +1338,22 @@ namespace vulkan {
             vkCmdDraw(command_buffer, 3, 1, 0, 0);
         }
 
-        // Main pass: draw this segment's leaves, grouping by their pipeline (each group binds
-        // its pipeline once - same batching as the flat primitive list; pipelines repeat across
-        // segments, which is the accepted cost of parallel recording)
-        for (auto const& [pipeline_name, pipeline] : this->pipelines) {
-            vk_pipeline const* const wanted = &pipeline;
-            bool any = false;
-            for (primitive const* const m : leaves) {
-                if (m->pipeline == wanted) {
-                    if (!any) {
-                        pipeline.begin_pipeline(command_buffer);
-                        any = true;
-                    }
-                    m->draw(command_buffer); // polymorphic: normal / instanced / ...
-                }
+        // Main pass: one render_environment per segment (per recording thread - never shared
+        // across the parallel workers). Its binder looks the requested pipeline up in the
+        // runtime cache and binds it; default-semantics leaves ask for the runtime default.
+        render_environment env;
+        env.available = this->pipeline_names;
+        env.default_name = this->default_pipeline_name;
+        env.bind = [this](VkCommandBuffer const cb, std::string_view const name) {
+            if (auto const it = this->pipelines.find(name); it != this->pipelines.end()) {
+                it->second.begin_pipeline(cb);
+            } else {
+                utility::log("runtime: main pass references unknown pipeline '{}' - draw skipped", name);
             }
+        };
+        env.layout = vk.scene_pipeline_layout;
+        for (primitive const* const m : leaves) {
+            m->draw(command_buffer, env); // polymorphic: normal / instanced / static / custom
         }
     }
 
@@ -1494,12 +1505,25 @@ namespace vulkan {
 
     std::expected<void, std::string> runtime::make_pipeline(std::string_view pipeline_name, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code) {
         using fail = std::unexpected<std::string>;
+        if (this->pipelines.contains(pipeline_name)) {
+            return fail(std::string("pipeline '") + std::string(pipeline_name) + "' already exists");
+        }
         auto make_result = this->vulkan_core.make_pipeline(vertex_shader_code, fragment_shader_code);
         if (!make_result) {
             return fail(make_result.error());
         }
         this->pipelines.emplace(pipeline_name, std::move(make_result).value());
+        this->pipeline_names.emplace_back(pipeline_name); // stable name table (see runtime.cppm)
+        if (this->default_pipeline_name.empty()) {
+            this->default_pipeline_name = pipeline_name; // first pipeline is the implicit default
+        }
         return {};
+    }
+
+    void runtime::set_default_pipeline(std::string_view const pipeline_name) {
+        if (this->pipelines.contains(pipeline_name)) {
+            this->default_pipeline_name = pipeline_name;
+        }
     }
 
     std::expected<void, std::string> runtime::make_shadow_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code) {
@@ -1609,14 +1633,16 @@ namespace vulkan {
     }
 
     std::unique_ptr<primitive> runtime::create_primitive(std::string_view const pipeline_name, primitive_create_info const& info) {
-        vk_pipeline const* pipeline = this->get_pipeline(pipeline_name);
-        if (pipeline == nullptr) {
+        // The pipeline must exist (the caller names the pipeline this geometry is for), but a
+        // normal_draw_primitive has DEFAULT semantics: it does not store the name, it draws with
+        // whatever pipeline the recording pass binds as default (render_environment). A custom
+        // draw strategy that needs a specific pipeline stores its own name and requests it.
+        if (!this->pipelines.contains(pipeline_name)) {
             return nullptr;
         }
         this->ensure_scene_set();
 
         auto result = std::make_unique<normal_draw_primitive>();
-        result->pipeline = pipeline;
 
         // ---- geometry buffers ----
         result->vertex_buffer = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex);
@@ -1690,10 +1716,6 @@ namespace vulkan {
         if (count == 0 || this->instance_mapped == nullptr || !source.is_valid()) {
             return nullptr;
         }
-        vk_pipeline const* pipeline = this->get_pipeline("pbr");
-        if (pipeline == nullptr) {
-            return nullptr;
-        }
         this->ensure_scene_set();
 
         // The instance buffer is one shared region; THIS primitive gets the slice starting at
@@ -1707,7 +1729,8 @@ namespace vulkan {
                     static_cast<size_t>(count) * sizeof(glm::mat4));
 
         auto result = std::make_unique<instanced_draw_primitive>();
-        result->pipeline = pipeline;
+        // same pipeline semantics as the source geometry it draws (empty = default semantics)
+        result->pipeline_name = source.pipeline_name;
         result->source = &source; // geometry owner; must stay in this runtime's scene tree
         result->instance_count = count;
         result->push.material_index = source.push.material_index;
@@ -1727,14 +1750,14 @@ namespace vulkan {
         if (info.vertex_count == 0 || info.index_data.empty() || info.chunks.empty()) {
             return nullptr; // nothing to draw: no vertices, no indices, or no chunks
         }
-        vk_pipeline const* pipeline = this->get_pipeline("pbr");
-        if (pipeline == nullptr) {
+        // Default-semantics draw (like normal_draw_primitive): static geometry renders with the
+        // runtime's default pipeline, which must exist by now (the first make_pipeline() set it).
+        if (this->default_pipeline_name.empty() || !this->pipelines.contains(this->default_pipeline_name)) {
             return nullptr;
         }
         this->ensure_scene_set();
 
         auto result = std::make_unique<static_draw_primitive>();
-        result->pipeline = pipeline;
 
         // ---- merged geometry buffers (owned by this primitive) ----
         result->vertex_buffer = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex);
@@ -1811,17 +1834,18 @@ namespace vulkan {
     }
 
     std::vector<primitive const*> runtime::get_primitives(std::string_view const pipeline_name) const noexcept {
-        vk_pipeline const* const wanted = this->get_pipeline(pipeline_name);
-        if (wanted == nullptr) {
-            return {};
-        }
+        // match by the pipeline a leaf effectively draws with: an explicit pipeline_name, or the
+        // runtime default for default-semantics leaves (empty pipeline_name)
+        auto const effective = [this](primitive const& m) -> std::string_view {
+            return m.pipeline_name.empty() ? std::string_view(this->default_pipeline_name) : m.pipeline_name;
+        };
         std::vector<primitive const*> result;
         for (scene_tree::scene_node const& root : this->get_scene().roots) {
-            // collect every leaf whose primitive binds the requested pipeline (models record their
-            // pipeline in primitive->pipeline; the scene tree just organizes them)
+            // collect every leaf whose primitive draws with the requested pipeline (leaves name
+            // their pipeline, or fall back to the runtime default; the tree just organizes them)
             scene_tree::visit_primitives(root, glm::mat4(1.0f), [&](scene_tree::scene_node const& n, glm::mat4 const&) {
                 auto const* m = static_cast<primitive const*>(n.primitive_leaf.get());
-                if (m->pipeline == wanted) {
+                if (effective(*m) == pipeline_name) {
                     result.push_back(m);
                 }
             });
@@ -1830,18 +1854,19 @@ namespace vulkan {
     }
 
     void runtime::clear_primitives(std::string_view const pipeline_name) {
-        vk_pipeline const* const unwanted = this->get_pipeline(pipeline_name);
-        if (unwanted == nullptr) {
-            return;
-        }
-        // DFS remove: erase every leaf primitive bound to the pipeline, wherever it sits in the tree
-        // (imported scenes nest leaves under hierarchy nodes; make_primitive attaches them at roots).
-        // A node whose leaf matches is stripped of that leaf; it (or an ancestor) is dropped only
-        // when nothing remains below it, so models of other pipelines in the subtree survive.
-        auto& roots = this->get_scene().roots;
-        auto const matches = [unwanted](scene_tree::scene_node const& node) {
-            return node.primitive_leaf != nullptr && static_cast<primitive const*>(node.primitive_leaf.get())->pipeline == unwanted;
+        auto const matches = [this, pipeline_name](scene_tree::scene_node const& node) {
+            if (node.primitive_leaf == nullptr) {
+                return false;
+            }
+            auto const* const m = static_cast<primitive const*>(node.primitive_leaf.get());
+            std::string_view const effective = m->pipeline_name.empty() ? std::string_view(this->default_pipeline_name) : m->pipeline_name;
+            return effective == pipeline_name;
         };
+        // DFS remove: erase every leaf primitive drawing with the pipeline, wherever it sits in
+        // the tree (imported scenes nest leaves under hierarchy nodes; make_primitive attaches
+        // them at roots). A node whose leaf matches is stripped of that leaf; it (or an ancestor)
+        // is dropped only when nothing remains below it, so models of other pipelines survive.
+        auto& roots = this->get_scene().roots;
         // prune(node) -> true when the node is now empty (no leaf, no children) and should be dropped
         auto const prune = [&](auto&& self, scene_tree::scene_node& node) -> bool {
             for (auto it = node.children.begin(); it != node.children.end();) {

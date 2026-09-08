@@ -161,24 +161,30 @@ namespace vulkan {
     }
 
     // shared recording for draw strategies that render this object's own geometry with its
-    // push constants (normal_draw_primitive; instanced_draw_primitive overrides both pieces)
-    void primitive::bind_geometry_and_push(VkCommandBuffer const command_buffer) const {
+    // push constants (normal_draw_primitive; instanced_draw_primitive overrides both pieces).
+    // The push-constant layout is the environment's shared scene layout - every pipeline shares
+    // it, so pushing does not depend on which pipeline is currently bound.
+    void primitive::bind_geometry_and_push(VkCommandBuffer const command_buffer, render_environment const& env) const {
         constexpr VkDeviceSize vertex_offset = 0;
         vkCmdBindVertexBuffers(command_buffer, 0, 1, &this->vertex_detail->buffer, &vertex_offset);
         vkCmdBindIndexBuffer(command_buffer, this->index_detail->buffer, 0, this->index_type);
 
         vkCmdPushConstants(command_buffer,
-                           this->pipeline->get_pipeline_layout(),
+                           env.layout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0,
                            sizeof(this->push),
                            &this->push);
     }
 
-    void normal_draw_primitive::draw(VkCommandBuffer const command_buffer) const {
-        // double-sided materials keep back faces (dynamic cull mode, Vulkan 1.3 core)
+    // Default-semantics draws (normal / instanced / static): request the recording session's
+    // default pipeline - bind_default() no-ops when it is already bound, so consecutive leaves
+    // of the same pass share one bind. Cull mode stays per draw (dynamic state, pipeline
+    // independent): double-sided materials keep back faces.
+    void normal_draw_primitive::draw(VkCommandBuffer const command_buffer, render_environment& env) const {
+        env.bind_default(command_buffer);
         vkCmdSetCullMode(command_buffer, this->double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
-        this->bind_geometry_and_push(command_buffer);
+        this->bind_geometry_and_push(command_buffer, env);
         vkCmdDrawIndexed(command_buffer, this->index_count, 1, 0, 0, 0);
     }
 
@@ -196,10 +202,11 @@ namespace vulkan {
 
     bool normal_draw_primitive::is_valid() const noexcept {
         return this->vertex_detail != nullptr && this->index_detail != nullptr &&
-               this->index_count != 0 && this->pipeline != nullptr;
+               this->index_count != 0;
     }
 
-    void instanced_draw_primitive::draw(VkCommandBuffer const command_buffer) const {
+    void instanced_draw_primitive::draw(VkCommandBuffer const command_buffer, render_environment& env) const {
+        env.bind_default(command_buffer);
         // geometry belongs to source: bind ITS buffers, then draw it instance_count times;
         // push flag bit0 makes pbr.vert pick instances[gl_InstanceIndex] per instance
         primitive const& geometry_source = *this->source;
@@ -209,7 +216,7 @@ namespace vulkan {
         vkCmdBindIndexBuffer(command_buffer, geometry_source.index_detail->buffer, 0, geometry_source.index_type);
 
         vkCmdPushConstants(command_buffer,
-                           this->pipeline->get_pipeline_layout(),
+                           env.layout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0,
                            sizeof(this->push),
@@ -222,11 +229,11 @@ namespace vulkan {
     }
 
     bool instanced_draw_primitive::is_valid() const noexcept {
-        return this->source != nullptr && this->source->is_valid() && this->instance_count != 0 &&
-               this->pipeline != nullptr;
+        return this->source != nullptr && this->source->is_valid() && this->instance_count != 0;
     }
 
-    void static_draw_primitive::draw(VkCommandBuffer const command_buffer) const {
+    void static_draw_primitive::draw(VkCommandBuffer const command_buffer, render_environment& env) const {
+        env.bind_default(command_buffer);
         // ONE bind for the whole merged geometry, then one offset draw per chunk (each chunk
         // pushes its own material_index — the batch shares push.model, set by update_world)
         constexpr VkDeviceSize vertex_offset_bytes = 0;
@@ -237,7 +244,7 @@ namespace vulkan {
             // degenerate: draw the whole merged range once (plain normal draw)
             vkCmdSetCullMode(command_buffer, this->double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
             vkCmdPushConstants(command_buffer,
-                               this->pipeline->get_pipeline_layout(),
+                               env.layout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0,
                                sizeof(this->push),
@@ -256,7 +263,7 @@ namespace vulkan {
                 return p;
             }();
             vkCmdPushConstants(command_buffer,
-                               this->pipeline->get_pipeline_layout(),
+                               env.layout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0,
                                sizeof(chunk_push),
@@ -283,7 +290,7 @@ namespace vulkan {
     }
 
     bool static_draw_primitive::is_valid() const noexcept {
-        if (this->vertex_detail == nullptr || this->index_detail == nullptr || this->pipeline == nullptr) {
+        if (this->vertex_detail == nullptr || this->index_detail == nullptr) {
             return false;
         }
         return this->chunks.empty()

@@ -201,6 +201,15 @@ namespace vulkan {
         // lookup, so the string_view-based API (get_pipeline / ...) still works without
         // constructing a std::string per call.
         std::map<std::string, vk_pipeline, std::less<>> pipelines;
+        // stable name table mirroring the pipelines map (same order as insertion): every
+        // make_pipeline() appends the name, nothing removes, so a std::span over it (handed to
+        // render_environment::available) stays valid for the runtime's lifetime.
+        std::vector<std::string> pipeline_names = {};
+        // name of the runtime's default pipeline: primitives with DEFAULT semantics (empty
+        // pipeline_name) draw with it. Set implicitly to the FIRST created pipeline, or
+        // explicitly via set_default_pipeline(); the shadow pass never consults it (its env
+        // default is the shadow pipeline).
+        std::string default_pipeline_name = {};
         // Scene storage: a scene tree of nodes with local transforms + children; every primitive
         // (normal_draw_primitive / instanced_draw_primitive) lives in a node's primitive leaf. The frame
         // record phase walks the tree once per frame: update_world() accumulates world matrices into each
@@ -598,10 +607,30 @@ namespace vulkan {
          *         present_failed on fatal errors */
         frame_status submit_and_present();
 
+        /**
+         * @ingroup vulkan_runtime
+         * @brief create a named pipeline from raw SPIR-V and cache it in the runtime. The first
+         *        pipeline created becomes the runtime's DEFAULT pipeline (implicitly); primitives
+         *        with default semantics draw with it. Every pipeline shares the scene set layout,
+         *        so any number of them can coexist in one scene (leaves choose by name).
+         * @param pipeline_name the pipeline's name (used by primitives to request it, and by
+         *        render_environment to bind it); must be unique
+         * @param vertex_shader_code raw SPIR-V binary of the vertex shader
+         * @param fragment_shader_code raw SPIR-V binary of the fragment shader
+         * @return success, or an error message on failure
+         */
         std::expected<void, std::string> make_pipeline(
             std::string_view pipeline_name,
             std::span<unsigned char const> vertex_shader_code,
             std::span<unsigned char const> fragment_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief make @p pipeline_name the runtime's default pipeline (the one default-semantics
+         *        primitives draw with; see make_pipeline for the implicit first-pipeline default)
+         * @param pipeline_name a pipeline previously created via make_pipeline()
+         */
+        void set_default_pipeline(std::string_view pipeline_name);
 
         /**
          * @ingroup vulkan_runtime

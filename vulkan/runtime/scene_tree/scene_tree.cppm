@@ -6,6 +6,7 @@ module;
 export module vulkan.runtime.scene_tree;
 export import std;
 export import vulkan.core;
+export import vulkan.render_environment;
 
 /**
  * @file scene_tree.cppm
@@ -558,9 +559,16 @@ namespace vulkan {
         uint32_t index_count = 0;
         uint32_t vertex_count = 0;
 
-        // pipeline the primitive binds against (points into the runtime's pipeline cache; valid
-        // for the runtime's lifetime) and the material push constants (material_index + model)
-        vk_pipeline const* pipeline = nullptr;
+        // Pipeline the primitive draws with. Empty = DEFAULT semantics: the primitive does not
+        // care which pipeline records it, it asks the draw-time render_environment to bind that
+        // session's default (normal / instanced / static draws all work this way - they draw
+        // with whatever default the recording pass set). Non-empty = an explicit pipeline name
+        // the primitive requests through render_environment::bind_pipeline (custom draw
+        // strategies). Never a vk_pipeline pointer: pipelines live in the runtime's cache and
+        // are reached by name through the environment, so the scene tree stays independent of
+        // pipeline objects.
+        std::string_view pipeline_name = {};
+        // the material push constants (material_index + model)
         material_push_constants push = {};
         bool double_sided = false; // glTF doubleSided: disable back-face culling (per draw)
 
@@ -604,17 +612,22 @@ namespace vulkan {
         void set_world(glm::mat4 const& world) override;
 
         /**
-         * @brief record the primitive's draw commands (the runtime already bound the pipeline
-         *        and the shared scene descriptor set)
+         * @brief record the primitive's draw commands (the shared scene descriptor set is bound
+         *        by the caller; the pipeline the primitive draws with comes from @p env)
          * @param command_buffer the command buffer being recorded
+         * @param env the recording session's render environment: default / named pipeline
+         *        binding (deduplicated) + the shared push-constant layout. One instance per
+         *        recording thread, never shared across workers.
          */
-        virtual void draw(VkCommandBuffer command_buffer) const = 0;
+        virtual void draw(VkCommandBuffer command_buffer, render_environment& env) const = 0;
         virtual void destroy(vma_allocator& vma) noexcept = 0;
         [[nodiscard]] virtual bool is_valid() const noexcept = 0;
 
     protected:
         // shared recording: bind this object's geometry buffers and push the push constants
-        void bind_geometry_and_push(VkCommandBuffer command_buffer) const;
+        // (the push-constant layout is the environment's shared scene layout, valid for every
+        // pipeline - push does not depend on which pipeline is currently bound)
+        void bind_geometry_and_push(VkCommandBuffer command_buffer, render_environment const& env) const;
     };
 
     /**
@@ -623,7 +636,7 @@ namespace vulkan {
      */
     export class normal_draw_primitive final : public primitive {
     public:
-        void draw(VkCommandBuffer command_buffer) const override;
+        void draw(VkCommandBuffer command_buffer, render_environment& env) const override;
         void destroy(vma_allocator& vma) noexcept override;
         [[nodiscard]] bool is_valid() const noexcept override;
     };
@@ -640,7 +653,7 @@ namespace vulkan {
         primitive const* source = nullptr;
         uint32_t instance_count = 0;
 
-        void draw(VkCommandBuffer command_buffer) const override;
+        void draw(VkCommandBuffer command_buffer, render_environment& env) const override;
         void destroy(vma_allocator& vma) noexcept override;
         [[nodiscard]] bool is_valid() const noexcept override;
     };
@@ -718,7 +731,7 @@ namespace vulkan {
         };
         std::vector<chunk_record> chunks = {};
 
-        void draw(VkCommandBuffer command_buffer) const override;
+        void draw(VkCommandBuffer command_buffer, render_environment& env) const override;
         void destroy(vma_allocator& vma) noexcept override;
         [[nodiscard]] bool is_valid() const noexcept override;
     };

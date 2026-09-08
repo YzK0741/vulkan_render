@@ -114,6 +114,7 @@ target_sources(vulkancorekit
         vulkan/runtime.cppm
         vulkan/core/pipeline/spirv_parser.cppm
         vulkan/runtime/scene_tree/scene_tree.cppm
+        vulkan/render_environment/render_environment.cppm
         vulkan/gui/gui.cppm
         vulkan/animation/animation_controller.cppm
     PRIVATE
