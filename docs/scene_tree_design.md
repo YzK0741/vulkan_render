@@ -3,7 +3,8 @@
 Status: migration complete — storage, import and the render loop are tree-driven;
 `vulkan.runtime.scene_tree` is the single scene-tree module (scene storage + GPU
 primitives, absorbed the former `vulkan.model`); per-node transforms work through
-`runtime::get_scene()` + the `spin-subtree` demo, and keyframe TRS animation,
+`runtime::get_scene()` and the per-frame animation writes (the former `spin` /
+`spin-subtree` demo modes were removed), and keyframe TRS animation,
 skinning and morph targets play through the same per-node locals (see §8 —
 loader sampling in `gltf_loader`, per-frame playback / skin matrices / morph
 weights in `main`). The scene tree is **caller-owned**: `main` declares the
@@ -321,12 +322,13 @@ Status, kept in sync with git history:
   fps unchanged, instancing grid + spin demo still render.
 - ✅ **3 — Whole-scene + per-node transform API** (`4ee1b82`, `74b18bc`, `9cc791a`).
   `runtime::set_scene_transform` applies one world matrix on top of every root
-  (identity default = unchanged rendering); main's `argv[2]/argv[3] == "spin"`
-  demo spins the whole scene around its sink. `runtime::scene()` exposes the tree
-  so callers edit per-node `local` in place (structure is fixed after import);
-  `argv[2]/argv[3] == "spin-subtree"` rotates one primitive-leaf node about its own
-  position — on the Hierarchy asset a single helmet spins while its sibling stays
-  put (per-node transform over the 2b hierarchy).
+  (identity default = unchanged rendering); the then-current `argv == "spin"`
+  demo spun the whole scene around its sink (demo modes were removed later).
+  `runtime::scene()` exposes the tree so callers edit per-node `local` in place
+  (structure is fixed after import); the `"spin-subtree"` demo rotated one
+  primitive-leaf node about its own position — on the Hierarchy asset a single
+  helmet spun while its sibling stayed put (per-node transform over the 2b
+  hierarchy).
 - ✅ **4 — Remove the flat `models` map.** No flat storage remains.
 - ✅ **4b — Rename model → primitive** (`386c772`). The GPU classes `vulkan::model`
   / `normal_draw_model` / `instanced_draw_model` are now `vulkan::primitive` /
@@ -433,6 +435,7 @@ source of truth for what each commit changed.)
    `clear_primitives`, `primitive_create_info`), matching the scene-tree leaf
    concept; the shader-facing `push.model` / `model_matrix` (model matrix)
    terminology is kept.
-3. **Whole-group transform demo** — answered: temporary auto-spin accepted and
-   shipped (`argv[2]/argv[3] == "spin"` whole-scene rotation around the sink,
-   `spin-subtree` per-node rotation — `9cc791a`).
+3. **Whole-group transform demo** — answered: temporary auto-spin was accepted and
+   shipped (`argv == "spin"` whole-scene rotation around the sink, `spin-subtree`
+   per-node rotation — `9cc791a`); both demo modes were removed later, but the
+   `set_scene_transform` / per-node-`local` APIs they exercised remain.

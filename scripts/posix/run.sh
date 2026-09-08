@@ -1,10 +1,10 @@
 #!/bin/sh
 # Run vulkan_render on POSIX (Linux / WSL / macOS). Runs from the repo root so
 # shaders/ and gltf_model/ are auto-located. Extra args are forwarded to the
-# executable (model path, demo name, grid side).
+# executable (model path, grid side).
 # Usage:
 #     sh scripts/posix/run.sh
-#     sh scripts/posix/run.sh path/to/model.glb gui
+#     sh scripts/posix/run.sh path/to/model.glb
 #     sh scripts/posix/run.sh --config my.toml
 
 set -eu

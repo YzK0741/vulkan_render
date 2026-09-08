@@ -1,7 +1,5 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/quaternion.hpp>
-#include <vulkan/vulkan.h> // VkFormat / VkIndexType for the static-draw merge demo (texture_input.format)
 import std;
 import app_config;
 import chores; // demo bootstrap helpers (shader loading / dir locating / pipelines)
@@ -23,8 +21,8 @@ import vulkan.runtime;
 int main(int argc, char** argv) {
     // 1-3. Resolve the startup config in one step (chores): merge the config file (config.toml
     // by default, --config <path> to override) with positional argv overrides (argv[1] = model,
-    // argv[2] = grid side (numeric) or demo, argv[3] = demo), then locate the shaders/ dir and
-    // pick the model file. Panics on any missing configured/located resource.
+    // argv[2] = grid side (numeric)), then locate the shaders/ dir and pick the model file.
+    // Panics on any missing configured/located resource.
     chores::startup_config const config = chores::analyse_config(argc, argv);
     app_config::app_settings const& settings = config.settings;
     std::filesystem::path const& shaders_dir = config.shaders_dir;
@@ -157,197 +155,8 @@ int main(int argc, char** argv) {
     //     lives inside runtime::render_frame()
     utility::log("rendering '{}' with PBR... left-drag to orbit, wheel to zoom, ESC to exit", model_path);
 
-    // Optional demo transforms (settings.demo: config.toml demo = ... or argv):
-    //   "spin"          — whole-scene rotation via runtime::set_scene_transform (extra world
-    //                     matrix on top of every root; the whole tree moves together).
-    //   "spin-subtree"  — per-node local transform: rotate ONE primitive leaf node around its
-    //                     own position in parent space (the scene tree's per-node local
-    //                     transforms make this possible). On the hierarchy asset this spins a
-    //                     single helmet in place while its sibling stays still; on the default
-    //                     single-node asset the primitive spins about the scene sink.
-    //   "nocull"        — verification: disable frustum culling (force every leaf visible); run
-    //                     the same camera path with and without it and compare the cull log + fps.
-    //   "static"        — verification: merge the first two loader drawables into ONE static
-    //                     buffer and draw them as two chunks of a static_draw (one bind + two
-    //                     offset draws) — exercises the merged/static-scene building block
-    //                     (static_draw_primitive + make_static_draw).
-    //   "gui"           — force-enable the Dear ImGui debug overlay (also the default: the
-    //                     overlay shows unless config sets [gui] show = false)
-    bool spin_scene = false;
-    bool spin_subtree = false;
-    bool no_cull = false;
-    bool closeup = false;
-    bool static_draw = false;
-    bool use_gui = settings.gui.show; // overlay defaults on ([gui] show); demo "gui" forces it
-    if (!settings.demo.empty()) {
-        std::string_view const demo_view(settings.demo);
-        spin_scene = demo_view == "spin";
-        spin_subtree = demo_view == "spin-subtree";
-        no_cull = demo_view == "nocull";
-        closeup = demo_view == "closeup";
-        static_draw = demo_view == "static";
-        if (demo_view == "gui") {
-            use_gui = true;
-        }
-    }
-    if (no_cull) {
-        runtime.set_frustum_culling(false);
-        utility::log("nocull: frustum culling disabled (all leaves drawn every frame)");
-    }
-    if (closeup) {
-        // pull the camera close so only part of the scene fits the frustum -> partial culling
-        runtime.camera.distance *= 0.22f;
-        utility::log("closeup: camera pulled in (partial frustum culling expected)");
-    }
-    if (static_draw) {
-        // static demo: replace the per-leaf import with ONE static_draw over merged loader
-        // geometry - every drawable's vertices are baked with its node's world transform (plus
-        // the import shift), indices are widened to 32-bit, and the whole model becomes a
-        // single buffer bind + N offset draws. This only makes sense for RIGID static models:
-        // skinned/morphed/animated geometry would bake the bind pose and drift from the live
-        // animation, so those files are skipped with a hint instead of mis-rendered.
-        if (!scenes->animations.empty() || !scenes->skins.empty()) {
-            utility::log("static demo: model has animation/skin - static batching needs a rigid static model, skipping");
-        } else {
-            // merged output: one 32-bit index buffer, one stride-64 vertex buffer (loader layout
-            // matches pbr.vert: pos/normal/uv/joints/weights; baking rewrites pos + normal)
-            std::vector<unsigned char> merged_vertices;
-            std::vector<std::uint32_t> merged_indices;
-            std::vector<vulkan::static_draw_chunk> chunk_table;
-            glm::mat4 const bake_shift = glm::translate(glm::mat4(1.0f), scene_import_shift);
-            gltf::drawable_iterator merge_it(*scenes, materials);
-            uint32_t vertex_count_total = 0;
-            uint32_t index_count_total = 0;
-            int merged = 0;
-            auto const to_tex = [](gltf::image_view const& img, VkFormat const format) {
-                vulkan::texture_input out = {};
-                if (img.valid) {
-                    out.data = img.data;
-                    out.width = img.width;
-                    out.height = img.height;
-                    out.mip_levels = img.mip_levels;
-                    out.format = format;
-                    out.valid = true;
-                }
-                return out;
-            };
-            for (; merge_it != scene_last; ++merge_it, ++merged) {
-                gltf::vertex_view const vertex = merge_it.get_vertex();
-                gltf::index_view const index = merge_it.get_index();
-                // bake the node's world transform + import shift into every vertex: the merged
-                // batch sits at identity, so its vertices must already be in final world space.
-                // Only pos (0..12) and normal (12..24) change; uv/joints/weights stay local.
-                glm::mat4 const world = bake_shift * merge_it.get_transform(); // loader world (scene-root based)
-                glm::mat3 const normal_matrix = glm::mat3(world);              // rotation part (demo: rigid/affine nodes)
-                std::vector<unsigned char> baked = {vertex.data.begin(), vertex.data.end()};
-                for (uint32_t v = 0; v < vertex.count; ++v) {
-                    unsigned char* const vp = baked.data() + static_cast<size_t>(v) * vertex.stride;
-                    glm::vec3 position;
-                    glm::vec3 normal;
-                    std::memcpy(&position, vp, sizeof(position));
-                    std::memcpy(&normal, vp + sizeof(glm::vec3), sizeof(normal));
-                    glm::vec4 const world_pos = world * glm::vec4(position, 1.0f);
-                    glm::vec3 const world_normal = glm::normalize(normal_matrix * normal);
-                    std::memcpy(vp, &world_pos, sizeof(glm::vec3));
-                    std::memcpy(vp + sizeof(glm::vec3), &world_normal, sizeof(glm::vec3));
-                }
-                merged_vertices.insert(merged_vertices.end(), baked.begin(), baked.end());
-
-                // widen every index to 32-bit so the merged buffer needs one index type
-                std::size_t const index_count_this = static_cast<std::size_t>(index.count);
-                if (index.width == 2) {
-                    auto const* src = reinterpret_cast<std::uint16_t const*>(index.data.data());
-                    for (std::size_t i = 0; i < index_count_this; ++i) {
-                        merged_indices.push_back(static_cast<std::uint32_t>(src[i]));
-                    }
-                } else {
-                    auto const* src = reinterpret_cast<std::uint32_t const*>(index.data.data());
-                    for (std::size_t i = 0; i < index_count_this; ++i) {
-                        merged_indices.push_back(src[i]);
-                    }
-                }
-
-                vulkan::static_draw_chunk chunk = {};
-                chunk.first_index = index_count_total; // cumulative 32-bit index count
-                chunk.index_count = index.count;
-                chunk.vertex_offset = vertex_count_total; // base vertex into the merged buffer
-                chunk.double_sided = merge_it.get_double_sided();
-                chunk.albedo = to_tex(merge_it.get_albedo(), VK_FORMAT_R8G8B8A8_SRGB);
-                chunk.metallic_roughness = to_tex(merge_it.get_metallic_roughness(), VK_FORMAT_R8G8B8A8_UNORM);
-                chunk.normal = to_tex(merge_it.get_normal(), VK_FORMAT_R8G8B8A8_UNORM);
-                chunk.occlusion = to_tex(merge_it.get_occlusion(), VK_FORMAT_R8G8B8A8_UNORM);
-                chunk.emissive = to_tex(merge_it.get_emissive(), VK_FORMAT_R8G8B8A8_SRGB);
-                gltf::resolved_factors const factors = merge_it.get_factors();
-                chunk.factors = vulkan::material_factors{};
-                chunk.factors.base_color_factor = factors.base_color_factor;
-                chunk.factors.emissive_factor = factors.emissive_factor;
-                chunk.factors.metallic_factor = factors.metallic_factor;
-                chunk.factors.roughness_factor = factors.roughness_factor;
-                chunk.factors.normal_scale = factors.normal_scale;
-                chunk.factors.occlusion_strength = factors.occlusion_strength;
-                chunk.factors.alpha_cutoff = factors.alpha_cutoff;
-                chunk.factors.alpha_mask = factors.alpha_mask;
-                chunk_table.push_back(chunk);
-                vertex_count_total += vertex.count;
-                index_count_total += static_cast<uint32_t>(index_count_this);
-            }
-            if (merged < 2) {
-                utility::log("static demo: need >= 2 drawables to merge, found {}", merged);
-            } else {
-                vulkan::static_draw_create_info info = {};
-                info.vertex_data = merged_vertices;
-                info.vertex_stride = 64; // the loader's interleaved layout is fixed (see pbr.vert)
-                info.vertex_count = vertex_count_total;
-                info.index_data = {reinterpret_cast<unsigned char const*>(merged_indices.data()), merged_indices.size() * sizeof(std::uint32_t)};
-                info.index_type = VK_INDEX_TYPE_UINT32;
-                info.index_count = index_count_total;
-                info.chunks = chunk_table;
-                // drop the import's per-leaf primitives, then append the batch as the scene's
-                // single static draw - the render must look identical to the ordinary import
-                runtime.clear_primitives("pbr");
-                vulkan::primitive* const created = runtime.make_static_draw(info);
-                if (created == nullptr) {
-                    utility::log("static demo: make_static_draw failed");
-                } else {
-                    utility::log("static demo: baked {} drawables into 1 buffer, {} chunks (1 bind + {} offset draws, replaces the per-leaf import)", merged, chunk_table.size(), chunk_table.size());
-                }
-            }
-        }
-    }
-    double spin_angle = 0.0;
-    if (spin_scene) {
-        utility::log("spin: rotating the whole scene about the scene sink");
-    }
-    // target node + its initial local transform for the subtree demo (found once, before the loop)
-    vulkan::scene_tree::scene_node* subtree_node = nullptr;
-    glm::mat4 subtree_local0 = glm::mat4(1.0f);
-    glm::vec3 subtree_pivot = glm::vec3(0.0f);
-    if (spin_subtree) {
-        // find the first node carrying a primitive leaf (DFS pre-order over all roots)
-        std::vector<vulkan::scene_tree::scene_node*> stack;
-        for (vulkan::scene_tree::scene_node& root : runtime.get_scene().roots) {
-            stack.push_back(&root);
-        }
-        while (!stack.empty() && subtree_node == nullptr) {
-            vulkan::scene_tree::scene_node* const node = stack.back();
-            stack.pop_back();
-            if (node->primitive_leaf != nullptr) {
-                subtree_node = node;
-                subtree_local0 = node->local;
-                // pivot = where this node sits in parent space (translation column of its local)
-                subtree_pivot = glm::vec3(subtree_local0[3]);
-                break;
-            }
-            for (vulkan::scene_tree::scene_node& child : node->children) {
-                stack.push_back(&child);
-            }
-        }
-        if (subtree_node == nullptr) { // NOLINT(bugprone-branch-clone): CLion FP - the branches log different messages
-            utility::log("spin-subtree: scene has no primitive leaf node to rotate");
-        } else {
-            utility::log("spin-subtree: rotating node '{}' about its own position", subtree_node->name);
-        }
-    }
+    // Dear ImGui debug overlay on by default ([gui] show)
+    bool const use_gui = settings.gui.show;
 
     // FPS statistics (utility.frame_stats): a rolling one-second window of frame gaps.
     // tick() once per presented frame, on_skipped() on minimized/recreate iterations, and
@@ -499,22 +308,6 @@ int main(int argc, char** argv) {
             frame_stats.on_skipped();
             std::this_thread::yield();
             continue;
-        }
-        if (spin_scene) {
-            // rotate the whole scene around scene_sink (its own center): shadows stay valid.
-            // dt = frame_clock's last stamp gap (one frame of real time)
-            spin_angle += 0.6 * frame_clock.delta_seconds();
-            glm::mat4 const center = glm::translate(glm::mat4(1.0f), scene_sink);
-            runtime.set_scene_transform(center * glm::rotate(glm::mat4(1.0f), static_cast<float>(spin_angle), glm::vec3(0.0f, 1.0f, 0.0f)) * glm::inverse(center));
-        }
-        if (spin_subtree && subtree_node != nullptr) {
-            // rotate ONE node's local transform about its own position (pivot in parent space):
-            // the leaf primitive under it spins in place while sibling nodes stay put — the scene
-            // tree's per-node locals make whole-group AND per-primitive transforms possible.
-            spin_angle += 0.6 * frame_clock.delta_seconds();
-            glm::mat4 const pivot = glm::translate(glm::mat4(1.0f), subtree_pivot);
-            subtree_node->local = pivot * glm::rotate(glm::mat4(1.0f), static_cast<float>(spin_angle), glm::vec3(0.0f, 1.0f, 0.0f)) * glm::inverse(pivot) * subtree_local0;
-            runtime.scene_changed(); // edited node.local directly -> culling BVH must track it
         }
 
         // drive the animation controller: sample the active animation into node locals (T/R/S +

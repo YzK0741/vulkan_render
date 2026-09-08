@@ -24,7 +24,7 @@ A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), implementin
 - **Keyframe animation + skinning + morph targets (`vulkan.animation`)**: `vulkan::animation::controller` (a module of the engine core library) plays channel-bearing animations automatically on a loop — it samples the animation (slerped rotations, morph weights) into the scene tree's node locals (animated roots keep the import offset), rebuilds the per-frame skin matrices (`inv(W_mesh) · W_joint · IBM`) and updates the active morph weights into the runtime's per-frame-slot buffers, so skinned and morphable meshes deform live. It is **format-neutral**: animation data is value-copied into its own `vulkan::animation` structures (samplers/channels/clips/skins/base poses, pure CPU) at init, and `init()` is a template over the `source` concept — any loader exposing the required member shapes (glTF's `scenes` does; a future format just implements them) can drive it, so the module never imports a loader. Heavy animations (many channels, e.g. the recursive-skeleton stress sample with 840 channels over 924 nodes) fan the per-source sampling out over a small `utility.thread_pool` (2–6 threads, sized to the machine) — each source only touches its own runtime nodes, so slices run concurrently; light animations skip the pool and sample on the frame thread. The demo drives it with `frame_clock` (cheap per-frame stamped time) and the `gui` overlay adds play/pause, a time scrubber and an animation dropdown for multi-animation files. Non-indexed glTF meshes (e.g. Fox) are handled by synthesizing indices. Authored glTF cameras are exported and picked as orbit-camera viewpoint seeds (gui "camera" dropdown); punctual lights (KHR_lights_punctual) are exported too, but the demo still shades with the fixed analytic sun, so they do not drive lighting yet.
 - **Orbit camera**: left-drag to rotate, wheel to zoom; one shared camera UBO is updated once per frame, with `MAX_FRAMES_IN_FLIGHT` frames in flight.
 - **Utility library (`utility` module)**: handle distribution, stack-style destructor mixin, thread pool (`utility.thread_pool`: RAII pool of `jthread` workers with priority queue + `wait_until_free()`, used by the animation sampling fan-out), BVH (used by frustum culling), data block, a per-frame stamped clock (`utility.frame_clock`: single-writer stamps, atomic-load readers), and more. A mimalloc-backed `pmr` manager (`utility::init_pmr()` via `better_pmr`) routes all `std::pmr` allocations — including the runtime's per-frame cull/visible vectors — through mimalloc (vendored under `third_party/mimalloc`); it is idempotent and initialized before `main` from every TU that uses it. Content hashing for GPU-resource dedup is [xxHash](https://github.com/Cyan4973/xxHash) `XXH3_64bits` (`utility::xxh3_64bits`, vendored under `third_party/xxhash`).
-- **Startup configuration (`app_config` module)**: TOML config (`config.toml`, `--config <path>` override) merged with argv, covering model/demo/grid, resource paths, window/render settings (size, title, vsync, MSAA, clear color, skybox/shadow toggles) and IBL resolutions. See `config.example.toml`.
+- **Startup configuration (`app_config` module)**: TOML config (`config.toml`, `--config <path>` override) merged with argv, covering model / instancing grid, resource paths, window/render settings (size, title, vsync, MSAA, clear color, skybox/shadow toggles) and IBL resolutions. See `config.example.toml`.
 - **Engineering practices**: automatic `clang-format` before every build, `-Wall -Wextra -Werror`, and **exceptions disabled in all build configurations** (`-fno-exceptions`; the vendored `std` module makes this work), plus `-flto -march=native -fno-rtti` in Release builds.
 
 ## Documentation
@@ -124,8 +124,8 @@ Builds land in `build-debug-clang64/` and `build-release-clang64/`.
 ```sh
 sh scripts/posix/setup.sh     # detect distro, install glfw/glm/toml++/Vulkan via apt/dnf/pacman/brew
 sh scripts/posix/build.sh     # Debug + Release
-sh scripts/posix/run.sh       # run; extra args (model / demo) are forwarded
-sh scripts/posix/run.sh path/to/model.glb gui
+sh scripts/posix/run.sh       # run; extra args (model / grid side) are forwarded
+sh scripts/posix/run.sh path/to/model.glb
 ```
 
 Builds land in `build-debug/` and `build-release/`.
@@ -152,10 +152,9 @@ Run from the project root or any build directory (the program walks upward to lo
 
 ```bash
 ./build-release/vulkan_render                # or build-release-clang64/vulkan_render.exe on Windows
-# or load a different model:
+# or load a different model / lay it out as an instancing grid:
 ./build-release/vulkan_render path/to/model.glb
-# or a demo / debug mode (see below):
-./build-release/vulkan_render path/to/model.glb gui
+./build-release/vulkan_render path/to/model.glb 8   # grid_side 8: one instanced draw call
 ```
 
 By default it loads `gltf_model/DamagedHelmet.gltf` and renders it with PBR + IBL. Controls: **left-drag** to orbit, **wheel** to zoom, **drag the window border** to resize (the swapchain is recreated on the fly), **ESC** to quit. Loaded models that carry keyframe animations (e.g. glTF-Sample-Assets `AnimatedCube` / `BoxAnimated`) play automatically on a loop.
@@ -174,21 +173,9 @@ Two helpers generate `config.toml` for you: `make_default_config.py`
 `make_config.py` (asks every setting with type hints and defaults) — see
 the [Scripts](#scripts) section.
 
-Positional argv overrides the file: `argv[1]` = model path, `argv[2]` = grid side (a number) or demo, `argv[3]` = demo. Configurable: model / demo / instancing grid, `shaders_dir` / `model_dir` paths, window size / title / vsync / MSAA / clear color, skybox & shadow stage toggles, IBL precompute resolutions, and the debug-panel default size.
+Positional argv overrides the file: `argv[1]` = model path, `argv[2]` = grid side (a number). Configurable: model / instancing grid, `shaders_dir` / `model_dir` paths, window size / title / vsync / MSAA / clear color, skybox & shadow stage toggles, IBL precompute resolutions, and the debug-panel default size.
 
-#### Demo / debug modes
-
-The third positional argument (or `demo = "..."` in the config) selects a mode:
-
-| demo | effect |
-|---|---|
-| *(none)* | static view — drag to orbit, wheel to zoom |
-| `spin` | rotate the whole scene around its own center (BVH rebuilt every frame) |
-| `spin-subtree` | rotate one geometry-carrying scene-tree node in place |
-| `nocull` | disable frustum culling (compare fps to verify culling) |
-| `closeup` | pull the camera into a partial close-up (expect partial culling) |
-| `static` | merge a rigid (non-animated/skinned) model's drawables into one buffer — the whole model renders as a single `static_draw_primitive` (1 bind + N offset draws) instead of per-leaf imports; models with animation/skin are skipped with a hint |
-| `gui` | force the Dear ImGui debug overlay on (fps, frustum-culling / skybox / shadow toggles, camera-target drag; animated models additionally get play/pause, a time scrubber and an animation dropdown). The overlay is also on **by default** — disable it with `[gui] show = false` in the config |
+The Dear ImGui debug overlay is on **by default** — disable it with `[gui] show = false` in the config.
 
 > Release builds are Windows GUI-subsystem executables: no console window appears when running, and the log output goes to `debug.log` in the working directory (the previous session's content is rotated to `debug.log.old` with a session timestamp on startup). Debug builds keep the terminal.
 

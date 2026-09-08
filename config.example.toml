@@ -7,27 +7,16 @@
 #   cp config.example.toml config.toml
 #   vulkan_render                    # reads config.toml
 #   vulkan_render --config my.toml   # reads the given file
-#   vulkan_render <model> gui        # argv overrides the file entries
+#   vulkan_render <model>            # argv overrides the file entries
 #
 # Note: backslashes are escapes in TOML strings, so use forward slashes
 # for Windows paths ("C:/...") or double backslashes ("C:\\...").
 # ============================================================
 
-# ---- top level: model to load + demo mode ----
+# ---- top level: model to load ----
 # model: glTF/GLB file to load. When empty, tries DamagedHelmet.gltf under
 #   paths.model_dir, then auto-locates gltf_model/ upward from the cwd.
 model = "gltf_model/DamagedHelmet.gltf"
-
-# demo: demo / verification mode (empty = static view; drag to orbit, wheel to zoom)
-#   spin          rotate the whole scene around its own center continuously
-#   spin-subtree  rotate one geometry-carrying scene-tree node (best on hierarchy assets)
-#   nocull        disable frustum culling (compare fps to verify culling)
-#   closeup       pull the camera into a partial close-up (expect some culling)
-#   static        merge a rigid (non-animated/skinned) model's drawables into one buffer:
-#                 the whole model renders as a single static_draw_primitive (1 bind + N
-#                 offset draws) instead of per-leaf imports; animated/skinned models are skipped
-#   gui           enable the Dear ImGui debug overlay
-demo = ""
 
 # grid_side: when > 1, lays the first pbr model out as a grid_side x grid_side
 #   instanced grid (single instanced draw call stress test; 0 = off)

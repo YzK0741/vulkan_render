@@ -21,15 +21,10 @@ namespace app_config {
 
         settings.config_file = path;
         // read keys only when present: absent keys keep the struct defaults (an empty model /
-        // demo / grid_side = 0 also mean "not specified" to the caller)
+        // grid_side = 0 also mean "not specified" to the caller)
         if (toml::node const* node = table.get("model")) {
             if (std::optional<std::string> const value = node->value<std::string>()) {
                 settings.model = *value;
-            }
-        }
-        if (toml::node const* node = table.get("demo")) {
-            if (std::optional<std::string> const value = node->value<std::string>()) {
-                settings.demo = *value;
             }
         }
         if (toml::node const* node = table.get("grid_side")) {
@@ -174,7 +169,7 @@ namespace app_config {
 
     app_settings resolve_from_argv(int const argc, char const* const* const argv, std::string const& default_config_path) {
         // 1. Collect the non-option positional arguments (--config <path> / --config=<path> is
-        //    consumed as an option, not a positional), so model/grid/demo positions stay stable
+        //    consumed as an option, not a positional), so model/grid positions stay stable
         //    regardless of where --config appears.
         std::string config_path = default_config_path;
         std::vector<std::string_view> positional;
@@ -202,8 +197,7 @@ namespace app_config {
             utility::log("app_config: config file '{}' not found, using defaults", config_path);
         }
 
-        // 2. Positional argv overrides the file: [0] = model, [1] = grid side (numeric) or demo,
-        //    [2] = demo.
+        // 2. Positional argv overrides the file: [0] = model, [1] = grid side (numeric).
         if (!positional.empty() && !positional[0].empty()) {
             settings.model = std::string(positional[0]);
         }
@@ -215,13 +209,10 @@ namespace app_config {
                 // grid side: clamp instead of trusting the raw value - a huge argv number would
                 // otherwise make the instancing stress reserve enormous buffers (and strtol
                 // overflow saturates to LONG_MAX, which the clamp also absorbs)
-                settings.grid_side = static_cast<int>(std::clamp(side, 0L, 90L)); // positional[1] is a number
+                settings.grid_side = static_cast<int>(std::clamp(side, 0L, 90L));
             } else {
-                settings.demo = arg; // positional[1] is a demo name
+                utility::log("app_config: ignoring unrecognized positional argument '{}' (expected a numeric grid side)", arg);
             }
-        }
-        if (positional.size() > 2 && !positional[2].empty()) {
-            settings.demo = std::string(positional[2]); // positional[2] is always the demo name
         }
         return settings;
     }

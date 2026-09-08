@@ -13,14 +13,12 @@ import utility;
  * @defgroup app_config Application Startup Config
  * @brief load vulkan_render startup settings from a TOML file, merged with command-line
  *        arguments (--config <path> overrides the default file; explicit argv values for the
- *        model / demo / grid override the file). Pure CPU, no Vulkan dependency.
+ *        model / grid override the file). Pure CPU, no Vulkan dependency.
  *
  * Example config.toml:
  * @code
- * # top level: model to load + demo mode
+ * # top level: model to load
  * model = "gltf_model/DamagedHelmet.gltf"
- * demo  = ""        # spin | spin-subtree | nocull | closeup | gui (empty = none; the gui
- *                   #   overlay defaults on via [gui] show, "gui" forces it on anyway)
  * grid_side = 0     # > 1 enables the instancing stress grid (0 = off)
  *
  * [paths]
@@ -39,7 +37,7 @@ import utility;
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
  *
  * [gui]
- * show         = true    # show the Dear ImGui debug overlay by default (demo "gui" forces it)
+ * show         = true    # show the Dear ImGui debug overlay by default
  * panel_width  = 380     # default debug-panel width (0 = auto-size)
  * panel_height = 140     # default debug-panel height (0 = auto-size)
  *
@@ -99,7 +97,7 @@ namespace app_config {
      * @brief debug-overlay panel settings ([gui] in the config)
      */
     export struct gui_settings {
-        bool show = true;            // show the Dear ImGui debug overlay by default (demo "gui" forces it on)
+        bool show = true;            // show the Dear ImGui debug overlay by default
         float panel_width = 380.0f;  // default debug-panel width (0 = ImGui auto-size)
         float panel_height = 140.0f; // default debug-panel height (0 = ImGui auto-size)
     };
@@ -112,7 +110,6 @@ namespace app_config {
      */
     export struct app_settings {
         std::string model = {}; // model file (empty = locate default via paths.model_dir)
-        std::string demo = {};  // spin | spin-subtree | nocull | closeup | gui (empty = none)
         int grid_side = 0;      // > 1 enables the instancing stress grid
         path_settings paths = {};
         render_settings render = {};
@@ -134,8 +131,7 @@ namespace app_config {
      * @brief resolve the effective startup settings from argv: a --config <path> argument picks
      *        the config file (default: "config.toml" in the working directory if present), then
      *        positional argv values (with --config <path> consumed as an option) override the
-     *        file: positional[0] = model path, positional[1] = grid side (numeric) or demo,
-     *        positional[2] = demo
+     *        file: positional[0] = model path, positional[1] = grid side (numeric)
      * @return the merged settings (see app_settings notes for the "not specified" semantics)
      */
     export app_settings resolve_from_argv(int argc, char const* const* argv);

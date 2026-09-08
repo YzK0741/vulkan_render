@@ -131,7 +131,7 @@ namespace chores {
      *        active animation), the camera selector (when @p camera_names is non-empty) and
      *        the shadow depth-bias sliders.
      * @param runtime the initialized runtime (enable_debug_gui() is called here)
-     * @param use_gui whether the overlay is wanted ([gui] show or the "gui" demo); no-op when false
+     * @param use_gui whether the overlay is wanted ([gui] show); no-op when false
      * @param settings startup settings: [gui] panel size + [render] initial skybox/shadow states
      * @param bindings live widget state (see gui_bindings); the frame loop updates fps and the
      *        animation mirrors each frame

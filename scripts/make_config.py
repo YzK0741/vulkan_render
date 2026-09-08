@@ -18,7 +18,6 @@ import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_MODEL = "gltf_model/DamagedHelmet.gltf"  # relative to the renderer's cwd
-DEMO_CHOICES = ["", "spin", "spin-subtree", "nocull", "closeup", "gui"]
 MSAA_CHOICES = [0, 2, 4, 8, 16]  # 0 = auto (device max usable)
 
 
@@ -131,10 +130,8 @@ def write_toml(path: str, cfg: dict) -> None:
         "#   scripts/make_config.py)",
         "# ============================================================",
         "",
-        "# ---- top level: model to load + demo mode ----",
+        "# ---- top level: model to load ----",
         f"model = \"{fmt_toml_string(cfg['model'])}\"",
-        "",
-        f"demo = \"{cfg['demo']}\"",
         "",
         f"grid_side = {cfg['grid_side']}",
         "",
@@ -177,14 +174,11 @@ def ask_all(output_dir: str) -> dict:
     print("== vulkan_render: interactive config ==")
     print("(press Enter on any question to keep its default)\n")
 
-    print("-- model + demo --")
+    print("-- model + grid --")
     model = ask_text(
         "model: glTF/GLB file to load",
         DEFAULT_MODEL,
         hint="empty = auto-locate DamagedHelmet.gltf; use forward slashes on Windows",
-    )
-    demo = ask_choice(
-        "demo: demo / verification mode", DEMO_CHOICES, "", hint="spin / spin-subtree / nocull / closeup / gui"
     )
     grid_side = ask_int("grid_side: instancing stress grid side", 0, 0, 90, hint=">1 draws a grid; 0 = off")
 
@@ -227,7 +221,6 @@ def ask_all(output_dir: str) -> dict:
     print(f"\nwriting config.toml to: {output_dir}")
     return {
         "model": model,
-        "demo": demo,
         "grid_side": grid_side,
         "shaders_dir": shaders_dir,
         "model_dir": model_dir,

@@ -19,7 +19,7 @@ namespace chores {
     startup_config analyse_config(int argc, char** argv) {
         // 1. Resolve startup settings first: config file (config.toml by default, --config <path>
         //    to override) merged with positional argv overrides. argv[1] = model, argv[2] = grid
-        //    side (numeric) or demo, argv[3] = demo.
+        //    side (numeric).
         app_config::app_settings const settings = app_config::resolve_from_argv(argc, argv);
         if (!settings.config_file.empty()) {
             utility::log("app_config: loaded startup settings from '{}'", settings.config_file);

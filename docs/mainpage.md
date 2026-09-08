@@ -15,7 +15,7 @@ CMake 4.3 + Ninja on MSYS2 clang64.
 - `gltf_loader` - pure-CPU glTF/GLB loading: meshes, keyframe animation, skins, morph targets,
   cameras and punctual lights (KHR_lights_punctual); world-AABB + loader diagnostics
 - `chores` - demo bootstrap helpers for main(): startup config analysis (config + argv merge,
-  shaders/model location), pipeline setup, instancing stress grid / static-merge demo, shader loading
+  shaders/model location), pipeline setup, instancing stress grid, shader loading
 - `utility` - log/panic, handle distribution, thread pool (utility.thread_pool), BVH, data blocks,
   frame_clock, pmr routing
 - `app_config` - TOML startup configuration merged with argv
@@ -26,4 +26,4 @@ Dear ImGui debug overlay that is on by default (`[gui] show = false` in config d
 
 Module reference is grouped under the `vulkan_core`, `vulkan_runtime`, `vulkan_runtime_scene_tree`,
 `vulkan_animation`, `vulkan_gui`, `vulkan_math`, `gltf_loader`, `chores`, `utility` and `app_config`
-groups. See the README at the repository root for the demo controls and config reference.
+groups. See the README at the repository root for the controls and config reference.
