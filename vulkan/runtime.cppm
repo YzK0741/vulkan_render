@@ -73,13 +73,17 @@ namespace vulkan {
      *
      * Each enumerator names one frame-time parallel stage of the runtime; it maps onto the
      * underlying pool's integer priority (higher numeric values run earlier) and is ALSO that
-     * stage's wait group, so distinct stages never block on each other's tasks. Add an
-     * enumerator per future stage instead of passing magic ints at call sites.
+     * stage's wait group, so distinct stages never block on each other's tasks. Values follow
+     * frame causality: the stage that PRODUCES data (animation sampling) carries the higher
+     * value so it runs first, the stage that CONSUMES it (command recording / rendering) the
+     * lower one - "prepare the data, then render". Add an enumerator per future stage instead
+     * of passing magic ints at call sites (slot new stages in by execution order; renumbering
+     * is free, these values are compile-time only).
      */
     export enum class task_priority : int {
-        animation = 0, // per-source animation sampling fan-out (animation::controller::update)
-        recording = 1, // parallel pass/secondary command-buffer recording (record_main_drawcalls)
-        // future frame-time stages (culling, skin upload, ...) append their own tier here
+        animation = 1, // runs first: per-source animation sampling fan-out (animation::controller::update)
+        recording = 0, // runs after the data is ready: pass/secondary command-buffer recording (record_main_drawcalls)
+        // future frame-time stages (culling, skin upload, ...) slot in between by execution order
     };
 
     /**
