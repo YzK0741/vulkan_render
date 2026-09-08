@@ -293,6 +293,19 @@ namespace vulkan {
         camera_ubo current_ubo = {};                           // camera UBO snapshot written in pace_and_acquire()
         std::pmr::vector<primitive const*> frame_leaves = {};  // every scene leaf this frame (shadow + cull input)
         std::pmr::vector<primitive const*> frame_visible = {}; // frustum-visible subset (main pass)
+        // shadow-pass subset (rebuilt each frame before the shadow recording): every leaf whose
+        // shadow can reach the camera frustum = the frustum-visible leaves PLUS the leaves up to
+        // shadow_caster_extent up-light of them (a caster just outside the view still throws a
+        // shadow into it). cull_bvh / frame_visible only cover the CAMERA frustum, so the shadow
+        // pass would otherwise re-draw every scene leaf every frame (huge on stress models like
+        // NodePerformanceTest: 10000 rocks). Instanced / bound-less leaves are always included.
+        std::pmr::vector<primitive const*> shadow_casters = {};
+        // normalized direction toward the analytic sun (mirrors make_directional_light_ubo);
+        // shadow caster culling shifts the camera frustum along this to catch up-light casters
+        glm::vec3 light_direction = glm::normalize(glm::vec3(0.3f, 1.0f, 0.5f));
+        // how far up-light of the camera frustum a caster still matters (its shadow can still
+        // reach the view). Scene-scale heuristic: max(1, scene_radius / 4).
+        float shadow_caster_extent = 1.0f;
         // optional Dear ImGui debug overlay; inactive until enable_debug_gui() succeeds. The
         // runtime drives it inside the frame steps (new_frame before recording, record after the
         // runtime's own draw calls) so callers only manage its content via debug_gui().

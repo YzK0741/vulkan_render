@@ -933,12 +933,43 @@ namespace vulkan {
                 }
                 this->cull_visible = std::move(visible);
                 this->camera_key = key;
+
+                // ---- Shadow caster set (see shadow_casters in the class docs) ----
+                // Built only when the camera moved or the scene changed (reusing the cached
+                // cull_visible otherwise, like the main pass does). The shadow pass needs every
+                // leaf whose shadow can reach the camera frustum: the frustum-visible set plus
+                // the leaves just OUTSIDE the view on the up-light side (a caster between the
+                // sun and the view still throws its shadow into the frustum). Approximate that
+                // by unioning cull_visible with the BVH culled against the camera frustum
+                // SHIFTED toward the sun by shadow_caster_extent.
+                this->shadow_casters = this->cull_visible;
+                if (this->cull_bvh.has_value()) {
+                    utility::frustum const shifted_frustum = [this, &ubo] {
+                        utility::frustum frustum = utility::make_frustum(ubo.proj * ubo.view);
+                        glm::vec3 const shift = this->light_direction * this->shadow_caster_extent;
+                        for (glm::vec4& plane : frustum.planes) {
+                            // shift the half-space n.x + w >= 0 by t: n.(x - t) + w >= 0 -> w' = w - n.t
+                            plane.w -= glm::dot(glm::vec3(plane), shift);
+                        }
+                        return frustum;
+                    }();
+                    auto const up_light = this->cull_bvh->frustum_cull(shifted_frustum);
+                    this->shadow_casters.reserve(this->shadow_casters.size() + up_light.size());
+                    for (auto const* node : up_light) {
+                        this->shadow_casters.push_back(node->extra_data);
+                    }
+                    std::sort(this->shadow_casters.begin(), this->shadow_casters.end());
+                    this->shadow_casters.erase(std::unique(this->shadow_casters.begin(), this->shadow_casters.end()), this->shadow_casters.end());
+                }
             }
             visible_leaves = this->cull_visible;
+        } else {
+            // culling disabled: the shadow pass draws every scene leaf (see shadow_casters)
+            this->shadow_casters = this->frame_leaves;
         }
 
-        // persist the cull result for the record steps below (shadow pass draws the full
-        // frame_leaves set, the main pass draws this visible subset)
+        // persist the cull result for the record steps below (the main pass draws this visible
+        // subset; the shadow pass draws the shadow_casters set)
         this->frame_visible = std::move(visible_leaves);
         return frame_status::proceed;
     }
@@ -1246,7 +1277,9 @@ namespace vulkan {
         // depth bias is dynamic state on the shadow pipeline: record the live-tunable values
         // (gui-adjustable) before the depth-only draw
         vkCmdSetDepthBias(command_buffer, this->shadow_depth_bias_constant, this->shadow_depth_bias_clamp, this->shadow_depth_bias_slope);
-        for (primitive const* m : this->frame_leaves) {
+        // draw only the casters that can throw a shadow into the camera frustum (see
+        // shadow_casters in begin_recording); the whole scene only when culling is disabled
+        for (primitive const* m : this->shadow_casters) {
             m->draw(command_buffer); // depth-only: shadow.vert transforms into light space
         }
     }
@@ -1498,6 +1531,9 @@ namespace vulkan {
         // Remember the scene extent even if shadow setup below fails: the camera far plane
         // (make_orbit_camera_ubo) needs it to keep the whole scene visible when zooming in.
         this->scene_radius = scene_radius;
+        // shadow caster culling (begin_recording): casters up to ~1/8 of the scene radius
+        // up-light of the camera frustum can still throw a shadow into the view
+        this->shadow_caster_extent = std::max(1.0f, scene_radius * 0.125f);
         if (!this->shadow_pipeline || this->light_mapped == nullptr) {
             utility::log("shadow mapping not enabled (no shadow pipeline / light buffer)");
             return;
