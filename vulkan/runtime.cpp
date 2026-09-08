@@ -560,7 +560,14 @@ namespace vulkan {
                 white_needed = true;
                 continue;
             }
-            auto const key = std::tuple<unsigned char const*, std::size_t, VkFormat>{tex.data.data(), tex.data.size_bytes(), slots[i].second};
+            // Content-addressed dedup: the loader hands every material its OWN byte copy of a
+            // shared glTF image, so identical pixels arrive under different pointers. Hash the
+            // decoded bytes (xxh3, same primitive vma uses for GPU-image dedup) and key the
+            // slot cache on (digest, format, dimensions): N materials over one image upload
+            // once and share the array element. The image itself is also vma-deduped below.
+            utility::xxh3_digest const digest = utility::xxh3_64bits(std::span<unsigned char const>(tex.data.data(), tex.data.size_bytes()));
+            auto const key = std::tuple<std::array<std::uint8_t, 8>, VkFormat, std::uint32_t, std::uint32_t, std::uint32_t>{
+                digest.data, slots[i].second, tex.width, tex.height, tex.mip_levels};
             auto const cached = this->texture_slot_cache.find(key);
             if (cached != this->texture_slot_cache.end()) {
                 texture_indices[i] = cached->second; // shared texture: reuse its slot

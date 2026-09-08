@@ -106,14 +106,16 @@ namespace vulkan {
         std::vector<void*> camera_mapped = {};
         // texture registry: flat entries of the set 0 binding 1 array (raw handles); the owning
         // views / vma images live in the vectors below (vk_image RAII frees the GPU image when
-        // the runtime goes away). texture_slot_cache deduplicates uploads: several materials
-        // sharing one glTF texture (same decoded bytes) all point at the same array slot instead
-        // of uploading a copy per material.
+        // the runtime goes away). texture_slot_cache deduplicates uploads by CONTENT (xxh3 of
+        // the decoded bytes + format + dimensions): several materials sharing one glTF image
+        // (same decoded pixels, different byte copies) all point at the same array slot instead
+        // of uploading a copy per material - the loader hands each material its own byte copy,
+        // so a pointer key would never match.
         std::vector<VkImageView> texture_array_views = {};
         std::vector<vk_image_view> owned_texture_views = {};
         std::vector<vk_image> owned_textures = {};
         uint32_t white_texture_index = 0;
-        std::map<std::tuple<unsigned char const*, std::size_t, VkFormat>, uint32_t> texture_slot_cache = {};
+        std::map<std::tuple<std::array<std::uint8_t, 8>, VkFormat, std::uint32_t, std::uint32_t, std::uint32_t>, uint32_t> texture_slot_cache = {}; // digest, format, width, height, mip_levels
         // scene-wide IBL (bindings 2-4): prefiltered env / irradiance / BRDF LUT, uploaded once
         std::vector<vk_image_view> ibl_views = {};
         std::vector<vk_image> ibl_images = {};
