@@ -20,12 +20,12 @@ import vulkan.runtime.scene_tree; // scene + node/primitive types (the one struc
  *
  * The controller never depends on the concrete host class (vulkan::runtime) NOR on a concrete
  * animation source format: it talks to whatever owns the scene through an injected
- * animation_backend (callbacks + a scene&), and init() is a TEMPLATE over an
- * animation_source concept - any type exposing the required member shapes (an animations
- * table, a skins table, an asset-node lookup) can drive it. gltf::scenes satisfies the
- * concept and is instantiated at the call site, so this module never imports a loader.
- * Animation data is value-copied into the controller's own format-neutral structures
- * (vulkan::anim) at init(); playback never touches the source afterwards.
+ * backend (callbacks + a scene&), and init() is a TEMPLATE over a source concept - any type
+ * exposing the required member shapes (an animations table, a skins table, an asset-node
+ * lookup) can drive it. gltf::scenes satisfies the concept and is instantiated at the call
+ * site, so this module never imports a loader. Animation data is value-copied into the
+ * controller's own format-neutral structures (vulkan::animation) at init(); playback never
+ * touches the source afterwards.
  *
  * Contract summary (mirrors make_primitive / import_scene / set_ibl):
  *   - init() registers materials/geometry state and writes every scene set's shared buffers,
@@ -33,100 +33,102 @@ import vulkan.runtime.scene_tree; // scene + node/primitive types (the one struc
  *   - update(dt) writes the paced frame slot's skin/morph buffers and scene node locals, so
  *     call it after the host paced a frame slot and before it records (after the slot's
  *     timeline wait).
+ *
+ * @note everything animation-related lives in vulkan::animation (the format-neutral data
+ *       model, the structural concepts, the backend host surface and the controller), so
+ *       names stay short - no animation_/anim prefixes needed inside.
  */
-namespace vulkan {
+namespace vulkan::animation {
     /**
      * @ingroup vulkan_animation
      * @brief format-neutral animation data model (reference semantics mirror glTF keyframe
-     *        animation, but no glTF type is involved): samplers/channels/skins plus the pure
-     *        CPU sampling functions. Loaders convert their format into these structures once;
-     *        the controller plays them without knowing the source format.
+     *        animation, but no glTF type is involved): samplers/channels/clips/skins plus the
+     *        pure CPU sampling functions. Loaders convert their format into these structures
+     *        once; the controller plays them without knowing the source format.
      */
-    namespace anim {
-        /** @brief interpolation mode of one animation sampler */
-        export enum class interpolation : int {
-            linear = 0,       // blend between consecutive keyframes (slerp for rotations)
-            step = 1,         // hold the previous keyframe's value until the next keyframe
-            cubic_spline = 2, // Hermite spline with per-key in/out tangents
-        };
+    /** @brief interpolation mode of one animation sampler */
+    export enum class interpolation : int {
+        linear = 0,       // blend between consecutive keyframes (slerp for rotations)
+        step = 1,         // hold the previous keyframe's value until the next keyframe
+        cubic_spline = 2, // Hermite spline with per-key in/out tangents
+    };
 
-        /** @brief animated node property of one animation channel */
-        export enum class channel_path : int {
-            translation = 1, // values are xyz triplets (one per keyframe)
-            rotation = 2,    // values are xyzw quaternions (w scalar, one per keyframe)
-            scale = 3,       // values are xyz triplets (one per keyframe)
-            weights = 4,     // morph target weights: per-key scalar block, one value per target
-        };
+    /** @brief animated node property of one animation channel */
+    export enum class channel_path : int {
+        translation = 1, // values are xyz triplets (one per keyframe)
+        rotation = 2,    // values are xyzw quaternions (w scalar, one per keyframe)
+        scale = 3,       // values are xyz triplets (one per keyframe)
+        weights = 4,     // morph target weights: per-key scalar block, one value per target
+    };
 
-        /** @brief one decoded animation sampler: keyframe times + flat output values */
-        export struct sampler {
-            std::vector<float> times = {};
-            std::vector<float> values = {};
-            std::size_t per_key = 0; // values per keyframe (3/4/4/weights; 0 = unknown)
-            interpolation interp = interpolation::linear;
-        };
+    /** @brief one decoded animation sampler: keyframe times + flat output values */
+    export struct sampler {
+        std::vector<float> times = {};
+        std::vector<float> values = {};
+        std::size_t per_key = 0; // values per keyframe (3/4/4/weights; 0 = unknown)
+        interpolation interp = interpolation::linear;
+    };
 
-        /** @brief one animation channel: animate one property of a node from a sampler */
-        export struct channel {
-            channel_path path = channel_path::translation;
-            std::size_t sampler = 0;     // index into the owning animation's samplers
-            std::size_t target_node = 0; // animated node's source index (asset node index)
-        };
+    /** @brief one animation channel: animate one property of a node from a sampler */
+    export struct channel {
+        channel_path path = channel_path::translation;
+        std::size_t sampler = 0;     // index into the owning clip's samplers
+        std::size_t target_node = 0; // animated node's source index (asset node index)
+    };
 
-        /** @brief one animation: channels over samplers */
-        export struct animation {
-            std::string name = {};
-            std::vector<sampler> samplers = {};
-            std::vector<channel> channels = {};
-        };
+    /** @brief one playable clip: channels over samplers (mirrors a glTF animation object) */
+    export struct clip {
+        std::string name = {};
+        std::vector<sampler> samplers = {};
+        std::vector<channel> channels = {};
+    };
 
-        /** @brief a skin: the joints driving a skinned mesh + their inverse bind matrices */
-        export struct skin {
-            std::string name = {};
-            std::vector<std::size_t> joints = {};     // source indices, in joint order
-            std::vector<glm::mat4> inverse_bind = {}; // one per joint (identity when omitted)
-        };
+    /** @brief a skin: the joints driving a skinned mesh + their inverse bind matrices */
+    export struct skin {
+        std::string name = {};
+        std::vector<std::size_t> joints = {};     // source indices, in joint order
+        std::vector<glm::mat4> inverse_bind = {}; // one per joint (identity when omitted)
+    };
 
-        /** @brief one node's animated state: TRS base pose overridden by every channel of the
-         *         sampled animation that targets it, plus the active morph weights */
-        export struct node_pose {
-            bool any_channel = false;                // true when at least one channel applied
-            bool any_transform = false;              // true when a T/R/S channel applied (local changes)
-            glm::vec3 translation = glm::vec3(0.0f); // base pose, overridden per channel path
-            glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-            glm::vec3 scale = glm::vec3(1.0f);
-            std::vector<float> weights = {}; // active morph weights (weights channel); empty = none
-        };
+    /** @brief one node's animated state: TRS base pose overridden by every channel of the
+     *         sampled clip that targets it, plus the active morph weights */
+    export struct node_pose {
+        bool any_channel = false;                // true when at least one channel applied
+        bool any_transform = false;              // true when a T/R/S channel applied (local changes)
+        glm::vec3 translation = glm::vec3(0.0f); // base pose, overridden per channel path
+        glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        glm::vec3 scale = glm::vec3(1.0f);
+        std::vector<float> weights = {}; // active morph weights (weights channel); empty = none
+    };
 
-        /**
-         * @ingroup vulkan_animation
-         * @brief evaluated value of one animation channel at a point in time
-         */
-        export struct channel_sample {
-            bool valid = false;
-            glm::vec3 vec3 = glm::vec3(0.0f);                   // translation / scale paths
-            glm::quat quat = glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // rotation path (normalized)
-            std::vector<float> scalars = {};                    // weights path: one value per target
-        };
+    /**
+     * @ingroup vulkan_animation
+     * @brief evaluated value of one animation channel at a point in time
+     */
+    export struct channel_sample {
+        bool valid = false;
+        glm::vec3 vec3 = glm::vec3(0.0f);                   // translation / scale paths
+        glm::quat quat = glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // rotation path (normalized)
+        std::vector<float> scalars = {};                    // weights path: one value per target
+    };
 
-        /** @brief evaluate the channel's sampler at @p t seconds (glTF keyframe sampling rules) */
-        export channel_sample sample_channel(sampler const& sampler, channel_path path, float t);
+    /** @brief evaluate the channel's sampler at @p t seconds (glTF keyframe sampling rules) */
+    export channel_sample sample_channel(sampler const& sampler, channel_path path, float t);
 
-        /**
-         * @brief evaluate every channel of @p animation targeting @p target_node at @p t and
-         *        merge the results onto the node's TRS base pose
-         * @param base the node's base pose (source base pose, e.g. from the loader node)
-         * @return merged pose; see channel_sample for the per-channel fill rules
-         */
-        export node_pose sample_node(animation const& animation, std::size_t target_node, node_pose const& base, float t);
-    } // namespace anim
+    /**
+     * @brief evaluate every channel of @p clip targeting @p target_node at @p t and
+     *        merge the results onto the node's TRS base pose
+     * @param base the node's base pose (source base pose, e.g. from the loader node)
+     * @return merged pose; see channel_sample for the per-channel fill rules
+     */
+    export node_pose sample_node(clip const& clip, std::size_t target_node, node_pose const& base, float t);
 
     // ---- module-private helpers (module linkage: visible to this interface's template bodies
     //      AND the implementation unit's non-template members, but not exported; plain functions,
     //      not anonymous-namespace ones, so the init template's unqualified calls resolve) ----
-    [[maybe_unused]] float animation_duration(anim::animation const& animation) {
+    [[maybe_unused]] float clip_duration(clip const& clip) {
         float duration = 0.0f;
-        for (anim::sampler const& sampler : animation.samplers) {
+        for (sampler const& sampler : clip.samplers) {
             if (!sampler.times.empty()) {
                 duration = std::max(duration, sampler.times.back());
             }
@@ -138,15 +140,15 @@ namespace vulkan {
         return name.empty() ? std::string_view("<unnamed>") : name;
     }
 
-    // The animation_source concept is STRUCTURAL over the member shapes below (mirroring how
-    // scene_tree constrains its iterators): a loader satisfies it with its own pure-CPU types,
-    // no shared type identity required. The init template converts the read values into the
-    // controller's anim:: structures. Element-level shapes are separate *_source concepts so
-    // the top-level one stays readable.
+    // The source concepts are STRUCTURAL over the member shapes below (mirroring how
+    // scene_tree constrains its iterators): a loader satisfies them with its own pure-CPU
+    // types, no shared type identity required. The init template converts the read values into
+    // the controller's own structures. Element-level shapes are separate concepts so the
+    // top-level one stays readable.
 
     /** @brief one sampler of a playable clip: keyframe times + flat values + per-key shape */
     export template <class T>
-    concept animation_sampler_source = requires(T const& s) {
+    concept sampler_source = requires(T const& s) {
         requires std::ranges::range<decltype(s.times)>;         // keyframe times
         typename std::ranges::range_value_t<decltype(s.times)>; //   (float keys)
         requires std::convertible_to<std::ranges::range_value_t<decltype(s.times)>, float>;
@@ -159,7 +161,7 @@ namespace vulkan {
 
     /** @brief one channel of a playable clip: property path + sampler + target node */
     export template <class T>
-    concept animation_channel_source = requires(T const& c) {
+    concept channel_source = requires(T const& c) {
         requires std::is_enum_v<std::remove_cvref_t<decltype(c.path)>>; // property path
         { c.sampler } -> std::convertible_to<std::size_t>;              // sampler index
         { c.target_node } -> std::convertible_to<std::size_t>;          // animated node
@@ -167,19 +169,19 @@ namespace vulkan {
 
     /** @brief one playable clip: name + samplers + channels */
     export template <class T>
-    concept animation_clip_source = requires(T const& a) {
+    concept clip_source = requires(T const& a) {
         { a.name } -> std::convertible_to<std::string_view>; // clip name
         requires std::ranges::range<decltype(a.samplers)>;
         typename std::ranges::range_value_t<decltype(a.samplers)>;
-        requires animation_sampler_source<std::ranges::range_value_t<decltype(a.samplers)>>;
+        requires sampler_source<std::ranges::range_value_t<decltype(a.samplers)>>;
         requires std::ranges::range<decltype(a.channels)>;
         typename std::ranges::range_value_t<decltype(a.channels)>;
-        requires animation_channel_source<std::ranges::range_value_t<decltype(a.channels)>>;
+        requires channel_source<std::ranges::range_value_t<decltype(a.channels)>>;
     };
 
     /** @brief one skin: name + joint list + inverse bind matrices */
     export template <class T>
-    concept animation_skin_source = requires(T const& k) {
+    concept skin_source = requires(T const& k) {
         { k.name } -> std::convertible_to<std::string_view>;
         requires std::ranges::range<decltype(k.joints)>;
         typename std::ranges::range_value_t<decltype(k.joints)>;
@@ -191,35 +193,35 @@ namespace vulkan {
 
     /** @brief one mesh's primitive: base attributes (POSITION etc.) + morph targets */
     export template <class T>
-    concept animation_primitive_source = requires(T const& p) {
+    concept primitive_source = requires(T const& p) {
         requires std::ranges::range<decltype(p.vertex)>;  // base attribute map (POSITION lookup)
         requires std::ranges::range<decltype(p.targets)>; // morph targets (may be empty)
     };
 
     /** @brief one mesh of a node: primitives (morph deltas) + default morph weights */
     export template <class T>
-    concept animation_mesh_source = requires(T const& m) {
+    concept mesh_source = requires(T const& m) {
         requires std::ranges::range<decltype(m.primitives)>;
         typename std::ranges::range_value_t<decltype(m.primitives)>;
-        requires animation_primitive_source<std::ranges::range_value_t<decltype(m.primitives)>>;
+        requires primitive_source<std::ranges::range_value_t<decltype(m.primitives)>>;
         requires std::ranges::range<decltype(m.weights)>; // default morph weights
     };
 
     /** @brief one node's metadata: TRS base pose + optional skin ref + attached meshes */
     export template <class T>
-    concept animation_node_source = requires(T const& n) {
+    concept node_source = requires(T const& n) {
         { n.translation } -> std::convertible_to<glm::vec3>;
         { n.rotation } -> std::convertible_to<glm::quat>;
         { n.scale } -> std::convertible_to<glm::vec3>;
         n.skin_index;                                    // optional asset-node index of the skin driving this node's mesh
         requires std::ranges::range<decltype(n.meshes)>; // meshes carry morph delta data
         typename std::ranges::range_value_t<decltype(n.meshes)>;
-        requires animation_mesh_source<std::ranges::range_value_t<decltype(n.meshes)>>;
+        requires mesh_source<std::ranges::range_value_t<decltype(n.meshes)>>;
     };
 
     /**
      * @ingroup vulkan_animation
-     * @brief an animation data source: what animation_controller::init() needs from a loaded
+     * @brief an animation data source: what controller::init() needs from a loaded
      *        file. Structural concept - any type exposing these member shapes can drive the
      *        controller (gltf::scenes satisfies it; a future format just implements the same
      *        shapes). The members mirror what the glTF loader already provides:
@@ -229,29 +231,29 @@ namespace vulkan {
      *          attached morph mesh data), queried per scene-tree node's source_index
      */
     export template <class S>
-    concept animation_source = requires(S const& s) {
+    concept source = requires(S const& s) {
         requires std::ranges::range<decltype(s.animations)>; // playable clips
         typename std::ranges::range_value_t<decltype(s.animations)>;
-        requires animation_clip_source<std::ranges::range_value_t<decltype(s.animations)>>;
+        requires clip_source<std::ranges::range_value_t<decltype(s.animations)>>;
         requires std::ranges::range<decltype(s.skins)>; // skins (may be empty)
         typename std::ranges::range_value_t<decltype(s.skins)>;
-        requires animation_skin_source<std::ranges::range_value_t<decltype(s.skins)>>;
+        requires skin_source<std::ranges::range_value_t<decltype(s.skins)>>;
         requires std::ranges::range<decltype(s.node_by_source)>;                                  // asset node index -> node*
         typename std::tuple_element_t<1, std::ranges::range_value_t<decltype(s.node_by_source)>>; // node const*
-        requires animation_node_source<std::remove_pointer_t<std::tuple_element_t<1, std::ranges::range_value_t<decltype(s.node_by_source)>>>>;
+        requires node_source<std::remove_pointer_t<std::tuple_element_t<1, std::ranges::range_value_t<decltype(s.node_by_source)>>>>;
     };
 
     /**
      * @ingroup vulkan_animation
-     * @brief the host surface an animation_controller drives, injected at init(): the scene
+     * @brief the host surface a controller drives, injected at init(): the scene
      *        tree it mutates plus callbacks for everything else it needs from the host.
      *
      * Kept deliberately narrow: only what per-frame playback touches. The scene is a
      * direct reference (animation must walk and edit nodes in place); the rest are callbacks
      * so the controller does not depend on the host class - any object exposing the same
-     * surface can drive animations. assemble via the host side (see chores).
+     * surface can drive animations. Assemble it on the host side (see chores).
      */
-    export struct animation_backend {
+    export struct backend {
         vulkan::scene_tree::scene* scene = nullptr; // tree to animate (nullptr = not bound)
 
         // ---- per-frame (active slot) access, used by update() ----
@@ -271,26 +273,26 @@ namespace vulkan {
     /**
      * @ingroup vulkan_animation
      * @brief plays keyframe animation on a scene tree: owns the playback clock and the
-     *        value-copied animation/skin data (vulkan::anim), samples the active animation
-     *        into scene node locals and rebuilds the per-frame skin matrices + morph weights
-     *        into the host's per-slot buffers.
+     *        value-copied clip/skin data, samples the active clip into scene node locals and
+     *        rebuilds the per-frame skin matrices + morph weights into the host's per-slot
+     *        buffers.
      */
-    export class animation_controller {
+    export class controller {
     public:
         /**
          * @ingroup vulkan_animation
-         * @brief build the playback table and resolve the skin/morph rigs against the backend's
-         *        scene: collect the playable (channel-bearing) animations, map the scene tree's
-         *        nodes onto their source metadata (TRS base poses etc. via the source's asset
-         *        node table), bake the morph deltas with their default weights into every frame
-         *        slot's morph buffer and upload the identity skin block into every slot's skin
-         *        buffer. Skinned/morphable primitives get their push.skin_base / push.morph_*
-         *        fields set here.
-         * @param scenes any type satisfying animation_source (gltf::scenes does): animation
-         *        keyframes + skins + mesh (morph) data. Only consulted as DATA; the
-         *        authoritative node host is backend.scene (the scene tree the controller
-         *        animates) - nodes not in that tree are ignored.
-         * @param backend the host surface to drive (scene + per-slot callbacks; see animation_backend)
+         * @brief build the playback table and resolve the skin/morph rigs against the
+         *        backend's scene: collect the playable (channel-bearing) clips, map the scene
+         *        tree's nodes onto their source metadata (TRS base poses etc. via the source's
+         *        asset node table), bake the morph deltas with their default weights into every
+         *        frame slot's morph buffer and upload the identity skin block into every slot's
+         *        skin buffer. Skinned/morphable primitives get their push.skin_base /
+         *        push.morph_* fields set here.
+         * @param scenes any type satisfying source (gltf::scenes does): clip keyframes +
+         *        skins + mesh (morph) data. Only consulted as DATA; the authoritative node
+         *        host is host.scene (the scene tree the controller animates) - nodes not in
+         *        that tree are ignored.
+         * @param host the host surface to drive (scene + per-slot callbacks)
          * @param import_shift translation the import applied to every scene ROOT node's local
          *        (animated roots must re-apply it, like import_scene did)
          * @note call before the first frame, or only while the host is idle (no frame in
@@ -298,59 +300,59 @@ namespace vulkan {
          * @note a template: the definition is in this interface so any TU that imports the
          *       module can instantiate it at the call site with a concrete source type.
          */
-        template <animation_source S>
-        void init(S const& scenes, animation_backend const& backend, glm::vec3 const& import_shift) {
-            this->backend = backend;
+        template <source S>
+        void init(S const& scenes, backend const& host, glm::vec3 const& import_shift) {
+            this->host = host;
             this->import_shift = import_shift;
 
-            // live-tree lookup: asset node index -> backend scene nodes + root flag (import applied
+            // live-tree lookup: asset node index -> host scene nodes + root flag (import applied
             // the shift to root locals only, so animated roots must re-apply it). scene_iterator
             // walks the whole tree in DFS pre-order; roots sit at depth 0. The SCENE TREE is the
             // authoritative host: only sources that actually live in it are animated.
-            for (auto it = vulkan::scene_tree::begin(*this->backend.scene); it != vulkan::scene_tree::end(*this->backend.scene); ++it) {
-                this->source_nodes[it->source_index].push_back(anim_target{&*it, /*scene_root=*/it.depth() == 0});
+            for (auto it = vulkan::scene_tree::begin(*this->host.scene); it != vulkan::scene_tree::end(*this->host.scene); ++it) {
+                this->source_nodes[it->source_index].push_back(node_target{&*it, /*scene_root=*/it.depth() == 0});
             }
 
             // TRS base pose per TREE node: look each tree node's asset source up in the source's
             // asset-level node table (scenes.node_by_source) instead of iterating per-scene node
             // pools - a node referenced by several scenes has identical copies, and the tree only
             // contains the nodes that were actually imported. The pose is value-copied into the
-            // controller's own anim::node_pose (no source type retained).
+            // controller's own node_pose (no source type retained).
             for (auto const& [source, targets] : this->source_nodes) {
                 auto const loader_it = scenes.node_by_source.find(source);
                 if (loader_it == scenes.node_by_source.end()) {
                     continue; // synthesized tree node (e.g. an extra "/prim" leaf) has no source node
                 }
                 auto const& loader_node = *loader_it->second;
-                anim::node_pose base = {};
+                node_pose base = {};
                 base.translation = loader_node.translation;
                 base.rotation = loader_node.rotation;
                 base.scale = loader_node.scale;
                 this->base_poses.try_emplace(source, std::move(base));
             }
 
-            // playable table: channel-bearing animations, in source order, VALUE-COPIED into the
-            // controller's own anim::animation structures (samplers/channels converted once, so
-            // playback never touches the source data afterwards); auto-pick the first
+            // playable table: channel-bearing clips, in source order, VALUE-COPIED into the
+            // controller's own clip structures (samplers/channels converted once, so playback
+            // never touches the source data afterwards); auto-pick the first
             for (auto const& candidate : scenes.animations) {
                 if (candidate.channels.empty()) {
                     continue;
                 }
-                anim::animation converted = {};
+                clip converted = {};
                 converted.name = candidate.name;
                 converted.samplers.reserve(candidate.samplers.size());
                 for (auto const& loader_sampler : candidate.samplers) {
-                    anim::sampler s = {};
+                    sampler s = {};
                     s.times = loader_sampler.times;
                     s.values = loader_sampler.values;
                     s.per_key = loader_sampler.per_key;
-                    s.interp = static_cast<anim::interpolation>(loader_sampler.interpolation);
+                    s.interp = static_cast<interpolation>(loader_sampler.interpolation);
                     converted.samplers.push_back(std::move(s));
                 }
                 converted.channels.reserve(candidate.channels.size());
                 for (auto const& loader_channel : candidate.channels) {
-                    anim::channel c = {};
-                    c.path = static_cast<anim::channel_path>(loader_channel.path);
+                    channel c = {};
+                    c.path = static_cast<channel_path>(loader_channel.path);
                     c.sampler = loader_channel.sampler;
                     c.target_node = loader_channel.target_node;
                     converted.channels.push_back(c);
@@ -358,34 +360,34 @@ namespace vulkan {
                 this->playable.push_back(std::move(converted));
             }
             this->max_duration = 1.0f;
-            for (anim::animation const& playable : this->playable) {
-                this->max_duration = std::max(this->max_duration, animation_duration(playable));
+            for (clip const& playable : this->playable) {
+                this->max_duration = std::max(this->max_duration, clip_duration(playable));
             }
             if (!this->playable.empty()) {
                 this->active = &this->playable[0];
                 this->current_index = 0;
                 this->time = 0.0f;
-                this->duration = animation_duration(*this->active);
+                this->duration = clip_duration(*this->active);
                 this->debug_source = this->pick_debug_source(*this->active);
                 this->refresh_debug_name();
                 utility::log("animation: playing '{}' ({} channels, {:.2f}s loop)", display_name(this->active->name), this->active->channels.size(), this->duration);
             }
 
             // Parallel sampling decision ("lite" fan-out, not full core count): only when the
-            // animation is heavy enough that per-source sampling (each source scans all channels)
-            // is worth splitting across the backend's shared task pool. Light animations (a handful
-            // of channels) stay on the caller thread - the pool sync would cost more than the work.
-            // The pool itself lives on the host (injected as backend.run_tasks), so we only record
+            // clip is heavy enough that per-source sampling (each source scans all channels) is
+            // worth splitting across the backend's shared task pool. Light clips (a handful of
+            // channels) stay on the caller thread - the pool sync would cost more than the work.
+            // The pool itself lives on the host (injected as host.run_tasks), so we only record
             // the decision here + a stable source list to slice update()'s sampling over.
             {
                 std::size_t max_channels = 0;
-                for (anim::animation const& playable : this->playable) {
+                for (clip const& playable : this->playable) {
                     max_channels = std::max(max_channels, playable.channels.size());
                 }
                 if (max_channels >= 32 && this->source_nodes.size() >= 64) {
                     this->parallel_sampling = true;
                     // stable source list for slicing update()'s sampling across the pool workers
-                    // (source_nodes is fixed after init; select() only swaps the active animation)
+                    // (source_nodes is fixed after init; select() only swaps the active clip)
                     this->sample_keys.reserve(this->source_nodes.size());
                     for (auto const& [source, targets] : this->source_nodes) {
                         this->sample_keys.push_back(source);
@@ -435,35 +437,35 @@ namespace vulkan {
                     };
                     assign_block(assign_block, *mesh_node);
                     // value-copy the skin (joints + inverse bind matrices) into the rig
-                    anim::skin skin = {};
-                    skin.name = loader_skin.name;
-                    skin.joints = loader_skin.joints;
-                    skin.inverse_bind = loader_skin.inverse_bind_matrices;
-                    this->skin_rigs.push_back(skin_rig{std::move(skin), mesh_source, block_base});
+                    skin s = {};
+                    s.name = loader_skin.name;
+                    s.joints = loader_skin.joints;
+                    s.inverse_bind = loader_skin.inverse_bind_matrices;
+                    this->skin_rigs.push_back(skin_rig{std::move(s), mesh_source, block_base});
                 }
                 // wanted set for the per-frame world collection: every accepted rig's mesh node +
                 // every joint it references (deduplicated; fixed after this init pass)
                 for (skin_rig const& rig : this->skin_rigs) {
                     this->skin_sources.insert(rig.mesh_source);
-                    for (std::size_t const joint : rig.skin.joints) {
+                    for (std::size_t const joint : rig.s.joints) {
                         this->skin_sources.insert(joint);
                     }
                 }
                 if (!skin_rigs.empty()) {
                     utility::log("skinning: {} skin rig(s) active ({} joint matrix block(s) + identity block)", this->skin_rigs.size(), next_block - 4);
-                    this->skin_debug_name = std::string(display_name(this->skin_rigs.front().skin.name));
+                    this->skin_debug_name = std::string(display_name(this->skin_rigs.front().s.name));
                 }
             }
             // identity block for unskinned draws: upload once into EVERY slot's skin buffer
             {
                 constexpr std::array<glm::mat4, 4> identity_block = {glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f)};
                 for (uint32_t slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-                    this->backend.set_skin_matrices_slot(identity_block, slot);
+                    this->host.set_skin_matrices_slot(identity_block, slot);
                 }
             }
 
             // ---- morph rigs: bake deltas + default weights into every slot's morph buffer ----
-            float* const morph_scratch_mem = this->backend.morph_scratch_slot(0);
+            float* const morph_scratch_mem = this->host.morph_scratch_slot(0);
             if (morph_scratch_mem != nullptr) {
                 // read one float delta attribute of a morph target. The source only keeps FLOAT
                 // morph deltas (glTF loader drops non-float target attributes), so the data can
@@ -487,7 +489,7 @@ namespace vulkan {
                         self(self, child, source);
                     }
                 };
-                for (vulkan::scene_tree::scene_node& root : this->backend.scene->roots) {
+                for (vulkan::scene_tree::scene_node& root : this->host.scene->roots) {
                     collect_leaves(collect_leaves, root, 0);
                 }
                 std::size_t total_floats = 0;
@@ -562,7 +564,7 @@ namespace vulkan {
                     // frame slot's morph buffer: deltas are static, only the per-frame weight
                     // rewrites target the active slot's buffer
                     for (uint32_t slot = 1; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-                        float* const other = this->backend.morph_scratch_slot(slot);
+                        float* const other = this->host.morph_scratch_slot(slot);
                         if (other != nullptr) {
                             std::memcpy(other, morph_scratch_mem, total_floats * sizeof(float));
                         }
@@ -573,18 +575,18 @@ namespace vulkan {
 
         // ---- playback table / gui binding ----
 
-        /** @brief number of channel-bearing animations (the combo lists these) */
+        /** @brief number of channel-bearing clips (the combo lists these) */
         [[nodiscard]] std::size_t playable_count() const noexcept;
         /** @brief display name of playable @p index ("<unnamed>" when the glTF has none) */
         [[nodiscard]] std::string_view playable_name(std::size_t index) const noexcept;
         /** @brief longest playable duration (fixed slider range, like the old demo combo) */
         [[nodiscard]] float playable_max_duration() const noexcept;
-        /** @brief true when a playable animation is selected (auto-picks the first on init) */
+        /** @brief true when a playable clip is selected (auto-picks the first on init) */
         [[nodiscard]] bool has_active() const noexcept;
         /** @brief index of the active playable in the playable list */
         [[nodiscard]] std::size_t current() const noexcept;
         /** @brief switch to playable @p index: reset every animated node to its base pose (so
-         *         nodes the previous animation moved but the new one does not return), then set
+         *         nodes the previous clip moved but the new one does not return), then set
          *         time to zero. Keeps the playing flag as-is.
          */
         void select(std::size_t index);
@@ -597,12 +599,12 @@ namespace vulkan {
         void set_time(float t);
         /** @brief current playback time in seconds */
         [[nodiscard]] float current_time() const noexcept;
-        /** @brief loop length of the active animation in seconds */
+        /** @brief loop length of the active clip in seconds */
         [[nodiscard]] float loop_duration() const noexcept;
 
         /**
          * @ingroup vulkan_animation
-         * @brief advance and apply one frame: sample the active animation at the (possibly
+         * @brief advance and apply one frame: sample the active clip at the (possibly
          *        advanced) time, write each animated node's T/R/S local (scene roots keep the
          *        import shift) and mark the scene changed, write the active frame slot's morph
          *        weights, then rebuild + upload the skin matrices into the active slot.
@@ -619,7 +621,7 @@ namespace vulkan {
 
         // ---- per-second diagnostics (demo log lines) ----
 
-        /** @brief display name of the active animation ("" when none) */
+        /** @brief display name of the active clip ("" when none) */
         [[nodiscard]] std::string_view active_name() const noexcept;
         /** @brief name of the reported animated node ("" when none) */
         [[nodiscard]] std::string_view get_debug_node_name() const noexcept;
@@ -633,12 +635,12 @@ namespace vulkan {
         [[nodiscard]] std::string_view get_skin_debug_name() const noexcept;
 
     private:
-        struct anim_target {
+        struct node_target {
             vulkan::scene_tree::scene_node* node = nullptr;
             bool scene_root = false;
         };
         struct skin_rig {
-            anim::skin skin = {};        // value-copied joints + inverse bind matrices
+            skin s = {};                 // value-copied joints + inverse bind matrices
             std::size_t mesh_source = 0; // asset node index of the skinned mesh node
             uint32_t block_base = 0;     // block start in the skin buffer (after identity)
         };
@@ -647,10 +649,10 @@ namespace vulkan {
             uint32_t vertex_count = 0;
             uint32_t target_count = 0;
             uint32_t morph_base = 0; // float index into the morph buffer
-            std::size_t source = 0;  // owning loader node (weights animation target)
+            std::size_t source = 0;  // owning loader node (weights channel target)
         };
 
-        animation_backend backend; // injected host surface (scene + callbacks); scene == nullptr when unbound
+        backend host; // injected host surface (scene + callbacks); scene == nullptr when unbound
         glm::vec3 import_shift{};
         // whether this scene's animation is heavy enough to fan sampling out over the backend's
         // shared task pool (many channels over many sources): decided in init(), used by update()
@@ -658,12 +660,12 @@ namespace vulkan {
         // source keys in stable order for parallel sampling (the source set is fixed after
         // init(); sample_keys mirrors source_nodes's keys so update() can slice them)
         std::vector<std::size_t> sample_keys = {};
-        // value-copied playable animations (channel-bearing, in source order). Filled once in
+        // value-copied playable clips (channel-bearing, in source order). Filled once in
         // init() and never mutated afterwards, so active may point into it safely.
-        std::vector<anim::animation> playable = {};
-        std::unordered_map<std::size_t, std::vector<anim_target>> source_nodes = {};
-        std::unordered_map<std::size_t, anim::node_pose> base_poses = {};
-        anim::animation const* active = nullptr; // == &playable[current_index] when has_active()
+        std::vector<clip> playable = {};
+        std::unordered_map<std::size_t, std::vector<node_target>> source_nodes = {};
+        std::unordered_map<std::size_t, node_pose> base_poses = {};
+        clip const* active = nullptr; // == &playable[current_index] when has_active()
         std::size_t current_index = 0;
         float time = 0.0f;
         float duration = 1.0f;
@@ -685,14 +687,14 @@ namespace vulkan {
 
         // the node reported per second: prefer a translation channel target, fall back to the
         // first channel target present in the tree
-        std::size_t pick_debug_source(anim::animation const& animation) const;
+        std::size_t pick_debug_source(clip const& clip) const;
         void refresh_debug_name();
 
         // sample one loader source into its scene nodes + the active slot's morph weights at
         // this->time; returns whether any node local moved (morph-only writes are not
         // "changed": they do not invalidate the culling BVH). A member function so the
         // sampling fan-out tasks only capture `this` (+ their source range): the task list is
-        // self-contained and can be handed to the backend's run_tasks for pool execution.
-        bool sample_source(std::size_t source, std::vector<anim_target> const& targets);
+        // self-contained and can be handed to the host's run_tasks for pool execution.
+        bool sample_source(std::size_t source, std::vector<node_target> const& targets);
     };
-} // namespace vulkan
+} // namespace vulkan::animation

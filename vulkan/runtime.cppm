@@ -77,7 +77,7 @@ namespace vulkan {
      * enumerator per future stage instead of passing magic ints at call sites.
      */
     export enum class task_priority : int {
-        animation = 0, // per-source animation sampling fan-out (animation_controller::update)
+        animation = 0, // per-source animation sampling fan-out (animation::controller::update)
         // future frame-time stages (culling, skin upload, ...) append their own tier here
     };
 

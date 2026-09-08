@@ -9,7 +9,7 @@ import gltf_loader;
 import utility;
 import utility.frame_clock; // per-frame stamp: cheap time reads for (future) parallel workers / animation
 import utility.frame_stats; // rolling fps window: smoothed overlay value + once-per-second report
-import vulkan.animation;    // animation_controller: glTF playback / skinning / morphs on the runtime tree
+import vulkan.animation;    // animation::controller: glTF playback / skinning / morphs on the runtime tree
 import vulkan.math;
 import vulkan.runtime.scene_tree; // scene storage + GPU primitives (was vulkan.model)
 import vulkan.runtime;
@@ -360,7 +360,7 @@ int main(int argc, char** argv) {
     // runtime scene tree; initialize it before the first frame (it bakes morph deltas and the
     // identity skin block into every frame slot's buffers). A float mirror of the playback
     // clock feeds the gui time slider (slider_widget binds an external float).
-    vulkan::animation_controller animation;
+    vulkan::animation::controller animation;
     // the controller drives the runtime through an injected surface (chores wires the scene,
     // per-slot buffers and task pool), so it never depends on vulkan::runtime itself
     animation.init(*scenes, chores::make_animation_backend(runtime), scene_import_shift);

@@ -197,7 +197,7 @@ namespace chores {
                    bool const use_gui,
                    app_config::app_settings const& settings,
                    gui_bindings& bindings,
-                   vulkan::animation_controller& animation,
+                   vulkan::animation::controller& animation,
                    std::vector<std::string> const& camera_names,
                    std::function<void(int)> const& on_camera_selected) {
         if (!use_gui) {
@@ -226,7 +226,7 @@ namespace chores {
         // playback controls (only when the model carries animations): play/pause toggle bound
         // to the playback state, a time scrubber (pauses on drag so the clock cannot fight the
         // scrub; the play checkbox resumes), and - for multi-animation assets - a dropdown to
-        // pick which animation plays. All playback state lives in the animation_controller.
+        // pick which animation plays. All playback state lives in the animation::controller.
         if (animation.has_active()) {
             panel.push_back(std::make_unique<vulkan::gui::label_widget>([&animation] {
                 return std::format("animation '{}' ({}s)", animation.active_name(), animation.loop_duration());
@@ -297,11 +297,11 @@ namespace chores {
         utility::log("gui: Dear ImGui debug overlay enabled");
     }
 
-    // Wire an animation_backend to the runtime: the scene tree it drives, its per-frame-slot
+    // Wire an animation backend to the runtime: the scene tree it drives, its per-frame-slot
     // morph/skin buffers (active slot for per-frame writes, explicit slot for setup bakes) and
     // its shared task pool. The controller sees only this surface, never vulkan::runtime.
-    vulkan::animation_backend make_animation_backend(vulkan::runtime& runtime) {
-        vulkan::animation_backend backend;
+    vulkan::animation::backend make_animation_backend(vulkan::runtime& runtime) {
+        vulkan::animation::backend backend;
         backend.scene = &runtime.get_scene();
         backend.morph_scratch_active = [&runtime]() -> float* {
             return static_cast<float*>(runtime.morph_scratch());
