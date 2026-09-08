@@ -731,6 +731,9 @@ namespace vulkan {
      * @param distance camera distance from the target
      * @param target the point the camera looks at and orbits around (e.g. the centered scene origin,
      *        or the scene sink so the camera follows the model)
+     * @param scene_radius conservative radius of the scene around @p target (bounds radius); the
+     *        projection far plane always covers target + scene_radius so zooming in never clips
+     *        the far side of the scene
      * @param aspect swapchain width / height
      * @return camera UBO with view/proj/camera_pos filled in
      * @note proj uses perspectiveRH_ZO with a Y flip to match Vulkan's y-down framebuffer
@@ -740,6 +743,7 @@ namespace vulkan {
         float pitch,
         float distance,
         glm::vec3 const& target,
+        float scene_radius,
         float aspect);
 
     /**

@@ -212,6 +212,10 @@ namespace vulkan {
         // their GPU resources through this runtime's vma allocator on destruction). Declaration order in
         // the caller (scene after runtime) gives that order automatically.
         scene_tree::scene* bound_scene = nullptr; // user-owned scene the runtime renders
+        // conservative radius of the bound scene around the camera target / scene center
+        // (set by enable_shadows, which receives it). The camera projection far plane uses it
+        // (make_orbit_camera_ubo) so zooming in never clips the scene's far side.
+        float scene_radius = 100.0f;
         // optional whole-scene transform applied on top of every root before local transforms
         // (programmatic grouping / demo rotation; identity by default = no visual change)
         glm::mat4 scene_transform = glm::mat4(1.0f);

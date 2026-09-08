@@ -59,7 +59,8 @@ namespace {
         auto& camera = runtime_from_window(window)->camera;
         // zoom: wheel up pulls in, wheel down pulls out. The upper bound is generous (scene
         // sizes vary from the tiny default model to e.g. the Fox rig, whose framing distance
-        // is ~240); the projection far plane follows the distance (see make_orbit_camera_ubo).
+        // is ~240). The projection far plane always covers the scene (see make_orbit_camera_ubo),
+        // so zooming in never clips the far side.
         camera.distance *= std::pow(0.9f, static_cast<float>(yoffset));
         camera.distance = std::clamp(camera.distance, 0.5f, 5000.0f);
     }
@@ -810,7 +811,7 @@ namespace vulkan {
             this->current_ubo.proj = this->external_proj;
             this->current_ubo.camera_pos = this->external_eye;
         } else {
-            this->current_ubo = make_orbit_camera_ubo(this->camera.yaw, this->camera.pitch, this->camera.distance, this->camera.target, this->current_aspect);
+            this->current_ubo = make_orbit_camera_ubo(this->camera.yaw, this->camera.pitch, this->camera.distance, this->camera.target, this->scene_radius, this->current_aspect);
         }
         if (this->camera_mapped[frame_slot] != nullptr) {
             std::memcpy(this->camera_mapped[frame_slot], &this->current_ubo, sizeof(camera_ubo));
@@ -1494,6 +1495,9 @@ namespace vulkan {
     }
 
     void runtime::enable_shadows(glm::vec3 const& scene_center, float const scene_radius) {
+        // Remember the scene extent even if shadow setup below fails: the camera far plane
+        // (make_orbit_camera_ubo) needs it to keep the whole scene visible when zooming in.
+        this->scene_radius = scene_radius;
         if (!this->shadow_pipeline || this->light_mapped == nullptr) {
             utility::log("shadow mapping not enabled (no shadow pipeline / light buffer)");
             return;
