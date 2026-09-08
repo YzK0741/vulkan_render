@@ -103,15 +103,16 @@ namespace vulkan {
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
             this->command_buffers.push_back(this->vulkan_core.make_command_buffer());
         }
-        // One shadow-pass + one main-pass secondary command buffer per frame slot (stage 2 of
-        // parallel recording): pre-allocated with the primaries so the GPU can read them while
-        // this slot's primary executes. Recorded sequentially for now (identical rendering);
-        // stage 3 fans the recording out over the task pool.
+        // One shadow-pass + one main-pass + one gui-overlay secondary command buffer per frame
+        // slot (stage 2 of parallel recording): pre-allocated with the primaries so the GPU can
+        // read them while this slot's primary executes. Recorded sequentially for now (identical
+        // rendering); stage 3 fans the recording out over the task pool.
         this->secondary_command_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
             std::array<vk_command_buffer, static_cast<std::size_t>(secondary_pass::count)> pair = {
-                this->vulkan_core.make_secondary_command_buffer(),
-                this->vulkan_core.make_secondary_command_buffer(),
+                this->vulkan_core.make_secondary_command_buffer(), // shadow
+                this->vulkan_core.make_secondary_command_buffer(), // main
+                this->vulkan_core.make_secondary_command_buffer(), // gui
             };
             this->secondary_command_buffers.push_back(std::move(pair));
         }
@@ -662,7 +663,7 @@ namespace vulkan {
         return material_index;
     }
 
-    void runtime::begin_rendering(VkCommandBuffer const command_buffer, uint32_t const image_index) const {
+    void runtime::begin_rendering(VkCommandBuffer const command_buffer, uint32_t const image_index, VkRenderingFlags const flags) const {
         std::array<VkClearValue, 2> clear_values = {};
         clear_values[0].color = {{this->clear_color.r, this->clear_color.g, this->clear_color.b, 1.0f}};
         clear_values[1].depthStencil = {1.0f, 0};
@@ -699,6 +700,7 @@ namespace vulkan {
 
             VkRenderingInfo rendering_info = {};
             rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            rendering_info.flags = flags;
             rendering_info.renderArea = {{0, 0}, vk.swap_chain_extent};
             rendering_info.layerCount = 1;
             rendering_info.colorAttachmentCount = 1;
@@ -1075,8 +1077,6 @@ namespace vulkan {
             vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
         }
 
-        this->begin_rendering(*command_buffer, this->current_image_index);
-
         // Pipelines cache a fullscreen viewport/scissor at creation; after a resize the swapchain
         // extent changed, so resync them from the current extent before drawing (begin_pipeline
         // applies the stored values). Done here on the primary thread (it mutates the cached
@@ -1099,15 +1099,52 @@ namespace vulkan {
             this->skybox_pipeline->scissor = full_scissor;
         }
 
-        // Scene content: bind the scene set, draw the skybox background (when enabled) then
-        // every pipeline's visible leaves (see record_main_content).
-        this->record_main_content(*command_buffer);
+        // Stage 2 of parallel recording: the main-pass scene content (scene set bind + skybox +
+        // per-pipeline draws) and the gui overlay are each recorded into this slot's SECONDARY
+        // command buffers first, then executed from the primary inside the main rendering
+        // instance (VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT). Recording is still
+        // sequential - rendering is identical to inline; stage 3 fans it out over the task pool.
+        auto const& secondaries = this->secondary_command_buffers[static_cast<std::size_t>(frame_slot)];
+        VkCommandBuffer const main_secondary = *secondaries[static_cast<std::size_t>(secondary_pass::main)];
+        VkCommandBuffer const gui_secondary = *secondaries[static_cast<std::size_t>(secondary_pass::gui)];
 
-        // Debug overlay: draw the ImGui frame into the STILL OPEN main rendering instance (the
-        // same MSAA color attachment the scene just rendered into, resolved together at
-        // end_recording()). record() runs the registered UI builder and emits the draw data.
+        // Main secondary inherits the color + depth attachments (dynamic rendering 1.3): same
+        // formats as begin_rendering() below, rasterization samples follow MSAA. The gui
+        // overlay draws into the same color+depth instance, so it inherits identically.
+        VkFormat const color_format = vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT ? vk.color_format : vk.swap_chain_image_format;
+        VkCommandBufferInheritanceRenderingInfo main_inheritance = {};
+        main_inheritance.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO;
+        main_inheritance.colorAttachmentCount = 1;
+        main_inheritance.pColorAttachmentFormats = &color_format;
+        main_inheritance.depthAttachmentFormat = vk.depth_format;
+        main_inheritance.rasterizationSamples = vk.msaa_samples;
+        VkCommandBufferInheritanceInfo main_sec_inherit = {};
+        main_sec_inherit.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+        main_sec_inherit.pNext = &main_inheritance;
+        VkCommandBufferBeginInfo main_sec_begin = {};
+        main_sec_begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        main_sec_begin.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+        main_sec_begin.pInheritanceInfo = &main_sec_inherit;
+
+        if (vkBeginCommandBuffer(main_secondary, &main_sec_begin) == VK_SUCCESS) {
+            this->record_main_content(main_secondary);
+            vkEndCommandBuffer(main_secondary);
+        } else {
+            utility::log("runtime: main secondary command buffer begin failed - scene skipped this frame");
+        }
         if (this->debug_overlay.is_active()) {
-            this->debug_overlay.record(*command_buffer);
+            if (vkBeginCommandBuffer(gui_secondary, &main_sec_begin) == VK_SUCCESS) {
+                this->debug_overlay.record(gui_secondary);
+                vkEndCommandBuffer(gui_secondary);
+            } else {
+                utility::log("runtime: gui secondary command buffer begin failed - overlay skipped this frame");
+            }
+        }
+
+        this->begin_rendering(*command_buffer, this->current_image_index, VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT);
+        vkCmdExecuteCommands(*command_buffer, 1, &main_secondary);
+        if (this->debug_overlay.is_active()) {
+            vkCmdExecuteCommands(*command_buffer, 1, &gui_secondary);
         }
     }
 
