@@ -4,10 +4,8 @@ import std;
 import app_config;
 import chores; // demo bootstrap helpers (shader loading / dir locating / pipelines)
 import gltf_loader;
-import utility;
-import utility.frame_clock; // per-frame stamp: cheap time reads for (future) parallel workers / animation
-import utility.frame_stats; // rolling fps window: smoothed overlay value + once-per-second report
-import vulkan.animation;    // animation::controller: glTF playback / skinning / morphs on the runtime tree
+import utility;          // re-exports utility.frame_clock / frame_stats / bvh / better_pmr / thread_pool / data_block
+import vulkan.animation; // animation::controller: glTF playback / skinning / morphs on the runtime tree
 import vulkan.math;
 import vulkan.runtime.scene_tree; // scene storage + GPU primitives (was vulkan.model)
 import vulkan.runtime;
