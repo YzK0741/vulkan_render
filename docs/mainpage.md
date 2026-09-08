@@ -9,7 +9,12 @@ CMake 4.3 + Ninja on MSYS2 clang64.
   record_main_drawcalls -> end_recording -> submit_and_present, plus one-call render_frame()),
   scene tree, GPU primitives (normal / instanced / static / offset draws), debug GUI overlay.
   Shadow + main pass commands are recorded into per-slot secondary command buffers and the
-  main pass fans its leaf recording out over the shared task pool (sub_render_task batches)
+  main pass fans its leaf recording out over the shared task pool (sub_render_task batches);
+  each recording worker gets its own render_environment (thread-local pipeline-bind state)
+- `vulkan.render_environment` - per-recording-session render state: the available named
+  pipelines (span over the runtime's stable name table), the session's default pipeline and a
+  deduplicated binder (std::function, injected by the runtime) that primitives call through
+  draw(command_buffer, render_environment&). Holds no Vulkan module dependency.
 - `vulkan.animation` - animation::controller: glTF keyframe playback / skinning / morphs on the
   runtime scene tree (heavy animations fan per-source sampling over a small utility.thread_pool)
 - `gltf_loader` - pure-CPU glTF/GLB loading: meshes, keyframe animation, skins, morph targets,
@@ -46,5 +51,5 @@ Use the modules as-is to extend this renderer (new pass / primitive strategy /
 loader) or link only the ones you need into your own project.
 
 Module reference is grouped under the `vulkan_core`, `vulkan_runtime`, `vulkan_runtime_scene_tree`,
-`vulkan_animation`, `vulkan_gui`, `vulkan_math`, `gltf_loader`, `chores`, `utility` and `app_config`
-groups. See the README at the repository root for the controls and config reference.
+`vulkan_render_environment`, `vulkan_animation`, `vulkan_gui`, `vulkan_math`, `gltf_loader`, `chores`,
+`utility` and `app_config` groups. See the README at the repository root for the controls and config reference.

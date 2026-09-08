@@ -17,8 +17,11 @@ build through the scene-tree mounting helpers (`add_root` / `add_child` /
 `static_draw_primitive` (one buffer bind + N offset draws), and the frame's pass
 recording is multi-threaded over secondary command buffers (see the README's
 runtime bullet — per-worker `{command pool, secondary}` pairs, `sub_render_task`
-segments on the shared task pool). Remaining: mesh sharing / GPU dedup (future
-pass, §8).
+segments on the shared task pool). **Pipeline binding is decoupled from the tree**:
+leaves carry default semantics (empty `pipeline_name`) or an explicit name, and
+`draw()` receives a per-recording-worker `vulkan.render_environment` (thread-local,
+deduplicated `bind_default()` / `bind_pipeline(name)`; see §4.1/§4.3). Remaining:
+mesh sharing / GPU dedup (future pass, §8).
 
 ## 1. Motivation
 
@@ -174,8 +177,10 @@ namespace vulkan::scene_tree {
   caller must destroy the tree BEFORE the runtime — `main` declares the scene
   after the runtime, so C++ reverse declaration order provides exactly that.
 - `make_primitive` / `make_instanced_primitive` / `make_static_draw` attach a **root** leaf
-  whose `name` records the pipeline (primitives record their pipeline in `primitive->pipeline`;
-  `instanced_draw_primitive` / `static_draw_primitive` get a tree slot like any primitive).
+  whose `name` records the requested pipeline (the leaf itself carries default semantics —
+  empty `pipeline_name` — or an explicit name, and `draw()` binds through the recording
+  `render_environment`; `instanced_draw_primitive` / `static_draw_primitive` get a tree slot
+  like any primitive).
   `make_static_draw` uploads ONE owned merged vertex/index buffer plus a chunk table
   (`static_draw_chunk`: index range + own material), so a batch of static sub-meshes renders
   with one buffer bind + N offset draws — the primitive-level form of a static scene.
@@ -211,34 +216,53 @@ void update_world(scene_node& n, glm::mat4 const& parent_world) {
 
 ### 4.1 Flat draw list derived from the tree (DONE — `7a445d5`, `896d5b3`)
 
-To keep "bind pipeline once, draw batch" (main and shadow passes) exactly as
-before, `render_frame()` derives the flat draw set from the tree **once per
-frame** — no persistent `render_lists_` map, no explicit cache to invalidate:
+As of the render_environment refactor (`fed35fe`) the recording walk does NOT group
+by pipeline anymore: each `draw(command_buffer, render_environment&)` binds the
+pipeline it needs itself, through the per-worker environment (deduplicated, so
+consecutive leaves of one pipeline still share a single bind). The flat leaf list
+is still derived from the tree **once per frame** — no persistent `render_lists_`
+map, no explicit cache to invalidate:
 
 ```cpp
-// render_frame(), after update_world:
+// begin_recording(), after update_world:
 std::vector<primitive const*> frame_leaves;              // DFS collect (once)
 for (scene_node const& root : scene_.roots) collect_leaf_primitives(root, frame_leaves);
-//   main pass: group frame_leaves by p->pipeline -> begin_pipeline() once, p->draw() per leaf
-//   shadow pass: bind shadow pipeline, p->draw() over the same frame_leaves
+//   main pass (record_main_segment): one render_environment per recording worker
+//     (available names, default pipeline, injected binder + shared scene layout);
+//     leaves draw via m->draw(cb, env) - default leaves request env.bind_default(),
+//     custom leaves env.bind_pipeline(name)
+//   shadow pass (record_shadow_content): its own environment always binds the shadow
+//     pipeline (the binder ignores the requested name), then m->draw(cb, env)
 ```
+
+(The pre-refactor text below records the earlier design, kept for history.)
 
 - `collect_leaf_primitives` / `get_primitives` are thin wrappers over the scene_tree
   module's own `visit_primitives()` DFS (`896d5b3`) — no hand-rolled traversal in
   the runtime.
-- Alternative considered: draw inline while walking the tree — rejected, it would
-  re-bind pipelines per leaf (breaks batching).
+- Alternative considered (original design): draw inline while walking the tree —
+  rejected, it would re-bind pipelines per leaf (breaks batching). The environment's
+  dedup gives the same single-bind-per-pipeline batching while letting each leaf
+  choose its pipeline.
+- Alternative considered (original design): group `frame_leaves` by `p->pipeline`
+  and `begin_pipeline()` once per group in the recorder. Replaced by the
+  environment-based binding: pipeline selection moved into `draw()`, so the record
+  layer no longer needs to know every leaf's pipeline up front (multi-pipeline
+  scenes, custom strategies) and each worker's bind state stays thread-local.
 
 ### 4.2 Public runtime API (current)
 
-Current surface (post-`4ee1b82`; per-pipeline names kept — see §9 Q2):
+Current surface (post-`4ee1b82` / `fed35fe`; per-pipeline names kept — see §9 Q2):
 
 ```cpp
 void set_scene(scene_tree::scene& scene);   // bind the caller-owned tree the runtime renders
+std::expected<void, std::string> make_pipeline(std::string_view name, vs, fs); // named pipeline;
+//   the FIRST created pipeline becomes the implicit runtime default (default-semantics leaves draw it)
+void set_default_pipeline(std::string_view name);   // override the implicit default
 primitive* make_primitive(std::string_view pipeline_name, primitive_create_info const& info); // build + attach root leaf
 primitive* make_instanced_primitive(primitive const& source, std::span<glm::mat4 const> transforms);
 primitive* make_static_draw(static_draw_create_info const& info); // one OWNED merged buffer + chunk table (static batch)
-std::vector<primitive const*> get_primitives(std::string_view pipeline_name) const; // DFS by pipeline
+std::vector<primitive const*> get_primitives(std::string_view pipeline_name) const; // DFS by effective pipeline name
 void clear_primitives(std::string_view pipeline_name);   // DFS: strips matching leaves anywhere in the tree
 scene_import_result import_scene(NI nfirst, NI nlast, DI dfirst, DI dlast, glm::vec3 const& offset);
 //   node stream (scene_node_iterator) + aligned drawable stream (scene_drawable_iterator);
@@ -249,6 +273,11 @@ void enable_shadows(glm::vec3 const& scene_center, float scene_radius);
 void log_scene_tree() const; // diagnostic: prints the runtime tree (names + [primitive] leaves)
 ```
 
+`get_primitives` / `clear_primitives` match by the leaf's EFFECTIVE pipeline: an
+explicit `pipeline_name` when the leaf carries one, otherwise the runtime default —
+so default-semantics leaves (the normal/instanced/static draws, which leave
+`pipeline_name` empty) are matched when the requested name equals the default.
+
 (Step-2b is done — see §6. Programmatic scenes build through the scene-tree mounting
 helpers — `scene::add_root()` / `scene_node::add_child()` / `scene_node::attach(unique_ptr<primitive>)`
 (used with `runtime::create_primitive`, which builds without attaching) / `find_node(name)` —
@@ -258,10 +287,26 @@ keep working through `get_primitives` / `scenes::begin()`.)
 
 ### 4.3 Shadow pass
 
-Unchanged structurally: the shadow pass iterates the same `frame_leaves` collected
-from the tree (step 2a). Because the shadow pipeline shares the vertex layout /
-push block / scene layout, leaves drawn into the shadow map still work via
-`primitive->draw()`.
+Unchanged structurally (and now caster-culled, see §4.4): the shadow pass iterates
+the collected casters (a subset of `frame_leaves` — see the runtime's
+`shadow_casters`, built from the frustum-visible leaves plus the up-light
+neighborhood). Because the shadow pipeline shares the vertex layout / push block /
+scene layout, leaves drawn into the shadow map still work via `draw()` — through
+the shadow pass's own `render_environment`, whose injected binder always binds the
+shadow pipeline (it ignores the requested pipeline name), so custom leaves that
+would draw with a named pipeline in the main pass still cast their geometry here.
+
+### 4.4 Shadow caster culling (`f094c31`)
+
+The shadow pass used to re-draw every scene leaf each frame ("the whole scene casts
+shadows"), so on large scenes (NodePerformanceTest: 10000 rocks) the camera view
+direction barely moved the fps — only the main pass was culled. Now only leaves
+whose shadow can reach the camera frustum are drawn: the frustum-visible leaves
+plus casters up to `shadow_caster_extent` (scene_radius / 8, set in
+`enable_shadows`) up-light of the frustum, computed in `begin_recording` by
+unioning `cull_visible` with a BVH `frustum_cull` against the camera frustum
+shifted toward the sun. Rebuilt only when the camera moved or the scene changed
+(same reuse rule as the main-pass cull); `record_shadow_content` walks that set.
 
 ## 5. Loader <-> runtime bridge (the key design decision)
 
