@@ -200,34 +200,25 @@ int main(int argc, char** argv) {
         utility::log("closeup: camera pulled in (partial frustum culling expected)");
     }
     if (static_draw) {
-        // merge the first two loader drawables into ONE static buffer (shared stride-64 vertex
-        // layout), then draw them as two chunks of one static_draw: a single buffer bind plus
-        // two offset draws instead of two binds. Each chunk's indices stay relative to its own
-        // vertices; chunk.vertex_offset (base vertex) re-anchors them into the merged buffer,
-        // so the index bytes need no rewriting. Verifies static_draw_primitive + make_static_draw.
-        std::vector<unsigned char> merged_vertices;
-        std::vector<unsigned char> merged_indices;
-        std::vector<vulkan::static_draw_chunk> chunk_table;
-        VkIndexType index_type = VK_INDEX_TYPE_UINT32;
-        gltf::drawable_iterator merge_it(*scenes, materials);
-        uint32_t vertex_count_total = 0;
-        uint32_t index_count_total = 0;
-        int merged = 0;
-        for (; merge_it != scene_last && merged < 2; ++merge_it) {
-            gltf::vertex_view const vertex = merge_it.get_vertex();
-            gltf::index_view const index = merge_it.get_index();
-            // the merged buffer needs ONE index width: only merge drawables sharing the first's
-            if (merged == 0) {
-                index_type = index.width == 4 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
-            } else if ((index_type == VK_INDEX_TYPE_UINT32) != (index.width == 4)) {
-                utility::log("static demo: drawable {} index width differs, merging only the first {}", merged, merged);
-                break;
-            }
-            vulkan::static_draw_chunk chunk = {};
-            chunk.first_index = index_count_total; // cumulative index count = offset into the merged buffer
-            chunk.index_count = index.count;
-            chunk.vertex_offset = vertex_count_total; // base vertex into the merged vertex buffer
-            chunk.double_sided = merge_it.get_double_sided();
+        // static demo: replace the per-leaf import with ONE static_draw over merged loader
+        // geometry - every drawable's vertices are baked with its node's world transform (plus
+        // the import shift), indices are widened to 32-bit, and the whole model becomes a
+        // single buffer bind + N offset draws. This only makes sense for RIGID static models:
+        // skinned/morphed/animated geometry would bake the bind pose and drift from the live
+        // animation, so those files are skipped with a hint instead of mis-rendered.
+        if (!scenes->animations.empty() || !scenes->skins.empty()) {
+            utility::log("static demo: model has animation/skin - static batching needs a rigid static model, skipping");
+        } else {
+            // merged output: one 32-bit index buffer, one stride-64 vertex buffer (loader layout
+            // matches pbr.vert: pos/normal/uv/joints/weights; baking rewrites pos + normal)
+            std::vector<unsigned char> merged_vertices;
+            std::vector<std::uint32_t> merged_indices;
+            std::vector<vulkan::static_draw_chunk> chunk_table;
+            glm::mat4 const bake_shift = glm::translate(glm::mat4(1.0f), scene_import_shift);
+            gltf::drawable_iterator merge_it(*scenes, materials);
+            uint32_t vertex_count_total = 0;
+            uint32_t index_count_total = 0;
+            int merged = 0;
             auto const to_tex = [](gltf::image_view const& img, VkFormat const format) {
                 vulkan::texture_input out = {};
                 if (img.valid) {
@@ -240,48 +231,87 @@ int main(int argc, char** argv) {
                 }
                 return out;
             };
-            chunk.albedo = to_tex(merge_it.get_albedo(), VK_FORMAT_R8G8B8A8_SRGB);
-            chunk.metallic_roughness = to_tex(merge_it.get_metallic_roughness(), VK_FORMAT_R8G8B8A8_UNORM);
-            chunk.normal = to_tex(merge_it.get_normal(), VK_FORMAT_R8G8B8A8_UNORM);
-            chunk.occlusion = to_tex(merge_it.get_occlusion(), VK_FORMAT_R8G8B8A8_UNORM);
-            chunk.emissive = to_tex(merge_it.get_emissive(), VK_FORMAT_R8G8B8A8_SRGB);
-            gltf::resolved_factors const factors = merge_it.get_factors();
-            chunk.factors = vulkan::material_factors{};
-            chunk.factors.base_color_factor = factors.base_color_factor;
-            chunk.factors.emissive_factor = factors.emissive_factor;
-            chunk.factors.metallic_factor = factors.metallic_factor;
-            chunk.factors.roughness_factor = factors.roughness_factor;
-            chunk.factors.normal_scale = factors.normal_scale;
-            chunk.factors.occlusion_strength = factors.occlusion_strength;
-            chunk.factors.alpha_cutoff = factors.alpha_cutoff;
-            chunk.factors.alpha_mask = factors.alpha_mask;
+            for (; merge_it != scene_last; ++merge_it, ++merged) {
+                gltf::vertex_view const vertex = merge_it.get_vertex();
+                gltf::index_view const index = merge_it.get_index();
+                // bake the node's world transform + import shift into every vertex: the merged
+                // batch sits at identity, so its vertices must already be in final world space.
+                // Only pos (0..12) and normal (12..24) change; uv/joints/weights stay local.
+                glm::mat4 const world = bake_shift * merge_it.get_transform(); // loader world (scene-root based)
+                glm::mat3 const normal_matrix = glm::mat3(world);              // rotation part (demo: rigid/affine nodes)
+                std::vector<unsigned char> baked = {vertex.data.begin(), vertex.data.end()};
+                for (uint32_t v = 0; v < vertex.count; ++v) {
+                    unsigned char* const vp = baked.data() + static_cast<size_t>(v) * vertex.stride;
+                    glm::vec3 position;
+                    glm::vec3 normal;
+                    std::memcpy(&position, vp, sizeof(position));
+                    std::memcpy(&normal, vp + sizeof(glm::vec3), sizeof(normal));
+                    glm::vec4 const world_pos = world * glm::vec4(position, 1.0f);
+                    glm::vec3 const world_normal = glm::normalize(normal_matrix * normal);
+                    std::memcpy(vp, &world_pos, sizeof(glm::vec3));
+                    std::memcpy(vp + sizeof(glm::vec3), &world_normal, sizeof(glm::vec3));
+                }
+                merged_vertices.insert(merged_vertices.end(), baked.begin(), baked.end());
 
-            merged_vertices.insert(merged_vertices.end(), vertex.data.begin(), vertex.data.end());
-            merged_indices.insert(merged_indices.end(), index.data.begin(), index.data.end());
-            vertex_count_total += vertex.count;
-            index_count_total += index.count;
-            chunk_table.push_back(chunk);
-            ++merged;
-        }
-        if (merged >= 2) {
-            vulkan::static_draw_create_info info = {};
-            info.vertex_data = merged_vertices;
-            info.vertex_stride = 64; // the loader's interleaved layout is fixed (see pbr.vert)
-            info.vertex_count = vertex_count_total;
-            info.index_data = merged_indices;
-            info.index_type = index_type;
-            info.index_count = index_count_total;
-            info.chunks = chunk_table;
-            // the static batch joins the imported scene as its own root leaf (it draws the same
-            // geometry the import already attached - the demo only verifies the merged path)
-            vulkan::primitive* const created = runtime.make_static_draw(info);
-            if (created == nullptr) {
-                utility::log("static demo: make_static_draw failed");
-            } else {
-                utility::log("static demo: merged {} drawables into 1 buffer, {} chunks (1 bind + {} offset draws)", merged, chunk_table.size(), chunk_table.size());
+                // widen every index to 32-bit so the merged buffer needs one index type
+                std::size_t const index_count_this = static_cast<std::size_t>(index.count);
+                if (index.width == 2) {
+                    auto const* src = reinterpret_cast<std::uint16_t const*>(index.data.data());
+                    for (std::size_t i = 0; i < index_count_this; ++i) {
+                        merged_indices.push_back(static_cast<std::uint32_t>(src[i]));
+                    }
+                } else {
+                    auto const* src = reinterpret_cast<std::uint32_t const*>(index.data.data());
+                    for (std::size_t i = 0; i < index_count_this; ++i) {
+                        merged_indices.push_back(src[i]);
+                    }
+                }
+
+                vulkan::static_draw_chunk chunk = {};
+                chunk.first_index = index_count_total; // cumulative 32-bit index count
+                chunk.index_count = index.count;
+                chunk.vertex_offset = vertex_count_total; // base vertex into the merged buffer
+                chunk.double_sided = merge_it.get_double_sided();
+                chunk.albedo = to_tex(merge_it.get_albedo(), VK_FORMAT_R8G8B8A8_SRGB);
+                chunk.metallic_roughness = to_tex(merge_it.get_metallic_roughness(), VK_FORMAT_R8G8B8A8_UNORM);
+                chunk.normal = to_tex(merge_it.get_normal(), VK_FORMAT_R8G8B8A8_UNORM);
+                chunk.occlusion = to_tex(merge_it.get_occlusion(), VK_FORMAT_R8G8B8A8_UNORM);
+                chunk.emissive = to_tex(merge_it.get_emissive(), VK_FORMAT_R8G8B8A8_SRGB);
+                gltf::resolved_factors const factors = merge_it.get_factors();
+                chunk.factors = vulkan::material_factors{};
+                chunk.factors.base_color_factor = factors.base_color_factor;
+                chunk.factors.emissive_factor = factors.emissive_factor;
+                chunk.factors.metallic_factor = factors.metallic_factor;
+                chunk.factors.roughness_factor = factors.roughness_factor;
+                chunk.factors.normal_scale = factors.normal_scale;
+                chunk.factors.occlusion_strength = factors.occlusion_strength;
+                chunk.factors.alpha_cutoff = factors.alpha_cutoff;
+                chunk.factors.alpha_mask = factors.alpha_mask;
+                chunk_table.push_back(chunk);
+                vertex_count_total += vertex.count;
+                index_count_total += static_cast<uint32_t>(index_count_this);
             }
-        } else {
-            utility::log("static demo: need >= 2 drawables to merge, found {}", merged);
+            if (merged < 2) {
+                utility::log("static demo: need >= 2 drawables to merge, found {}", merged);
+            } else {
+                vulkan::static_draw_create_info info = {};
+                info.vertex_data = merged_vertices;
+                info.vertex_stride = 64; // the loader's interleaved layout is fixed (see pbr.vert)
+                info.vertex_count = vertex_count_total;
+                info.index_data = {reinterpret_cast<unsigned char const*>(merged_indices.data()), merged_indices.size() * sizeof(std::uint32_t)};
+                info.index_type = VK_INDEX_TYPE_UINT32;
+                info.index_count = index_count_total;
+                info.chunks = chunk_table;
+                // drop the import's per-leaf primitives, then append the batch as the scene's
+                // single static draw - the render must look identical to the ordinary import
+                runtime.clear_primitives("pbr");
+                vulkan::primitive* const created = runtime.make_static_draw(info);
+                if (created == nullptr) {
+                    utility::log("static demo: make_static_draw failed");
+                } else {
+                    utility::log("static demo: baked {} drawables into 1 buffer, {} chunks (1 bind + {} offset draws, replaces the per-leaf import)", merged, chunk_table.size(), chunk_table.size());
+                }
+            }
         }
     }
     double spin_angle = 0.0;
