@@ -7,13 +7,15 @@ CMake 4.3 + Ninja on MSYS2 clang64.
 - `vulkan.runtime` - the frame facade (per-frame-slot scene resources, granular frame phases:
   poll_events -> recreate_if_minimized -> pace_and_acquire -> begin_recording ->
   record_main_drawcalls -> end_recording -> submit_and_present, plus one-call render_frame()),
-  scene tree, GPU primitives, debug GUI overlay
+  scene tree, GPU primitives (normal / instanced / static / offset draws), debug GUI overlay.
+  Shadow + main pass commands are recorded into per-slot secondary command buffers and the
+  main pass fans its leaf recording out over the shared task pool (sub_render_task batches)
 - `vulkan.animation` - animation::controller: glTF keyframe playback / skinning / morphs on the
   runtime scene tree (heavy animations fan per-source sampling over a small utility.thread_pool)
 - `gltf_loader` - pure-CPU glTF/GLB loading: meshes, keyframe animation, skins, morph targets,
   cameras and punctual lights (KHR_lights_punctual); world-AABB + loader diagnostics
 - `chores` - demo bootstrap helpers for main(): startup config analysis (config + argv merge,
-  shaders/model location), pipeline setup, instancing stress grid, shader loading
+  shaders/model location), pipeline setup, instancing stress grid / static-merge demo, shader loading
 - `utility` - log/panic, handle distribution, thread pool (utility.thread_pool), BVH, data blocks,
   frame_clock, pmr routing
 - `app_config` - TOML startup configuration merged with argv

@@ -23,6 +23,9 @@ model = "gltf_model/DamagedHelmet.gltf"
 #   spin-subtree  rotate one geometry-carrying scene-tree node (best on hierarchy assets)
 #   nocull        disable frustum culling (compare fps to verify culling)
 #   closeup       pull the camera into a partial close-up (expect some culling)
+#   static        merge a rigid (non-animated/skinned) model's drawables into one buffer:
+#                 the whole model renders as a single static_draw_primitive (1 bind + N
+#                 offset draws) instead of per-leaf imports; animated/skinned models are skipped
 #   gui           enable the Dear ImGui debug overlay
 demo = ""
 

@@ -10,8 +10,14 @@ weights in `main`). The scene tree is **caller-owned**: `main` declares the
 `scene_tree::scene` and binds it with `runtime::set_scene(scene&)`; the runtime
 renders it but never owns or destroys it (the tree must be destroyed before the
 runtime so the leaves' GPU buffers release through the still-alive vma
-allocator — declaration order in `main` guarantees this). Remaining: mesh
-sharing / GPU dedup (future pass, §8).
+allocator — declaration order in `main` guarantees this). Programmatic scenes
+build through the scene-tree mounting helpers (`add_root` / `add_child` /
+`attach` / `find_node`, §4.2); merged/static geometry renders as one owned
+`static_draw_primitive` (one buffer bind + N offset draws), and the frame's pass
+recording is multi-threaded over secondary command buffers (see the README's
+runtime bullet — per-worker `{command pool, secondary}` pairs, `sub_render_task`
+segments on the shared task pool). Remaining: mesh sharing / GPU dedup (future
+pass, §8).
 
 ## 1. Motivation
 
@@ -166,9 +172,15 @@ namespace vulkan::scene_tree {
   when the tree is destroyed (`vk_buffer`/`vk_image` RAII members), so the
   caller must destroy the tree BEFORE the runtime — `main` declares the scene
   after the runtime, so C++ reverse declaration order provides exactly that.
-- `make_primitive` / `make_instanced_primitive` attach a **root** leaf whose `name`
-  records the pipeline (primitives record their pipeline in `primitive->pipeline`;
-  `instanced_draw_primitive` gets a tree slot like any primitive).
+- `make_primitive` / `make_instanced_primitive` / `make_static_draw` attach a **root** leaf
+  whose `name` records the pipeline (primitives record their pipeline in `primitive->pipeline`;
+  `instanced_draw_primitive` / `static_draw_primitive` get a tree slot like any primitive).
+  `make_static_draw` uploads ONE owned merged vertex/index buffer plus a chunk table
+  (`static_draw_chunk`: index range + own material), so a batch of static sub-meshes renders
+  with one buffer bind + N offset draws — the primitive-level form of a static scene.
+- `scene_node::attach(unique_ptr<primitive>)` (with `runtime::create_primitive`, which builds
+  WITHOUT attaching) places a primitive under any node; `scene::add_root()` /
+  `scene_node::add_child()` / `find_node(name)` round out programmatic scene building.
 - **Scene offset / whole-scene transform**: `runtime::set_scene_transform(mat4)`
   applies one extra world matrix on top of every root before `update_world`
   (identity default → rendering identical to pre-tree). The `import_scene`
@@ -221,21 +233,27 @@ for (scene_node const& root : scene_.roots) collect_leaf_primitives(root, frame_
 Current surface (post-`4ee1b82`; per-pipeline names kept — see §9 Q2):
 
 ```cpp
+void set_scene(scene_tree::scene& scene);   // bind the caller-owned tree the runtime renders
 primitive* make_primitive(std::string_view pipeline_name, primitive_create_info const& info); // build + attach root leaf
 primitive* make_instanced_primitive(primitive const& source, std::span<glm::mat4 const> transforms);
+primitive* make_static_draw(static_draw_create_info const& info); // one OWNED merged buffer + chunk table (static batch)
 std::vector<primitive const*> get_primitives(std::string_view pipeline_name) const; // DFS by pipeline
 void clear_primitives(std::string_view pipeline_name);   // DFS: strips matching leaves anywhere in the tree
 scene_import_result import_scene(NI nfirst, NI nlast, DI dfirst, DI dlast, glm::vec3 const& offset);
 //   node stream (scene_node_iterator) + aligned drawable stream (scene_drawable_iterator);
 //   rebuilds the real hierarchy (one scene_node per loader node), offset lands on each root
 void set_scene_transform(glm::mat4 const& transform);  // extra world on top of every root
+void scene_changed();              // caller edited node locals / structure via get_scene() -> culling BVH rebuilds
 void enable_shadows(glm::vec3 const& scene_center, float scene_radius);
 void log_scene_tree() const; // diagnostic: prints the runtime tree (names + [primitive] leaves)
 ```
 
-(Step-2b is done — see §6. A per-node `set_local_transform` handle API can now be
-added on top of the real subtrees; legacy helpers (bounds scan / instancing grid
-in main.cpp) keep working through `get_primitives` / `scenes::begin()`.)
+(Step-2b is done — see §6. Programmatic scenes build through the scene-tree mounting
+helpers — `scene::add_root()` / `scene_node::add_child()` / `scene_node::attach(unique_ptr<primitive>)`
+(used with `runtime::create_primitive`, which builds without attaching) / `find_node(name)` —
+instead of hand-rolling `scene_node` packing; structural edits must be followed by
+`runtime::scene_changed()`. Legacy helpers (bounds scan / instancing grid in main.cpp)
+keep working through `get_primitives` / `scenes::begin()`.)
 
 ### 4.3 Shadow pass
 

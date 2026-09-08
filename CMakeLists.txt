@@ -93,9 +93,10 @@ target_sources(app_config
 )
 
 # The engine core library (vulkancorekit): Vulkan object management + math + the runtime
-# facade + scene tree + the debug GUI, plus - merged in - vulkan.animation, the one module
-# that knows how glTF keyframes/skins/morphs map onto the runtime scene. The animation module
-# imports gltf_loader types, so this library links the glTF content layer (gltf_loader).
+# facade + scene tree + the debug GUI + the format-neutral animation controller
+# (vulkan.animation: plays keyframe clips / skins / morphs onto the runtime scene; it never
+# imports a loader - gltf::scenes satisfies its structural source concept at the call site).
+# This library does NOT depend on gltf_loader (pure CPU, used by the demo layer only).
 add_library(vulkancorekit STATIC)
 
 target_sources(vulkancorekit
@@ -260,6 +261,9 @@ target_link_libraries(gltf_loader
         utility
 )
 
+# gltf_loader is deliberately absent here: the engine core is loader-agnostic (see the
+# library comment above). The executable links gltf_loader itself (main.cpp is its only
+# consumer) and passes the parsed gltf::scenes down to the runtime at the call site.
 target_link_libraries(vulkancorekit
         Vulkan::Vulkan
         glfw
@@ -268,7 +272,6 @@ target_link_libraries(vulkancorekit
         ${CMAKE_DL_LIBS}
         std_lib
         imgui
-        gltf_loader
 )
 
 # Vendored VMA (third_party/vma/vk_mem_alloc.h): vma.cppm includes <vma/vk_mem_alloc.h>,
