@@ -1419,12 +1419,11 @@ namespace vulkan {
 
         // attach the primitive as a new root leaf of the scene tree; the node's name records the
         // pipeline it draws with (the record path groups leaves by node name / pipeline)
-        scene_tree::scene_node leaf;
+        scene_tree::scene_node& leaf = this->get_scene().add_root();
         leaf.name = std::string(pipeline_name);
-        leaf.local = info.model_matrix;           // world = identity * local (root)
-        leaf.primitive_leaf = std::move(created); // a vulkan::primitive is a scene_tree::primitive
-        this->get_scene().roots.push_back(std::move(leaf));
-        this->bvh_dirty = true; // new leaf -> culling BVH must be rebuilt
+        leaf.local = info.model_matrix;  // world = identity * local (root)
+        leaf.attach(std::move(created)); // a vulkan::primitive is a scene_tree::primitive
+        this->bvh_dirty = true;          // new leaf -> culling BVH must be rebuilt
         return result;
     }
 
@@ -1459,11 +1458,9 @@ namespace vulkan {
         result->push.model = glm::mat4(1.0f);
         result->double_sided = source.double_sided;
 
-        scene_tree::scene_node leaf;
+        scene_tree::scene_node& leaf = this->get_scene().add_root();
         leaf.name = "pbr";
-        leaf.primitive_leaf = std::move(result); // a vulkan::primitive is a scene_tree::primitive
-        primitive* const created = static_cast<primitive*>(leaf.primitive_leaf.get());
-        this->get_scene().roots.push_back(std::move(leaf));
+        primitive* const created = static_cast<primitive*>(leaf.attach(std::move(result)));
         this->bvh_dirty = true; // new leaf -> culling BVH must be rebuilt
         return created;
     }
@@ -1505,11 +1502,9 @@ namespace vulkan {
         result->local_aabb_max = source.local_aabb_max;
         result->has_bounds = source.has_bounds;
 
-        scene_tree::scene_node leaf;
+        scene_tree::scene_node& leaf = this->get_scene().add_root();
         leaf.name = "pbr";
-        leaf.primitive_leaf = std::move(result); // a vulkan::primitive is a scene_tree::primitive
-        primitive* const created = static_cast<primitive*>(leaf.primitive_leaf.get());
-        this->get_scene().roots.push_back(std::move(leaf));
+        primitive* const created = static_cast<primitive*>(leaf.attach(std::move(result)));
         this->bvh_dirty = true; // new leaf -> culling BVH must be rebuilt
         return created;
     }

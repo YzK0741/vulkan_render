@@ -63,6 +63,94 @@ namespace vulkan::scene_tree {
         // external (the runtime registers them once); copy preserves null
         return copy;
     }
+
+    scene_node& scene_node::add_child() {
+        this->children.emplace_back();
+        return this->children.back();
+    }
+
+    scene_node& scene_node::add_child(scene_node child) {
+        this->children.push_back(std::move(child));
+        return this->children.back();
+    }
+
+    primitive* scene_node::attach(std::unique_ptr<primitive> leaf) {
+        if (leaf == nullptr) {
+            return nullptr;
+        }
+        primitive* const result = leaf.get();
+        this->primitive_leaf = std::move(leaf);
+        return result;
+    }
+
+    // iterative DFS (explicit stack, mirrors import_scene's traversal style): visit the node,
+    // then its children in order; first name match wins (pre-order).
+    scene_node* scene_node::find_node(std::string_view const name) noexcept {
+        if (name.empty()) {
+            return nullptr; // empty names are the unnamed default; never match
+        }
+        std::vector<scene_node*> stack;
+        stack.push_back(this);
+        while (!stack.empty()) {
+            scene_node* const current = stack.back();
+            stack.pop_back();
+            if (current->name == name) {
+                return current;
+            }
+            // push children reversed so the first child is visited next (DFS pre-order)
+            for (auto it = current->children.rbegin(); it != current->children.rend(); ++it) {
+                stack.push_back(&*it);
+            }
+        }
+        return nullptr;
+    }
+
+    scene_node const* scene_node::find_node(std::string_view const name) const noexcept {
+        if (name.empty()) {
+            return nullptr;
+        }
+        std::vector<scene_node const*> stack;
+        stack.push_back(this);
+        while (!stack.empty()) {
+            scene_node const* const current = stack.back();
+            stack.pop_back();
+            if (current->name == name) {
+                return current;
+            }
+            for (auto it = current->children.rbegin(); it != current->children.rend(); ++it) {
+                stack.push_back(&*it);
+            }
+        }
+        return nullptr;
+    }
+
+    scene_node& scene::add_root() {
+        this->roots.emplace_back();
+        return this->roots.back();
+    }
+
+    scene_node& scene::add_root(scene_node root) {
+        this->roots.push_back(std::move(root));
+        return this->roots.back();
+    }
+
+    scene_node* scene::find_node(std::string_view const name) noexcept {
+        for (scene_node& root : this->roots) {
+            if (scene_node* const found = root.find_node(name)) {
+                return found;
+            }
+        }
+        return nullptr;
+    }
+
+    scene_node const* scene::find_node(std::string_view const name) const noexcept {
+        for (scene_node const& root : this->roots) {
+            if (scene_node const* const found = root.find_node(name)) {
+                return found;
+            }
+        }
+        return nullptr;
+    }
 } // namespace vulkan::scene_tree
 
 namespace vulkan {

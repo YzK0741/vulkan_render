@@ -73,6 +73,46 @@ namespace vulkan::scene_tree {
 
         /** @brief deep-copy this subtree (children and all) */
         [[nodiscard]] scene_node clone() const;
+
+        /**
+         * @ingroup vulkan_runtime_scene_tree
+         * @brief append a new child node (empty: name "", identity local) and return it, so the
+         *        caller fills it in place: add_child().name = ...; add_child().local = ...;
+         * @return the appended child (reference valid until the next structural mutation of
+         *         this node's children vector - pushing more children may reallocate)
+         */
+        scene_node& add_child();
+
+        /**
+         * @ingroup vulkan_runtime_scene_tree
+         * @brief move @p child (and its whole subtree) into this node's children
+         * @return the appended child (reference valid until the next structural mutation)
+         */
+        scene_node& add_child(scene_node child);
+
+        /**
+         * @ingroup vulkan_runtime_scene_tree
+         * @brief attach an already-built primitive as this node's primitive leaf (replaces any
+         *        existing leaf). Building happens through runtime::create_primitive(), which
+         *        returns the primitive WITHOUT attaching it; this call places it under this
+         *        node, so programmatic scenes can group primitives under transform nodes
+         *        instead of only appending root leaves.
+         * @param leaf the primitive to attach (ownership moves into this node)
+         * @return the attached primitive (stable: it lives on the heap, unlike this node)
+         * @note the node becomes a leaf node; any children it already had stay siblings below it
+         * @note structural change: call runtime::scene_changed() afterwards so the culling BVH
+         *       rebuilds (attach does not know about the runtime)
+         */
+        primitive* attach(std::unique_ptr<primitive> leaf);
+
+        /**
+         * @ingroup vulkan_runtime_scene_tree
+         * @brief depth-first search this subtree for the first node with the given name
+         *        (pre-order, matching scene_iterator's order); returns nullptr when absent.
+         *        Empty names never match (they are the unnamed-node default).
+         */
+        [[nodiscard]] scene_node* find_node(std::string_view name) noexcept;
+        [[nodiscard]] scene_node const* find_node(std::string_view name) const noexcept;
     };
 
     /**
@@ -82,6 +122,29 @@ namespace vulkan::scene_tree {
     export struct scene {
         std::string name = {};
         std::vector<scene_node> roots = {};
+
+        /**
+         * @ingroup vulkan_runtime_scene_tree
+         * @brief append a new root node (empty: name "", identity local) and return it
+         * @return the appended root (reference valid until the next structural mutation of
+         *         roots - pushing more roots may reallocate)
+         */
+        scene_node& add_root();
+
+        /**
+         * @ingroup vulkan_runtime_scene_tree
+         * @brief move @p root (and its whole subtree) in as a new root
+         * @return the appended root (reference valid until the next structural mutation)
+         */
+        scene_node& add_root(scene_node root);
+
+        /**
+         * @ingroup vulkan_runtime_scene_tree
+         * @brief depth-first search every root for the first node named @p name (pre-order);
+         *        returns nullptr when absent. Empty names never match.
+         */
+        [[nodiscard]] scene_node* find_node(std::string_view name) noexcept;
+        [[nodiscard]] scene_node const* find_node(std::string_view name) const noexcept;
     };
 
     /**
