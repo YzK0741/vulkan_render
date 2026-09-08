@@ -195,7 +195,15 @@ namespace vulkan {
         static int default_task_pool_threads() noexcept;
         utility::thread_pool task_pool = utility::thread_pool{default_task_pool_threads()};
 
-        std::mutex access_mutex;
+        // Guards the pipeline registry below (pipelines / pipeline_names / default_pipeline_name):
+        // parallel recording workers read it through render_environment's binder (shared locks,
+        // concurrent), while make_pipeline / set_default_pipeline / resize resync write it
+        // (unique lock). A reader/writer lock because reads vastly outnumber writes. Mutable so
+        // const accessors (get_pipeline, the env construction inside the const record steps)
+        // can take shared locks. The scene tree, per-frame vectors and camera state are NOT
+        // guarded: they are only touched on the frame thread or inside run_tasks' synchronous
+        // windows, so locking them would only add hot-path cost.
+        mutable std::shared_mutex access_mutex;
         // string keys (not string_view): the runtime owns the pipeline names, so lookups
         // stay valid regardless of the caller's storage lifetime. std::less<> enables heterogeneous
         // lookup, so the string_view-based API (get_pipeline / ...) still works without

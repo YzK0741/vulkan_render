@@ -1140,9 +1140,14 @@ namespace vulkan {
             1.0f,
         };
         VkRect2D const full_scissor = {{0, 0}, vk.swap_chain_extent};
-        for (auto& pipeline : this->pipelines | std::views::values) {
-            pipeline.viewport = full_viewport;
-            pipeline.scissor = full_scissor;
+        {
+            // unique lock: mutating every cached pipeline's viewport/scissor while parallel
+            // recording workers may read them through their environments
+            std::unique_lock const lock(this->access_mutex);
+            for (auto& pipeline : this->pipelines | std::views::values) {
+                pipeline.viewport = full_viewport;
+                pipeline.scissor = full_scissor;
+            }
         }
         if (this->skybox_pipeline && this->skybox_enabled) {
             this->skybox_pipeline->viewport = full_viewport;
@@ -1341,10 +1346,19 @@ namespace vulkan {
         // Main pass: one render_environment per segment (per recording thread - never shared
         // across the parallel workers). Its binder looks the requested pipeline up in the
         // runtime cache and binds it; default-semantics leaves ask for the runtime default.
+        // The registry reads below (available span / default name / per-bind lookup) are
+        // shared-locked: several workers may record concurrently while a make_pipeline /
+        // set_default_pipeline on another thread mutates the registry. The span handed to the
+        // environment stays valid because pipeline_names only grows and only outside recording
+        // (setup time), matching the make_primitive timing note.
         render_environment env;
-        env.available = this->pipeline_names;
-        env.default_name = this->default_pipeline_name;
+        {
+            std::shared_lock const lock(this->access_mutex);
+            env.available = this->pipeline_names;
+            env.default_name = this->default_pipeline_name;
+        }
         env.bind = [this](VkCommandBuffer const cb, std::string_view const name) {
+            std::shared_lock const lock(this->access_mutex);
             if (auto const it = this->pipelines.find(name); it != this->pipelines.end()) {
                 it->second.begin_pipeline(cb);
             } else {
@@ -1505,22 +1519,33 @@ namespace vulkan {
 
     std::expected<void, std::string> runtime::make_pipeline(std::string_view pipeline_name, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code) {
         using fail = std::unexpected<std::string>;
-        if (this->pipelines.contains(pipeline_name)) {
-            return fail(std::string("pipeline '") + std::string(pipeline_name) + "' already exists");
+        {
+            // unique lock around the duplicate check + registry append: a concurrent reader
+            // (recording worker) must never observe a half-inserted map / name table
+            std::unique_lock const lock(this->access_mutex);
+            if (this->pipelines.contains(pipeline_name)) {
+                return fail(std::string("pipeline '") + std::string(pipeline_name) + "' already exists");
+            }
         }
+        // GPU pipeline creation is expensive and touches no shared registry state: build it
+        // OUTSIDE the lock so a reader is never blocked by shader compilation.
         auto make_result = this->vulkan_core.make_pipeline(vertex_shader_code, fragment_shader_code);
         if (!make_result) {
             return fail(make_result.error());
         }
-        this->pipelines.emplace(pipeline_name, std::move(make_result).value());
-        this->pipeline_names.emplace_back(pipeline_name); // stable name table (see runtime.cppm)
-        if (this->default_pipeline_name.empty()) {
-            this->default_pipeline_name = pipeline_name; // first pipeline is the implicit default
+        {
+            std::unique_lock const lock(this->access_mutex);
+            this->pipelines.emplace(pipeline_name, std::move(make_result).value());
+            this->pipeline_names.emplace_back(pipeline_name); // stable name table (see runtime.cppm)
+            if (this->default_pipeline_name.empty()) {
+                this->default_pipeline_name = pipeline_name; // first pipeline is the implicit default
+            }
         }
         return {};
     }
 
     void runtime::set_default_pipeline(std::string_view const pipeline_name) {
+        std::unique_lock const lock(this->access_mutex);
         if (this->pipelines.contains(pipeline_name)) {
             this->default_pipeline_name = pipeline_name;
         }
@@ -1628,6 +1653,7 @@ namespace vulkan {
         return {};
     }
     vk_pipeline const* runtime::get_pipeline(std::string_view const pipeline_name) const noexcept {
+        std::shared_lock const lock(this->access_mutex);
         auto const it = this->pipelines.find(pipeline_name);
         return it == this->pipelines.end() ? nullptr : &it->second;
     }
@@ -1637,8 +1663,11 @@ namespace vulkan {
         // normal_draw_primitive has DEFAULT semantics: it does not store the name, it draws with
         // whatever pipeline the recording pass binds as default (render_environment). A custom
         // draw strategy that needs a specific pipeline stores its own name and requests it.
-        if (!this->pipelines.contains(pipeline_name)) {
-            return nullptr;
+        {
+            std::shared_lock const lock(this->access_mutex);
+            if (!this->pipelines.contains(pipeline_name)) {
+                return nullptr;
+            }
         }
         this->ensure_scene_set();
 
@@ -1752,8 +1781,11 @@ namespace vulkan {
         }
         // Default-semantics draw (like normal_draw_primitive): static geometry renders with the
         // runtime's default pipeline, which must exist by now (the first make_pipeline() set it).
-        if (this->default_pipeline_name.empty() || !this->pipelines.contains(this->default_pipeline_name)) {
-            return nullptr;
+        {
+            std::shared_lock const lock(this->access_mutex);
+            if (this->default_pipeline_name.empty() || !this->pipelines.contains(this->default_pipeline_name)) {
+                return nullptr;
+            }
         }
         this->ensure_scene_set();
 
@@ -1835,9 +1867,15 @@ namespace vulkan {
 
     std::vector<primitive const*> runtime::get_primitives(std::string_view const pipeline_name) const noexcept {
         // match by the pipeline a leaf effectively draws with: an explicit pipeline_name, or the
-        // runtime default for default-semantics leaves (empty pipeline_name)
-        auto const effective = [this](primitive const& m) -> std::string_view {
-            return m.pipeline_name.empty() ? std::string_view(this->default_pipeline_name) : m.pipeline_name;
+        // runtime default for default-semantics leaves (empty pipeline_name). Snapshot the
+        // default under a shared lock (it can change via set_default_pipeline on another thread).
+        std::string_view default_name;
+        {
+            std::shared_lock const lock(this->access_mutex);
+            default_name = this->default_pipeline_name;
+        }
+        auto const effective = [default_name](primitive const& m) -> std::string_view {
+            return m.pipeline_name.empty() ? default_name : m.pipeline_name;
         };
         std::vector<primitive const*> result;
         for (scene_tree::scene_node const& root : this->get_scene().roots) {
@@ -1854,12 +1892,18 @@ namespace vulkan {
     }
 
     void runtime::clear_primitives(std::string_view const pipeline_name) {
-        auto const matches = [this, pipeline_name](scene_tree::scene_node const& node) {
+        // snapshot the default (a concurrent set_default_pipeline must not tear the comparison)
+        std::string_view default_name;
+        {
+            std::shared_lock const lock(this->access_mutex);
+            default_name = this->default_pipeline_name;
+        }
+        auto const matches = [default_name, pipeline_name](scene_tree::scene_node const& node) {
             if (node.primitive_leaf == nullptr) {
                 return false;
             }
             auto const* const m = static_cast<primitive const*>(node.primitive_leaf.get());
-            std::string_view const effective = m->pipeline_name.empty() ? std::string_view(this->default_pipeline_name) : m->pipeline_name;
+            std::string_view const effective = m->pipeline_name.empty() ? default_name : m->pipeline_name;
             return effective == pipeline_name;
         };
         // DFS remove: erase every leaf primitive drawing with the pipeline, wherever it sits in
