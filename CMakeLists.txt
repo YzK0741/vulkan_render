@@ -359,6 +359,13 @@ target_link_options(${PROJECT_NAME} PRIVATE
         $<$<AND:$<CONFIG:Release>,$<PLATFORM_ID:Windows>>:-static>
 )
 
+# Release exe: strip all symbols at link time (smaller single-file build; llvm-strip saves
+# ~0.8 MB here). Debug keeps its symbols for debugging. Crash reports on a shipped build are
+# symbol-less by design - keep the unstripped exe around if you need to map addresses.
+target_link_options(${PROJECT_NAME} PRIVATE
+        $<$<CONFIG:Release>:-s>
+)
+
 # ---- compile options: one shared flag set on every first-party C++ target (vendored code is
 # deliberately excluded - imgui / fastgltf / simdjson / xxhash / mimalloc do not follow the
 # project's -Werror set, see their own targets above).
