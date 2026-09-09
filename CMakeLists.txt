@@ -381,7 +381,7 @@ option(VR_BUILD_TESTS "Build the headless unit tests" ON)
 if(VR_BUILD_TESTS)
     enable_testing()
 
-    set(VR_TEST_TARGETS test_app_config test_utility test_math)
+    set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader)
 
     foreach(test_target IN ITEMS ${VR_TEST_TARGETS})
         add_executable(${test_target} tests/${test_target}.cpp)
@@ -405,6 +405,20 @@ if(VR_BUILD_TESTS)
     # unless the math code actually references them).
     target_link_libraries(test_math
             vulkancorekit
+            std_lib
+    )
+    # vulkan.animation is format-neutral / runtime-agnostic; the sampling tests only touch the
+    # pure functions, so nothing Vulkan is pulled in.
+    target_link_libraries(test_animation
+            vulkancorekit
+            glm::glm
+            std_lib
+    )
+    # gltf_loader is pure CPU (fastgltf + stb vendored, linked by the library itself); the
+    # test loads the repo's gltf_model/DamagedHelmet sample from the working directory.
+    target_link_libraries(test_gltf_loader
+            gltf_loader
+            glm::glm
             std_lib
     )
 endif()
