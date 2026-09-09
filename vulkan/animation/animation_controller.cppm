@@ -1,3 +1,14 @@
+// ============================================================================
+// module: vulkan.animation
+// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+//
+// Keyframe playback / skinning / morph targets, format-neutral and runtime-agnostic:
+// driven through an injected `backend` surface and structural `source` concepts -
+// imports no loader and no vulkan.runtime. Reuse with any scene storage / source.
+//
+// evolve: bump MAJOR on breaking interface changes, MINOR on additive features,
+//         PATCH on internal fixes - independently of the rest of the project.
+// ============================================================================
 module;
 
 #include <glm/glm.hpp>

@@ -1,3 +1,14 @@
+// ============================================================================
+// module: vulkan.gui
+// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+//
+// Dear ImGui debug overlay: widget / panel layer driven from the runtime's frame
+// steps (runtime::debug_gui). Kept as its own unit so the overlay can be swapped
+// or embedded elsewhere; depends on the runtime's gui hook, ImGui + Vulkan.
+//
+// evolve: bump MAJOR on breaking interface changes, MINOR on additive features,
+//         PATCH on internal fixes - independently of the rest of the project.
+// ============================================================================
 module;
 
 #include <vulkan/vulkan.h>

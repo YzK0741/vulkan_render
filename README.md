@@ -15,6 +15,13 @@ there and update this line (plus `docs/mainpage.md`). The version is surfaced by
 the startup log banner (`vulkan_render x.y.z`), and the Vulkan instance's `app_info`
 (`applicationVersion` / `engineVersion`).
 
+Each **independently reusable module set** also carries its own `module version` annotation
+(0.1.0 currently) in a comment block at the top of its main interface unit — `utility`,
+`gltf_loader`, `app_config`, `vulkan.core`, `vulkan.math`, `vulkan.runtime` (incl. its
+`scene_tree` / `render_environment` submodules), `vulkan.animation` and `vulkan.gui`. They
+evolve on their own cadence (bump MAJOR on breaking interface changes, MINOR on additive
+features, PATCH on fixes), independent of the app version and of each other.
+
 ## Features
 
 > **Modular by design — free to combine.** Most modules here are independent,

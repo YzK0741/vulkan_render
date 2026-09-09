@@ -1,3 +1,14 @@
+// ============================================================================
+// module: gltf_loader
+// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+//
+// Pure-CPU glTF / GLB loader (vendored fastgltf + stb): drawable stream, retained
+// node tree, animations / skins / morph targets / cameras / punctual lights.
+// No Vulkan dependency.
+//
+// evolve: bump MAJOR on breaking interface changes, MINOR on additive features,
+//         PATCH on internal fixes - independently of the rest of the project.
+// ============================================================================
 module;
 
 #include <cstdint>

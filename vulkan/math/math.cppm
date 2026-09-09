@@ -1,3 +1,13 @@
+// ============================================================================
+// module: vulkan.math
+// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+//
+// CPU-side math: environment cubemap generation / IBL precompute (prefilter,
+// irradiance, BRDF LUT). Pure CPU, no Vulkan dependency.
+//
+// evolve: bump MAJOR on breaking interface changes, MINOR on additive features,
+//         PATCH on internal fixes - independently of the rest of the project.
+// ============================================================================
 export module vulkan.math;
 export import std;
 

@@ -1,3 +1,17 @@
+// ============================================================================
+// module: vulkan.runtime
+// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+//
+// The renderer core: per-frame-slot frame facade (pace/record/submit phases,
+// scene resources, parallel secondary-CB recording) plus the
+// vulkan.runtime.scene_tree (scene storage + GPU primitives) and
+// vulkan.render_environment (per-worker draw state) submodules - versioned as ONE
+// unit because they share the scene / draw interface and evolve together.
+// Depends on vulkan.core (GPU), vulkan.math (IBL) and utility.
+//
+// evolve: bump MAJOR on breaking interface changes, MINOR on additive features,
+//         PATCH on internal fixes - independently of the rest of the project.
+// ============================================================================
 module;
 
 #include <glm/glm.hpp>

@@ -1,3 +1,13 @@
+// ============================================================================
+// module: app_config
+// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+//
+// Startup configuration: TOML file (config.toml / --config) merged with argv.
+// Pure CPU, no Vulkan dependency.
+//
+// evolve: bump MAJOR on breaking interface changes, MINOR on additive features,
+//         PATCH on internal fixes - independently of the rest of the project.
+// ============================================================================
 module;
 
 // toml++ is header-only and auto-detects -fno-exceptions (TOML_EXCEPTIONS=0),

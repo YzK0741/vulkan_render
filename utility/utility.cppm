@@ -1,3 +1,14 @@
+// ============================================================================
+// module: utility
+// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+//
+// Pure-CPU toolkit: data_block, BVH, thread_pool, frame_clock / frame_stats,
+// better_pmr (mimalloc routing), content hashing. Standalone - no Vulkan or app
+// dependency, link it into any host.
+//
+// evolve: bump MAJOR on breaking interface changes, MINOR on additive features,
+//         PATCH on internal fixes - independently of the rest of the project.
+// ============================================================================
 module;
 
 #include <cstdint>
