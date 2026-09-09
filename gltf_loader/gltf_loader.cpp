@@ -833,7 +833,6 @@ namespace {
             utility::panic("primitive has no POSITION attribute");
         }
 
-        constexpr glm::vec3 default_normal(0.0f, 1.0f, 0.0f);
         constexpr glm::vec2 default_uv(0.0f, 0.0f);
 
         // ---- attribute count guard: POSITION's byte length fixes the vertex count, but a
@@ -874,17 +873,13 @@ namespace {
         }
 
         std::vector<glm::vec3> positions;
-        std::vector<glm::vec3> normals;
         std::vector<glm::vec2> uvs;
         positions.reserve(vertex_count);
-        normals.reserve(vertex_count);
         uvs.reserve(vertex_count);
         for (size_t i = 0; i < vertex_count; ++i) {
             auto const* p = reinterpret_cast<glm::vec3 const*>(position_portion->data.data()) + i;
-            auto const* n = normal_portion == nullptr ? &default_normal : reinterpret_cast<glm::vec3 const*>(normal_portion->data.data()) + i;
             auto const* uv = uv_portion == nullptr ? &default_uv : reinterpret_cast<glm::vec2 const*>(uv_portion->data.data()) + i;
             positions.push_back(*p);
-            normals.push_back(*n);
             uvs.push_back(*uv);
         }
 
@@ -926,6 +921,53 @@ namespace {
                                                             ? widened_indices
                                                             : (prim.index.empty() ? synthesized_indices : prim.index);
         uint32_t const index_count = static_cast<uint32_t>(index_bytes.size() / index_width);
+
+        // ---- Normals: use the authored NORMAL attribute when the primitive has one; otherwise
+        //      GENERATE them from the triangle connectivity. A hard-coded fallback direction
+        //      (the old +Y) shades every face as if it pointed up, which turns whole regions
+        //      dark the moment the geometry faces sideways - extreme on normal-less skinned
+        //      meshes like RecursiveSkeletons' boards (their visible faces got normals pointing
+        //      away from the camera/light). Generating smooth per-vertex normals is what the
+        //      glTF spec expects viewers to do when the attribute is missing.
+        std::vector<glm::vec3> normals;
+        normals.resize(vertex_count);
+        if (normal_portion != nullptr) {
+            for (size_t i = 0; i < vertex_count; ++i) {
+                normals[i] = *(reinterpret_cast<glm::vec3 const*>(normal_portion->data.data()) + i);
+            }
+        } else {
+            // accumulate area-weighted face normals per vertex over the triangle list (glTF
+            // front faces are counter-clockwise, so cross(e1, e2) points outward)
+            auto const index_at = [index_bytes, index_width](size_t const k) -> uint32_t {
+                size_t const off = k * index_width;
+                if (index_width == 4) {
+                    return *reinterpret_cast<uint32_t const*>(index_bytes.data() + off);
+                }
+                // u8 indices were widened to u16 above, so 2 is the smallest width here
+                return *reinterpret_cast<uint16_t const*>(index_bytes.data() + off);
+            };
+            for (size_t t = 0; t + 2 < index_count; t += 3) {
+                uint32_t const a = index_at(t);
+                uint32_t const b = index_at(t + 1);
+                uint32_t const c = index_at(t + 2);
+                if (a >= vertex_count || b >= vertex_count || c >= vertex_count) {
+                    continue; // malformed index list: skip the triangle
+                }
+                glm::vec3 const e1 = positions[b] - positions[a];
+                glm::vec3 const e2 = positions[c] - positions[a];
+                glm::vec3 const face = glm::cross(e1, e2);
+                if (glm::dot(face, face) > 0.0f) { // skip degenerate (zero-area) triangles
+                    normals[a] += face;
+                    normals[b] += face;
+                    normals[c] += face;
+                }
+            }
+            for (glm::vec3& n : normals) {
+                float const len2 = glm::dot(n, n);
+                // a vertex that only touched degenerate triangles keeps a sane up normal
+                n = len2 > 0.0f ? n / std::sqrt(len2) : glm::vec3(0.0f, 1.0f, 0.0f);
+            }
+        }
 
         // skinned attributes decoded per vertex (portions declared above, default semantics
         // keep non-skinned meshes correct under the shared skinned vertex layout)
