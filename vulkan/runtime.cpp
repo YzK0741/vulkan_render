@@ -1282,9 +1282,12 @@ namespace vulkan {
         // per segment records its own secondary on a pool worker (segment 0 also draws the
         // skybox). The tasks only read shared state (scene set / pipeline caches / the leaf
         // pointers) and write their own command buffer, so they run concurrently; the recording
-        // priority group is waited on before the primary executes the segments in order.
+        // priority group is waited on before the primary executes the segments in order. Each
+        // task's recorded flag is set only on a successful begin+end; the primary skips a
+        // segment whose flag stayed false (executing an unrecorded secondary is a VUID).
         std::vector<std::function<void()>> tasks;
         tasks.reserve(segment_count);
+        std::vector<std::atomic<bool>> segment_recorded(segment_count);
         for (std::size_t s = 0; s < segment_count; ++s) {
             std::size_t const seg_first = leaf_count * s / segment_count;
             std::size_t const seg_last = leaf_count * (s + 1) / segment_count;
@@ -1296,6 +1299,7 @@ namespace vulkan {
             task.depth_format = vk.depth_format;
             task.rasterization_samples = vk.msaa_samples;
             task.owner = this;
+            task.recorded = &segment_recorded[s];
             tasks.emplace_back(std::move(task)); // std::function copies the value task
         }
         this->run_tasks(tasks, vulkan::task_priority::recording);
@@ -1319,6 +1323,9 @@ namespace vulkan {
 
         this->begin_rendering(*command_buffer, this->current_image_index, VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT);
         for (std::size_t s = 0; s < segment_count; ++s) {
+            if (!segment_recorded[s].load(std::memory_order_relaxed)) {
+                continue; // this segment's begin failed - never execute the unrecorded buffer
+            }
             VkCommandBuffer const seg_cb = *main_segments[s].second;
             vkCmdExecuteCommands(*command_buffer, 1, &seg_cb);
         }
@@ -1488,10 +1495,16 @@ namespace vulkan {
         begin.pInheritanceInfo = &inherit;
         if (vkBeginCommandBuffer(this->command_buffer, &begin) != VK_SUCCESS) {
             utility::log("runtime: main segment secondary begin failed - segment skipped this frame");
+            if (this->recorded != nullptr) {
+                this->recorded->store(false, std::memory_order_relaxed);
+            }
             return;
         }
         this->owner->record_main_segment(this->command_buffer, this->leaves, this->draw_skybox);
         vkEndCommandBuffer(this->command_buffer);
+        if (this->recorded != nullptr) {
+            this->recorded->store(true, std::memory_order_relaxed);
+        }
     }
 
     frame_status runtime::end_recording() {

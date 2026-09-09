@@ -609,6 +609,11 @@ namespace vulkan {
             VkFormat depth_format = VK_FORMAT_UNDEFINED; // main depth attachment format
             VkSampleCountFlagBits rasterization_samples = VK_SAMPLE_COUNT_1_BIT;
             runtime const* owner = nullptr; // recording context (scene set / pipeline caches)
+            // set to true by operator() when the secondary was actually recorded (begin + end
+            // succeeded). Points into a per-frame array owned by the caller of the task batch;
+            // the caller waits the recording group before reading it, so no extra sync is
+            // needed. The primary must NOT execute a segment whose begin failed.
+            std::atomic<bool>* recorded = nullptr;
 
             void operator()() const; // defined in runtime.cpp (module-private)
         };
