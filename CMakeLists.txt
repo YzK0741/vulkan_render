@@ -357,6 +357,9 @@ target_link_libraries(${PROJECT_NAME}
 # distro packages are shared objects; static glibc would need extra dev packages).
 target_link_options(${PROJECT_NAME} PRIVATE
         $<$<AND:$<CONFIG:Release>,$<PLATFORM_ID:Windows>>:-static>
+        # drop unused function/data sections at link (first-party code is compiled with
+        # -ffunction-sections -fdata-sections; see the vendored-lib gc test below)
+        $<$<CONFIG:Release>:-Wl,--gc-sections>
 )
 
 # Release exe: strip all symbols at link time (smaller single-file build; llvm-strip saves
@@ -375,6 +378,17 @@ endforeach()
 # vendored fastgltf headers are upstream code: relax one warning their templates trip under
 # -fno-exceptions (raise() leaves its arguments unused on the abort() path)
 target_compile_options(gltf_loader PRIVATE -Wno-unused-parameter)
+
+# Vendored libs get function/data sections AND -flto in Release too (plain C/C++ flags, no
+# -Werror set involved): without sections --gc-sections can only drop whole objects, so unused
+# imgui / fastgltf / xxhash / mimalloc functions would survive into the exe; without -flto the
+# linker cannot see into their translation units, so cross-TU dead code stays. Both cost build
+# time only - runtime speed is unaffected (LTO is at worst neutral).
+foreach(vendored_target IN ITEMS imgui fastgltf_vendored xxhash mimalloc_vendored)
+    target_compile_options(${vendored_target} PRIVATE
+            $<$<CONFIG:Release>:-flto;-ffunction-sections;-fdata-sections>
+    )
+endforeach()
 
 target_compile_definitions(vulkancorekit PRIVATE
         $<$<CONFIG:Debug>:
