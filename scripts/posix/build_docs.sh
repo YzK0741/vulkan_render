@@ -7,6 +7,11 @@
 # Requires: doxygen on PATH (or the standard Windows/Unix install dirs) and a
 # TeX toolchain — make + pdflatex/makeindex, latexmk, or bare pdflatex
 # (MiKTeX's per-user install under %LOCALAPPDATA% is found automatically).
+#
+# The LaTeX steps run SILENTLY: the (very chatty) pdflatex/make/makeindex
+# stdout+stderr goes to a throwaway log file instead of the console. On
+# failure the tail of that log is printed so a broken build still says why;
+# pdflatex additionally keeps its full transcript in docs/latex/refman.log.
 
 set -eu
 
@@ -45,7 +50,6 @@ echo "== doxygen: $doxygen_cmd =="
 echo "html written to docs/html/index.html"
 
 # ---------- 2. LaTeX manual -> refman.pdf ----------
-# ---------- 2. LaTeX manual -> refman.pdf ----------
 # put a TeX toolchain on PATH when it lives at a standard location
 add_tex_to_path() {
     [ -n "$1" ] || return 0
@@ -58,12 +62,24 @@ add_tex_to_path() {
 }
 # manual rerun loop replicating the generated Makefile: pdflatex, makeindex,
 # repeat pdflatex while the log asks for another pass, makeindex, pdflatex
+# (each pass is captured to latex_pass.log; failures show its tail)
 run_pdflatex() {
-    pdflatex -interaction=nonstopmode -halt-on-error refman.tex
+    if pdflatex -interaction=nonstopmode -halt-on-error refman.tex >latex_pass.log 2>&1; then
+        return 0
+    fi
+    echo "error: pdflatex failed (see docs/latex/refman.log for the full transcript):" >&2
+    tail -n 30 latex_pass.log >&2
+    exit 1
 }
 run_makeindex() {
     if [ -f refman.idx ] && command -v makeindex >/dev/null 2>&1; then
-        makeindex refman.idx
+        if makeindex refman.idx >latex_makeindex.log 2>&1; then
+            rm -f latex_makeindex.log
+        else
+            echo "error: makeindex failed:" >&2
+            tail -n 20 latex_makeindex.log >&2
+            exit 1
+        fi
     fi
 }
 compile_latex_manually() {
@@ -76,6 +92,7 @@ compile_latex_manually() {
     done
     run_makeindex
     run_pdflatex
+    rm -f latex_pass.log
 }
 
 add_tex_to_path "${LOCALAPPDATA:-}/Programs/MiKTeX/miktex/bin/x64"
@@ -91,10 +108,17 @@ cd docs/latex
 
 if command -v make >/dev/null 2>&1; then
     # doxygen generates docs/latex/Makefile with 'all' -> refman.pdf
-    echo "== latex via make (docs/latex/Makefile) =="
-    make
+    echo "== latex via make (docs/latex/Makefile, output suppressed) =="
+    if make >latex_make.log 2>&1; then
+        rm -f latex_make.log
+    else
+        rc=$?
+        echo "error: make failed (exit $rc), tail of docs/latex/latex_make.log:" >&2
+        tail -n 40 latex_make.log >&2
+        exit "$rc"
+    fi
 elif command -v pdflatex >/dev/null 2>&1; then
-    echo "== latex via pdflatex (no make found) =="
+    echo "== latex via pdflatex (no make found, output suppressed) =="
     compile_latex_manually
 else
     echo "error: no LaTeX toolchain found. Install MiKTeX/TeX Live (or make), then rerun." >&2
