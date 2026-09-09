@@ -11,7 +11,9 @@ namespace utility {
      * @defgroup data_block Fixed-Size Byte Container
      * @ingroup utility
      * @brief struct template creates a sized data type provides auto generated operator==/!= (use std::ranges::equal),
-     *     operator<=>(use std::lexicographical_compare_three_way) and hex formatter (.to_hex_string())
+     *     operator<=>(use std::lexicographical_compare_three_way) and hex formatter (.to_hex_string()).
+     *     Complete key support: operator< for std::map/std::set keys, hash64() + the nested
+     *     hasher functor for std::unordered_map/std::unordered_set keys.
      * @tparam S byte size of the struct
      */
     export template <size_t S>
@@ -34,6 +36,35 @@ namespace utility {
                 data.begin(), data.end(),
                 other.data.begin(), other.data.end());
         }
+
+        // Ordering for ordered containers: std::map / std::set keys compare with operator<,
+        // which is not synthesized from <=> (C++20 gives us <=> only).
+        bool operator<(data_block<S> const& other) const {
+            return (*this <=> other) < 0;
+        }
+
+        /**
+         * @brief FNV-1a 64-bit hash of the bytes (unordered-container key support)
+         * @return a stable 64-bit fingerprint of the block's contents
+         */
+        [[nodiscard]] uint64_t hash64() const noexcept {
+            uint64_t hash = 14695981039346656037ull; // FNV offset basis
+            for (uint8_t const byte : this->data) {
+                hash ^= byte;
+                hash *= 1099511628211ull; // FNV prime
+            }
+            return hash;
+        }
+
+        /**
+         * @brief hash functor so a data_block can key a std::unordered_map / unordered_set:
+         *        std::unordered_map<data_block<N>, V, data_block<N>::hasher>
+         */
+        struct hasher {
+            size_t operator()(data_block<S> const& block) const noexcept {
+                return static_cast<size_t>(block.hash64());
+            }
+        };
 
         [[nodiscard]] std::string to_hex_string() const {
             std::string result;

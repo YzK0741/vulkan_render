@@ -588,8 +588,10 @@ namespace vulkan {
             // slot cache on (digest, format, dimensions): N materials over one image upload
             // once and share the array element. The image itself is also vma-deduped below.
             utility::xxh3_digest const digest = utility::xxh3_128bits(std::span<unsigned char const>(tex.data.data(), tex.data.size_bytes()));
-            auto const key = std::tuple<std::array<std::uint8_t, 16>, VkFormat, std::uint32_t, std::uint32_t, std::uint32_t>{
-                digest.data, slots[i].second, tex.width, tex.height, tex.mip_levels};
+            // key on the digest data_block itself (not a raw byte array): data_block carries the
+            // equality/ordering the std::map key needs
+            auto const key = std::tuple<utility::xxh3_digest, VkFormat, std::uint32_t, std::uint32_t, std::uint32_t>{
+                digest, slots[i].second, tex.width, tex.height, tex.mip_levels};
             auto const cached = this->texture_slot_cache.find(key);
             if (cached != this->texture_slot_cache.end()) {
                 texture_indices[i] = cached->second; // shared texture: reuse its slot
@@ -702,9 +704,11 @@ namespace vulkan {
         // Identical materials (same texture slots, factors and flags) share ONE table entry:
         // registration happens per primitive, so a scene with N primitives over M shared glTF
         // materials would otherwise append N records and burn the table needlessly. The key is
-        // the byte-exact 80-byte record (no hash collisions possible).
-        std::array<std::uint8_t, sizeof(vulkan::material_record)> material_key = {};
-        std::memcpy(material_key.data(), &record, sizeof(record));
+        // the byte-exact 80-byte record carried in a data_block - no hash collisions, because
+        // the unordered lookup hashes the block only for bucketing while equality stays
+        // byte-exact.
+        utility::data_block<sizeof(vulkan::material_record)> material_key = {};
+        std::memcpy(material_key.data.data(), &record, sizeof(record));
         if (auto const cached = this->material_slot_cache.find(material_key); cached != this->material_slot_cache.end()) {
             return cached->second; // already registered: share the existing record
         }

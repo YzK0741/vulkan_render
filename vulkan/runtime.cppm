@@ -115,7 +115,7 @@ namespace vulkan {
         std::vector<vk_image_view> owned_texture_views = {};
         std::vector<vk_image> owned_textures = {};
         uint32_t white_texture_index = 0;
-        std::map<std::tuple<std::array<std::uint8_t, 16>, VkFormat, std::uint32_t, std::uint32_t, std::uint32_t>, uint32_t> texture_slot_cache = {}; // digest(128-bit), format, width, height, mip_levels
+        std::map<std::tuple<utility::xxh3_digest, VkFormat, std::uint32_t, std::uint32_t, std::uint32_t>, uint32_t> texture_slot_cache = {}; // digest (data_block<16>), format, width, height, mip_levels
         // scene-wide IBL (bindings 2-4): prefiltered env / irradiance / BRDF LUT, uploaded once
         std::vector<vk_image_view> ibl_views = {};
         std::vector<vk_image> ibl_images = {};
@@ -129,11 +129,14 @@ namespace vulkan {
         uint32_t material_count = 0;
         // content-addressed material dedup + overflow fallback (see register_material):
         // material_slot_cache keys the full material_record bytes (texture indices + factors +
-        // flags), so N primitives sharing one glTF material register ONE record instead of N
-        // identical appends; when the table really fills up, later registrations degrade to the
-        // reserved default material at index 0 (registered in init_scene_resources) with a
-        // one-time log instead of a hard panic.
-        std::map<std::array<std::uint8_t, sizeof(vulkan::material_record)>, uint32_t> material_slot_cache = {};
+        // flags) as a byte-exact data_block<sizeof(material_record)>, so N primitives sharing
+        // one glTF material register ONE record instead of N identical appends (an unordered
+        // key: data_block's own FNV-1a hasher + byte-equality); when the table really fills up,
+        // later registrations degrade to the reserved default material at index 0 (registered
+        // in init_scene_resources) with a one-time log instead of a hard panic.
+        std::unordered_map<utility::data_block<sizeof(vulkan::material_record)>, uint32_t,
+                           utility::data_block<sizeof(vulkan::material_record)>::hasher>
+            material_slot_cache = {};
         bool material_overflow_logged = false;
         // per-instance transforms for instanced primitives (scene set binding 6): one mat4 per
         // instance, host-visible. The buffer is ONE shared region split into per-instanced-
