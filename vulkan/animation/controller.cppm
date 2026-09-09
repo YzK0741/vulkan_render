@@ -19,7 +19,7 @@ export module vulkan.animation;
 
 import vstd;
 import utility;
-import vulkan.runtime.scene_tree; // scene + node/primitive types (the one structural dependency)
+import vulkan.scene_tree; // scene + node/primitive types (the one structural dependency)
 
 /**
  * @file controller.cppm

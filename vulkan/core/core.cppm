@@ -57,7 +57,7 @@ namespace vulkan {
      *       skip descriptor / push constant parsing and share one layout object
      */
     export constexpr uint32_t scene_texture_capacity = 128;
-    // material_push_constants: 6 uints + aligned mat4 = 96 bytes, see vulkan/runtime/scene_tree/scene_tree.cppm
+    // material_push_constants: 6 uints + aligned mat4 = 96 bytes, see vulkan/scene_tree/scene_tree.cppm
     export constexpr uint32_t scene_push_constant_size = 96;
 
     /**

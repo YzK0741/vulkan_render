@@ -1,7 +1,7 @@
 # Scene Graph Storage — Design Document
 
 Status: migration complete — storage, import and the render loop are tree-driven;
-`vulkan.runtime.scene_tree` is the single scene-tree module (scene storage + GPU
+`vulkan.scene_tree` is the single scene-tree module (scene storage + GPU
 primitives, absorbed the former `vulkan.model`); per-node transforms work through
 `runtime::get_scene()` and the per-frame animation writes (the former `spin` /
 `spin-subtree` demo modes were removed), and keyframe TRS animation,
@@ -144,11 +144,11 @@ Notes (implemented):
 
 ### 3.2 Runtime: scene tree storage (DONE — `ca6769a`, `7a445d5`)
 
-New module `vulkan.runtime.scene_tree` (pure CPU: glm + std only, no Vulkan
+New module `vulkan.scene_tree` (pure CPU: glm + std only, no Vulkan
 types) owns the storage; the old private `models` map is gone:
 
 ```cpp
-// vulkan/runtime/scene_tree/scene_tree.cppm
+// vulkan/scene_tree/scene_tree.cppm
 namespace vulkan::scene_tree {
     class primitive {                      // abstract leaf; GPU primitives implement it
         virtual ~primitive() = default;
@@ -169,7 +169,7 @@ namespace vulkan::scene_tree {
 - `vulkan::primitive` (the GPU side of this same module) is
   `public vulkan::scene_tree::primitive`; `primitive::set_world` writes
   `push.model = world`, so the existing draw path (`primitive->draw()`) is
-  untouched. (Both live in `vulkan.runtime.scene_tree` — the former separate
+  untouched. (Both live in `vulkan.scene_tree` — the former separate
   `vulkan.model` module was merged into it; see step 4c in §6.)
 - The tree is **caller-owned**: the runtime binds it with `set_scene(scene&)`
   and never owns/destroys it. Leaves release their GPU buffers automatically
@@ -344,7 +344,7 @@ Status, kept in sync with git history:
   DFS-flatten semantics (same world matrices, same order) so nothing downstream
   breaks. Verified: scene bounds / fps unchanged.
 - ✅ **2a — Runtime scene tree storage** (`ca6769a`, `7a445d5`, `896d5b3`). New
-  `vulkan.runtime.scene_tree` module (scene/scene_node/primitive + update_world +
+  `vulkan.scene_tree` module (scene/scene_node/primitive + update_world +
   visit_primitives); `vulkan::primitive` (renamed from `vulkan::model`) implements
   `scene_tree::primitive`; the `models` map is replaced by a `scene_tree::scene`;
   `make_primitive` / `make_instanced_primitive` attach leaves; `render_frame`
@@ -386,10 +386,10 @@ Status, kept in sync with git history:
   Verified: full regression matrix unchanged.
 - ✅ **4c — Merge vulkan.model into scene_tree** (next commit). The separate
   `vulkan.model` module (and its files) is gone: its exports now live in
-  `vulkan.runtime.scene_tree` (scene storage + abstract leaf primitive + the GPU
+  `vulkan.scene_tree` (scene storage + abstract leaf primitive + the GPU
   primitives + material/UBO records + structural iterator concepts in one module,
   which imports vulkan.core for the GPU types). `runtime` / `main` import
-  `vulkan.runtime.scene_tree` instead of `vulkan.model`; CMake module list
+  `vulkan.scene_tree` instead of `vulkan.model`; CMake module list
   updated. Verified: Release builds (no ICE), full regression matrix unchanged.
 - ✅ **5 — Morph targets landed on the tree substrate** (export `5bea625`, GPU blend
   `f530889`, weights `60c7c1f`; see §8): per-primitive morph deltas + default weights bake
@@ -473,7 +473,7 @@ source of truth for what each commit changed.)
 
 ## 9. Open questions for the maintainer (answers)
 
-1. **Storage module** — answered: `vulkan.runtime.scene_tree` is the single
+1. **Storage module** — answered: `vulkan.scene_tree` is the single
    scene-tree module. The former separate `vulkan.model` module was merged into
    it (step 4c), so scene storage, the abstract leaf `primitive`, the GPU
    primitives and the material/UBO records all live in one module — no cycle, no

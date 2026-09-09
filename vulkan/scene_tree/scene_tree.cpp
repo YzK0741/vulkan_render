@@ -4,7 +4,7 @@ module;
 #include <glm/gtc/matrix_transform.hpp>
 #include <vulkan/vulkan.h>
 
-module vulkan.runtime.scene_tree;
+module vulkan.scene_tree;
 import vulkan.core;
 
 namespace vulkan::scene_tree {

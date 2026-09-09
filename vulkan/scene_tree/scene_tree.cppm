@@ -1,17 +1,36 @@
+// ============================================================================
+// module: vulkan.scene_tree  (peer of vulkan.runtime - the scene tree the
+//         frame facade renders; versioned in lock-step with vulkan.runtime,
+//         see that module's banner: they share the scene / draw interface)
+// module version: 0.1.2  (independent of the app version in CMakeLists project(VERSION))
+//
+// Scene organization + the GPU primitives that live in it:
+//   - storage: scene / scene_node { name, local, children, primitive_leaf } and the
+//     abstract leaf interface scene_tree::primitive; the CPU-side walkers
+//     update_world() / visit_primitives() accumulate world transforms per frame
+//   - GPU primitives: vulkan::primitive (owns geometry buffers + material push
+//     constants, implements scene_tree::primitive) and its draw strategies
+//     normal_draw_primitive / instanced_draw_primitive / static_draw_primitive
+//   - GPU material / UBO records (material_record, material_push_constants,
+//     camera_ubo, light_ubo) and the structural iterator concepts
+//
+// evolve: bump MAJOR on breaking interface changes, MINOR on additive features,
+//         PATCH on internal fixes - in lock-step with vulkan.runtime.
+// ============================================================================
 module;
 
 #include <cstddef> // offsetof (layout guard below)
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
 
-export module vulkan.runtime.scene_tree;
+export module vulkan.scene_tree;
 export import vstd;
 export import vulkan.core;
 export import vulkan.render_environment;
 
 /**
  * @file scene_tree.cppm
- * @defgroup vulkan_runtime_scene_tree Vulkan Runtime Scene Tree
+ * @defgroup vulkan_scene_tree Vulkan Scene Tree
  * @brief scene organization: a transform hierarchy of scene_node objects with
  *        primitive leaves, plus the GPU primitives that live in those leaves.
  *
@@ -32,7 +51,7 @@ export import vulkan.render_environment;
  */
 namespace vulkan::scene_tree {
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief abstract primitive leaf of a scene node (the interface the GPU primitives
      *        below implement: normal_draw_primitive / instanced_draw_primitive)
      * @note pure interface: implementations own their GPU geometry and record
@@ -51,7 +70,7 @@ namespace vulkan::scene_tree {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief one node of the scene tree: a local transform, child nodes and an
      *        optional primitive leaf. Value semantics: children are owned inline
      *        (copying a node copies its subtree).
@@ -77,7 +96,7 @@ namespace vulkan::scene_tree {
         [[nodiscard]] scene_node clone() const;
 
         /**
-         * @ingroup vulkan_runtime_scene_tree
+         * @ingroup vulkan_scene_tree
          * @brief append a new child node (empty: name "", identity local) and return it, so the
          *        caller fills it in place: add_child().name = ...; add_child().local = ...;
          * @return the appended child (reference valid until the next structural mutation of
@@ -86,14 +105,14 @@ namespace vulkan::scene_tree {
         scene_node& add_child();
 
         /**
-         * @ingroup vulkan_runtime_scene_tree
+         * @ingroup vulkan_scene_tree
          * @brief move @p child (and its whole subtree) into this node's children
          * @return the appended child (reference valid until the next structural mutation)
          */
         scene_node& add_child(scene_node child);
 
         /**
-         * @ingroup vulkan_runtime_scene_tree
+         * @ingroup vulkan_scene_tree
          * @brief attach an already-built primitive as this node's primitive leaf (replaces any
          *        existing leaf). Building happens through runtime::create_primitive(), which
          *        returns the primitive WITHOUT attaching it; this call places it under this
@@ -108,7 +127,7 @@ namespace vulkan::scene_tree {
         primitive* attach(std::unique_ptr<primitive> leaf);
 
         /**
-         * @ingroup vulkan_runtime_scene_tree
+         * @ingroup vulkan_scene_tree
          * @brief depth-first search this subtree for the first node with the given name
          *        (pre-order, matching scene_iterator's order); returns nullptr when absent.
          *        Empty names never match (they are the unnamed-node default).
@@ -118,7 +137,7 @@ namespace vulkan::scene_tree {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief a named scene: a list of root nodes (mirrors gltf::scene's shape)
      */
     export struct scene {
@@ -126,7 +145,7 @@ namespace vulkan::scene_tree {
         std::vector<scene_node> roots = {};
 
         /**
-         * @ingroup vulkan_runtime_scene_tree
+         * @ingroup vulkan_scene_tree
          * @brief append a new root node (empty: name "", identity local) and return it
          * @return the appended root (reference valid until the next structural mutation of
          *         roots - pushing more roots may reallocate)
@@ -134,14 +153,14 @@ namespace vulkan::scene_tree {
         scene_node& add_root();
 
         /**
-         * @ingroup vulkan_runtime_scene_tree
+         * @ingroup vulkan_scene_tree
          * @brief move @p root (and its whole subtree) in as a new root
          * @return the appended root (reference valid until the next structural mutation)
          */
         scene_node& add_root(scene_node root);
 
         /**
-         * @ingroup vulkan_runtime_scene_tree
+         * @ingroup vulkan_scene_tree
          * @brief depth-first search every root for the first node named @p name (pre-order);
          *        returns nullptr when absent. Empty names never match.
          */
@@ -150,7 +169,7 @@ namespace vulkan::scene_tree {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief depth-first walk that accumulates world transforms and pushes them
      *        into every primitive leaf: world(child) = world(parent) * child.local
      * @param node subtree root to walk (call once per scene root with mat4(1))
@@ -159,7 +178,7 @@ namespace vulkan::scene_tree {
     export void update_world(scene_node& node, glm::mat4 const& parent_world);
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief walk the subtree and call @p visit on every primitive leaf
      * @tparam F invocable(scene_node const&, glm::mat4 const& world)
      */
@@ -175,7 +194,7 @@ namespace vulkan::scene_tree {
     }
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief single-pass forward iterator over a scene's node tree: DFS pre-order across every
      *        root, INCLUDING transform-only (mesh-less) nodes, yielding each scene_node.
      *
@@ -237,7 +256,7 @@ namespace vulkan::scene_tree {
 
 namespace vulkan {
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief camera UBO content, layout matches the CameraUBO block in pbr.frag (no model
      *        matrix: the per-primitive world transform lives in the push constants instead,
      *        so the camera UBO can be shared by every primitive)
@@ -250,7 +269,7 @@ namespace vulkan {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief one user-configurable punctual light (API surface of runtime::set_point_lights).
      *        Point lights are omni-directional; a spot light additionally restricts its cone to
      *        @p spot_direction with a soft edge whose outer half-angle cosine is
@@ -282,7 +301,7 @@ namespace vulkan {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief light UBO content, layout matches the LightUBO block in pbr.frag / shadow.vert
      *        (scene set binding 7): light-space view-proj + the light direction, then the
      *        active punctual light count and the punctual light array
@@ -314,7 +333,7 @@ namespace vulkan {
     static_assert(sizeof(point_light) == 64);
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief RGBA texture pixels ready for GPU upload (already converted to the target format)
      * @note valid == false means "missing texture", the primitive falls back to a 1x1 white image
      */
@@ -330,7 +349,7 @@ namespace vulkan {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief precomputed split-sum IBL resources as half-float bytes, ready for upload
      * @note env_size == 0 disables the IBL bindings
      */
@@ -345,7 +364,7 @@ namespace vulkan {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief PBR material factors, mirrored into the GPU material table (material_record)
      * @note the same shape as gltf::material_factors, converted by the scene builder
      */
@@ -362,7 +381,7 @@ namespace vulkan {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief result of one runtime::import_scene() batch import
      */
     export struct scene_import_result {
@@ -416,7 +435,7 @@ namespace vulkan {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief concept for a scene-traversal iterator the runtime can consume directly:
      *        ++ moves to the next drawable, then geometry/material are read through the
      *        getters (vertex/index/transform + one getter per material slot). The getters
@@ -442,7 +461,7 @@ namespace vulkan {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief concept for a scene-tree structural iterator: DFS pre-order over the retained
      *        node hierarchy (transform-only nodes included), so a consumer can rebuild the
      *        parent/child edges with an explicit stack. ++ moves to the next node, then the
@@ -463,7 +482,7 @@ namespace vulkan {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief everything runtime::make_primitive() needs: geometry + material textures + factors
      */
     export struct primitive_create_info {
@@ -492,7 +511,7 @@ namespace vulkan {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief one entry of the scene's GPU-side material table (set 0 binding 5, a storage buffer):
      *        the 5 texture array indices + all material parameters. Primitives only push a
      *        material_index and the shader reads the record — material data lives in one
@@ -515,7 +534,7 @@ namespace vulkan {
     static_assert(sizeof(material_record) == 80);
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief max entries of the GPU material table
      * @note sized for the heaviest glTF stress sample (NodePerformanceTest: 10000 rocks, each
      *       with its own material record - factors differ per rock, so content dedup cannot
@@ -527,13 +546,13 @@ namespace vulkan {
     export constexpr uint32_t material_capacity = 16384;
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief max per-instance transforms of an instanced draw (set 0 binding 6 storage buffer)
      */
     export constexpr uint32_t instance_capacity = 8192;
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief max skin matrices of the scene skin buffer (set 0 binding 9 storage buffer), in
      *        mat4s. Indices 0-3 are the identity block (the fallback for unskinned draws:
      *        skin_base = 0), the per-skin joint blocks follow at 4.
@@ -544,7 +563,7 @@ namespace vulkan {
     export constexpr uint32_t scene_skin_capacity = 2048;
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief byte capacity of the scene morph buffer (set 0 binding 10 storage buffer, floats):
      *        per-morphable-primitive blocks of vertex deltas + morph weights, laid out by the
      *        caller (see the material_push_constants morph fields); 0 = no morph buffer
@@ -552,7 +571,7 @@ namespace vulkan {
     export constexpr std::size_t scene_morph_capacity = std::size_t{8u} * 1024u * 1024u; // 8 MiB of floats
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief per-draw push constants, layout matches the shaders' PushConstants (96 bytes)
      * @note material data lives in the material table (set 0 binding 5), so the push block only
      *       carries the material reference, the skin-matrix block start, the morph block start
@@ -560,7 +579,7 @@ namespace vulkan {
      *       the vertex shader skips the blend; morph_base is a FLOAT index into binding 10.
      */
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief index of one material in the runtime's material table (scene set binding 5).
      *        Strongly typed on the CPU side so it cannot be confused with the other GPU-table
      *        indices (instance/skin/morph bases); it is a single uint32_t, so push-constant /
@@ -595,7 +614,7 @@ namespace vulkan {
     static_assert(sizeof(material_push_constants) == scene_push_constant_size);
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief base class of every GPU primitive: owns geometry buffers + material push constants
      *        and declares the draw strategy interface. Derived classes implement how the
      *        geometry is drawn (single draw, instanced grid, ...), so the runtime's frame loop
@@ -705,7 +724,7 @@ namespace vulkan {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief the standard primitive: one indexed draw of its own geometry (push.model places it)
      */
     export class normal_draw_primitive final : public primitive {
@@ -716,7 +735,7 @@ namespace vulkan {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief instanced primitive: draws the geometry of another primitive (source)
      *        instance_count times in ONE draw call; per-instance world transforms come from the
      *        runtime's instance transform buffer (scene set binding 6, push flag bit0). Owns
@@ -733,7 +752,7 @@ namespace vulkan {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief one chunk of a static_draw: an index sub-range of the merged buffer plus the
      *        material this chunk draws with (each chunk may bind a different material, so one
      *        merged buffer can hold many sub-meshes with distinct materials)
@@ -754,7 +773,7 @@ namespace vulkan {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief build description for runtime::make_static_draw(): ONE merged vertex/index buffer
      *        (the packer's output) plus the chunk table over it. Each chunk is drawn as a
      *        single offset draw call after ONE buffer bind, so N static sub-meshes cost 1 bind
@@ -775,7 +794,7 @@ namespace vulkan {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief static batch primitive: OWNS one merged vertex/index buffer and draws a chunk
      *        table over it — every chunk shares the single buffer bind, each chunk is one
      *        offset draw with its own material (push.material_index). Self-contained: no
@@ -817,7 +836,7 @@ namespace vulkan {
     };
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief build the camera UBO from orbit camera state (the camera orbits the target point)
      * @param yaw yaw angle in radians (see vulkan::runtime::camera)
      * @param pitch pitch angle in radians
@@ -840,7 +859,7 @@ namespace vulkan {
         float aspect);
 
     /**
-     * @ingroup vulkan_runtime_scene_tree
+     * @ingroup vulkan_scene_tree
      * @brief build the directional light UBO (light-space view-proj + direction) for shadow
      *        mapping. The light direction matches the analytic sky sun (see skybox.frag), so
      *        shadows, the PBR direct light and the visible sun disc all agree.

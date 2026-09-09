@@ -7,7 +7,7 @@ import gltf_loader;
 import utility;          // re-exports utility.frame_clock / frame_stats / bvh / better_pmr / thread_pool / data_block
 import vulkan.animation; // animation::controller: glTF playback / skinning / morphs on the runtime tree
 import vulkan.math;
-import vulkan.runtime.scene_tree; // scene storage + GPU primitives (was vulkan.model)
+import vulkan.scene_tree; // scene storage + GPU primitives (was vulkan.model)
 import vulkan.runtime;
 
 // Route std::pmr allocations through mimalloc (utility.better_pmr) before main(): this

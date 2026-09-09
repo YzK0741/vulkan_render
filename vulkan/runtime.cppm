@@ -3,10 +3,11 @@
 // module version: 0.1.2  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
-// scene resources, parallel secondary-CB recording) plus the
-// vulkan.runtime.scene_tree (scene storage + GPU primitives) and
-// vulkan.render_environment (per-worker draw state) submodules - versioned as ONE
-// unit because they share the scene / draw interface and evolve together.
+// scene resources, parallel secondary-CB recording). It re-exports its peer
+// modules vulkan.scene_tree (scene storage + GPU primitives) and
+// vulkan.render_environment (per-worker draw state) - the frame draws through
+// both, so they are versioned as ONE unit because they share the scene / draw
+// interface and evolve together.
 // Depends on vulkan.core (GPU), vulkan.math (IBL) and utility, with the frame
 // struct fills coming from vulkan.constant_init.
 //
@@ -23,7 +24,7 @@ export module vulkan.runtime;
 export import vstd;
 export import vulkan.core;
 export import vulkan.core.filter;
-export import vulkan.runtime.scene_tree; // scene_tree owns the scene storage + GPU primitives (absorbed vulkan.model)
+export import vulkan.scene_tree; // scene_tree owns the scene storage + GPU primitives (absorbed vulkan.model)
 import utility;
 export import vulkan.gui; // optional debug overlay (gui_content): exported so callers can manage panels/widgets via debug_gui()
 
