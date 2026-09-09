@@ -7,7 +7,7 @@ module;
 module vulkan.core;
 import vulkan.core.pipeline;
 import vulkan.core.init_utils;
-import vulkan.core.vkinit;
+import vulkan.constant_init;
 
 // core
 namespace vulkan {

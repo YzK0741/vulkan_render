@@ -6,7 +6,7 @@ module;
 module vulkan.core.init_utils;
 
 import utility;
-import vulkan.core.vkinit;
+import vulkan.constant_init;
 
 [[maybe_unused]] VKAPI_ATTR VkBool32 VKAPI_CALL
 debug_callback(

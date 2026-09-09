@@ -2,14 +2,19 @@ module;
 
 #include <vulkan/vulkan.h>
 
-export module vulkan.core.vkinit;
+export module vulkan.constant_init;
 
 /**
- * @defgroup vulkan_vkinit Vulkan Info-Struct Builders (fixed conventions)
- * @file vkinit.cppm
+ * @defgroup vulkan_constant_init Vulkan Info-Struct Builders (fixed conventions)
+ * @file constant_init.cppm
  *
  * @brief constexpr constructors and constinit defaults for the Vulkan info structs the engine
  *        fills the same way everywhere.
+ *
+ * Top-level module (sibling of vulkan.core): it depends on nothing but the Vulkan headers, so
+ * any Vulkan module can use it. The name sets it apart from vulkan.core.init_utils - that
+ * module performs the initialization PROCEDURES (instance/device/swapchain), while this one
+ * holds the compile-time CONSTANTS of those calls: the fixed field values ("constant init").
  *
  * The engine never hand-fills these structs at call sites: every fill is either
  *  - a constexpr factory returning the struct by value (each factory lists EVERY member with
@@ -20,7 +25,7 @@ export module vulkan.core.vkinit;
  *
  * Pointer members always point at caller-owned data (never at locals of the factory itself).
  * This module is header-only in effect: all definitions live in the interface, so callers can
- * constant-fold the factories. It depends on nothing but the Vulkan headers.
+ * constant-fold the factories.
  */
 export namespace vulkan {
     // ---- Object create infos (one line per object; fields fixed by engine convention) ----

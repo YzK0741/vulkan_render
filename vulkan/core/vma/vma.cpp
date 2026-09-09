@@ -6,7 +6,7 @@ module;
 
 module vulkan.core.vma;
 
-import vulkan.core.vkinit;
+import vulkan.constant_init;
 
 namespace {
     constexpr uint32_t sizeof_vk_format(VkFormat const format) {

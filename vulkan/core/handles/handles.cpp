@@ -5,7 +5,7 @@ module;
 module vulkan.core.handles;
 
 import utility;
-import vulkan.core.vkinit;
+import vulkan.constant_init;
 
 // vk_command_buffer
 namespace vulkan {

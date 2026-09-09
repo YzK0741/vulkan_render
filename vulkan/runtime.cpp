@@ -7,7 +7,7 @@ module;
 module vulkan.runtime;
 
 import utility;
-import vulkan.core.vkinit;
+import vulkan.constant_init;
 
 // Route std::pmr allocations through mimalloc for this TU (utility.better_pmr). Idempotent:
 // init_pmr() returns the same process-wide singleton no matter which TU calls it first, so

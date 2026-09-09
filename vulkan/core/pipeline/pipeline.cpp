@@ -4,7 +4,7 @@ module;
 
 module vulkan.core.pipeline;
 import vulkan.core.pipeline.spirv_parser;
-import vulkan.core.vkinit;
+import vulkan.constant_init;
 
 namespace {
     // Collects the Vulkan objects created during pipeline creation; the destructor frees the
