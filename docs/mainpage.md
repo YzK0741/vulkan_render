@@ -11,7 +11,7 @@ and keep this line in sync.
 - `vulkan.runtime` - the frame facade (per-frame-slot scene resources, granular frame phases:
   poll_events -> recreate_if_minimized -> pace_and_acquire -> begin_recording ->
   record_main_drawcalls -> end_recording -> submit_and_present, plus one-call render_frame()),
-  scene tree, GPU primitives (normal / instanced / static / offset draws), debug GUI overlay.
+  scene tree, GPU primitives (normal / instanced / static draws), debug GUI overlay.
   Shadow + main pass commands are recorded into per-slot secondary command buffers and the
   main pass fans its leaf recording out over the shared task pool (sub_render_task batches);
   each recording worker gets its own render_environment (thread-local pipeline-bind state)
