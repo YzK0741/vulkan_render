@@ -252,7 +252,8 @@ namespace vulkan {
      * @ingroup vulkan_runtime_scene_tree
      * @brief one user-configurable punctual light (API surface of runtime::set_point_lights).
      *        Point lights are omni-directional; a spot light additionally restricts its cone to
-     *        @p spot_direction with a soft edge whose half-angle cosine is @p spot_outer_cos.
+     *        @p spot_direction with a soft edge whose outer half-angle cosine is
+     *        @p spot_outer_cos (the shader derives the soft INNER cone as mix(outer, 1, 0.6)).
      */
     export struct punctual_light {
         glm::vec3 position = glm::vec3(0.0f);                    // world position

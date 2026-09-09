@@ -798,12 +798,19 @@ namespace vulkan {
         /**
          * @ingroup vulkan_runtime
          * @brief set the active punctual lights (point/spot, pbr.frag's direct-light loop).
-         *        Light 0 is the warm key, 1 the cool rim in the demo GUI - any subset up to
-         *        @ref vulkan::max_punctual_lights is allowed; extras are ignored.
-         * @param lights the lights to enable (converted into the light UBO's array; entries
-         *        beyond max_punctual_lights are dropped)
+         *        Each light is evaluated through the same BRDF path as the directional sun
+         *        (inverse-square falloff, optional smooth range cutoff, spot cone mask) and
+         *        never casts a shadow in this version.
+         * @param lights the lights to enable. Every `vulkan::punctual_light` field is honored:
+         *        `position`, linear `color` (radiance = color * intensity), `range` (0 =
+         *        infinite falloff, otherwise a smooth cutoff at this distance), and for spot
+         *        lights `spot = true` + `spot_direction` + `spot_outer_cos` (cos of the outer
+         *        half-angle; the shader derives the soft inner cone as mix(outer, 1, 0.6)).
+         *        Entries beyond `vulkan::max_punctual_lights` (2) are dropped.
          * @note same timing rule as set_brdf_model: CPU-side only, copied into the paced
-         *       slot's buffer every frame, so safe at any time (GUI included)
+         *       slot's buffer every frame, so safe at any time (GUI included). The demo GUI
+         *       currently exposes two POINT lights (no spot toggle); programmatic callers can
+         *       set spot lights directly.
          */
         void set_point_lights(std::span<punctual_light const> lights) noexcept;
 
