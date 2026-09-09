@@ -224,6 +224,7 @@ namespace gltf {
         float occlusion_strength = 1.0f; // occlusion map influence: mix(1, sampled AO, strength)
         float alpha_cutoff = 0.5f;       // alphaMode MASK threshold (default per glTF spec)
         bool alpha_mask = false;         // alphaMode == MASK: discard fragments below alpha_cutoff
+        bool alpha_blend = false;        // alphaMode == BLEND: alpha-blended (transparent) material
     };
 
     /**
@@ -760,7 +761,8 @@ namespace gltf {
         float normal_scale = 1.0f;
         float occlusion_strength = 1.0f; // mix(1, sampled AO, strength)
         float alpha_cutoff = 0.5f;       // alphaMode MASK threshold
-        bool alpha_mask = false;         // alphaMode == MASK (alphaMode BLEND stays opaque for now)
+        bool alpha_mask = false;         // alphaMode == MASK (fragment discard)
+        bool alpha_blend = false;        // alphaMode == BLEND (alpha-blended / transparent)
     };
 
     /**

@@ -283,6 +283,10 @@ namespace vulkan {
         //   - shadow: one shadow-pass CB per frame slot (single segment; the depth-only pass
         //     shares one pipeline, so further splitting buys little - stage 2)
         //   - gui: one overlay CB per frame slot (stage 2)
+        //   - transparent: one CB per frame slot for the alpha-blended leaves - recorded on the
+        //     PRIMARY thread after the opaque segments (transparent leaves are usually few and
+        //     order-sensitive, so they do not join the parallel fan-out), executed last before
+        //     the gui overlay so blends compose over the opaque depth
         //   - main: SEGMENT secondaries per frame slot (stage 3): the main pass splits its
         //     visible leaves into up-to-SEGMENT contiguous ranges, each recorded on a pool
         //     worker and executed in order. SEGMENT is sized to the task pool (see
@@ -291,8 +295,9 @@ namespace vulkan {
         //     timeline wait, no per-frame allocation, no pool lock).
         enum class secondary_pass : std::size_t { shadow = 0,
                                                   gui = 1,
-                                                  main_seg_0 = 2, // main pass segments follow
-                                                  count = 2 };    // fixed single-segment slots
+                                                  transparent = 2,
+                                                  main_seg_0 = 3, // main pass segments follow
+                                                  count = 3 };    // fixed single-segment slots
         std::vector<std::array<vk_command_buffer, static_cast<std::size_t>(secondary_pass::count)>> secondary_command_buffers;
         // per-slot main-pass parallel segments (stage 3): one {command pool, secondary buffer}
         // PAIR per task-pool worker, in the same style as the vma allocator's command_cache -
@@ -309,7 +314,11 @@ namespace vulkan {
         float current_aspect = 1.0f;                           // swapchain aspect for the frame's UBO + culling
         camera_ubo current_ubo = {};                           // camera UBO snapshot written in pace_and_acquire()
         std::pmr::vector<primitive const*> frame_leaves = {};  // every scene leaf this frame (shadow + cull input)
-        std::pmr::vector<primitive const*> frame_visible = {}; // frustum-visible subset (main pass)
+        std::pmr::vector<primitive const*> frame_visible = {}; // opaque frustum-visible subset (main pass)
+        // transparent (alphaMode BLEND) frustum-visible leaves, sorted FAR -> NEAR from the
+        // camera each time the cull re-runs: drawn AFTER the opaque pass (depth-write off), so
+        // the blend order is back-to-front. Rebuilt in begin_recording together with the cull.
+        std::pmr::vector<primitive const*> frame_transparent = {};
         // shadow-pass subset (rebuilt each frame before the shadow recording): every leaf whose
         // shadow can reach the camera frustum = the frustum-visible leaves PLUS the leaves up to
         // shadow_caster_extent up-light of them (a caster just outside the view still throws a
@@ -978,6 +987,7 @@ namespace vulkan {
                 info.factors.occlusion_strength = factors.occlusion_strength;
                 info.factors.alpha_cutoff = factors.alpha_cutoff;
                 info.factors.alpha_mask = factors.alpha_mask;
+                info.factors.alpha_blend = factors.alpha_blend;
                 info.double_sided = drawable.get_double_sided();
             };
             // attach one leaf primitive to @p node (geometry from the next drawable of the stream);

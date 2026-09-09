@@ -182,10 +182,12 @@ namespace vulkan {
     // Default-semantics draws (normal / instanced / static): request the recording session's
     // default pipeline - bind_default() no-ops when it is already bound, so consecutive leaves
     // of the same pass share one bind. Cull mode stays per draw (dynamic state, pipeline
-    // independent): double-sided materials keep back faces. All commands record onto
-    // env.command_buffer.
+    // independent): double-sided materials keep back faces. Transparent (alphaMode BLEND)
+    // leaves disable depth writes so they blend onto whatever is behind them. All commands
+    // record onto env.command_buffer.
     void normal_draw_primitive::draw(render_environment& env) const {
         env.bind_default();
+        env.set_depth_write(!this->transparent);
         VkCommandBuffer const command_buffer = env.command_buffer;
         vkCmdSetCullMode(command_buffer, this->double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
         this->bind_geometry_and_push(env);
@@ -211,6 +213,7 @@ namespace vulkan {
 
     void instanced_draw_primitive::draw(render_environment& env) const {
         env.bind_default();
+        env.set_depth_write(!this->transparent);
         VkCommandBuffer const command_buffer = env.command_buffer;
         // geometry belongs to source: bind ITS buffers, then draw it instance_count times;
         // push flag bit0 makes pbr.vert pick instances[gl_InstanceIndex] per instance
@@ -239,6 +242,7 @@ namespace vulkan {
 
     void static_draw_primitive::draw(render_environment& env) const {
         env.bind_default();
+        env.set_depth_write(!this->transparent);
         VkCommandBuffer const command_buffer = env.command_buffer;
         // ONE bind for the whole merged geometry, then one offset draw per chunk (each chunk
         // pushes its own material_index — the batch shares push.model, set by update_world)

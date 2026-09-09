@@ -118,6 +118,7 @@ namespace vulkan {
             std::array<vk_command_buffer, static_cast<std::size_t>(secondary_pass::count)> pair = {
                 this->vulkan_core.make_secondary_command_buffer(), // shadow
                 this->vulkan_core.make_secondary_command_buffer(), // gui
+                this->vulkan_core.make_secondary_command_buffer(), // transparent
             };
             this->secondary_command_buffers.push_back(std::move(pair));
             std::vector<std::pair<VkCommandPool, vk_command_buffer>> segments;
@@ -676,6 +677,9 @@ namespace vulkan {
         if (info.factors.alpha_mask) {
             record.flags |= 16u; // bit4: alphaMode MASK - fragment shader discards below alpha_cutoff
         }
+        if (info.factors.alpha_blend) {
+            record.flags |= 32u; // bit5: alphaMode BLEND - alpha-blended / transparent material
+        }
 
         uint32_t const material_index = this->material_count++;
         std::memcpy(static_cast<unsigned char*>(this->material_mapped) + static_cast<size_t>(material_index) * sizeof(material_record), &record, sizeof(record));
@@ -968,9 +972,30 @@ namespace vulkan {
             this->shadow_casters = this->frame_leaves;
         }
 
-        // persist the cull result for the record steps below (the main pass draws this visible
-        // subset; the shadow pass draws the shadow_casters set)
-        this->frame_visible = std::move(visible_leaves);
+        // Split the visible set into OPAQUE leaves (frame_visible: drawn first, depth write on,
+        // in the parallel segments) and TRANSPARENT leaves (frame_transparent: alpha-blended,
+        // depth write off, drawn last). Transparent leaves are sorted FAR -> NEAR from the
+        // camera so overlapping blends compose back-to-front. The split re-runs every frame
+        // (cheap: one pass over the visible set + sort of the usually-few transparent leaves);
+        // with a static camera the input and thus the result are identical, so no extra cache.
+        this->frame_visible.clear();
+        this->frame_transparent.clear();
+        {
+            glm::vec3 const eye = ubo.camera_pos;
+            auto const distance_to = [&eye](primitive const* const m) -> float {
+                // view-space distance of the leaf's origin (push.model translation column =
+                // world position after update_world; good enough for ordering)
+                glm::vec3 const origin(m->push.model[3]);
+                return glm::dot(origin - eye, origin - eye);
+            };
+            for (primitive const* const m : visible_leaves) {
+                (m->transparent ? this->frame_transparent : this->frame_visible).push_back(m);
+            }
+            std::sort(this->frame_transparent.begin(), this->frame_transparent.end(),
+                      [&distance_to](primitive const* const a, primitive const* const b) {
+                          return distance_to(a) > distance_to(b); // far first
+                      });
+        }
         return frame_status::proceed;
     }
 
@@ -1189,6 +1214,25 @@ namespace vulkan {
 
         std::size_t const leaf_count = this->frame_visible.size();
         std::size_t const segment_count = std::min<std::size_t>(main_segments.size(), std::max<std::size_t>(1, leaf_count));
+
+        // Transparent pass: the alpha-blended leaves, recorded on the PRIMARY thread (usually
+        // few + order-sensitive, so no parallel fan-out). Its environment keeps the session
+        // default but transparent draws disable depth writes via env.set_depth_write(false)
+        // (each leaf's draw() requests it). Recorded only when there are transparent leaves.
+        VkCommandBuffer const transparent_secondary = *secondaries[static_cast<std::size_t>(secondary_pass::transparent)];
+        bool const has_transparent = !this->frame_transparent.empty();
+        auto const record_transparent_pass = [&] {
+            if (!has_transparent) {
+                return;
+            }
+            if (vkBeginCommandBuffer(transparent_secondary, &main_sec_begin) == VK_SUCCESS) {
+                this->record_main_segment(transparent_secondary, this->frame_transparent, false);
+                vkEndCommandBuffer(transparent_secondary);
+            } else {
+                utility::log("runtime: transparent secondary begin failed - transparent leaves skipped this frame");
+            }
+        };
+
         if (segment_count == 1 || leaf_count < 4) {
             // Few leaves: parallel recording would cost more than it saves - record the whole
             // main pass on one segment (identical to stage 2) on this thread.
@@ -1209,6 +1253,10 @@ namespace vulkan {
             }
             this->begin_rendering(*command_buffer, this->current_image_index, VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT);
             vkCmdExecuteCommands(*command_buffer, 1, &single_main);
+            record_transparent_pass(); // alpha-blended leaves compose over the opaque depth
+            if (has_transparent) {
+                vkCmdExecuteCommands(*command_buffer, 1, &transparent_secondary);
+            }
             if (this->debug_overlay.is_active()) {
                 vkCmdExecuteCommands(*command_buffer, 1, &gui_secondary);
             }
@@ -1237,9 +1285,11 @@ namespace vulkan {
         }
         this->run_tasks(tasks, vulkan::task_priority::recording);
 
-        // The gui overlay records on the PRIMARY thread (its recorder touches the Dear ImGui
-        // global state via ImGui::Render()/GetDrawData, which must stay on one thread - the
-        // pool workers above only recorded scene secondaries, so nothing races it).
+        // The gui overlay + the transparent pass record on the PRIMARY thread (the gui recorder
+        // touches Dear ImGui global state via ImGui::Render()/GetDrawData; transparent leaves
+        // are few + order-sensitive) - the pool workers above only recorded scene secondaries,
+        // so nothing races them.
+        record_transparent_pass();
         if (this->debug_overlay.is_active()) {
             if (vkBeginCommandBuffer(gui_secondary, &main_sec_begin) == VK_SUCCESS) {
                 this->debug_overlay.record(gui_secondary);
@@ -1253,6 +1303,10 @@ namespace vulkan {
         for (std::size_t s = 0; s < segment_count; ++s) {
             VkCommandBuffer const seg_cb = *main_segments[s].second;
             vkCmdExecuteCommands(*command_buffer, 1, &seg_cb);
+        }
+        // transparent leaves compose over the opaque depth, before the gui overlay
+        if (has_transparent) {
+            vkCmdExecuteCommands(*command_buffer, 1, &transparent_secondary);
         }
         if (this->debug_overlay.is_active()) {
             vkCmdExecuteCommands(*command_buffer, 1, &gui_secondary);
@@ -1290,6 +1344,14 @@ namespace vulkan {
         env.default_name = "shadow"; // binder ignores the name; kept for in_default_pipeline()
         env.bind = [this](VkCommandBuffer const cb, std::string_view const /*name*/) {
             this->shadow_pipeline->begin_pipeline(cb);
+        };
+        // The shadow pass MUST write depth for every caster (transparent leaves included): its
+        // env always records depth-write ENABLED (VK_TRUE) regardless of what a leaf requests -
+        // the first leaf's set_depth_write() emits the one required vkCmdSetDepthWriteEnable
+        // and later leaves dedupe against it. (The pipeline declares depth-write as dynamic
+        // state, so it must be set at least once even though the value matches the default.)
+        env.set_depth_write_fn = [](VkCommandBuffer const cb, VkBool32 const) {
+            vkCmdSetDepthWriteEnable(cb, VK_TRUE);
         };
         env.layout = vk.scene_pipeline_layout;
         // draw only the casters that can throw a shadow into the camera frustum (see
@@ -1366,6 +1428,10 @@ namespace vulkan {
             } else {
                 utility::log("runtime: main pass references unknown pipeline '{}' - draw skipped", name);
             }
+        };
+        // transparent leaves toggle depth writes off via this (core dynamic state, 1.3)
+        env.set_depth_write_fn = [](VkCommandBuffer const cb, VkBool32 const enabled) {
+            vkCmdSetDepthWriteEnable(cb, enabled);
         };
         env.layout = vk.scene_pipeline_layout;
         for (primitive const* const m : leaves) {
@@ -1722,6 +1788,7 @@ namespace vulkan {
         result->push.material_index = this->register_material(info);
         result->push.model = info.model_matrix;
         result->double_sided = info.double_sided;
+        result->transparent = info.factors.alpha_blend;
         return result;
     }
 
@@ -1769,6 +1836,7 @@ namespace vulkan {
         result->push.instance_base = base;
         result->push.model = glm::mat4(1.0f);
         result->double_sided = source.double_sided;
+        result->transparent = source.transparent; // same material semantics as the source geometry
 
         scene_tree::scene_node& leaf = this->get_scene().add_root();
         leaf.name = "pbr";
@@ -1854,6 +1922,10 @@ namespace vulkan {
             record.material_index = this->register_material(material_info);
             record.double_sided = chunk.double_sided;
             result->chunks.push_back(record);
+            // A merged batch with any transparent chunk is drawn as ONE transparent unit in the
+            // transparent pass (depth-write off). Within the batch the chunk order is the draw
+            // order - the caller packs back-to-front chunks itself.
+            result->transparent = result->transparent || chunk.factors.alpha_blend;
         }
         if (result->chunks.empty()) {
             return nullptr; // every chunk was empty: nothing drawable

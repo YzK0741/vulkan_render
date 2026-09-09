@@ -120,12 +120,15 @@ namespace vulkan {
         viewport_state_create_info.pScissors = nullptr;
         viewport_state_create_info.pViewports = nullptr;
 
-        // double-sided materials need per-draw cull control (core dynamic state since Vulkan 1.3)
-        std::array<VkDynamicState, 4> dynamic_states = {};
-        uint32_t dynamic_state_count = 3;
+        // double-sided materials need per-draw cull control (core dynamic state since Vulkan 1.3);
+        // transparent (alphaMode BLEND) leaves disable depth writes per draw, also a 1.3 core
+        // dynamic state, so one pipeline serves both opaque and blended draws
+        std::array<VkDynamicState, 6> dynamic_states = {};
+        uint32_t dynamic_state_count = 4;
         dynamic_states[0] = VK_DYNAMIC_STATE_VIEWPORT;
         dynamic_states[1] = VK_DYNAMIC_STATE_SCISSOR;
         dynamic_states[2] = VK_DYNAMIC_STATE_CULL_MODE;
+        dynamic_states[3] = VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE;
         // depth-bias pipelines (the shadow pass) take the three bias factors as dynamic state,
         // so the values can be tuned live (e.g. from the debug gui) without recreating the
         // pipeline; depthBiasEnable itself stays static below
@@ -171,7 +174,17 @@ namespace vulkan {
             VK_COLOR_COMPONENT_G_BIT |
             VK_COLOR_COMPONENT_B_BIT |
             VK_COLOR_COMPONENT_A_BIT;
-        color_blend_attachment_state.blendEnable = VK_FALSE;
+        // Standard alpha blending, ALWAYS enabled: with src alpha == 1 (an opaque material) the
+        // blend math reduces to the source color exactly, so opaque draws are pixel-identical
+        // whether or not blending is on. Blended (transparent) materials simply carry alpha < 1
+        // and are drawn depth-write-off in the transparent pass - no second pipeline needed.
+        color_blend_attachment_state.blendEnable = VK_TRUE;
+        color_blend_attachment_state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        color_blend_attachment_state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        color_blend_attachment_state.colorBlendOp = VK_BLEND_OP_ADD;
+        color_blend_attachment_state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        color_blend_attachment_state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        color_blend_attachment_state.alphaBlendOp = VK_BLEND_OP_ADD;
 
         VkPipelineColorBlendStateCreateInfo color_blend_state_create_info = {};
         color_blend_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;

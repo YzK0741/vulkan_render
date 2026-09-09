@@ -309,6 +309,7 @@ namespace vulkan {
         float occlusion_strength = 1.0f; // occlusion map influence: mix(1, sampled AO, strength)
         float alpha_cutoff = 0.5f;       // alphaMode MASK threshold (fragment discard below it)
         bool alpha_mask = false;         // alphaMode == MASK
+        bool alpha_blend = false;        // alphaMode == BLEND (alpha-blended / transparent)
     };
 
     /**
@@ -362,6 +363,7 @@ namespace vulkan {
         { v.occlusion_strength } -> std::convertible_to<float>;
         { v.alpha_cutoff } -> std::convertible_to<float>;
         { v.alpha_mask } -> std::convertible_to<bool>;
+        { v.alpha_blend } -> std::convertible_to<bool>;
     };
 
     /**
@@ -459,7 +461,7 @@ namespace vulkan {
         float metallic_factor = 1.0f;
         float roughness_factor = 1.0f;
         float normal_scale = 1.0f;
-        uint32_t flags = 0; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK
+        uint32_t flags = 0; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK, bit5: alphaMode BLEND
     };
     static_assert(sizeof(material_record) == 80);
 
@@ -571,6 +573,10 @@ namespace vulkan {
         // the material push constants (material_index + model)
         material_push_constants push = {};
         bool double_sided = false; // glTF doubleSided: disable back-face culling (per draw)
+        // alphaMode BLEND: drawn alpha-blended in the transparent pass (depth write off,
+        // back-to-front order). The GPU material record also carries the flag; this mirror on
+        // the primitive lets draw() pick the depth-write state without a GPU readback.
+        bool transparent = false;
 
         // local-space AABB of this primitive's geometry (model space, i.e. before push.model);
         // filled by the runtime when the geometry is uploaded. has_bounds == false means "no

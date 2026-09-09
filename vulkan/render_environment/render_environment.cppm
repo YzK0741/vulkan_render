@@ -52,12 +52,19 @@ namespace vulkan {
      * @endcode
      */
     export struct render_environment {
-        VkCommandBuffer command_buffer = VK_NULL_HANDLE;                  // session's recording target
-        std::span<std::string const> available = {};                      // scene pipeline names
-        std::string_view default_name = {};                               // this pass's default
-        std::function<void(VkCommandBuffer, std::string_view)> bind = {}; // injected binder
-        VkPipelineLayout layout = VK_NULL_HANDLE;                         // shared scene layout
-        std::string_view bound = {};                                      // currently bound name
+        VkCommandBuffer command_buffer = VK_NULL_HANDLE;                        // session's recording target
+        std::span<std::string const> available = {};                            // scene pipeline names
+        std::string_view default_name = {};                                     // this pass's default
+        std::function<void(VkCommandBuffer, std::string_view)> bind = {};       // injected binder
+        std::function<void(VkCommandBuffer, VkBool32)> set_depth_write_fn = {}; // injected depth-write setter
+        VkPipelineLayout layout = VK_NULL_HANDLE;                               // shared scene layout
+        std::string_view bound = {};                                            // currently bound name
+        // depth-write state actually recorded so far. Starts "unknown" (nothing recorded yet):
+        // the first set_depth_write() must ALWAYS emit vkCmdSetDepthWriteEnable even when the
+        // requested state matches the pipeline default - a dynamic state that is never set is
+        // invalid (VUID). known == true once any set has been recorded.
+        VkBool32 depth_write_recorded = VK_TRUE;
+        bool depth_write_known = false;
 
         /** @brief whether the session's default pipeline is the one currently bound */
         [[nodiscard]] bool in_default_pipeline() const noexcept {
@@ -77,6 +84,20 @@ namespace vulkan {
             if (this->bound != name) {
                 this->bind(this->command_buffer, name);
                 this->bound = name;
+            }
+        }
+
+        /**
+         * @brief record the depth-write state when it differs from what is already recorded
+         * @param enabled true = depth writes on (opaque passes); false = off (transparent
+         *        draws, which must not occlude later back-to-front geometry)
+         */
+        void set_depth_write(bool const enabled) {
+            VkBool32 const want = enabled ? VK_TRUE : VK_FALSE;
+            if (!this->depth_write_known || this->depth_write_recorded != want) {
+                this->set_depth_write_fn(this->command_buffer, want);
+                this->depth_write_recorded = want;
+                this->depth_write_known = true;
             }
         }
     };

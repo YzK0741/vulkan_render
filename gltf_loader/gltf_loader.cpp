@@ -333,10 +333,11 @@ namespace {
                                                    material.emissiveFactor[2]);
         result.factors.normal_scale = material.normalTexture ? material.normalTexture->scale : 1.0f;
         result.factors.occlusion_strength = material.occlusionTexture ? material.occlusionTexture->strength : 1.0f;
-        // alphaMode: MASK gets a fragment-discard threshold; BLEND needs a transparent pipeline
-        // (not implemented - such materials currently render as opaque, documented in the README)
+        // alphaMode: MASK gets a fragment-discard threshold; BLEND marks a transparent material
+        // (the runtime draws it alpha-blended, back-to-front, depth-write off)
         result.factors.alpha_cutoff = material.alphaCutoff;
         result.factors.alpha_mask = material.alphaMode == fastgltf::AlphaMode::Mask;
+        result.factors.alpha_blend = material.alphaMode == fastgltf::AlphaMode::Blend;
         result.double_sided = material.doubleSided;
         result.texture_indices = get_texture_indices(material);
         return result;
@@ -1386,6 +1387,7 @@ namespace gltf {
             out.factors.occlusion_strength = mat.factors.occlusion_strength;
             out.factors.alpha_cutoff = mat.factors.alpha_cutoff;
             out.factors.alpha_mask = mat.factors.alpha_mask;
+            out.factors.alpha_blend = mat.factors.alpha_blend;
             out.double_sided = mat.double_sided;
             for (int i = 0; i < 5; ++i) {
                 auto const it = mat.texture_indices.find(std::string(slot_names[i]));

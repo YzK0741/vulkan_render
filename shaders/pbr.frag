@@ -33,7 +33,7 @@ struct Material {
     float metallic_factor;
     float roughness_factor;
     float normal_scale;
-    uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK
+    uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK, bit5: alphaMode BLEND
 };
 layout(set = 0, binding = 5) readonly buffer Materials { Material materials[]; };
 
