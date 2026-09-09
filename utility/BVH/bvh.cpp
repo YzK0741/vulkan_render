@@ -34,44 +34,44 @@ bool hit(glm::vec3 const& min, glm::vec3 const& max, glm::vec3 const& start, glm
 }
 
 namespace {
-    // constexpr so the interleaving is verifiable at compile time (static_assert below)
+    // Standard-C++ morton interleave (no __uint128_t extension, so this compiles on every
+    // toolchain incl. MSVC): output bit 3*i carries x bit i, 3*i+1 carries y bit i, 3*i+2
+    // carries z bit i for i in [0, 32). Bits are set straight into the little-endian byte
+    // array, which is byte-identical to the former __uint128_t spread + dump. constexpr so
+    // the interleaving is verifiable at compile time (static_assert below).
     constexpr utility::morton_code morton_encode(uint32_t const x, uint32_t const y, uint32_t const z) {
-        utility::morton_code code;
-        auto* const out = code.data.data();
-
-        auto spread = [](uint32_t const n) -> __uint128_t {
-            __uint128_t output = 0;
-            for (int i = 0; i < 32; i++) {
-                __uint128_t const bit = (n >> i) & 1u; // NOLINT(*-signed-bitwise)
-                output |= (bit << (3 * i));            // NOLINT(*-signed-bitwise)
-            }
-            return output;
+        utility::morton_code code; // NSDMI: zero-initialized
+        auto const set_bit = [&code](uint32_t const bit) {
+            code.data[bit >> 3] =
+                static_cast<uint8_t>(code.data[bit >> 3] | static_cast<uint8_t>(1u << (bit & 7u)));
         };
-
-        __uint128_t const x_spread = spread(x);
-        __uint128_t const y_spread = spread(y);
-        __uint128_t const z_spread = spread(z);
-
-        __uint128_t result = 0;
-        result |= static_cast<__uint128_t>(x_spread);
-        result |= static_cast<__uint128_t>(y_spread) << 1;
-        result |= static_cast<__uint128_t>(z_spread) << 2;
-
-        // little-endian byte dump of the 96-bit code (memcpy is not constexpr)
-        for (int byte = 0; byte < 12; ++byte) {
-            out[byte] = static_cast<uint8_t>(result >> (8 * byte));
+        for (uint32_t i = 0; i < 32; ++i) {
+            if (((x >> i) & 1u) != 0) {
+                set_bit(3 * i);
+            }
+            if (((y >> i) & 1u) != 0) {
+                set_bit(3 * i + 1);
+            }
+            if (((z >> i) & 1u) != 0) {
+                set_bit(3 * i + 2);
+            }
         }
         return code;
     }
 
-    // Compile-time self-check: the axis bits land at their interleaved offsets in the 96-bit
-    // code (x at bit 0, y at bit 1, z at bit 2) -> little-endian first bytes 1 / 2 / 4.
+    // Compile-time golden vectors (little-endian bytes). The axis vectors lock the interleave
+    // offsets (x/y/z land on bits 0/1/2 of the 96-bit code); the mixed + saturated vectors
+    // were cross-checked against the previous __uint128_t implementation.
     constexpr uint8_t axis_x[] = {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     constexpr uint8_t axis_y[] = {2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     constexpr uint8_t axis_z[] = {4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    constexpr uint8_t mix_golden[] = {67, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    constexpr uint8_t sat_x_golden[] = {73, 146, 36, 73, 146, 36, 73, 146, 36, 73, 146, 36};
     static_assert(morton_encode(1, 0, 0) == utility::morton_code(axis_x));
     static_assert(morton_encode(0, 1, 0) == utility::morton_code(axis_y));
     static_assert(morton_encode(0, 0, 1) == utility::morton_code(axis_z));
+    static_assert(morton_encode(5, 9, 0) == utility::morton_code(mix_golden));
+    static_assert(morton_encode(0xFFFFFFFFu, 0, 0) == utility::morton_code(sat_x_golden));
 } // namespace
 
 namespace utility {
