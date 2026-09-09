@@ -6,7 +6,7 @@ module;
 
 module vulkan.animation;
 
-import std;
+import vstd;
 import utility;
 
 namespace vulkan::animation {

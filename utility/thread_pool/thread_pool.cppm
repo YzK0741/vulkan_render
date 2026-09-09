@@ -3,7 +3,7 @@ module;
 #include <cstdint>
 
 export module utility.thread_pool;
-export import std;
+export import vstd;
 
 /**
  * @ingroup utility

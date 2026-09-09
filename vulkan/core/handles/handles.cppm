@@ -4,7 +4,7 @@ module;
 
 export module vulkan.core.handles;
 
-export import std;
+export import vstd;
 
 /**
  * @defgroup vulkan_handles Vulkan Main Handles' RAII Wrapper

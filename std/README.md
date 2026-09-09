@@ -1,9 +1,13 @@
-# std / std.compat modules snapshot
+# std / std.compat / vstd modules
 
-This directory is a **DO NOT MODIFY** generated snapshot of the C++23 `std`
-and `std.compat` modules, built from the libc++ headers shipped with the
-MSYS2 clang64 toolchain (clang 22.1.8, x86_64-w64-windows-gnu; the project
-compiles with exceptions disabled, `-fno-exceptions`, and `import std;`).
+This directory vendors STL-module artifacts for the project's `import vstd;`
+build (C++23 modules on clang + libc++, exceptions disabled).
+
+## `std.cppm` / `std.compat.cppm` + `std/` + `std.compat/` — upstream snapshot
+
+A **DO NOT MODIFY** generated snapshot of the C++23 `std` and `std.compat`
+modules, built from the libc++ headers shipped with the MSYS2 clang64
+toolchain (clang 22.1.8, x86_64-w64-windows-gnu).
 
 Contents:
 
@@ -23,11 +27,32 @@ Both `.cppm` files carry the upstream generator warning in their header:
 
 That script is LLVM libc++'s module generator (it lives in the upstream LLVM
 tree, not vendored here); the snapshot is a copy of its output taken from
-the toolchain's libc++ installation and compiled as a regular module (see
-commit b0199fa, "migrate from traditional headers to std module").
+the toolchain's libc++ installation (see commit b0199fa, "migrate from
+traditional headers to std module"). Mechanism: the global-module-fragment
+`#include`s of `std.cppm` provide every definition, and the `.inc`
+partitions re-export the entities (`export namespace std { using std::vector; ... }`).
 
-If a clang64 toolchain upgrade breaks the build, the snapshot is stale:
-regenerate it from the new toolchain (copy the fresh `std.cppm` /
-`std.compat.cppm` and the `std/` + `std.compat/` partition sets out of the
-new libc++ include tree), or revert to the snapshot that matches the
-installed toolchain. Do not hand-edit these files.
+## `vstd.cppm` — the project's actual STL module
+
+`vstd.cppm` is a **fork of that snapshot, trimmed to the headers this project
+uses** and renamed to `vstd` (module name only - the namespace stays `std::`,
+because the entities are the libc++ ones being re-exported). Every TU that
+used to `import std;` now does `import vstd;`, and the CMake `std_lib` target
+compiles only `vstd.cppm`. Nothing else in the code changes.
+
+Current trim: ~70 global-fragment `#include`s and ~71 `.inc` partitions
+(down from the full ~166 / ~110), so the STL module parses a fraction of the
+headers and its BMI is much smaller. The trim is conservative: any header the
+build stops to need is simply re-added.
+
+`vstd.cppm` **is editable** (unlike the upstream files): the `#include <X>`
+lines and their matching `#include "std/X.inc"` lines form a whitelist, one
+partition per header, in the same order as the upstream module.
+
+- **Adding** an STL feature: the compiler reports the missing entity; add that
+  header's `#include <X>` + `#include "std/X.inc"` pair to `vstd.cppm`.
+- **Toolchain upgrade**: refresh the upstream snapshot from the new libc++
+  include tree first (`std.cppm` / `std.compat.cppm` and the `std/` +
+  `std.compat/` partition sets), then replay the whitelist onto `vstd.cppm`
+  for each header it lists, and re-verify the trim. The snapshot must always
+  match the installed libc++ - exactly as before.

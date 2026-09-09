@@ -18,7 +18,7 @@ module;
 struct GLFWwindow;
 
 export module vulkan.gui;
-export import std;
+export import vstd;
 
 /**
  * @file gui.cppm

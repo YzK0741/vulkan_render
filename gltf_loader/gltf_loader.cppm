@@ -16,7 +16,7 @@ module;
 #include <glm/gtc/quaternion.hpp>
 
 export module gltf_loader;
-export import std;
+export import vstd;
 /**
  * @file gltf_loader.cppm
  * @defgroup gltf_loader glTF Loader

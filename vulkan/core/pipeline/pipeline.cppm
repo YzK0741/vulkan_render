@@ -3,7 +3,7 @@ module;
 #include <vulkan/vulkan.h>
 
 export module vulkan.core.pipeline;
-export import std;
+export import vstd;
 export import vulkan.core.handles;
 
 /**

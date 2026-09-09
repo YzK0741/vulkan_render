@@ -14,7 +14,7 @@ module;
 #include <cstdint>
 
 export module utility;
-export import std;
+export import vstd;
 // Forward-export every utility submodule so consumers only need `import utility;`
 // (frame_clock / frame_stats are the frame-loop time + fps helpers; data_block /
 // bvh / better_pmr / thread_pool cover the rest). Submodules stay individually

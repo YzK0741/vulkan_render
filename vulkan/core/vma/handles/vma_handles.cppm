@@ -4,7 +4,7 @@ module;
 
 export module vulkan.core.vma.handles;
 
-import std;
+import vstd;
 
 /**
  * @defgroup vulkan_vma_handles Vulkan VMA Handles' RAII Wrapper

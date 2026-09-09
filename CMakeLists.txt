@@ -54,11 +54,13 @@ set(COMPILE_OPTIONS
 
 add_library(std_lib STATIC)
 
+# The project's STL module is `vstd` (std/vstd.cppm): a fork of the generated
+# libc++ std module trimmed to the headers the project uses (see std/README.md).
 target_sources(std_lib
         PUBLIC
         FILE_SET CXX_MODULES
         FILES
-        std/std.cppm
+        std/vstd.cppm
 )
 
 add_library(utility STATIC)

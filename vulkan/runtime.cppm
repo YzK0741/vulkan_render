@@ -20,7 +20,7 @@ module;
 #include <vulkan/vulkan.h>
 
 export module vulkan.runtime;
-export import std;
+export import vstd;
 export import vulkan.core;
 export import vulkan.core.filter;
 export import vulkan.runtime.scene_tree; // scene_tree owns the scene storage + GPU primitives (absorbed vulkan.model)

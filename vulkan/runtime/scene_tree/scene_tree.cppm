@@ -5,7 +5,7 @@ module;
 #include <vulkan/vulkan.h>
 
 export module vulkan.runtime.scene_tree;
-export import std;
+export import vstd;
 export import vulkan.core;
 export import vulkan.render_environment;
 

@@ -4,7 +4,7 @@ module;
 
 export module utility.frame_stats;
 
-import std;
+import vstd;
 
 /**
  * @ingroup utility

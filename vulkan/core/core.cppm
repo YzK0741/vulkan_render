@@ -17,7 +17,7 @@ module;
 
 export module vulkan.core;
 import utility;
-export import std;
+export import vstd;
 export import vulkan.core.handles;
 export import vulkan.core.vma;
 export import vulkan.core.vma.handles;

@@ -9,7 +9,7 @@
 //         PATCH on internal fixes - independently of the rest of the project.
 // ============================================================================
 export module vulkan.math;
-export import std;
+export import vstd;
 
 /**
  * @file math.cppm

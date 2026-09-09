@@ -4,7 +4,7 @@ module;
 #include <vulkan/vulkan.h>
 
 export module vulkan.core.init_utils;
-export import std;
+export import vstd;
 
 /**
  * @file init_utils.cppm

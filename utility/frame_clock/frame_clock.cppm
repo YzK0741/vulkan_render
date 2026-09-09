@@ -4,7 +4,7 @@ module;
 
 export module utility.frame_clock;
 
-import std;
+import vstd;
 
 /**
  * @ingroup utility

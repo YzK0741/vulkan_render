@@ -1,5 +1,5 @@
 export module utility.better_pmr;
-export import std;
+export import vstd;
 /**
  * @defgroup better_pmr PMR Allocation Routing
  * @ingroup utility

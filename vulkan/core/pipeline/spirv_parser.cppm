@@ -3,7 +3,7 @@ module;
 #include <vulkan/vulkan_core.h>
 
 export module vulkan.core.pipeline.spirv_parser;
-export import std;
+export import vstd;
 
 /**
  * @file spirv_parser.cppm

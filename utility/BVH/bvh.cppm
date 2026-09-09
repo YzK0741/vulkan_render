@@ -3,7 +3,7 @@ module;
 #include <glm/glm.hpp>
 
 export module utility.bvh;
-export import std;
+export import vstd;
 
 export import utility.data_block;
 

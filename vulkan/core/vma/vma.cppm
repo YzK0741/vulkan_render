@@ -3,7 +3,7 @@ module;
 #include <vma/vk_mem_alloc.h>
 
 export module vulkan.core.vma;
-export import std;
+export import vstd;
 import utility;
 import vulkan.core.vma.handles; // vk_buffer / vk_image RAII owners (create_xxx returns these)
 

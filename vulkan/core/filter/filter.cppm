@@ -4,7 +4,7 @@ module;
 #include <vulkan/vulkan.h>
 
 export module vulkan.core.filter;
-export import std;
+export import vstd;
 export import vulkan.core;
 
 /**

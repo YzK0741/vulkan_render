@@ -1,6 +1,6 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-import std;
+import vstd;
 import app_config;
 import chores; // demo bootstrap helpers (shader loading / dir locating / pipelines)
 import gltf_loader;

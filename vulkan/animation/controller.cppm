@@ -17,7 +17,7 @@ module;
 
 export module vulkan.animation;
 
-import std;
+import vstd;
 import utility;
 import vulkan.runtime.scene_tree; // scene + node/primitive types (the one structural dependency)
 

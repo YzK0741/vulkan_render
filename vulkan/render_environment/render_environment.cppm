@@ -4,7 +4,7 @@ module;
 
 export module vulkan.render_environment;
 
-export import std;
+export import vstd;
 
 /**
  * @defgroup vulkan_render_environment Render Environment

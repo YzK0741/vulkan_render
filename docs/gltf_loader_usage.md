@@ -88,7 +88,7 @@ namespace gltf {
 
 ```cpp
 import gltf_loader;
-import std;
+import vstd; // the project's trimmed STL module (was `import std;`)
 
 int main() {
     auto result = gltf::load_model("assets/box.glb");   // auto-detects GLB / JSON

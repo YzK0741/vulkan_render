@@ -15,7 +15,7 @@ module;
 #include <toml++/toml.hpp>
 
 export module app_config;
-export import std;
+export import vstd;
 import utility;
 
 /**
