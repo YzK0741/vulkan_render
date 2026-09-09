@@ -3,6 +3,10 @@
 A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), built with
 CMake 4.3 + Ninja on MSYS2 clang64.
 
+Current version: **0.1.0** — single source is `project(VERSION)` in `CMakeLists.txt`
+(surfaced by `--version`, the startup log banner and the Vulkan `app_info`); bump it there
+and keep this line in sync.
+
 - `vulkan.core` - instance / device / swapchain / VMA allocator / pipeline / descriptor plumbing
 - `vulkan.runtime` - the frame facade (per-frame-slot scene resources, granular frame phases:
   poll_events -> recreate_if_minimized -> pace_and_acquire -> begin_recording ->

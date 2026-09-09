@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.3)
-project(vulkan_render)
+project(vulkan_render VERSION 0.1.0)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
@@ -391,6 +391,18 @@ target_compile_definitions(vulkancorekit PRIVATE
         _DEBUG
         >
 )
+
+# -- version: single source of truth is project(VERSION) above. Injected into the C++ targets
+#    that surface it: the Vulkan app_info (vulkan/core/core.cpp, applicationVersion /
+#    engineVersion), the --version flag and the startup log banner (main.cpp). Bump the number
+#    in project(VERSION) and keep README/docs' "current version" lines in sync.
+foreach(version_target IN ITEMS vulkancorekit vulkan_render)
+    target_compile_definitions(${version_target} PRIVATE
+            VULKAN_RENDER_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+            VULKAN_RENDER_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+            VULKAN_RENDER_VERSION_PATCH=${PROJECT_VERSION_PATCH}
+    )
+endforeach()
 
 #-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 #clang - format : run automatically before compiling

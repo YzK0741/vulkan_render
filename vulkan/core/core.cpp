@@ -65,9 +65,10 @@ namespace vulkan {
         VkApplicationInfo app_info = {};
         app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
         app_info.pApplicationName = "vulkan render";
-        app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+        // version injected by CMake (project(VERSION) in CMakeLists.txt) - the single source
+        app_info.applicationVersion = VK_MAKE_VERSION(VULKAN_RENDER_VERSION_MAJOR, VULKAN_RENDER_VERSION_MINOR, VULKAN_RENDER_VERSION_PATCH);
         app_info.pEngineName = "";
-        app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
+        app_info.engineVersion = VK_MAKE_VERSION(VULKAN_RENDER_VERSION_MAJOR, VULKAN_RENDER_VERSION_MINOR, VULKAN_RENDER_VERSION_PATCH);
         app_info.apiVersion = VK_API_VERSION_1_3;
 
         VkInstanceCreateInfo create_info = {};

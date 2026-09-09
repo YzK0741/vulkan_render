@@ -7,6 +7,14 @@ A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), implementin
   <img src="snapshot/FlightHelmet.png" width="49%" alt="FlightHelmet with PBR + IBL + shadows" />
 </p>
 
+## Version
+
+**0.1.0** — single source of truth is `project(VERSION)` in `CMakeLists.txt`; CMake injects
+`VULKAN_RENDER_VERSION_{MAJOR,MINOR,PATCH}` into the code. To release a new version, bump it
+there and update this line (plus `docs/mainpage.md`). The version is surfaced by `--version`,
+the startup log banner (`vulkan_render x.y.z`), and the Vulkan instance's `app_info`
+(`applicationVersion` / `engineVersion`).
+
 ## Features
 
 > **Modular by design — free to combine.** Most modules here are independent,

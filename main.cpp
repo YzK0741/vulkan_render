@@ -17,6 +17,15 @@ import vulkan.runtime;
 [[maybe_unused]] static auto& pmr = utility::init_pmr(); // NOLINT(keep-alive)
 
 int main(int argc, char** argv) {
+    // --version: print the version (single source: project(VERSION) in CMakeLists.txt, injected
+    // as VULKAN_RENDER_VERSION_*) and exit before any config / Vulkan init.
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--version") {
+            std::print("vulkan_render {}.{}.{}\n", VULKAN_RENDER_VERSION_MAJOR, VULKAN_RENDER_VERSION_MINOR, VULKAN_RENDER_VERSION_PATCH);
+            return 0;
+        }
+    }
+
     // 1-3. Resolve the startup config in one step (chores): merge the config file (config.toml
     // by default, --config <path> to override) with positional argv overrides (argv[1] = model,
     // argv[2] = grid side (numeric)), then locate the shaders/ dir and pick the model file.
@@ -25,6 +34,9 @@ int main(int argc, char** argv) {
     app_config::app_settings const& settings = config.settings;
     std::filesystem::path const& shaders_dir = config.shaders_dir;
     std::string const& model_path = config.model_path;
+
+    // startup banner: version (single source: project(VERSION) in CMakeLists.txt)
+    utility::log("vulkan_render {}.{}.{}", VULKAN_RENDER_VERSION_MAJOR, VULKAN_RENDER_VERSION_MINOR, VULKAN_RENDER_VERSION_PATCH);
 
     // 4. Kick off the runtime-independent heavy CPU stages BEFORE constructing the (heavy)
     //    Vulkan runtime, so window/instance/device/swapchain init overlaps the model parse +
