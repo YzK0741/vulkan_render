@@ -978,30 +978,42 @@ namespace vulkan {
 
                 // ---- Shadow caster set (see shadow_casters in the class docs) ----
                 // Built only when the camera moved or the scene changed (reusing the cached
-                // cull_visible otherwise, like the main pass does). The shadow pass needs every
-                // leaf whose shadow can reach the camera frustum: the frustum-visible set plus
-                // the leaves just OUTSIDE the view on the up-light side (a caster between the
-                // sun and the view still throws its shadow into the frustum). Approximate that
-                // by unioning cull_visible with the BVH culled against the camera frustum
-                // SHIFTED toward the sun by shadow_caster_extent.
-                this->shadow_casters = this->cull_visible;
-                if (this->cull_bvh.has_value()) {
-                    utility::frustum const shifted_frustum = [this, &ubo] {
-                        utility::frustum frustum = utility::make_frustum(ubo.proj * ubo.view);
-                        glm::vec3 const shift = this->light_direction * this->shadow_caster_extent;
-                        for (glm::vec4& plane : frustum.planes) {
-                            // shift the half-space n.x + w >= 0 by t: n.(x - t) + w >= 0 -> w' = w - n.t
-                            plane.w -= glm::dot(glm::vec3(plane), shift);
+                // cull_visible otherwise, like the main pass does). Two regimes split on scene
+                // size:
+                //  - SMALL scenes: every leaf goes into the shadow map. Camera-based caster
+                //    culling is only an approximation: a caster can sit arbitrarily far
+                //    up-light and its PARALLEL shadow column still falls into the view, so a
+                //    finite margin (shadow_caster_extent) visibly leaked the sun through
+                //    Sponza's walls. With few leaves the full depth render is cheap - take
+                //    the exact path.
+                //  - HEAVY scenes (tens of thousands of leaves): keep the perf heuristic -
+                //    cull_visible plus the BVH culled against the camera frustum SHIFTED
+                //    toward the sun by shadow_caster_extent. Re-rendering every leaf into the
+                //    shadow map every frame would dominate the frame time on such scenes, and
+                //    open-field stress scenes rarely show the interior leak.
+                constexpr std::size_t full_scene_shadow_leaf_limit = 1500;
+                if (frame_leaves.size() <= full_scene_shadow_leaf_limit) {
+                    this->shadow_casters = this->frame_leaves;
+                } else {
+                    this->shadow_casters = this->cull_visible;
+                    if (this->cull_bvh.has_value()) {
+                        utility::frustum const shifted_frustum = [this, &ubo] {
+                            utility::frustum frustum = utility::make_frustum(ubo.proj * ubo.view);
+                            glm::vec3 const shift = this->light_direction * this->shadow_caster_extent;
+                            for (glm::vec4& plane : frustum.planes) {
+                                // shift the half-space n.x + w >= 0 by t: n.(x - t) + w >= 0 -> w' = w - n.t
+                                plane.w -= glm::dot(glm::vec3(plane), shift);
+                            }
+                            return frustum;
+                        }();
+                        auto const up_light = this->cull_bvh->frustum_cull(shifted_frustum);
+                        this->shadow_casters.reserve(this->shadow_casters.size() + up_light.size());
+                        for (auto const* node : up_light) {
+                            this->shadow_casters.push_back(node->extra_data);
                         }
-                        return frustum;
-                    }();
-                    auto const up_light = this->cull_bvh->frustum_cull(shifted_frustum);
-                    this->shadow_casters.reserve(this->shadow_casters.size() + up_light.size());
-                    for (auto const* node : up_light) {
-                        this->shadow_casters.push_back(node->extra_data);
+                        std::sort(this->shadow_casters.begin(), this->shadow_casters.end());
+                        this->shadow_casters.erase(std::unique(this->shadow_casters.begin(), this->shadow_casters.end()), this->shadow_casters.end());
                     }
-                    std::sort(this->shadow_casters.begin(), this->shadow_casters.end());
-                    this->shadow_casters.erase(std::unique(this->shadow_casters.begin(), this->shadow_casters.end()), this->shadow_casters.end());
                 }
             }
             visible_leaves = this->cull_visible;

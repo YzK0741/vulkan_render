@@ -356,12 +356,14 @@ namespace vulkan {
         // camera each time the cull re-runs: drawn AFTER the opaque pass (depth-write off), so
         // the blend order is back-to-front. Rebuilt in begin_recording together with the cull.
         std::pmr::vector<primitive const*> frame_transparent = {};
-        // shadow-pass subset (rebuilt each frame before the shadow recording): every leaf whose
-        // shadow can reach the camera frustum = the frustum-visible leaves PLUS the leaves up to
-        // shadow_caster_extent up-light of them (a caster just outside the view still throws a
-        // shadow into it). cull_bvh / frame_visible only cover the CAMERA frustum, so the shadow
-        // pass would otherwise re-draw every scene leaf every frame (huge on stress models like
-        // NodePerformanceTest: 10000 rocks). Instanced / bound-less leaves are always included.
+        // shadow-pass subset (rebuilt each frame before the shadow recording). SMALL scenes
+        // (<= full_scene_shadow_leaf_limit leaves, begin_recording): EVERY leaf - exact, because
+        // camera-based caster culling is only an approximation (a caster arbitrarily far
+        // up-light still throws its parallel shadow column into the view; a finite margin
+        // leaked sun through interior walls like Sponza's). HEAVY scenes (tens of thousands of
+        // leaves): the frustum-visible leaves PLUS the leaves up to shadow_caster_extent
+        // up-light of them, so the shadow pass does not re-draw every scene leaf every frame.
+        // Instanced / bound-less leaves are always included.
         std::pmr::vector<primitive const*> shadow_casters = {};
         // normalized direction toward the analytic sun (mirrors make_directional_light_ubo);
         // shadow caster culling shifts the camera frustum along this to catch up-light casters
