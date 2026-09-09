@@ -19,7 +19,8 @@ export module vulkan.animation;
 
 import vstd;
 import utility;
-import vulkan.scene_tree; // scene + node/primitive types (the one structural dependency)
+import vulkan.scene_tree; // scene + node types (pure-CPU scene storage)
+import vulkan.primitive;  // GPU leaf primitive + scene capacity constants the rigs drive
 
 /**
  * @file controller.cppm

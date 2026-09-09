@@ -10,10 +10,12 @@ and keep this line in sync.
 - `vstd` - the project's STL module (modified from libc++ and trimmed to the project's
   usage; consumed as `import vstd;`, module version 0.1.0 - see `vstd/README.md`)
 - `vulkan.core` - instance / device / swapchain / VMA allocator / pipeline / descriptor plumbing
+- `vulkan.scene_tree` - pure-CPU scene storage (transform hierarchy of scene_node objects with abstract primitive leaves)
+- `vulkan.primitive` - the GPU primitives (normal / instanced / static draws) plus the material / camera / light UBO records of the GPU scene set
 - `vulkan.runtime` - the frame facade (per-frame-slot scene resources, granular frame phases:
   poll_events -> recreate_if_minimized -> pace_and_acquire -> begin_recording ->
   record_main_drawcalls -> end_recording -> submit_and_present, plus one-call render_frame()),
-  scene tree, GPU primitives (normal / instanced / static draws), debug GUI overlay.
+  drives the peer scene_tree / primitive modules, debug GUI overlay.
   Shadow + main pass commands are recorded into per-slot secondary command buffers and the
   main pass fans its leaf recording out over the shared task pool (sub_render_task batches);
   each recording worker gets its own render_environment (thread-local pipeline-bind state)

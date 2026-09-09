@@ -1,8 +1,12 @@
 # Scene Graph Storage — Design Document
 
-Status: migration complete — storage, import and the render loop are tree-driven;
-`vulkan.scene_tree` is the single scene-tree module (scene storage + GPU
-primitives, absorbed the former `vulkan.model`); per-node transforms work through
+Status: migration complete — storage, import and the render loop are tree-driven.
+The scene concept now spans **two peer modules**: `vulkan.scene_tree` (pure-CPU
+scene storage + the abstract leaf interface, absorbed the former `vulkan.model`)
+and `vulkan.primitive` (the GPU drawables — `vulkan::primitive` and its
+normal/instanced/static strategies — plus the material / camera / light UBO
+records of the GPU scene set; a later rename split them out of
+`vulkan.runtime.scene_tree`). Per-node transforms work through
 `runtime::get_scene()` and the per-frame animation writes (the former `spin` /
 `spin-subtree` demo modes were removed), and keyframe TRS animation,
 skinning and morph targets play through the same per-node locals (see §8 —

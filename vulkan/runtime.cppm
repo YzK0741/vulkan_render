@@ -24,7 +24,9 @@ export module vulkan.runtime;
 export import vstd;
 export import vulkan.core;
 export import vulkan.core.filter;
-export import vulkan.scene_tree; // scene_tree owns the scene storage + GPU primitives (absorbed vulkan.model)
+export import vulkan.scene_tree;         // scene storage + the abstract leaf interface (pure CPU)
+export import vulkan.primitive;          // the GPU primitives + material/UBO records (peer module)
+export import vulkan.render_environment; // per-worker draw state (peer module)
 import utility;
 export import vulkan.gui; // optional debug overlay (gui_content): exported so callers can manage panels/widgets via debug_gui()
 
