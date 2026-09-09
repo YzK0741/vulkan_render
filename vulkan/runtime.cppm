@@ -153,6 +153,9 @@ namespace vulkan {
                            utility::data_block<sizeof(vulkan::material_record)>::hasher>
             material_slot_cache = {};
         bool material_overflow_logged = false;
+        // same degradation policy for the texture array: when scene_texture_capacity distinct
+        // images are in use, later slots fall back to the white element (0) with a one-time log
+        bool texture_overflow_logged = false;
         // per-instance transforms for instanced primitives (scene set binding 6): one mat4 per
         // instance, host-visible. The buffer is ONE shared region split into per-instanced-
         // primitive slices: make_instanced_primitive() appends its transforms at instance_cursor

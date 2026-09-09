@@ -599,7 +599,19 @@ namespace vulkan {
                 continue;
             }
             if (this->texture_array_views.size() >= vulkan::scene_texture_capacity) {
-                utility::panic("scene texture array capacity exceeded");
+                // Array full (pathological scene with > scene_texture_capacity distinct images):
+                // degrade this texture slot to the white element instead of crashing - the
+                // material still renders untextured. Same policy as the material-table overflow
+                // below (one-time log, then keep going); content dedup means real scenes rarely
+                // get close to the cap.
+                if (!this->texture_overflow_logged) {
+                    this->texture_overflow_logged = true;
+                    utility::log("scene texture array capacity ({}) exceeded - extra textures render as white (element {})",
+                                 vulkan::scene_texture_capacity, this->white_texture_index);
+                }
+                texture_indices[i] = this->white_texture_index; // white fallback, like an invalid texture
+                white_needed = true;                            // (re)write the white element's descriptor once
+                continue;
             }
             vulkan::image_create_info image_info = {};
             image_info.width = tex.width;
