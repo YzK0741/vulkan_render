@@ -387,8 +387,8 @@ namespace vulkan {
          *        attachment with a dark background and the depth attachment
          * @param command_buffer the command buffer being recorded
          * @param image_index the acquired swapchain image index (selects the attachment views)
-         * @note uses vkCmdBeginRendering (dynamic rendering) when the device supports it,
-         *       otherwise falls back to the classic render pass + framebuffer path
+         * @note uses vkCmdBeginRendering (dynamic rendering, Vulkan 1.3 core - the only path
+         *       the engine supports; device selection requires an apiVersion >= 1.3 device)
          */
         void begin_rendering(VkCommandBuffer command_buffer, uint32_t image_index, VkRenderingFlags flags = 0) const;
 
@@ -699,8 +699,8 @@ namespace vulkan {
          * @param vertex_shader_code raw SPIR-V binary of the shadow vertex shader
          * @param fragment_shader_code raw SPIR-V binary of the shadow fragment shader
          * @return success, or an error message on failure
-         * @note requires dynamic rendering (Vulkan 1.3); on the classic render-pass fallback
-         *       path the creation fails and shadow mapping stays disabled
+         * @note depth-only rendering (no color attachment) requires dynamic rendering, which
+         *       is core Vulkan 1.3 - the only path the engine supports
          */
         std::expected<void, std::string> make_shadow_pipeline(
             std::span<unsigned char const> vertex_shader_code,

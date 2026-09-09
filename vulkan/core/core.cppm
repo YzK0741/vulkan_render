@@ -148,17 +148,6 @@ namespace vulkan {
         VkPipelineLayout scene_pipeline_layout = VK_NULL_HANDLE;
         void init_scene_layouts() noexcept;
 
-        VkRenderPass renderpass = {};
-        void init_renderpass() noexcept;
-
-        // true when the device supports dynamic rendering (Vulkan 1.3 core): frames then use
-        // vkCmdBeginRendering and no render pass / framebuffer objects exist; devices without
-        // it fall back to the classic render pass path below
-        bool use_dynamic_rendering = false;
-
-        std::vector<VkFramebuffer> swap_chain_framebuffers = {};
-        void create_frame_buffers() noexcept;
-
         vma_allocator vma = {};
 
         // ---- frame synchronization (timeline semaphores; see create_sync_objects) ----
@@ -190,8 +179,8 @@ namespace vulkan {
         ~core();
 
         vk_command_buffer make_command_buffer() const;
-        /** @brief allocate a SECONDARY command buffer (recorded inside a render pass / dynamic
-         *         rendering instance, executed there via vkCmdExecuteCommands) */
+        /** @brief allocate a SECONDARY command buffer (recorded inside a dynamic rendering
+         *         instance, executed there via vkCmdExecuteCommands) */
         vk_command_buffer make_secondary_command_buffer() const;
         /** @brief like make_secondary_command_buffer() but allocated from @p pool (a per-thread
          *         pool from make_command_pool(); the RAII wrapper frees into that same pool) */
@@ -259,8 +248,6 @@ namespace vulkan {
          * @param depth_bias_slope_factor slope-scaled depth bias (removes shadow acne on angled surfaces)
          * @param depth_bias_clamp maximum depth bias magnitude (0 = no clamp)
          * @return vk_pipeline on success, error message on failure
-         * @note requires dynamic rendering (Vulkan 1.3); on the classic render-pass fallback
-         *       path it returns an error and the caller should disable shadow mapping
          */
         std::expected<vk_pipeline, std::string_view> make_depth_pipeline(
             std::span<unsigned char const> vertex_shader_code,

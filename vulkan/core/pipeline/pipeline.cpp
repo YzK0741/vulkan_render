@@ -32,7 +32,6 @@ namespace vulkan {
     std::expected<vk_pipeline, std::string_view> make_pipeline( // NOLINT(*-function-cognitive-complexity)
         VkDevice device,
         VkPipelineLayout const pipeline_layout, // shared scene layout (fixed set 0 + push block); not owned
-        VkRenderPass const render_pass,         // NOLINT(*-misplaced-const) ; VK_NULL_HANDLE selects dynamic rendering
         VkFormat const color_format,
         VkFormat const depth_format,
         std::span<unsigned char const> const vertex_shader_code,
@@ -213,21 +212,19 @@ namespace vulkan {
         guard.device = device;
 
         // ---- 5. graphics pipeline ----
-        // With dynamic rendering (render_pass == VK_NULL_HANDLE) the attachments are described
-        // by VkPipelineRenderingCreateInfo in the pNext chain instead of a render pass + subpass.
-        // Depth-only pipelines (has_color_attachment == false, e.g. the shadow pass) declare no
-        // color attachment format.
+        // Dynamic rendering (Vulkan 1.3 core, the only path the engine uses): attachments are
+        // declared through VkPipelineRenderingCreateInfo in the pNext chain instead of a render
+        // pass + subpass. Depth-only pipelines (has_color_attachment == false, e.g. the shadow
+        // pass) declare no color attachment format.
         VkPipelineRenderingCreateInfo rendering_create_info = {};
-        if (render_pass == VK_NULL_HANDLE) {
-            rendering_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-            rendering_create_info.colorAttachmentCount = has_color_attachment ? 1u : 0u;
-            rendering_create_info.pColorAttachmentFormats = has_color_attachment ? &color_format : nullptr;
-            rendering_create_info.depthAttachmentFormat = depth_format;
-        }
+        rendering_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        rendering_create_info.colorAttachmentCount = has_color_attachment ? 1u : 0u;
+        rendering_create_info.pColorAttachmentFormats = has_color_attachment ? &color_format : nullptr;
+        rendering_create_info.depthAttachmentFormat = depth_format;
         VkGraphicsPipelineCreateInfo pipeline_create_info = {};
         pipeline_create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-        pipeline_create_info.pNext = render_pass == VK_NULL_HANDLE ? &rendering_create_info : nullptr;
-        pipeline_create_info.renderPass = render_pass;
+        pipeline_create_info.pNext = &rendering_create_info;
+        pipeline_create_info.renderPass = VK_NULL_HANDLE; // dynamic rendering: no render pass
         pipeline_create_info.pInputAssemblyState = &input_assembly_state_create_info;
         pipeline_create_info.pViewportState = &viewport_state_create_info;
         pipeline_create_info.pDepthStencilState = &depth_stencil_state_create_info;

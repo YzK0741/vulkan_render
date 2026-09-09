@@ -24,13 +24,12 @@ namespace vulkan {
      * @brief create a graphics pipeline directly from raw SPIR-V binary
      * @param device the logical device
      * @param pipeline_layout the shared scene pipeline layout (owned by core, not the pipeline)
-     * @param render_pass the render pass the pipeline renders into; pass VK_NULL_HANDLE to use
-     *        dynamic rendering instead (the attachments are then described by color/depth formats)
-     * @param color_format swapchain color attachment format (dynamic rendering only)
-     * @param depth_format depth attachment format (dynamic rendering only)
+     * @param color_format swapchain color attachment format (VK_FORMAT_UNDEFINED for depth-only
+     *        pipelines with no color attachment)
+     * @param depth_format depth attachment format
      * @param vertex_shader_code raw SPIR-V binary of the vertex shader
      * @param fragment_shader_code raw SPIR-V binary of the fragment shader
-     * @param msaa_level MSAA sample count used by the render pass
+     * @param msaa_level MSAA sample count used by the render instance
      * @param depth_test_enabled enable depth test + depth write (false e.g. for the skybox pass)
      * @param has_color_attachment whether the pipeline renders color (false for depth-only
      *        passes like the shadow map: no color attachment, no color blending)
@@ -38,11 +37,12 @@ namespace vulkan {
      * @param depth_bias_slope_factor slope-scaled depth bias (removes shadow acne on angled surfaces)
      * @param depth_bias_clamp maximum depth bias magnitude (0 = no clamp)
      * @return vk_pipeline on success, error message on failure
+     * @note created for DYNAMIC RENDERING (Vulkan 1.3 core, the only path the engine uses): the
+     *       attachment formats are declared through VkPipelineRenderingCreateInfo, no render pass
      */
     export std::expected<vk_pipeline, std::string_view> make_pipeline(
         VkDevice device,
         VkPipelineLayout pipeline_layout,
-        VkRenderPass render_pass,
         VkFormat color_format,
         VkFormat depth_format,
         std::span<unsigned char const> vertex_shader_code,

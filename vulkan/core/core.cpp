@@ -25,10 +25,6 @@ namespace vulkan {
         create_depth_resources();
         color_format = swap_chain_image_format;
         create_color_resources();
-        if (!this->use_dynamic_rendering) {
-            init_renderpass();
-            create_frame_buffers();
-        }
         create_command_pool();
         create_descriptor_pool();
         init_scene_layouts();
@@ -218,10 +214,13 @@ namespace vulkan {
         capabilities.query(this->physical_device);
         print_device_capabilities(capabilities);
 
-        // Dynamic rendering (Vulkan 1.3 core) is preferred when supported; the classic render
-        // pass path stays as the fallback for devices without it
-        this->use_dynamic_rendering = capabilities.features_1_3.dynamicRendering == VK_TRUE;
-        utility::log("rendering path: {}", this->use_dynamic_rendering ? "dynamic rendering (Vulkan 1.3)" : "classic render pass");
+        // Dynamic rendering (Vulkan 1.3 core) is mandatory: pick_suitable_device only accepts
+        // apiVersion >= 1.3 devices, and frames always record through vkCmdBeginRendering - no
+        // render pass / framebuffer objects exist. Double-check the feature bit anyway (a
+        // conformant 1.3 driver must expose it).
+        if (capabilities.features_1_3.dynamicRendering != VK_TRUE) {
+            utility::panic("dynamic rendering (Vulkan 1.3) is required but not supported by the device");
+        }
 
         device_creation_info creation_info;
 
@@ -505,167 +504,6 @@ namespace vulkan {
             color_image_views.clear();
             color_image_memories.clear();
             color_images.clear();
-        });
-    }
-
-    void core::init_renderpass() noexcept {
-        // 1. Color attachment (now MSAA)
-        VkAttachmentDescription color_attachment = {};
-        color_attachment.format = swap_chain_image_format;
-        color_attachment.samples = msaa_samples; // use MSAA samples
-        color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-        // Key: with MSAA, the final layout must resolve to the present image
-        if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-            color_attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        } else {
-            color_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        }
-
-        // 2. Depth attachment (also MSAA)
-        VkAttachmentDescription depth_attachment = {};
-        depth_attachment.format = depth_format;
-        depth_attachment.samples = msaa_samples; // depth must be MSAA too
-        depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depth_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        depth_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depth_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        depth_attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-        // 3. Color resolve attachment (only needed with MSAA)
-        VkAttachmentDescription color_resolve_attachment = {};
-        if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-            color_resolve_attachment.format = swap_chain_image_format;
-            color_resolve_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-            color_resolve_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-            color_resolve_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            color_resolve_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-            color_resolve_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            color_resolve_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            color_resolve_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        }
-
-        VkAttachmentReference color_attachment_ref = {};
-        color_attachment_ref.attachment = 0;
-        color_attachment_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-        VkAttachmentReference depth_attachment_ref = {};
-        depth_attachment_ref.attachment = 1;
-        depth_attachment_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-        VkAttachmentReference color_resolve_ref = {};
-        if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-            color_resolve_ref.attachment = 2;
-            color_resolve_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        }
-
-        VkSubpassDescription subpass = {};
-        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 1;
-        subpass.pColorAttachments = &color_attachment_ref;
-        subpass.pDepthStencilAttachment = &depth_attachment_ref;
-
-        // Key: set up the resolve attachment
-        if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-            subpass.pResolveAttachments = &color_resolve_ref;
-        } else {
-            subpass.pResolveAttachments = nullptr;
-        }
-
-        // Build the attachment array
-        std::vector<VkAttachmentDescription> attachments;
-        attachments.push_back(color_attachment);
-        attachments.push_back(depth_attachment);
-
-        if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-            attachments.push_back(color_resolve_attachment);
-        }
-
-        VkRenderPassCreateInfo render_pass_info = {};
-        render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        render_pass_info.attachmentCount = static_cast<uint32_t>(attachments.size());
-        render_pass_info.pAttachments = attachments.data();
-        render_pass_info.subpassCount = 1;
-        render_pass_info.pSubpasses = &subpass;
-
-        // Add subpass dependencies
-        std::array<VkSubpassDependency, 2> dependencies = {};
-        dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-        dependencies[0].dstSubpass = 0;
-        dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-        dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependencies[0].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-        dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
-
-        dependencies[1].srcSubpass = 0;
-        dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-        dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-        dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        dependencies[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-        dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
-
-        render_pass_info.dependencyCount = static_cast<uint32_t>(dependencies.size());
-        render_pass_info.pDependencies = dependencies.data();
-
-        if (vkCreateRenderPass(device, &render_pass_info, nullptr, &renderpass) != VK_SUCCESS) {
-            utility::panic("can't create renderpass");
-        }
-        register_cleanup(
-            [this] {
-                if (renderpass != VK_NULL_HANDLE) {
-                    vkDestroyRenderPass(device, renderpass, nullptr);
-                    renderpass = VK_NULL_HANDLE;
-                }
-            });
-    }
-
-    void core::create_frame_buffers() noexcept {
-
-        swap_chain_framebuffers.resize(swap_chain_image_views.size());
-
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            std::vector<VkImageView> attachments;
-
-            // With MSAA, the first attachment is the MSAA color attachment
-            if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-                attachments.push_back(color_image_views[i]); // MSAA color attachment
-            } else {
-                attachments.push_back(swap_chain_image_views[i]); // regular color attachment
-            }
-
-            attachments.push_back(depth_image_views[i]); // depth attachment
-
-            // With MSAA, add the resolve attachment
-            if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-                attachments.push_back(swap_chain_image_views[i]); // resolve to the swapchain image
-            }
-
-            VkFramebufferCreateInfo framebuffer_create_info = {};
-            framebuffer_create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-            framebuffer_create_info.renderPass = renderpass;
-            framebuffer_create_info.attachmentCount = static_cast<uint32_t>(attachments.size());
-            framebuffer_create_info.pAttachments = attachments.data();
-            framebuffer_create_info.width = swap_chain_extent.width;
-            framebuffer_create_info.height = swap_chain_extent.height;
-            framebuffer_create_info.layers = 1;
-
-            if (vkCreateFramebuffer(this->device, &framebuffer_create_info, nullptr, &this->swap_chain_framebuffers[i]) != VK_SUCCESS) {
-                utility::panic("can't create frame buffer");
-            }
-        }
-
-        register_cleanup([this] {
-            for (auto const& frame_buffer : swap_chain_framebuffers) {
-                vkDestroyFramebuffer(device, frame_buffer, nullptr);
-            }
-            swap_chain_framebuffers.clear();
         });
     }
 
@@ -1022,21 +860,7 @@ namespace vulkan {
         // 1. Wait for the device to be idle
         vkDeviceWaitIdle(device);
 
-        // 2-3. Framebuffers and the render pass only exist on the classic render pass path;
-        //      dynamic rendering recreates neither
-        if (!this->use_dynamic_rendering) {
-            for (auto const& frame_buffer : swap_chain_framebuffers) {
-                vkDestroyFramebuffer(device, frame_buffer, nullptr);
-            }
-            swap_chain_framebuffers.clear();
-
-            if (this->renderpass != VK_NULL_HANDLE) {
-                vkDestroyRenderPass(device, renderpass, nullptr);
-                renderpass = VK_NULL_HANDLE;
-            }
-        }
-
-        // 4. Destroy MSAA color resources
+        // 2. Destroy MSAA color resources
         if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
             for (auto const& view : color_image_views) {
                 vkDestroyImageView(device, view, nullptr);
@@ -1054,7 +878,7 @@ namespace vulkan {
             color_image_memories.clear();
         }
 
-        // 5. Destroy depth resources
+        // 3. Destroy depth resources
         for (auto const& view : depth_image_views) {
             vkDestroyImageView(device, view, nullptr);
         }
@@ -1070,30 +894,25 @@ namespace vulkan {
         }
         depth_image_memories.clear();
 
-        // 6. Destroy swapchain image views
+        // 4. Destroy swapchain image views
         for (auto const& image_view : swap_chain_image_views) {
             vkDestroyImageView(device, image_view, nullptr);
         }
         swap_chain_image_views.clear();
 
-        // 7. Destroy the swapchain itself
+        // 5. Destroy the swapchain itself
         if (swap_chain != VK_NULL_HANDLE) {
             vkDestroySwapchainKHR(device, swap_chain, nullptr);
             swap_chain = VK_NULL_HANDLE;
         }
 
-        // 8. Recreate all resources
+        // 6. Recreate all resources
         this->init_swap_chain();        // rebuild swapchain
         this->init_image_views();       // rebuild image views
         this->create_depth_resources(); // rebuild depth resources
 
         if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
             this->create_color_resources(); // rebuild MSAA color resources
-        }
-
-        if (!this->use_dynamic_rendering) {
-            this->init_renderpass();      // rebuild render pass
-            this->create_frame_buffers(); // rebuild framebuffers
         }
 
         // Present-ready semaphores are allocated per image index; destroy and rebuild when the
@@ -1155,7 +974,6 @@ namespace vulkan {
         auto result = vulkan::make_pipeline(
             this->device,
             this->scene_pipeline_layout,
-            this->use_dynamic_rendering ? VK_NULL_HANDLE : this->renderpass,
             this->swap_chain_image_format,
             this->depth_format,
             vertex_shader_code,
@@ -1184,16 +1002,9 @@ namespace vulkan {
         float const depth_bias_constant_factor,
         float const depth_bias_slope_factor,
         float const depth_bias_clamp) const {
-        using fail = std::unexpected<std::string_view>;
-        // The depth-only pipeline renders with no color attachment; only the dynamic rendering
-        // path can express that (the classic render pass fallback always has color attachments)
-        if (!this->use_dynamic_rendering) {
-            return fail("depth-only pipelines require dynamic rendering (shadow mapping disabled)");
-        }
         auto result = vulkan::make_pipeline(
             this->device,
             this->scene_pipeline_layout,
-            VK_NULL_HANDLE,      // dynamic rendering
             VK_FORMAT_UNDEFINED, // no color attachment
             depth_format,
             vertex_shader_code,

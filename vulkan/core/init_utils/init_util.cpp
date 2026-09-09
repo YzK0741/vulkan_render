@@ -461,6 +461,12 @@ VkPhysicalDevice pick_suitable_device(VkInstance const& instance, VkSurfaceKHR s
         vkGetPhysicalDeviceProperties(device, &device_properties);
         vkGetPhysicalDeviceFeatures(device, &device_features);
 
+        // The engine requires Vulkan 1.3: dynamic rendering (frame recording, the depth-only
+        // shadow pass, the ImGui overlay) is core 1.3 - there is no classic render-pass fallback.
+        if (device_properties.apiVersion < VK_API_VERSION_1_3) {
+            continue;
+        }
+
         if (queue_family_indices indices = find_queue_families(device, surface); !indices.is_complete()) {
             continue;
         }
@@ -476,7 +482,7 @@ VkPhysicalDevice pick_suitable_device(VkInstance const& instance, VkSurfaceKHR s
         return device; // suitable device found
     }
 
-    utility::panic("Failed to find a suitable GPU!");
+    utility::panic("Failed to find a suitable GPU (Vulkan 1.3 required)!");
 }
 
 swap_chain_support_details query_swap_chain_support(VkPhysicalDevice const& device, VkSurfaceKHR const& surface) noexcept {

@@ -731,55 +731,43 @@ namespace vulkan {
 
         core const& vk = this->vulkan_core;
 
-        if (vk.use_dynamic_rendering) {
-            // Dynamic rendering (Vulkan 1.3): attachments are described inline, no render pass
-            VkRenderingAttachmentInfo color_attachment = {};
-            color_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            color_attachment.imageView = vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT
-                                             ? vk.color_image_views[image_index]
-                                             : vk.swap_chain_image_views[image_index];
-            color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            color_attachment.clearValue = clear_values[0];
-            if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-                // MSAA resolve: the MSAA color attachment resolves into the swapchain image.
-                // resolveImageLayout must not be PRESENT_SRC_KHR (VUID-VkRenderingAttachmentInfo-imageView-06146);
-                // the swapchain image is transitioned to PRESENT_SRC_KHR after vkCmdEndRendering instead
-                color_attachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-                color_attachment.resolveImageView = vk.swap_chain_image_views[image_index];
-                color_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            }
-
-            VkRenderingAttachmentInfo depth_attachment = {};
-            depth_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            depth_attachment.imageView = vk.depth_image_views[image_index];
-            depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            depth_attachment.clearValue = clear_values[1];
-
-            VkRenderingInfo rendering_info = {};
-            rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-            rendering_info.flags = flags;
-            rendering_info.renderArea = {{0, 0}, vk.swap_chain_extent};
-            rendering_info.layerCount = 1;
-            rendering_info.colorAttachmentCount = 1;
-            rendering_info.pColorAttachments = &color_attachment;
-            rendering_info.pDepthAttachment = &depth_attachment;
-            vkCmdBeginRendering(command_buffer, &rendering_info);
-            return;
+        // Dynamic rendering (Vulkan 1.3 core, the only path the engine supports): attachments
+        // are described inline, no render pass / framebuffer objects exist
+        VkRenderingAttachmentInfo color_attachment = {};
+        color_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color_attachment.imageView = vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT
+                                         ? vk.color_image_views[image_index]
+                                         : vk.swap_chain_image_views[image_index];
+        color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color_attachment.clearValue = clear_values[0];
+        if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
+            // MSAA resolve: the MSAA color attachment resolves into the swapchain image.
+            // resolveImageLayout must not be PRESENT_SRC_KHR (VUID-VkRenderingAttachmentInfo-imageView-06146);
+            // the swapchain image is transitioned to PRESENT_SRC_KHR after vkCmdEndRendering instead
+            color_attachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+            color_attachment.resolveImageView = vk.swap_chain_image_views[image_index];
+            color_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         }
 
-        // Classic render pass fallback (devices without dynamic rendering)
-        VkRenderPassBeginInfo render_pass_info = {};
-        render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        render_pass_info.renderPass = vk.renderpass;
-        render_pass_info.framebuffer = vk.swap_chain_framebuffers[image_index];
-        render_pass_info.renderArea = {{0, 0}, vk.swap_chain_extent};
-        render_pass_info.clearValueCount = static_cast<uint32_t>(clear_values.size());
-        render_pass_info.pClearValues = clear_values.data();
-        vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+        VkRenderingAttachmentInfo depth_attachment = {};
+        depth_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depth_attachment.imageView = vk.depth_image_views[image_index];
+        depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depth_attachment.clearValue = clear_values[1];
+
+        VkRenderingInfo rendering_info = {};
+        rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        rendering_info.flags = flags;
+        rendering_info.renderArea = {{0, 0}, vk.swap_chain_extent};
+        rendering_info.layerCount = 1;
+        rendering_info.colorAttachmentCount = 1;
+        rendering_info.pColorAttachments = &color_attachment;
+        rendering_info.pDepthAttachment = &depth_attachment;
+        vkCmdBeginRendering(command_buffer, &rendering_info);
     }
 
     frame_status runtime::poll_events() {
@@ -1066,16 +1054,15 @@ namespace vulkan {
         //      Drawn before the main pass; the depth-only pipeline shares the flat scene layout
         //      and the primitive draw() path (same vertex buffers / push constants), so the shadow
         //      pass is just "bind the shadow pipeline, then draw the same models".
-        //      Dynamic rendering only: depth-only rendering needs no color attachment, which the
-        //      classic render-pass fallback cannot express (make_shadow_pipeline already failed
-        //      there, so this block is skipped together with shadows_enabled).
+        //      Depth-only rendering (no color attachment) needs dynamic rendering, which is core
+        //      1.3 - the only path the engine supports.
         //
         //      Stage 2 of parallel recording: the shadow content is recorded into this slot's
         //      shadow SECONDARY command buffer first, then executed from the primary inside the
         //      shadow rendering instance (VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT).
         //      The recording is still sequential on the primary thread - rendering is identical
         //      to inline; stage 3 fans the recording out over the task pool.
-        if (vk.use_dynamic_rendering && this->shadow_pipeline && this->shadows_enabled && this->shadow_enabled) {
+        if (this->shadow_pipeline && this->shadows_enabled && this->shadow_enabled) {
             auto const* shadow_detail = vk.vma.get_image_detail(this->shadow_images[frame_slot].handle());
             if (shadow_detail != nullptr) {
                 // Secondary: inherit only the depth attachment (dynamic rendering 1.3). The
@@ -1173,48 +1160,47 @@ namespace vulkan {
             }
         }
 
-        // Dynamic rendering has no automatic attachment transitions (unlike a render pass):
-        // move every attachment into its render layout before vkCmdBeginRendering
-        if (vk.use_dynamic_rendering) {
-            std::array<VkImageMemoryBarrier2, 3> attachment_barriers = {};
-            uint32_t barrier_count = 0;
-            auto const add_render_barrier = [&attachment_barriers, &barrier_count](VkImage const image, VkImageAspectFlags const aspect, VkImageLayout const new_layout, VkPipelineStageFlags2 const dst_stage, VkAccessFlags2 const dst_access) {
-                VkImageMemoryBarrier2& barrier = attachment_barriers[barrier_count++];
-                barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-                barrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-                barrier.srcAccessMask = 0;
-                barrier.dstStageMask = dst_stage;
-                barrier.dstAccessMask = dst_access;
-                // loadOp CLEAR discards the contents: UNDEFINED as oldLayout is valid whatever the
-                // image's actual current layout is, and avoids tracking it per frame
-                barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-                barrier.newLayout = new_layout;
-                barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                barrier.image = image;
-                barrier.subresourceRange = {aspect, 0, 1, 0, 1};
-            };
+        // Dynamic rendering has no automatic attachment transitions (a render pass would do
+        // them implicitly): move every attachment into its render layout before
+        // vkCmdBeginRendering
+        std::array<VkImageMemoryBarrier2, 3> attachment_barriers = {};
+        uint32_t barrier_count = 0;
+        auto const add_render_barrier = [&attachment_barriers, &barrier_count](VkImage const image, VkImageAspectFlags const aspect, VkImageLayout const new_layout, VkPipelineStageFlags2 const dst_stage, VkAccessFlags2 const dst_access) {
+            VkImageMemoryBarrier2& barrier = attachment_barriers[barrier_count++];
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            barrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+            barrier.srcAccessMask = 0;
+            barrier.dstStageMask = dst_stage;
+            barrier.dstAccessMask = dst_access;
+            // loadOp CLEAR discards the contents: UNDEFINED as oldLayout is valid whatever the
+            // image's actual current layout is, and avoids tracking it per frame
+            barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            barrier.newLayout = new_layout;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = image;
+            barrier.subresourceRange = {aspect, 0, 1, 0, 1};
+        };
 
-            if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-                // MSAA color attachment and the swapchain resolve target both render in COLOR_ATTACHMENT_OPTIMAL
-                add_render_barrier(vk.color_images[this->current_image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-                add_render_barrier(vk.swap_chain_images[this->current_image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-            } else {
-                add_render_barrier(vk.swap_chain_images[this->current_image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-            }
-            add_render_barrier(vk.depth_images[this->current_image_index], VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                               VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                               VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
-
-            VkDependencyInfo dependency_info = {};
-            dependency_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dependency_info.imageMemoryBarrierCount = barrier_count;
-            dependency_info.pImageMemoryBarriers = attachment_barriers.data();
-            vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
+        if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
+            // MSAA color attachment and the swapchain resolve target both render in COLOR_ATTACHMENT_OPTIMAL
+            add_render_barrier(vk.color_images[this->current_image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+            add_render_barrier(vk.swap_chain_images[this->current_image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        } else {
+            add_render_barrier(vk.swap_chain_images[this->current_image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
         }
+        add_render_barrier(vk.depth_images[this->current_image_index], VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                           VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+
+        VkDependencyInfo dependency_info = {};
+        dependency_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dependency_info.imageMemoryBarrierCount = barrier_count;
+        dependency_info.pImageMemoryBarriers = attachment_barriers.data();
+        vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
 
         // Pipelines cache a fullscreen viewport/scissor at creation; after a resize the swapchain
         // extent changed, so resync them from the current extent before drawing (begin_pipeline
@@ -1573,32 +1559,28 @@ namespace vulkan {
         core& vk = this->vulkan_core;
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
 
-        if (vk.use_dynamic_rendering) {
-            vkCmdEndRendering(*command_buffer);
-            // Dynamic rendering has no render pass finalLayout to hand the image back to the
-            // presentation engine: transition the swapchain image to PRESENT_SRC_KHR explicitly.
-            // With MSAA the resolve target ends up in resolveImageLayout (COLOR_ATTACHMENT_OPTIMAL),
-            // so the barrier is needed on both the direct-render and the resolve paths.
-            VkImageMemoryBarrier2 present_barrier = {};
-            present_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-            present_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-            present_barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-            present_barrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
-            present_barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            present_barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-            present_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            present_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            present_barrier.image = vk.swap_chain_images[this->current_image_index];
-            present_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdEndRendering(*command_buffer);
+        // Dynamic rendering has no render pass finalLayout to hand the image back to the
+        // presentation engine: transition the swapchain image to PRESENT_SRC_KHR explicitly.
+        // With MSAA the resolve target ends up in resolveImageLayout (COLOR_ATTACHMENT_OPTIMAL),
+        // so the barrier is needed on both the direct-render and the resolve paths.
+        VkImageMemoryBarrier2 present_barrier = {};
+        present_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        present_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        present_barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        present_barrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+        present_barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        present_barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        present_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        present_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        present_barrier.image = vk.swap_chain_images[this->current_image_index];
+        present_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
-            VkDependencyInfo dependency_info = {};
-            dependency_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dependency_info.imageMemoryBarrierCount = 1;
-            dependency_info.pImageMemoryBarriers = &present_barrier;
-            vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
-        } else {
-            vkCmdEndRenderPass(*command_buffer);
-        }
+        VkDependencyInfo dependency_info = {};
+        dependency_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dependency_info.imageMemoryBarrierCount = 1;
+        dependency_info.pImageMemoryBarriers = &present_barrier;
+        vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
         if (vkEndCommandBuffer(*command_buffer) != VK_SUCCESS) {
             return frame_status::end_recording_failed;
         }
@@ -1659,12 +1641,7 @@ namespace vulkan {
             return true;
         }
         // The overlay draws into the runtime's OPEN main rendering instance via dynamic
-        // rendering (the backend is initialized with UseDynamicRendering=true), so it cannot
-        // be enabled on the classic render-pass fallback path.
-        if (!this->vulkan_core.use_dynamic_rendering) {
-            utility::log("enable_debug_gui: requires dynamic rendering (classic fallback active)");
-            return false;
-        }
+        // rendering (the backend is initialized with UseDynamicRendering=true).
         vulkan::core const& vk = this->vulkan_core;
         gui::gui_create_info info = {};
         info.window = vk.window;
