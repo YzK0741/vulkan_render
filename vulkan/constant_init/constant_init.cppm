@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.constant_init
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // Compile-time Vulkan info-struct conventions: constexpr factories + constinit
 // "transition" defaults for the structs the engine fills identically everywhere
@@ -142,6 +142,25 @@ export namespace vulkan {
                 .queueFamilyIndex = queue_family,
                 .queueCount = 1,
                 .pQueuePriorities = queue_priorities};
+    }
+    /**
+     * @brief 2D image view with identity component swizzle, from mip 0 / layer 0
+     * @param image the image to view
+     * @param format the image's format
+     * @param view_type usually 2D
+     * @param aspect_mask color or depth(-stencil)
+     * @param level_count mip levels in the view (VK_REMAINING_MIP_LEVELS for the whole image)
+     * @param layer_count array layers in the view (VK_REMAINING_ARRAY_LAYERS for the whole image)
+     */
+    constexpr VkImageViewCreateInfo make_image_view_info(VkImage const image, VkFormat const format, VkImageViewType const view_type, VkImageAspectFlags const aspect_mask, uint32_t const level_count, uint32_t const layer_count) noexcept {
+        return {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .image = image,
+                .viewType = view_type,
+                .format = format,
+                .components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY},
+                .subresourceRange = {aspect_mask, 0, level_count, 0, layer_count}};
     }
 
     // ---- Command buffer / submit infos ----

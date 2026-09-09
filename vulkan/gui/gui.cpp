@@ -8,6 +8,7 @@ module;
 module vulkan.gui;
 
 import utility;
+import vulkan.constant_init;
 
 namespace vulkan::gui {
     // ---- gui_content lifecycle (see the module docs: ImGui state lives in ImGui's globals) ----
@@ -55,17 +56,13 @@ namespace vulkan::gui {
         backend_info.ImageCount = info.frames_in_flight;
         backend_info.UseDynamicRendering = true;
         backend_info.PipelineInfoMain.MSAASamples = info.msaa_samples;
-        VkPipelineRenderingCreateInfo rendering_info = {};
-        rendering_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-        rendering_info.colorAttachmentCount = 1;
-        rendering_info.pColorAttachmentFormats = &info.color_format;
         // The overlay records into the still-open main rendering instance, which carries the
         // scene's depth attachment. Dynamic rendering requires a bound pipeline's
         // depthAttachmentFormat to equal the attachment's format (VUID-vkCmdDrawIndexed-
         // dynamicRenderingUnusedAttachments-08914) unless dynamicRenderingUnusedAttachments is
         // enabled, so declare the scene depth format here - the pipeline still does no depth
         // test/write (the backend's depth stencil state is all-disabled).
-        rendering_info.depthAttachmentFormat = info.depth_format;
+        VkPipelineRenderingCreateInfo const rendering_info = make_rendering_create_info(true, &info.color_format, info.depth_format);
         backend_info.PipelineInfoMain.PipelineRenderingCreateInfo = rendering_info;
         backend_info.CheckVkResultFn = [](VkResult const err) {
             if (err != VK_SUCCESS) {

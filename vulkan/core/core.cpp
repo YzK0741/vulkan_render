@@ -331,20 +331,7 @@ namespace vulkan {
 
         this->swap_chain_image_views.resize(this->swap_chain_images.size());
         for (size_t i = 0; i < this->swap_chain_images.size(); i++) {
-            VkImageViewCreateInfo create_info = {};
-            create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            create_info.image = this->swap_chain_images[i];
-            create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            create_info.format = swap_chain_image_format;
-            create_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-            create_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-            create_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-            create_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-            create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            create_info.subresourceRange.baseMipLevel = 0;
-            create_info.subresourceRange.levelCount = 1;
-            create_info.subresourceRange.baseArrayLayer = 0;
-            create_info.subresourceRange.layerCount = 1;
+            VkImageViewCreateInfo const create_info = make_image_view_info(this->swap_chain_images[i], swap_chain_image_format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, 1, 1);
             if (vkCreateImageView(device, &create_info, nullptr, &this->swap_chain_image_views[i]) != VK_SUCCESS) {
                 utility::panic("failed to create image views!");
             }
@@ -397,16 +384,7 @@ namespace vulkan {
         vkBindImageMemory(device, image, image_memory, 0);
 
         // 3. Create image views
-        VkImageViewCreateInfo view_info = {};
-        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view_info.image = image;
-        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view_info.format = this->depth_format;
-        view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        view_info.subresourceRange.baseMipLevel = 0;
-        view_info.subresourceRange.levelCount = 1;
-        view_info.subresourceRange.baseArrayLayer = 0;
-        view_info.subresourceRange.layerCount = 1;
+        VkImageViewCreateInfo const view_info = make_image_view_info(image, this->depth_format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, 1, 1);
 
         if (vkCreateImageView(device, &view_info, nullptr, &image_view) != VK_SUCCESS) {
             utility::panic("failed to create depth image view!");
@@ -753,12 +731,7 @@ namespace vulkan {
     }
 
     vk_image_view core::make_image_view(VkImage const image, VkFormat const format, VkImageViewType const type) const {
-        VkImageViewCreateInfo view_info = {};
-        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view_info.image = image;
-        view_info.viewType = type;
-        view_info.format = format;
-        view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+        VkImageViewCreateInfo const view_info = make_image_view_info(image, format, type, VK_IMAGE_ASPECT_COLOR_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
         VkImageView view = VK_NULL_HANDLE;
         vkCreateImageView(this->device, &view_info, nullptr, &view);
         return vk_image_view(view, this->device);
@@ -912,12 +885,7 @@ namespace vulkan {
     }
 
     vk_image_view core::make_depth_image_view(VkImage const image, VkFormat const format) const {
-        VkImageViewCreateInfo view_info = {};
-        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view_info.image = image;
-        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view_info.format = format;
-        view_info.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+        VkImageViewCreateInfo const view_info = make_image_view_info(image, format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
         VkImageView view = VK_NULL_HANDLE;
         vkCreateImageView(this->device, &view_info, nullptr, &view);
         return vk_image_view(view, this->device);
