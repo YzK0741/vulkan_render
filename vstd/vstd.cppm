@@ -49,8 +49,8 @@ module;
 
 #include <__config>
 
-// The headers of Table 24: C++ library headers [tab:headers.cpp]
-// and the headers of Table 25: C++ headers for C library facilities [tab:headers.cpp.c]
+// The headers of Table 24: C++ library headers [tab:headers.cpp]
+// and the headers of Table 25: C++ headers for C library facilities [tab:headers.cpp.c]
 #include <algorithm>
 #include <any>
 #include <array>
