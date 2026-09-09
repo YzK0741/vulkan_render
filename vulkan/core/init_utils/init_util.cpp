@@ -44,7 +44,7 @@ bool check_validation_layer_support(std::vector<char const*> const& validation_l
 }
 
 bool check_device_extension_support(
-    VkPhysicalDevice const& physical_device,
+    VkPhysicalDevice physical_device,
     std::vector<char const*> const& required_extensions) noexcept {
     uint32_t extension_count;
     vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count, nullptr);
@@ -356,7 +356,7 @@ logical_device create_logical_device(
     return logical_device;
 }
 
-queue_family_indices find_queue_families(VkPhysicalDevice const& device, VkSurfaceKHR const& surface) noexcept { // NOLINT(*-function-cognitive-complexity)
+queue_family_indices find_queue_families(VkPhysicalDevice device, VkSurfaceKHR surface) noexcept { // NOLINT(*-function-cognitive-complexity)
     queue_family_indices indices;
 
     // Get queue family properties
@@ -435,7 +435,7 @@ queue_family_indices find_queue_families(VkPhysicalDevice const& device, VkSurfa
     return indices;
 }
 
-VkPhysicalDevice pick_suitable_device(VkInstance const& instance, VkSurfaceKHR surface) noexcept {
+VkPhysicalDevice pick_suitable_device(VkInstance instance, VkSurfaceKHR surface) noexcept {
     uint32_t device_count = 0;
     vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
     if (device_count == 0) {
@@ -475,7 +475,7 @@ VkPhysicalDevice pick_suitable_device(VkInstance const& instance, VkSurfaceKHR s
     utility::panic("Failed to find a suitable GPU (Vulkan 1.3 required)!");
 }
 
-swap_chain_support_details query_swap_chain_support(VkPhysicalDevice const& device, VkSurfaceKHR const& surface) noexcept {
+swap_chain_support_details query_swap_chain_support(VkPhysicalDevice device, VkSurfaceKHR surface) noexcept {
     swap_chain_support_details details = {};
 
     // 1. Query surface capabilities
@@ -523,7 +523,7 @@ VkSurfaceFormatKHR choose_swap_surface_format(std::vector<VkSurfaceFormatKHR> co
     return available_formats[0];
 }
 
-VkExtent2D choose_swap_extent(VkSurfaceCapabilitiesKHR const& capabilities, GLFWwindow* window) noexcept {
+VkExtent2D choose_swap_extent(VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* window) noexcept {
     if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
         return capabilities.currentExtent;
     }
@@ -568,7 +568,7 @@ uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties
     utility::panic("failed to find suitable memory type");
 }
 
-VkFormat find_depth_format(VkPhysicalDevice const& physical_device) noexcept {
+VkFormat find_depth_format(VkPhysicalDevice physical_device) noexcept {
     // Try to find a supported depth format, in order of preference
     std::vector<VkFormat> const candidates = {
         VK_FORMAT_D32_SFLOAT_S8_UINT,
@@ -591,7 +591,7 @@ VkFormat find_depth_format(VkPhysicalDevice const& physical_device) noexcept {
     utility::panic("failed to find supported depth format!");
 }
 
-VkSampleCountFlagBits get_max_usable_sample_count(VkPhysicalDevice const& physical_device) noexcept {
+VkSampleCountFlagBits get_max_usable_sample_count(VkPhysicalDevice physical_device) noexcept {
     VkPhysicalDeviceProperties physical_device_properties;
     vkGetPhysicalDeviceProperties(physical_device, &physical_device_properties);
 

@@ -86,7 +86,7 @@ namespace vulkan {
      * @param layout valid VkDescriptorSetLayout
      * @return raii wrapper of VkDescriptorSet
      */
-    export vk_descriptor_set make_descriptor_set(VkDevice device, VkDescriptorPool descriptor_pool, VkDescriptorSetLayout const& layout) noexcept;
+    export vk_descriptor_set make_descriptor_set(VkDevice device, VkDescriptorPool descriptor_pool, VkDescriptorSetLayout layout) noexcept;
 
     /**
      * @ingroup vulkan_handles
@@ -103,7 +103,7 @@ namespace vulkan {
         [[nodiscard]] VkShaderModule const& get() const noexcept;
         [[nodiscard]] VkShaderModule const& operator*() const noexcept;
         void release();
-        explicit vk_shader_module(VkShaderModule const& shader_module, VkDevice device) noexcept;
+        explicit vk_shader_module(VkShaderModule shader_module, VkDevice device) noexcept;
         ~vk_shader_module() noexcept;
 
         explicit vk_shader_module(vk_shader_module& shader_module) = delete;

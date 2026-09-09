@@ -138,7 +138,7 @@ namespace vulkan {
         this->descriptor_pool = VK_NULL_HANDLE;
     }
 
-    vk_descriptor_set make_descriptor_set(VkDevice const device, VkDescriptorPool const descriptor_pool, VkDescriptorSetLayout const& layout) noexcept {
+    vk_descriptor_set make_descriptor_set(VkDevice const device, VkDescriptorPool const descriptor_pool, VkDescriptorSetLayout layout) noexcept {
         VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSetAllocateInfo allocate_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -155,7 +155,7 @@ namespace vulkan {
 
 // vk_shader_module
 namespace vulkan {
-    vk_shader_module::vk_shader_module(VkShaderModule const& shader_module, VkDevice const device) noexcept {
+    vk_shader_module::vk_shader_module(VkShaderModule shader_module, VkDevice const device) noexcept {
         this->shader_module = shader_module;
         this->device = device;
     }

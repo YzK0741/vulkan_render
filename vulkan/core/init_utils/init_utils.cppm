@@ -146,7 +146,7 @@ export bool check_validation_layer_support(std::vector<char const*> const& valid
  * @return true if all extensions are supported
  */
 export bool check_device_extension_support(
-    VkPhysicalDevice const& physical_device,
+    VkPhysicalDevice physical_device,
     std::vector<char const*> const& required_extensions) noexcept;
 
 /**
@@ -167,7 +167,7 @@ export logical_device create_logical_device(
  * @param surface the presentation surface, may be VK_NULL_HANDLE
  * @return queue family indices, missing families are std::nullopt
  */
-export queue_family_indices find_queue_families(VkPhysicalDevice const& device, VkSurfaceKHR const& surface) noexcept;
+export queue_family_indices find_queue_families(VkPhysicalDevice device, VkSurfaceKHR surface) noexcept;
 
 /**
  * @ingroup vulkan_init_utils
@@ -176,7 +176,7 @@ export queue_family_indices find_queue_families(VkPhysicalDevice const& device, 
  * @param surface the presentation surface
  * @return the chosen physical device; panics if none is suitable
  */
-export VkPhysicalDevice pick_suitable_device(VkInstance const& instance, VkSurfaceKHR surface) noexcept;
+export VkPhysicalDevice pick_suitable_device(VkInstance instance, VkSurfaceKHR surface) noexcept;
 
 /**
  * @ingroup vulkan_init_utils
@@ -185,7 +185,7 @@ export VkPhysicalDevice pick_suitable_device(VkInstance const& instance, VkSurfa
  * @param surface the presentation surface
  * @return swap chain capabilities, formats and present modes
  */
-export swap_chain_support_details query_swap_chain_support(VkPhysicalDevice const& device, VkSurfaceKHR const& surface) noexcept;
+export swap_chain_support_details query_swap_chain_support(VkPhysicalDevice device, VkSurfaceKHR surface) noexcept;
 
 /**
  * @ingroup vulkan_init_utils
@@ -211,7 +211,7 @@ export VkSurfaceFormatKHR choose_swap_surface_format(std::vector<VkSurfaceFormat
  * @param window the GLFW window, used to query the framebuffer size
  * @return the chosen extent
  */
-export VkExtent2D choose_swap_extent(VkSurfaceCapabilitiesKHR const& capabilities, GLFWwindow* window) noexcept;
+export VkExtent2D choose_swap_extent(VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* window) noexcept;
 
 /**
  * @ingroup vulkan_init_utils
@@ -229,7 +229,7 @@ export uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags pro
  * @param physical_device the physical device to query
  * @return the chosen depth format; panics if none is supported
  */
-export VkFormat find_depth_format(VkPhysicalDevice const& physical_device) noexcept;
+export VkFormat find_depth_format(VkPhysicalDevice physical_device) noexcept;
 
 /**
  * @ingroup vulkan_init_utils
@@ -237,7 +237,7 @@ export VkFormat find_depth_format(VkPhysicalDevice const& physical_device) noexc
  * @param physical_device the physical device to query
  * @return the maximum supported sample count flag
  */
-export VkSampleCountFlagBits get_max_usable_sample_count(VkPhysicalDevice const& physical_device) noexcept;
+export VkSampleCountFlagBits get_max_usable_sample_count(VkPhysicalDevice physical_device) noexcept;
 
 /**
  * @ingroup vulkan_init_utils

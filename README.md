@@ -23,7 +23,9 @@ in a comment block at the top of its main interface unit — `utility`, `gltf_lo
 embed). All started at 0.1.0; `vulkan.core` and `vulkan.animation` are at 0.1.1,
 `vulkan.runtime` at 0.1.2, `vulkan.constant_init` at 0.1.3.
 They evolve on their own cadence (bump MAJOR on breaking interface changes, MINOR on additive
-features, PATCH on fixes), independent of the app version and of each other.
+features, PATCH on fixes), independent of the app version and of each other. An appended `a`
+suffix (e.g. `vulkan.core` 0.1.1a) marks an **internal revision**: source-compatible style or
+implementation changes that do not consume a semver slot.
 
 ## Features
 
