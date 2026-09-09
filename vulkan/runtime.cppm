@@ -210,9 +210,12 @@ namespace vulkan {
         // constructing a std::string per call.
         std::map<std::string, vk_pipeline, std::less<>> pipelines;
         // stable name table mirroring the pipelines map (same order as insertion): every
-        // make_pipeline() appends the name, nothing removes, so a std::span over it (handed to
-        // render_environment::available) stays valid for the runtime's lifetime.
-        std::vector<std::string> pipeline_names = {};
+        // make_pipeline() appends the name, nothing removes. A DEQUE (not vector): push_back
+        // never invalidates existing elements, so a pointer to it (handed to
+        // render_environment::available for the recording workers' lifetime) stays valid even
+        // if another thread registers a pipeline concurrently. Only make_pipeline() writes it,
+        // under the unique lock; readers that took the pointer may use it lock-free afterwards.
+        std::deque<std::string> pipeline_names = {};
         // name of the runtime's default pipeline: primitives with DEFAULT semantics (empty
         // pipeline_name) draw with it. Set implicitly to the FIRST created pipeline, or
         // explicitly via set_default_pipeline(); the shadow pass never consults it (its env
@@ -330,7 +333,7 @@ namespace vulkan {
         // shadow caster culling shifts the camera frustum along this to catch up-light casters
         glm::vec3 light_direction = glm::normalize(glm::vec3(0.3f, 1.0f, 0.5f));
         // how far up-light of the camera frustum a caster still matters (its shadow can still
-        // reach the view). Scene-scale heuristic: max(1, scene_radius / 4).
+        // reach the view). Scene-scale heuristic: max(1, scene_radius / 8); see enable_shadows.
         float shadow_caster_extent = 1.0f;
         // optional Dear ImGui debug overlay; inactive until enable_debug_gui() succeeds. The
         // runtime drives it inside the frame steps (new_frame before recording, record after the
@@ -640,6 +643,10 @@ namespace vulkan {
          * @param vertex_shader_code raw SPIR-V binary of the vertex shader
          * @param fragment_shader_code raw SPIR-V binary of the fragment shader
          * @return success, or an error message on failure
+         * @note thread-safe (registry guarded), but call OUTSIDE the frame loop: recording
+         *       workers read the registry lock-free during a frame (see record_main_segment's
+         *       concurrency note), so mid-frame registration would race them. Register at setup
+         *       or between frames (while idle).
          */
         std::expected<void, std::string> make_pipeline(
             std::string_view pipeline_name,

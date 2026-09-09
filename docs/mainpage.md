@@ -12,7 +12,7 @@ CMake 4.3 + Ninja on MSYS2 clang64.
   main pass fans its leaf recording out over the shared task pool (sub_render_task batches);
   each recording worker gets its own render_environment (thread-local pipeline-bind state)
 - `vulkan.render_environment` - per-recording-session render state: the session's command
-  buffer, the available named pipelines (span over the runtime's stable name table), the
+  buffer, the available named pipelines (pointer to the runtime's stable name table), the
   session's default pipeline and a deduplicated binder (std::function, injected by the runtime)
   that primitives call through draw(render_environment&). Holds no Vulkan module dependency.
 - `vulkan.animation` - animation::controller: glTF keyframe playback / skinning / morphs on the

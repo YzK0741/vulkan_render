@@ -983,10 +983,22 @@ namespace vulkan {
         {
             glm::vec3 const eye = ubo.camera_pos;
             auto const distance_to = [&eye](primitive const* const m) -> float {
-                // view-space distance of the leaf's origin (push.model translation column =
-                // world position after update_world; good enough for ordering)
-                glm::vec3 const origin(m->push.model[3]);
-                return glm::dot(origin - eye, origin - eye);
+                // squared world-space distance of the leaf to the eye. Use the center of the
+                // world AABB (transform of the local bounds by push.model) so large or
+                // skinned/instanced-with-world leaves sort by where they actually occupy
+                // space, not by an arbitrary origin point.
+                glm::vec3 center;
+                if (m->has_bounds) {
+                    auto const [wmin, wmax] = m->world_aabb();
+                    center = (wmin + wmax) * 0.5f;
+                } else {
+                    // no single world AABB (e.g. instanced primitive: one leaf, many world
+                    // transforms, push.model is identity): fall back to the model origin.
+                    // The resulting order is a no-op for instanced leaves, which is fine -
+                    // instances spread over space have no meaningful per-leaf depth anyway.
+                    center = glm::vec3(m->push.model[3]);
+                }
+                return glm::dot(center - eye, center - eye);
             };
             for (primitive const* const m : visible_leaves) {
                 (m->transparent ? this->frame_transparent : this->frame_visible).push_back(m);
@@ -1444,20 +1456,24 @@ namespace vulkan {
         // Main pass: one render_environment per segment (per recording thread - never shared
         // across the parallel workers). Its binder looks the requested pipeline up in the
         // runtime cache and binds it; default-semantics leaves ask for the runtime default.
-        // The registry reads below (available span / default name / per-bind lookup) are
-        // shared-locked: several workers may record concurrently while a make_pipeline /
-        // set_default_pipeline on another thread mutates the registry. The span handed to the
-        // environment stays valid because pipeline_names only grows and only outside recording
-        // (setup time), matching the make_primitive timing note.
+        //
+        // Concurrency contract: make_pipeline() / set_default_pipeline() may be called from any
+        // thread, but only OUTSIDE the frame loop (setup or while idle - same timing rule as
+        // make_primitive: mid-frame creation would race the recording workers). During
+        // recording the registry is therefore read-only, so the per-bind lookup below needs no
+        // lock: the pipelines map is a node container (inserts never invalidate existing
+        // entries). available points at the runtime's name table member (its address is stable)
+        // and pipeline_names is a deque, so later appends cannot invalidate the entries either.
+        // The default-name view below is still snapshotted under a shared lock so a concurrent
+        // setup-time set_default_pipeline cannot tear the std::string it points into.
         render_environment env;
         env.command_buffer = command_buffer;
         {
             std::shared_lock const lock(this->access_mutex);
-            env.available = this->pipeline_names;
+            env.available = &this->pipeline_names;
             env.default_name = this->default_pipeline_name;
         }
         env.bind = [this](VkCommandBuffer const cb, std::string_view const name) {
-            std::shared_lock const lock(this->access_mutex);
             if (auto const it = this->pipelines.find(name); it != this->pipelines.end()) {
                 it->second.begin_pipeline(cb);
             } else {
