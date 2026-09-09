@@ -81,6 +81,7 @@ Output: `docs/html/` (open `docs/html/index.html`) and `docs/latex/` + `docs/lat
 Related source docs (tracked in the repo):
 
 - [gltf_loader usage guide](docs/gltf_loader_usage.md) (API semantics, data formats, Vulkan integration examples)
+- [scene tree design notes](docs/scene_tree_design.md) (design history of the scene-tree / import rework)
 - [docs/official-shaders/](docs/official-shaders/): reference shaders (IBL / PBR / primitive)
 
 ## Layout

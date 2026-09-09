@@ -363,7 +363,7 @@ Status, kept in sync with git history:
   a node's drawables become leaf primitives attached at that node — extra
   primitives of one node become identity-local child leaves). Scene `offset` moves
   onto each root node's local. `make_primitive` splits into `create_primitive`
-  (build) + attach-as-root-leaf. Verified: default + Hierarchy assets show the
+  (build) + attach-as-root-leaf. Verified: default + hierarchy-style assets show the
   runtime tree mirroring the loader tree (`node_group_root -> 2 helmet leaves`),
   fps unchanged, instancing grid + spin demo still render.
 - ✅ **3 — Whole-scene + per-node transform API** (`4ee1b82`, `74b18bc`, `9cc791a`).
@@ -372,7 +372,7 @@ Status, kept in sync with git history:
   demo spun the whole scene around its sink (demo modes were removed later).
   `runtime::scene()` exposes the tree so callers edit per-node `local` in place
   (structure is fixed after import); the `"spin-subtree"` demo rotated one
-  primitive-leaf node about its own position — on the Hierarchy asset a single
+  primitive-leaf node about its own position — on a hierarchy-style asset a single
   helmet spun while its sibling stayed put (per-node transform over the 2b
   hierarchy).
 - ✅ **4 — Remove the flat `models` map.** No flat storage remains.
