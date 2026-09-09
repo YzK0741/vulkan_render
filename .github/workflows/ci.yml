@@ -1,0 +1,59 @@
+name: ci
+
+# Build + headless tests on every push to master and every pull request.
+#
+# Why MSYS2 clang64: the project is C++23 modules on clang + libc++, and the
+# std module (std/std.cppm) is the generated libc++ module for that toolchain -
+# the only environment that guarantees a byte-compatible libc++ is the same
+# MSYS2 clang64 the project is developed in. The headless unit tests
+# (tests/, ctest) run on the CPU-only modules; the Release build of the full
+# project (including the Vulkan executable) is the compile gate. No GPU is
+# needed - nothing is executed that requires a Vulkan device.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: clang64 Release build + ctest
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up MSYS2 (clang64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: clang64
+          update: true
+          install: >-
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-lld
+            mingw-w64-clang-x86_64-libc++
+            mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-glfw
+            mingw-w64-clang-x86_64-glm
+            mingw-w64-clang-x86_64-tomlplusplus
+            mingw-w64-clang-x86_64-vulkan-loader
+            mingw-w64-clang-x86_64-vulkan-headers
+
+      - name: Configure (Release, Ninja)
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build all targets (incl. tests + vulkan_render.exe)
+        run: cmake --build build
+
+      - name: Run headless unit tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Upload the Release executable
+        uses: actions/upload-artifact@v5
+        with:
+          name: vulkan_render-windows-x64
+          path: build/vulkan_render.exe
+          if-no-files-found: error
