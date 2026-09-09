@@ -4,6 +4,7 @@ module;
 
 module vulkan.core.pipeline;
 import vulkan.core.pipeline.spirv_parser;
+import vulkan.core.vkinit;
 
 namespace {
     // Collects the Vulkan objects created during pipeline creation; the destructor frees the
@@ -29,129 +30,6 @@ namespace {
 } // namespace
 
 namespace vulkan {
-    // ---- Fixed-function pipeline state, built by constexpr factories (see the call site
-    //      below): each state is either fully constant or differs by one or two knobs, so the
-    //      hand re-fills are replaced by a single construction. Pointer members point at
-    //      caller-owned data (never at locals of the factory itself). ----
-    constexpr VkPipelineShaderStageCreateInfo make_shader_stage(VkShaderModule const module, VkShaderStageFlagBits const stage) noexcept {
-        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .stage = stage,
-                .module = module,
-                .pName = "main",
-                .pSpecializationInfo = nullptr};
-    }
-    constexpr VkPipelineInputAssemblyStateCreateInfo make_input_assembly_state() noexcept {
-        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-                .primitiveRestartEnable = VK_FALSE};
-    }
-    constexpr VkPipelineViewportStateCreateInfo make_viewport_state() noexcept {
-        // viewport/scissor are dynamic state: only the counts are static
-        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .viewportCount = 1,
-                .pViewports = nullptr,
-                .scissorCount = 1,
-                .pScissors = nullptr};
-    }
-    constexpr VkPipelineDynamicStateCreateInfo make_dynamic_state(VkDynamicState const* states, uint32_t const count) noexcept {
-        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .dynamicStateCount = count,
-                .pDynamicStates = states};
-    }
-    constexpr VkPipelineRasterizationStateCreateInfo make_rasterization_state(
-        bool const depth_bias_enabled,
-        float const depth_bias_constant_factor,
-        float const depth_bias_slope_factor,
-        float const depth_bias_clamp) noexcept {
-        // slope-scaled depth bias for depth-writing passes (the shadow map); when the bias is
-        // enabled the factors are dynamic state anyway - the static values only matter while
-        // the dynamic state is never set
-        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .depthClampEnable = VK_FALSE,
-                .rasterizerDiscardEnable = VK_FALSE,
-                .polygonMode = VK_POLYGON_MODE_FILL,
-                .cullMode = VK_CULL_MODE_BACK_BIT,
-                .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-                .depthBiasEnable = depth_bias_enabled ? VK_TRUE : VK_FALSE,
-                .depthBiasConstantFactor = depth_bias_constant_factor,
-                .depthBiasClamp = depth_bias_clamp,
-                .depthBiasSlopeFactor = depth_bias_slope_factor,
-                .lineWidth = 1.0f};
-    }
-    constexpr VkPipelineDepthStencilStateCreateInfo make_depth_stencil_state(bool const depth_test_enabled) noexcept {
-        // depth test + write disabled for background passes (e.g. the skybox), which draw first
-        // and must not occlude later geometry
-        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .depthTestEnable = depth_test_enabled ? VK_TRUE : VK_FALSE,
-                .depthWriteEnable = depth_test_enabled ? VK_TRUE : VK_FALSE,
-                .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
-                .depthBoundsTestEnable = VK_FALSE,
-                .stencilTestEnable = VK_FALSE,
-                .front = {},
-                .back = {},
-                .minDepthBounds = 0.0f,
-                .maxDepthBounds = 0.0f};
-    }
-    // Standard alpha blending, ALWAYS enabled: with src alpha == 1 (an opaque material) the
-    // blend math reduces to the source color exactly, so opaque draws are pixel-identical
-    // whether or not blending is on. Blended (transparent) materials simply carry alpha < 1
-    // and are drawn depth-write-off in the transparent pass - no second pipeline needed.
-    constexpr VkPipelineColorBlendAttachmentState make_color_blend_attachment() noexcept {
-        return {.blendEnable = VK_TRUE,
-                .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
-                .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                .colorBlendOp = VK_BLEND_OP_ADD,
-                .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-                .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                .alphaBlendOp = VK_BLEND_OP_ADD,
-                .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT};
-    }
-    constexpr VkPipelineColorBlendStateCreateInfo make_color_blend_state(bool const has_color_attachment, VkPipelineColorBlendAttachmentState const* attachment) noexcept {
-        // depth-only pipelines (e.g. the shadow pass) have no color attachment: no blend state
-        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .logicOpEnable = VK_FALSE,
-                .logicOp = VK_LOGIC_OP_COPY,
-                .attachmentCount = has_color_attachment ? 1u : 0u,
-                .pAttachments = has_color_attachment ? attachment : nullptr,
-                .blendConstants = {1.0f, 1.0f, 1.0f, 1.0f}};
-    }
-    constexpr VkPipelineMultisampleStateCreateInfo make_multisample_state(VkSampleCountFlagBits const samples) noexcept {
-        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .rasterizationSamples = samples,
-                .sampleShadingEnable = VK_FALSE,
-                .minSampleShading = 0.0f,
-                .pSampleMask = nullptr,
-                .alphaToCoverageEnable = VK_FALSE,
-                .alphaToOneEnable = VK_FALSE};
-    }
-    // @param color_format_ptr pointer to the caller's color format: the returned info holds
-    //        that pointer, so it must outlive the struct (it does - make_pipeline's parameter)
-    constexpr VkPipelineRenderingCreateInfo make_rendering_create_info(bool const has_color_attachment, VkFormat const* color_format_ptr, VkFormat const depth_format) noexcept {
-        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-                .pNext = nullptr,
-                .viewMask = 0,
-                .colorAttachmentCount = has_color_attachment ? 1u : 0u,
-                .pColorAttachmentFormats = has_color_attachment ? color_format_ptr : nullptr,
-                .depthAttachmentFormat = depth_format,
-                .stencilAttachmentFormat = VK_FORMAT_UNDEFINED};
-    }
-
     std::expected<vk_pipeline, std::string_view> make_pipeline( // NOLINT(*-function-cognitive-complexity)
         VkDevice device,
         VkPipelineLayout const pipeline_layout, // shared scene layout (fixed set 0 + push block); not owned

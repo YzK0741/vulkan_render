@@ -6,6 +6,7 @@ module;
 module vulkan.core.init_utils;
 
 import utility;
+import vulkan.core.vkinit;
 
 [[maybe_unused]] VKAPI_ATTR VkBool32 VKAPI_CALL
 debug_callback(
@@ -256,15 +257,6 @@ void print_device_capabilities(device_capabilities const& capabilities) {
     utility::log("{}", box_line);
 }
 
-constexpr VkDeviceQueueCreateInfo make_device_queue_info(uint32_t const queue_family, float const* queue_priorities) noexcept {
-    return {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .queueFamilyIndex = queue_family,
-            .queueCount = 1,
-            .pQueuePriorities = queue_priorities};
-}
-
 logical_device create_logical_device(
     VkPhysicalDevice const physical_device, // NOLINT(*-misplaced-const)
     device_creation_info const& create_info) noexcept {
@@ -296,7 +288,7 @@ logical_device create_logical_device(
     constexpr float queue_priority = 1.0f;
 
     for (uint32_t const& queue_family : unique_queue_families) {
-        queue_create_infos.push_back(make_device_queue_info(queue_family, &queue_priority));
+        queue_create_infos.push_back(vulkan::make_device_queue_info(queue_family, &queue_priority));
     }
 
     VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR fifo_latest_ready_features = {

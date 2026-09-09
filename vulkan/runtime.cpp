@@ -7,6 +7,7 @@ module;
 module vulkan.runtime;
 
 import utility;
+import vulkan.core.vkinit;
 
 // Route std::pmr allocations through mimalloc for this TU (utility.better_pmr). Idempotent:
 // init_pmr() returns the same process-wide singleton no matter which TU calls it first, so
@@ -1065,114 +1066,6 @@ namespace vulkan {
         return frame_status::proceed;
     }
 
-    // Frame-recording fills that repeat across the per-frame phases as constexpr factories
-    // (anonymous namespace: TU-local): the shadow secondary, the main-pass secondaries and the
-    // parallel sub_render_task workers all begin with the SAME inheritance rendering info /
-    // inheritance info / RENDER_PASS_CONTINUE begin-info trio (only color count/formats vary),
-    // and every barrier pass ends with the same one-struct VkDependencyInfo.
-    namespace {
-        constexpr VkCommandBufferInheritanceRenderingInfo make_inheritance_rendering_info(bool const has_color_attachment, VkFormat const* color_format_ptr, VkFormat const depth_format, VkSampleCountFlagBits const rasterization_samples) noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO,
-                    .pNext = nullptr,
-                    .flags = 0,
-                    .viewMask = 0,
-                    .colorAttachmentCount = has_color_attachment ? 1u : 0u,
-                    .pColorAttachmentFormats = has_color_attachment ? color_format_ptr : nullptr,
-                    .depthAttachmentFormat = depth_format,
-                    .stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
-                    .rasterizationSamples = rasterization_samples};
-        }
-        constexpr VkCommandBufferInheritanceInfo make_inheritance_info(void const* p_next) noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
-                    .pNext = p_next,
-                    .renderPass = VK_NULL_HANDLE,
-                    .subpass = 0,
-                    .framebuffer = VK_NULL_HANDLE,
-                    .occlusionQueryEnable = VK_FALSE,
-                    .queryFlags = 0,
-                    .pipelineStatistics = 0};
-        }
-        constexpr VkCommandBufferBeginInfo make_render_pass_continue_begin_info(VkCommandBufferInheritanceInfo const* inheritance_info) noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                    .pNext = nullptr,
-                    .flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT,
-                    .pInheritanceInfo = inheritance_info};
-        }
-        constexpr VkDependencyInfo make_image_dependency_info(uint32_t const image_barrier_count, VkImageMemoryBarrier2 const* barriers) noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .pNext = nullptr,
-                    .dependencyFlags = 0,
-                    .memoryBarrierCount = 0,
-                    .pMemoryBarriers = nullptr,
-                    .bufferMemoryBarrierCount = 0,
-                    .pBufferMemoryBarriers = nullptr,
-                    .imageMemoryBarrierCount = image_barrier_count,
-                    .pImageMemoryBarriers = barriers};
-        }
-
-        // Every frame moves the same images between the same layouts; only the target image
-        // differs per barrier. Each role below is therefore a constinit default that call
-        // sites copy and then override .image on. The attachment transitions discard the old
-        // contents (loadOp CLEAR makes UNDEFINED as oldLayout valid whatever the image's
-        // actual current layout is - no per-frame layout tracking needed).
-        constinit VkImageMemoryBarrier2 color_attachment_transition = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext = nullptr,
-            .srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            .srcAccessMask = 0,
-            .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = VK_NULL_HANDLE,
-            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-        };
-        constinit VkImageMemoryBarrier2 depth_attachment_transition = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext = nullptr,
-            .srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            .srcAccessMask = 0,
-            .dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-            .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = VK_NULL_HANDLE,
-            .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
-        };
-        constinit VkImageMemoryBarrier2 shadow_map_sampling_transition = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext = nullptr,
-            .srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-            .srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = VK_NULL_HANDLE,
-            .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
-        };
-        constinit VkImageMemoryBarrier2 present_transition = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext = nullptr,
-            .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-            .dstAccessMask = 0,
-            .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = VK_NULL_HANDLE,
-            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-        };
-    } // namespace
-
     void runtime::record_main_drawcalls() {
         core& vk = this->vulkan_core;
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
@@ -1200,7 +1093,7 @@ namespace vulkan {
                 VkCommandBuffer const shadow_secondary = *this->secondary_command_buffers[static_cast<std::size_t>(frame_slot)][static_cast<std::size_t>(secondary_pass::shadow)];
                 VkCommandBufferInheritanceRenderingInfo const shadow_inheritance = make_inheritance_rendering_info(false, nullptr, vk.depth_format, VK_SAMPLE_COUNT_1_BIT);
                 VkCommandBufferInheritanceInfo const shadow_sec_inherit = make_inheritance_info(&shadow_inheritance);
-                VkCommandBufferBeginInfo const shadow_sec_begin = make_render_pass_continue_begin_info(&shadow_sec_inherit);
+                VkCommandBufferBeginInfo const shadow_sec_begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &shadow_sec_inherit);
                 bool shadow_recorded = false;
                 if (vkBeginCommandBuffer(shadow_secondary, &shadow_sec_begin) != VK_SUCCESS) {
                     utility::log("runtime: shadow secondary command buffer begin failed - shadow pass skipped this frame");
@@ -1329,7 +1222,7 @@ namespace vulkan {
         VkFormat const color_format = vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT ? vk.color_format : vk.swap_chain_image_format;
         VkCommandBufferInheritanceRenderingInfo const main_inheritance = make_inheritance_rendering_info(true, &color_format, vk.depth_format, vk.msaa_samples);
         VkCommandBufferInheritanceInfo const main_sec_inherit = make_inheritance_info(&main_inheritance);
-        VkCommandBufferBeginInfo const main_sec_begin = make_render_pass_continue_begin_info(&main_sec_inherit);
+        VkCommandBufferBeginInfo const main_sec_begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &main_sec_inherit);
 
         std::size_t const leaf_count = this->frame_visible.size();
         std::size_t const segment_count = std::min<std::size_t>(main_segments.size(), std::max<std::size_t>(1, leaf_count));
@@ -1599,7 +1492,7 @@ namespace vulkan {
     void runtime::sub_render_task::operator()() const {
         VkCommandBufferInheritanceRenderingInfo const rendering_inherit = make_inheritance_rendering_info(true, &this->color_format, this->depth_format, this->rasterization_samples);
         VkCommandBufferInheritanceInfo const inherit = make_inheritance_info(&rendering_inherit);
-        VkCommandBufferBeginInfo const begin = make_render_pass_continue_begin_info(&inherit);
+        VkCommandBufferBeginInfo const begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &inherit);
         if (vkBeginCommandBuffer(this->command_buffer, &begin) != VK_SUCCESS) {
             utility::log("runtime: main segment secondary begin failed - segment skipped this frame");
             if (this->recorded != nullptr) {

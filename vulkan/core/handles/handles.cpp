@@ -5,6 +5,7 @@ module;
 module vulkan.core.handles;
 
 import utility;
+import vulkan.core.vkinit;
 
 // vk_command_buffer
 namespace vulkan {
@@ -59,18 +60,6 @@ namespace vulkan {
         other.command_buffer = VK_NULL_HANDLE;
         return *this;
     }
-
-    // The primary and secondary allocators fill the same VkCommandBufferAllocateInfo; only the
-    // level differs, so the fill lives in one constexpr factory (anonymous namespace: TU-local).
-    namespace {
-        constexpr VkCommandBufferAllocateInfo make_command_buffer_allocate_info(VkCommandPool const command_pool, VkCommandBufferLevel const level) noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                    .pNext = nullptr,
-                    .commandPool = command_pool,
-                    .level = level,
-                    .commandBufferCount = 1};
-        }
-    } // namespace
 
     vk_command_buffer make_command_buffer(VkDevice const device, VkCommandPool const command_pool) noexcept {
         VkCommandBuffer buffer = VK_NULL_HANDLE;

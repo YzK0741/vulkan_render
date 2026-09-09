@@ -114,6 +114,7 @@ target_sources(vulkancorekit
         vulkan/core/handles/handles.cppm
         vulkan/core/init_utils/init_utils.cppm
         vulkan/core/pipeline/pipeline.cppm
+        vulkan/core/vkinit/vkinit.cppm
         vulkan/math/math.cppm
         vulkan/runtime.cppm
         vulkan/core/pipeline/spirv_parser.cppm

@@ -7,6 +7,7 @@ module;
 module vulkan.core;
 import vulkan.core.pipeline;
 import vulkan.core.init_utils;
+import vulkan.core.vkinit;
 
 // core
 namespace vulkan {
@@ -507,71 +508,6 @@ namespace vulkan {
             color_images.clear();
         });
     }
-
-    // Constant / near-constant Vulkan info fills as constexpr factories: the full field lists
-    // are fixed or differ by one knob, so call sites construct them in a single line instead of
-    // re-filling the boilerplate (see core::make_pipeline for the same pattern). Anonymous
-    // namespace: internal linkage keeps these TU-local, since sibling files define similarly
-    // named factories for the same Vulkan structs.
-    namespace {
-        constexpr VkCommandPoolCreateInfo make_command_pool_info(uint32_t const queue_family) noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-                    .pNext = nullptr,
-                    .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                    .queueFamilyIndex = queue_family};
-        }
-        constexpr VkSemaphoreCreateInfo make_binary_semaphore_info() noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-                    .pNext = nullptr,
-                    .flags = 0};
-        }
-        constexpr VkSemaphoreTypeCreateInfo make_timeline_semaphore_type_info() noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
-                    .pNext = nullptr,
-                    .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
-                    .initialValue = 0};
-        }
-        constexpr VkSamplerCreateInfo make_texture_sampler_info(VkSamplerAddressMode const address_mode, float const max_lod) noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-                    .pNext = nullptr,
-                    .flags = 0,
-                    .magFilter = VK_FILTER_LINEAR,
-                    .minFilter = VK_FILTER_LINEAR,
-                    .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-                    .addressModeU = address_mode,
-                    .addressModeV = address_mode,
-                    .addressModeW = address_mode,
-                    .mipLodBias = 0.0f,
-                    .anisotropyEnable = VK_FALSE,
-                    .maxAnisotropy = 1.0f,
-                    .compareEnable = VK_FALSE,
-                    .compareOp = VK_COMPARE_OP_NEVER,
-                    .minLod = 0.0f,
-                    .maxLod = max_lod,
-                    .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
-                    .unnormalizedCoordinates = VK_FALSE};
-        }
-        constexpr VkSamplerCreateInfo make_shadow_sampler_info() noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-                    .pNext = nullptr,
-                    .flags = 0,
-                    .magFilter = VK_FILTER_LINEAR,
-                    .minFilter = VK_FILTER_LINEAR,
-                    .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
-                    .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                    .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                    .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                    .mipLodBias = 0.0f,
-                    .anisotropyEnable = VK_FALSE,
-                    .maxAnisotropy = 1.0f,
-                    .compareEnable = VK_TRUE,
-                    .compareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
-                    .minLod = 0.0f,
-                    .maxLod = 0.0f,
-                    .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
-                    .unnormalizedCoordinates = VK_FALSE};
-        }
-    } // namespace
 
     void core::create_command_pool() noexcept {
         VkCommandPoolCreateInfo const pool_info = make_command_pool_info(graphics_family_index);

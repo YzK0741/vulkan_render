@@ -6,6 +6,8 @@ module;
 
 module vulkan.core.vma;
 
+import vulkan.core.vkinit;
+
 namespace {
     constexpr uint32_t sizeof_vk_format(VkFormat const format) {
         switch (format) {
@@ -399,56 +401,6 @@ namespace vulkan {
         }
     }
 
-    // Near-constant Vulkan info fills as constexpr factories (anonymous namespace: TU-local,
-    // sibling files define similarly named factories for the same Vulkan structs).
-    namespace {
-        constexpr VkFenceCreateInfo make_fence_info() noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-                    .pNext = nullptr,
-                    .flags = 0};
-        }
-        constexpr VkBufferCreateInfo make_staging_buffer_info(VkDeviceSize const size) noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                    .pNext = nullptr,
-                    .flags = 0,
-                    .size = size,
-                    .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-                    .queueFamilyIndexCount = 0,
-                    .pQueueFamilyIndices = nullptr};
-        }
-        constexpr VkCommandBufferBeginInfo make_begin_info() noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                    .pNext = nullptr,
-                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-                    .pInheritanceInfo = nullptr};
-        }
-        constexpr VkSubmitInfo make_submit_info(VkCommandBuffer const* command_buffer) noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                    .pNext = nullptr,
-                    .waitSemaphoreCount = 0,
-                    .pWaitSemaphores = nullptr,
-                    .pWaitDstStageMask = nullptr,
-                    .commandBufferCount = 1,
-                    .pCommandBuffers = command_buffer,
-                    .signalSemaphoreCount = 0,
-                    .pSignalSemaphores = nullptr};
-        }
-        constexpr VkCommandPoolCreateInfo make_command_pool_info(uint32_t const queue_family) noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-                    .pNext = nullptr,
-                    .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                    .queueFamilyIndex = queue_family};
-        }
-        constexpr VkCommandBufferAllocateInfo make_allocate_info(VkCommandPool const pool) noexcept {
-            return {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                    .pNext = nullptr,
-                    .commandPool = pool,
-                    .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                    .commandBufferCount = 1};
-        }
-    } // namespace
-
     VkFence vma_allocator::create_fence() const {
 
         VkFence fence = VK_NULL_HANDLE;
@@ -562,7 +514,7 @@ namespace vulkan {
 
         VkCommandBuffer command_buffer = command_pair.second;
 
-        VkCommandBufferBeginInfo begin_info = make_begin_info();
+        VkCommandBufferBeginInfo begin_info = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr);
         vkBeginCommandBuffer(command_buffer, &begin_info);
 
         VkBufferCopy copy_region = {};
@@ -655,7 +607,7 @@ namespace vulkan {
         }
         VkCommandBuffer command_buffer = command_pair.second;
 
-        VkCommandBufferBeginInfo begin_info = make_begin_info();
+        VkCommandBufferBeginInfo begin_info = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr);
         vkBeginCommandBuffer(command_buffer, &begin_info);
 
         // ========== Fix point 1: correct layout transition order ==========
@@ -1024,7 +976,7 @@ namespace vulkan {
         }
 
         VkCommandBuffer command_buffer;
-        VkCommandBufferAllocateInfo buffer_allocate_info = make_allocate_info(command_pool);
+        VkCommandBufferAllocateInfo buffer_allocate_info = make_command_buffer_allocate_info(command_pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY);
         if (vkAllocateCommandBuffers(this->device, &buffer_allocate_info, &command_buffer) != VK_SUCCESS) {
             utility::panic("Failed to create command buffer");
         }
