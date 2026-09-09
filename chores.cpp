@@ -10,6 +10,8 @@ module;
 // the allocator instantiations resolve. Do not remove this include to "clean up".
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <array>
+#include <span>
 
 module chores;
 
@@ -246,6 +248,21 @@ namespace chores {
             std::vector<std::string>{"Lambert", "Oren-Nayar"},
             &bindings.diffuse_model,
             [&runtime](int const index) { runtime.set_diffuse_model(index); }));
+        // ---- punctual lights (demo point lights; see apply_point_lights): the widgets edit
+        //      bindings.point_lights live and main() pushes the enabled set once per frame ---
+        for (int i = 0; i < 2; ++i) {
+            gui_bindings::light_slot& slot = bindings.point_lights[i];
+            panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
+                std::format("point light {}", i + 1), &slot.enabled));
+            panel.push_back(std::make_unique<vulkan::gui::vec3_widget>(
+                std::format("  position {}", i + 1), slot.position, 0.1f));
+            panel.push_back(std::make_unique<vulkan::gui::vec3_widget>(
+                std::format("  color {}", i + 1), slot.color, 0.02f));
+            panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
+                std::format("  intensity {}", i + 1), &slot.intensity, 0.0f, 50.0f));
+            panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
+                std::format("  range {}", i + 1), &slot.range, 0.1f, 100.0f));
+        }
         // camera orbit target: dragging it moves what the camera looks at / orbits around
         // (camera.target is a glm::vec3, i.e. three contiguous floats; the runtime rebuilds the
         // camera UBO from it every frame, so no on_change callback is needed)
@@ -322,6 +339,24 @@ namespace chores {
                 runtime.set_shadow_depth_bias(bindings.shadow_bias_constant, bindings.shadow_bias_slope, 0.0f);
             }));
         utility::log("gui: Dear ImGui debug overlay enabled");
+    }
+
+    void apply_point_lights(vulkan::runtime& runtime, gui_bindings const& bindings) {
+        // build the enabled demo lights into a fixed stack array (limit = the light UBO's
+        // array size) and push it; the span form keeps set_point_lights cheap to call per frame
+        std::array<vulkan::punctual_light, vulkan::max_punctual_lights> active = {};
+        uint32_t count = 0;
+        for (gui_bindings::light_slot const& slot : bindings.point_lights) {
+            if (!slot.enabled || count >= vulkan::max_punctual_lights) {
+                continue;
+            }
+            vulkan::punctual_light& light = active[count++];
+            light.position = glm::vec3(slot.position[0], slot.position[1], slot.position[2]);
+            light.color = glm::vec3(slot.color[0], slot.color[1], slot.color[2]);
+            light.intensity = slot.intensity;
+            light.range = slot.range;
+        }
+        runtime.set_point_lights(std::span(active.data(), count));
     }
 
     // Wire an animation backend to the runtime: the scene tree it drives, its per-frame-slot

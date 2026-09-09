@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.2  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording) plus the
@@ -794,6 +794,18 @@ namespace vulkan {
          * @note same timing rule as set_brdf_model
          */
         void set_diffuse_model(int model) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief set the active punctual lights (point/spot, pbr.frag's direct-light loop).
+         *        Light 0 is the warm key, 1 the cool rim in the demo GUI - any subset up to
+         *        @ref vulkan::max_punctual_lights is allowed; extras are ignored.
+         * @param lights the lights to enable (converted into the light UBO's array; entries
+         *        beyond max_punctual_lights are dropped)
+         * @note same timing rule as set_brdf_model: CPU-side only, copied into the paced
+         *       slot's buffer every frame, so safe at any time (GUI included)
+         */
+        void set_point_lights(std::span<punctual_light const> lights) noexcept;
 
         /**
          * @ingroup vulkan_runtime

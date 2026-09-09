@@ -250,11 +250,37 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_runtime_scene_tree
-     * @brief directional light UBO content, layout matches the LightUBO block in pbr.frag /
-     *        shadow.vert (scene set binding 7): light-space view-proj plus the light direction
-     * @note single fixed directional sun: the runtime builds it from the scene bounds and both
-     *       shader stages read it, so the sun disc, the PBR direct light and the shadow map
-     *       sampling all agree on one direction
+     * @brief one user-configurable punctual light (API surface of runtime::set_point_lights).
+     *        Point lights are omni-directional; a spot light additionally restricts its cone to
+     *        @p spot_direction with a soft edge whose half-angle cosine is @p spot_outer_cos.
+     */
+    export struct punctual_light {
+        glm::vec3 position = glm::vec3(0.0f);                    // world position
+        float range = 10.0f;                                     // 0 = infinite falloff, otherwise smooth cutoff
+        glm::vec3 color = glm::vec3(1.0f);                       // linear light color
+        float intensity = 1.0f;                                  // radiance scale (color * intensity)
+        bool spot = false;                                       // false = point light (omni)
+        glm::vec3 spot_direction = glm::vec3(0.0f, -1.0f, 0.0f); // spot axis (normalized when spot)
+        float spot_outer_cos = -0.2f;                            // cos of the outer cone half-angle (spot only)
+    };
+    /** @brief max simultaneous punctual lights (LightUBO.punctual_lights / GLSL PunctualLight array) */
+    export constexpr uint32_t max_punctual_lights = 2;
+    /** @brief one punctual light in the GPU light UBO (std140, 64 bytes; mirror PunctualLight in pbr.frag) */
+    export struct point_light {
+        glm::vec4 position = {}; // xyz: world position (w unused)
+        glm::vec4 color = {};    // xyz: linear color * intensity (w unused)
+        glm::vec4 spot_dir = {}; // xyz: spot axis, normalized when the light is a spot (w unused)
+        glm::vec4 params = {};   // x = range (0 = infinite), y = 0 point / 1 spot, z = cos(outer cone), w = unused
+    };
+
+    /**
+     * @ingroup vulkan_runtime_scene_tree
+     * @brief light UBO content, layout matches the LightUBO block in pbr.frag / shadow.vert
+     *        (scene set binding 7): light-space view-proj + the light direction, then the
+     *        active punctual light count and the punctual light array
+     * @note the directional sun is built from the scene bounds (enable_shadows) and the shadow
+     *       map samples agree on its direction; punctual lights never cast shadows and ride the
+     *       same block after the directional header
      */
     export struct light_ubo {
         glm::mat4 light_view_proj; // world -> light clip space (orthographic)
@@ -268,8 +294,10 @@ namespace vulkan {
         float brdf_model = 0.0f;
         float diffuse_model = 0.0f;
         float pad = 0.0f;
+        glm::vec4 light_count = {}; // x = number of active punctual lights (GLSL reads it as uint + vec3 pad)
+        std::array<point_light, max_punctual_lights> punctual_lights = {};
     };
-    static_assert(sizeof(light_ubo) == 96);
+    static_assert(sizeof(light_ubo) == 112 + static_cast<int>(64 * max_punctual_lights));
 
     /**
      * @ingroup vulkan_runtime_scene_tree

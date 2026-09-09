@@ -125,6 +125,17 @@ namespace chores {
         int brdf_model = 0;                // brdf-model combo (0 = GGX+joint, 1 = GGX+height-corr,
                                            // 2 = Beckmann, 3 = Blinn-Phong); write-through to runtime
         int diffuse_model = 0;             // diffuse combo (0 = Lambert, 1 = Oren-Nayar)
+        // two demo point lights: the gui rows below edit these fields live (no per-widget
+        // callbacks), and main() pushes the enabled set to the runtime once per frame via
+        // chores::apply_point_lights(). Plain C arrays keep this interface glm-free.
+        struct light_slot {
+            bool enabled = false;
+            float position[3] = {0.0f, 0.0f, 0.0f};
+            float color[3] = {1.0f, 1.0f, 1.0f};
+            float intensity = 1.0f;
+            float range = 10.0f;
+        };
+        light_slot point_lights[2] = {};
     };
 
     /**
@@ -155,6 +166,15 @@ namespace chores {
                           vulkan::animation::controller& animation,
                           std::vector<std::string> const& camera_names,
                           std::function<void(int)> const& on_camera_selected);
+
+    /**
+     * @ingroup chores
+     * @brief push the enabled point-light slots of @p bindings into the runtime's light UBO.
+     *        Called once per frame from main (while the gui is active): the gui widgets edit
+     *        bindings.point_lights live, so a drag/toggle becomes visible next frame without
+     *        per-widget callbacks. Cheap no-op when nothing is enabled.
+     */
+    export void apply_point_lights(vulkan::runtime& runtime, gui_bindings const& bindings);
 
     /**
      * @ingroup chores

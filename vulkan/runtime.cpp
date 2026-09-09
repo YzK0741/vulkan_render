@@ -1672,6 +1672,25 @@ namespace vulkan {
         this->light_state.diffuse_model = static_cast<float>(std::clamp(model, 0, 1));
     }
 
+    void runtime::set_point_lights(std::span<punctual_light const> lights) noexcept {
+        // CPU-side only (same rule as set_brdf_model): encode into light_state's GPU-layout
+        // array; pace_and_acquire() copies the whole light UBO into the paced slot's buffer.
+        uint32_t count = 0;
+        for (punctual_light const& light : lights) {
+            if (count >= max_punctual_lights) {
+                break;
+            }
+            point_light& slot = this->light_state.punctual_lights[count];
+            slot.position = glm::vec4(light.position, 0.0f);
+            // color already scaled by intensity (radiance units, as the shader expects)
+            slot.color = glm::vec4(light.color * light.intensity, 0.0f);
+            slot.spot_dir = glm::vec4(glm::normalize(light.spot_direction), 0.0f);
+            slot.params = glm::vec4(light.range, light.spot ? 1.0f : 0.0f, light.spot_outer_cos, 0.0f);
+            ++count;
+        }
+        this->light_state.light_count.x = static_cast<float>(count);
+    }
+
     void runtime::set_scene_transform(glm::mat4 const& transform) {
         this->scene_transform = transform;
         this->bvh_dirty = true; // whole-scene transform changes every leaf's world AABB

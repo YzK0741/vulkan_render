@@ -370,6 +370,8 @@ int main(int argc, char** argv) {
         frame_stats.tick();
         if (use_gui) {
             gui.fps = frame_stats.smoothed_fps(); // live smoothed value for the overlay
+            // point-light widgets edit gui.point_lights live; push the enabled set every frame
+            chores::apply_point_lights(runtime, gui);
         }
         if (frame_stats.window_rolled()) {
             // once per second: the fps log line stays for headless / non-gui runs; the overlay

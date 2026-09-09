@@ -52,9 +52,20 @@ layout(push_constant) uniform PushConstants {
     mat4 model;          // per-model world transform (kept out of the shared camera UBO; unused here)
 } push;
 
-// Directional light UBO (scene set binding 7): the orthographic light view-proj (world -> shadow
-// map) and the light direction. The direction is filled by the CPU (make_directional_light_ubo)
-// and matches the sky sun, so the direct light, the visible sun disc and the shadows all agree.
+// Light UBO (scene set binding 7): the orthographic light view-proj (world -> shadow map) and
+// the light direction, followed by the active punctual lights. The direction is filled by the
+// CPU (make_directional_light_ubo) and matches the sky sun, so the direct light, the visible
+// sun disc and the shadows all agree. Layout must match vulkan::light_ubo in scene_tree.cppm
+// (std140): mat4 | vec4 | 4 floats | uint+vec3 | PunctualLight[2].
+const int MAX_PUNCTUAL_LIGHTS = 2; // vulkan::max_punctual_lights
+
+struct PunctualLight {
+    vec4 position; // xyz: world position (w unused)
+    vec4 color;    // xyz: linear color * intensity (w unused)
+    vec4 spot_dir; // xyz: spot axis, normalized for spot lights (w unused)
+    vec4 params;   // x = range (0 = infinite), y = 0 point / 1 spot, z = cos(outer cone), w = unused
+};
+
 layout(set = 0, binding = 7) uniform LightUBO {
     mat4 light_view_proj;
     vec4 light_dir; // xyz: normalized light direction
@@ -67,6 +78,9 @@ layout(set = 0, binding = 7) uniform LightUBO {
     float brdf_model;
     float diffuse_model;
     float _pad;
+    uint light_count;
+    vec3 _pad2;
+    PunctualLight punctual_lights[MAX_PUNCTUAL_LIGHTS];
 } light;
 
 // Shadow map (scene set binding 8): depth-compare sampler (sampler2DShadow) with LINEAR
@@ -189,6 +203,53 @@ vec3 fresnel_schlick(float cos_theta, vec3 f0) {
     return f0 + (1.0 - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
 }
 
+// Cook-Torrance direct light for ONE light, in radiance units. @p light_radiance carries the
+// light's intensity/attenuation (and, for the sun, its shadow factor); ndotl is folded in
+// here. The BRDF theory selections (LightUBO.brdf_model / diffuse_model) are applied inside so
+// the directional sun and every punctual light take the exact same code path.
+vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, float roughness, vec3 f0, vec3 light_dir, vec3 light_radiance) {
+    vec3 l = normalize(light_dir);
+    vec3 h = normalize(v + l);
+
+    // ---- Specular NDF / visibility by the selected BRDF preset. Preset 0 = GGX + joint
+    //      Smith, byte-for-byte the historic default; each other preset differs by exactly one
+    //      piece so the gui is a live A/B compare.
+    float ndf;
+    float vis;
+    const int brdf_model = int(light.brdf_model + 0.5);
+    if (brdf_model == 1) {
+        ndf = distribution_ggx(n, h, roughness);
+        vis = geometry_vis_smith_height_correlated(n, v, l, roughness);
+    } else if (brdf_model == 2) {
+        ndf = distribution_beckmann(n, h, roughness);
+        vis = geometry_vis_smith_joint_approx(n, v, l, roughness);
+    } else if (brdf_model == 3) {
+        ndf = distribution_blinn_phong(n, h, roughness);
+        vis = geometry_vis_smith_joint_approx(n, v, l, roughness);
+    } else {
+        ndf = distribution_ggx(n, h, roughness);
+        vis = geometry_vis_smith_joint_approx(n, v, l, roughness);
+    }
+    vec3 f = fresnel_schlick(max(dot(h, v), 0.0), f0);
+
+    // UE structure: specular = D * Vis * F (Vis already folds in G / (4 NoV NoL))
+    vec3 specular = ndf * vis * f;
+
+    vec3 kd = (1.0 - f) * (1.0 - metallic);
+    float ndotv = max(dot(n, v), 0.0);
+    float ndotl = max(dot(n, l), 0.0);
+
+    // ---- Diffuse by the selected model (LightUBO.diffuse_model): Lambert (default) or the
+    //      roughness-dependent Oren-Nayar approximation (0 -> Lambert).
+    vec3 diffuse;
+    if (int(light.diffuse_model + 0.5) == 1) {
+        diffuse = kd * base_color * oren_nayar_diffuse(n, v, l, roughness, ndotv, ndotl);
+    } else {
+        diffuse = kd * base_color / PI;
+    }
+    return (diffuse + specular) * (light_radiance * ndotl);
+}
+
 // ---- IBL: split-sum approximation (ported from glTF-Sample-Renderer's ibl.glsl) ----
 
 // Diffuse ambient: irradiance map
@@ -279,52 +340,45 @@ void main() {
         n = -n;
     }
 
-    // ---- Cook-Torrance BRDF (single directional light, direction from the shared LightUBO so
-    //      the direct light always agrees with the shadow map and the sky sun) ----
+    // ---- Direct light: the directional sun + the active punctual lights, all through the
+    //      shared evaluate_direct_light() (same BRDF theory path, so they agree visually).
     vec3 v = normalize(camera.camera_pos - v_world_pos);
-    vec3 l = normalize(light.light_dir.xyz);
-    vec3 h = normalize(v + l);
-
     vec3 f0 = mix(vec3(0.04), base_color.rgb, metallic);
 
-    // ---- Specular NDF / visibility by the selected BRDF preset (LightUBO.brdf_model, gui
-    //      "brdf model"). Preset 0 = GGX + joint Smith, byte-for-byte the historic default;
-    //      each other preset differs by exactly one piece so the gui is a live A/B compare.
-    float ndf;
-    float vis;
-    const int brdf_model = int(light.brdf_model + 0.5);
-    if (brdf_model == 1) {
-        ndf = distribution_ggx(n, h, roughness);
-        vis = geometry_vis_smith_height_correlated(n, v, l, roughness);
-    } else if (brdf_model == 2) {
-        ndf = distribution_beckmann(n, h, roughness);
-        vis = geometry_vis_smith_joint_approx(n, v, l, roughness);
-    } else if (brdf_model == 3) {
-        ndf = distribution_blinn_phong(n, h, roughness);
-        vis = geometry_vis_smith_joint_approx(n, v, l, roughness);
-    } else {
-        ndf = distribution_ggx(n, h, roughness);
-        vis = geometry_vis_smith_joint_approx(n, v, l, roughness);
+    vec3 direct = vec3(0.0);
+    // directional sun: shadow factor attenuates only this light; IBL ambient stays unshadowed
+    {
+        float shadow = (light.shadow_enabled > 0.5) ? calc_shadow(v_world_pos) : 1.0;
+        direct += evaluate_direct_light(n, v, base_color.rgb, metallic, roughness, f0, light.light_dir.xyz, vec3(7.5) * shadow);
     }
-    vec3 f = fresnel_schlick(max(dot(h, v), 0.0), f0);
-
-    // UE structure: specular = D * Vis * F (Vis already folds in G / (4 NoV NoL))
-    vec3 specular = ndf * vis * f;
-
-    vec3 kd = (1.0 - f) * (1.0 - metallic);
-    float ndotv = max(dot(n, v), 0.0);
-    float ndotl = max(dot(n, l), 0.0);
-    float shadow = (light.shadow_enabled > 0.5) ? calc_shadow(v_world_pos) : 1.0;
-    // direct-light radiance is attenuated by the shadow factor; IBL ambient stays unshadowed
-    vec3 radiance = vec3(7.5) * ndotl * shadow;
-
-    // ---- Diffuse by the selected model (LightUBO.diffuse_model): Lambert (default) or the
-    //      roughness-dependent Oren-Nayar approximation (0 -> Lambert).
-    vec3 diffuse;
-    if (int(light.diffuse_model + 0.5) == 1) {
-        diffuse = kd * base_color.rgb * oren_nayar_diffuse(n, v, l, roughness, ndotv, ndotl);
-    } else {
-        diffuse = kd * base_color.rgb / PI;
+    // punctual lights (point/spot, no shadow casting in this version): inverse-square falloff
+    // (well-behaved at zero distance) with an optional smooth range cutoff; spots add a soft
+    // cone mask between the inner and outer half-angles
+    for (int i = 0; i < MAX_PUNCTUAL_LIGHTS; ++i) {
+        if (i >= int(light.light_count)) {
+            break;
+        }
+        const PunctualLight pl = light.punctual_lights[i];
+        vec3 to_light = pl.position.xyz - v_world_pos;
+        const float dist = length(to_light);
+        const vec3 dir = dist > 1e-6 ? to_light / dist : vec3(0.0, 1.0, 0.0);
+        vec3 radiance = pl.color.xyz / (1.0 + dist * dist);
+        const float range = pl.params.x;
+        if (range > 0.0) {
+            // smooth range cutoff (no hard pop at the boundary)
+            const float d = dist / range;
+            const float fade = clamp(1.0 - d * d, 0.0, 1.0);
+            radiance *= fade * fade;
+        }
+        if (pl.params.y > 0.5) { // spot light: cone around spot_dir
+            const float outer = pl.params.z;
+            const float inner = mix(outer, 1.0, 0.6);
+            const float cone = smoothstep(outer, inner, dot(-dir, normalize(pl.spot_dir.xyz)));
+            radiance *= cone;
+        }
+        if (radiance != vec3(0.0)) {
+            direct += evaluate_direct_light(n, v, base_color.rgb, metallic, roughness, f0, dir, radiance);
+        }
     }
 
     // ---- IBL (split-sum): diffuse irradiance + prefiltered specular ----
@@ -337,7 +391,7 @@ void main() {
     vec3 ambient = ibl_diffuse * base_color.rgb * ao * (1.0 - metallic);
     vec3 specular_ibl = ibl_specular * fresnel_ibl * ao;
 
-    vec3 color = ambient + (diffuse + specular) * radiance + specular_ibl + emissive;
+    vec3 color = ambient + direct + specular_ibl + emissive;
 
     // ---- Tonemapping + gamma correction ----
     color = aces_tone_mapping(color);
