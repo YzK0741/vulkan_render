@@ -58,10 +58,13 @@ namespace utility {
             }
             current_task();
             {
-                // finished (or dropped above): the task's priority group made progress
+                // finished (or dropped above): the task's priority group made progress.
+                // notify_one suffices: the only waiter on idle is the caller of
+                // wait_until_free / wait_until_priority_done (one thread); waking all would
+                // only thundering-herd them into the mutex for nothing.
                 std::lock_guard lock(this->access_mutex);
                 this->note_task_finished(current_priority);
-                this->idle.notify_all();
+                this->idle.notify_one();
             }
         }
     }

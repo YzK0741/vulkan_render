@@ -1037,11 +1037,13 @@ namespace vulkan {
                 shadow_sec_begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
                 shadow_sec_begin.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
                 shadow_sec_begin.pInheritanceInfo = &shadow_sec_inherit;
+                bool shadow_recorded = false;
                 if (vkBeginCommandBuffer(shadow_secondary, &shadow_sec_begin) != VK_SUCCESS) {
                     utility::log("runtime: shadow secondary command buffer begin failed - shadow pass skipped this frame");
                 } else {
                     this->record_shadow_content(shadow_secondary);
                     vkEndCommandBuffer(shadow_secondary);
+                    shadow_recorded = true;
                 }
 
                 // Transition the shadow image to a renderable depth attachment (loadOp CLEAR
@@ -1084,8 +1086,12 @@ namespace vulkan {
                 shadow_rendering_info.pDepthAttachment = &shadow_depth_attachment;
                 vkCmdBeginRendering(*command_buffer, &shadow_rendering_info);
 
-                // Run the pre-recorded shadow secondary (the whole scene casts shadows)
-                vkCmdExecuteCommands(*command_buffer, 1, &shadow_secondary);
+                // Run the pre-recorded shadow secondary (the whole scene casts shadows). Never
+                // execute a secondary whose begin failed - executing an unrecorded command
+                // buffer is a VUID and can wedge the frame slot.
+                if (shadow_recorded) {
+                    vkCmdExecuteCommands(*command_buffer, 1, &shadow_secondary);
+                }
                 vkCmdEndRendering(*command_buffer);
 
                 // Hand the shadow map back to the main pass as a sampled texture
@@ -1219,8 +1225,10 @@ namespace vulkan {
         // few + order-sensitive, so no parallel fan-out). Its environment keeps the session
         // default but transparent draws disable depth writes via env.set_depth_write(false)
         // (each leaf's draw() requests it). Recorded only when there are transparent leaves.
+        // recorded_* flags gate the execute below: a secondary whose begin failed must never be
+        // executed (executing an unrecorded command buffer is a VUID and can wedge the slot).
         VkCommandBuffer const transparent_secondary = *secondaries[static_cast<std::size_t>(secondary_pass::transparent)];
-        bool const has_transparent = !this->frame_transparent.empty();
+        bool has_transparent = !this->frame_transparent.empty();
         auto const record_transparent_pass = [&] {
             if (!has_transparent) {
                 return;
@@ -1230,6 +1238,7 @@ namespace vulkan {
                 vkEndCommandBuffer(transparent_secondary);
             } else {
                 utility::log("runtime: transparent secondary begin failed - transparent leaves skipped this frame");
+                has_transparent = false; // do not execute the unrecorded buffer
             }
         };
 
@@ -1237,27 +1246,33 @@ namespace vulkan {
             // Few leaves: parallel recording would cost more than it saves - record the whole
             // main pass on one segment (identical to stage 2) on this thread.
             VkCommandBuffer const single_main = *main_segments[0].second;
+            bool main_recorded = false;
             if (vkBeginCommandBuffer(single_main, &main_sec_begin) == VK_SUCCESS) {
                 this->record_main_content(single_main);
                 vkEndCommandBuffer(single_main);
+                main_recorded = true;
             } else {
                 utility::log("runtime: main secondary begin failed - scene skipped this frame");
             }
+            bool gui_recorded = false;
             if (this->debug_overlay.is_active()) {
                 if (vkBeginCommandBuffer(gui_secondary, &main_sec_begin) == VK_SUCCESS) {
                     this->debug_overlay.record(gui_secondary);
                     vkEndCommandBuffer(gui_secondary);
+                    gui_recorded = true;
                 } else {
                     utility::log("runtime: gui secondary begin failed - overlay skipped this frame");
                 }
             }
             this->begin_rendering(*command_buffer, this->current_image_index, VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT);
-            vkCmdExecuteCommands(*command_buffer, 1, &single_main);
+            if (main_recorded) {
+                vkCmdExecuteCommands(*command_buffer, 1, &single_main);
+            }
             record_transparent_pass(); // alpha-blended leaves compose over the opaque depth
             if (has_transparent) {
                 vkCmdExecuteCommands(*command_buffer, 1, &transparent_secondary);
             }
-            if (this->debug_overlay.is_active()) {
+            if (gui_recorded) {
                 vkCmdExecuteCommands(*command_buffer, 1, &gui_secondary);
             }
             return;
@@ -1288,12 +1303,15 @@ namespace vulkan {
         // The gui overlay + the transparent pass record on the PRIMARY thread (the gui recorder
         // touches Dear ImGui global state via ImGui::Render()/GetDrawData; transparent leaves
         // are few + order-sensitive) - the pool workers above only recorded scene secondaries,
-        // so nothing races them.
+        // so nothing races them. Like the single-segment branch, a secondary whose begin failed
+        // is never executed.
         record_transparent_pass();
+        bool gui_recorded = false;
         if (this->debug_overlay.is_active()) {
             if (vkBeginCommandBuffer(gui_secondary, &main_sec_begin) == VK_SUCCESS) {
                 this->debug_overlay.record(gui_secondary);
                 vkEndCommandBuffer(gui_secondary);
+                gui_recorded = true;
             } else {
                 utility::log("runtime: gui secondary begin failed - overlay skipped this frame");
             }
@@ -1308,7 +1326,7 @@ namespace vulkan {
         if (has_transparent) {
             vkCmdExecuteCommands(*command_buffer, 1, &transparent_secondary);
         }
-        if (this->debug_overlay.is_active()) {
+        if (gui_recorded) {
             vkCmdExecuteCommands(*command_buffer, 1, &gui_secondary);
         }
     }
@@ -1345,18 +1363,24 @@ namespace vulkan {
         env.bind = [this](VkCommandBuffer const cb, std::string_view const /*name*/) {
             this->shadow_pipeline->begin_pipeline(cb);
         };
-        // The shadow pass MUST write depth for every caster (transparent leaves included): its
-        // env always records depth-write ENABLED (VK_TRUE) regardless of what a leaf requests -
-        // the first leaf's set_depth_write() emits the one required vkCmdSetDepthWriteEnable
-        // and later leaves dedupe against it. (The pipeline declares depth-write as dynamic
-        // state, so it must be set at least once even though the value matches the default.)
+        // The shadow pass MUST write depth for every caster: its env always records depth-write
+        // ENABLED (VK_TRUE) regardless of what a leaf requests - the first leaf's
+        // set_depth_write() emits the one required vkCmdSetDepthWriteEnable and later leaves
+        // dedupe against it. (The pipeline declares depth-write as dynamic state, so it must be
+        // set at least once even though the value matches the default.)
         env.set_depth_write_fn = [](VkCommandBuffer const cb, VkBool32 const) {
             vkCmdSetDepthWriteEnable(cb, VK_TRUE);
         };
         env.layout = vk.scene_pipeline_layout;
         // draw only the casters that can throw a shadow into the camera frustum (see
-        // shadow_casters in begin_recording); the whole scene only when culling is disabled
+        // shadow_casters in begin_recording); the whole scene only when culling is disabled.
+        // BLEND (transparent) and MASK leaves are skipped: the depth-only shadow shader has no
+        // alpha test, so a masked leaf would cast a SOLID shadow (and a transparent leaf a
+        // wrong one) - no shadow is the correct fallback for both.
         for (primitive const* m : this->shadow_casters) {
+            if (m->transparent || m->alpha_masked) {
+                continue;
+            }
             m->draw(env); // depth-only: shadow.vert transforms into light space
         }
     }
@@ -1793,6 +1817,7 @@ namespace vulkan {
         result->push.model = info.model_matrix;
         result->double_sided = info.double_sided;
         result->transparent = info.factors.alpha_blend;
+        result->alpha_masked = info.factors.alpha_mask;
         return result;
     }
 
@@ -1841,6 +1866,7 @@ namespace vulkan {
         result->push.model = glm::mat4(1.0f);
         result->double_sided = source.double_sided;
         result->transparent = source.transparent; // same material semantics as the source geometry
+        result->alpha_masked = source.alpha_masked;
 
         scene_tree::scene_node& leaf = this->get_scene().add_root();
         leaf.name = "pbr";
@@ -1928,8 +1954,10 @@ namespace vulkan {
             result->chunks.push_back(record);
             // A merged batch with any transparent chunk is drawn as ONE transparent unit in the
             // transparent pass (depth-write off). Within the batch the chunk order is the draw
-            // order - the caller packs back-to-front chunks itself.
+            // order - the caller packs back-to-front chunks itself. Masked chunks likewise mark
+            // the whole batch so the shadow pass skips it (no alpha test in the depth shader).
             result->transparent = result->transparent || chunk.factors.alpha_blend;
+            result->alpha_masked = result->alpha_masked || chunk.factors.alpha_mask;
         }
         if (result->chunks.empty()) {
             return nullptr; // every chunk was empty: nothing drawable
