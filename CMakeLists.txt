@@ -3,7 +3,9 @@ project(vulkan_render VERSION 0.1.0)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
-set(CMAKE_CXX_FLAGS "-std=c++23")
+# NOTE: do NOT add "-std=c++23" to CMAKE_CXX_FLAGS here - CMAKE_CXX_STANDARD already injects it,
+# and doing both duplicates the flag on every TU (same for -O3 / -g, which the default per-config
+# flags already provide - see COMPILE_OPTIONS below).
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Vulkan REQUIRED)
@@ -24,11 +26,14 @@ else()
     target_link_libraries(glfw INTERFACE ${GLFW_LIBRARY} Threads::Threads)
 endif()
 
+# Project-wide compiler flags, applied to every first-party C++ target below via a single
+# foreach (see "compile options" further down). Per-config additions ride on the DEFAULT
+# per-config flags (Release already adds -O3 -DNDEBUG, Debug -g), so only the extras that the
+# defaults do not cover are listed here - keeping the flags duplicated here AND in the defaults
+# would put -O3 / -g on the command line twice.
 set(COMPILE_OPTIONS
         $<$<CONFIG:Release>:
-        -O3
         -fno-rtti
-        -fno-exceptions
         -ffunction-sections
         -fdata-sections
         -flto
@@ -38,7 +43,6 @@ set(COMPILE_OPTIONS
         -fmerge-all-constants
         >
         $<$<CONFIG:Debug>:
-        -g
         -fno-omit-frame-pointer
         >
         -fno-exceptions
@@ -203,8 +207,8 @@ target_link_libraries(imgui
 )
 
 # xxHash (vendored under third_party/xxhash, see the LICENSE there): non-cryptographic
-# 64-bit content hashing (XXH3_64bits) used by utility::xxh3_64bits for image/texture
-# dedup. Compiled as its own plain-C target, mirroring the imgui policy above (vendored
+# content hashing (XXH3_128bits) used by utility::xxh3_128bits for image/texture dedup.
+# Compiled as its own plain-C target, mirroring the imgui policy above (vendored
 # code does not follow the project's -Werror set). The utility module links it.
 add_library(xxhash STATIC
         third_party/xxhash/xxhash.c
@@ -293,9 +297,9 @@ add_executable(vulkan_render main.cpp)
 # still calls main(), only the subsystem changes. Debug keeps the console for terminal log output.
 set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE $<$<CONFIG:Release>:ON>)
 
-# utility.cpp implements the xxHash-based hash functions (utility::xxh3_64bits) on top of
+# utility.cpp implements the xxHash-based hash functions (utility::xxh3_128bits) on top of
 # the vendored xxhash library, so the dependency is declared here, on the library that
-# actually uses the XXH3_64bits symbol. It propagates to consumers (vulkancorekit / gltf_loader
+# actually uses the XXH3_128bits symbol. It propagates to consumers (vulkancorekit / gltf_loader
 # / vulkan_render) at link time, so the executable does not need to link xxhash itself.
 # better_pmr (utility.better_pmr) routes std::pmr allocations through the vendored mimalloc
 # (third_party/mimalloc), so the executable no longer needs MSYS2's libmimalloc.dll.
@@ -355,36 +359,15 @@ target_link_options(${PROJECT_NAME} PRIVATE
         $<$<AND:$<CONFIG:Release>,$<PLATFORM_ID:Windows>>:-static>
 )
 
-target_compile_options(std_lib PRIVATE
-        ${COMPILE_OPTIONS}
-)
-
-target_compile_options(vulkan_render PRIVATE
-        ${COMPILE_OPTIONS}
-)
-
-target_compile_options(vulkancorekit PRIVATE
-        ${COMPILE_OPTIONS}
-)
-
-target_compile_options(utility PRIVATE
-        ${COMPILE_OPTIONS}
-)
-
-target_compile_options(gltf_loader PRIVATE
-        ${COMPILE_OPTIONS}
-        # vendored fastgltf headers are upstream code: relax one warning their templates trip
-        # under -fno-exceptions (raise() leaves its arguments unused on the abort() path)
-        -Wno-unused-parameter
-)
-
-target_compile_options(app_config PRIVATE
-        ${COMPILE_OPTIONS}
-)
-
-target_compile_options(chores PRIVATE
-        ${COMPILE_OPTIONS}
-)
+# ---- compile options: one shared flag set on every first-party C++ target (vendored code is
+# deliberately excluded - imgui / fastgltf / simdjson / xxhash / mimalloc do not follow the
+# project's -Werror set, see their own targets above).
+foreach(compile_target IN ITEMS std_lib vulkan_render vulkancorekit utility gltf_loader app_config chores)
+    target_compile_options(${compile_target} PRIVATE ${COMPILE_OPTIONS})
+endforeach()
+# vendored fastgltf headers are upstream code: relax one warning their templates trip under
+# -fno-exceptions (raise() leaves its arguments unused on the abort() path)
+target_compile_options(gltf_loader PRIVATE -Wno-unused-parameter)
 
 target_compile_definitions(vulkancorekit PRIVATE
         $<$<CONFIG:Debug>:
@@ -404,11 +387,11 @@ foreach(version_target IN ITEMS vulkancorekit vulkan_render)
     )
 endforeach()
 
-#-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
-#clang - format : run automatically before compiling
-#Only format when a source is newer than the stamp (i.e. changed), avoiding reformatting on every build,
-#which would touch source mtimes and trigger endless recompiles
-#-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
+# ---------------------------------------------------------------------------------------------
+# clang-format: run automatically before compiling. Only formats when a source is newer than
+# the stamp (i.e. changed), avoiding reformatting on every build, which would touch source
+# mtimes and trigger endless recompiles.
+# ---------------------------------------------------------------------------------------------
 find_program(CLANG_FORMAT_EXECUTABLE clang-format)
 
 if(CLANG_FORMAT_EXECUTABLE)
