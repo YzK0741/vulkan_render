@@ -34,7 +34,8 @@ bool hit(glm::vec3 const& min, glm::vec3 const& max, glm::vec3 const& start, glm
 }
 
 namespace {
-    utility::morton_code morton_encode(uint32_t const x, uint32_t const y, uint32_t const z) {
+    // constexpr so the interleaving is verifiable at compile time (static_assert below)
+    constexpr utility::morton_code morton_encode(uint32_t const x, uint32_t const y, uint32_t const z) {
         utility::morton_code code;
         auto* const out = code.data.data();
 
@@ -56,9 +57,21 @@ namespace {
         result |= static_cast<__uint128_t>(y_spread) << 1;
         result |= static_cast<__uint128_t>(z_spread) << 2;
 
-        memcpy(out, &result, 12);
+        // little-endian byte dump of the 96-bit code (memcpy is not constexpr)
+        for (int byte = 0; byte < 12; ++byte) {
+            out[byte] = static_cast<uint8_t>(result >> (8 * byte));
+        }
         return code;
     }
+
+    // Compile-time self-check: the axis bits land at their interleaved offsets in the 96-bit
+    // code (x at bit 0, y at bit 1, z at bit 2) -> little-endian first bytes 1 / 2 / 4.
+    constexpr uint8_t axis_x[] = {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    constexpr uint8_t axis_y[] = {2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    constexpr uint8_t axis_z[] = {4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    static_assert(morton_encode(1, 0, 0) == utility::morton_code(axis_x));
+    static_assert(morton_encode(0, 1, 0) == utility::morton_code(axis_y));
+    static_assert(morton_encode(0, 0, 1) == utility::morton_code(axis_z));
 } // namespace
 
 namespace utility {

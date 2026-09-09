@@ -15,6 +15,13 @@
 import utility;
 
 namespace {
+    // Compile-time self-checks: data_block is fully constexpr (zero-init default + FNV-1a).
+    // FNV-1a-64 golden vectors: {1,2,3,4} -> 13725386680924731485, {0,0,0,0} -> 5558979605539197941.
+    constexpr unsigned char golden_bytes[] = {1, 2, 3, 4};
+    static_assert(utility::data_block<4>(golden_bytes).hash64() == 13725386680924731485ull);
+    static_assert(utility::data_block<4>().hash64() == 5558979605539197941ull); // default = zeroed
+    static_assert(utility::data_block<4>(golden_bytes) == utility::data_block<4>(golden_bytes));
+
     void test_xxh3_content_hash() {
         unsigned char const a[] = {1, 2, 3, 4, 5};
         unsigned char const b[] = {1, 2, 3, 4, 5};
@@ -33,6 +40,9 @@ namespace {
         utility::data_block<4> y{};
         x.data = {1, 2, 3, 4};
         y.data = {1, 2, 3, 4};
+        // the C-array constructor copies element-for-element (also exercised at compile time above)
+        utility::data_block<4> const from_c_array(golden_bytes);
+        CHECK(from_c_array == x);
         CHECK(x == y);
         CHECK(x != zeros);
         CHECK(zeros < x); // lexicographic ordering for ordered containers

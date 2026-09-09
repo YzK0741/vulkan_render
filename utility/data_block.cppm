@@ -19,19 +19,32 @@ namespace utility {
     export template <size_t S>
     struct data_block {
         constexpr static uint32_t size_byte = S;
-        std::array<uint8_t, S> data;
+        std::array<uint8_t, S> data = {}; // NSDMI: default construction zero-initializes
 
         constexpr static size_t size = S;
 
-        bool operator==(data_block<S> const& other) const {
+        /** @brief zero-initialized block */
+        constexpr data_block() noexcept = default;
+
+        /**
+         * @brief copy a caller-owned C array of exactly S bytes
+         * @param bytes byte array to copy from (compile-time usable, e.g. for static_assert)
+         */
+        constexpr explicit data_block(uint8_t const (&bytes)[S]) noexcept {
+            for (std::size_t i = 0; i < S; ++i) {
+                data[i] = bytes[i];
+            }
+        }
+
+        constexpr bool operator==(data_block<S> const& other) const noexcept {
             return std::ranges::equal(data, other.data);
         }
 
-        bool operator!=(data_block<S> const& other) const {
+        constexpr bool operator!=(data_block<S> const& other) const noexcept {
             return !(*this == other);
         }
 
-        auto operator<=>(data_block<S> const& other) const {
+        constexpr auto operator<=>(data_block<S> const& other) const noexcept {
             return std::lexicographical_compare_three_way(
                 data.begin(), data.end(),
                 other.data.begin(), other.data.end());
@@ -39,7 +52,7 @@ namespace utility {
 
         // Ordering for ordered containers: std::map / std::set keys compare with operator<,
         // which is not synthesized from <=> (C++20 gives us <=> only).
-        bool operator<(data_block<S> const& other) const {
+        constexpr bool operator<(data_block<S> const& other) const noexcept {
             return (*this <=> other) < 0;
         }
 
@@ -47,7 +60,7 @@ namespace utility {
          * @brief FNV-1a 64-bit hash of the bytes (unordered-container key support)
          * @return a stable 64-bit fingerprint of the block's contents
          */
-        [[nodiscard]] uint64_t hash64() const noexcept {
+        [[nodiscard]] constexpr uint64_t hash64() const noexcept {
             uint64_t hash = 14695981039346656037ull; // FNV offset basis
             for (uint8_t const byte : this->data) {
                 hash ^= byte;
@@ -61,7 +74,7 @@ namespace utility {
          *        std::unordered_map<data_block<N>, V, data_block<N>::hasher>
          */
         struct hasher {
-            size_t operator()(data_block<S> const& block) const noexcept {
+            constexpr size_t operator()(data_block<S> const& block) const noexcept {
                 return static_cast<size_t>(block.hash64());
             }
         };
