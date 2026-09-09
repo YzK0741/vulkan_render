@@ -1931,10 +1931,43 @@ namespace vulkan {
         }
 
         // ---- chunk table: register each chunk's material, record its index range ----
+        // The merged index element count is the hard bound every chunk must stay inside.
+        uint32_t const index_element_size = info.index_type == VK_INDEX_TYPE_UINT16 ? 2u : 4u;
+        if (info.index_data.size_bytes() % index_element_size != 0) {
+            utility::error("static draw: index data size is not a multiple of the index element size");
+            return nullptr;
+        }
+        uint64_t const index_element_count = info.index_data.size_bytes() / index_element_size;
+        auto const* const index_bytes = info.index_data.data();
+
         result->chunks.reserve(info.chunks.size());
         for (static_draw_chunk const& chunk : info.chunks) {
             if (chunk.index_count == 0) {
                 continue; // empty chunk: skip (keeps is_valid simple)
+            }
+            // Bounds check against the merged buffers BEFORE anything is registered: a bad chunk
+            // table (out-of-range index window or a vertex_offset pushing past vertex_count)
+            // would otherwise read out of bounds in vkCmdDrawIndexed - only visible under
+            // validation/debug. Offending chunks are logged and skipped (the batch keeps the
+            // valid remainder, like the material-table overflow degradation).
+            bool const index_window_ok = static_cast<uint64_t>(chunk.first_index) + chunk.index_count <= index_element_count;
+            bool vertex_reference_ok = chunk.vertex_offset < info.vertex_count;
+            if (index_window_ok && vertex_reference_ok) {
+                // walk the chunk's indices to verify the referenced vertices exist (the packer
+                // may have left per-chunk offsets instead of remapping indices)
+                for (uint32_t k = 0; k < chunk.index_count; ++k) {
+                    uint32_t index = 0;
+                    std::memcpy(&index, index_bytes + (static_cast<size_t>(chunk.first_index) + k) * index_element_size, index_element_size);
+                    if (static_cast<uint64_t>(index) + chunk.vertex_offset >= info.vertex_count) {
+                        vertex_reference_ok = false;
+                        break;
+                    }
+                }
+            }
+            if (!index_window_ok || !vertex_reference_ok) {
+                utility::error("static draw: chunk [first_index {}, count {}, vertex_offset {}] out of the merged buffer range ({} indices, {} vertices) - chunk skipped",
+                               chunk.first_index, chunk.index_count, chunk.vertex_offset, index_element_count, info.vertex_count);
+                continue;
             }
             // register this chunk's material (register_material only reads the material
             // fields of primitive_create_info, so a material-only info is enough)
@@ -1961,12 +1994,12 @@ namespace vulkan {
             result->alpha_masked = result->alpha_masked || chunk.factors.alpha_mask;
         }
         if (result->chunks.empty()) {
-            return nullptr; // every chunk was empty: nothing drawable
+            return nullptr; // every chunk was empty or out of range: nothing drawable
         }
-        result->push.model = info.model_matrix;
 
         scene_tree::scene_node& leaf = this->get_scene().add_root();
-        leaf.name = "pbr";
+        leaf.name = "static";
+        leaf.local = info.model_matrix; // whole-batch placement, like make_primitive (update_world fills push.model from it)
         primitive* const created = static_cast<primitive*>(leaf.attach(std::move(result)));
         this->bvh_dirty = true; // new leaf -> culling BVH must be rebuilt
         return created;

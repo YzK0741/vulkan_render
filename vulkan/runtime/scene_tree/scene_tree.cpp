@@ -250,21 +250,10 @@ namespace vulkan {
         vkCmdBindVertexBuffers(command_buffer, 0, 1, &this->vertex_detail->buffer, &vertex_offset_bytes);
         vkCmdBindIndexBuffer(command_buffer, this->index_detail->buffer, 0, this->index_type);
 
-        if (this->chunks.empty()) {
-            // degenerate: draw the whole merged range once (plain normal draw)
-            vkCmdSetCullMode(command_buffer, this->double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
-            vkCmdPushConstants(command_buffer,
-                               env.layout,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0,
-                               sizeof(this->push),
-                               &this->push);
-            vkCmdDrawIndexed(command_buffer, this->index_count, 1, 0, 0, 0);
-            return;
-        }
-
         // chunked: per chunk set the cull mode + material_index (push.material_index is the
-        // first field, so only that slice needs re-pushing; model stays from the base push)
+        // first field, so only that slice needs re-pushing; model stays from the base push).
+        // The chunk table is validated at make_static_draw() time (in-range index windows and
+        // vertex references), so no draw can go out of bounds.
         for (chunk_record const& chunk : this->chunks) {
             vkCmdSetCullMode(command_buffer, chunk.double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
             material_push_constants const chunk_push = [&] {
@@ -300,12 +289,10 @@ namespace vulkan {
     }
 
     bool static_draw_primitive::is_valid() const noexcept {
-        if (this->vertex_detail == nullptr || this->index_detail == nullptr) {
-            return false;
+        if (this->vertex_detail == nullptr || this->index_detail == nullptr || this->chunks.empty()) {
+            return false; // a validated, non-empty chunk table is required (see make_static_draw)
         }
-        return this->chunks.empty()
-                   ? this->index_count != 0 // degenerate whole-range draw
-                   : std::all_of(this->chunks.begin(), this->chunks.end(), [](chunk_record const& c) { return c.index_count != 0; });
+        return std::all_of(this->chunks.begin(), this->chunks.end(), [](chunk_record const& c) { return c.index_count != 0; });
     }
 
     camera_ubo make_orbit_camera_ubo(

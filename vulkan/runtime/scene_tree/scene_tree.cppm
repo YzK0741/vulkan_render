@@ -741,8 +741,10 @@ namespace vulkan {
      * @brief build description for runtime::make_static_draw(): ONE merged vertex/index buffer
      *        (the packer's output) plus the chunk table over it. Each chunk is drawn as a
      *        single offset draw call after ONE buffer bind, so N static sub-meshes cost 1 bind
-     *        + N draws instead of N binds + N draws. Empty chunks = draw the whole merged
-     *        range once (static_draw degenerates to a plain normal draw).
+     *        + N draws instead of N binds + N draws.
+     * @note the chunk table is REQUIRED (a non-empty, validated list): every chunk's index
+     *       window and vertex references are checked against the merged buffers at
+     *       make_static_draw() time - out-of-range chunks are logged and skipped.
      */
     export struct static_draw_create_info {
         std::span<unsigned char const> vertex_data = {};
@@ -762,8 +764,11 @@ namespace vulkan {
      *        offset draw with its own material (push.material_index). Self-contained: no
      *        source primitive to outlive, destroy() releases the owned buffers like a normal
      *        draw. This is the primitive-level form of a static scene: one buffer, one bind,
-     *        N offset draws. push.model places the whole batch (all chunks share the world);
-     *        per-chunk placement needs separate batches or per-chunk model baking later.
+     *        N offset draws. Placement works like every other leaf: the node's local
+     *        transform (set from static_draw_create_info::model_matrix by make_static_draw)
+     *        becomes push.model via update_world, so the whole batch shares one world
+     *        transform; per-chunk placement needs separate batches or per-chunk model baking
+     *        later.
      * @note AABB: one local box over the whole merged geometry (batch-level frustum culling);
      *       per-chunk AABBs would need chunk-level culling, deferred.
      */
@@ -775,10 +780,11 @@ namespace vulkan {
         vk_buffer index_buffer = {};
         buffer_detail const* index_detail = nullptr;
         VkIndexType index_type = VK_INDEX_TYPE_UINT32;
-        uint32_t index_count = 0; // whole merged index range (chunk table empty = draw this once)
+        uint32_t index_count = 0; // whole merged index count (upper bound for chunk validation)
         uint32_t vertex_count = 0;
         // chunk table over the merged buffer; each entry draws once after the single bind.
-        // Material identity lives in material_index; double_sided is per chunk (cull mode)
+        // Material identity lives in material_index; double_sided is per chunk (cull mode).
+        // Always non-empty after make_static_draw() succeeds (chunks are validated there).
         struct chunk_record {
             uint32_t first_index = 0;
             uint32_t index_count = 0;
