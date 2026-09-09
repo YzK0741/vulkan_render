@@ -59,6 +59,14 @@ layout(set = 0, binding = 7) uniform LightUBO {
     mat4 light_view_proj;
     vec4 light_dir; // xyz: normalized light direction
     float shadow_enabled; // 1.0 = sample shadow map, 0.0 = fully lit (runtime::set_shadow_enabled)
+    // selectable BRDF theory models (gui combos -> runtime::set_brdf_model / set_diffuse_model,
+    // CPU-side, riding the std140 padding of this block):
+    //   brdf_model:    0 = GGX + joint Smith (default), 1 = GGX + height-correlated Smith,
+    //                  2 = Beckmann + Smith, 3 = Blinn-Phong + Smith
+    //   diffuse_model: 0 = Lambert (default), 1 = Oren-Nayar
+    float brdf_model;
+    float diffuse_model;
+    float _pad;
 } light;
 
 // Shadow map (scene set binding 8): depth-compare sampler (sampler2DShadow) with LINEAR
@@ -100,6 +108,26 @@ float distribution_ggx(vec3 n, vec3 h, float roughness) {
     return a2 / (PI * denom * denom);
 }
 
+// Alternative NDFs for the selectable BRDF presets (see LightUBO.brdf_model). All share the
+// same perceptual roughness -> alpha^2 mapping as distribution_ggx, so each preset differs by
+// exactly one piece (NDF or visibility) from the default.
+float distribution_beckmann(vec3 n, vec3 h, float roughness) {
+    float a2 = roughness * roughness;
+    a2 = a2 * a2;
+    float ndoth = max(dot(n, h), 1e-4); // guard: tan blows up at grazing, exp() dies first
+    float cos2 = ndoth * ndoth;
+    float tan2 = (1.0 - cos2) / cos2;
+    return exp(-tan2 / a2) / (PI * a2 * cos2 * cos2);
+}
+
+float distribution_blinn_phong(vec3 n, vec3 h, float roughness) {
+    float a2 = roughness * roughness;
+    a2 = a2 * a2;
+    const float exponent = min(2.0 / a2 - 2.0, 4096.0); // classic n = 2 / alpha^2 - 2
+    const float ndoth = max(dot(n, h), 0.0);
+    return (exponent + 2.0) * pow(ndoth, exponent) / (2.0 * PI);
+}
+
 // Geometric shadowing-masking, merged into the visibility term Vis = G / (4 NoV NoL):
 // Heitz's joint Smith approximation for GGX (UE's Vis_SmithJointApprox). One term
 // shadows AND masks in the half-vector sense, so the BRDF is specular = D * Vis * F
@@ -118,6 +146,42 @@ float geometry_vis_smith_joint_approx(vec3 n, vec3 v, vec3 l, float roughness) {
     // skinned limbs like RecursiveSkeletons at certain poses). Clamping the sum keeps Vis large
     // but finite - at ndotl == 0 the product is exactly 0 either way.
     return 0.5 / max(vis_v + vis_l, 1e-5);
+}
+
+// Height-correlated Smith visibility (Heitz 2014) - the exact joint form the approximation
+// above simplifies, selected as brdf_model 1. Uses the same alpha^2 as distribution_ggx.
+float geometry_vis_smith_height_correlated(vec3 n, vec3 v, vec3 l, float roughness) {
+    float a2 = roughness * roughness;
+    a2 = a2 * a2;
+    float ndotv = max(dot(n, v), 0.0);
+    float ndotl = max(dot(n, l), 0.0);
+    const float sqrt_v = sqrt(ndotv * ndotv * (1.0 - a2) + a2);
+    const float sqrt_l = sqrt(ndotl * ndotl * (1.0 - a2) + a2);
+    // same grazing guard as geometry_vis_smith_joint_approx
+    return 0.5 / max(ndotl * sqrt_v + ndotv * sqrt_l, 1e-5);
+}
+
+// Oren-Nayar diffuse (roughness-dependent), selected as diffuse_model 1: the classic A/B
+// approximation of the paper's integral. roughness 0 reduces to Lambert (A = 1, B = 0).
+float oren_nayar_diffuse(vec3 n, vec3 v, vec3 l, float roughness, float ndotv, float ndotl) {
+    const float alpha2 = roughness * roughness;
+    const float A = 1.0 - 0.5 * alpha2 / (alpha2 + 0.33);
+    const float B = 0.45 * alpha2 / (alpha2 + 0.09);
+    const float sin_v = sqrt(max(1.0 - ndotv * ndotv, 0.0));
+    const float sin_l = sqrt(max(1.0 - ndotl * ndotl, 0.0));
+    // cos(phi_i - phi_o): angle between the view/light projections onto the tangent plane
+    const vec3 vp = v - n * ndotv;
+    const vec3 lp = l - n * ndotl;
+    const float vp_len = length(vp);
+    const float lp_len = length(lp);
+    float cos_diff = 0.0;
+    if (vp_len > 1e-6 && lp_len > 1e-6) {
+        cos_diff = clamp(dot(vp, lp) / (vp_len * lp_len), 0.0, 1.0);
+    }
+    // sin(alpha) * tan(beta), alpha/beta = the larger/smaller of the two incident angles
+    const float sin_max = max(sin_v, sin_l);
+    const float tan_min = min(sin_v / max(ndotv, 1e-4), sin_l / max(ndotl, 1e-4));
+    return (A + B * cos_diff * sin_max * tan_min) / PI;
 }
 
 // Fresnel: Schlick approximation
@@ -223,20 +287,45 @@ void main() {
 
     vec3 f0 = mix(vec3(0.04), base_color.rgb, metallic);
 
-    float ndf = distribution_ggx(n, h, roughness);
-    float vis = geometry_vis_smith_joint_approx(n, v, l, roughness);
+    // ---- Specular NDF / visibility by the selected BRDF preset (LightUBO.brdf_model, gui
+    //      "brdf model"). Preset 0 = GGX + joint Smith, byte-for-byte the historic default;
+    //      each other preset differs by exactly one piece so the gui is a live A/B compare.
+    float ndf;
+    float vis;
+    const int brdf_model = int(light.brdf_model + 0.5);
+    if (brdf_model == 1) {
+        ndf = distribution_ggx(n, h, roughness);
+        vis = geometry_vis_smith_height_correlated(n, v, l, roughness);
+    } else if (brdf_model == 2) {
+        ndf = distribution_beckmann(n, h, roughness);
+        vis = geometry_vis_smith_joint_approx(n, v, l, roughness);
+    } else if (brdf_model == 3) {
+        ndf = distribution_blinn_phong(n, h, roughness);
+        vis = geometry_vis_smith_joint_approx(n, v, l, roughness);
+    } else {
+        ndf = distribution_ggx(n, h, roughness);
+        vis = geometry_vis_smith_joint_approx(n, v, l, roughness);
+    }
     vec3 f = fresnel_schlick(max(dot(h, v), 0.0), f0);
 
     // UE structure: specular = D * Vis * F (Vis already folds in G / (4 NoV NoL))
     vec3 specular = ndf * vis * f;
 
     vec3 kd = (1.0 - f) * (1.0 - metallic);
+    float ndotv = max(dot(n, v), 0.0);
     float ndotl = max(dot(n, l), 0.0);
     float shadow = (light.shadow_enabled > 0.5) ? calc_shadow(v_world_pos) : 1.0;
     // direct-light radiance is attenuated by the shadow factor; IBL ambient stays unshadowed
     vec3 radiance = vec3(7.5) * ndotl * shadow;
 
-    vec3 diffuse = kd * base_color.rgb / PI;
+    // ---- Diffuse by the selected model (LightUBO.diffuse_model): Lambert (default) or the
+    //      roughness-dependent Oren-Nayar approximation (0 -> Lambert).
+    vec3 diffuse;
+    if (int(light.diffuse_model + 0.5) == 1) {
+        diffuse = kd * base_color.rgb * oren_nayar_diffuse(n, v, l, roughness, ndotv, ndotl);
+    } else {
+        diffuse = kd * base_color.rgb / PI;
+    }
 
     // ---- IBL (split-sum): diffuse irradiance + prefiltered specular ----
     vec3 ibl_diffuse = get_diffuse_light(n);

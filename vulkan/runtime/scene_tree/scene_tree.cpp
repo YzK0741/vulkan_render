@@ -370,9 +370,9 @@ namespace vulkan {
         ubo.light_view_proj = proj * view;
         ubo.light_dir = glm::vec4(light_dir, 0.0f);
         ubo.shadow_enabled = 1.0f; // shadows on by default; runtime::set_shadow_enabled flips it
-        ubo.pad[0] = 0.0f;
-        ubo.pad[1] = 0.0f;
-        ubo.pad[2] = 0.0f;
+        ubo.brdf_model = 0.0f;     // defaults: GGX + joint Smith, Lambert (see light_ubo docs)
+        ubo.diffuse_model = 0.0f;
+        ubo.pad = 0.0f;
         return ubo;
     }
 } // namespace vulkan

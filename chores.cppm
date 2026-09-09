@@ -122,6 +122,9 @@ namespace chores {
         int current_camera = 0;            // camera combo selection (0 = orbit, 1..N = authored)
         int render_mode = 0;               // render-mode combo (0 = pbr, 1 = unlit); main applies it
                                            // between frames via set_default_pipeline
+        int brdf_model = 0;                // brdf-model combo (0 = GGX+joint, 1 = GGX+height-corr,
+                                           // 2 = Beckmann, 3 = Blinn-Phong); write-through to runtime
+        int diffuse_model = 0;             // diffuse combo (0 = Lambert, 1 = Oren-Nayar)
     };
 
     /**

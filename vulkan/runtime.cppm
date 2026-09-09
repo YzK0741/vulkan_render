@@ -777,6 +777,25 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief select the specular BRDF model preset (pbr.frag, gui "brdf model" combo):
+         *        0 = GGX + joint Smith (default), 1 = GGX + height-correlated Smith,
+         *        2 = Beckmann + Smith, 3 = Blinn-Phong + Smith
+         * @param model preset id (clamped to the valid range)
+         * @note CPU-side only: the value rides the light UBO's std140 padding and is copied into
+         *       the paced slot's buffer every frame, so this is safe at any time (GUI included)
+         */
+        void set_brdf_model(int model) noexcept;
+        /**
+         * @ingroup vulkan_runtime
+         * @brief select the diffuse BRDF model (pbr.frag, gui "diffuse model" combo):
+         *        0 = Lambert (default), 1 = Oren-Nayar
+         * @param model model id (clamped)
+         * @note same timing rule as set_brdf_model
+         */
+        void set_diffuse_model(int model) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief set the live depth bias of the directional shadow pass (applied every frame via
          *        vkCmdSetDepthBias before the depth-only draw)
          * @param constant_factor fixed depth bias added to every fragment's depth

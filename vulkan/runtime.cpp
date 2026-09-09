@@ -1778,6 +1778,17 @@ namespace vulkan {
         utility::log("shadow pass {}", enabled ? "enabled" : "disabled");
     }
 
+    void runtime::set_brdf_model(int const model) noexcept {
+        // CPU-side only, like set_shadow_enabled: pace_and_acquire() copies light_state (which
+        // carries the selected models in the UBO's std140 padding) into the paced slot's light
+        // buffer every frame, so flipping the model mid-run never races an in-flight frame.
+        this->light_state.brdf_model = static_cast<float>(std::clamp(model, 0, 3));
+    }
+
+    void runtime::set_diffuse_model(int const model) noexcept {
+        this->light_state.diffuse_model = static_cast<float>(std::clamp(model, 0, 1));
+    }
+
     void runtime::set_scene_transform(glm::mat4 const& transform) {
         this->scene_transform = transform;
         this->bvh_dirty = true; // whole-scene transform changes every leaf's world AABB

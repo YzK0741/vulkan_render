@@ -233,6 +233,19 @@ namespace chores {
             "render mode",
             std::vector<std::string>{"pbr (lit)", "unlit (flat)"},
             &bindings.render_mode));
+        // selectable BRDF theory models (pbr.frag): preset 0 is the default GGX + joint-Smith;
+        // each other preset differs by exactly one piece (NDF or visibility), so the gui is a
+        // live A/B comparison. CPU-side write-through (safe mid-run, see runtime::set_brdf_model).
+        panel.push_back(std::make_unique<vulkan::gui::combo_widget>(
+            "brdf model",
+            std::vector<std::string>{"GGX + joint Smith", "GGX + height-corr. Smith", "Beckmann + Smith", "Blinn-Phong + Smith"},
+            &bindings.brdf_model,
+            [&runtime](int const index) { runtime.set_brdf_model(index); }));
+        panel.push_back(std::make_unique<vulkan::gui::combo_widget>(
+            "diffuse model",
+            std::vector<std::string>{"Lambert", "Oren-Nayar"},
+            &bindings.diffuse_model,
+            [&runtime](int const index) { runtime.set_diffuse_model(index); }));
         // camera orbit target: dragging it moves what the camera looks at / orbits around
         // (camera.target is a glm::vec3, i.e. three contiguous floats; the runtime rebuilds the
         // camera UBO from it every frame, so no on_change callback is needed)

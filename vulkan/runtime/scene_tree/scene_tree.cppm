@@ -259,8 +259,15 @@ namespace vulkan {
     export struct light_ubo {
         glm::mat4 light_view_proj; // world -> light clip space (orthographic)
         glm::vec4 light_dir;       // xyz: normalized light direction (sun)
-        float shadow_enabled;      // 1.0 samples the shadow map, 0.0 skips shadows (std140 pad to 16)
-        float pad[3];
+        float shadow_enabled;      // 1.0 samples the shadow map, 0.0 skips shadows
+        // Selectable BRDF models (set via runtime::set_brdf_model / set_diffuse_model, gui
+        // combos). Rides the std140 padding of this block - the shader reads them as floats:
+        //   brdf_model:   0 = GGX + joint Smith (default), 1 = GGX + height-correlated Smith,
+        //                 2 = Beckmann + Smith, 3 = Blinn-Phong + Smith
+        //   diffuse_model: 0 = Lambert (default), 1 = Oren-Nayar
+        float brdf_model = 0.0f;
+        float diffuse_model = 0.0f;
+        float pad = 0.0f;
     };
     static_assert(sizeof(light_ubo) == 96);
 
