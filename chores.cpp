@@ -6,7 +6,7 @@ module;
 // std's and the textual libc++ copy baked into utility.data_block.pcm (data_block is the one
 // module that never imports std; it includes libc++ headers in its own GMF). The result is
 // 'call to operator new is ambiguous' at allocate.h. Textually including glm here (the same
-// trick vulkan/animation/animation_controller.cpp uses) makes clang merge the two copies, so
+// trick vulkan/animation/controller.cpp uses) makes clang merge the two copies, so
 // the allocator instantiations resolve. Do not remove this include to "clean up".
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>

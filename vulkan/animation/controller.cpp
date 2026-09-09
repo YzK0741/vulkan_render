@@ -11,7 +11,7 @@ import utility;
 
 namespace vulkan::animation {
     // clip_duration / display_name are module-private helpers declared in the interface unit
-    // (animation_controller.cppm); the non-template members below use them from here.
+    // (controller.cppm); the non-template members below use them from here.
 
     // ---- sampling (format-neutral keyframe evaluation; glTF rules) ----
 
@@ -154,7 +154,7 @@ namespace vulkan::animation {
         return pose;
     }
 
-    // ---- init is a template member defined in the interface unit (animation_controller.cppm)
+    // ---- init is a template member defined in the interface unit (controller.cppm)
     //      so any importer can instantiate it with its concrete animation source ----
 
     // ---- playback table / gui binding ----

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.animation
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // Keyframe playback / skinning / morph targets, format-neutral and runtime-agnostic:
 // driven through an injected `backend` surface and structural `source` concepts -
@@ -22,7 +22,7 @@ import utility;
 import vulkan.runtime.scene_tree; // scene + node/primitive types (the one structural dependency)
 
 /**
- * @file animation_controller.cppm
+ * @file controller.cppm
  * @defgroup vulkan_animation Vulkan Animation Controller
  * @brief bridge between animation/skin/morph data and a scene runtime: plays keyframe
  *        animations by sampling pure CPU, writing the evaluated T/R/S back into scene node

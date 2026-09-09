@@ -116,7 +116,7 @@ target_sources(vulkancorekit
         vulkan/runtime/scene_tree/scene_tree.cppm
         vulkan/render_environment/render_environment.cppm
         vulkan/gui/gui.cppm
-        vulkan/animation/animation_controller.cppm
+        vulkan/animation/controller.cppm
     PRIVATE
         vulkan/core/core.cpp
         vulkan/core/filter/filter.cpp
@@ -129,7 +129,7 @@ target_sources(vulkancorekit
         vulkan/runtime.cpp
         vulkan/runtime/scene_tree/scene_tree.cpp
         vulkan/gui/gui.cpp
-        vulkan/animation/animation_controller.cpp
+        vulkan/animation/controller.cpp
         third_party/spirv-reflect/spirv_reflect.c
 )
 add_library(gltf_loader STATIC)
