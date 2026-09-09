@@ -105,8 +105,8 @@ Related source docs (tracked in the repo):
 │                            #   runtime / runtime.scene_tree / render_environment / gui / animation)
 ├── utility/                 # utility module (data_block / better_pmr / BVH / thread_pool / frame_clock)
 ├── gltf_loader/             # gltf_loader module (CPU-side glTF/GLB loading)
-├── std/                     # std / std.compat modules (vendored libc++ module; required by the -fno-exceptions builds,
-│                            #   avoids configuring CMake's experimental C++ modules flags)
+├── vstd/                     # vstd module — modified from libc++ (LLVM), trimmed to the project's
+│                            #   STL usage (import vstd; see vstd/README.md)
 ├── shaders/                 # GLSL sources + precompiled SPIR-V (recompile via compile_shaders.ps1 / .sh)
 ├── gltf_model/              # Sample model (DamagedHelmet)
 ├── snapshot/                # Screenshots

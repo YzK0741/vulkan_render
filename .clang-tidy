@@ -6,7 +6,8 @@
 # 启用一组保守的检查；运行时可用 -checks=... 临时覆盖。
 #
 # 已禁用的噪音/误报检查（图形代码 + 自研 std 模块场景）：
-#   - bugprone-std-namespace-modification     : std/ 自研 std 模块向 std 添加扩展是有意设计（2000+ 误报）
+#   - bugprone-std-namespace-modification     : vstd.cppm (modified from libc++) re-opens
+#     namespace std only to re-export libc++ entities via using - intentional, not an extension
 #   - bugprone-invalid-enum-default-initialization : Vulkan 结构体全 0 初始化是标准做法
 #   - bugprone-easily-swappable-parameters         : 同类型相邻参数在图形 API 中常见，误报为主
 #   - bugprone-signed-bitwise                      : 位运算操作数有符号，多为 Vulkan 结构体/位掩码固有写法

@@ -52,15 +52,16 @@ set(COMPILE_OPTIONS
         -Wno-reserved-module-identifier
 )
 
-add_library(std_lib STATIC)
+add_library(vstd_lib STATIC)
 
-# The project's STL module is `vstd` (std/vstd.cppm): a fork of the generated
-# libc++ std module trimmed to the headers the project uses (see std/README.md).
-target_sources(std_lib
+# The project's STL module is `vstd` (vstd/vstd.cppm): modified from libc++'s
+# (LLVM) generated std-module output and trimmed to the headers the project
+# uses (see vstd/README.md).
+target_sources(vstd_lib
         PUBLIC
         FILE_SET CXX_MODULES
         FILES
-        std/vstd.cppm
+        vstd/vstd.cppm
 )
 
 add_library(utility STATIC)
@@ -265,7 +266,7 @@ target_link_libraries(gltf_loader
         PRIVATE
         fastgltf_vendored
         stb_vendored
-        std_lib
+        vstd_lib
         utility
 )
 
@@ -278,7 +279,7 @@ target_link_libraries(vulkancorekit
         utility
         glm::glm
         ${CMAKE_DL_LIBS}
-        std_lib
+        vstd_lib
         imgui
 )
 
@@ -307,14 +308,14 @@ set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE $<$<CONFIG:Rel
 # better_pmr (utility.better_pmr) routes std::pmr allocations through the vendored mimalloc
 # (third_party/mimalloc), so the executable no longer needs MSYS2's libmimalloc.dll.
 target_link_libraries(utility
-        std_lib
+        vstd_lib
         xxhash
         mimalloc_vendored
 )
 
 target_link_libraries(app_config
         utility
-        std_lib
+        vstd_lib
 )
 
 # Demo bootstrap chores (root-level module, next to main.cpp): main's startup-config analysis
@@ -339,7 +340,7 @@ target_link_libraries(chores
         app_config
         vulkancorekit
         utility
-        std_lib
+        vstd_lib
 )
 
 target_link_libraries(${PROJECT_NAME}
@@ -348,7 +349,7 @@ target_link_libraries(${PROJECT_NAME}
         chores
         gltf_loader
         app_config
-        std_lib
+        vstd_lib
         glm::glm
         imgui
 )
@@ -401,40 +402,40 @@ if(VR_BUILD_TESTS)
 
     target_link_libraries(test_app_config
             app_config
-            std_lib
+            vstd_lib
     )
     target_link_libraries(test_utility
             utility
             glm::glm
-            std_lib
+            vstd_lib
     )
     # vulkan.math lives in vulkancorekit; the module itself is pure CPU (see math.cppm), the
     # link chain just rides the library's PUBLIC dependencies (Vulkan/glfw are not pulled in
     # unless the math code actually references them).
     target_link_libraries(test_math
             vulkancorekit
-            std_lib
+            vstd_lib
     )
     # vulkan.animation is format-neutral / runtime-agnostic; the sampling tests only touch the
     # pure functions, so nothing Vulkan is pulled in.
     target_link_libraries(test_animation
             vulkancorekit
             glm::glm
-            std_lib
+            vstd_lib
     )
     # gltf_loader is pure CPU (fastgltf + stb vendored, linked by the library itself); the
     # test loads the repo's gltf_model/DamagedHelmet sample from the working directory.
     target_link_libraries(test_gltf_loader
             gltf_loader
             glm::glm
-            std_lib
+            vstd_lib
     )
 endif()
 
 # ---- compile options: one shared flag set on every first-party C++ target (vendored code is
 # deliberately excluded - imgui / fastgltf / simdjson / xxhash / mimalloc do not follow the
 # project's -Werror set, see their own targets above).
-foreach(compile_target IN ITEMS std_lib vulkan_render vulkancorekit utility gltf_loader app_config chores ${VR_TEST_TARGETS})
+foreach(compile_target IN ITEMS vstd_lib vulkan_render vulkancorekit utility gltf_loader app_config chores ${VR_TEST_TARGETS})
     target_compile_options(${compile_target} PRIVATE ${COMPILE_OPTIONS})
 endforeach()
 # vendored fastgltf headers are upstream code: relax one warning their templates trip under

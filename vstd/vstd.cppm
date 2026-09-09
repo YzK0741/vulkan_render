@@ -7,14 +7,17 @@
 //
 //===----------------------------------------------------------------------===//
 
-// The project's STL module: a trimmed fork of the libc++ std-module output
-// (upstream generator: utils/generate_libcxx_cppm_in.py, LLVM tree - the full
-// generated std.cppm is NOT vendored, only the used std/*.inc partitions).
+// The project's STL module, MODIFIED FROM libc++ (LLVM's C++ standard
+// library): a trimmed copy of libc++'s generated std-module output (upstream
+// generator: utils/generate_libcxx_cppm_in.py, LLVM tree - the full generated
+// std.cppm is NOT vendored, only the used std/*.inc partitions). Every
+// exported entity is a libc++ entity re-exported via `using`; no STL is
+// implemented or rewritten here.
 //
 // EDITABLE WHITELIST: keep the global-fragment #include lines and the
 // matching "std/X.inc" partition includes in sync, one pair per used header.
 // The std/*.inc partition contents are upstream-generated - do not hand-edit
-// them. See std/README.md for the trim rules and the toolchain-upgrade steps.
+// them. See vstd/README.md for the trim rules and the toolchain-upgrade steps.
 
 module;
 
