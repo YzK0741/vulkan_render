@@ -373,8 +373,9 @@ target_link_options(${PROJECT_NAME} PRIVATE
 # ---------------------------------------------------------------------------------------------
 # Headless unit tests (no GPU, no external test framework - see tests/vk_test.h): each test is
 # an ordinary module consumer that imports the module under test and links its library, so the
-# tests compile with the exact interfaces the rest of the code uses. CTest runs them with the
-# repository root as working directory (fixtures are referenced relative to it).
+# tests compile with the exact interfaces the rest of the code uses. CTest runs them in a
+# per-build scratch directory (module logging writes debug.log there, not into the source
+# tree); tests that open fixtures/models receive the source root via VR_TEST_SOURCE_DIR.
 # ---------------------------------------------------------------------------------------------
 option(VR_BUILD_TESTS "Build the headless unit tests" ON)
 
@@ -382,14 +383,19 @@ if(VR_BUILD_TESTS)
     enable_testing()
 
     set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-run")
 
     foreach(test_target IN ITEMS ${VR_TEST_TARGETS})
         add_executable(${test_target} tests/${test_target}.cpp)
         add_test(NAME ${test_target} COMMAND $<TARGET_FILE:${test_target}>)
         set_tests_properties(${test_target} PROPERTIES
-                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-run"
                 TIMEOUT 120)
     endforeach()
+
+    # source root for fixture/model paths (tests no longer assume the repo root is the cwd)
+    target_compile_definitions(test_app_config PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(test_gltf_loader PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
     target_link_libraries(test_app_config
             app_config

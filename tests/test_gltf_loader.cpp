@@ -12,7 +12,7 @@ import gltf_loader;
 
 namespace {
     void test_load_damaged_helmet() {
-        auto const result = gltf::load_model("gltf_model/DamagedHelmet.gltf");
+        auto const result = gltf::load_model(VR_TEST_SOURCE_DIR "/gltf_model/DamagedHelmet.gltf");
         CHECK(result.has_value());
         if (!result.has_value()) {
             return;
@@ -51,7 +51,7 @@ namespace {
     }
 
     void test_async_load_matches_sync() {
-        auto future = gltf::load_model_async("gltf_model/DamagedHelmet.gltf");
+        auto future = gltf::load_model_async(VR_TEST_SOURCE_DIR "/gltf_model/DamagedHelmet.gltf");
         auto const result = future.get();
         CHECK(result.has_value());
         if (result.has_value()) {
@@ -62,7 +62,7 @@ namespace {
     }
 
     void test_missing_file_reports_file_not_found() {
-        auto const result = gltf::load_model("tests/fixtures/definitely_missing.gltf");
+        auto const result = gltf::load_model(VR_TEST_SOURCE_DIR "/tests/fixtures/definitely_missing.gltf");
         CHECK(!result.has_value());
         CHECK(result.error() == gltf::error_code::file_not_found);
     }

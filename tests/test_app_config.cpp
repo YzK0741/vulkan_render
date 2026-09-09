@@ -9,7 +9,7 @@ import app_config;
 
 namespace {
     void test_load_settings_applies_toml() {
-        app_config::app_settings const settings = app_config::load_settings("tests/fixtures/config_full.toml");
+        app_config::app_settings const settings = app_config::load_settings(VR_TEST_SOURCE_DIR "/tests/fixtures/config_full.toml");
         CHECK(settings.model == "Models/tri.gltf");
         CHECK(settings.render.msaa == 8);
         CHECK(settings.render.vsync);
@@ -21,7 +21,7 @@ namespace {
     }
 
     void test_load_settings_missing_file_keeps_defaults() {
-        app_config::app_settings const settings = app_config::load_settings("tests/fixtures/does_not_exist.toml");
+        app_config::app_settings const settings = app_config::load_settings(VR_TEST_SOURCE_DIR "/tests/fixtures/does_not_exist.toml");
         CHECK(settings.model.empty());
         CHECK(settings.render.msaa == 0);
         CHECK(settings.render.skybox);
@@ -32,7 +32,7 @@ namespace {
     void test_resolve_from_argv_merges_config_and_positional() {
         char const* argv[] = {"vk_test", "Models/tri.gltf", "3"};
         app_config::app_settings const settings =
-            app_config::resolve_from_argv(3, argv, "tests/fixtures/config_full.toml");
+            app_config::resolve_from_argv(3, argv, VR_TEST_SOURCE_DIR "/tests/fixtures/config_full.toml");
         CHECK(settings.model == "Models/tri.gltf");
         CHECK(settings.grid_side == 3);
         CHECK(settings.render.msaa == 8); // still comes from the config file
