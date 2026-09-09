@@ -559,10 +559,21 @@ namespace vulkan {
      *       and the per-primitive world transform. morph_targets == 0 means "not morphable" and
      *       the vertex shader skips the blend; morph_base is a FLOAT index into binding 10.
      */
+    /**
+     * @ingroup vulkan_runtime_scene_tree
+     * @brief index of one material in the runtime's material table (scene set binding 5).
+     *        Strongly typed on the CPU side so it cannot be confused with the other GPU-table
+     *        indices (instance/skin/morph bases); it is a single uint32_t, so push-constant /
+     *        material-record byte layout is unchanged (memcpy/push use the raw bytes).
+     */
+    export struct material_id {
+        uint32_t value = 0;
+    };
+
     export struct material_push_constants {
-        uint32_t material_index = 0; // index into the scene's material table
-        uint32_t flags = 0;          // bit0: instanced draw -> model matrix comes from the
-                                     //       instance transform buffer (set 0 binding 6)
+        material_id material_index = {}; // index into the scene's material table
+        uint32_t flags = 0;              // bit0: instanced draw -> model matrix comes from the
+                                         //       instance transform buffer (set 0 binding 6)
         // index into the scene skin-matrix buffer (binding 9) where this primitive's joint
         // matrices start; 0 = the identity block (unskinned). The vertex shader reads
         // matrices[skin_base + in_joints.x] etc. — set once per primitive after import
@@ -795,7 +806,7 @@ namespace vulkan {
             uint32_t first_index = 0;
             uint32_t index_count = 0;
             uint32_t vertex_offset = 0;
-            uint32_t material_index = 0;
+            material_id material_index = {};
             bool double_sided = false;
         };
         std::vector<chunk_record> chunks = {};

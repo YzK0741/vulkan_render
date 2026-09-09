@@ -283,8 +283,8 @@ namespace vulkan {
         // writes register_material builds are deferred (update_all_scene_sets no-ops).
         {
             primitive_create_info const default_material = {};
-            uint32_t const default_index = this->register_material(default_material);
-            if (default_index != 0) {
+            material_id const default_index = this->register_material(default_material);
+            if (default_index.value != 0) {
                 utility::panic("default material must occupy table index 0");
             }
         }
@@ -556,7 +556,7 @@ namespace vulkan {
         this->write_ibl_bindings();
     }
 
-    uint32_t runtime::register_material(primitive_create_info const& info) {
+    material_id runtime::register_material(primitive_create_info const& info) {
         // ---- 1. Resolve the 5 texture slots against the shared array: identical texture bytes
         //         upload once, keyed by a CONTENT hash of the decoded bytes (xxh3 digest +
         //         format/dimensions - the loader hands every material its own copy of a shared
@@ -736,12 +736,12 @@ namespace vulkan {
                 this->material_overflow_logged = true;
                 utility::log("material table capacity ({}) exceeded - extra materials render with the default (index 0)", vulkan::material_capacity);
             }
-            return 0;
+            return {};
         }
         uint32_t const material_index = this->material_count++;
         std::memcpy(static_cast<unsigned char*>(this->material_mapped) + static_cast<size_t>(material_index) * sizeof(material_record), &record, sizeof(record));
-        this->material_slot_cache.emplace(material_key, material_index);
-        return material_index;
+        this->material_slot_cache.emplace(material_key, material_id{material_index});
+        return material_id{material_index};
     }
 
     void runtime::begin_rendering(VkCommandBuffer const command_buffer, uint32_t const image_index, VkRenderingFlags const flags) const {

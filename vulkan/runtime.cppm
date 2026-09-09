@@ -149,7 +149,7 @@ namespace vulkan {
         // key: data_block's own FNV-1a hasher + byte-equality); when the table really fills up,
         // later registrations degrade to the reserved default material at index 0 (registered
         // in init_scene_resources) with a one-time log instead of a hard panic.
-        std::unordered_map<utility::data_block<sizeof(vulkan::material_record)>, uint32_t,
+        std::unordered_map<utility::data_block<sizeof(vulkan::material_record)>, material_id,
                            utility::data_block<sizeof(vulkan::material_record)>::hasher>
             material_slot_cache = {};
         bool material_overflow_logged = false;
@@ -426,7 +426,7 @@ namespace vulkan {
         void write_ibl_bindings() const;                                                      // (re)write bindings 2-4 on every scene set with the current IBL views / placeholders
         void write_light_and_shadow_bindings();                                               // (re)write binding 7 (light UBO) + binding 8 (shadow map) on every scene set
         void update_all_scene_sets(VkWriteDescriptorSet const* writes, uint32_t write_count); // apply one batch of writes to every slot's scene set
-        uint32_t register_material(primitive_create_info const& info);                        // upload textures into the array, append a material_record, return its index
+        material_id register_material(primitive_create_info const& info);                     // upload textures into the array, append a material_record, return its index
 
     public:
         // A non-const runtime exposes a mutable filter (e.g. runtime->get_vma()); a const runtime
