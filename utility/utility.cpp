@@ -171,7 +171,7 @@ namespace {
 
         // Cap debug.log.old: once it exceeds the cap, start it fresh (truncate) instead of
         // appending forever, so the archive stays bounded across many sessions.
-        constexpr uintmax_t old_log_cap = 8u * 1024u * 1024u; // 8 MiB
+        constexpr uintmax_t old_log_cap = 8ull * 1024ull * 1024ull; // 8 MiB
         std::ios::openmode const old_mode = [&] {
             std::error_code ec;
             uintmax_t const size = std::filesystem::file_size("debug.log.old", ec);

@@ -152,12 +152,8 @@ namespace app_config {
         if (settings.render.window_height <= 0) {
             settings.render.window_height = 960;
         }
-        if (settings.gui.panel_width < 0) {
-            settings.gui.panel_width = 0; // 0 = ImGui auto-size
-        }
-        if (settings.gui.panel_height < 0) {
-            settings.gui.panel_height = 0;
-        }
+        settings.gui.panel_width = std::max(settings.gui.panel_width, 0.0f); // 0 = ImGui auto-size
+        settings.gui.panel_height = std::max(settings.gui.panel_height, 0.0f);
         settings.grid_side = std::clamp(settings.grid_side, 0, 90);
         bool const msaa_valid = settings.render.msaa == 0 || settings.render.msaa == 1 || settings.render.msaa == 2 || settings.render.msaa == 4 || settings.render.msaa == 8 || settings.render.msaa == 16 || settings.render.msaa == 32 || settings.render.msaa == 64;
         if (!msaa_valid) {

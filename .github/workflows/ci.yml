@@ -9,6 +9,11 @@ name: ci
 # (tests/, ctest) run on the CPU-only modules; the Release build of the full
 # project (including the Vulkan executable) is the compile gate. No GPU is
 # needed - nothing is executed that requires a Vulkan device.
+#
+# Gates in one job (they share the MSYS2 install): Release build + ctest,
+# a Debug build (assert-enabled compile gate - catches paths Release skips),
+# and clang-tidy over the pure-CPU modules (app_config + utility), which is
+# kept warning-free so --warnings-as-errors fails on any regression.
 
 on:
   push:
@@ -17,7 +22,7 @@ on:
 
 jobs:
   build-and-test:
-    name: clang64 Release build + ctest
+    name: Release build + ctest + Debug gate + clang-tidy
     runs-on: windows-latest
     defaults:
       run:
@@ -32,6 +37,7 @@ jobs:
           update: true
           install: >-
             mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-clang-tools-extra
             mingw-w64-clang-x86_64-lld
             mingw-w64-clang-x86_64-libc++
             mingw-w64-clang-x86_64-cmake
@@ -43,13 +49,30 @@ jobs:
             mingw-w64-clang-x86_64-vulkan-headers
 
       - name: Configure (Release, Ninja)
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       - name: Build all targets (incl. tests + vulkan_render.exe)
         run: cmake --build build
 
       - name: Run headless unit tests
         run: ctest --test-dir build --output-on-failure
+
+      - name: Configure (Debug, Ninja)
+        run: cmake -S . -B build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build all targets (Debug compile gate)
+        run: cmake --build build-debug
+
+      - name: clang-tidy (pure-CPU modules, warnings are errors)
+        run: >-
+          clang-tidy -p build --warnings-as-errors='*'
+          app_config/app_config.cppm app_config/app_config.cpp
+          utility/data_block.cppm utility/utility.cppm utility/utility.cpp
+          utility/thread_pool/thread_pool.cppm utility/thread_pool/thread_pool.cpp
+          utility/BVH/bvh.cppm utility/BVH/bvh.cpp
+          utility/frame_clock/frame_clock.cppm
+          utility/frame_stats/frame_stats.cppm
+          utility/better_pmr/better_pmr.cppm
 
       - name: Upload the Release executable
         uses: actions/upload-artifact@v5
