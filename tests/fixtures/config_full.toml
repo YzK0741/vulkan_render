@@ -1,0 +1,28 @@
+# config consumed by the app_config unit tests (tests/test_app_config.cpp).
+# Keys deliberately cover every settings struct so a wrong parse/merge shows up.
+model = "Models/tri.gltf"
+
+[paths]
+shaders_dir = "shaders"
+
+[render]
+window_width = 800
+window_height = 600
+window_title = "vk_test"
+vsync = true
+msaa = 8
+clear_color = [0.1, 0.2, 0.3]
+skybox = false
+shadow = false
+validation_layers = false
+
+[lighting]
+env_size = 128
+env_mip_count = 5
+irr_size = 64
+lut_size = 128
+
+[gui]
+show = false
+panel_width = 320
+panel_height = 200

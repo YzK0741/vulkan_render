@@ -370,10 +370,49 @@ target_link_options(${PROJECT_NAME} PRIVATE
         $<$<CONFIG:Release>:-s>
 )
 
+# ---------------------------------------------------------------------------------------------
+# Headless unit tests (no GPU, no external test framework - see tests/vk_test.h): each test is
+# an ordinary module consumer that imports the module under test and links its library, so the
+# tests compile with the exact interfaces the rest of the code uses. CTest runs them with the
+# repository root as working directory (fixtures are referenced relative to it).
+# ---------------------------------------------------------------------------------------------
+option(VR_BUILD_TESTS "Build the headless unit tests" ON)
+
+if(VR_BUILD_TESTS)
+    enable_testing()
+
+    set(VR_TEST_TARGETS test_app_config test_utility test_math)
+
+    foreach(test_target IN ITEMS ${VR_TEST_TARGETS})
+        add_executable(${test_target} tests/${test_target}.cpp)
+        add_test(NAME ${test_target} COMMAND $<TARGET_FILE:${test_target}>)
+        set_tests_properties(${test_target} PROPERTIES
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                TIMEOUT 120)
+    endforeach()
+
+    target_link_libraries(test_app_config
+            app_config
+            std_lib
+    )
+    target_link_libraries(test_utility
+            utility
+            glm::glm
+            std_lib
+    )
+    # vulkan.math lives in vulkancorekit; the module itself is pure CPU (see math.cppm), the
+    # link chain just rides the library's PUBLIC dependencies (Vulkan/glfw are not pulled in
+    # unless the math code actually references them).
+    target_link_libraries(test_math
+            vulkancorekit
+            std_lib
+    )
+endif()
+
 # ---- compile options: one shared flag set on every first-party C++ target (vendored code is
 # deliberately excluded - imgui / fastgltf / simdjson / xxhash / mimalloc do not follow the
 # project's -Werror set, see their own targets above).
-foreach(compile_target IN ITEMS std_lib vulkan_render vulkancorekit utility gltf_loader app_config chores)
+foreach(compile_target IN ITEMS std_lib vulkan_render vulkancorekit utility gltf_loader app_config chores ${VR_TEST_TARGETS})
     target_compile_options(${compile_target} PRIVATE ${COMPILE_OPTIONS})
 endforeach()
 # vendored fastgltf headers are upstream code: relax one warning their templates trip under
@@ -422,7 +461,8 @@ if(CLANG_FORMAT_EXECUTABLE)
             ${CMAKE_CURRENT_SOURCE_DIR}/app_config/*.cpp*
             ${CMAKE_CURRENT_SOURCE_DIR}/gltf_loader/*.cpp*
             ${CMAKE_CURRENT_SOURCE_DIR}/utility/*.cpp*
-            ${CMAKE_CURRENT_SOURCE_DIR}/vulkan/*.cpp*)
+            ${CMAKE_CURRENT_SOURCE_DIR}/vulkan/*.cpp*
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp*)
 
     set(CLANG_FORMAT_STAMP "${CMAKE_CURRENT_BINARY_DIR}/.clang-format.stamp")
 
