@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.constant_init
-// module version: 0.1.2  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.3  (independent of the app version in CMakeLists project(VERSION))
 //
 // Compile-time Vulkan info-struct conventions: constexpr factories + constinit
 // "transition" defaults for the structs the engine fills identically everywhere
@@ -280,6 +280,49 @@ export namespace vulkan {
                 .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                 .storeOp = store_op,
                 .clearValue = clear_value};
+    }
+    /**
+     * @brief color attachment of a rendering instance: COLOR_ATTACHMENT_OPTIMAL layout,
+     *        loadOp CLEAR + storeOp STORE (the swapchain image is presented afterwards)
+     * @param image_view the (MSAA or swapchain) color image view
+     * @param clear_value the runtime clear color
+     * @param resolve_mode NONE without MSAA, AVERAGE with MSAA
+     * @param resolve_image_view swapchain resolve target when MSAA, VK_NULL_HANDLE otherwise.
+     *        NOTE: the resolve layout must not be PRESENT_SRC_KHR
+     *        (VUID-VkRenderingAttachmentInfo-imageView-06146) - the swapchain image moves to
+     *        PRESENT_SRC_KHR only after vkCmdEndRendering
+     */
+    constexpr VkRenderingAttachmentInfo make_color_attachment_info(VkImageView const image_view, VkClearValue const clear_value, VkResolveModeFlagBits const resolve_mode, VkImageView const resolve_image_view) noexcept {
+        return {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .pNext = nullptr,
+                .imageView = image_view,
+                .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .resolveMode = resolve_mode,
+                .resolveImageView = resolve_image_view,
+                .resolveImageLayout = resolve_mode == VK_RESOLVE_MODE_NONE ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .clearValue = clear_value};
+    }
+    /**
+     * @brief dynamic-rendering instance: one layer, at most one color attachment
+     * @param flags e.g. VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT
+     * @param render_area the area to render into (the pipelines apply their own viewport/scissor)
+     * @param has_color_attachment depth-only passes (the shadow map) pass false
+     * @param color_attachments pointer to the single color attachment when present, else nullptr
+     * @param depth_attachment the depth attachment, or nullptr
+     */
+    constexpr VkRenderingInfo make_rendering_info(VkRenderingFlags const flags, VkRect2D const render_area, bool const has_color_attachment, VkRenderingAttachmentInfo const* color_attachments, VkRenderingAttachmentInfo const* depth_attachment) noexcept {
+        return {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                .pNext = nullptr,
+                .flags = flags,
+                .renderArea = render_area,
+                .layerCount = 1,
+                .viewMask = 0,
+                .colorAttachmentCount = has_color_attachment ? 1u : 0u,
+                .pColorAttachments = has_color_attachment ? color_attachments : nullptr,
+                .pDepthAttachment = depth_attachment,
+                .pStencilAttachment = nullptr};
     }
 
     // ---- Fixed-function pipeline state (engine-wide conventions) ----

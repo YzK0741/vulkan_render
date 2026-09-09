@@ -736,36 +736,19 @@ namespace vulkan {
         core const& vk = this->vulkan_core;
 
         // Dynamic rendering (Vulkan 1.3 core, the only path the engine supports): attachments
-        // are described inline, no render pass / framebuffer objects exist
-        VkRenderingAttachmentInfo color_attachment = {};
-        color_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        color_attachment.imageView = vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT
-                                         ? vk.color_image_views[image_index]
-                                         : vk.swap_chain_image_views[image_index];
-        color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        color_attachment.clearValue = clear_color;
-        if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-            // MSAA resolve: the MSAA color attachment resolves into the swapchain image.
-            // resolveImageLayout must not be PRESENT_SRC_KHR (VUID-VkRenderingAttachmentInfo-imageView-06146);
-            // the swapchain image is transitioned to PRESENT_SRC_KHR after vkCmdEndRendering instead
-            color_attachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-            color_attachment.resolveImageView = vk.swap_chain_image_views[image_index];
-            color_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        }
+        // are described inline, no render pass / framebuffer objects exist. With MSAA the
+        // color attachment resolves into the swapchain image (see make_color_attachment_info).
+        bool const msaa = vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT;
+        VkRenderingAttachmentInfo const color_attachment = make_color_attachment_info(
+            msaa ? vk.color_image_views[image_index] : vk.swap_chain_image_views[image_index],
+            clear_color,
+            msaa ? VK_RESOLVE_MODE_AVERAGE_BIT : VK_RESOLVE_MODE_NONE,
+            msaa ? vk.swap_chain_image_views[image_index] : VK_NULL_HANDLE);
 
         // depth clears to the far plane (1.0): make_depth_attachment_info
         VkRenderingAttachmentInfo const depth_attachment = make_depth_attachment_info(vk.depth_image_views[image_index], VK_ATTACHMENT_STORE_OP_DONT_CARE);
 
-        VkRenderingInfo rendering_info = {};
-        rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        rendering_info.flags = flags;
-        rendering_info.renderArea = {{0, 0}, vk.swap_chain_extent};
-        rendering_info.layerCount = 1;
-        rendering_info.colorAttachmentCount = 1;
-        rendering_info.pColorAttachments = &color_attachment;
-        rendering_info.pDepthAttachment = &depth_attachment;
+        VkRenderingInfo const rendering_info = make_rendering_info(flags, {{0, 0}, vk.swap_chain_extent}, true, &color_attachment, &depth_attachment);
         vkCmdBeginRendering(command_buffer, &rendering_info);
     }
 
@@ -1108,18 +1091,7 @@ namespace vulkan {
                 // (far plane) + storeOp STORE - the map must survive for the main pass
                 VkRenderingAttachmentInfo const shadow_depth_attachment = make_depth_attachment_info(*this->shadow_image_views[frame_slot], VK_ATTACHMENT_STORE_OP_STORE);
 
-                VkRenderingInfo const shadow_rendering_info = {
-                    .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                    .pNext = nullptr,
-                    .flags = VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT,
-                    .renderArea = {{0, 0}, {vulkan::runtime::shadow_map_size, vulkan::runtime::shadow_map_size}},
-                    .layerCount = 1,
-                    .viewMask = 0,
-                    .colorAttachmentCount = 0,
-                    .pColorAttachments = nullptr,
-                    .pDepthAttachment = &shadow_depth_attachment,
-                    .pStencilAttachment = nullptr,
-                };
+                VkRenderingInfo const shadow_rendering_info = make_rendering_info(VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT, {{0, 0}, {vulkan::runtime::shadow_map_size, vulkan::runtime::shadow_map_size}}, false, nullptr, &shadow_depth_attachment);
                 vkCmdBeginRendering(*command_buffer, &shadow_rendering_info);
 
                 // Run the pre-recorded shadow secondary (the whole scene casts shadows). Never

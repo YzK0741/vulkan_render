@@ -21,7 +21,7 @@ in a comment block at the top of its main interface unit — `utility`, `gltf_lo
 `render_environment` submodules), `vulkan.animation`, `vulkan.gui` and `vulkan.constant_init`
 (the compile-time Vulkan info-struct builders that `vulkan.core` and `vulkan.runtime`
 embed). All started at 0.1.0; `vulkan.core`, `vulkan.runtime` and `vulkan.animation` are at
-0.1.1, `vulkan.constant_init` at 0.1.2.
+0.1.1, `vulkan.constant_init` at 0.1.3.
 They evolve on their own cadence (bump MAJOR on breaking interface changes, MINOR on additive
 features, PATCH on fixes), independent of the app version and of each other.
 
