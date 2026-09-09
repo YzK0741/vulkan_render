@@ -23,10 +23,7 @@ namespace vulkan::animation {
         }
         // values per keyframe: the sampler records it (morph-weights channels vary per mesh);
         // fall back to the path rule when a sampler carries no per_key shape
-        std::size_t comps = sampler.per_key;
-        if (comps == 0) {
-            comps = path == channel_path::rotation ? 4 : 3;
-        }
+        std::size_t const comps = sampler.per_key != 0 ? sampler.per_key : (path == channel_path::rotation ? 4 : 3);
         bool const cubic = sampler.interp == interpolation::cubic_spline;
         std::size_t const stored_per_key = comps * (cubic ? 3 : 1);
         if (sampler.values.size() < keys * stored_per_key) {
@@ -34,22 +31,23 @@ namespace vulkan::animation {
         }
         out.valid = true;
 
-        // read one key's block: 'offset' selects the value triplet (0 for linear, comps for the
-        // middle value triplet of a cubic block) or a tangent (comps / 2 * comps of a cubic block)
-        auto const read_block = [&](std::size_t const key, std::size_t const offset, std::vector<float>& block) {
-            block.resize(comps);
-            std::size_t const base = key * stored_per_key + offset;
-            for (std::size_t c = 0; c < comps; ++c) {
-                block[c] = sampler.values[base + c];
-            }
+        // read one component straight out of the flat keyframe values (no temporary blocks):
+        // 'key' selects the keyframe, 'comp' the component, 'offset' the triplet inside a
+        // cubic block (0 = in tangent, comps = middle value, 2 * comps = out tangent)
+        auto const read = [&](std::size_t const key, std::size_t const comp, std::size_t const offset) -> float {
+            return sampler.values[key * stored_per_key + offset + comp];
         };
-        auto const assign = [&](std::vector<float> const& block) {
+        // assign a keyframe's value block to the output (rotation -> quat, weights -> scalars)
+        auto const set_value = [&](std::size_t const key, std::size_t const offset) {
             if (path == channel_path::rotation) {
-                out.quat = glm::quat(block[3], block[0], block[1], block[2]); // glm ctor order (w, x, y, z)
+                out.quat = glm::quat(read(key, 3, offset), read(key, 0, offset), read(key, 1, offset), read(key, 2, offset)); // glm ctor order (w, x, y, z)
             } else if (path == channel_path::weights) {
-                out.scalars = block; // one value per morph target
+                out.scalars.resize(comps); // one value per morph target (the only result that needs a heap block)
+                for (std::size_t c = 0; c < comps; ++c) {
+                    out.scalars[c] = read(key, c, offset);
+                }
             } else {
-                out.vec3 = glm::vec3(block[0], block[1], block[2]);
+                out.vec3 = glm::vec3(read(key, 0, offset), read(key, 1, offset), read(key, 2, offset));
             }
         };
 
@@ -59,69 +57,67 @@ namespace vulkan::animation {
         while (key + 1 < keys && sampler.times[key + 1] <= time) {
             ++key;
         }
-        auto const hold_key = [&] {
-            std::vector<float> value;
-            read_block(key, cubic ? comps : 0, value);
-            assign(value);
-        };
-
-        // STEP interpolation and the range end hold the left key's value
+        // STEP interpolation and the range end hold the left key's value (its middle triplet)
+        auto const hold = [&] { set_value(key, cubic ? comps : 0); };
         if (sampler.interp == interpolation::step || key + 1 >= keys) {
-            hold_key();
+            hold();
             return out;
         }
 
         float const dt = sampler.times[key + 1] - sampler.times[key];
         if (dt <= 0.0f) { // duplicate timestamps (invalid per the spec): hold the key's value
-            hold_key();
+            hold();
             return out;
         }
         float const u = (time - sampler.times[key]) / dt;
 
-        std::vector<float> a;
-        std::vector<float> b;
-        read_block(key, cubic ? comps : 0, a);
-        read_block(key + 1, cubic ? comps : 0, b);
-
         if (cubic) {
             // Hermite spline over the segment; tangents are scaled by the segment duration
-            std::vector<float> out_tangent;
-            std::vector<float> in_tangent;
-            read_block(key, 2 * comps, out_tangent);
-            read_block(key + 1, 0, in_tangent);
             float const h00 = 2.0f * u * u * u - 3.0f * u * u + 1.0f;
             float const h10 = u * u * u - 2.0f * u * u + u;
             float const h01 = -2.0f * u * u * u + 3.0f * u * u;
             float const h11 = u * u * u - u * u;
-            std::vector<float> value(comps);
-            for (std::size_t c = 0; c < comps; ++c) {
-                value[c] = h00 * a[c] + h10 * dt * out_tangent[c] + h01 * b[c] + h11 * dt * in_tangent[c];
-            }
+            auto const eval = [&](std::size_t const c) {
+                float const a = read(key, c, comps);         // this key's middle value
+                float const out_t = read(key, c, 2 * comps); // this key's out tangent
+                float const b = read(key + 1, c, comps);     // next key's middle value
+                float const in_t = read(key + 1, c, 0);      // next key's in tangent
+                return h00 * a + h10 * dt * out_t + h01 * b + h11 * dt * in_t;
+            };
             if (path == channel_path::rotation) {
                 // component-wise spline over the quaternion, then normalize (per the spec)
-                glm::quat const q(value[3], value[0], value[1], value[2]);
+                glm::quat const q(eval(3), eval(0), eval(1), eval(2));
                 float const norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
                 out.quat = norm > 0.0f ? glm::normalize(q) : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            } else if (path == channel_path::weights) {
+                out.scalars.resize(comps);
+                for (std::size_t c = 0; c < comps; ++c) {
+                    out.scalars[c] = eval(c);
+                }
             } else {
-                assign(value);
+                out.vec3 = glm::vec3(eval(0), eval(1), eval(2));
             }
             return out;
         }
 
         // LINEAR
         if (path == channel_path::rotation) {
-            glm::quat const q0(a[3], a[0], a[1], a[2]);
-            glm::quat q1(b[3], b[0], b[1], b[2]);
+            glm::quat const q0(read(key, 3, 0), read(key, 0, 0), read(key, 1, 0), read(key, 2, 0));
+            glm::quat q1(read(key + 1, 3, 0), read(key + 1, 0, 0), read(key + 1, 1, 0), read(key + 1, 2, 0));
             if (glm::dot(q0, q1) < 0.0f) {
                 q1 = glm::quat(-q1.w, -q1.x, -q1.y, -q1.z); // shortest arc: flip one endpoint
             }
             out.quat = glm::normalize(glm::slerp(q0, q1, u));
-        } else {
-            std::vector<float> value(comps);
+        } else if (path == channel_path::weights) {
+            out.scalars.resize(comps);
             for (std::size_t c = 0; c < comps; ++c) {
-                value[c] = a[c] + (b[c] - a[c]) * u;
+                float const a = read(key, c, 0);
+                out.scalars[c] = a + (read(key + 1, c, 0) - a) * u;
             }
-            assign(value);
+        } else {
+            glm::vec3 const a(read(key, 0, 0), read(key, 1, 0), read(key, 2, 0));
+            glm::vec3 const b(read(key + 1, 0, 0), read(key + 1, 1, 0), read(key + 1, 2, 0));
+            out.vec3 = a + (b - a) * u;
         }
         return out;
     }
@@ -240,17 +236,23 @@ namespace vulkan::animation {
         auto const base_it = this->base_poses.find(source);
         node_pose const base = base_it == this->base_poses.end() ? node_pose{} : base_it->second;
         node_pose const pose = sample_node(*this->active, source, base, this->time);
-        if (!pose.weights.empty()) {
-            float* const active_scratch = this->host.morph_scratch_active();
-            if (active_scratch != nullptr) {
-                for (morph_rig const& rig : this->morph_rigs) {
-                    if (rig.source == source && static_cast<std::size_t>(rig.target_count) == pose.weights.size()) {
-                        std::size_t const weight_offset = static_cast<std::size_t>(rig.morph_base) + static_cast<std::size_t>(rig.vertex_count) * static_cast<std::size_t>(rig.target_count) * 6u;
-                        for (std::size_t t = 0; t < pose.weights.size(); ++t) {
-                            active_scratch[weight_offset + t] = pose.weights[t];
-                        }
-                    }
+        // Morph weights of every rig of this source: the active clip's sampled weights when it
+        // animates this source (pose.weights matches the rig's target count), otherwise the
+        // baked DEFAULT weights. Writing the defaults whenever the clip does not drive the
+        // source is what clears a previous clip's weights after a clip switch - without it the
+        // mesh would keep the last animated pose (morph residue) on any clip that has no
+        // weights channel for it.
+        float* const active_scratch = this->host.morph_scratch_active();
+        if (active_scratch != nullptr && !this->morph_rigs.empty()) {
+            for (morph_rig const& rig : this->morph_rigs) {
+                if (rig.source != source) {
+                    continue;
                 }
+                std::size_t const weight_offset = static_cast<std::size_t>(rig.morph_base) + static_cast<std::size_t>(rig.vertex_count) * static_cast<std::size_t>(rig.target_count) * 6u;
+                std::span<float const> const weights = pose.weights.size() == rig.target_count
+                                                           ? std::span<float const>(pose.weights)
+                                                           : std::span<float const>(rig.default_weights);
+                std::memcpy(active_scratch + weight_offset, weights.data(), weights.size_bytes());
             }
         }
         if (!pose.any_transform) {
@@ -292,10 +294,16 @@ namespace vulkan::animation {
                 // written concurrently (debug_translation has one writer: its own source's slice).
                 // The tasks capture only `this` (+ the slice bounds): self-contained, so the
                 // list can be handed to the host's run_tasks and executed on the host pool.
+                // sampling_tasks is MEMBER scratch, reused every frame (no per-frame allocation
+                // on this hot path; only touched from this frame thread).
                 std::size_t const total = this->sample_keys.size();
                 unsigned const workers = std::max(1, this->host.task_worker_count());
-                std::vector<std::atomic<bool>> slice_changed(workers);
-                std::vector<std::function<void()>> tasks;
+                // a single monotonic flag replaces per-slice flags: the main thread resets it
+                // before spawning, workers only ever set it, and run_tasks is synchronous, so it
+                // is only read back after every task finished
+                this->sampling_changed.store(false);
+                std::vector<std::function<void()>>& tasks = this->sampling_tasks;
+                tasks.clear();
                 tasks.reserve(workers);
                 for (unsigned w = 0; w < workers; ++w) {
                     std::size_t const begin = total * w / workers;
@@ -303,24 +311,20 @@ namespace vulkan::animation {
                     if (begin >= end) {
                         continue;
                     }
-                    tasks.emplace_back([this, begin, end, &slice_changed, w] {
-                        bool any = false;
+                    tasks.emplace_back([this, begin, end] {
                         for (std::size_t i = begin; i < end; ++i) {
                             std::size_t const source = this->sample_keys[i];
                             auto const targets_it = this->source_nodes.find(source);
                             if (targets_it != this->source_nodes.end() && this->sample_source(source, targets_it->second)) {
-                                any = true;
+                                this->sampling_changed.store(true);
                             }
                         }
-                        slice_changed[static_cast<std::size_t>(w)].store(any);
                     });
                 }
                 // forward the task list to the host's pool and wait for this stage's
                 // group: run_tasks is synchronous, so sampling finishes before update() returns
                 this->host.run_tasks(tasks);
-                for (std::atomic<bool> const& c : slice_changed) {
-                    changed = changed || c.load();
-                }
+                changed = this->sampling_changed.load();
             } else {
                 for (auto const& [source, targets] : this->source_nodes) {
                     changed = this->sample_source(source, targets) || changed;
@@ -334,13 +338,16 @@ namespace vulkan::animation {
         // 2. skin matrices: the joint worlds follow the locals above, so rebuild every frame
         //    [identity block | per-rig joint blocks] into the active slot's skin buffer
         if (!this->skin_rigs.empty()) {
-            std::unordered_map<std::size_t, glm::mat4> skin_worlds;
-            // collect the world matrix of every node the skin rigs need (mesh nodes + joints):
-            // one O(1) set test per visited node instead of scanning rig x joint pairs per node
-            auto const collect_worlds = [this, &skin_worlds](auto&& self, vulkan::scene_tree::scene_node& node, glm::mat4 const& parent_world) -> void {
+            // collect the world matrix of every wanted node (mesh nodes + joints) into the
+            // REUSED dense cache: skin_world_index maps a source to its cache slot (fixed after
+            // init), so this writes plain vector slots instead of building a fresh
+            // unordered_map every frame. Wanted nodes that the DFS never reaches (not in the
+            // tree) keep the identity they were filled with.
+            std::fill(this->skin_world_cache.begin(), this->skin_world_cache.end(), glm::mat4(1.0f));
+            auto const collect_worlds = [this](auto&& self, vulkan::scene_tree::scene_node& node, glm::mat4 const& parent_world) -> void {
                 glm::mat4 const world = parent_world * node.local;
-                if (this->skin_sources.contains(node.source_index)) {
-                    skin_worlds.try_emplace(node.source_index, world);
+                if (auto const it = this->skin_world_index.find(node.source_index); it != this->skin_world_index.end()) {
+                    this->skin_world_cache[it->second] = world;
                 }
                 for (vulkan::scene_tree::scene_node& child : node.children) {
                     self(self, child, world);
@@ -349,16 +356,18 @@ namespace vulkan::animation {
             for (vulkan::scene_tree::scene_node& root : this->host.scene->roots) {
                 collect_worlds(collect_worlds, root, glm::mat4(1.0f));
             }
-            std::vector<glm::mat4> matrices;
+            auto const world_of = [this](std::size_t const source) -> glm::mat4 {
+                auto const it = this->skin_world_index.find(source);
+                return it == this->skin_world_index.end() ? glm::mat4(1.0f) : this->skin_world_cache[it->second];
+            };
+            std::vector<glm::mat4>& matrices = this->skin_matrices_scratch;
+            matrices.clear();
             matrices.reserve(4 + (this->skin_rigs.size() * 8));
             matrices.insert(matrices.end(), {glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f)});
             for (skin_rig const& rig : this->skin_rigs) {
-                auto const mesh_it = skin_worlds.find(rig.mesh_source);
-                glm::mat4 const mesh_world_inv = glm::inverse(mesh_it == skin_worlds.end() ? glm::mat4(1.0f) : mesh_it->second);
+                glm::mat4 const mesh_world_inv = glm::inverse(world_of(rig.mesh_source));
                 for (std::size_t j = 0; j < rig.s.joints.size(); ++j) {
-                    auto const joint_it = skin_worlds.find(rig.s.joints[j]);
-                    glm::mat4 const joint_world = joint_it == skin_worlds.end() ? glm::mat4(1.0f) : joint_it->second;
-                    matrices.push_back(mesh_world_inv * joint_world * rig.s.inverse_bind[j]);
+                    matrices.push_back(mesh_world_inv * world_of(rig.s.joints[j]) * rig.s.inverse_bind[j]);
                 }
             }
             this->host.set_skin_matrices_active(matrices);
@@ -367,10 +376,9 @@ namespace vulkan::animation {
             this->skin_debug_valid = false;
             if (!this->skin_rigs.front().s.joints.empty()) {
                 std::size_t const last_joint = this->skin_rigs.front().s.joints.back();
-                auto const joint_it = skin_worlds.find(last_joint);
-                if (joint_it != skin_worlds.end()) {
+                if (this->skin_world_index.contains(last_joint)) {
                     this->skin_debug_valid = true;
-                    this->skin_debug_translation = glm::vec3(joint_it->second[0]); // world x axis
+                    this->skin_debug_translation = glm::vec3(world_of(last_joint)[0]); // world x axis
                 }
             }
         }

@@ -451,6 +451,15 @@ namespace vulkan::animation {
                         this->skin_sources.insert(joint);
                     }
                 }
+                // dense slot map over the wanted set: update() writes each wanted node's world
+                // matrix into a REUSED vector (skin_world_cache) instead of building a fresh
+                // unordered_map every frame
+                this->skin_world_index.reserve(this->skin_sources.size());
+                this->skin_world_cache.reserve(this->skin_sources.size());
+                for (std::size_t const wanted : this->skin_sources) {
+                    this->skin_world_index.emplace(wanted, static_cast<uint32_t>(this->skin_world_cache.size()));
+                    this->skin_world_cache.emplace_back(); // placeholder; rewritten every frame
+                }
                 if (!skin_rigs.empty()) {
                     utility::log("skinning: {} skin rig(s) active ({} joint matrix block(s) + identity block)", this->skin_rigs.size(), next_block - 4);
                     this->skin_debug_name = std::string(display_name(this->skin_rigs.front().s.name));
@@ -548,10 +557,14 @@ namespace vulkan::animation {
                                 *dst++ = dnrm.z;
                             }
                         }
+                        std::vector<float> rig_defaults;
+                        rig_defaults.reserve(target_count);
                         for (uint32_t t = 0; t < target_count; ++t) {
-                            *dst++ = t < default_weights.size() ? default_weights[t] : 0.0f;
+                            float const w = t < default_weights.size() ? default_weights[t] : 0.0f;
+                            *dst++ = w;
+                            rig_defaults.push_back(w);
                         }
-                        this->morph_rigs.push_back(morph_rig{leaves[i], verts, target_count, static_cast<uint32_t>(total_floats), source});
+                        this->morph_rigs.push_back(morph_rig{leaves[i], verts, target_count, static_cast<uint32_t>(total_floats), source, std::move(rig_defaults)});
                         leaves[i]->push.morph_base = static_cast<uint32_t>(total_floats);
                         leaves[i]->push.morph_targets = target_count;
                         leaves[i]->push.morph_vertices = verts;
@@ -650,6 +663,9 @@ namespace vulkan::animation {
             uint32_t target_count = 0;
             uint32_t morph_base = 0; // float index into the morph buffer
             std::size_t source = 0;  // owning loader node (weights channel target)
+            // baked rest weights (target_count floats): written when no clip animates this
+            // source's weights, so a previous clip's weights cannot linger after a clip switch
+            std::vector<float> default_weights = {};
         };
 
         backend host; // injected host surface (scene + callbacks); scene == nullptr when unbound
@@ -676,6 +692,15 @@ namespace vulkan::animation {
         std::string debug_node_name = {};
         std::vector<skin_rig> skin_rigs = {};
         std::vector<morph_rig> morph_rigs = {};
+        // ---- per-frame scratch, reused across update() calls to keep the hot path
+        //      allocation-free; only touched on the caller's frame thread ----
+        std::atomic<bool> sampling_changed = false;             // any sampling slice moved a node
+        std::vector<std::function<void()>> sampling_tasks = {}; // parallel sampling fan-out
+        // skin world collection: dense slot map (source -> cache index, fixed after init) plus
+        // a reused per-frame world cache, so update() never allocates a per-frame map
+        std::unordered_map<std::size_t, uint32_t> skin_world_index = {};
+        std::vector<glm::mat4> skin_world_cache = {};
+        std::vector<glm::mat4> skin_matrices_scratch = {}; // per-frame skin upload buffer
         bool skin_debug_valid = false;
         glm::vec3 skin_debug_translation{};
         std::string skin_debug_name = {};
