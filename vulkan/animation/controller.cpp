@@ -343,7 +343,7 @@ namespace vulkan::animation {
             // init), so this writes plain vector slots instead of building a fresh
             // unordered_map every frame. Wanted nodes that the DFS never reaches (not in the
             // tree) keep the identity they were filled with.
-            std::fill(this->skin_world_cache.begin(), this->skin_world_cache.end(), glm::mat4(1.0f));
+            std::ranges::fill(this->skin_world_cache, glm::mat4(1.0f));
             auto const collect_worlds = [this](auto&& self, vulkan::scene_tree::scene_node& node, glm::mat4 const& parent_world) -> void {
                 glm::mat4 const world = parent_world * node.local;
                 if (auto const it = this->skin_world_index.find(node.source_index); it != this->skin_world_index.end()) {

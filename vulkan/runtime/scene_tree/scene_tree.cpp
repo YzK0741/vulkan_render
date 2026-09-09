@@ -292,7 +292,7 @@ namespace vulkan {
         if (this->vertex_detail == nullptr || this->index_detail == nullptr || this->chunks.empty()) {
             return false; // a validated, non-empty chunk table is required (see make_static_draw)
         }
-        return std::all_of(this->chunks.begin(), this->chunks.end(), [](chunk_record const& c) { return c.index_count != 0; });
+        return std::ranges::all_of(this->chunks, [](chunk_record const& c) { return c.index_count != 0; });
     }
 
     camera_ubo make_orbit_camera_ubo(

@@ -1016,8 +1016,8 @@ namespace vulkan {
                         for (auto const* node : up_light) {
                             this->shadow_casters.push_back(node->extra_data);
                         }
-                        std::sort(this->shadow_casters.begin(), this->shadow_casters.end());
-                        this->shadow_casters.erase(std::unique(this->shadow_casters.begin(), this->shadow_casters.end()), this->shadow_casters.end());
+                        std::ranges::sort(this->shadow_casters);
+                        this->shadow_casters.erase(std::ranges::unique(this->shadow_casters).begin(), this->shadow_casters.end());
                     }
                 }
             }
@@ -1058,10 +1058,10 @@ namespace vulkan {
             for (primitive const* const m : visible_leaves) {
                 (m->transparent ? this->frame_transparent : this->frame_visible).push_back(m);
             }
-            std::sort(this->frame_transparent.begin(), this->frame_transparent.end(),
-                      [&distance_to](primitive const* const a, primitive const* const b) {
-                          return distance_to(a) > distance_to(b); // far first
-                      });
+            std::ranges::sort(this->frame_transparent,
+                              [&distance_to](primitive const* const a, primitive const* const b) {
+                                  return distance_to(a) > distance_to(b); // far first
+                              });
         }
         return frame_status::proceed;
     }
