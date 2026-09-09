@@ -730,9 +730,8 @@ namespace vulkan {
     }
 
     void runtime::begin_rendering(VkCommandBuffer const command_buffer, uint32_t const image_index, VkRenderingFlags const flags) const {
-        std::array<VkClearValue, 2> clear_values = {};
-        clear_values[0].color = {{this->clear_color.r, this->clear_color.g, this->clear_color.b, 1.0f}};
-        clear_values[1].depthStencil = {1.0f, 0};
+        VkClearValue clear_color = {};
+        clear_color.color = {{this->clear_color.r, this->clear_color.g, this->clear_color.b, 1.0f}};
 
         core const& vk = this->vulkan_core;
 
@@ -746,7 +745,7 @@ namespace vulkan {
         color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        color_attachment.clearValue = clear_values[0];
+        color_attachment.clearValue = clear_color;
         if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
             // MSAA resolve: the MSAA color attachment resolves into the swapchain image.
             // resolveImageLayout must not be PRESENT_SRC_KHR (VUID-VkRenderingAttachmentInfo-imageView-06146);
@@ -756,13 +755,8 @@ namespace vulkan {
             color_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         }
 
-        VkRenderingAttachmentInfo depth_attachment = {};
-        depth_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        depth_attachment.imageView = vk.depth_image_views[image_index];
-        depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depth_attachment.clearValue = clear_values[1];
+        // depth clears to the far plane (1.0): make_depth_attachment_info
+        VkRenderingAttachmentInfo const depth_attachment = make_depth_attachment_info(vk.depth_image_views[image_index], VK_ATTACHMENT_STORE_OP_DONT_CARE);
 
         VkRenderingInfo rendering_info = {};
         rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -1110,16 +1104,9 @@ namespace vulkan {
                 VkDependencyInfo const shadow_dependency = make_image_dependency_info(1, &shadow_barrier);
                 vkCmdPipelineBarrier2(*command_buffer, &shadow_dependency);
 
-                // Depth-only rendering into the shadow map (no color attachment)
-                VkClearValue shadow_clear = {};
-                shadow_clear.depthStencil = {1.0f, 0};
-                VkRenderingAttachmentInfo shadow_depth_attachment = {};
-                shadow_depth_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                shadow_depth_attachment.imageView = *this->shadow_image_views[frame_slot];
-                shadow_depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                shadow_depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                shadow_depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                shadow_depth_attachment.clearValue = shadow_clear;
+                // Depth-only rendering into the shadow map (no color attachment): loadOp CLEAR
+                // (far plane) + storeOp STORE - the map must survive for the main pass
+                VkRenderingAttachmentInfo const shadow_depth_attachment = make_depth_attachment_info(*this->shadow_image_views[frame_slot], VK_ATTACHMENT_STORE_OP_STORE);
 
                 VkRenderingInfo const shadow_rendering_info = {
                     .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,

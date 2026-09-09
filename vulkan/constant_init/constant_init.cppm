@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.constant_init
-// module version: 0.1.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.2  (independent of the app version in CMakeLists project(VERSION))
 //
 // Compile-time Vulkan info-struct conventions: constexpr factories + constinit
 // "transition" defaults for the structs the engine fills identically everywhere
@@ -256,6 +256,30 @@ export namespace vulkan {
                 .pBufferMemoryBarriers = nullptr,
                 .imageMemoryBarrierCount = image_barrier_count,
                 .pImageMemoryBarriers = barriers};
+    }
+
+    // ---- Dynamic rendering attachment infos ----
+
+    /**
+     * @brief depth attachment of a rendering instance: loadOp CLEAR with the far-plane value
+     *        (1.0, stencil 0 - the engine clears every attachment on load) and no resolve
+     * @param image_view the depth image view
+     * @param store_op DONT_CARE for the transient main depth buffer, STORE for the shadow map
+     *        (its contents must survive for the main pass to sample)
+     */
+    constexpr VkRenderingAttachmentInfo make_depth_attachment_info(VkImageView const image_view, VkAttachmentStoreOp const store_op) noexcept {
+        VkClearValue clear_value = {};
+        clear_value.depthStencil = {1.0f, 0};
+        return {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .pNext = nullptr,
+                .imageView = image_view,
+                .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                .resolveMode = VK_RESOLVE_MODE_NONE,
+                .resolveImageView = VK_NULL_HANDLE,
+                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = store_op,
+                .clearValue = clear_value};
     }
 
     // ---- Fixed-function pipeline state (engine-wide conventions) ----
