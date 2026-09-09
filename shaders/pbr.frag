@@ -112,7 +112,12 @@ float geometry_vis_smith_joint_approx(vec3 n, vec3 v, vec3 l, float roughness) {
     float ndotl = max(dot(n, l), 0.0);
     float vis_v = ndotl * (ndotv * (1.0 - a) + a);
     float vis_l = ndotv * (ndotl * (1.0 - a) + a);
-    return 0.5 / (vis_v + vis_l);
+    // Guard the denominator: at an exact grazing silhouette both ndotv and ndotl are 0, the sum
+    // below is 0 and 0.5/0 would be +inf. The direct term multiplies by radiance (ndotl * ...),
+    // so inf * 0 = NaN would turn the whole fragment black (visible as black flashes on thin
+    // skinned limbs like RecursiveSkeletons at certain poses). Clamping the sum keeps Vis large
+    // but finite - at ndotl == 0 the product is exactly 0 either way.
+    return 0.5 / max(vis_v + vis_l, 1e-5);
 }
 
 // Fresnel: Schlick approximation
