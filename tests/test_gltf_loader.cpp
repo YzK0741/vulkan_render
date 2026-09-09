@@ -4,13 +4,55 @@
 // loader is pure CPU - no Vulkan anywhere.
 #include "vk_test.h"
 
+#include <cmath>
 #include <cstddef>
+#include <glm/glm.hpp>
+#include <optional>
 #include <string_view>
 #include <vector>
 
 import gltf_loader;
 
 namespace {
+    void test_khr_lights_punctual_minimal() {
+        auto const result = gltf::load_model(VR_TEST_SOURCE_DIR "/tests/fixtures/lights_punctual_minimal.gltf");
+        CHECK(result.has_value());
+        if (!result.has_value()) {
+            return;
+        }
+        gltf::scenes const& scenes = *result;
+        CHECK(scenes.lights.size() == 3);
+        if (scenes.lights.size() != 3) {
+            return;
+        }
+        // point light: binary-clean values load exactly
+        CHECK(scenes.lights[0].type == gltf::light_type::point);
+        CHECK(scenes.lights[0].intensity == 2.0f);
+        CHECK(scenes.lights[0].range == std::optional<float>(8.0f));
+        CHECK(scenes.lights[0].color == glm::vec3(1.0f, 0.5f, 0.25f));
+        // spot light: the optional cone angles are exported
+        CHECK(scenes.lights[1].type == gltf::light_type::spot);
+        CHECK(scenes.lights[1].spot_inner_cone.has_value());
+        CHECK(scenes.lights[1].spot_outer_cone.has_value());
+        if (scenes.lights[1].spot_outer_cone) {
+            CHECK(std::abs(*scenes.lights[1].spot_outer_cone - 0.5f) < 1e-5f);
+        }
+        // directional light
+        CHECK(scenes.lights[2].type == gltf::light_type::directional);
+        CHECK(scenes.lights[2].intensity == 4.0f);
+
+        // every KHR node attachment landed on a node (light_index into scenes.lights)
+        CHECK(scenes.scene[0].nodes.size() == 4);
+        std::size_t attached = 0;
+        for (gltf::node const& node : scenes.scene[0].nodes) {
+            if (node.light_index) {
+                ++attached;
+                CHECK(*node.light_index < scenes.lights.size());
+            }
+        }
+        CHECK(attached == 3);
+    }
+
     void test_load_damaged_helmet() {
         auto const result = gltf::load_model(VR_TEST_SOURCE_DIR "/gltf_model/DamagedHelmet.gltf");
         CHECK(result.has_value());
@@ -72,5 +114,6 @@ int main() {
     test_load_damaged_helmet();
     test_async_load_matches_sync();
     test_missing_file_reports_file_not_found();
+    test_khr_lights_punctual_minimal();
     return vk_test::finish("test_gltf_loader");
 }

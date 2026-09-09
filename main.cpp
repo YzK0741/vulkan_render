@@ -262,6 +262,56 @@ int main(int argc, char** argv) {
         seed_orbit_from_camera(current_camera);
     }
 
+    // ---- authored (glTF) punctual lights: KHR_lights_punctual lights up automatically ----
+    // The loader already parsed the extension (scenes.lights + per-node light_index); bind up
+    // to vulkan::max_punctual_lights point/spot lights here. Position comes from the owning
+    // node's loader-space world matrix, shifted by the same import offset the geometry got, so
+    // the lights sit on the imported model. KHR directional lights are NOT mapped: the engine
+    // sun is the shadow-casting analytic light configured by enable_shadows() above - the log
+    // keeps that miss visible instead of silent. The lights are fixed to the base pose (an
+    // animated light node would need per-frame resolution - not wired yet).
+    std::array<vulkan::punctual_light, vulkan::max_punctual_lights> imported_lights = {};
+    std::size_t imported_light_count = 0;
+    std::size_t imported_directional = 0;
+    std::size_t imported_truncated = 0;
+    for (auto const& [source, loader_node] : scenes->node_by_source) {
+        if (!loader_node->light_index.has_value() || !animation.has_runtime_node(source)) {
+            continue; // no light, or the node is absent from the imported tree
+        }
+        gltf::light const& src = scenes->lights[*loader_node->light_index];
+        if (src.type == gltf::light_type::directional) {
+            ++imported_directional;
+            continue;
+        }
+        if (imported_light_count >= vulkan::max_punctual_lights) {
+            ++imported_truncated;
+            continue;
+        }
+        vulkan::punctual_light& out = imported_lights[imported_light_count++];
+        out.position = glm::vec3(loader_node->transform_matrix[3]) + scene_import_shift;
+        out.color = src.color;
+        out.intensity = src.intensity;
+        out.range = src.range.value_or(0.0f); // 0 = infinite falloff (UBO semantics)
+        if (src.type == gltf::light_type::spot) {
+            out.spot = true;
+            glm::vec3 const dir = glm::mat3(loader_node->transform_matrix) * glm::vec3(0.0f, 0.0f, -1.0f); // glTF spot axis
+            out.spot_direction = glm::dot(dir, dir) > 1e-8f ? glm::normalize(dir) : glm::vec3(0.0f, -1.0f, 0.0f);
+            float const outer = src.spot_outer_cone.value_or(glm::radians(45.0f)); // KHR default cone
+            out.spot_outer_cos = std::cos(outer);
+        }
+    }
+    if (imported_light_count > 0) {
+        utility::log("KHR_lights_punctual: {} point/spot light(s) auto-enabled from the model (fixed to the base pose; the gui point-light slots stay off while these are active)",
+                     imported_light_count);
+    }
+    if (imported_directional > 0) {
+        utility::log("KHR_lights_punctual: {} directional light(s) ignored - the engine sun is enable_shadows()'s analytic light",
+                     imported_directional);
+    }
+    if (imported_truncated > 0) {
+        utility::log("KHR_lights_punctual: {} additional light(s) dropped (GPU punctual-light cap = {})", imported_truncated, vulkan::max_punctual_lights);
+    }
+
     // Optional Dear ImGui debug overlay: chores::setup_gui enables it on the runtime (when
     // use_gui) and assembles the whole panel - fps label, frustum-culling / skybox / shadow
     // toggles, the camera-target drag, animation playback controls, the camera selector and
@@ -370,8 +420,14 @@ int main(int argc, char** argv) {
         frame_stats.tick();
         if (use_gui) {
             gui.fps = frame_stats.smoothed_fps(); // live smoothed value for the overlay
-            // point-light widgets edit gui.point_lights live; push the enabled set every frame
-            chores::apply_point_lights(runtime, gui);
+            // Light source each frame: KHR_lights_punctual lights imported above win when the
+            // asset has any; otherwise push the gui slots (demo point lights, user-editable).
+            // Cheap either way - the runtime light array has max 2 entries.
+            if (imported_light_count > 0) {
+                runtime.set_point_lights(std::span(imported_lights.data(), imported_light_count));
+            } else {
+                chores::apply_point_lights(runtime, gui);
+            }
         }
         if (frame_stats.window_rolled()) {
             // once per second: the fps log line stays for headless / non-gui runs; the overlay

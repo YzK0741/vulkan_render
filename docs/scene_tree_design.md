@@ -466,8 +466,10 @@ source of truth for what each commit changed.)
   referencing the same glTF mesh still get independent leaf primitives, and material
   identity lives in the leaf primitive's material_index.
 - Authored glTF cameras are consumed as orbit-camera viewpoint seeds (main + the gui
-  "camera" selector); punctual lights (KHR_lights_punctual) are imported but not used for
-  shading yet — the demo shades with the fixed analytic sun.
+  "camera" selector); punctual point/spot lights (KHR_lights_punctual) are auto-enabled by
+  main into the runtime punctual-light UBO (up to the 2-light cap, base-pose world
+  transform). KHR directional lights are not mapped - the sun stays the analytic
+  shadow-casting light from `enable_shadows()`.
 
 ## 9. Open questions for the maintainer (answers)
 

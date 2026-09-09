@@ -1171,7 +1171,7 @@ namespace gltf {
         // (load_scene / load_animation / load_skin / load_primitive dereference raw asset
         // indices). Cost is one O(n) pass over the parsed asset at load time.
         if (fastgltf::Error const validation_error = fastgltf::validate(asset); validation_error != fastgltf::Error::None) {
-            utility::error("gltf validate err: {}", fastgltf::getErrorMessage(validation_error));
+            utility::error("gltf validate err [validate]: {}", fastgltf::getErrorMessage(validation_error));
             return std::unexpected(to_error_code(validation_error));
         }
 
@@ -1824,8 +1824,8 @@ namespace gltf {
 
         // Camera / light summary: nodes may reference glTF cameras and punctual lights
         // (KHR_lights_punctual). Authored cameras are consumed by the caller as orbit-camera
-        // viewpoint seeds; punctual lights are imported but the demo shades with a fixed
-        // analytic sun - this block logs what the loader exported.
+        // viewpoint seeds; point/spot lights are consumed by the demo main (auto-enabled via
+        // the runtime's punctual-light UBO) - this block logs what the loader exported.
         if (!scenes.cameras.empty()) {
             size_t perspective = 0;
             for (camera const& cam : scenes.cameras) {
