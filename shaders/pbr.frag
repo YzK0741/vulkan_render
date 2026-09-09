@@ -123,6 +123,11 @@ float distribution_ggx(vec3 n, vec3 h, float roughness) {
     a2 = a2 * a2; // perceptual roughness -> alpha^2 (UE passes Pow4(Roughness))
     float ndoth = max(dot(n, h), 0.0);
     float denom = ndoth * ndoth * (a2 - 1.0) + 1.0;
+    // Guard the denominator (same NaN class as the Vis guards below): at the exact specular
+    // hotspot center of a perfectly smooth surface (roughness 0 AND ndoth == 1) denom is 0 and
+    // a2 / (PI * 0) is 0/0 = NaN, turning the fragment black. Clamping keeps D finite (it is
+    // 0 there anyway - an infinitely sharp lobe needs no finite value).
+    denom = max(denom, 1e-6);
     return a2 / (PI * denom * denom);
 }
 
@@ -131,7 +136,7 @@ float distribution_ggx(vec3 n, vec3 h, float roughness) {
 // exactly one piece (NDF or visibility) from the default.
 float distribution_beckmann(vec3 n, vec3 h, float roughness) {
     float a2 = roughness * roughness;
-    a2 = a2 * a2;
+    a2 = max(a2 * a2, 1e-6); // roughness 0 would make 0/0 (or inf) below at ndoth == 1
     float ndoth = max(dot(n, h), 1e-4); // guard: tan blows up at grazing, exp() dies first
     float cos2 = ndoth * ndoth;
     float tan2 = (1.0 - cos2) / cos2;
@@ -140,7 +145,7 @@ float distribution_beckmann(vec3 n, vec3 h, float roughness) {
 
 float distribution_blinn_phong(vec3 n, vec3 h, float roughness) {
     float a2 = roughness * roughness;
-    a2 = a2 * a2;
+    a2 = max(a2 * a2, 1e-6);
     const float exponent = min(2.0 / a2 - 2.0, 4096.0); // classic n = 2 / alpha^2 - 2
     const float ndoth = max(dot(n, h), 0.0);
     return (exponent + 2.0) * pow(ndoth, exponent) / (2.0 * PI);
@@ -213,7 +218,11 @@ vec3 fresnel_schlick(float cos_theta, vec3 f0) {
 // the directional sun and every punctual light take the exact same code path.
 vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, float roughness, vec3 f0, vec3 light_dir, vec3 light_radiance) {
     vec3 l = normalize(light_dir);
-    vec3 h = normalize(v + l);
+    // Half vector: normalize(v + l) is NaN when the light sits exactly behind the fragment
+    // along the view ray (v + l == 0, e.g. a point light placed at the camera). Fall back to
+    // the normal - a degenerate lobe with no real reflection, but a finite one.
+    const vec3 sum = v + l;
+    vec3 h = length(sum) > 1e-6 ? sum / length(sum) : n;
 
     // ---- Specular NDF / visibility by the selected BRDF preset. Preset 0 = GGX + joint
     //      Smith, byte-for-byte the historic default; each other preset differs by exactly one

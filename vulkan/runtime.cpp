@@ -1684,7 +1684,11 @@ namespace vulkan {
             slot.position = glm::vec4(light.position, 0.0f);
             // color already scaled by intensity (radiance units, as the shader expects)
             slot.color = glm::vec4(light.color * light.intensity, 0.0f);
-            slot.spot_dir = glm::vec4(glm::normalize(light.spot_direction), 0.0f);
+            // a zero-length spot axis would encode NaNs (normalize(0) divides by 0): fall back
+            // to the default downward axis so the shader's normalize() stays finite
+            float const axis_length = glm::length(light.spot_direction);
+            glm::vec3 const axis = axis_length > 1e-6f ? light.spot_direction / axis_length : glm::vec3(0.0f, -1.0f, 0.0f);
+            slot.spot_dir = glm::vec4(axis, 0.0f);
             slot.params = glm::vec4(light.range, light.spot ? 1.0f : 0.0f, light.spot_outer_cos, 0.0f);
             ++count;
         }
