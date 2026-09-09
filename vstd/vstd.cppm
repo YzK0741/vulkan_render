@@ -7,17 +7,43 @@
 //
 //===----------------------------------------------------------------------===//
 
+// ============================================================================
+// module: vstd
+// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+//
 // The project's STL module, MODIFIED FROM libc++ (LLVM's C++ standard
 // library): a trimmed copy of libc++'s generated std-module output (upstream
 // generator: utils/generate_libcxx_cppm_in.py, LLVM tree - the full generated
 // std.cppm is NOT vendored, only the used std/*.inc partitions). Every
 // exported entity is a libc++ entity re-exported via `using`; no STL is
-// implemented or rewritten here.
+// implemented or rewritten here. The whole module is byte-bound to the
+// matching libc++ of the MSYS2 clang64 toolchain.
 //
-// EDITABLE WHITELIST: keep the global-fragment #include lines and the
-// matching "std/X.inc" partition includes in sync, one pair per used header.
-// The std/*.inc partition contents are upstream-generated - do not hand-edit
-// them. See vstd/README.md for the trim rules and the toolchain-upgrade steps.
+// extend: this module is the natural home for project-local STL extensions
+//         (vstd-only additions beyond libc++) later on - bump the version
+//         below when they land.
+// evolve: bump MAJOR on breaking interface changes, MINOR on additive features
+//         (including extensions), PATCH on internal fixes - independently of
+//         the rest of the project.
+// ============================================================================
+
+/**
+ * @file vstd.cppm
+ * @defgroup vstd vstd STL Module
+ * @brief the project's STL module: modified from libc++ (LLVM), trimmed to the
+ *        headers this project uses and consumed via `import vstd;`.
+ *
+ * @details
+ * - The global-module-fragment `#include <...>` lines pull the definitions from
+ *   the toolchain's libc++ headers; each `std/X.inc` partition then re-exports
+ *   that header's entities (`export namespace std { using std::vector; ... }`).
+ * - The file is an **editable whitelist**: one `#include <X>` pair with its
+ *   `#include "std/X.inc"` partition per used header; the partition contents
+ *   are upstream-generated and must not be hand-edited (see vstd/README.md).
+ * - Byte-bound to the matching libc++ of the MSYS2 clang64 toolchain: refresh
+ *   the partitions on toolchain upgrades.
+ * @version 0.1.0
+ */
 
 module;
 

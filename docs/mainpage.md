@@ -7,6 +7,8 @@ Current version: **0.1.0** — single source is `project(VERSION)` in `CMakeList
 (surfaced by `--version`, the startup log banner and the Vulkan `app_info`); bump it there
 and keep this line in sync.
 
+- `vstd` - the project's STL module (modified from libc++ and trimmed to the project's
+  usage; consumed as `import vstd;`, module version 0.1.0 - see `vstd/README.md`)
 - `vulkan.core` - instance / device / swapchain / VMA allocator / pipeline / descriptor plumbing
 - `vulkan.runtime` - the frame facade (per-frame-slot scene resources, granular frame phases:
   poll_events -> recreate_if_minimized -> pace_and_acquire -> begin_recording ->

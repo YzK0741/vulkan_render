@@ -50,6 +50,20 @@ So the content is **toolchain-bound, not platform-bound**: it compiles
 against the matching libc++ headers and must be regenerated with them, but it
 has no Windows/Linux/compiler-specific forks of its own.
 
+## Versioning
+
+`vstd` follows the same independent version scheme as every other module in the
+repo (banner at the top of `vstd.cppm`, independent of the app version in
+`project(VERSION)`):
+
+- current: **0.1.0**
+- MAJOR: breaking interface changes
+- MINOR: additive features — including project-local **extensions** (`vstd`
+  is the natural home for STL additions beyond libc++; the module is not just a
+  re-export shim, so bump MINOR when one lands)
+- PATCH: internal fixes (trim changes, partition refreshes on a libc++ patch
+  upgrade)
+
 ## Editing / trimming
 
 `vstd.cppm` keeps one `#include <X>` + `#include "std/X.inc"` pair per used
