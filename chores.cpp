@@ -8,9 +8,9 @@ module;
 // 'call to operator new is ambiguous' at allocate.h. Textually including glm here (the same
 // trick vulkan/animation/controller.cpp uses) makes clang merge the two copies, so
 // the allocator instantiations resolve. Do not remove this include to "clean up".
+#include <array>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <array>
 #include <span>
 
 module chores;
@@ -250,7 +250,7 @@ namespace chores {
             [&runtime](int const index) { runtime.set_diffuse_model(index); }));
         // ---- punctual lights (demo point lights; see apply_point_lights): the widgets edit
         //      bindings.point_lights live and main() pushes the enabled set once per frame ---
-        for (int i = 0; i < 2; ++i) {
+        for (std::size_t i = 0; i < std::size(bindings.point_lights); ++i) {
             gui_bindings::light_slot& slot = bindings.point_lights[i];
             panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
                 std::format("point light {}", i + 1), &slot.enabled));

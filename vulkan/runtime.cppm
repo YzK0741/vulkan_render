@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.2  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.3  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -816,7 +816,7 @@ namespace vulkan {
          *        infinite falloff, otherwise a smooth cutoff at this distance), and for spot
          *        lights `spot = true` + `spot_direction` + `spot_outer_cos` (cos of the outer
          *        half-angle; the shader derives the soft inner cone as mix(outer, 1, 0.6)).
-         *        Entries beyond `vulkan::max_punctual_lights` (2) are dropped.
+         *        Entries beyond `vulkan::max_punctual_lights` (4) are dropped.
          * @note same timing rule as set_brdf_model: CPU-side only, copied into the paced
          *       slot's buffer every frame, so safe at any time (GUI included). The demo GUI
          *       currently exposes two POINT lights (no spot toggle); programmatic callers can

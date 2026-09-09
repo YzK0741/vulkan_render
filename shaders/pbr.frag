@@ -55,17 +55,17 @@ layout(push_constant) uniform PushConstants {
 // Light UBO (scene set binding 7): the orthographic light view-proj (world -> shadow map) and
 // the light direction, followed by the active punctual lights. The direction is filled by the
 // CPU (make_directional_light_ubo) and matches the sky sun, so the direct light, the visible
-// sun disc and the shadows all agree. Layout must match vulkan::light_ubo in scene_tree.cppm
-// (std140): mat4 | vec4 | 4 floats | uint + 3 pad floats | PunctualLight[2] - the CPU mirrors
+// sun disc and the shadows all agree. Layout must match vulkan::light_ubo in primitive.cppm
+// (std140): mat4 | vec4 | 4 floats | uint + 3 pad floats | PunctualLight[4] - the CPU mirrors
 // the "uint + pad" slot with one glm::vec4, so the array starts at byte 112 and the block is
-// 240 bytes. (A vec3 pad would force 16-byte alignment to 128 and shift every light by 16.)
-const int MAX_PUNCTUAL_LIGHTS = 2; // vulkan::max_punctual_lights
+// 368 bytes. (A vec3 pad would force 16-byte alignment to 128 and shift every light by 16.)
+const int MAX_PUNCTUAL_LIGHTS = 4; // vulkan::max_punctual_lights
 
 struct PunctualLight {
     vec4 position; // xyz: world position (w unused)
     vec4 color;    // xyz: linear color * intensity (w unused)
     vec4 spot_dir; // xyz: spot axis, normalized for spot lights (w unused)
-    vec4 params;   // x = range (0 = infinite), y = 0 point / 1 spot, z = cos(outer cone), w = unused
+    vec4 params;   // x = range (0 = infinite), y = 0 point / 1 spot, z = cos(outer cone), w = cos(inner cone, spot only)
 };
 
 layout(set = 0, binding = 7) uniform LightUBO {
@@ -389,7 +389,9 @@ void main() {
         }
         if (pl.params.y > 0.5) { // spot light: cone around spot_dir
             const float outer = pl.params.z;
-            const float inner = mix(outer, 1.0, 0.6);
+            // inner cone: cos of the inner half-angle (glTF KHR innerConeAngle, set by the CPU);
+            // w == 0 means the light did not specify one -> legacy soft-inner mix(outer, 1, 0.6)
+            const float inner = pl.params.w > 0.0 ? pl.params.w : mix(outer, 1.0, 0.6);
             const float cone = smoothstep(outer, inner, dot(-dir, normalize(pl.spot_dir.xyz)));
             radiance *= cone;
         }

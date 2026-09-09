@@ -125,7 +125,7 @@ namespace chores {
         int brdf_model = 0;                // brdf-model combo (0 = GGX+joint, 1 = GGX+height-corr,
                                            // 2 = Beckmann, 3 = Blinn-Phong); write-through to runtime
         int diffuse_model = 0;             // diffuse combo (0 = Lambert, 1 = Oren-Nayar)
-        // two demo point lights: the gui rows below edit these fields live (no per-widget
+        // demo point lights (count matches vulkan::max_punctual_lights): the gui rows below edit these fields live (no per-widget
         // callbacks), and main() pushes the enabled set to the runtime once per frame via
         // chores::apply_point_lights(). Plain C arrays keep this interface glm-free.
         struct light_slot {
@@ -135,7 +135,7 @@ namespace chores {
             float intensity = 1.0f;
             float range = 10.0f;
         };
-        light_slot point_lights[2] = {};
+        light_slot point_lights[4] = {};
     };
 
     /**

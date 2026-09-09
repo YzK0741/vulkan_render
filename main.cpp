@@ -298,6 +298,9 @@ int main(int argc, char** argv) {
             out.spot_direction = glm::dot(dir, dir) > 1e-8f ? glm::normalize(dir) : glm::vec3(0.0f, -1.0f, 0.0f);
             float const outer = src.spot_outer_cone.value_or(glm::radians(45.0f)); // KHR default cone
             out.spot_outer_cos = std::cos(outer);
+            if (src.spot_inner_cone.has_value()) {
+                out.spot_inner_cos = std::cos(*src.spot_inner_cone); // KHR innerConeAngle -> inner-cone cosine
+            }
         }
     }
     if (imported_light_count > 0) {

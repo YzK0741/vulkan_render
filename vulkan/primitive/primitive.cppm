@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene set; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.1.2  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.3  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -59,14 +59,16 @@ namespace vulkan {
      * @ingroup vulkan_primitive
      * @brief one user-configurable punctual light (API surface of runtime::set_point_lights).
      *        Point lights are omni-directional; a spot light additionally restricts its cone to
-     *        @p spot_direction with a soft edge whose outer half-angle cosine is
-     *        @p spot_outer_cos (the shader derives the soft INNER cone as mix(outer, 1, 0.6)).
+     *        @p spot_direction with a soft edge whose OUTER half-angle cosine is
+     *        @p spot_outer_cos and whose INNER half-angle cosine is @p spot_inner_cos
+     *        (optional: when unset, the CPU derives the legacy soft inner cone as
+     *        mix(outer, 1, 0.6)).
      * @note intensity/range are ARTISTIC units, not physical: the shader uses inverse-square
      *       falloff 1/(1+d^2) (well-behaved at zero distance) with a smooth range fade
      *       (1-(d/r)^2)^2 - both differ from the physical/Khronos forms (1/d^2,
      *       (1-(d/r)^4)^2), which are unbounded/too harsh for the demo's scales.
-     * @note the spot inner cone is derived in-shader; a per-light innerConeAngle (glTF
-     *       KHR_lights_punctual) is not surfaced yet, so spot support is stub-level.
+     * @note glTF KHR_lights_punctual spot innerConeAngle maps to @p spot_inner_cos (imported by
+     *       the demo main); the shader smoothsteps outer->inner over the cone cosine.
      */
     export struct punctual_light {
         glm::vec3 position = glm::vec3(0.0f);                    // world position
@@ -76,15 +78,16 @@ namespace vulkan {
         bool spot = false;                                       // false = point light (omni)
         glm::vec3 spot_direction = glm::vec3(0.0f, -1.0f, 0.0f); // spot axis (normalized when spot)
         float spot_outer_cos = -0.2f;                            // cos of the outer cone half-angle (spot only)
+        std::optional<float> spot_inner_cos = std::nullopt;      // cos of the inner cone half-angle (spot only); nullopt = legacy mix(outer, 1, 0.6)
     };
     /** @brief max simultaneous punctual lights (LightUBO.punctual_lights / GLSL PunctualLight array) */
-    export constexpr uint32_t max_punctual_lights = 2;
+    export constexpr uint32_t max_punctual_lights = 4;
     /** @brief one punctual light in the GPU light UBO (std140, 64 bytes; mirror PunctualLight in pbr.frag) */
     export struct point_light {
         glm::vec4 position = {}; // xyz: world position (w unused)
         glm::vec4 color = {};    // xyz: linear color * intensity (w unused)
         glm::vec4 spot_dir = {}; // xyz: spot axis, normalized when the light is a spot (w unused)
-        glm::vec4 params = {};   // x = range (0 = infinite), y = 0 point / 1 spot, z = cos(outer cone), w = unused
+        glm::vec4 params = {};   // x = range (0 = infinite), y = 0 point / 1 spot, z = cos(outer cone), w = cos(inner cone, spot only)
     };
 
     /**
@@ -113,9 +116,10 @@ namespace vulkan {
     };
     // std140 layout guard against the GLSL LightUBO in pbr.frag: light_count is a glm::vec4
     // (16 B @96, its x carries the count the shader reads as uint) and the punctual light array
-    // must sit at byte 112 with a 240-byte block (a vec3 pad on the GLSL side would push the
-    // array to 128 and shift every light by 16 bytes - see pbr.frag's layout comment).
-    static_assert(sizeof(light_ubo) == 240);
+    // must sit at byte 112 with a 368-byte block for max_punctual_lights = 4 (a vec3 pad on the
+    // GLSL side would push the array to 128 and shift every light by 16 bytes - see pbr.frag's
+    // layout comment).
+    static_assert(sizeof(light_ubo) == 112 + max_punctual_lights * sizeof(point_light));
     static_assert(offsetof(light_ubo, punctual_lights) == 112);
     static_assert(sizeof(point_light) == 64);
 

@@ -1710,7 +1710,10 @@ namespace vulkan {
             float const axis_length = glm::length(light.spot_direction);
             glm::vec3 const axis = axis_length > 1e-6f ? light.spot_direction / axis_length : glm::vec3(0.0f, -1.0f, 0.0f);
             slot.spot_dir = glm::vec4(axis, 0.0f);
-            slot.params = glm::vec4(light.range, light.spot ? 1.0f : 0.0f, light.spot_outer_cos, 0.0f);
+            // inner cone: cos of the inner half-angle (glTF KHR innerConeAngle when set), else the
+            // legacy soft-inner derivation mix(outer, 1, 0.6) == 0.6 + 0.4 * outer
+            float const inner_cos = light.spot_inner_cos.value_or(0.6f + 0.4f * light.spot_outer_cos);
+            slot.params = glm::vec4(light.range, light.spot ? 1.0f : 0.0f, light.spot_outer_cos, light.spot ? inner_cos : 0.0f);
             ++count;
         }
         this->light_state.light_count.x = static_cast<float>(count);

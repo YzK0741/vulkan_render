@@ -2,7 +2,7 @@
 // module: vulkan.scene_tree  (peer of vulkan.runtime - the scene tree the
 //         frame facade renders; versioned in lock-step with vulkan.runtime,
 //         see that module's banner: they share the scene / draw interface)
-// module version: 0.1.2  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.3  (independent of the app version in CMakeLists project(VERSION))
 //
 // Scene storage + the abstract leaf interface the GPU primitives implement
 // (pure CPU - glm + vstd only):
