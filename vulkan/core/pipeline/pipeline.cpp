@@ -29,6 +29,129 @@ namespace {
 } // namespace
 
 namespace vulkan {
+    // ---- Fixed-function pipeline state, built by constexpr factories (see the call site
+    //      below): each state is either fully constant or differs by one or two knobs, so the
+    //      hand re-fills are replaced by a single construction. Pointer members point at
+    //      caller-owned data (never at locals of the factory itself). ----
+    constexpr VkPipelineShaderStageCreateInfo make_shader_stage(VkShaderModule const module, VkShaderStageFlagBits const stage) noexcept {
+        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .stage = stage,
+                .module = module,
+                .pName = "main",
+                .pSpecializationInfo = nullptr};
+    }
+    constexpr VkPipelineInputAssemblyStateCreateInfo make_input_assembly_state() noexcept {
+        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                .primitiveRestartEnable = VK_FALSE};
+    }
+    constexpr VkPipelineViewportStateCreateInfo make_viewport_state() noexcept {
+        // viewport/scissor are dynamic state: only the counts are static
+        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .viewportCount = 1,
+                .pViewports = nullptr,
+                .scissorCount = 1,
+                .pScissors = nullptr};
+    }
+    constexpr VkPipelineDynamicStateCreateInfo make_dynamic_state(VkDynamicState const* states, uint32_t const count) noexcept {
+        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .dynamicStateCount = count,
+                .pDynamicStates = states};
+    }
+    constexpr VkPipelineRasterizationStateCreateInfo make_rasterization_state(
+        bool const depth_bias_enabled,
+        float const depth_bias_constant_factor,
+        float const depth_bias_slope_factor,
+        float const depth_bias_clamp) noexcept {
+        // slope-scaled depth bias for depth-writing passes (the shadow map); when the bias is
+        // enabled the factors are dynamic state anyway - the static values only matter while
+        // the dynamic state is never set
+        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .depthClampEnable = VK_FALSE,
+                .rasterizerDiscardEnable = VK_FALSE,
+                .polygonMode = VK_POLYGON_MODE_FILL,
+                .cullMode = VK_CULL_MODE_BACK_BIT,
+                .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+                .depthBiasEnable = depth_bias_enabled ? VK_TRUE : VK_FALSE,
+                .depthBiasConstantFactor = depth_bias_constant_factor,
+                .depthBiasClamp = depth_bias_clamp,
+                .depthBiasSlopeFactor = depth_bias_slope_factor,
+                .lineWidth = 1.0f};
+    }
+    constexpr VkPipelineDepthStencilStateCreateInfo make_depth_stencil_state(bool const depth_test_enabled) noexcept {
+        // depth test + write disabled for background passes (e.g. the skybox), which draw first
+        // and must not occlude later geometry
+        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .depthTestEnable = depth_test_enabled ? VK_TRUE : VK_FALSE,
+                .depthWriteEnable = depth_test_enabled ? VK_TRUE : VK_FALSE,
+                .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+                .depthBoundsTestEnable = VK_FALSE,
+                .stencilTestEnable = VK_FALSE,
+                .front = {},
+                .back = {},
+                .minDepthBounds = 0.0f,
+                .maxDepthBounds = 0.0f};
+    }
+    // Standard alpha blending, ALWAYS enabled: with src alpha == 1 (an opaque material) the
+    // blend math reduces to the source color exactly, so opaque draws are pixel-identical
+    // whether or not blending is on. Blended (transparent) materials simply carry alpha < 1
+    // and are drawn depth-write-off in the transparent pass - no second pipeline needed.
+    constexpr VkPipelineColorBlendAttachmentState make_color_blend_attachment() noexcept {
+        return {.blendEnable = VK_TRUE,
+                .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+                .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                .colorBlendOp = VK_BLEND_OP_ADD,
+                .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+                .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                .alphaBlendOp = VK_BLEND_OP_ADD,
+                .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT};
+    }
+    constexpr VkPipelineColorBlendStateCreateInfo make_color_blend_state(bool const has_color_attachment, VkPipelineColorBlendAttachmentState const* attachment) noexcept {
+        // depth-only pipelines (e.g. the shadow pass) have no color attachment: no blend state
+        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .logicOpEnable = VK_FALSE,
+                .logicOp = VK_LOGIC_OP_COPY,
+                .attachmentCount = has_color_attachment ? 1u : 0u,
+                .pAttachments = has_color_attachment ? attachment : nullptr,
+                .blendConstants = {1.0f, 1.0f, 1.0f, 1.0f}};
+    }
+    constexpr VkPipelineMultisampleStateCreateInfo make_multisample_state(VkSampleCountFlagBits const samples) noexcept {
+        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .rasterizationSamples = samples,
+                .sampleShadingEnable = VK_FALSE,
+                .minSampleShading = 0.0f,
+                .pSampleMask = nullptr,
+                .alphaToCoverageEnable = VK_FALSE,
+                .alphaToOneEnable = VK_FALSE};
+    }
+    // @param color_format_ptr pointer to the caller's color format: the returned info holds
+    //        that pointer, so it must outlive the struct (it does - make_pipeline's parameter)
+    constexpr VkPipelineRenderingCreateInfo make_rendering_create_info(bool const has_color_attachment, VkFormat const* color_format_ptr, VkFormat const depth_format) noexcept {
+        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                .pNext = nullptr,
+                .viewMask = 0,
+                .colorAttachmentCount = has_color_attachment ? 1u : 0u,
+                .pColorAttachmentFormats = has_color_attachment ? color_format_ptr : nullptr,
+                .depthAttachmentFormat = depth_format,
+                .stencilAttachmentFormat = VK_FORMAT_UNDEFINED};
+    }
+
     std::expected<vk_pipeline, std::string_view> make_pipeline( // NOLINT(*-function-cognitive-complexity)
         VkDevice device,
         VkPipelineLayout const pipeline_layout, // shared scene layout (fixed set 0 + push block); not owned
@@ -90,34 +213,11 @@ namespace vulkan {
             return fail("failed to create fragment shader module");
         }
 
-        // ---- 3. Fixed-function pipeline state ----
-        VkPipelineShaderStageCreateInfo vertex_stage = {};
-        vertex_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        vertex_stage.module = **vertex_shader_module;
-        vertex_stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-        vertex_stage.pName = "main";
-        vertex_stage.pSpecializationInfo = nullptr;
-
-        VkPipelineShaderStageCreateInfo fragment_stage = {};
-        fragment_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        fragment_stage.module = **fragment_shader_module;
-        fragment_stage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        fragment_stage.pName = "main";
-        fragment_stage.pSpecializationInfo = nullptr;
-
-        std::array<VkPipelineShaderStageCreateInfo, 2> shader_stage_create_infos = {vertex_stage, fragment_stage};
-
-        VkPipelineInputAssemblyStateCreateInfo input_assembly_state_create_info = {};
-        input_assembly_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-        input_assembly_state_create_info.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        input_assembly_state_create_info.primitiveRestartEnable = VK_FALSE;
-
-        VkPipelineViewportStateCreateInfo viewport_state_create_info = {};
-        viewport_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-        viewport_state_create_info.viewportCount = 1;
-        viewport_state_create_info.scissorCount = 1;
-        viewport_state_create_info.pScissors = nullptr;
-        viewport_state_create_info.pViewports = nullptr;
+        // ---- 3. Fixed-function pipeline state (constexpr factories, see above) ----
+        std::array<VkPipelineShaderStageCreateInfo, 2> shader_stage_create_infos = {
+            make_shader_stage(**vertex_shader_module, VK_SHADER_STAGE_VERTEX_BIT),
+            make_shader_stage(**fragment_shader_module, VK_SHADER_STAGE_FRAGMENT_BIT),
+        };
 
         // double-sided materials need per-draw cull control (core dynamic state since Vulkan 1.3);
         // transparent (alphaMode BLEND) leaves disable depth writes per draw, also a 1.3 core
@@ -136,74 +236,14 @@ namespace vulkan {
             dynamic_states[dynamic_state_count++] = VK_DYNAMIC_STATE_DEPTH_BIAS;
         }
 
-        VkPipelineDynamicStateCreateInfo dynamic_state_create_info = {};
-        dynamic_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-        dynamic_state_create_info.dynamicStateCount = dynamic_state_count;
-        dynamic_state_create_info.pDynamicStates = dynamic_states.data();
-
-        VkPipelineRasterizationStateCreateInfo rasterization_state_create_info = {};
-        rasterization_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-        rasterization_state_create_info.depthClampEnable = VK_FALSE;
-        rasterization_state_create_info.rasterizerDiscardEnable = VK_FALSE;
-        rasterization_state_create_info.polygonMode = VK_POLYGON_MODE_FILL;
-        rasterization_state_create_info.lineWidth = 1.0f;
-        rasterization_state_create_info.cullMode = VK_CULL_MODE_BACK_BIT;
-        rasterization_state_create_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        // slope-scaled depth bias for depth-writing passes (the shadow map): pushing the stored
-        // depth away from the light by the surface's depth slope removes acne on angled
-        // surfaces; the factor is scale-free (in depth units per depth-unit slope). When the
-        // bias is enabled the factors are dynamic state (set per frame via vkCmdSetDepthBias);
-        // the static values below only matter while the state is never set dynamically.
-        rasterization_state_create_info.depthBiasEnable = depth_bias_enabled ? VK_TRUE : VK_FALSE;
-        rasterization_state_create_info.depthBiasConstantFactor = depth_bias_constant_factor;
-        rasterization_state_create_info.depthBiasSlopeFactor = depth_bias_slope_factor;
-        rasterization_state_create_info.depthBiasClamp = depth_bias_clamp;
-
-        VkPipelineDepthStencilStateCreateInfo depth_stencil_state_create_info = {};
-        depth_stencil_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        // depth test + write disabled for background passes (e.g. the skybox), which draw first
-        // and must not occlude later geometry
-        depth_stencil_state_create_info.depthTestEnable = depth_test_enabled ? VK_TRUE : VK_FALSE;
-        depth_stencil_state_create_info.depthWriteEnable = depth_test_enabled ? VK_TRUE : VK_FALSE;
-        depth_stencil_state_create_info.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-
-        VkPipelineColorBlendAttachmentState color_blend_attachment_state = {};
-        color_blend_attachment_state.colorWriteMask =
-            VK_COLOR_COMPONENT_R_BIT |
-            VK_COLOR_COMPONENT_G_BIT |
-            VK_COLOR_COMPONENT_B_BIT |
-            VK_COLOR_COMPONENT_A_BIT;
-        // Standard alpha blending, ALWAYS enabled: with src alpha == 1 (an opaque material) the
-        // blend math reduces to the source color exactly, so opaque draws are pixel-identical
-        // whether or not blending is on. Blended (transparent) materials simply carry alpha < 1
-        // and are drawn depth-write-off in the transparent pass - no second pipeline needed.
-        color_blend_attachment_state.blendEnable = VK_TRUE;
-        color_blend_attachment_state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        color_blend_attachment_state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        color_blend_attachment_state.colorBlendOp = VK_BLEND_OP_ADD;
-        color_blend_attachment_state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        color_blend_attachment_state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        color_blend_attachment_state.alphaBlendOp = VK_BLEND_OP_ADD;
-
-        VkPipelineColorBlendStateCreateInfo color_blend_state_create_info = {};
-        color_blend_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        color_blend_state_create_info.logicOpEnable = VK_FALSE;
-        color_blend_state_create_info.logicOp = VK_LOGIC_OP_COPY;
-        // depth-only pipelines (e.g. the shadow pass) have no color attachment: no blend state
-        color_blend_state_create_info.attachmentCount = has_color_attachment ? 1u : 0u;
-        color_blend_state_create_info.blendConstants[0] = 1.0f;
-        color_blend_state_create_info.blendConstants[1] = 1.0f;
-        color_blend_state_create_info.blendConstants[2] = 1.0f;
-        color_blend_state_create_info.blendConstants[3] = 1.0f;
-        color_blend_state_create_info.pAttachments = has_color_attachment ? &color_blend_attachment_state : nullptr;
-
-        VkPipelineMultisampleStateCreateInfo multisample_state_create_info = {};
-        multisample_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-        multisample_state_create_info.sampleShadingEnable = VK_FALSE;
-        multisample_state_create_info.rasterizationSamples = msaa_level;
-        multisample_state_create_info.pSampleMask = nullptr;
-        multisample_state_create_info.alphaToCoverageEnable = VK_FALSE;
-        multisample_state_create_info.alphaToOneEnable = VK_FALSE;
+        VkPipelineInputAssemblyStateCreateInfo const input_assembly_state_create_info = make_input_assembly_state();
+        VkPipelineViewportStateCreateInfo const viewport_state_create_info = make_viewport_state();
+        VkPipelineDynamicStateCreateInfo const dynamic_state_create_info = make_dynamic_state(dynamic_states.data(), dynamic_state_count);
+        VkPipelineRasterizationStateCreateInfo const rasterization_state_create_info = make_rasterization_state(depth_bias_enabled, depth_bias_constant_factor, depth_bias_slope_factor, depth_bias_clamp);
+        VkPipelineDepthStencilStateCreateInfo const depth_stencil_state_create_info = make_depth_stencil_state(depth_test_enabled);
+        VkPipelineColorBlendAttachmentState const color_blend_attachment_state = make_color_blend_attachment();
+        VkPipelineColorBlendStateCreateInfo const color_blend_state_create_info = make_color_blend_state(has_color_attachment, &color_blend_attachment_state);
+        VkPipelineMultisampleStateCreateInfo const multisample_state_create_info = make_multisample_state(msaa_level);
 
         // ---- 4. Pipeline layout: the shared scene layout (passed in) already carries the
         //         agreed flat descriptor set 0 and the fixed push constant block; nothing to
@@ -216,11 +256,7 @@ namespace vulkan {
         // declared through VkPipelineRenderingCreateInfo in the pNext chain instead of a render
         // pass + subpass. Depth-only pipelines (has_color_attachment == false, e.g. the shadow
         // pass) declare no color attachment format.
-        VkPipelineRenderingCreateInfo rendering_create_info = {};
-        rendering_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-        rendering_create_info.colorAttachmentCount = has_color_attachment ? 1u : 0u;
-        rendering_create_info.pColorAttachmentFormats = has_color_attachment ? &color_format : nullptr;
-        rendering_create_info.depthAttachmentFormat = depth_format;
+        VkPipelineRenderingCreateInfo const rendering_create_info = make_rendering_create_info(has_color_attachment, &color_format, depth_format);
         VkGraphicsPipelineCreateInfo pipeline_create_info = {};
         pipeline_create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
         pipeline_create_info.pNext = &rendering_create_info;

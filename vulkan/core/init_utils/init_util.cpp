@@ -60,13 +60,8 @@ bool check_device_extension_support(
 }
 
 void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t const api_version) noexcept {
-    // ---- Feature pNext chain: features_2 -> 1_1 -> 1_2 -> 1_3 -> 1_4 (truncated by api_version) ----
-    features_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    features_1_1.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
-    features_1_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-    features_1_3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-    features_1_4.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
-
+    // ---- Feature pNext chain: features_2 -> 1_1 -> 1_2 -> 1_3 -> 1_4 (truncated by api_version).
+    //      sType of every struct is fixed at construction (see the member initializers) ----
     features_2.pNext = api_version >= VK_API_VERSION_1_1 ? &features_1_1 : nullptr;
     features_1_1.pNext = api_version >= VK_API_VERSION_1_2 ? &features_1_2 : nullptr;
     features_1_2.pNext = api_version >= VK_API_VERSION_1_3 ? &features_1_3 : nullptr;
@@ -74,12 +69,6 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
     vkGetPhysicalDeviceFeatures2(physical_device, &features_2);
 
     // ---- Property pNext chain: properties_2 -> driver -> subgroup -> descriptor indexing -> maintenance4 ----
-    properties_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-    driver_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
-    subgroup_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
-    descriptor_indexing_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES;
-    maintenance4_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES;
-
     properties_2.pNext = &driver_properties;
     driver_properties.pNext = &subgroup_properties;
     subgroup_properties.pNext = &descriptor_indexing_properties;
@@ -267,6 +256,15 @@ void print_device_capabilities(device_capabilities const& capabilities) {
     utility::log("{}", box_line);
 }
 
+constexpr VkDeviceQueueCreateInfo make_device_queue_info(uint32_t const queue_family, float const* queue_priorities) noexcept {
+    return {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .queueFamilyIndex = queue_family,
+            .queueCount = 1,
+            .pQueuePriorities = queue_priorities};
+}
+
 logical_device create_logical_device(
     VkPhysicalDevice const physical_device, // NOLINT(*-misplaced-const)
     device_creation_info const& create_info) noexcept {
@@ -298,19 +296,19 @@ logical_device create_logical_device(
     constexpr float queue_priority = 1.0f;
 
     for (uint32_t const& queue_family : unique_queue_families) {
-        VkDeviceQueueCreateInfo queue_info = {};
-        queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queue_info.queueFamilyIndex = queue_family;
-        queue_info.queueCount = 1;
-        queue_info.pQueuePriorities = &queue_priority;
-        queue_create_infos.push_back(queue_info);
+        queue_create_infos.push_back(make_device_queue_info(queue_family, &queue_priority));
     }
 
-    VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR fifo_latest_ready_features = {};
-    fifo_latest_ready_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_MODE_FIFO_LATEST_READY_FEATURES_KHR;
-    VkPhysicalDeviceFeatures2 probe_features = {};
-    probe_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    probe_features.pNext = &fifo_latest_ready_features;
+    VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR fifo_latest_ready_features = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_MODE_FIFO_LATEST_READY_FEATURES_KHR,
+        .pNext = nullptr,
+        .presentModeFifoLatestReady = VK_FALSE,
+    };
+    VkPhysicalDeviceFeatures2 probe_features = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &fifo_latest_ready_features,
+        .features = {},
+    };
     vkGetPhysicalDeviceFeatures2(physical_device, &probe_features);
 
     // Create the device

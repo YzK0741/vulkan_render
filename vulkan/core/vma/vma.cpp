@@ -399,12 +399,61 @@ namespace vulkan {
         }
     }
 
+    // Near-constant Vulkan info fills as constexpr factories (anonymous namespace: TU-local,
+    // sibling files define similarly named factories for the same Vulkan structs).
+    namespace {
+        constexpr VkFenceCreateInfo make_fence_info() noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                    .pNext = nullptr,
+                    .flags = 0};
+        }
+        constexpr VkBufferCreateInfo make_staging_buffer_info(VkDeviceSize const size) noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                    .pNext = nullptr,
+                    .flags = 0,
+                    .size = size,
+                    .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                    .queueFamilyIndexCount = 0,
+                    .pQueueFamilyIndices = nullptr};
+        }
+        constexpr VkCommandBufferBeginInfo make_begin_info() noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                    .pNext = nullptr,
+                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                    .pInheritanceInfo = nullptr};
+        }
+        constexpr VkSubmitInfo make_submit_info(VkCommandBuffer const* command_buffer) noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                    .pNext = nullptr,
+                    .waitSemaphoreCount = 0,
+                    .pWaitSemaphores = nullptr,
+                    .pWaitDstStageMask = nullptr,
+                    .commandBufferCount = 1,
+                    .pCommandBuffers = command_buffer,
+                    .signalSemaphoreCount = 0,
+                    .pSignalSemaphores = nullptr};
+        }
+        constexpr VkCommandPoolCreateInfo make_command_pool_info(uint32_t const queue_family) noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                    .pNext = nullptr,
+                    .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                    .queueFamilyIndex = queue_family};
+        }
+        constexpr VkCommandBufferAllocateInfo make_allocate_info(VkCommandPool const pool) noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                    .pNext = nullptr,
+                    .commandPool = pool,
+                    .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                    .commandBufferCount = 1};
+        }
+    } // namespace
+
     VkFence vma_allocator::create_fence() const {
 
         VkFence fence = VK_NULL_HANDLE;
 
-        VkFenceCreateInfo fence_create_info = {};
-        fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VkFenceCreateInfo fence_create_info = make_fence_info();
         vkCreateFence(this->device, &fence_create_info, nullptr, &fence);
 
         return fence;
@@ -426,10 +475,7 @@ namespace vulkan {
             this->buffer_size = 0;
         }
 
-        VkBufferCreateInfo staging_create_info = {};
-        staging_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        staging_create_info.size = size;
-        staging_create_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        VkBufferCreateInfo staging_create_info = make_staging_buffer_info(size);
 
         VmaAllocationCreateInfo staging_alloc_info = {};
         staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
@@ -516,9 +562,7 @@ namespace vulkan {
 
         VkCommandBuffer command_buffer = command_pair.second;
 
-        VkCommandBufferBeginInfo begin_info = {};
-        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VkCommandBufferBeginInfo begin_info = make_begin_info();
         vkBeginCommandBuffer(command_buffer, &begin_info);
 
         VkBufferCopy copy_region = {};
@@ -527,10 +571,7 @@ namespace vulkan {
 
         vkEndCommandBuffer(command_buffer);
 
-        VkSubmitInfo submit_info = {};
-        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &command_buffer;
+        VkSubmitInfo submit_info = make_submit_info(&command_buffer);
 
         {
             // VkQueue is externally synchronized; submits must be serialized
@@ -614,9 +655,7 @@ namespace vulkan {
         }
         VkCommandBuffer command_buffer = command_pair.second;
 
-        VkCommandBufferBeginInfo begin_info = {};
-        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VkCommandBufferBeginInfo begin_info = make_begin_info();
         vkBeginCommandBuffer(command_buffer, &begin_info);
 
         // ========== Fix point 1: correct layout transition order ==========
@@ -695,10 +734,7 @@ namespace vulkan {
         vkEndCommandBuffer(command_buffer);
 
         // Submit and wait for completion
-        VkSubmitInfo submit_info = {};
-        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &command_buffer;
+        VkSubmitInfo submit_info = make_submit_info(&command_buffer);
 
         {
             // VkQueue is externally synchronized; submits must be serialized
@@ -980,11 +1016,7 @@ namespace vulkan {
     }
 
     std::pair<VkCommandPool, VkCommandBuffer> vma_allocator::create_command_pair() const {
-        VkCommandPoolCreateInfo command_pool_create_info = {};
-
-        command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        command_pool_create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        command_pool_create_info.queueFamilyIndex = this->queue_family_index;
+        VkCommandPoolCreateInfo command_pool_create_info = make_command_pool_info(this->queue_family_index);
 
         VkCommandPool command_pool;
         if (vkCreateCommandPool(device, &command_pool_create_info, nullptr, &command_pool) != VK_SUCCESS) {
@@ -992,10 +1024,7 @@ namespace vulkan {
         }
 
         VkCommandBuffer command_buffer;
-        VkCommandBufferAllocateInfo buffer_allocate_info = {};
-        buffer_allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        buffer_allocate_info.commandBufferCount = 1;
-        buffer_allocate_info.commandPool = command_pool;
+        VkCommandBufferAllocateInfo buffer_allocate_info = make_allocate_info(command_pool);
         if (vkAllocateCommandBuffers(this->device, &buffer_allocate_info, &command_buffer) != VK_SUCCESS) {
             utility::panic("Failed to create command buffer");
         }

@@ -60,16 +60,22 @@ namespace vulkan {
         return *this;
     }
 
+    // The primary and secondary allocators fill the same VkCommandBufferAllocateInfo; only the
+    // level differs, so the fill lives in one constexpr factory (anonymous namespace: TU-local).
+    namespace {
+        constexpr VkCommandBufferAllocateInfo make_command_buffer_allocate_info(VkCommandPool const command_pool, VkCommandBufferLevel const level) noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                    .pNext = nullptr,
+                    .commandPool = command_pool,
+                    .level = level,
+                    .commandBufferCount = 1};
+        }
+    } // namespace
+
     vk_command_buffer make_command_buffer(VkDevice const device, VkCommandPool const command_pool) noexcept {
         VkCommandBuffer buffer = VK_NULL_HANDLE;
 
-        VkCommandBufferAllocateInfo allocate_info = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .pNext = nullptr,
-            .commandPool = command_pool,
-            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1,
-        };
+        VkCommandBufferAllocateInfo allocate_info = make_command_buffer_allocate_info(command_pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 
         if (vkAllocateCommandBuffers(device, &allocate_info, &buffer) != VK_SUCCESS) {
             utility::panic("failed to allocate command buffer");
@@ -81,13 +87,7 @@ namespace vulkan {
     vk_command_buffer make_secondary_command_buffer(VkDevice const device, VkCommandPool const command_pool) noexcept {
         VkCommandBuffer buffer = VK_NULL_HANDLE;
 
-        VkCommandBufferAllocateInfo allocate_info = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .pNext = nullptr,
-            .commandPool = command_pool,
-            .level = VK_COMMAND_BUFFER_LEVEL_SECONDARY,
-            .commandBufferCount = 1,
-        };
+        VkCommandBufferAllocateInfo allocate_info = make_command_buffer_allocate_info(command_pool, VK_COMMAND_BUFFER_LEVEL_SECONDARY);
 
         if (vkAllocateCommandBuffers(device, &allocate_info, &buffer) != VK_SUCCESS) {
             utility::panic("failed to allocate secondary command buffer");
@@ -151,11 +151,13 @@ namespace vulkan {
 
     vk_descriptor_set make_descriptor_set(VkDevice const device, VkDescriptorPool const descriptor_pool, VkDescriptorSetLayout const& layout) noexcept {
         VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
-        VkDescriptorSetAllocateInfo allocate_info = {};
-        allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocate_info.descriptorPool = descriptor_pool;
-        allocate_info.descriptorSetCount = 1;
-        allocate_info.pSetLayouts = &layout;
+        VkDescriptorSetAllocateInfo allocate_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .descriptorPool = descriptor_pool,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &layout,
+        };
         vkAllocateDescriptorSets(device, &allocate_info, &descriptor_set);
 
         return vk_descriptor_set(descriptor_set, device, descriptor_pool);
@@ -211,10 +213,13 @@ namespace vulkan {
     std::optional<vk_shader_module> make_shader_module(std::span<unsigned char const> const shader, VkDevice const device) noexcept {
         VkShaderModule shader_module = {};
 
-        VkShaderModuleCreateInfo create_info = {};
-        create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-        create_info.codeSize = shader.size_bytes();
-        create_info.pCode = reinterpret_cast<uint32_t const*>(shader.data());
+        VkShaderModuleCreateInfo create_info = {
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .codeSize = shader.size_bytes(),
+            .pCode = reinterpret_cast<uint32_t const*>(shader.data()),
+        };
 
         if (vkCreateShaderModule(device, &create_info, nullptr, &shader_module) != VK_SUCCESS) {
             return std::nullopt;

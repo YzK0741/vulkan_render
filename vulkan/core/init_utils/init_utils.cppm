@@ -63,19 +63,26 @@ export struct queue_family_indices {
  *      - device_pnext() returns the feature chain head to pass via device_creation_info::pNext
  */
 export struct device_capabilities {
-    // ---- Feature chain (shared by query and device creation) ----
-    VkPhysicalDeviceFeatures2 features_2 = {};
-    VkPhysicalDeviceVulkan11Features features_1_1 = {};
-    VkPhysicalDeviceVulkan12Features features_1_2 = {};
-    VkPhysicalDeviceVulkan13Features features_1_3 = {};
-    VkPhysicalDeviceVulkan14Features features_1_4 = {};
+    // ---- Feature chain (shared by query and device creation): the sType of every member is
+    //      fixed at construction (designated initializer), so query() only re-wires the pNext
+    //      chain and issues the vkGetPhysicalDevice*2 calls each time. The remaining members of
+    //      the Vulkan chain structs are deliberately left to zero-initialization (correct for
+    //      query/creation), which -Wmissing-designated-field-initializers would otherwise flag.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-designated-field-initializers"
+    VkPhysicalDeviceFeatures2 features_2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    VkPhysicalDeviceVulkan11Features features_1_1 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+    VkPhysicalDeviceVulkan12Features features_1_2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceVulkan13Features features_1_3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceVulkan14Features features_1_4 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES};
 
     // ---- Property chain (query only, for renderer decisions/diagnostics) ----
-    VkPhysicalDeviceProperties2 properties_2 = {};
-    VkPhysicalDeviceDriverProperties driver_properties = {};
-    VkPhysicalDeviceSubgroupProperties subgroup_properties = {};
-    VkPhysicalDeviceDescriptorIndexingProperties descriptor_indexing_properties = {};
-    VkPhysicalDeviceMaintenance4Properties maintenance4_properties = {};
+    VkPhysicalDeviceProperties2 properties_2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    VkPhysicalDeviceDriverProperties driver_properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceSubgroupProperties subgroup_properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+    VkPhysicalDeviceDescriptorIndexingProperties descriptor_indexing_properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES};
+    VkPhysicalDeviceMaintenance4Properties maintenance4_properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES};
+#pragma clang diagnostic pop
 
     /**
      * @brief query all features and properties of the physical device

@@ -508,11 +508,73 @@ namespace vulkan {
         });
     }
 
+    // Constant / near-constant Vulkan info fills as constexpr factories: the full field lists
+    // are fixed or differ by one knob, so call sites construct them in a single line instead of
+    // re-filling the boilerplate (see core::make_pipeline for the same pattern). Anonymous
+    // namespace: internal linkage keeps these TU-local, since sibling files define similarly
+    // named factories for the same Vulkan structs.
+    namespace {
+        constexpr VkCommandPoolCreateInfo make_command_pool_info(uint32_t const queue_family) noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                    .pNext = nullptr,
+                    .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                    .queueFamilyIndex = queue_family};
+        }
+        constexpr VkSemaphoreCreateInfo make_binary_semaphore_info() noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                    .pNext = nullptr,
+                    .flags = 0};
+        }
+        constexpr VkSemaphoreTypeCreateInfo make_timeline_semaphore_type_info() noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                    .pNext = nullptr,
+                    .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+                    .initialValue = 0};
+        }
+        constexpr VkSamplerCreateInfo make_texture_sampler_info(VkSamplerAddressMode const address_mode, float const max_lod) noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                    .pNext = nullptr,
+                    .flags = 0,
+                    .magFilter = VK_FILTER_LINEAR,
+                    .minFilter = VK_FILTER_LINEAR,
+                    .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+                    .addressModeU = address_mode,
+                    .addressModeV = address_mode,
+                    .addressModeW = address_mode,
+                    .mipLodBias = 0.0f,
+                    .anisotropyEnable = VK_FALSE,
+                    .maxAnisotropy = 1.0f,
+                    .compareEnable = VK_FALSE,
+                    .compareOp = VK_COMPARE_OP_NEVER,
+                    .minLod = 0.0f,
+                    .maxLod = max_lod,
+                    .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
+                    .unnormalizedCoordinates = VK_FALSE};
+        }
+        constexpr VkSamplerCreateInfo make_shadow_sampler_info() noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                    .pNext = nullptr,
+                    .flags = 0,
+                    .magFilter = VK_FILTER_LINEAR,
+                    .minFilter = VK_FILTER_LINEAR,
+                    .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                    .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                    .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                    .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                    .mipLodBias = 0.0f,
+                    .anisotropyEnable = VK_FALSE,
+                    .maxAnisotropy = 1.0f,
+                    .compareEnable = VK_TRUE,
+                    .compareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+                    .minLod = 0.0f,
+                    .maxLod = 0.0f,
+                    .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
+                    .unnormalizedCoordinates = VK_FALSE};
+        }
+    } // namespace
+
     void core::create_command_pool() noexcept {
-        VkCommandPoolCreateInfo pool_info = {};
-        pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        pool_info.queueFamilyIndex = graphics_family_index;
+        VkCommandPoolCreateInfo const pool_info = make_command_pool_info(graphics_family_index);
 
         if (vkCreateCommandPool(device, &pool_info, nullptr, &command_pool) != VK_SUCCESS) {
             utility::panic("failed to create command pool");
@@ -689,13 +751,8 @@ namespace vulkan {
         frame_done_semaphores.resize(MAX_FRAMES_IN_FLIGHT);
         frame_done_values.assign(MAX_FRAMES_IN_FLIGHT, 0);
 
-        VkSemaphoreTypeCreateInfo timeline_type = {};
-        timeline_type.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
-        timeline_type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
-        timeline_type.initialValue = 0;
-
-        VkSemaphoreCreateInfo binary_info = {};
-        binary_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        VkSemaphoreTypeCreateInfo timeline_type = make_timeline_semaphore_type_info();
+        VkSemaphoreCreateInfo binary_info = make_binary_semaphore_info();
 
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
             if (vkCreateSemaphore(device, &binary_info, nullptr, &image_available_semaphores[i]) != VK_SUCCESS) {
@@ -739,10 +796,7 @@ namespace vulkan {
     }
 
     VkCommandPool core::make_command_pool() {
-        VkCommandPoolCreateInfo pool_info = {};
-        pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        pool_info.queueFamilyIndex = this->graphics_family_index;
+        VkCommandPoolCreateInfo pool_info = make_command_pool_info(this->graphics_family_index);
 
         VkCommandPool pool = VK_NULL_HANDLE;
         if (vkCreateCommandPool(this->device, &pool_info, nullptr, &pool) != VK_SUCCESS) {
@@ -775,17 +829,7 @@ namespace vulkan {
     }
 
     vk_sampler core::make_sampler(VkSamplerAddressMode const address_mode, float const max_lod) const {
-        VkSamplerCreateInfo info = {};
-        info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        info.magFilter = VK_FILTER_LINEAR;
-        info.minFilter = VK_FILTER_LINEAR;
-        info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        info.addressModeU = address_mode;
-        info.addressModeV = address_mode;
-        info.addressModeW = address_mode;
-        info.maxAnisotropy = 1.0f;
-        info.minLod = 0.0f;
-        info.maxLod = max_lod;
+        VkSamplerCreateInfo info = make_texture_sampler_info(address_mode, max_lod);
         VkSampler sampler = VK_NULL_HANDLE;
         vkCreateSampler(this->device, &info, nullptr, &sampler);
         return vk_sampler(sampler, this->device);
@@ -923,8 +967,7 @@ namespace vulkan {
             vkDestroySemaphore(device, semaphore, nullptr);
         }
         present_ready_semaphores.resize(swap_chain_images.size());
-        VkSemaphoreCreateInfo binary_info = {};
-        binary_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        VkSemaphoreCreateInfo binary_info = make_binary_semaphore_info();
         for (auto& semaphore : present_ready_semaphores) {
             if (vkCreateSemaphore(device, &binary_info, nullptr, &semaphore) != VK_SUCCESS) {
                 utility::panic("failed to recreate present-ready semaphore!");
@@ -950,19 +993,7 @@ namespace vulkan {
         // the lit fraction of the 2x2 texel neighborhood, so the shader no longer hand-loops a
         // 3x3 PCF. compareOp matches pbr.frag's test: lit when the fragment is not deeper than
         // the stored depth (ref <= stored).
-        VkSamplerCreateInfo info = {};
-        info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        info.magFilter = VK_FILTER_LINEAR;
-        info.minFilter = VK_FILTER_LINEAR;
-        info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-        info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        info.compareEnable = VK_TRUE;
-        info.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-        info.maxAnisotropy = 1.0f;
-        info.minLod = 0.0f;
-        info.maxLod = 0.0f;
+        VkSamplerCreateInfo info = make_shadow_sampler_info();
         VkSampler sampler = VK_NULL_HANDLE;
         vkCreateSampler(this->device, &info, nullptr, &sampler);
         return vk_sampler(sampler, this->device);
