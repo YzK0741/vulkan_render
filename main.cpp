@@ -278,6 +278,7 @@ int main(int argc, char** argv) {
     // recreation on restore/resize) live inside the runtime's frame phases, which main calls at
     // fine granularity so it can write per-frame data (scene node locals -> culling, skin
     // matrices, morph weights) between pacing and recording.
+    int last_render_mode = 0; // gui render-mode combo (0 = pbr); applied between frames below
     while (true) {
         // Phase 1: poll window events (ESC / native close -> closed, minimized -> skipped)
         vulkan::frame_status const polled = runtime.poll_events();
@@ -342,6 +343,16 @@ int main(int argc, char** argv) {
 
         // A frame was presented: publish its stamp for cheap readers (frame_clock)
         frame_clock.stamp();
+
+        // gui "render mode": switch the runtime's default pipeline BETWEEN frames (the pipeline
+        // registry must not be mutated while a frame records; this point is after submit, before
+        // the next frame's recording). Default-semantics leaves re-shade on the next frame.
+        if (gui.render_mode != last_render_mode) {
+            last_render_mode = gui.render_mode;
+            std::string_view const mode_name = gui.render_mode == 0 ? "pbr" : "unlit";
+            runtime.set_default_pipeline(mode_name);
+            utility::log("render mode: {} ({})", mode_name, gui.render_mode == 0 ? "lit" : "unlit / flat");
+        }
 
         // fps statistics: accumulate the frame gap into the rolling window
         frame_stats.tick();

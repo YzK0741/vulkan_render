@@ -120,6 +120,8 @@ namespace chores {
         bool anim_playing = true;          // play/pause checkbox (mirror of controller state)
         int anim_index = 0;                // animation combo selection (0 = the auto-played one)
         int current_camera = 0;            // camera combo selection (0 = orbit, 1..N = authored)
+        int render_mode = 0;               // render-mode combo (0 = pbr, 1 = unlit); main applies it
+                                           // between frames via set_default_pipeline
     };
 
     /**

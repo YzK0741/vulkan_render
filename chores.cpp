@@ -127,8 +127,14 @@ namespace chores {
     // (depth-only). The legacy triangle demo pipeline is deliberately not created here - nothing
     // draws it anymore.
     void setup_pipeline(vulkan::runtime& runtime, std::filesystem::path const& shaders_dir) {
-        // Standard PBR pipeline: the imported scene's primitives bind to it
+        // Standard PBR pipeline: the imported scene's primitives bind to it (the FIRST pipeline
+        // created becomes the runtime's implicit default)
         load_and_create_pipeline(runtime, shaders_dir, "pbr", "pbr.vert.spv", "pbr.frag.spv");
+        // Non-PBR "unlit" pipeline: flat base color, no lighting/shadows/IBL (see unlit.frag).
+        // Registered as a SECOND named pipeline - the scene tree's default-semantics leaves draw
+        // with whatever the runtime default is, so switching set_default_pipeline() between
+        // "pbr" and "unlit" (gui "render mode") re-shades the whole scene without re-baking.
+        load_and_create_pipeline(runtime, shaders_dir, "unlit", "pbr.vert.spv", "unlit.frag.spv");
 
         {
             // Skybox background pipeline (fullscreen environment pass): drawn first every frame,
@@ -219,6 +225,14 @@ namespace chores {
             "shadow",
             &bindings.shadow_enabled,
             [&runtime](bool const enabled) { runtime.set_shadow_enabled(enabled); }));
+        // render mode: pbr (lit) vs unlit (flat base color, no shading). Default-semantics leaves
+        // draw with the runtime's default pipeline, so this only records a combo selection here;
+        // main() applies it BETWEEN frames via runtime.set_default_pipeline (the registry may
+        // not be mutated while a frame records).
+        panel.push_back(std::make_unique<vulkan::gui::combo_widget>(
+            "render mode",
+            std::vector<std::string>{"pbr (lit)", "unlit (flat)"},
+            &bindings.render_mode));
         // camera orbit target: dragging it moves what the camera looks at / orbits around
         // (camera.target is a glm::vec3, i.e. three contiguous floats; the runtime rebuilds the
         // camera UBO from it every frame, so no on_change callback is needed)
