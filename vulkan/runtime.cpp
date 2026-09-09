@@ -870,10 +870,14 @@ namespace vulkan {
         if (this->bound_scene == nullptr) {
             utility::panic("runtime::begin_recording() called before set_scene() bound a scene");
         }
-        // Record the frame into this slot's command buffer
+        // Record the frame into this slot's command buffer (inline recording: no inheritance)
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
-        VkCommandBufferBeginInfo begin_info = {};
-        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        VkCommandBufferBeginInfo const begin_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .pInheritanceInfo = nullptr,
+        };
         if (vkBeginCommandBuffer(*command_buffer, &begin_info) != VK_SUCCESS) {
             return frame_status::begin_recording_failed;
         }
@@ -1061,6 +1065,52 @@ namespace vulkan {
         return frame_status::proceed;
     }
 
+    // Frame-recording fills that repeat across the per-frame phases as constexpr factories
+    // (anonymous namespace: TU-local): the shadow secondary, the main-pass secondaries and the
+    // parallel sub_render_task workers all begin with the SAME inheritance rendering info /
+    // inheritance info / RENDER_PASS_CONTINUE begin-info trio (only color count/formats vary),
+    // and every barrier pass ends with the same one-struct VkDependencyInfo.
+    namespace {
+        constexpr VkCommandBufferInheritanceRenderingInfo make_inheritance_rendering_info(bool const has_color_attachment, VkFormat const* color_format_ptr, VkFormat const depth_format, VkSampleCountFlagBits const rasterization_samples) noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO,
+                    .pNext = nullptr,
+                    .flags = 0,
+                    .viewMask = 0,
+                    .colorAttachmentCount = has_color_attachment ? 1u : 0u,
+                    .pColorAttachmentFormats = has_color_attachment ? color_format_ptr : nullptr,
+                    .depthAttachmentFormat = depth_format,
+                    .stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
+                    .rasterizationSamples = rasterization_samples};
+        }
+        constexpr VkCommandBufferInheritanceInfo make_inheritance_info(void const* p_next) noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
+                    .pNext = p_next,
+                    .renderPass = VK_NULL_HANDLE,
+                    .subpass = 0,
+                    .framebuffer = VK_NULL_HANDLE,
+                    .occlusionQueryEnable = VK_FALSE,
+                    .queryFlags = 0,
+                    .pipelineStatistics = 0};
+        }
+        constexpr VkCommandBufferBeginInfo make_render_pass_continue_begin_info(VkCommandBufferInheritanceInfo const* inheritance_info) noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                    .pNext = nullptr,
+                    .flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT,
+                    .pInheritanceInfo = inheritance_info};
+        }
+        constexpr VkDependencyInfo make_image_dependency_info(uint32_t const image_barrier_count, VkImageMemoryBarrier2 const* barriers) noexcept {
+            return {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                    .pNext = nullptr,
+                    .dependencyFlags = 0,
+                    .memoryBarrierCount = 0,
+                    .pMemoryBarriers = nullptr,
+                    .bufferMemoryBarrierCount = 0,
+                    .pBufferMemoryBarriers = nullptr,
+                    .imageMemoryBarrierCount = image_barrier_count,
+                    .pImageMemoryBarriers = barriers};
+        }
+    } // namespace
+
     void runtime::record_main_drawcalls() {
         core& vk = this->vulkan_core;
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
@@ -1086,18 +1136,9 @@ namespace vulkan {
                 // inheritance struct hangs off VkCommandBufferInheritanceInfo::pNext (NOT the
                 // begin-info pNext), and a secondary buffer must always provide inheritance info.
                 VkCommandBuffer const shadow_secondary = *this->secondary_command_buffers[static_cast<std::size_t>(frame_slot)][static_cast<std::size_t>(secondary_pass::shadow)];
-                VkCommandBufferInheritanceRenderingInfo shadow_inheritance = {};
-                shadow_inheritance.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO;
-                shadow_inheritance.colorAttachmentCount = 0;
-                shadow_inheritance.depthAttachmentFormat = vk.depth_format;
-                shadow_inheritance.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-                VkCommandBufferInheritanceInfo shadow_sec_inherit = {};
-                shadow_sec_inherit.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
-                shadow_sec_inherit.pNext = &shadow_inheritance;
-                VkCommandBufferBeginInfo shadow_sec_begin = {};
-                shadow_sec_begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                shadow_sec_begin.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
-                shadow_sec_begin.pInheritanceInfo = &shadow_sec_inherit;
+                VkCommandBufferInheritanceRenderingInfo const shadow_inheritance = make_inheritance_rendering_info(false, nullptr, vk.depth_format, VK_SAMPLE_COUNT_1_BIT);
+                VkCommandBufferInheritanceInfo const shadow_sec_inherit = make_inheritance_info(&shadow_inheritance);
+                VkCommandBufferBeginInfo const shadow_sec_begin = make_render_pass_continue_begin_info(&shadow_sec_inherit);
                 bool shadow_recorded = false;
                 if (vkBeginCommandBuffer(shadow_secondary, &shadow_sec_begin) != VK_SUCCESS) {
                     utility::log("runtime: shadow secondary command buffer begin failed - shadow pass skipped this frame");
@@ -1121,10 +1162,7 @@ namespace vulkan {
                 shadow_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 shadow_barrier.image = shadow_detail->image;
                 shadow_barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-                VkDependencyInfo shadow_dependency = {};
-                shadow_dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                shadow_dependency.imageMemoryBarrierCount = 1;
-                shadow_dependency.pImageMemoryBarriers = &shadow_barrier;
+                VkDependencyInfo const shadow_dependency = make_image_dependency_info(1, &shadow_barrier);
                 vkCmdPipelineBarrier2(*command_buffer, &shadow_dependency);
 
                 // Depth-only rendering into the shadow map (no color attachment)
@@ -1138,13 +1176,18 @@ namespace vulkan {
                 shadow_depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                 shadow_depth_attachment.clearValue = shadow_clear;
 
-                VkRenderingInfo shadow_rendering_info = {};
-                shadow_rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-                shadow_rendering_info.flags = VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT;
-                shadow_rendering_info.renderArea = {{0, 0}, {vulkan::runtime::shadow_map_size, vulkan::runtime::shadow_map_size}};
-                shadow_rendering_info.layerCount = 1;
-                shadow_rendering_info.colorAttachmentCount = 0;
-                shadow_rendering_info.pDepthAttachment = &shadow_depth_attachment;
+                VkRenderingInfo const shadow_rendering_info = {
+                    .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                    .pNext = nullptr,
+                    .flags = VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT,
+                    .renderArea = {{0, 0}, {vulkan::runtime::shadow_map_size, vulkan::runtime::shadow_map_size}},
+                    .layerCount = 1,
+                    .viewMask = 0,
+                    .colorAttachmentCount = 0,
+                    .pColorAttachments = nullptr,
+                    .pDepthAttachment = &shadow_depth_attachment,
+                    .pStencilAttachment = nullptr,
+                };
                 vkCmdBeginRendering(*command_buffer, &shadow_rendering_info);
 
                 // Run the pre-recorded shadow secondary (the whole scene casts shadows). Never
@@ -1168,10 +1211,7 @@ namespace vulkan {
                 shadow_read_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 shadow_read_barrier.image = shadow_detail->image;
                 shadow_read_barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-                VkDependencyInfo shadow_read_dependency = {};
-                shadow_read_dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                shadow_read_dependency.imageMemoryBarrierCount = 1;
-                shadow_read_dependency.pImageMemoryBarriers = &shadow_read_barrier;
+                VkDependencyInfo const shadow_read_dependency = make_image_dependency_info(1, &shadow_read_barrier);
                 vkCmdPipelineBarrier2(*command_buffer, &shadow_read_dependency);
             }
         }
@@ -1212,10 +1252,7 @@ namespace vulkan {
                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
 
-        VkDependencyInfo dependency_info = {};
-        dependency_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dependency_info.imageMemoryBarrierCount = barrier_count;
-        dependency_info.pImageMemoryBarriers = attachment_barriers.data();
+        VkDependencyInfo const dependency_info = make_image_dependency_info(barrier_count, attachment_barriers.data());
         vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
 
         // Pipelines cache a fullscreen viewport/scissor at creation; after a resize the swapchain
@@ -1264,19 +1301,9 @@ namespace vulkan {
         // formats as begin_rendering() below, rasterization samples follow MSAA. The gui
         // overlay draws into the same color+depth instance, so it inherits identically.
         VkFormat const color_format = vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT ? vk.color_format : vk.swap_chain_image_format;
-        VkCommandBufferInheritanceRenderingInfo main_inheritance = {};
-        main_inheritance.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO;
-        main_inheritance.colorAttachmentCount = 1;
-        main_inheritance.pColorAttachmentFormats = &color_format;
-        main_inheritance.depthAttachmentFormat = vk.depth_format;
-        main_inheritance.rasterizationSamples = vk.msaa_samples;
-        VkCommandBufferInheritanceInfo main_sec_inherit = {};
-        main_sec_inherit.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
-        main_sec_inherit.pNext = &main_inheritance;
-        VkCommandBufferBeginInfo main_sec_begin = {};
-        main_sec_begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        main_sec_begin.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
-        main_sec_begin.pInheritanceInfo = &main_sec_inherit;
+        VkCommandBufferInheritanceRenderingInfo const main_inheritance = make_inheritance_rendering_info(true, &color_format, vk.depth_format, vk.msaa_samples);
+        VkCommandBufferInheritanceInfo const main_sec_inherit = make_inheritance_info(&main_inheritance);
+        VkCommandBufferBeginInfo const main_sec_begin = make_render_pass_continue_begin_info(&main_sec_inherit);
 
         std::size_t const leaf_count = this->frame_visible.size();
         std::size_t const segment_count = std::min<std::size_t>(main_segments.size(), std::max<std::size_t>(1, leaf_count));
@@ -1544,19 +1571,9 @@ namespace vulkan {
     // fresh each call so the pNext chains point at this invocation's stack structs; safe to run
     // on any pool worker.
     void runtime::sub_render_task::operator()() const {
-        VkCommandBufferInheritanceRenderingInfo rendering_inherit = {};
-        rendering_inherit.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO;
-        rendering_inherit.colorAttachmentCount = 1;
-        rendering_inherit.pColorAttachmentFormats = &this->color_format;
-        rendering_inherit.depthAttachmentFormat = this->depth_format;
-        rendering_inherit.rasterizationSamples = this->rasterization_samples;
-        VkCommandBufferInheritanceInfo inherit = {};
-        inherit.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
-        inherit.pNext = &rendering_inherit;
-        VkCommandBufferBeginInfo begin = {};
-        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
-        begin.pInheritanceInfo = &inherit;
+        VkCommandBufferInheritanceRenderingInfo const rendering_inherit = make_inheritance_rendering_info(true, &this->color_format, this->depth_format, this->rasterization_samples);
+        VkCommandBufferInheritanceInfo const inherit = make_inheritance_info(&rendering_inherit);
+        VkCommandBufferBeginInfo const begin = make_render_pass_continue_begin_info(&inherit);
         if (vkBeginCommandBuffer(this->command_buffer, &begin) != VK_SUCCESS) {
             utility::log("runtime: main segment secondary begin failed - segment skipped this frame");
             if (this->recorded != nullptr) {
@@ -1592,10 +1609,7 @@ namespace vulkan {
         present_barrier.image = vk.swap_chain_images[this->current_image_index];
         present_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
-        VkDependencyInfo dependency_info = {};
-        dependency_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dependency_info.imageMemoryBarrierCount = 1;
-        dependency_info.pImageMemoryBarriers = &present_barrier;
+        VkDependencyInfo const dependency_info = make_image_dependency_info(1, &present_barrier);
         vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
         if (vkEndCommandBuffer(*command_buffer) != VK_SUCCESS) {
             return frame_status::end_recording_failed;
