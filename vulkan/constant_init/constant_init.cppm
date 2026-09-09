@@ -1,3 +1,16 @@
+// ============================================================================
+// module: vulkan.constant_init
+// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+//
+// Compile-time Vulkan info-struct conventions: constexpr factories + constinit
+// "transition" defaults for the structs the engine fills identically everywhere
+// (object create infos, command-buffer / secondary inheritance, fixed-function
+// pipeline state, per-frame layout transitions). Top-level module: depends on
+// nothing but the Vulkan headers, so any Vulkan module can embed it.
+//
+// evolve: bump MAJOR on breaking interface changes, MINOR on additive features,
+//         PATCH on internal fixes - independently of the rest of the project.
+// ============================================================================
 module;
 
 #include <vulkan/vulkan.h>

@@ -1,10 +1,11 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
-// are part of this unit). Standalone Vulkan wrapper; depends on VMA + utility.
+// are part of this unit). Standalone Vulkan wrapper; depends on VMA + utility,
+// with the struct-fill conventions coming from vulkan.constant_init.
 //
 // evolve: bump MAJOR on breaking interface changes, MINOR on additive features,
 //         PATCH on internal fixes - independently of the rest of the project.
