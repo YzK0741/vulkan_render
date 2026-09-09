@@ -297,10 +297,10 @@ void utility::error_message(std::string message) {
 #endif
 }
 
-utility::xxh3_digest utility::xxh3_64bits(std::span<unsigned char const> const data_view) {
-    // XXH3_64bits returns the fingerprint as a scalar; store its bytes in the digest
+utility::xxh3_digest utility::xxh3_128bits(std::span<unsigned char const> const data_view) {
+    // XXH3_128bits returns a {low64, high64} pair; store its bytes in the digest
     xxh3_digest digest = {};
-    uint64_t const hash = XXH3_64bits(data_view.data(), data_view.size_bytes());
+    XXH128_hash_t const hash = XXH3_128bits(data_view.data(), data_view.size_bytes());
     std::memcpy(digest.data.data(), &hash, sizeof(hash));
     return digest;
 }

@@ -804,13 +804,15 @@ namespace vulkan {
                             [this](uint64_t const h) { this->free_image(h); }};
         };
 
-        // XXH3_64bits is pure CPU work; keep it outside the critical section. It is computed
+        // XXH3-128 is pure CPU work; keep it outside the critical section. It is computed
         // before allocating so a content hit can reuse an existing image without any allocation
         // or upload. Empty images (data == nullptr, e.g. a depth shadow map that is rendered
         // into, never uploaded) have no content digest (all-zero) and are never deduplicated.
+        // 128 bits (not 64): a wrong dedup hit would silently render the wrong texture, so the
+        // digest collision chance should be negligible even across large scenes.
         utility::xxh3_digest digest = {};
         if (data != nullptr && size_byte != 0) {
-            digest = utility::xxh3_64bits(std::span(data, size_byte));
+            digest = utility::xxh3_128bits(std::span(data, size_byte));
         }
 
         // Only immutable, data-uploaded textures are shareable: depth / staging / render targets

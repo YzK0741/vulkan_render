@@ -115,7 +115,7 @@ namespace vulkan {
         std::vector<vk_image_view> owned_texture_views = {};
         std::vector<vk_image> owned_textures = {};
         uint32_t white_texture_index = 0;
-        std::map<std::tuple<std::array<std::uint8_t, 8>, VkFormat, std::uint32_t, std::uint32_t, std::uint32_t>, uint32_t> texture_slot_cache = {}; // digest, format, width, height, mip_levels
+        std::map<std::tuple<std::array<std::uint8_t, 16>, VkFormat, std::uint32_t, std::uint32_t, std::uint32_t>, uint32_t> texture_slot_cache = {}; // digest(128-bit), format, width, height, mip_levels
         // scene-wide IBL (bindings 2-4): prefiltered env / irradiance / BRDF LUT, uploaded once
         std::vector<vk_image_view> ibl_views = {};
         std::vector<vk_image> ibl_images = {};
@@ -127,6 +127,14 @@ namespace vulkan {
         vk_buffer material_buffer = {};
         void* material_mapped = nullptr;
         uint32_t material_count = 0;
+        // content-addressed material dedup + overflow fallback (see register_material):
+        // material_slot_cache keys the full material_record bytes (texture indices + factors +
+        // flags), so N primitives sharing one glTF material register ONE record instead of N
+        // identical appends; when the table really fills up, later registrations degrade to the
+        // reserved default material at index 0 (registered in init_scene_resources) with a
+        // one-time log instead of a hard panic.
+        std::map<std::array<std::uint8_t, sizeof(vulkan::material_record)>, uint32_t> material_slot_cache = {};
+        bool material_overflow_logged = false;
         // per-instance transforms for instanced primitives (scene set binding 6): one mat4 per
         // instance, host-visible. The buffer is ONE shared region split into per-instanced-
         // primitive slices: make_instanced_primitive() appends its transforms at instance_cursor
@@ -152,9 +160,10 @@ namespace vulkan {
         std::vector<vk_buffer> morph_buffers = {};
         std::vector<void*> morph_mapped = {};
         // per-slot scene descriptor sets: all pipelines share the scene layout, so every frame
-        // slot gets one set from it. A set's per-slot bindings (0 camera / 8 shadow / 9 skin /
-        // 10 morph) always point at that slot's own resources and never change, so an in-flight
-        // frame can never observe the next frame's descriptors (no update-after-bind race).
+        // slot gets one set from it. A set's per-slot bindings (0 camera / 7 light / 8 shadow /
+        // 9 skin / 10 morph) always point at that slot's own resources and never change, so an
+        // in-flight frame can never observe the next frame's descriptors (no update-after-bind
+        // race).
         std::array<vk_descriptor_set, vulkan::core::MAX_FRAMES_IN_FLIGHT> scene_sets = {};
         bool scene_set_created = false;
         // the frame slot paced by the last successful pace_and_acquire();
@@ -176,8 +185,16 @@ namespace vulkan {
         std::vector<vk_image> shadow_images = {}; // depth images, rendered into every frame
         std::vector<vk_image_view> shadow_image_views = {};
         vk_sampler shadow_sampler = {}; // nearest + clamp-to-edge (manual PCF in pbr.frag)
-        vk_buffer light_buffer = {};    // host-visible light UBO (static content)
-        void* light_mapped = nullptr;
+        // Light UBO (scene set binding 7): ONE host-visible buffer per frame slot, like the
+        // camera UBO - each slot's scene set points at its own buffer, so the per-frame host
+        // write into the paced slot's copy can never race a frame still in flight on the other
+        // slot. CPU-side light_state mirrors the content: enable_shadows() fills it once,
+        // set_shadow_enabled() flips its flag, and pace_and_acquire() copies it into the paced
+        // slot's buffer next to the camera UBO - arbitrary-time calls (GUI callbacks included)
+        // never touch mapped memory directly.
+        std::vector<vk_buffer> light_buffers = {};
+        std::vector<void*> light_mapped = {};
+        light_ubo light_state = {};
         std::optional<vk_pipeline> shadow_pipeline = std::nullopt; // depth-only pass pipeline
         bool shadows_enabled = false;                              // true after enable_shadows() (light UBO filled + pipeline ready)
         // live-tunable depth bias of the shadow pass (dynamic state, set per frame before the

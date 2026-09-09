@@ -96,7 +96,7 @@ namespace vulkan {
         VkImage image = VK_NULL_HANDLE;
         VmaAllocation allocation = VK_NULL_HANDLE;
         VmaAllocationInfo allocation_info = {};
-        // XXH3_64bits content digest (data_block<8>, hex-formatable); all-zero = no content digest
+        // XXH3-128 content digest (data_block<16>, hex-formatable); all-zero = no content digest
         // (never deduplicated)
         utility::xxh3_digest digest = {};
         // creation parameters, kept so a digest hit only reuses an identical image

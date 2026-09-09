@@ -470,7 +470,10 @@ namespace vulkan {
      * @brief max entries of the GPU material table
      * @note sized for the heaviest glTF stress sample (NodePerformanceTest: 10000 rocks, each
      *       with its own material record - factors differ per rock, so content dedup cannot
-     *       collapse them). 16384 x 80 B = 1.3 MiB storage buffer per frame slot, negligible.
+     *       collapse them). 16384 x 80 B = 1.3 MiB storage buffer, negligible. The runtime
+     *       dedups byte-identical materials (register_material) and reserves index 0 as the
+     *       default material; registrations past the capacity degrade to it with a logged
+     *       warning instead of failing the whole scene.
      */
     export constexpr uint32_t material_capacity = 16384;
 

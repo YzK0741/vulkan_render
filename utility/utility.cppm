@@ -264,9 +264,12 @@ namespace utility {
     /**
      * @defgroup hash Content Hashing
      * @ingroup utility
-     * @brief xxHash-based 64-bit content hash (XXH3_64bits), returned as a data_block<8>
+     * @brief xxHash-based 128-bit content hash (XXH3_128bits), returned as a data_block<16>
      * @note
      *     - non-cryptographic, extremely fast (used for content dedup)
+     *     - 128-bit digest: two independent 64-bit lanes, so an accidental collision is
+     *       negligible for content-addressed GPU-resource dedup (a wrong share would silently
+     *       render the wrong texture / image)
      *     - digest supports operator==/!=/<=> and hex formatting (.to_hex_string())
      *     - cannot fail (no allocation / error state)
      */
@@ -276,13 +279,13 @@ namespace utility {
      * @relates data_block
      * @ingroup hash
      */
-    export using xxh3_digest = data_block<8>;
+    export using xxh3_digest = data_block<16>;
 
     /**
-     * @brief xxh3_64bits hash function
+     * @brief xxh3_128bits hash function
      * @param data_view bytes to fingerprint
-     * @return 8-byte digest of @p data_view (the raw 64-bit fingerprint)
+     * @return 16-byte digest of @p data_view (the raw 128-bit fingerprint)
      * @ingroup hash
      */
-    export xxh3_digest xxh3_64bits(std::span<unsigned char const> data_view);
+    export xxh3_digest xxh3_128bits(std::span<unsigned char const> data_view);
 } // namespace utility

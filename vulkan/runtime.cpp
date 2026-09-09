@@ -274,6 +274,19 @@ namespace vulkan {
             this->morph_buffers.push_back(std::move(morph_buf));
             this->morph_mapped.push_back(morph_detail->allocation_info.pMappedData);
         }
+
+        // Reserve table index 0 as the DEFAULT material (white textures + identity factors):
+        // registrations that overflow the table degrade to it (see register_material). Done
+        // FIRST so it always lands at index 0 - the raw zeroed record at 0 would render black
+        // (all factors zero), not white. Safe here: no scene set exists yet, so the descriptor
+        // writes register_material builds are deferred (update_all_scene_sets no-ops).
+        {
+            primitive_create_info const default_material = {};
+            uint32_t const default_index = this->register_material(default_material);
+            if (default_index != 0) {
+                utility::panic("default material must occupy table index 0");
+            }
+        }
     }
 
     void runtime::init_shadow_resources() {
@@ -303,18 +316,25 @@ namespace vulkan {
         }
         this->shadow_sampler = this->vulkan_core.make_shadow_sampler();
 
-        // Light UBO (scene set binding 7): static content, filled by enable_shadows()
-        light_ubo initial = {};
-        vk_buffer light_buf = this->vulkan_core.vma.create_buffer(std::span(&initial, 1), vulkan::buffer_type::uniform_coherent);
-        if (!light_buf.valid()) {
-            utility::panic("failed to create light ubo buffer");
+        // Light UBO (scene set binding 7): one buffer PER FRAME SLOT (host-visible, mapped), so
+        // a frame being rendered never shares the buffer the next frame rewrites. CPU-side
+        // content lives in light_state; the frame loop memcpys it into the paced slot's buffer
+        // (pace_and_acquire) - see the member docs for the concurrency rationale.
+        this->light_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        this->light_mapped.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            light_ubo initial = {};
+            vk_buffer light_buf = this->vulkan_core.vma.create_buffer(std::span(&initial, 1), vulkan::buffer_type::uniform_coherent);
+            if (!light_buf.valid()) {
+                utility::panic("failed to create light ubo buffer");
+            }
+            auto const* light_detail = this->vulkan_core.vma.get_buffer_detail(light_buf.handle());
+            if (light_detail == nullptr) {
+                utility::panic("failed to get light ubo buffer detail");
+            }
+            this->light_buffers.push_back(std::move(light_buf));
+            this->light_mapped.push_back(light_detail->allocation_info.pMappedData);
         }
-        auto const* light_detail = this->vulkan_core.vma.get_buffer_detail(light_buf.handle());
-        if (light_detail == nullptr) {
-            utility::panic("failed to get light ubo buffer detail");
-        }
-        this->light_buffer = std::move(light_buf);
-        this->light_mapped = light_detail->allocation_info.pMappedData;
     }
 
     void runtime::ensure_scene_set() {
@@ -380,7 +400,7 @@ namespace vulkan {
             write_buffer_binding(set, 10, morph_detail->buffer, static_cast<VkDeviceSize>(vulkan::scene_morph_capacity) * sizeof(float), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         }
 
-        // binding 7 (light UBO, shared) + binding 8 (per-slot shadow map) and bindings 2-4 (IBL):
+        // binding 7 (light UBO, per-slot) + binding 8 (per-slot shadow map) and bindings 2-4 (IBL):
         // written on every scene set below
         this->write_light_and_shadow_bindings();
         this->write_ibl_bindings();
@@ -403,17 +423,17 @@ namespace vulkan {
         if (!this->scene_set_created) {
             return;
         }
-        // binding 7: light UBO (uniform buffer; light_view_proj + light_dir filled by enable_shadows)
-        auto const* light_detail = this->vulkan_core.vma.get_buffer_detail(this->light_buffer.handle());
-        if (light_detail == nullptr) {
-            utility::panic("failed to get light ubo buffer detail");
-        }
-        VkDescriptorBufferInfo const light_info{light_detail->buffer, 0, sizeof(light_ubo)};
-
-        // binding 8: THIS slot's shadow map depth texture (each slot's set points at its own
-        // depth image, so no per-frame re-pointing is needed)
+        // binding 7 (light UBO) + binding 8 (shadow map): BOTH point at THIS slot's own
+        // resources (per-slot light buffers like the camera UBO, per-slot shadow images), so no
+        // per-frame re-pointing is needed and an in-flight frame never shares a buffer the next
+        // frame rewrites.
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
             VkDescriptorSet const set = *this->scene_sets[static_cast<std::size_t>(slot)];
+            auto const* light_detail = this->vulkan_core.vma.get_buffer_detail(this->light_buffers[static_cast<std::size_t>(slot)].handle());
+            if (light_detail == nullptr) {
+                utility::panic("failed to get light ubo buffer detail");
+            }
+            VkDescriptorBufferInfo const light_info{light_detail->buffer, 0, sizeof(light_ubo)};
             auto const* shadow_detail = this->vulkan_core.vma.get_image_detail(this->shadow_images[static_cast<std::size_t>(slot)].handle());
             if (shadow_detail == nullptr) {
                 utility::panic("failed to get shadow map image detail");
@@ -564,11 +584,11 @@ namespace vulkan {
             }
             // Content-addressed dedup: the loader hands every material its OWN byte copy of a
             // shared glTF image, so identical pixels arrive under different pointers. Hash the
-            // decoded bytes (xxh3, same primitive vma uses for GPU-image dedup) and key the
+            // decoded bytes (xxh3-128, the same digest vma uses for GPU-image dedup) and key the
             // slot cache on (digest, format, dimensions): N materials over one image upload
             // once and share the array element. The image itself is also vma-deduped below.
-            utility::xxh3_digest const digest = utility::xxh3_64bits(std::span<unsigned char const>(tex.data.data(), tex.data.size_bytes()));
-            auto const key = std::tuple<std::array<std::uint8_t, 8>, VkFormat, std::uint32_t, std::uint32_t, std::uint32_t>{
+            utility::xxh3_digest const digest = utility::xxh3_128bits(std::span<unsigned char const>(tex.data.data(), tex.data.size_bytes()));
+            auto const key = std::tuple<std::array<std::uint8_t, 16>, VkFormat, std::uint32_t, std::uint32_t, std::uint32_t>{
                 digest.data, slots[i].second, tex.width, tex.height, tex.mip_levels};
             auto const cached = this->texture_slot_cache.find(key);
             if (cached != this->texture_slot_cache.end()) {
@@ -648,9 +668,6 @@ namespace vulkan {
 
         // ---- 2. Append one material record: texture indices + presence flags; factors keep
         //         their identity defaults (extend primitive_create_info to pass custom factors) ----
-        if (this->material_count >= vulkan::material_capacity) {
-            utility::panic("material table capacity exceeded");
-        }
         material_record record = {};
         record.tex_indices = glm::uvec4(texture_indices[0], texture_indices[1], texture_indices[2], texture_indices[3]);
         record.emissive_index = texture_indices[4];
@@ -681,8 +698,29 @@ namespace vulkan {
             record.flags |= 32u; // bit5: alphaMode BLEND - alpha-blended / transparent material
         }
 
+        // ---- 3. Content-address the record, then append (or degrade on overflow) ----
+        // Identical materials (same texture slots, factors and flags) share ONE table entry:
+        // registration happens per primitive, so a scene with N primitives over M shared glTF
+        // materials would otherwise append N records and burn the table needlessly. The key is
+        // the byte-exact 80-byte record (no hash collisions possible).
+        std::array<std::uint8_t, sizeof(vulkan::material_record)> material_key = {};
+        std::memcpy(material_key.data(), &record, sizeof(record));
+        if (auto const cached = this->material_slot_cache.find(material_key); cached != this->material_slot_cache.end()) {
+            return cached->second; // already registered: share the existing record
+        }
+        if (this->material_count >= vulkan::material_capacity) {
+            // Table full (pathological - 16384 unique materials): degrade to the reserved
+            // default material (index 0, white + identity factors, registered at setup) instead
+            // of crashing; the mesh still draws. Logged once, not per registration.
+            if (!this->material_overflow_logged) {
+                this->material_overflow_logged = true;
+                utility::log("material table capacity ({}) exceeded - extra materials render with the default (index 0)", vulkan::material_capacity);
+            }
+            return 0;
+        }
         uint32_t const material_index = this->material_count++;
         std::memcpy(static_cast<unsigned char*>(this->material_mapped) + static_cast<size_t>(material_index) * sizeof(material_record), &record, sizeof(record));
+        this->material_slot_cache.emplace(material_key, material_index);
         return material_index;
     }
 
@@ -805,8 +843,8 @@ namespace vulkan {
         }
 
         // Write this frame's camera UBO into the paced slot's per-slot buffer. The scene
-        //    descriptor sets are static per slot (ensure_scene_set wired bindings 0/8/9/10 to
-        //    each slot's own camera/shadow/skin/morph resources), so one memcpy is the whole
+        //    descriptor sets are static per slot (ensure_scene_set wired bindings 0/7/8/9/10 to
+        //    each slot's own camera/light/shadow/skin/morph resources), so one memcpy is the whole
         //    camera update - no per-frame descriptor write exists anymore. An external
         //    (glTF/programmatic) camera, when active, supplies the matrices directly.
         this->current_aspect = static_cast<float>(vk.swap_chain_extent.width) / static_cast<float>(vk.swap_chain_extent.height);
@@ -819,6 +857,14 @@ namespace vulkan {
         }
         if (this->camera_mapped[frame_slot] != nullptr) {
             std::memcpy(this->camera_mapped[frame_slot], &this->current_ubo, sizeof(camera_ubo));
+        }
+        // Same for the light UBO: copy the CPU-side light_state into THIS slot's own light
+        // buffer. The slot was just paced (its previous submission completed) and the other
+        // in-flight slot's set points at its own buffer, so this host write can never race a GPU
+        // read - which is why set_shadow_enabled() / enable_shadows() only touch light_state and
+        // never mapped memory directly.
+        if (this->light_mapped.size() > static_cast<std::size_t>(frame_slot) && this->light_mapped[frame_slot] != nullptr) {
+            std::memcpy(this->light_mapped[frame_slot], &this->light_state, sizeof(light_ubo));
         }
         // Remember the paced slot: the caller's per-frame host writes (set_skin_matrices /
         // morph_scratch) land in this slot's buffers and are safe to make now that the slot's
@@ -1708,13 +1754,17 @@ namespace vulkan {
         // shadow caster culling (begin_recording): casters up to ~1/8 of the scene radius
         // up-light of the camera frustum can still throw a shadow into the view
         this->shadow_caster_extent = std::max(1.0f, scene_radius * 0.125f);
-        if (!this->shadow_pipeline || this->light_mapped == nullptr) {
+        if (!this->shadow_pipeline || this->light_mapped.empty()) {
             utility::log("shadow mapping not enabled (no shadow pipeline / light buffer)");
             return;
         }
-        // light UBO: orthographic light view-proj framing the scene + the light direction
-        light_ubo const ubo = make_directional_light_ubo(scene_center, scene_radius);
-        std::memcpy(this->light_mapped, &ubo, sizeof(ubo));
+        // light UBO: orthographic light view-proj framing the scene + the light direction.
+        // Fill the CPU-side mirror only - pace_and_acquire copies it into every slot's own
+        // light buffer as each slot is paced (nothing here touches mapped memory directly).
+        this->light_state = make_directional_light_ubo(scene_center, scene_radius);
+        // respect the current GUI toggle: the flag in the slot's buffer tells pbr.frag whether
+        // the depth map was rendered this frame
+        this->light_state.shadow_enabled = this->shadow_enabled ? 1.0f : 0.0f;
         this->shadows_enabled = true;
         utility::log("shadow mapping enabled: light frustum center ({:.2f}, {:.2f}, {:.2f}), radius {:.2f}",
                      scene_center.x, scene_center.y, scene_center.z, scene_radius);
@@ -1725,13 +1775,13 @@ namespace vulkan {
             return;
         }
         this->shadow_enabled = enabled;
-        // The light UBO's shadow_enabled flag drives pbr.frag: when shadows are off the shader
-        // skips calc_shadow entirely (fully lit), so no shadow-map clearing is needed — this
+        // Only the CPU-side flag changes here: the frame loop copies light_state into the paced
+        // slot's OWN light buffer (pace_and_acquire), so this call is safe at ANY time (GUI
+        // callbacks included) - it never touches memory a frame in flight may be reading. The
+        // light UBO's shadow_enabled flag drives pbr.frag: when shadows are off the shader
+        // skips calc_shadow entirely (fully lit), so no shadow-map clearing is needed - this
         // avoids the per-frame-slot double-buffer race that clearing once could not fix.
-        if (this->light_mapped != nullptr) {
-            float const flag = enabled ? 1.0f : 0.0f;
-            std::memcpy(static_cast<unsigned char*>(this->light_mapped) + offsetof(light_ubo, shadow_enabled), &flag, sizeof(flag));
-        }
+        this->light_state.shadow_enabled = (enabled && this->shadows_enabled) ? 1.0f : 0.0f;
         utility::log("shadow pass {}", enabled ? "enabled" : "disabled");
     }
 
