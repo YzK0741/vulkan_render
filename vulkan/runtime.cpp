@@ -1399,10 +1399,14 @@ namespace vulkan {
         // Background pass first (only the segment that carries it): the skybox draws a fullscreen
         // triangle (no vertex/index buffers) with depth test/write disabled, then the models
         // render over it. Cull mode is dynamic state: set it explicitly (previously it leaked
-        // from the shadow pass's inline draws; with secondaries that leak is gone).
+        // from the shadow pass's inline draws; with secondaries that leak is gone). Depth write
+        // is dynamic state too (transparency): the skybox pipeline declares it, so it must be
+        // set once before the draw - OFF, the skybox never writes depth (it sits at z=0.0 and
+        // must not occlude the scene).
         if (draw_skybox && this->skybox_pipeline && this->skybox_enabled) {
             this->skybox_pipeline->begin_pipeline(command_buffer);
             vkCmdSetCullMode(command_buffer, VK_CULL_MODE_BACK_BIT);
+            vkCmdSetDepthWriteEnable(command_buffer, VK_FALSE);
             vkCmdDraw(command_buffer, 3, 1, 0, 0);
         }
 

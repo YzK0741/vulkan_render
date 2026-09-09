@@ -38,7 +38,11 @@ namespace utility {
         void stamp() noexcept {
             uint64_t const now = now_ns();
             uint64_t const previous = this->last_ns_.load(std::memory_order_relaxed);
-            this->delta_ns_.store(now - previous, std::memory_order_relaxed);
+            // First stamp (previous == 0, the clock's zero value): there is no previous frame,
+            // so the delta is 0 - NOT now - 0, which would be the machine's uptime and make the
+            // first delta_seconds() jump the animation to a random phase.
+            uint64_t const delta = (previous == 0) ? 0 : now - previous;
+            this->delta_ns_.store(delta, std::memory_order_relaxed);
             this->last_ns_.store(now, std::memory_order_relaxed);
         }
 

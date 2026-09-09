@@ -249,5 +249,10 @@ void main() {
     color = aces_tone_mapping(color);
     color = pow(color, vec3(1.0 / 2.2));
 
-    out_color = vec4(color, base_color.a);
+    // glTF alpha semantics: only alphaMode BLEND materials carry real coverage in the output
+    // alpha. OPAQUE and MASK outputs must write alpha = 1 (their base_color.a / albedo alpha
+    // is ignored by the spec), otherwise the always-on blending below would make e.g. an
+    // albedo texture with an alpha channel unexpectedly translucent. BLEND keeps base_color.a.
+    float out_alpha = ((mat.flags & 32u) != 0u) ? base_color.a : 1.0;
+    out_color = vec4(color, out_alpha);
 }

@@ -310,8 +310,11 @@ int main(int argc, char** argv) {
 
         // drive the animation controller: sample the active animation into node locals (T/R/S +
         // morph weights) and rebuild the skin matrices, into the frame slot pace_and_acquire()
-        // just paced. dt comes from frame_clock (stamped after the previous presented frame).
-        animation.update(static_cast<float>(frame_clock.delta_seconds()));
+        // just paced. dt comes from frame_clock (stamped after the previous presented frame);
+        // clamp it so a pause (minimized / swapchain-recreate gaps that never stamped) does not
+        // fast-forward the animation by the whole gap - playback resumes where it paused.
+        float const dt = static_cast<float>(std::min(frame_clock.delta_seconds(), 0.25));
+        animation.update(dt);
         gui.anim_time = animation.current_time();  // keep the gui time slider in sync
         gui.anim_playing = animation.is_playing(); // reflect controller-side pauses (scrub / select)
         gui.anim_index = static_cast<int>(animation.current());
