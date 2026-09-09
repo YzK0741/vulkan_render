@@ -56,7 +56,9 @@ layout(push_constant) uniform PushConstants {
 // the light direction, followed by the active punctual lights. The direction is filled by the
 // CPU (make_directional_light_ubo) and matches the sky sun, so the direct light, the visible
 // sun disc and the shadows all agree. Layout must match vulkan::light_ubo in scene_tree.cppm
-// (std140): mat4 | vec4 | 4 floats | uint+vec3 | PunctualLight[2].
+// (std140): mat4 | vec4 | 4 floats | uint + 3 pad floats | PunctualLight[2] - the CPU mirrors
+// the "uint + pad" slot with one glm::vec4, so the array starts at byte 112 and the block is
+// 240 bytes. (A vec3 pad would force 16-byte alignment to 128 and shift every light by 16.)
 const int MAX_PUNCTUAL_LIGHTS = 2; // vulkan::max_punctual_lights
 
 struct PunctualLight {
@@ -79,7 +81,9 @@ layout(set = 0, binding = 7) uniform LightUBO {
     float diffuse_model;
     float _pad;
     uint light_count;
-    vec3 _pad2;
+    float _pad2a; // std140 tail of the CPU's glm::vec4 light_count (bytes 100..111, unused)
+    float _pad2b;
+    float _pad2c;
     PunctualLight punctual_lights[MAX_PUNCTUAL_LIGHTS];
 } light;
 

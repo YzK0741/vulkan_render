@@ -1,5 +1,6 @@
 module;
 
+#include <cstddef> // offsetof (layout guard below)
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
 
@@ -298,7 +299,13 @@ namespace vulkan {
         glm::vec4 light_count = {}; // x = number of active punctual lights (GLSL reads it as uint + vec3 pad)
         std::array<point_light, max_punctual_lights> punctual_lights = {};
     };
-    static_assert(sizeof(light_ubo) == 112 + static_cast<int>(64 * max_punctual_lights));
+    // std140 layout guard against the GLSL LightUBO in pbr.frag: light_count is a glm::vec4
+    // (16 B @96, its x carries the count the shader reads as uint) and the punctual light array
+    // must sit at byte 112 with a 240-byte block (a vec3 pad on the GLSL side would push the
+    // array to 128 and shift every light by 16 bytes - see pbr.frag's layout comment).
+    static_assert(sizeof(light_ubo) == 240);
+    static_assert(offsetof(light_ubo, punctual_lights) == 112);
+    static_assert(sizeof(point_light) == 64);
 
     /**
      * @ingroup vulkan_runtime_scene_tree
