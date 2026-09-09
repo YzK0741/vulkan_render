@@ -1109,6 +1109,68 @@ namespace vulkan {
                     .imageMemoryBarrierCount = image_barrier_count,
                     .pImageMemoryBarriers = barriers};
         }
+
+        // Every frame moves the same images between the same layouts; only the target image
+        // differs per barrier. Each role below is therefore a constinit default that call
+        // sites copy and then override .image on. The attachment transitions discard the old
+        // contents (loadOp CLEAR makes UNDEFINED as oldLayout valid whatever the image's
+        // actual current layout is - no per-frame layout tracking needed).
+        constinit VkImageMemoryBarrier2 color_attachment_transition = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .pNext = nullptr,
+            .srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            .srcAccessMask = 0,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = VK_NULL_HANDLE,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        };
+        constinit VkImageMemoryBarrier2 depth_attachment_transition = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .pNext = nullptr,
+            .srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            .srcAccessMask = 0,
+            .dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = VK_NULL_HANDLE,
+            .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
+        };
+        constinit VkImageMemoryBarrier2 shadow_map_sampling_transition = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .pNext = nullptr,
+            .srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            .srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = VK_NULL_HANDLE,
+            .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
+        };
+        constinit VkImageMemoryBarrier2 present_transition = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .pNext = nullptr,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            .dstAccessMask = 0,
+            .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = VK_NULL_HANDLE,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        };
     } // namespace
 
     void runtime::record_main_drawcalls() {
@@ -1150,18 +1212,8 @@ namespace vulkan {
 
                 // Transition the shadow image to a renderable depth attachment (loadOp CLEAR
                 //     discards the previous frame's contents, so UNDEFINED as oldLayout is valid)
-                VkImageMemoryBarrier2 shadow_barrier = {};
-                shadow_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-                shadow_barrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-                shadow_barrier.srcAccessMask = 0;
-                shadow_barrier.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-                shadow_barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                shadow_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-                shadow_barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                shadow_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                shadow_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                VkImageMemoryBarrier2 shadow_barrier = depth_attachment_transition;
                 shadow_barrier.image = shadow_detail->image;
-                shadow_barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
                 VkDependencyInfo const shadow_dependency = make_image_dependency_info(1, &shadow_barrier);
                 vkCmdPipelineBarrier2(*command_buffer, &shadow_dependency);
 
@@ -1199,18 +1251,8 @@ namespace vulkan {
                 vkCmdEndRendering(*command_buffer);
 
                 // Hand the shadow map back to the main pass as a sampled texture
-                VkImageMemoryBarrier2 shadow_read_barrier = {};
-                shadow_read_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-                shadow_read_barrier.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-                shadow_read_barrier.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                shadow_read_barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-                shadow_read_barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-                shadow_read_barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                shadow_read_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                shadow_read_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                shadow_read_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                VkImageMemoryBarrier2 shadow_read_barrier = shadow_map_sampling_transition;
                 shadow_read_barrier.image = shadow_detail->image;
-                shadow_read_barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
                 VkDependencyInfo const shadow_read_dependency = make_image_dependency_info(1, &shadow_read_barrier);
                 vkCmdPipelineBarrier2(*command_buffer, &shadow_read_dependency);
             }
@@ -1221,36 +1263,20 @@ namespace vulkan {
         // vkCmdBeginRendering
         std::array<VkImageMemoryBarrier2, 3> attachment_barriers = {};
         uint32_t barrier_count = 0;
-        auto const add_render_barrier = [&attachment_barriers, &barrier_count](VkImage const image, VkImageAspectFlags const aspect, VkImageLayout const new_layout, VkPipelineStageFlags2 const dst_stage, VkAccessFlags2 const dst_access) {
+        auto const add_render_barrier = [&attachment_barriers, &barrier_count](VkImageMemoryBarrier2 const& transition, VkImage const image) {
             VkImageMemoryBarrier2& barrier = attachment_barriers[barrier_count++];
-            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-            barrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-            barrier.srcAccessMask = 0;
-            barrier.dstStageMask = dst_stage;
-            barrier.dstAccessMask = dst_access;
-            // loadOp CLEAR discards the contents: UNDEFINED as oldLayout is valid whatever the
-            // image's actual current layout is, and avoids tracking it per frame
-            barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            barrier.newLayout = new_layout;
-            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier = transition; // copy the role default, then retarget it
             barrier.image = image;
-            barrier.subresourceRange = {aspect, 0, 1, 0, 1};
         };
 
         if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
             // MSAA color attachment and the swapchain resolve target both render in COLOR_ATTACHMENT_OPTIMAL
-            add_render_barrier(vk.color_images[this->current_image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-            add_render_barrier(vk.swap_chain_images[this->current_image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+            add_render_barrier(color_attachment_transition, vk.color_images[this->current_image_index]);
+            add_render_barrier(color_attachment_transition, vk.swap_chain_images[this->current_image_index]);
         } else {
-            add_render_barrier(vk.swap_chain_images[this->current_image_index], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+            add_render_barrier(color_attachment_transition, vk.swap_chain_images[this->current_image_index]);
         }
-        add_render_barrier(vk.depth_images[this->current_image_index], VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                           VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                           VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+        add_render_barrier(depth_attachment_transition, vk.depth_images[this->current_image_index]);
 
         VkDependencyInfo const dependency_info = make_image_dependency_info(barrier_count, attachment_barriers.data());
         vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
@@ -1597,17 +1623,8 @@ namespace vulkan {
         // presentation engine: transition the swapchain image to PRESENT_SRC_KHR explicitly.
         // With MSAA the resolve target ends up in resolveImageLayout (COLOR_ATTACHMENT_OPTIMAL),
         // so the barrier is needed on both the direct-render and the resolve paths.
-        VkImageMemoryBarrier2 present_barrier = {};
-        present_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        present_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        present_barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-        present_barrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
-        present_barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        present_barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        present_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        present_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        VkImageMemoryBarrier2 present_barrier = present_transition;
         present_barrier.image = vk.swap_chain_images[this->current_image_index];
-        present_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
         VkDependencyInfo const dependency_info = make_image_dependency_info(1, &present_barrier);
         vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
