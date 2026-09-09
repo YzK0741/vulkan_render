@@ -255,6 +255,12 @@ namespace vulkan {
      *        Point lights are omni-directional; a spot light additionally restricts its cone to
      *        @p spot_direction with a soft edge whose outer half-angle cosine is
      *        @p spot_outer_cos (the shader derives the soft INNER cone as mix(outer, 1, 0.6)).
+     * @note intensity/range are ARTISTIC units, not physical: the shader uses inverse-square
+     *       falloff 1/(1+d^2) (well-behaved at zero distance) with a smooth range fade
+     *       (1-(d/r)^2)^2 - both differ from the physical/Khronos forms (1/d^2,
+     *       (1-(d/r)^4)^2), which are unbounded/too harsh for the demo's scales.
+     * @note the spot inner cone is derived in-shader; a per-light innerConeAngle (glTF
+     *       KHR_lights_punctual) is not surfaced yet, so spot support is stub-level.
      */
     export struct punctual_light {
         glm::vec3 position = glm::vec3(0.0f);                    // world position

@@ -558,8 +558,11 @@ namespace vulkan {
 
     uint32_t runtime::register_material(primitive_create_info const& info) {
         // ---- 1. Resolve the 5 texture slots against the shared array: identical texture bytes
-        //         upload once (shared glTF textures decode to one buffer, so the data pointer is
-        //         a stable identity); missing slots point at the white fallback (element 0).
+        //         upload once, keyed by a CONTENT hash of the decoded bytes (xxh3 digest +
+        //         format/dimensions - the loader hands every material its own copy of a shared
+        //         glTF image, so a raw data pointer is NOT a stable identity; the digest lookup
+        //         below is what actually dedups); missing slots point at the white fallback
+        //         (element 0).
         std::array<std::pair<texture_input const*, VkFormat>, 5> const slots = {
             std::pair{&info.albedo, VK_FORMAT_R8G8B8A8_SRGB},
             std::pair{&info.metallic_roughness, VK_FORMAT_R8G8B8A8_UNORM},
@@ -989,6 +992,14 @@ namespace vulkan {
                 if (frame_leaves.size() <= full_scene_shadow_leaf_limit) {
                     this->shadow_casters = this->frame_leaves;
                 } else {
+                    // HEAVY scene: revert to the camera + up-light-margin caster subset (see the
+                    // long comment above). Crossing the threshold silently would recreate the
+                    // interior light-leak this heuristic replaced, so say it once.
+                    if (!this->shadow_heuristic_logged) {
+                        this->shadow_heuristic_logged = true;
+                        utility::log("shadow caster heuristic: scene exceeds {} leaves - shadow casters fall back to the camera-margin cull set (interiors may leak light)",
+                                     full_scene_shadow_leaf_limit);
+                    }
                     this->shadow_casters = this->cull_visible;
                     if (this->cull_bvh.has_value()) {
                         utility::frustum const shifted_frustum = [this, &ubo] {
@@ -1427,15 +1438,13 @@ namespace vulkan {
         // make_primitive: mid-frame creation would race the recording workers). During
         // recording the registry is therefore read-only, so the per-bind lookup below needs no
         // lock: the pipelines map is a node container (inserts never invalidate existing
-        // entries). available points at the runtime's name table member (its address is stable)
-        // and pipeline_names is a deque, so later appends cannot invalidate the entries either.
-        // The default-name view below is still snapshotted under a shared lock so a concurrent
-        // setup-time set_default_pipeline cannot tear the std::string it points into.
+        // entries), so the binder can search it directly. The default-name view below is still
+        // snapshotted under a shared lock so a concurrent setup-time set_default_pipeline
+        // cannot tear the std::string it points into.
         render_environment env;
         env.command_buffer = command_buffer;
         {
             std::shared_lock const lock(this->access_mutex);
-            env.available = &this->pipeline_names;
             env.default_name = this->default_pipeline_name;
         }
         env.bind = [this](VkCommandBuffer const cb, std::string_view const name) {

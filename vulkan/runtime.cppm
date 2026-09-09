@@ -205,7 +205,11 @@ namespace vulkan {
         // own map, so the two never race on the same depth image
         std::vector<vk_image> shadow_images = {}; // depth images, rendered into every frame
         std::vector<vk_image_view> shadow_image_views = {};
-        vk_sampler shadow_sampler = {}; // nearest + clamp-to-edge (manual PCF in pbr.frag)
+        vk_sampler shadow_sampler = {}; // linear depth-compare (hardware PCF) + clamp-to-edge
+        // one-time log for the shadow-caster heuristic switch (see begin_recording): scenes over
+        // full_scene_shadow_leaf_limit fall back to the camera-margin cull set, which can leak
+        // sunlight through interiors - say so once instead of silently changing behavior
+        bool shadow_heuristic_logged = false;
         // Light UBO (scene set binding 7): ONE host-visible buffer per frame slot, like the
         // camera UBO - each slot's scene set points at its own buffer, so the per-frame host
         // write into the paced slot's copy can never race a frame still in flight on the other
@@ -771,11 +775,11 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief enable or disable recording the directional shadow pass each frame
-         * @param enabled true (default) renders the shadow map; false skips the depth pass and
-         *        clears the shadow map to fully-lit so the main pass shows no shadows
-         * @note requires enable_shadows() to have succeeded; turning it off clears the shadow maps
-         *       (a one-shot GPU command), re-enabling restores per-frame rendering
+         * @brief enable or disable the directional shadow each frame
+         * @param enabled true (default) records the shadow pass and samples the map; false skips
+         *        the depth pass - pbr.frag then skips calc_shadow entirely (fully lit)
+         * @note requires enable_shadows() to have succeeded. Flag-only toggle: nothing is cleared
+         *       and no command is recorded; the shader simply stops sampling the stale map
          */
         void set_shadow_enabled(bool enabled);
 

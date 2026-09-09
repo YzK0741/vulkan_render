@@ -15,8 +15,8 @@ export import std;
  * One instance exists per parallel recording worker (each sub_render_task builds its own, per
  * frame), so the command buffer and the "currently bound pipeline" state are always
  * thread-local - workers never share them. The environment carries the session's command
- * buffer, available pipelines and its default, and lets a primitive's draw() bind the pipeline
- * it wants through an injected callback; the real vkCmdBindPipeline lives in that callback
+ * buffer, its default pipeline and the injected binder, and lets a primitive's draw() bind the
+ * pipeline it wants through that callback; the real vkCmdBindPipeline lives in the callback
  * (owned by the runtime, which captures its pipeline cache). The environment itself holds no
  * Vulkan objects - only the handle typedefs it needs to forward them.
  *
@@ -32,7 +32,6 @@ namespace vulkan {
      * Members are set by the recording site (the runtime) before the session's leaves draw:
      * - command_buffer: the buffer being recorded into (each session owns its own, so draw()
      *   needs no separate command-buffer parameter)
-     * - available: the scene's pipeline names (pointer to the runtime's stable name table)
      * - default_name: this pass's default pipeline ("pbr" for the main pass, the shadow
      *   pipeline for the shadow pass) - the fallback a default-semantics primitive wants
      * - bind: injected binding action; takes the pipeline name and records the real
@@ -52,11 +51,7 @@ namespace vulkan {
      * @endcode
      */
     export struct render_environment {
-        VkCommandBuffer command_buffer = VK_NULL_HANDLE; // session's recording target
-        // the scene's pipeline names: pointer to the runtime's stable name table (a std::deque -
-        // appends never invalidate existing elements, so the pointed-to entries stay valid for the
-        // session's whole lifetime even if setup-time registration runs on another thread)
-        std::deque<std::string> const* available = nullptr;
+        VkCommandBuffer command_buffer = VK_NULL_HANDLE;                        // session's recording target
         std::string_view default_name = {};                                     // this pass's default
         std::function<void(VkCommandBuffer, std::string_view)> bind = {};       // injected binder
         std::function<void(VkCommandBuffer, VkBool32)> set_depth_write_fn = {}; // injected depth-write setter

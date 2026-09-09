@@ -590,10 +590,11 @@ namespace vulkan {
         bindings[5] = {.binding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         // per-instance world transforms for instanced draws (mat4 per instance, read in pbr.vert)
         bindings[6] = {.binding = 6, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
-        // directional light: light-space view-proj + light direction (read by shadow.vert and pbr.frag)
+        // light UBO: directional sun (light-space view-proj + direction) + BRDF model ids +
+        // the punctual-light count/array (read by shadow.vert and pbr.frag)
         bindings[7] = {.binding = 7, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
-        // shadow map depth texture (NEAREST sampler; pbr.frag does manual 3x3 PCF, no
-        // depth-comparison / hardware PCF)
+        // shadow map depth texture: LINEAR depth-compare sampler = HARDWARE percentage-closer
+        // filtering (one sampler2DShadow texture() returns the lit 2x2 fraction, no manual 3x3)
         bindings[8] = {.binding = 8, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         // per-joint skin matrices (mat4 per joint; indices 0-3 are the identity block for
         // unskinned draws; read in pbr.vert / shadow.vert, filled per frame by set_skin_matrices)

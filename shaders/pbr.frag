@@ -216,6 +216,10 @@ vec3 fresnel_schlick(float cos_theta, vec3 f0) {
 // light's intensity/attenuation (and, for the sun, its shadow factor); ndotl is folded in
 // here. The BRDF theory selections (LightUBO.brdf_model / diffuse_model) are applied inside so
 // the directional sun and every punctual light take the exact same code path.
+// NOTE: these presets drive the DIRECT lights only. The IBL ambient below always uses the
+// fixed GGX model (prefiltered GGX environment + GGX BRDF LUT with Fdez-Aguera multiscatter
+// compensation, Lambert diffuse irradiance) - the gui preset switch is an honest DIRECT-light
+// A/B, not a whole-scene model comparison.
 vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, float roughness, vec3 f0, vec3 light_dir, vec3 light_radiance) {
     vec3 l = normalize(light_dir);
     // Half vector: normalize(v + l) is NaN when the light sits exactly behind the fragment

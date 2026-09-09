@@ -170,7 +170,13 @@ namespace utility {
      */
     export template <typename T>
     class bvh {
-        std::vector<bvh_node<T>> leaves;
+        // Leaf storage is a DEQUE, not a vector: internal (heap) nodes point at leaf elements,
+        // and add() inserts new leaves without invalidating those addresses. A vector would
+        // reallocate on growth and leave every internal node dangling until the next rebuild -
+        // add() + rebuild() is a documented usage, so leaf addresses must be stable. Deque
+        // swaps also keep references valid, which make() relies on when it hands its built tree
+        // to the result.
+        std::deque<bvh_node<T>> leaves;
         std::unique_ptr<bvh_node<T>> root;
         // normalization for morton coding: world-space midpoints are mapped into [0,1]^3 by
         // (mid - origin) * scale so the morton quantizer works for AABBs anywhere in space
@@ -183,7 +189,7 @@ namespace utility {
             return glm::clamp(normalized, glm::vec3(0.0f), glm::vec3(1.0f));
         }
         /** @brief compute origin/scale from a set of leaf AABBs (scene extent) */
-        void set_extent(std::vector<bvh_node<T>> const& leaf_nodes) {
+        void set_extent(std::deque<bvh_node<T>> const& leaf_nodes) {
             glm::vec3 min = glm::vec3(std::numeric_limits<float>::infinity());
             glm::vec3 max = glm::vec3(-std::numeric_limits<float>::infinity());
             for (bvh_node<T> const& leaf : leaf_nodes) {
@@ -204,7 +210,7 @@ namespace utility {
          * @return the root node on success, error message on failure
          */
         static std::expected<std::unique_ptr<bvh_node<T>>, std::string> build_from_leaves( // NOLINT(*-function-cognitive-complexity)
-            std::vector<bvh_node<T>>& leaves,
+            std::deque<bvh_node<T>>& leaves,
             glm::vec3 const& origin,
             glm::vec3 const& scale) {
             using fail = std::unexpected<std::string>;
@@ -273,10 +279,16 @@ namespace utility {
             }
 
             if (layers.size() == 1) {
-                // With a single element, layers[0][0] points at an element of the leaves vector;
-                // handing it to a unique_ptr would delete it on destruction (it wasn't new'd) -> double-free UB.
-                // Copy it to the heap as the root node instead.
-                return std::unique_ptr<bvh_node<T>>(new bvh_node<T>(*layers.back()[0]));
+                // Single element on the bottom layer - two cases:
+                //  - the sole LEAF points at an element of `leaves`: it was not new'd, handing
+                //    it to a unique_ptr would double-free on destruction, so copy it to the heap.
+                //  - ONE heap-allocated internal node (exactly two leaves paired into it): take
+                //    ownership directly - copying it would leak the original.
+                bvh_node<T>* const sole = layers.back()[0];
+                if (sole->is_leaf()) {
+                    return std::unique_ptr<bvh_node<T>>(new bvh_node<T>(*sole));
+                }
+                return std::unique_ptr<bvh_node<T>>(sole);
             }
 
             return std::unique_ptr<bvh_node<T>>(layers.back()[0]);
@@ -296,8 +308,7 @@ namespace utility {
                 return fail("data is empty");
             }
 
-            std::vector<bvh_node<T>> leaves;
-            leaves.reserve(datas.size());
+            std::deque<bvh_node<T>> leaves;
             for (auto const& data : datas) {
                 bvh_node<T> node = {};
                 node.aabb.min = data.min;
@@ -325,7 +336,10 @@ namespace utility {
 
             result.root = std::move(build_result).value();
 
-            result.leaves = std::move(leaves);
+            // swap, not move: the built tree's internal nodes point at these leaf addresses,
+            // and deque::swap keeps every element at its address (a move may not, per the
+            // standard's guarantees for deque).
+            result.leaves.swap(leaves);
             return result;
         }
 

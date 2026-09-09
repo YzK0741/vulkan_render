@@ -26,7 +26,11 @@ namespace utility {
                 std::unique_lock lock(this->access_mutex);
                 this->active_thread.fetch_sub(1);
                 if (this->active_thread.load() < 1) {
-                    this->idle.notify_one();
+                    // all workers idle: wake EVERY wait_until_free/priority waiter - notify_one
+                    // would let two concurrent waiters consume each other's notification (both
+                    // predicates satisfied, no further wake -> permanent hang). Events are
+                    // rare, so the thundering-herd cost is negligible.
+                    this->idle.notify_all();
                 }
                 cv.wait(lock, [this, &token]() {
                     return !this->tasks.empty() || token.stop_requested();
@@ -59,12 +63,14 @@ namespace utility {
             current_task();
             {
                 // finished (or dropped above): the task's priority group made progress.
-                // notify_one suffices: the only waiter on idle is the caller of
-                // wait_until_free / wait_until_priority_done (one thread); waking all would
-                // only thundering-herd them into the mutex for nothing.
+                // notify_all, not notify_one: several threads may wait on idle concurrently
+                // (run_tasks on the frame thread + another consumer of the shared pool), and a
+                // single notification could wake one waiter whose predicate is already true
+                // while another waiter's predicate just became true - the second would hang
+                // forever. Events are per-task (rare relative to wake cost), so notify_all.
                 std::lock_guard lock(this->access_mutex);
                 this->note_task_finished(current_priority);
-                this->idle.notify_one();
+                this->idle.notify_all();
             }
         }
     }
