@@ -907,7 +907,7 @@ namespace vulkan {
         //     a non-dirty scene keeps identical world AABBs and the cached BVH stays valid.
         // local aliases into the per-frame state filled above (keeps the cull math unchanged)
         std::pmr::vector<primitive const*> const& frame_leaves = this->frame_leaves;
-        float const& aspect = this->current_aspect;
+        float const aspect = this->current_aspect;
         camera_ubo const& ubo = this->current_ubo;
         std::pmr::vector<primitive const*> visible_leaves = this->frame_leaves; // fallback: no culling
         if (this->frustum_culling) {

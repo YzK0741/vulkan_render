@@ -128,13 +128,13 @@ namespace vulkan {
         std::vector<VkImageView> color_image_views = {}; // MSAA image views
         VkFormat color_format = VK_FORMAT_UNDEFINED;
         void create_msaa_image(
-            uint32_t const& width,
-            uint32_t const& height,
-            VkFormat const& format,
-            VkSampleCountFlagBits const& num_samples,
-            VkImageTiling const& tiling,
-            VkImageUsageFlags const& usage,
-            VkMemoryPropertyFlags const& properties,
+            uint32_t width,
+            uint32_t height,
+            VkFormat format,
+            VkSampleCountFlagBits num_samples,
+            VkImageTiling tiling,
+            VkImageUsageFlags usage,
+            VkMemoryPropertyFlags properties,
             VkImage& image,
             VkDeviceMemory& image_memory) const noexcept;
 

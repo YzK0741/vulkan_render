@@ -287,7 +287,7 @@ logical_device create_logical_device(
     std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
     constexpr float queue_priority = 1.0f;
 
-    for (uint32_t const& queue_family : unique_queue_families) {
+    for (uint32_t queue_family : unique_queue_families) {
         queue_create_infos.push_back(vulkan::make_device_queue_info(queue_family, &queue_priority));
     }
 
@@ -550,7 +550,7 @@ VkExtent2D choose_swap_extent(VkSurfaceCapabilitiesKHR const& capabilities, GLFW
     return actual_extent;
 }
 
-uint32_t find_memory_type(uint32_t const& type_filter, VkMemoryPropertyFlags const& properties, VkPhysicalDevice const& physical_device) noexcept {
+uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties, VkPhysicalDevice physical_device) noexcept {
     // Get the physical device's memory properties
     VkPhysicalDeviceMemoryProperties mem_properties;
     vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_properties);
@@ -620,7 +620,7 @@ VkSampleCountFlagBits get_max_usable_sample_count(VkPhysicalDevice const& physic
     return VK_SAMPLE_COUNT_1_BIT;
 }
 
-VkImageView create_image_view(VkImage const& image, VkFormat const& format, VkImageAspectFlags const& aspect_flags, VkDevice const& device) noexcept {
+VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device) noexcept {
     // 2D view, identity swizzle, one mip + one layer (see vulkan::make_image_view_info)
     VkImageViewCreateInfo const view_info = vulkan::make_image_view_info(image, format, VK_IMAGE_VIEW_TYPE_2D, aspect_flags, 1, 1);
 

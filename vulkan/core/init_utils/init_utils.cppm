@@ -221,7 +221,7 @@ export VkExtent2D choose_swap_extent(VkSurfaceCapabilitiesKHR const& capabilitie
  * @param physical_device the physical device to query
  * @return the matching memory type index; panics if none matches
  */
-export uint32_t find_memory_type(uint32_t const& type_filter, VkMemoryPropertyFlags const& properties, VkPhysicalDevice const& physical_device) noexcept;
+export uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties, VkPhysicalDevice physical_device) noexcept;
 
 /**
  * @ingroup vulkan_init_utils
@@ -248,4 +248,4 @@ export VkSampleCountFlagBits get_max_usable_sample_count(VkPhysicalDevice const&
  * @param device the logical device
  * @return the created image view
  */
-export VkImageView create_image_view(VkImage const& image, VkFormat const& format, VkImageAspectFlags const& aspect_flags, VkDevice const& device) noexcept;
+export VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device) noexcept;
