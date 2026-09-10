@@ -1288,7 +1288,10 @@ namespace vulkan {
                                                             static_cast<float>(vk.swap_chain_extent.height));
                 // the pass only APPENDS, so the counts are cleared here - the buffer is host-coherent
                 // (no flush) and this slot was just paced, so its previous GPU reads are done
-                if (this->cluster_count_mapped.size() > static_cast<std::size_t>(frame_slot) && this->cluster_count_mapped[frame_slot] != nullptr) {
+                // Gated on the SAME feature flag the dispatch uses: without an active punctual light,
+                // or in the flat render mode, nothing will ever read the counts (49 KB per frame).
+                bool const cluster_counts_used = this->active_features().clustered;
+                if (cluster_counts_used && this->cluster_count_mapped.size() > static_cast<std::size_t>(frame_slot) && this->cluster_count_mapped[frame_slot] != nullptr) {
                     std::memset(this->cluster_count_mapped[frame_slot], 0, static_cast<std::size_t>(vulkan::max_cluster_count) * sizeof(uint32_t));
                 }
             }

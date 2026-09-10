@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.16.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.16.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -587,6 +587,11 @@ namespace vulkan {
         // secondary_command_buffers pool stays for the slot-scoped passes (gui, transparent) that the
         // primary thread records alone.
         std::vector<std::vector<std::pair<VkCommandPool, vk_command_buffer>>> shadow_recording = {};
+        // Reused task scratch: the frame builds its task batches into these vectors every frame, so
+        // they are members with clear() (capacity kept) instead of a fresh heap allocation per frame
+        // (M9 overhead trim: a per-frame allocation plus one std::function per task is a few
+        // microseconds of a ~0.35 ms frame on a light scene).
+        std::vector<std::function<void()>> shadow_task_scratch = {};
         std::vector<vk_buffer> cluster_count_buffers = {}; // per slot: one uint per cluster
         std::vector<void*> cluster_count_mapped = {};      // their persistent mappings (memset per frame)
         std::vector<vk_buffer> cluster_index_buffers = {}; // per slot: cluster_light_capacity uints per cluster
