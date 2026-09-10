@@ -105,6 +105,11 @@ namespace vulkan {
     // back while still giving heavy CPU stages (animation sampling fan-out) real parallelism.
     int runtime::default_task_pool_threads() noexcept {
         unsigned const hw = std::thread::hardware_concurrency();
+        // A QUARTER of the hardware threads, not a half: measured on a 16-thread machine, moving this
+        // to hw/2 cost 11-12% fps (822 -> 735 forward, 1706 -> 1497 unlit) and lengthened the shadow
+        // sub-phase (0.61 -> 0.65 ms) - the recording stages are not worker-starved at hw/4, and more
+        // workers only add wake/join, cache and driver-side recording contention. Kept as a documented
+        // negative result so the experiment is not repeated.
         return static_cast<int>(hw == 0 ? 2u : std::max(1u, hw / 4u));
     }
 
