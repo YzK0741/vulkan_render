@@ -1,7 +1,9 @@
 module;
 
+#include <cstdint>
 #include <cstdio> // std::print(stderr, ...) below needs the stderr macro (not exportable via modules)
 #include <cstring>
+extern "C" void utility_platform_sleep_ns(std::int64_t nanoseconds); // implemented in platform_sleep.cpp (see its header comment for why it is not a module)
 #include <xxhash.h>
 
 module utility;
@@ -313,6 +315,14 @@ uint64_t utility::xxh3_64bits(std::span<unsigned char const> const data_view) {
     return XXH3_64bits(data_view.data(), data_view.size_bytes());
 }
 
+void utility::sleep_for_nanoseconds(std::int64_t const nanoseconds) {
+    if (nanoseconds <= 0) {
+        return;
+    }
+    // The platform half does the accurate waiting (see platform_sleep.cpp); the caller may still spin the
+    // last fraction of a millisecond if it needs to land exactly on the deadline.
+    utility_platform_sleep_ns(nanoseconds);
+}
 utility::xxh3_digest utility::xxh3_128bits(std::span<unsigned char const> const data_view) {
     // XXH3_128bits returns a {low64, high64} pair; store its bytes in the digest
     xxh3_digest digest = {};

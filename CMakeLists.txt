@@ -566,3 +566,7 @@ if(CLANG_FORMAT_EXECUTABLE)
 else()
     message(WARNING "clang-format not found, skipping auto-format before build")
 endif()
+
+# The frame limiter's portable sleep lives in a plain (non-module) TU so that <windows.h> stays out of
+# the module's global module fragment - see utility/platform_sleep.cpp.
+target_sources(utility PRIVATE utility/platform_sleep.cpp)

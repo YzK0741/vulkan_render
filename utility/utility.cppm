@@ -1,6 +1,6 @@
 // ============================================================================
 // module: utility
-// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Pure-CPU toolkit: data_block, BVH, thread_pool, frame_clock / frame_stats,
 // better_pmr (mimalloc routing), content hashing. Standalone - no Vulkan or app
@@ -582,6 +582,21 @@ namespace utility {
      * content-addressed dedup. It is also the faster of the two on small inputs.
      */
     export uint64_t xxh3_64bits(std::span<unsigned char const> data_view);
+
+    /**
+     * @brief sleep until an absolute steady-clock deadline, with sub-millisecond precision
+     * @param deadline the instant to wake up at (already in the past = return immediately)
+     * @ingroup utility
+     *
+     * Why this is not std::this_thread::sleep_until: on Windows the default timer granularity is
+     * 15.6 ms, so a sleep of a few milliseconds is routinely served late - which is the difference
+     * between holding 60 fps and sagging towards 30. The Windows implementation waits on a
+     * CREATE_WAITABLE_TIMER_HIGH_RESOLUTION timer (Windows 10 1803+) instead, and the POSIX one calls
+     * clock_nanosleep with CLOCK_MONOTONIC and TIMER_ABSTIME, which needs no raised timer resolution.
+     * A caller that wants to land exactly on a deadline should sleep to a safe margin early and spin
+     * the remainder (the frame limiter in vulkan.runtime does); this only makes the sleep accurate.
+     */
+    export void sleep_for_nanoseconds(int64_t nanoseconds);
 
     /**
      * @brief xxh3_128bits hash function

@@ -1194,6 +1194,11 @@ namespace vulkan {
             auto const now = std::chrono::steady_clock::now();
             this->next_frame_deadline += period;
             if (this->next_frame_deadline > now) {
+                // Sleep to a millisecond before the deadline, then spin that last millisecond: sleeping
+                // alone cannot hit a sub-millisecond target, and spinning alone reaches it but burns a
+                // whole core doing nothing. Splitting it costs about a millisecond of spin per frame
+                // (6% of a core at 60 fps) and still lands on the deadline to within microseconds.
+                utility::sleep_for_nanoseconds(std::chrono::duration_cast<std::chrono::nanoseconds>(this->next_frame_deadline - std::chrono::milliseconds(1) - std::chrono::steady_clock::now()).count()); // portable: Win32 waitable timer / POSIX nanosleep
                 while (std::chrono::steady_clock::now() < this->next_frame_deadline) {
                     std::this_thread::yield();
                 }
