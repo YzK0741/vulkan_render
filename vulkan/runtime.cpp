@@ -1563,18 +1563,31 @@ namespace vulkan {
                 VkCommandBufferInheritanceInfo const shadow_sec_inherit = make_inheritance_info(&shadow_inheritance);
                 VkCommandBufferBeginInfo const shadow_sec_begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &shadow_sec_inherit);
                 std::array<bool, vulkan::max_shadow_cascades> shadow_recorded = {};
-                for (uint32_t cascade = 0; cascade < cascades; ++cascade) {
-                    VkCommandBuffer const cascade_secondary = *this->shadow_recording[frame_slot][cascade].second;
-                    if (vkBeginCommandBuffer(cascade_secondary, &shadow_sec_begin) != VK_SUCCESS) {
-                        utility::log("runtime: shadow secondary command buffer begin failed - cascade {} skipped this frame", cascade);
-                        continue;
+                // One task per cascade on the task pool (M9): each records into its OWN {pool, buffer}
+                // pair (see shadow_recording), because a VkCommandPool is not thread safe - the same
+                // rule the main-pass workers follow. Only the CONTENT recording moves off the primary
+                // thread; the barriers, the per-cascade rendering instances and the executions below
+                // stay here, in the layer order the attachments require, so the recorded commands are
+                // identical to the sequential version.
+                {
+                    std::vector<std::function<void()>> cascade_tasks;
+                    cascade_tasks.reserve(cascades);
+                    for (uint32_t cascade = 0; cascade < cascades; ++cascade) {
+                        cascade_tasks.emplace_back([this, frame_slot, cascade, &shadow_sec_begin, &shadow_recorded] {
+                            VkCommandBuffer const cascade_secondary = *this->shadow_recording[frame_slot][cascade].second;
+                            if (vkBeginCommandBuffer(cascade_secondary, &shadow_sec_begin) != VK_SUCCESS) {
+                                utility::log("runtime: shadow secondary command buffer begin failed - cascade {} skipped this frame", cascade);
+                                return;
+                            }
+                            // which cascade these casters are projected into (the vertex stage indexes
+                            // the light UBO's matrix array with it)
+                            vkCmdPushConstants(cascade_secondary, this->vulkan_core.scene_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, vulkan::scene_cascade_push_offset, sizeof(uint32_t), &cascade);
+                            this->record_shadow_content(cascade_secondary);
+                            vkEndCommandBuffer(cascade_secondary);
+                            shadow_recorded[cascade] = true;
+                        });
                     }
-                    // which cascade these casters are projected into (the vertex stage indexes the light
-                    // UBO's matrix array with it)
-                    vkCmdPushConstants(cascade_secondary, vk.scene_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, vulkan::scene_cascade_push_offset, sizeof(uint32_t), &cascade);
-                    this->record_shadow_content(cascade_secondary);
-                    vkEndCommandBuffer(cascade_secondary);
-                    shadow_recorded[cascade] = true;
+                    this->run_tasks(cascade_tasks, vulkan::task_priority::recording);
                 }
 
                 // ---- one instance per cascade ----
