@@ -108,6 +108,10 @@ namespace vulkan::gui {
         return this->active;
     }
 
+    bool gui_content::wants_mouse() const noexcept {
+        return this->active && ImGui::GetIO().WantCaptureMouse;
+    }
+
     // ---- panel management ----
 
     debug_panel& gui_content::add_panel(std::string title) {

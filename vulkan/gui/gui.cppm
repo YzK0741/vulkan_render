@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.gui
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // Dear ImGui debug overlay: widget / panel layer driven from the runtime's frame
 // steps (runtime::debug_gui). Kept as its own unit so the overlay can be swapped
@@ -248,6 +248,12 @@ namespace vulkan::gui {
 
         /** @brief true after a successful init() and before shutdown() */
         [[nodiscard]] bool is_active() const noexcept;
+        /**
+         * @brief true while Dear ImGui owns the mouse (cursor over a panel or dragging a widget)
+         * @note the runtime uses this to suppress the camera orbit/zoom callbacks, so dragging a
+         *       slider never moves the view; it reflects the last ImGui frame (NewFrame order)
+         */
+        [[nodiscard]] bool wants_mouse() const noexcept;
 
         // ---- panel management (the external participation surface) ----
         /**

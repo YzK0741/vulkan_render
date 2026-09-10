@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.8  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.9  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -593,6 +593,11 @@ namespace vulkan {
          *        the overlay stays initialized while hidden, so showing it again is instant)
          */
         [[nodiscard]] bool debug_gui_visible() const noexcept;
+        /**
+         * @brief true while the debug overlay owns the mouse: the camera orbit/zoom callbacks are
+         *        suppressed then, so dragging an overlay slider cannot rotate or zoom the view
+         */
+        [[nodiscard]] bool debug_gui_wants_mouse() const noexcept;
 
         /**
          * @ingroup vulkan_runtime

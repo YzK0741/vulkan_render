@@ -26,6 +26,11 @@ namespace {
         if (button != GLFW_MOUSE_BUTTON_LEFT) {
             return;
         }
+        // the overlay owns the mouse while the cursor is over a panel / a widget is being
+        // dragged: starting an orbit there would fight the ui (see gui_content::wants_mouse)
+        if (runtime->debug_gui_wants_mouse()) {
+            return;
+        }
         if (action == GLFW_PRESS) {
             runtime->camera.dragging = true;
             glfwGetCursorPos(window, &runtime->camera.last_x, &runtime->camera.last_y);
@@ -37,6 +42,12 @@ namespace {
     void cursor_pos_callback(GLFWwindow* window, double const x, double const y) {
         auto& camera = runtime_from_window(window)->camera;
         if (!camera.dragging) {
+            return;
+        }
+        if (runtime_from_window(window)->debug_gui_wants_mouse()) {
+            // the drag left the scene and landed on the overlay: keep the camera still but keep
+            // tracking the cursor so leaving the panel does not jump the view
+            glfwGetCursorPos(window, &camera.last_x, &camera.last_y);
             return;
         }
         // an external (glTF/programmatic) camera owns the view: orbit dragging is ignored
@@ -57,6 +68,9 @@ namespace {
         // an external (glTF/programmatic) camera owns the view: wheel zoom is ignored
         if (runtime_from_window(window)->using_external_camera()) {
             return;
+        }
+        if (runtime_from_window(window)->debug_gui_wants_mouse()) {
+            return; // scrolling inside an overlay panel must not zoom the camera
         }
         auto& camera = runtime_from_window(window)->camera;
         // zoom: wheel up pulls in, wheel down pulls out. The upper bound is generous (scene
@@ -1847,6 +1861,10 @@ namespace vulkan {
 
     bool runtime::debug_gui_visible() const noexcept {
         return this->debug_overlay.is_active() && this->debug_gui_shown;
+    }
+
+    bool runtime::debug_gui_wants_mouse() const noexcept {
+        return this->debug_gui_shown && this->debug_overlay.is_active() && this->debug_overlay.wants_mouse();
     }
 
     void runtime::set_debug_gui_visible(bool const visible) noexcept {
