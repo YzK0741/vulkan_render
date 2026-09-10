@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.9.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -250,7 +250,11 @@ namespace vulkan {
         static constexpr uint32_t GPU_TIMING_WINDOW = 60;
         std::array<double, gpu_mark_count - 1> gpu_timing_sum = {}; // current window's summed ms
         uint32_t gpu_timing_window_frames = 0;                      // frames sampled in the current window
-        uint32_t gpu_timing_marks_measured = 0;                     // intervals the last measured frame had
+        // The overlay's copy of the last COMPLETED timing window (gpu_timing_summary): a label whose
+        // text changes width every frame re-wraps against the panel edge and makes the whole overlay
+        // twitch, so this is refreshed once per window and every number is a fixed-width field.
+        std::string gpu_timing_report_label = {};
+        uint32_t gpu_timing_marks_measured = 0; // intervals the last measured frame had
         void gpu_mark(VkCommandBuffer command_buffer, gpu_mark_id mark, VkPipelineStageFlagBits stage) noexcept;
         void collect_gpu_timings(uint32_t slot);
 

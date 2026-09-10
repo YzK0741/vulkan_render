@@ -301,7 +301,7 @@ namespace chores {
         runtime.enable_debug_gui();
         vulkan::gui::debug_panel& panel = runtime.debug_gui().add_panel("vulkan_render debug");
         panel.set_default_size(settings.gui.panel_width, settings.gui.panel_height);
-        panel.push_back(std::make_unique<vulkan::gui::label_widget>([&bindings] { return std::format("fps: {:.1f}", bindings.fps); }));
+        panel.push_back(std::make_unique<vulkan::gui::label_widget>([&bindings] { return std::format("fps: {:>6.1f}", bindings.fps); })); // fixed-width field: a growing number must not re-wrap the panel
         // per-pass GPU milliseconds (runtime::gpu_timing_summary): the timing that steers the
         // renderer's performance work, so it sits with the fps line at the top of the panel
         panel.push_back(std::make_unique<vulkan::gui::label_widget>([&runtime] { return runtime.gpu_timing_summary(); }));

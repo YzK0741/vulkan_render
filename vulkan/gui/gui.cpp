@@ -35,6 +35,29 @@ namespace vulkan::gui {
         // size can be baked into the panel defaults later. DestroyContext() saves on shutdown.
         io.IniFilename = "imgui_layout.ini";
 
+        // Display scale: on a monitor with Windows display scaling (the machine this was written on
+        // reports 1.50) the framebuffer is LARGER than the logical window. Without telling ImGui, the
+        // overlay keeps its 13 px font atlas and every glyph is upscaled by the fractional factor
+        // while landing between framebuffer pixels - which is exactly what "the ImGui panel looks
+        // soft and twitches" describes. ImGui 1.92 rasterizes fonts dynamically, so pointing
+        // style.FontScaleDpi at the monitor's content scale makes the atlas render at the framebuffer
+        // resolution while the LAYOUT stays in logical units (window coordinates, which is also what
+        // the GLFW backend feeds the mouse in): the panel keeps its size and becomes crisp.
+        // io.ConfigDpiScaleFonts additionally lets the backend follow a monitor change.
+        if (info.window != nullptr) {
+            float scale_x = 1.0f;
+            float scale_y = 1.0f;
+            glfwGetWindowContentScale(info.window, &scale_x, &scale_y);
+            float const scale = std::max(scale_x, scale_y);
+            // style.FontScaleDpi is the 1.92 scale factor for "the monitor's content scale" (the
+            // docking branch's io.ConfigDpiScaleFonts, which follows a monitor change automatically,
+            // is not in this build). Setting it makes the dynamically rasterized font atlas render at
+            // the framebuffer resolution while the layout - and the mouse coordinates the GLFW
+            // backend feeds - stay in logical window units.
+            ImGui::GetStyle().FontScaleDpi = scale;
+            utility::log("gui_content: display content scale {:.2f} x {:.2f} - overlay font rasterized at {:.1f} px (logical layout unchanged)", static_cast<double>(scale_x), static_cast<double>(scale_y), 13.0 * static_cast<double>(scale));
+        }
+
         // Platform backend. install_callbacks=true makes imgui chain-call the runtime's own
         // GLFW callbacks (mouse/scroll -> orbit camera) which were registered earlier.
         if (!ImGui_ImplGlfw_InitForVulkan(info.window, /*install_callbacks=*/true)) {

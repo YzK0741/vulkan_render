@@ -1111,14 +1111,22 @@ namespace vulkan {
         // snapshots and resets) and start over
         double total = 0.0;
         std::string report = std::format("gpu pass timings (avg of {} frames):", GPU_TIMING_WINDOW);
+        // The OVERLAY line is built here as well, and deliberately not every frame: every value is a
+        // fixed-width field, because a label whose text width changes re-wraps against the panel edge
+        // and the whole overlay appears to twitch (the numbers of a live running mean change in width
+        // frame by frame: 0.25 -> 10.25). Fixed fields + a report that changes once per window make
+        // the panel layout stable between updates.
+        std::string label = std::format("gpu ({}f):", GPU_TIMING_WINDOW);
         for (uint32_t interval = 0; interval < intervals; ++interval) {
             double const mean = this->gpu_timing_sum[interval] / static_cast<double>(GPU_TIMING_WINDOW);
             report += std::format(" {} {:.2f} ms |", gpu_timing_labels[interval].name, mean);
+            label += std::format("{} {:>5.2f}", gpu_timing_labels[interval].new_line ? "\n     " : " |", mean);
             total += mean;
             this->gpu_timing_sum[interval] = 0.0;
         }
         this->gpu_timing_window_frames = 0;
         report += std::format(" total {:.2f} ms", total);
+        this->gpu_timing_report_label = label + std::format("\n     total {:>5.2f} ms", total);
         utility::log("{}", report);
     }
 
@@ -1129,19 +1137,14 @@ namespace vulkan {
         if (!this->vulkan_core.gpu_timing_available()) {
             return "gpu timings: unavailable on this device";
         }
-        if (this->gpu_timing_marks_measured == 0 || this->gpu_timing_window_frames == 0) {
+        if (this->gpu_timing_report_label.empty()) {
             return "gpu timings: collecting...";
         }
-        double const samples = static_cast<double>(this->gpu_timing_window_frames);
-        std::string report = "gpu:";
-        double total = 0.0;
-        for (uint32_t interval = 0; interval < this->gpu_timing_marks_measured; ++interval) {
-            gpu_timing_label const& label = gpu_timing_labels[interval];
-            double const mean = this->gpu_timing_sum[interval] / samples;
-            report += std::format("{}{} {:.2f}", label.new_line ? "\n     " : "  ", label.name, mean);
-            total += mean;
-        }
-        return report + std::format("\n     total {:.2f} ms", total);
+        // The last COMPLETED window's report, not a per-frame running mean: the overlay line is a
+        // text layout, and a text layout that changes every frame is a UI that twitches (see the
+        // report construction above). It refreshes once per GPU_TIMING_WINDOW frames, which is also
+        // what the log line reports - so the overlay and the log always agree.
+        return this->gpu_timing_report_label;
     }
 
     frame_status runtime::pace_and_acquire() {
