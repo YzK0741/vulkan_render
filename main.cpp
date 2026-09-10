@@ -441,7 +441,8 @@ int main(int argc, char** argv) {
         // visible - imported model lights were loaded into those slots, so they must stay lit in
         // headless-overlay runs too (the demo slots stay off unless the user enabled them)
         chores::apply_point_lights(runtime, gui);
-        runtime.set_exposure(gui.exposure); // gui exposure slider -> linear scale (post-process pass)
+        runtime.set_exposure(gui.exposure);                          // gui exposure slider -> linear scale (post-process pass)
+        runtime.set_bloom(gui.bloom_intensity, gui.bloom_threshold); // gui bloom sliders -> post pass
         // F12 screenshot: the runtime reports the request (edge-triggered in poll_events), main
         // captures the presented swapchain image and writes it as a PNG (dependency-free encoder)
         if (runtime.consume_screenshot_request()) {

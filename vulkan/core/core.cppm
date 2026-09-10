@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.1.3  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.4  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -147,6 +147,11 @@ namespace vulkan {
         std::vector<VkDeviceMemory> hdr_image_memories = {};
         std::vector<VkImageView> hdr_image_views = {};
         void create_hdr_resolve_resources();
+        // bloom targets (quarter resolution, one per swapchain image): the post pass bright-
+        // passes/blurs into them and composites the result in the final post pass
+        std::vector<VkImage> bloom_images = {};
+        std::vector<VkDeviceMemory> bloom_image_memories = {};
+        std::vector<VkImageView> bloom_image_views = {};
         void create_msaa_image(
             uint32_t width,
             uint32_t height,

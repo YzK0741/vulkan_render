@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.7  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.8  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -204,7 +204,7 @@ namespace vulkan {
             float exposure = 1.0f;        // linear exposure scale (see set_exposure)
             float bloom_intensity = 0.0f; // reserved: bloom blend weight (next step)
             float bloom_threshold = 0.0f; // reserved: bloom bright-pass threshold
-            float pad = 0.0f;
+            float mode = 0.0f;            // 0 = bright-pass + horizontal blur into the bloom target, 1 = vertical blur + composite
         };
         std::optional<vk_pipeline> post_pipeline = std::nullopt;
         vk_sampler post_sampler = {};
@@ -213,7 +213,9 @@ namespace vulkan {
         VkDescriptorPool post_descriptor_pool = VK_NULL_HANDLE;
         uint32_t post_pool_capacity = 0; // descriptor sets the current pool can hold
         std::vector<VkDescriptorSet> post_sets = {};
-        std::vector<VkImageView> post_bound_views = {}; // HDR views the current sets point at
+        std::vector<VkDescriptorSet> post_bright_sets = {}; // pass A sets (HDR + a dummy sampler binding)
+        std::vector<VkImageView> post_bound_blooms = {};    // bloom views the current sets point at
+        std::vector<VkImageView> post_bound_views = {};     // HDR views the current sets point at
         // per-stage render toggles: whether the skybox / shadow pass actually records this frame.
         // Skybox off leaves just the clear color; shadow off skips the depth pass (the shadow map
         // is cleared to fully-lit so the main pass samples "no shadow"). Both default on.
@@ -245,6 +247,10 @@ namespace vulkan {
         // (the light UBO's first unused lane) right before the per-frame UBO upload, and pushed to
         // the skybox pass through the scene layout's push-constant range (see record_main_segment)
         float exposure_scale = 1.0f;
+        float bloom_intensity = 0.0f;
+        float bloom_threshold = 0.6f;
+        // bloom parameters (see set_bloom): blend weight into the HDR image and the bright-pass
+        // threshold subtracted in linear space (0 intensity disables the effect)
 
         // F12 screenshot request: set edge-triggered by poll_events, consumed by the caller
         // (see consume_screenshot_request / acquire_current_frame_image)
@@ -890,6 +896,16 @@ namespace vulkan {
          * @brief the current exposure scale (see set_exposure)
          */
         [[nodiscard]] float exposure() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief bloom amount for the post-process pass (bright-pass threshold + blend weight)
+         * @param intensity how much of the blurred bright pass is added back (0 disables bloom)
+         * @param threshold linear luminance subtracted in the bright pass (higher = only the
+         *        brightest highlights glow); both are clamped to sane ranges
+         * @note same timing rule as set_exposure: CPU-side, copied into the post push constants
+         */
+        void set_bloom(float intensity, float threshold) noexcept;
 
         /**
          * @ingroup vulkan_runtime
