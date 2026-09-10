@@ -2,6 +2,7 @@ module;
 
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <vulkan/vulkan.h>
 
 module vulkan.runtime;
@@ -893,6 +894,9 @@ namespace vulkan {
         if (this->light_mapped.size() > static_cast<std::size_t>(frame_slot) && this->light_mapped[frame_slot] != nullptr) {
             // the light_count lane's y carries the exposure scale (pbr.frag / skybox.frag apply it
             // in linear space right before the tonemapper)
+            // shadows follow the camera: refit the light frustum to this frame's camera before
+            // the UBO upload (16 points + a few matrix multiplies per frame)
+            this->update_shadow_frustum();
             this->light_state.light_count.y = this->exposure_scale;
             this->light_state.light_count.z = this->toon_steps;
             this->light_state.light_count.w = this->toon_softness;
@@ -1956,6 +1960,76 @@ namespace vulkan {
         return {};
     }
 
+    // Tighten the directional shadow frustum to the camera's own view frustum every frame. One
+    // 2048^2 map cannot cover a whole scene and still resolve a thin caster: the orthographic box
+    // therefore follows the camera. The camera frustum corners (plus the same corners pushed
+    // up-light by shadow_caster_extent, so a caster outside the view still throws its shadow in)
+    // are fitted with an axis-aligned box in light space; the box center is then snapped to the
+    // texel grid, which is what keeps the shadow edges from crawling while the camera moves.
+    void runtime::update_shadow_frustum() {
+        if (!this->shadows_enabled) {
+            return;
+        }
+        float const map_size = static_cast<float>(vulkan::runtime::shadow_map_size);
+        glm::vec3 const light_dir = glm::normalize(glm::vec3(this->light_state.light_dir));
+        glm::vec3 const up(0.0f, 1.0f, 0.0f);
+
+        // camera frustum corners in world space (Vulkan NDC: x/y in [-1,1], z in [0,1])
+        glm::mat4 const inverse_view_proj = glm::inverse(this->current_ubo.proj * this->current_ubo.view);
+        std::array<glm::vec3, 16> points = {};
+        std::size_t count = 0;
+        for (int zi = 0; zi < 2; ++zi) {
+            for (int yi = 0; yi < 2; ++yi) {
+                for (int xi = 0; xi < 2; ++xi) {
+                    glm::vec4 const clip(xi == 0 ? -1.0f : 1.0f, yi == 0 ? -1.0f : 1.0f, zi == 0 ? 0.0f : 1.0f, 1.0f);
+                    glm::vec4 const world = inverse_view_proj * clip;
+                    glm::vec3 const corner = glm::vec3(world) / world.w;
+                    points[count++] = corner;
+                    points[count++] = corner + light_dir * this->shadow_caster_extent;
+                }
+            }
+        }
+
+        // fit the points in light space (rotation only - the translation comes from the center)
+        glm::mat4 const light_rotation = glm::lookAt(glm::vec3(0.0f), -light_dir, up);
+        glm::vec3 min_ls(std::numeric_limits<float>::max());
+        glm::vec3 max_ls(std::numeric_limits<float>::lowest());
+        for (glm::vec3 const& point : points) {
+            glm::vec3 const ls = glm::vec3(light_rotation * glm::vec4(point, 1.0f));
+            min_ls = glm::min(min_ls, ls);
+            max_ls = glm::max(max_ls, ls);
+        }
+
+        // square the box (isotropic resolution) and snap its center to the texel grid
+        float const extent = std::max(max_ls.x - min_ls.x, max_ls.y - min_ls.y);
+        float const half = std::max(extent * 0.5f, 0.001f);
+        float const texel = (2.0f * half) / map_size;
+        glm::vec3 center_ls = (min_ls + max_ls) * 0.5f;
+        center_ls.x = std::floor(center_ls.x / texel) * texel;
+        center_ls.y = std::floor(center_ls.y / texel) * texel;
+        glm::vec3 const center_ws = glm::vec3(glm::inverse(light_rotation) * glm::vec4(center_ls, 1.0f));
+
+        // light camera far enough up-sun to see every point, then fit near/far to the points
+        float const distance = std::max(this->scene_radius * 2.0f, 1.0f) + this->shadow_caster_extent;
+        glm::vec3 const eye = center_ws + light_dir * distance;
+        glm::mat4 const view = glm::lookAt(eye, center_ws, up);
+        float near_plane = std::numeric_limits<float>::max();
+        float far_plane = 0.0f;
+        for (glm::vec3 const& point : points) {
+            float const depth = -(glm::vec3(view * glm::vec4(point, 1.0f)).z);
+            near_plane = std::min(near_plane, depth);
+            far_plane = std::max(far_plane, depth);
+        }
+        near_plane = std::max(near_plane - 1.0f, 0.05f);
+        far_plane = far_plane + 1.0f;
+
+        glm::mat4 proj = glm::orthoRH_ZO(-half, half, -half, half, near_plane, far_plane);
+        proj[1][1] *= -1.0f; // same y-flip convention as the camera projection
+
+        this->light_state.light_view_proj = proj * view;
+        this->light_state.light_dir = glm::vec4(light_dir, 1.0f / map_size);
+        this->light_state.shadow_texel_world = (2.0f * half) / map_size;
+    }
     void runtime::enable_shadows(glm::vec3 const& scene_center, float const scene_radius) {
         // Remember the scene extent even if shadow setup below fails: the camera far plane
         // (make_orbit_camera_ubo) needs it to keep the whole scene visible when zooming in.

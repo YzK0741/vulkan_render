@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.13  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.14  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -681,6 +681,9 @@ namespace vulkan {
          *       inline (stage 1) or into a per-slot secondary command buffer (stage 2,
          *       parallel recording) - only bind/push/draw commands, no barriers / begin-end.
          */
+        /** @brief refit the directional shadow frustum to the current camera view (called once
+         *         per frame from pace_and_acquire; see enable_shadows) */
+        void update_shadow_frustum();
         void record_shadow_content(VkCommandBuffer command_buffer) const;
 
         /**
