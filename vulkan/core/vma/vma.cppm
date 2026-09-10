@@ -300,5 +300,16 @@ namespace vulkan {
          * @return pointer to the image detail, or nullptr if the handle is invalid
          */
         [[nodiscard]] image_detail const* get_image_detail(uint64_t handle);
+
+        /**
+         * @brief log what this allocator holds: requested allocation bytes against the block bytes VMA
+         *        took from the driver, per memory type, plus the per-heap budgets
+         * @ingroup vulkan_core_vma
+         *
+         * Diagnostic for the process's commit charge: a block-per-small-allocation pattern shows up as
+         * blockBytes an order of magnitude above allocationBytes, which is a block-size question
+         * (preferredLargeHeapBlockSize) rather than real usage.
+         */
+        void log_statistics() const;
     };
 } // namespace vulkan
