@@ -3483,19 +3483,46 @@ namespace vulkan {
         }
     }
 
+    bool runtime::feature_available(std::string_view const name) const noexcept {
+        // The single source of truth for "can this feature run at all this session": the overlay asks
+        // it to decide what to offer, log_feature_status() prints it, and both therefore agree.
+        if (name == "deferred") {
+            return this->deferred_pipeline.has_value();
+        }
+        if (name == "gbuffer-debug") {
+            return this->gbuffer_pipeline.has_value() && this->gbuffer_debug_pipeline.has_value();
+        }
+        if (name == "taa") {
+            return this->taa_pipeline.has_value();
+        }
+        if (name == "fxaa") {
+            return this->post_fxaa_pipeline.has_value();
+        }
+        if (name == "shadow") {
+            return this->shadow_pipeline.has_value();
+        }
+        if (name == "skybox") {
+            return this->skybox_pipeline.has_value();
+        }
+        if (name == "clustered") {
+            return this->cluster_pipeline.has_value();
+        }
+        return false;
+    }
+
     void runtime::log_feature_status() const {
         // One line naming every optional feature, so "why does this switch do nothing?" is answerable
         // from the log alone. `on` means the pipeline exists and the feature CAN run; whether it is
         // currently switched on is the overlay's and the config's business.
         utility::log("features: deferred={} gbuffer-debug={} taa={} fxaa={} shadow={} skybox={} clustered-lights={}",
-                     this->deferred_pipeline.has_value() ? "on" : "UNAVAILABLE",
-                     (this->gbuffer_pipeline.has_value() && this->gbuffer_debug_pipeline.has_value()) ? "on" : "UNAVAILABLE",
-                     this->taa_pipeline.has_value() ? "on" : "UNAVAILABLE",
-                     this->post_fxaa_pipeline.has_value() ? "on" : "UNAVAILABLE",
-                     this->shadow_pipeline.has_value() ? "on" : "UNAVAILABLE",
-                     this->skybox_pipeline.has_value() ? "on" : "UNAVAILABLE",
-                     this->cluster_pipeline.has_value() ? "on" : "UNAVAILABLE");
-        if (!this->deferred_pipeline.has_value()) {
+                     this->feature_available("deferred") ? "on" : "UNAVAILABLE",
+                     this->feature_available("gbuffer-debug") ? "on" : "UNAVAILABLE",
+                     this->feature_available("taa") ? "on" : "UNAVAILABLE",
+                     this->feature_available("fxaa") ? "on" : "UNAVAILABLE",
+                     this->feature_available("shadow") ? "on" : "UNAVAILABLE",
+                     this->feature_available("skybox") ? "on" : "UNAVAILABLE",
+                     this->feature_available("clustered") ? "on" : "UNAVAILABLE");
+        if (!this->feature_available("deferred")) {
             utility::log("features: the deferred lighting stage is unavailable, so its dependencies ([render] taa, ssao) have nothing to run in");
         }
     }

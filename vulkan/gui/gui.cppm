@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.gui
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Dear ImGui debug overlay: widget / panel layer driven from the runtime's frame
 // steps (runtime::debug_gui). Kept as its own unit so the overlay can be swapped
@@ -81,6 +81,18 @@ namespace vulkan::gui {
         widget& operator=(widget const&) = delete;
         widget(widget&&) noexcept = default;
         widget& operator=(widget&&) noexcept = default;
+
+        /**
+         * @brief optional predicate deciding whether this widget is drawn at all
+         *
+         * Empty (the default) = always drawn. The panel evaluates it every frame and skips the widget
+         * while it returns false, so a control that cannot do anything right now is not offered
+         * instead of sitting there inert: the fine-tuning sliders appear with the switch they tune
+         * (TAA's while the deferred path is on, FXAA's while FXAA is on, the shadow bias while the
+         * shadow pass is on), and a control whose pipeline was never created is hidden outright - the
+         * log's `features:` line says which those are.
+         */
+        std::function<bool()> visible_when = {};
 
         /** @brief draw this widget at the current ImGui cursor position */
         virtual void draw() = 0;

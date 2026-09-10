@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.10.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.11.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -1568,6 +1568,18 @@ namespace vulkan {
          * cannot take effect at the moment it is switched on.
          */
         void log_feature_status() const;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether an optional feature is usable this session (its pipeline was created)
+         * @param name one of "deferred", "gbuffer-debug", "taa", "fxaa", "shadow", "skybox",
+         *        "clustered" - unknown names return false
+         *
+         * The debug overlay asks this to decide what to offer (see vulkan::gui::widget::visible_when):
+         * a control whose pipeline does not exist can never do anything, so it is hidden instead of
+         * being shown inert. log_feature_status() prints the same information once at startup.
+         */
+        [[nodiscard]] bool feature_available(std::string_view name) const noexcept;
 
         /** @brief whether the opaque pass currently writes the G-buffer (see set_gbuffer_debug) */
         [[nodiscard]] bool gbuffer_debug_enabled() const noexcept {

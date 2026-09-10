@@ -175,11 +175,14 @@ validation_layers = true
 # ---- [gui] debug overlay ----
 [gui]
 show = true   # show the Dear ImGui debug overlay by default (F1 toggles it at runtime)
-# Default debug-panel window size (0 = ImGui auto-size). The recorded comfortable size
-# from a manual drag is 380x140; it only applies on first use — later drags / the
-# persisted imgui_layout.ini override it.
-panel_width  = 380
-panel_height = 140
+# Default debug-panel window size (0 = ImGui auto-size). It only applies on FIRST use:
+# a later drag - persisted in imgui_layout.ini next to the working directory - overrides it
+# (delete that file to get these values back). 560 is tall enough that the render-path
+# controls are visible without scrolling; the panel only offers the controls the current
+# render path can actually use (TAA/SSAO appear once deferred lighting is on, the FXAA knobs
+# once FXAA is on, ...) and says why in the log when something cannot run.
+panel_width  = 420
+panel_height = 560
 
 # ---- [lighting] IBL precompute resolutions ----
 # Lower values speed up startup (fewer pixels precomputed); higher values improve

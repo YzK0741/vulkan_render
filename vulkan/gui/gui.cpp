@@ -245,9 +245,15 @@ namespace vulkan::gui {
             return;
         }
         for (auto const& item : this->items) {
-            if (item != nullptr) {
-                item->draw();
+            if (item == nullptr) {
+                continue;
             }
+            // An empty visible_when means "always drawn" (most widgets are unconditional); the
+            // predicate lets the panel offer only what the current render path can actually use.
+            if (item->visible_when && !item->visible_when()) {
+                continue;
+            }
+            item->draw();
         }
         ImGui::End();
     }

@@ -319,14 +319,29 @@ namespace chores {
             [&runtime](bool const enabled) { runtime.set_shadow_enabled(enabled); }));
         // clustered light culling (M5): off = every active light is evaluated per pixel (the
         // brute-force reference), on = only the pixel's cluster list. Mirroring it every frame in
-        // main() keeps the config and the checkbox in agreement.
-        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("clustered lights", &bindings.clustered_lights));
-        // screen-space ambient occlusion (M6): the deferred lighting stage traces the G-buffer.
+        // main() keeps the config and the checkbox in agreement. Offered only when the cluster
+        // compute pipeline exists - without it the switch cannot do anything.
+        {
+            auto clustered = std::make_unique<vulkan::gui::checkbox_widget>("clustered lights", &bindings.clustered_lights);
+            clustered->visible_when = [&runtime] { return runtime.feature_available("clustered"); };
+            panel.push_back(std::move(clustered));
+        }
+        // screen-space ambient occlusion (M6): the deferred lighting stage traces the G-buffer, so
+        // the whole group (switch + its three knobs) is offered only while the deferred path is on.
         // The sliders edit the radius (world units), the applied intensity and the sample count.
-        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("ssao (deferred path only)", &bindings.ssao_enabled));
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("ssao radius", &bindings.ssao_radius, 0.05f, 3.0f));
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("ssao intensity", &bindings.ssao_intensity, 0.0f, 1.0f));
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("ssao samples", &bindings.ssao_samples, 1.0f, 16.0f));
+        {
+            auto ssao = std::make_unique<vulkan::gui::checkbox_widget>("ssao", &bindings.ssao_enabled);
+            ssao->visible_when = [&bindings, &runtime] { return runtime.feature_available("deferred") && bindings.deferred_enabled; }; // deferred-only: offer it once that path is on
+            panel.push_back(std::move(ssao));
+            auto make_ssao_slider = [&](std::string label, float* value, float lo, float hi) {
+                auto slider = std::make_unique<vulkan::gui::slider_widget>(std::move(label), value, lo, hi);
+                slider->visible_when = [&bindings, &runtime] { return runtime.feature_available("deferred") && bindings.deferred_enabled && bindings.ssao_enabled; };
+                panel.push_back(std::move(slider));
+            };
+            make_ssao_slider("ssao radius", &bindings.ssao_radius, 0.05f, 3.0f);
+            make_ssao_slider("ssao intensity", &bindings.ssao_intensity, 0.0f, 1.0f);
+            make_ssao_slider("ssao samples", &bindings.ssao_samples, 1.0f, 16.0f);
+        }
         // render mode: pbr (lit) vs unlit (flat base color, no shading). Default-semantics leaves
         // draw with the runtime's default pipeline, so this only records a combo selection here;
         // main() applies it BETWEEN frames via runtime.set_default_pipeline (the registry may
@@ -362,26 +377,54 @@ namespace chores {
         // smoothing for the single-pixel sparkle FXAA leaves on near-axis-aligned edges, and the
         // threshold decides how much contrast counts as an edge (lower = softer whole image).
         panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("fxaa", &bindings.fxaa_enabled));
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("fxaa subpixel", &bindings.fxaa_subpixel, 0.0f, 1.0f));
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("fxaa edge threshold", &bindings.fxaa_edge_threshold, 0.05f, 0.5f));
+        {
+            // the knobs only matter while FXAA is on (and while the fxaa pipeline exists at all)
+            auto make_fxaa_slider = [&](std::string label, float* value, float lo, float hi) {
+                auto slider = std::make_unique<vulkan::gui::slider_widget>(std::move(label), value, lo, hi);
+                slider->visible_when = [&bindings, &runtime] { return runtime.feature_available("fxaa") && bindings.fxaa_enabled; };
+                panel.push_back(std::move(slider));
+            };
+            make_fxaa_slider("fxaa subpixel", &bindings.fxaa_subpixel, 0.0f, 1.0f);
+            make_fxaa_slider("fxaa edge threshold", &bindings.fxaa_edge_threshold, 0.05f, 0.5f);
+        }
         // G-buffer debug view: what the deferred path stores - the one part of the renderer whose
         // contents cannot be judged from a shaded screenshot, so it gets a channel selector rather
         // than a strength knob. main() mirrors both fields into the runtime every frame.
-        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("gbuffer debug", &bindings.gbuffer_debug));
-        panel.push_back(std::make_unique<vulkan::gui::combo_widget>(
-            "gbuffer channel",
-            std::vector<std::string>{"albedo", "normal", "roughness", "metallic", "ao", "material id", "depth", "flags"},
-            &bindings.gbuffer_channel));
+        {
+            auto debug_view = std::make_unique<vulkan::gui::checkbox_widget>("gbuffer debug", &bindings.gbuffer_debug);
+            debug_view->visible_when = [&runtime] { return runtime.feature_available("gbuffer-debug"); };
+            panel.push_back(std::move(debug_view));
+            auto channel = std::make_unique<vulkan::gui::combo_widget>(
+                "gbuffer channel",
+                std::vector<std::string>{"albedo", "normal", "roughness", "metallic", "ao", "material id", "depth", "flags"},
+                &bindings.gbuffer_channel);
+            channel->visible_when = [&bindings, &runtime] { return runtime.feature_available("gbuffer-debug") && bindings.gbuffer_debug; };
+            panel.push_back(std::move(channel));
+        }
         // deferred lighting: the render-mode switch for the deferred path (the debug view above wins
         // when both are on, which is why it is not part of the same combo as pbr/unlit)
-        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("deferred lighting", &bindings.deferred_enabled));
+        {
+            auto deferred = std::make_unique<vulkan::gui::checkbox_widget>("deferred lighting", &bindings.deferred_enabled);
+            deferred->visible_when = [&runtime] { return runtime.feature_available("deferred"); };
+            panel.push_back(std::move(deferred));
+        }
         // TAA: the deferred path's anti-aliasing, with the two history-weight knobs. The static weight
         // decides how smooth a still image gets (higher = smoother, slower to react to lighting
         // changes); the minimum is what a fast-moving pixel falls back to (lower = trusts the current
-        // frame more, which trades smoothing for less ghosting).
-        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("taa (deferred path only)", &bindings.taa_enabled));
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("taa history (static)", &bindings.taa_blend_static, 0.0f, 0.98f));
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("taa history (min)", &bindings.taa_blend_min, 0.0f, 0.98f));
+        // frame more, which trades smoothing for less ghosting). Deferred-only, so the group appears
+        // with the deferred path - the forward path keeps its MSAA.
+        {
+            auto taa = std::make_unique<vulkan::gui::checkbox_widget>("taa", &bindings.taa_enabled);
+            taa->visible_when = [&bindings, &runtime] { return bindings.deferred_enabled && runtime.feature_available("taa") && runtime.feature_available("deferred"); }; // deferred-only
+            panel.push_back(std::move(taa));
+            auto make_taa_slider = [&](std::string label, float* value, float lo, float hi) {
+                auto slider = std::make_unique<vulkan::gui::slider_widget>(std::move(label), value, lo, hi);
+                slider->visible_when = [&bindings, &runtime] { return runtime.feature_available("taa") && bindings.deferred_enabled && bindings.taa_enabled; };
+                panel.push_back(std::move(slider));
+            };
+            make_taa_slider("taa history (static)", &bindings.taa_blend_static, 0.0f, 0.98f);
+            make_taa_slider("taa history (min)", &bindings.taa_blend_min, 0.0f, 0.98f);
+        }
         // cel/toon shading: quantize the diffuse falloff (and harden shadows/highlights);
         // 0 steps leaves plain PBR, softness shrinks toward hard comic edges
         // cel/toon shading is discrete: every listed band count gives a visibly different look
