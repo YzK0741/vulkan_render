@@ -64,19 +64,64 @@ vec3 linear_to_srgb(vec3 color) {
 }
 
 /**
- * @brief 4-tap box average over one texel of @p s 's own resolution
- * @param s the sampler to filter (its textureSize() drives the tap spacing, so it works at any
- *          bloom level without a resolution constant)
+ * @brief 13-tap downsample (Karis, "Next Generation Post Processing in Call of Duty"), the filter UE
+ *        uses for its bloom chain: a 5x5 footprint built from a 3x3 ring plus a 2x2 inner quad, with
+ *        the corners weighted lowest
+ * @param s the level being read (its textureSize() drives the tap spacing, so no resolution constant)
  * @param uv the sample position
- * @return the averaged RGB
+ * @return the filtered RGB (weights sum to 1)
+ *
+ * A plain box downsample moves a single bright pixel into the next level almost unchanged, and after
+ * two or three levels that pixel IS a whole texel of a very coarse image - which the composite then
+ * magnifies into a visible block. The 13 taps spread it over its neighbourhood on the way down. This
+ * is the point UE's higher-quality downsample path makes too (PostProcessDownsample.usf).
  */
-vec3 sample_box(sampler2D s, vec2 uv) {
-    vec2 texel = 1.0 / vec2(textureSize(s, 0));
-    vec3 sum = texture(s, uv + vec2(-0.5, -0.5) * texel).rgb;
-    sum += texture(s, uv + vec2(0.5, -0.5) * texel).rgb;
-    sum += texture(s, uv + vec2(-0.5, 0.5) * texel).rgb;
-    sum += texture(s, uv + vec2(0.5, 0.5) * texel).rgb;
-    return sum * 0.25;
+vec3 downsample_13(sampler2D s, vec2 uv) {
+    const vec2 t = 1.0 / vec2(textureSize(s, 0));
+    const vec3 a = texture(s, uv + t * vec2(-2.0, -2.0)).rgb;
+    const vec3 b = texture(s, uv + t * vec2(0.0, -2.0)).rgb;
+    const vec3 c = texture(s, uv + t * vec2(2.0, -2.0)).rgb;
+    const vec3 d = texture(s, uv + t * vec2(-2.0, 0.0)).rgb;
+    const vec3 e = texture(s, uv).rgb;
+    const vec3 f = texture(s, uv + t * vec2(2.0, 0.0)).rgb;
+    const vec3 g = texture(s, uv + t * vec2(-2.0, 2.0)).rgb;
+    const vec3 h = texture(s, uv + t * vec2(0.0, 2.0)).rgb;
+    const vec3 i = texture(s, uv + t * vec2(2.0, 2.0)).rgb;
+    const vec3 j = texture(s, uv + t * vec2(-1.0, -1.0)).rgb;
+    const vec3 k = texture(s, uv + t * vec2(1.0, -1.0)).rgb;
+    const vec3 l = texture(s, uv + t * vec2(-1.0, 1.0)).rgb;
+    const vec3 m = texture(s, uv + t * vec2(1.0, 1.0)).rgb;
+    vec3 sum = e * 0.125;
+    sum += (a + c + g + i) * 0.03125;
+    sum += (b + d + f + h) * 0.0625;
+    sum += (j + k + l + m) * 0.125;
+    return sum;
+}
+
+/**
+ * @brief 3x3 tent filter (1 2 1 / 2 4 2 / 1 2 1) over one texel of @p s 's own resolution: the
+ *        footprint an upsample step of the bloom pyramid stands for
+ * @param s the level to filter
+ * @param uv the sample position
+ * @return the filtered RGB (weights sum to 1)
+ *
+ * Sampling a coarse level with a single bilinear fetch (or a half-texel box) makes one of ITS texels
+ * a block on screen - at 1/16 resolution that is 16x16 pixels of flat light with square edges. The
+ * tent is what UE's bloom upsample uses (PostProcessBloom.usf), and it is the reason a coarse level
+ * reads as a wide glow instead of a tile.
+ */
+vec3 sample_tent(sampler2D s, vec2 uv) {
+    const vec2 t = 1.0 / vec2(textureSize(s, 0));
+    vec3 sum = texture(s, uv).rgb * 4.0;
+    sum += texture(s, uv + vec2(-t.x, 0.0)).rgb * 2.0;
+    sum += texture(s, uv + vec2(t.x, 0.0)).rgb * 2.0;
+    sum += texture(s, uv + vec2(0.0, -t.y)).rgb * 2.0;
+    sum += texture(s, uv + vec2(0.0, t.y)).rgb * 2.0;
+    sum += texture(s, uv + vec2(-t.x, -t.y)).rgb;
+    sum += texture(s, uv + vec2(t.x, -t.y)).rgb;
+    sum += texture(s, uv + vec2(-t.x, t.y)).rgb;
+    sum += texture(s, uv + vec2(t.x, t.y)).rgb;
+    return sum / 16.0;
 }
 
 /**
@@ -90,24 +135,34 @@ void main() {
     if (pc.mode < 0.5) {
         // bright pass: one fetch into a half-resolution target. Sampling a full-resolution source
         // from a pixel centre of the half-resolution target lands exactly halfway between four source
-        // texels, so the LINEAR sampler returns their 2x2 average - no box filter needed here - and
-        // the soft threshold is applied to that average.
-        vec3 color = texture(source_color, v_uv).rgb;
-        out_color = vec4(max(color - vec3(pc.bloom_threshold), vec3(0.0)), 1.0);
+        // texels, so the LINEAR sampler returns their 2x2 average.
+        //
+        // The threshold is a RAMP over luminance, not a per-channel subtract-and-clamp. Subtracting
+        // and clamping makes the bloom switch on and off along the iso-luminance contour of whatever
+        // is in the frame, so a whole region pops in at once with geometrically straight edges as the
+        // camera moves - the "bright spot suddenly becomes a big square" artifact. UE does exactly
+        // this ramp (PostProcessBloom.usf, BloomSetupCommon):
+        //     BloomAmount = saturate((Luminance - BloomThreshold) * 0.5);  out = BloomAmount * Color
+        // which fades in over a 2.0-wide luminance window above the threshold and keeps the colour.
+        const vec3 color = texture(source_color, v_uv).rgb;
+        const float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        const float amount = clamp((luminance - pc.bloom_threshold) * 0.5, 0.0, 1.0);
+        out_color = vec4(color * amount, 1.0);
         return;
     }
 
     if (pc.mode < 1.5) {
-        // downsample: 4-tap box into the next level
-        out_color = vec4(sample_box(source_color, v_uv), 1.0);
+        // downsample: 13-tap filter into the next level (see downsample_13)
+        out_color = vec4(downsample_13(source_color, v_uv), 1.0);
         return;
     }
 
-    // composite: weighted sum of the four levels (each box-filtered at its own resolution)
-    vec3 bloom = sample_box(bloom_l0, v_uv) * 0.50;
-    bloom += sample_box(bloom_l1, v_uv) * 0.30;
-    bloom += sample_box(bloom_l2, v_uv) * 0.20;
-    bloom += sample_box(bloom_l3, v_uv) * 0.12;
+    // composite: weighted sum of the four levels, each read through the tent filter that the
+    // upsample step of a bloom pyramid stands for (see sample_tent)
+    vec3 bloom = sample_tent(bloom_l0, v_uv) * 0.50;
+    bloom += sample_tent(bloom_l1, v_uv) * 0.30;
+    bloom += sample_tent(bloom_l2, v_uv) * 0.20;
+    bloom += sample_tent(bloom_l3, v_uv) * 0.12;
 
     vec3 color = texture(source_color, v_uv).rgb;
     color += bloom * pc.bloom_intensity;
