@@ -157,6 +157,16 @@ namespace vulkan {
                 this->vulkan_core.make_secondary_command_buffer(), // transparent
             };
             this->secondary_command_buffers.push_back(std::move(pair));
+
+            // Shadow cascades record on the task pool, so each cascade gets its OWN {pool, buffer}: a
+            // VkCommandPool is not thread safe and concurrent recording must not share one (M9).
+            std::vector<std::pair<VkCommandPool, vk_command_buffer>> cascade_recording;
+            cascade_recording.reserve(vulkan::max_shadow_cascades);
+            for (uint32_t cascade = 0; cascade < vulkan::max_shadow_cascades; ++cascade) {
+                VkCommandPool const cascade_pool = this->vulkan_core.make_command_pool();
+                cascade_recording.emplace_back(cascade_pool, this->vulkan_core.make_secondary_command_buffer(cascade_pool));
+            }
+            this->shadow_recording.push_back(std::move(cascade_recording));
             std::vector<std::pair<VkCommandPool, vk_command_buffer>> segments;
             segments.reserve(record_workers);
             for (unsigned s = 0; s < record_workers; ++s) {
@@ -1554,7 +1564,7 @@ namespace vulkan {
                 VkCommandBufferBeginInfo const shadow_sec_begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &shadow_sec_inherit);
                 std::array<bool, vulkan::max_shadow_cascades> shadow_recorded = {};
                 for (uint32_t cascade = 0; cascade < cascades; ++cascade) {
-                    VkCommandBuffer const cascade_secondary = *this->secondary_command_buffers[static_cast<std::size_t>(frame_slot)][static_cast<std::size_t>(shadow_secondary(cascade))];
+                    VkCommandBuffer const cascade_secondary = *this->shadow_recording[frame_slot][cascade].second;
                     if (vkBeginCommandBuffer(cascade_secondary, &shadow_sec_begin) != VK_SUCCESS) {
                         utility::log("runtime: shadow secondary command buffer begin failed - cascade {} skipped this frame", cascade);
                         continue;
@@ -1590,7 +1600,7 @@ namespace vulkan {
                     // execute a secondary whose begin failed - executing an unrecorded command
                     // buffer is a VUID and can wedge the frame slot.
                     if (shadow_recorded[cascade]) {
-                        VkCommandBuffer const cascade_secondary = *this->secondary_command_buffers[static_cast<std::size_t>(frame_slot)][static_cast<std::size_t>(shadow_secondary(cascade))];
+                        VkCommandBuffer const cascade_secondary = *this->shadow_recording[frame_slot][cascade].second;
                         vkCmdExecuteCommands(*command_buffer, 1, &cascade_secondary);
                     }
                     vkCmdEndRendering(*command_buffer);
