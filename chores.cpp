@@ -273,10 +273,13 @@ namespace chores {
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("bloom threshold", &bindings.bloom_threshold, 0.0f, 0.75f));
         // cel/toon shading: quantize the diffuse falloff (and harden shadows/highlights);
         // 0 steps leaves plain PBR, softness shrinks toward hard comic edges
-        // toon strength: 0 = plain PBR, 10 = strongest cartoon (few bands). main() maps it onto
-        // 2..8 bands - more bands would converge back to smooth PBR, which is why a band-count
-        // slider read backwards. Softness stays small: a wide edge erases the bands entirely.
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("toon strength", &bindings.toon_strength, 0.0f, 10.0f));
+        // cel/toon shading is discrete: every listed band count gives a visibly different look
+        // (more bands converge back to smooth PBR, so a continuous slider had dead zones).
+        // Softness stays small - a wide band edge erases the steps entirely.
+        panel.push_back(std::make_unique<vulkan::gui::combo_widget>(
+            "toon shading",
+            std::vector<std::string>{"off (plain pbr)", "2 bands (hardest)", "3 bands", "4 bands", "5 bands", "6 bands", "8 bands (softest)"},
+            &bindings.toon_bands_index));
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("toon softness", &bindings.toon_softness, 0.01f, 0.25f));
         // ---- punctual lights (demo lights; see apply_point_lights): the widgets edit
         //      bindings.point_lights live and main() pushes the enabled set once per frame.

@@ -443,12 +443,11 @@ int main(int argc, char** argv) {
         chores::apply_point_lights(runtime, gui);
         runtime.set_exposure(gui.exposure);                          // gui exposure slider -> linear scale (post-process pass)
         runtime.set_bloom(gui.bloom_intensity, gui.bloom_threshold); // gui bloom sliders -> post pass
-        // cel shading: the slider is a strength (0 = off, 10 = strongest cartoon); map it onto the
-        // 2..8 band range the runtime takes (fewer bands = harder cel look)
-        float const toon_steps = gui.toon_strength < 0.5f
-                                     ? 0.0f
-                                     : std::round(8.0f - (std::clamp(gui.toon_strength, 1.0f, 10.0f) - 1.0f) * (6.0f / 9.0f));
-        runtime.set_toon_shading(toon_steps, gui.toon_softness);
+        // cel shading: the combo picks a discrete band count (index 0 = off); every entry is a
+        // visibly different look, unlike a continuous strength that had dead zones between bands
+        constexpr std::array<float, 7> toon_band_counts = {0.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 8.0f};
+        auto const toon_index = static_cast<std::size_t>(std::clamp(gui.toon_bands_index, 0, static_cast<int>(toon_band_counts.size()) - 1));
+        runtime.set_toon_shading(toon_band_counts[toon_index], gui.toon_softness);
         // F12 screenshot: the runtime reports the request (edge-triggered in poll_events), main
         // captures the presented swapchain image and writes it as a PNG (dependency-free encoder)
         if (runtime.consume_screenshot_request()) {
