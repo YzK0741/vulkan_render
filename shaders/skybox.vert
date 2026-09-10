@@ -1,8 +1,15 @@
 #version 450
 
-// Fullscreen-triangle skybox: no vertex buffer, 3 vertices. Each vertex emits the world-space
-// view direction for its screen corner; the fragment normalizes the interpolated direction and
-// samples the environment cubemap (scene set binding 2).
+/**
+ * @file shaders/skybox.vert
+ * @brief Fullscreen-triangle skybox: emits a world-space view direction per screen corner.
+ * @ingroup shaders
+ *
+ * No vertex buffer, 3 vertices. Each vertex emits the world-space view direction for its screen
+ * corner; skybox.frag normalizes the interpolated direction and evaluates the analytic sky. The
+ * pipeline is created by runtime::make_skybox_pipeline() and shares the scene set (the camera UBO
+ * at binding 0 is all this pass needs).
+ */
 layout(set = 0, binding = 0) uniform CameraUBO {
     mat4 view;
     mat4 proj;
@@ -11,6 +18,9 @@ layout(set = 0, binding = 0) uniform CameraUBO {
 
 layout(location = 0) out vec3 v_dir;
 
+/**
+ * @brief emit the fullscreen triangle and the world-space view ray for its corner
+ */
 void main() {
     // Fullscreen triangle covering the viewport (no vertex input). Winding flipped vs. the naive
     // (id<<1)&2, id&2 pattern so the triangle is front-facing with the pipeline's BACK culling

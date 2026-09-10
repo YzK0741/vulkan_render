@@ -2,21 +2,25 @@
 // the albedo texture is picked by the material record's index (bindless array), like pbr.frag
 #extension GL_EXT_nonuniform_qualifier : enable
 
-// Depth-only fragment shader for the directional shadow pass, plus the glTF alphaMode MASK test.
-//
-// The pass has no color attachment: rasterization depth is all it writes, and the shader declares
-// no output. What it DOES do is discard below the material's alpha cutoff, so a masked caster
-// (foliage, curtains, grates) casts a cut-out shadow. Before this, the pass skipped masked leaves
-// entirely - the sun poured straight through a Sponza curtain - and casting a SOLID shadow would be
-// just as wrong.
-//
-// The test mirrors pbr.frag's, on the same texture array and the same material record, so the
-// shaded alpha edge and the shadow edge always agree. Opaque materials take the early-out below:
-// their record has flag bit4 clear, so the texture fetch never executes (one uniform branch per
-// draw, decided by the per-draw material_index push constant).
-//
-// The push-constant block must stay byte-identical to shadow.vert's: one pipeline shares a single
-// push-constant range across both stages.
+/**
+ * @file shaders/shadow.frag
+ * @brief Depth-only shadow fragment shader plus the glTF alphaMode MASK test.
+ * @ingroup shaders
+ *
+ * The pass has no color attachment: rasterization depth is all it writes, and the shader declares no
+ * output. What it DOES do is discard below the material's alpha cutoff, so a masked caster (foliage,
+ * curtains, grates) casts a cut-out shadow. Before this, the pass skipped masked leaves entirely -
+ * the sun poured straight through a Sponza curtain - and casting a SOLID shadow would be just as
+ * wrong.
+ *
+ * The test mirrors pbr.frag's, on the same texture array and the same material record, so the
+ * shaded alpha edge and the shadow edge always agree. Opaque materials take the early-out below:
+ * their record has flag bit4 clear, so the texture fetch never executes (one uniform branch per
+ * draw, decided by the per-draw material_index push constant).
+ *
+ * The push-constant block must stay byte-identical to shadow.vert's: one pipeline shares a single
+ * push-constant range across both stages.
+ */
 
 // One entry of the material table; layout matches material_record in vulkan/model.cppm (std430)
 struct Material {
@@ -48,6 +52,13 @@ layout(push_constant) uniform PushConstants {
 
 layout(location = 0) in vec2 v_uv; // albedo UV from shadow.vert (only the mask test reads it)
 
+/**
+ * @brief the alphaMode MASK test: discard below the material's alpha cutoff
+ *
+ * Cost is one uniform branch per draw plus one texture fetch for the masked materials only: the
+ * material record's flag bit4 is a push-constant-decided value, so opaque casters never sample the
+ * albedo texture at all.
+ */
 void main() {
     Material mat = materials[push.material_index];
     if ((mat.flags & 16u) == 0u) {

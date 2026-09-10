@@ -1,6 +1,26 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : enable
 
+/**
+ * @file shaders/pbr.frag
+ * @brief Forward PBR fragment stage: metallic-roughness direct lighting, IBL, shadows, cel shading.
+ * @ingroup shaders
+ *
+ * Structure of main():
+ * -# material lookup (texture indices + factors + flags) and the glTF alphaMode tests;
+ * -# tangent-space normal mapping (with the double-sided normal flip) and occlusion;
+ * -# the directional sun through evaluate_direct_light() - the same BRDF path every punctual light
+ *    takes - attenuated by calc_shadow();
+ * -# the split-sum IBL ambient (irradiance + prefiltered GGX environment + BRDF LUT), always the
+ *    fixed GGX model so the GUI presets are an honest direct-light A/B;
+ * -# emissive, then linear HDR output. Exposure, tonemapping and display encoding all belong to
+ *    post.frag, so this stage never applies gamma.
+ *
+ * The BRDF theory model (NDF + visibility) and the diffuse model are switchable per frame through
+ * LightUBO.brdf_model / diffuse_model - see the presets in evaluate_direct_light(). Cel/toon shading
+ * (LightUBO.toon_steps / toon_softness) bands the shading response without touching geometry.
+ */
+
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_normal;
 layout(location = 2) in vec2 v_uv;
@@ -93,9 +113,14 @@ layout(set = 0, binding = 7) uniform LightUBO {
 // fraction (no manual 3x3 loop needed).
 layout(set = 0, binding = 8) uniform sampler2DShadow shadow_map;
 
-// ---- Cel/toon shading band: quantize x (0..1) into `steps` bands with a soft edge of
-//      +-`softness` around each band boundary. steps < 1.5 returns x unchanged (plain PBR), so
-//      the same code path serves both styles.
+/**
+ * @brief quantize x into @p steps bands with a soft edge of +- @p softness
+ * @param x value in [0,1] (a diffuse falloff factor, a shadow factor, ...)
+ * @param steps band count; below 1.5 the value is returned unchanged (plain PBR), so the same code
+ *              path serves both styles
+ * @param softness band edge width in normalized space; smaller = harder cel edges
+ * @return the quantized value in [0,1]
+ */
 float toon_band(float x, float steps, float softness) {
     if (steps < 1.5) {
         return x;
@@ -106,14 +131,22 @@ float toon_band(float x, float steps, float softness) {
     float edge = smoothstep(0.5 - softness, 0.5 + softness, frac);
     return (base + edge) / steps;
 }
-// Shadow lookup: normal-offset bias + 3x3 percentage-closer filtering.
-//   - the sample point is pushed along the world normal by a couple of light-space texels, which
-//     removes most quantization acne on flat receivers WITHOUT a large depth bias - and a large
-//     depth bias is exactly what erases the shadow of a thin caster (a sword, a railing). The
-//     normal offset lets the depth bias below drop to a fraction of the old 0.0015.
-//   - the 3x3 grid of hardware 2x2 comparison taps (4x4 texel footprint) smooths the edge; a
-//     single tap flickered badly on thin geometry. The grid is unrotated on purpose: a rotated
-//     grid needs TAA to hide its per-pixel noise, and this renderer has no TAA yet.
+/**
+ * @brief shadow factor for a world-space point: normal-offset bias + 3x3 PCF
+ * @param world_pos receiver position in world space
+ * @param normal receiver world-space normal
+ * @return 1.0 = fully lit, 0.0 = fully shadowed (also passed through toon_band for cel shading)
+ *
+ * - the sample point is pushed along the world normal by a couple of light-space texels, which
+ *   removes most quantization acne on flat receivers WITHOUT a large depth bias - and a large depth
+ *   bias is exactly what erases the shadow of a thin caster (a sword, a railing). The normal offset
+ *   lets the depth bias below drop to a fraction of the old 0.0015.
+ * - the 3x3 grid of hardware 2x2 comparison taps (4x4 texel footprint) smooths the edge; a single
+ *   tap flickered badly on thin geometry. The grid is unrotated on purpose: a rotated grid needs TAA
+ *   to hide its per-pixel noise, and this renderer has no TAA yet.
+ * - outside the light frustum the fragment is reported lit: the map covers the fitted box only, and
+ *   runtime::update_shadow_frustum() keeps that box on the part of the scene the camera can see.
+ */
 float calc_shadow(vec3 world_pos, vec3 normal) {
     float texel_uv = light.light_dir.w;            // 1 / shadow map size
     float texel_world = light.shadow_texel_world;  // world size of one texel
@@ -145,7 +178,12 @@ float calc_shadow(vec3 world_pos, vec3 normal) {
 }
 const float PI = 3.14159265359;
 
-// Normal distribution function: GGX / Trowbridge-Reitz (matches UE's D_GGX)
+/**
+ * @brief GGX / Trowbridge-Reitz normal distribution (matches UE's D_GGX)
+ * @param n world normal, @p h half vector, @p roughness perceptual roughness
+ * @return the NDF value, finite even at a perfectly smooth specular hotspot (the denominator is
+ *         clamped: roughness 0 with ndoth == 1 would otherwise be 0/0 = NaN and blacken the fragment)
+ */
 float distribution_ggx(vec3 n, vec3 h, float roughness) {
     float a2 = roughness * roughness;
     a2 = a2 * a2; // perceptual roughness -> alpha^2 (UE passes Pow4(Roughness))
@@ -159,9 +197,7 @@ float distribution_ggx(vec3 n, vec3 h, float roughness) {
     return a2 / (PI * denom * denom);
 }
 
-// Alternative NDFs for the selectable BRDF presets (see LightUBO.brdf_model). All share the
-// same perceptual roughness -> alpha^2 mapping as distribution_ggx, so each preset differs by
-// exactly one piece (NDF or visibility) from the default.
+/// @brief Beckmann NDF preset (brdf_model 2); same alpha^2 mapping as distribution_ggx
 float distribution_beckmann(vec3 n, vec3 h, float roughness) {
     float a2 = roughness * roughness;
     a2 = max(a2 * a2, 1e-6); // roughness 0 would make 0/0 (or inf) below at ndoth == 1
@@ -171,6 +207,7 @@ float distribution_beckmann(vec3 n, vec3 h, float roughness) {
     return exp(-tan2 / a2) / (PI * a2 * cos2 * cos2);
 }
 
+/// @brief Blinn-Phong NDF preset (brdf_model 3), exponent capped at 4096
 float distribution_blinn_phong(vec3 n, vec3 h, float roughness) {
     float a2 = roughness * roughness;
     a2 = max(a2 * a2, 1e-6);
@@ -179,10 +216,16 @@ float distribution_blinn_phong(vec3 n, vec3 h, float roughness) {
     return (exponent + 2.0) * pow(ndoth, exponent) / (2.0 * PI);
 }
 
-// Geometric shadowing-masking, merged into the visibility term Vis = G / (4 NoV NoL):
-// Heitz's joint Smith approximation for GGX (UE's Vis_SmithJointApprox). One term
-// shadows AND masks in the half-vector sense, so the BRDF is specular = D * Vis * F
-// with no separate 4 NoV NoL denominator (UE's SpecularGGX structure).
+/**
+ * @brief Geometric shadowing-masking as a visibility term: Vis = G / (4 NoV NoL)
+ * @param n world normal, @p v view direction, @p l light direction, @p roughness
+ * @return Heitz's joint Smith approximation for GGX (UE's Vis_SmithJointApprox)
+ *
+ * One term shadows AND masks in the half-vector sense, so the BRDF is specular = D * Vis * F with no
+ * separate 4 NoV NoL denominator (UE's SpecularGGX structure). The denominator is clamped: at an
+ * exact grazing silhouette both ndotv and ndotl are 0, and inf * 0 = NaN would turn the whole
+ * fragment black (visible as black flashes on thin skinned limbs).
+ */
 float geometry_vis_smith_joint_approx(vec3 n, vec3 v, vec3 l, float roughness) {
     float a2 = roughness * roughness;
     a2 = a2 * a2; // perceptual roughness -> alpha^2 (UE passes Pow4(Roughness))
@@ -199,8 +242,8 @@ float geometry_vis_smith_joint_approx(vec3 n, vec3 v, vec3 l, float roughness) {
     return 0.5 / max(vis_v + vis_l, 1e-5);
 }
 
-// Height-correlated Smith visibility (Heitz 2014) - the exact joint form the approximation
-// above simplifies, selected as brdf_model 1. Uses the same alpha^2 as distribution_ggx.
+/// @brief Height-correlated Smith visibility (Heitz 2014), the exact form the approximation above
+///        simplifies - selected as brdf_model 1; same alpha^2 and the same grazing guard
 float geometry_vis_smith_height_correlated(vec3 n, vec3 v, vec3 l, float roughness) {
     float a2 = roughness * roughness;
     a2 = a2 * a2;
@@ -212,8 +255,8 @@ float geometry_vis_smith_height_correlated(vec3 n, vec3 v, vec3 l, float roughne
     return 0.5 / max(ndotl * sqrt_v + ndotv * sqrt_l, 1e-5);
 }
 
-// Oren-Nayar diffuse (roughness-dependent), selected as diffuse_model 1: the classic A/B
-// approximation of the paper's integral. roughness 0 reduces to Lambert (A = 1, B = 0).
+/// @brief Oren-Nayar diffuse (roughness-dependent), selected as diffuse_model 1: the classic A/B
+///        approximation of the paper's integral; roughness 0 reduces to Lambert (A = 1, B = 0)
 float oren_nayar_diffuse(vec3 n, vec3 v, vec3 l, float roughness, float ndotv, float ndotl) {
     const float alpha2 = roughness * roughness;
     const float A = 1.0 - 0.5 * alpha2 / (alpha2 + 0.33);
@@ -235,19 +278,28 @@ float oren_nayar_diffuse(vec3 n, vec3 v, vec3 l, float roughness, float ndotv, f
     return (A + B * cos_diff * sin_max * tan_min) / PI;
 }
 
-// Fresnel: Schlick approximation
+/// @brief Schlick's Fresnel approximation: @p f0 + (1 - f0) * (1 - cos(theta))^5
 vec3 fresnel_schlick(float cos_theta, vec3 f0) {
     return f0 + (1.0 - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
 }
 
-// Cook-Torrance direct light for ONE light, in radiance units. @p light_radiance carries the
-// light's intensity/attenuation (and, for the sun, its shadow factor); ndotl is folded in
-// here. The BRDF theory selections (LightUBO.brdf_model / diffuse_model) are applied inside so
-// the directional sun and every punctual light take the exact same code path.
-// NOTE: these presets drive the DIRECT lights only. The IBL ambient below always uses the
-// fixed GGX model (prefiltered GGX environment + GGX BRDF LUT with Fdez-Aguera multiscatter
-// compensation, Lambert diffuse irradiance) - the gui preset switch is an honest DIRECT-light
-// A/B, not a whole-scene model comparison.
+/**
+ * @brief Cook-Torrance direct light for ONE light, in radiance units
+ * @param n world normal, @p v view direction, @p base_color albedo
+ * @param metallic / roughness material factors, @p f0 the Fresnel reflectance at normal incidence
+ * @param light_dir surface-to-light direction, @p light_radiance radiance * attenuation
+ * @return outgoing radiance (already multiplied by the diffuse ndotl factor)
+ *
+ * @p light_radiance carries the light's intensity/attenuation (and, for the sun, its shadow factor);
+ * ndotl is folded in here, so the directional sun and every punctual light take the exact same code
+ * path. The BRDF theory selections (LightUBO.brdf_model / diffuse_model) and the cel-shading bands
+ * are applied inside.
+ *
+ * @note these presets drive the DIRECT lights only. The IBL ambient in main() always uses the fixed
+ *       GGX model (prefiltered GGX environment + GGX BRDF LUT with Fdez-Aguera multiscatter
+ *       compensation, Lambert diffuse irradiance) - the GUI preset switch is an honest
+ *       direct-light A/B, not a whole-scene model comparison.
+ */
 vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, float roughness, vec3 f0, vec3 light_dir, vec3 light_radiance) {
     vec3 l = normalize(light_dir);
     // Half vector: normalize(v + l) is NaN when the light sits exactly behind the fragment
@@ -306,19 +358,20 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
     return (diffuse + specular) * (light_radiance * ndotl);
 }
 
-// ---- IBL: split-sum approximation (ported from glTF-Sample-Renderer's ibl.glsl) ----
-
-// Diffuse ambient: irradiance map
+/// @brief IBL: split-sum approximation (ported from glTF-Sample-Renderer's ibl.glsl); the ambient
+///        always uses this fixed GGX model, independent of the BRDF presets above
+/// Diffuse ambient: irradiance map lookup by the world normal
 vec3 get_diffuse_light(vec3 n) {
     return texture(irradiance_sampler, n).rgb;
 }
 
-// Specular ambient: sample the prefiltered env by lod
+/// Specular ambient: prefiltered environment sampled at the roughness-derived mip level
 vec3 get_specular_sample(vec3 reflection, float lod) {
     return textureLod(env_sampler, reflection, lod).rgb;
 }
 
-// Single-scatter + multi-scatter-compensated Fresnel weights (BRDF LUT), from Fdez-Aguera
+/// @brief Single-scatter plus multi-scatter-compensated Fresnel weights from the BRDF LUT
+///        (Fdez-Aguera); @p specular_weight is the material's monochrome specular amount
 vec3 get_ibl_ggx_fresnel(vec3 n, vec3 v, float roughness, vec3 f0, float specular_weight) {
     float ndotv = clamp(dot(n, v), 0.0, 1.0);
     vec2 brdf_sample_point = clamp(vec2(ndotv, roughness), vec2(0.0), vec2(1.0));
@@ -334,6 +387,9 @@ vec3 get_ibl_ggx_fresnel(vec3 n, vec3 v, float roughness, vec3 f0, float specula
     return fssess + fmsems;
 }
 
+/// @brief Prefiltered GGX environment radiance for a reflection ray, at the mip that matches
+///        @p roughness; the level count is queried from the sampler so it always matches whatever
+///        env_mip_count the CPU baked (no hardcoded constant)
 vec3 get_ibl_radiance_ggx(vec3 n, vec3 v, float roughness) {
     // roughness -> lod across the prefiltered chain; the level count is queried from the
     // sampler so it always matches whatever env_mip_count the CPU baked (no hardcoded constant)
@@ -342,11 +398,20 @@ vec3 get_ibl_radiance_ggx(vec3 n, vec3 v, float roughness) {
     return get_specular_sample(reflection, lod);
 }
 
-// ACES filmic tonemapping
+/// @brief ACES filmic tonemapping (kept here for the unlit/debug paths; the display-referred work
+///        for the frame happens in post.frag)
 vec3 aces_tone_mapping(vec3 color) {
     return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);
 }
 
+/**
+ * @brief shade one fragment: material, normal mapping, sun + shadow, punctual lights, IBL, emissive
+ *
+ * Output is linear HDR radiance - no exposure, no gamma. The per-frame model selections come from
+ * the LightUBO lanes (brdf_model, diffuse_model, toon_steps/toon_softness, exposure is applied in
+ * post.frag). The shadow factor attenuates the directional sun only; the IBL ambient stays
+ * unshadowed, which is the usual approximation and keeps interiors from going pitch black.
+ */
 void main() {
     // ---- Material: one GPU-side record (texture indices + factors + flags) ----
     Material mat = materials[push.material_index];

@@ -1,13 +1,32 @@
 #version 450
 
+/**
+ * @file shaders/skybox.frag
+ * @brief Analytic sky background, evaluated per pixel from the view ray.
+ * @ingroup shaders
+ *
+ * The sky is written as linear HDR radiance like the lit geometry; the post-process pass
+ * (post.frag) applies exposure + ACES + display encoding once for the whole frame, so sky and models
+ * stay consistent without the skybox needing any descriptor set or push constant beyond the shared
+ * scene set.
+ */
+
 layout(location = 0) out vec4 out_color;
 
 layout(location = 0) in vec3 v_dir;
 
-// Analytic sky, matching vulkan.math::environment_color (which bakes the IBL cubemap), so the
-// visible sky and environment reflections agree exactly. Computed per-pixel from the view ray —
-// like UE's SkyAtmosphere — instead of sampling the env cubemap, which eliminates every cubemap
-// face/texel artifact (the "inside a cube" look): no face seams, no banding, no texel steps.
+/**
+ * @brief analytic sky radiance for a world-space direction
+ * @param dir normalized world-space view direction
+ * @return linear HDR sky radiance (ground / horizon / sky bands plus a soft sun disc)
+ *
+ * Matches vulkan.math::environment_color (which bakes the IBL cubemap), so the visible sky and the
+ * environment reflections agree exactly. Computed rather than sampled from the env cubemap - like
+ * UE's SkyAtmosphere - which eliminates every cubemap face/texel artifact (the "inside a cube"
+ * look): no face seams, no banding, no texel steps. The three bands are blended with smoothstep
+ * (C1-smooth) rather than piecewise linear, and the sun disc sits along the same fixed sun direction
+ * that pbr.frag and the shadow pass use.
+ */
 vec3 sky_color(vec3 dir) {
     // elevation t: 0 = nadir, 1 = zenith
     float t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
@@ -25,9 +44,12 @@ vec3 sky_color(vec3 dir) {
     return env;
 }
 
-// The sky is written as linear HDR radiance like the lit geometry; the post-process pass
-// (post.frag) applies exposure + ACES + gamma once for the whole frame, so sky and models stay
-// consistent without the skybox needing any descriptor set or push constant.
+/**
+ * @brief evaluate the sky for the interpolated view ray and write linear HDR radiance
+ *
+ * No exposure, tonemapping or encode happens here: the post pass owns all display-referred work, so
+ * the sky and the lit geometry cannot drift apart.
+ */
 void main() {
     vec3 color = sky_color(normalize(v_dir));
     out_color = vec4(color, 1.0);

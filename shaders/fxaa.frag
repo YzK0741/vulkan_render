@@ -1,24 +1,31 @@
 #version 450
 
-// FXAA (Fast Approximate Anti-Aliasing), Lottes' FXAA 3.11 "quality" variant, on the LDR image the
-// composite produced.
-//
-// Position in the chain: forward -> HDR -> bloom -> composite -> [this] -> swapchain. It has to sit
-// AFTER tonemapping (the luma thresholds below are tuned for display-referred, gamma-encoded data)
-// and it needs its own input, because a pass cannot read the image it renders into: that is what
-// core::ldr_images are for. The composite writes them *gamma-encoded* (post_push_constants::
-// encode_gamma - they are R16F, so nothing decodes them again) and this shader therefore works
-// directly in the perceptual space FXAA was designed for. Its own output is LINEAR, because the
-// swapchain is an sRGB attachment whose write path encodes to display values in hardware.
-//
-// What it does: luma of a 3x3 neighbourhood -> if the local contrast is under a relative threshold
-// the pixel is left alone (that is what keeps flat/gradual shading and text from being blurred) ->
-// otherwise the edge direction is estimated from the diagonal luma gradients and the pixel is
-// blended along it, with a two-step (near/far) search that stops as soon as the blended luma leaves
-// the neighbourhood's range. Cost is ~9 texture fetches, no depth/normal/motion input.
-//
-// Because it is a screen-space blur it cannot fix sub-pixel shimmer in motion (that needs TAA), and
-// it softens fine detail; the debug overlay is therefore drawn AFTER this pass, not before.
+/**
+ * @file shaders/fxaa.frag
+ * @brief FXAA (Lottes' 3.11 "quality" variant) over the display-referred LDR image.
+ * @ingroup shaders
+ *
+ * Position in the chain: forward -> HDR -> bloom -> composite -> [this] -> swapchain. It has to sit
+ * AFTER tonemapping (the luma thresholds below are tuned for display-referred, gamma-encoded data)
+ * and it needs its own input, because a pass cannot read the image it renders into: that is what
+ * core::ldr_images are for. The composite writes them *gamma-encoded* (post_push_constants::
+ * encode_gamma - they are R16F, so nothing decodes them again) and this shader therefore works
+ * directly in the perceptual space FXAA was designed for. Its own output is @b linear when the
+ * swapchain is an sRGB attachment (which encodes to display values in hardware) and stays
+ * display-encoded for a UNORM swapchain.
+ *
+ * What it does: luma of a 3x3 neighbourhood -> if the local contrast is under a relative threshold
+ * the pixel is left alone (that is what keeps flat/gradual shading and text from being blurred) ->
+ * otherwise the edge direction is estimated from the diagonal luma gradients and the pixel is
+ * blended along it, with a two-step (near/far) search that stops as soon as the blended luma leaves
+ * the neighbourhood's range. Cost is ~9 texture fetches, no depth/normal/motion input.
+ *
+ * Because it is a screen-space blur it cannot fix sub-pixel shimmer in motion (that needs TAA), and
+ * it softens fine detail; the debug overlay is therefore drawn AFTER this pass, not before.
+ *
+ * Requires the pipeline built by runtime::make_fxaa_pipeline() (post.vert + this file, the
+ * swapchain color format, the post set layout).
+ */
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
@@ -43,19 +50,39 @@ const float FXAA_EDGE_THRESHOLD_MIN = 0.0833; // absolute floor for the contrast
 const float FXAA_DIR_STEP_CAP = 8.0;          // max length of the edge-direction step, in texels
 const float FXAA_SUBPIXEL_CAP = 1.0;
 
+/**
+ * @brief perceptual luma of a display-referred colour
+ * @param color gamma-encoded RGB
+ * @return Rec.601 luma, the quantity FXAA's contrast test and direction estimate work on
+ */
 float luma_of(vec3 color) {
     return dot(color, vec3(0.299, 0.587, 0.114));
 }
 
-// sRGB -> linear, for the final write: the swapchain attachment encodes linear -> sRGB in hardware,
-// so handing it an already-encoded value would double-encode (see the gamma note in post.frag).
+/**
+ * @brief sRGB -> linear, for the final write
+ * @param color display-encoded RGB
+ * @return linear RGB
+ * @note the swapchain attachment encodes linear -> sRGB in hardware, so handing it an already
+ *       encoded value would double-encode (see the gamma note in post.frag). A UNORM swapchain does
+ *       no such encoding, and then pc.encode_gamma keeps the encoded value instead.
+ * @note no local `const` inside the body: GLSL wants `const float x`, and the east-const form
+ *       (`float const x`) is rejected by glslc with a bare "unexpected CONST".
+ */
 vec3 srgb_to_linear(vec3 color) {
-    // NOTE: no local `const` - glslc rejects it ("unexpected CONST")
     vec3 low = color / 12.92;
     vec3 high = pow(max((color + 0.055) / 1.055, vec3(0.0)), vec3(2.4));
     return mix(low, high, step(vec3(0.04045), color));
 }
 
+/**
+ * @brief the FXAA pass itself: contrast test, edge direction, two-step blend, sub-pixel term
+ *
+ * Reads the gamma-encoded LDR image (binding 5) and writes the swapchain. The two controls come
+ * from runtime::set_fxaa(): pc.fxaa_edge_threshold decides how much local luma contrast counts as
+ * an edge (lower = more pixels treated = softer image) and pc.fxaa_subpixel mixes away the
+ * single-pixel aliasing that survives on near-axis-aligned edges.
+ */
 void main() {
     vec2 texel = 1.0 / vec2(textureSize(display_color, 0));
 

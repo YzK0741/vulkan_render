@@ -76,7 +76,7 @@ implementation changes that do not consume a semver slot.
 
 ## Documentation
 
-The project uses **Doxygen** for API documentation; every module, class, and interface is annotated in-source with `@defgroup` / `@brief`. The generated HTML and the LaTeX manual are **not** committed to the repo (they would drown the source tree in generated files) — build them whenever you need them with the platform wrapper script: `scripts/windows/build_docs.ps1` (PowerShell / Windows) or `scripts/posix/build_docs.sh` (POSIX sh — WSL / Linux / macOS / an MSYS2 shell). They run `doxygen Doxyfile`, then compile the LaTeX manual into `docs/latex/refman.pdf`:
+The project uses **Doxygen** for API documentation; every module, class, interface **and shader** is annotated in-source with `@defgroup` / `@brief`. The GLSL sources are part of the generated reference too: `Doxyfile` maps `*.vert` / `*.frag` to the C++ parser (`EXTENSION_MAPPING`), so each shader gets a file page with its documented functions, all collected under the `shaders` group (see [docs/shaders.md](docs/shaders.md) for the pass chain, the shared scene-set binding table, the push-constant contract and the conventions). The generated HTML and the LaTeX manual are **not** committed to the repo (they would drown the source tree in generated files) — build them whenever you need them with the platform wrapper script: `scripts/windows/build_docs.ps1` (PowerShell / Windows) or `scripts/posix/build_docs.sh` (POSIX sh — WSL / Linux / macOS / an MSYS2 shell). They run `doxygen Doxyfile`, then compile the LaTeX manual into `docs/latex/refman.pdf`:
 
 ```bash
 # Windows (PowerShell)
@@ -94,6 +94,7 @@ Related source docs (tracked in the repo):
 
 - [gltf_loader usage guide](docs/gltf_loader_usage.md) (API semantics, data formats, Vulkan integration examples)
 - [scene tree design notes](docs/scene_tree_design.md) (design history of the scene-tree / import rework)
+- [shader reference](docs/shaders.md) (the pass chain, the shared scene set, push constants, conventions) — also the Doxygen `shaders` group description
 - [docs/official-shaders/](docs/official-shaders/): reference shaders (IBL / PBR / primitive)
 
 ## Layout
@@ -114,7 +115,8 @@ Related source docs (tracked in the repo):
 ├── gltf_loader/             # gltf_loader module (CPU-side glTF/GLB loading)
 ├── vstd/                     # vstd module — modified from libc++ (LLVM), trimmed to the project's
 │                            #   STL usage (import vstd; see vstd/README.md)
-├── shaders/                 # GLSL sources + precompiled SPIR-V (recompile via compile_shaders.ps1 / .sh)
+├── shaders/                 # GLSL sources + precompiled SPIR-V (recompile via compile_shaders.ps1 / .sh);
+│                            #   documented in-source and grouped under the Doxygen "shaders" group
 ├── gltf_model/              # Sample model (DamagedHelmet)
 ├── snapshot/                # Screenshots
 ├── docs/                    # Usage guides + reference shaders; Doxygen HTML is generated on demand (gitignored)

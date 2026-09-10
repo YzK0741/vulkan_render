@@ -1,14 +1,25 @@
 #version 450
 
-// Depth-only vertex shader for the directional shadow pass: transforms the model into the
-// light's orthographic clip space, so rasterization writes the depth seen from the light.
-//
-// The vertex input layout MUST stay identical to pbr.vert (locations 0,1,2,4,5, interleaved
-// 64-byte stride): the shadow pass draws the very same vertex/index buffers, and the pipeline
-// derives its vertex input stride from the shader's inputs. Normals/uv have no role in the
-// depth pass but are declared and kept alive by a never-taken branch below so a
-// driver/compiler cannot prune them and shrink the stride below pbr.vert's.
-
+/**
+ * @file shaders/shadow.vert
+ * @brief Depth-only vertex shader for the directional shadow pass.
+ * @ingroup shaders
+ *
+ * Transforms the model into the light's orthographic clip space, so rasterization writes the depth
+ * seen from the light. The light matrices come from the LightUBO (scene set binding 7) that
+ * runtime::update_shadow_frustum() refits to the camera every time the camera or the scene moves.
+ *
+ * The vertex input layout MUST stay identical to pbr.vert (locations 0,1,2,4,5, interleaved 64-byte
+ * stride): the shadow pass draws the very same vertex/index buffers, and the pipeline derives its
+ * vertex input stride from the shader's inputs. Normals/uv have no role in the depth pass but are
+ * declared and kept alive by a never-taken branch below so a driver/compiler cannot prune them and
+ * shrink the stride below pbr.vert's.
+ *
+ * Skinning and morphing are applied exactly like pbr.vert (both passes must agree on where the
+ * geometry is), and the pass rasterizes two-sided: runtime::record_shadow_content() sets
+ * render_environment::two_sided so a single-sided caster can never be dropped for facing away from
+ * the light.
+ */
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
@@ -50,6 +61,13 @@ layout(push_constant) uniform PushConstants {
 // Albedo UV, consumed by shadow.frag's alphaMode MASK test (the pass has no other use for it)
 layout(location = 0) out vec2 v_uv;
 
+/**
+ * @brief morph, skin, transform into light clip space, and pass the albedo UV through
+ *
+ * The morph/skin order and math are identical to pbr.vert; the only difference is the final
+ * projection (light.light_view_proj instead of camera.proj * camera.view) and the v_uv passthrough
+ * that shadow.frag's mask test needs.
+ */
 void main() {
     // morph blend first (same layout as pbr.vert)
     vec4 local_pos = vec4(in_position, 1.0);

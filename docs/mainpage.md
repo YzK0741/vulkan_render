@@ -60,4 +60,6 @@ loader) or link only the ones you need into your own project.
 
 Module reference is grouped under the `vulkan_core`, `vulkan_runtime`, `vulkan_runtime_scene_tree`,
 `vulkan_render_environment`, `vulkan_animation`, `vulkan_gui`, `vulkan_math`, `gltf_loader`, `chores`,
-`utility` and `app_config` groups. See the README at the repository root for the controls and config reference.
+`utility` and `app_config` groups; the GLSL passes are collected under the `shaders` group (see the
+shader reference page for the pass chain, the shared scene set and the conventions). See the README at the
+repository root for the controls and config reference.

@@ -1,5 +1,22 @@
 #version 450
 
+/**
+ * @file shaders/pbr.vert
+ * @brief Forward vertex stage: morph blend, GPU skinning, instancing and the world transform.
+ * @ingroup shaders
+ *
+ * One vertex layout serves every draw strategy (locations 0,1,2,4,5, interleaved 64-byte stride;
+ * shadow.vert must declare exactly the same inputs). Per-draw data arrives through the material push
+ * constants; per-frame scene data through the shared scene set:
+ * - binding 6 @c InstanceTransforms - the world matrix of an instanced draw (push flag bit0)
+ * - binding 9 @c SkinMatrices - per-joint matrices, identity block at skin_base 0
+ * - binding 10 @c MorphData - per-vertex position/normal deltas plus per-target weights
+ *
+ * Order matters and must match shadow.vert: morph first (local-space deltas), then skinning (the
+ * four joint matrices selected by the vertex's joints, weighted), then the world transform. The
+ * outputs feed pbr.frag's world-space lighting: a world position, a world normal and the UV.
+ */
+
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
@@ -47,6 +64,13 @@ layout(location = 0) out vec3 v_world_pos;
 layout(location = 1) out vec3 v_normal;
 layout(location = 2) out vec2 v_uv;
 
+/**
+ * @brief morph blend -> skin -> world transform; outputs the world position, normal and UV
+ *
+ * Each stage is skipped by a uniform branch when the primitive does not need it
+ * (push.morph_targets == 0, weight sum == 0, flag bit0 clear), so one pipeline serves static,
+ * skinned, morphed and instanced geometry without variants.
+ */
 void main() {
     // morph blend first (local deltas + active target weights; skipped when not morphable)
     vec4 local_pos = vec4(in_position, 1.0);
