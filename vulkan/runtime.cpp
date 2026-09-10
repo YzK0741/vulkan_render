@@ -18,6 +18,22 @@ import vulkan.core.pipeline; // vulkan::make_pipeline for the post-process pipel
 [[maybe_unused]] static auto& pmr = utility::init_pmr(); // NOLINT(keep-alive)
 
 namespace {
+    // A color format whose attachment write path encodes linear -> sRGB in hardware. Writing an
+    // already gamma-encoded value into one of these double-encodes gamma (and leaves a UNORM target
+    // under-encoded), so the post-process composite asks this before deciding who encodes.
+    [[nodiscard]] constexpr bool is_srgb_format(VkFormat const format) noexcept {
+        switch (format) {
+        case VK_FORMAT_B8G8R8A8_SRGB:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
+        case VK_FORMAT_R8G8B8_SRGB:
+        case VK_FORMAT_B8G8R8_SRGB:
+            return true;
+        default:
+            return false;
+        }
+    }
+
     vulkan::runtime* runtime_from_window(GLFWwindow* window) {
         return static_cast<vulkan::runtime*>(glfwGetWindowUserPointer(window));
     }
@@ -1848,7 +1864,11 @@ namespace vulkan {
             .exposure = this->exposure_scale,
             .bloom_intensity = this->bloom_intensity,
             .bloom_threshold = this->bloom_threshold,
-            .mode = 2.0f};
+            .mode = 2.0f,
+            // The composite writes a LINEAR tonemapped image. An sRGB swapchain attachment encodes it
+            // to display values in hardware, so the shader must NOT apply gamma as well; only a
+            // non-sRGB (UNORM) swapchain needs the manual transfer function.
+            .encode_gamma = is_srgb_format(vk.swap_chain_image_format) ? 0.0f : 1.0f};
         vkCmdPushConstants(command_buffer, this->post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(composite_push), &composite_push);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
 

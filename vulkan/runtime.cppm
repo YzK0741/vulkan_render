@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.19  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.20  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -202,9 +202,14 @@ namespace vulkan {
         // swapchain (and with it the per-image HDR resolve targets) is recreated
         struct post_push_constants {
             float exposure = 1.0f;        // linear exposure scale (see set_exposure)
-            float bloom_intensity = 0.0f; // reserved: bloom blend weight (next step)
-            float bloom_threshold = 0.0f; // reserved: bloom bright-pass threshold
-            float mode = 0.0f;            // 0 = bright-pass + horizontal blur into the bloom target, 1 = vertical blur + composite
+            float bloom_intensity = 0.0f; // bloom blend weight (see set_bloom)
+            float bloom_threshold = 0.0f; // bloom bright-pass threshold (see set_bloom)
+            float mode = 0.0f;            // 0 = prefilter, 1 = downsample, 2 = composite
+            // composite only: 1 = the shader encodes to sRGB itself, 0 = the target is an sRGB
+            // attachment and the hardware encodes on write. Filled from the swapchain format every
+            // frame - hard-coding either way double-encodes (sRGB attachment) or under-encodes
+            // (UNORM attachment) gamma.
+            float encode_gamma = 0.0f;
         };
         std::optional<vk_pipeline> post_pipeline = std::nullopt;
         // The SAME shader pair drives two different color formats, so it needs two pipelines:
