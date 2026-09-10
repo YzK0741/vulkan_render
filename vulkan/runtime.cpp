@@ -3312,10 +3312,15 @@ namespace vulkan {
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
 
         // Submit + present; recreate the swapchain when presentation reports out of date
+        auto const submit_started = std::chrono::steady_clock::now(); // sub-phase marks: what of submit is the
+        // queue submission (with its timeline signal) and what is the present call below
         if (vk.submit(*command_buffer, this->current_image_index) != VK_SUCCESS) {
             return frame_status::submit_failed;
         }
+        this->cpu_phase_add(cpu_phase::submit_queue, submit_started);
+        auto const present_started = std::chrono::steady_clock::now();
         VkResult const present_result = vk.present(this->current_image_index);
+        this->cpu_phase_add(cpu_phase::present, present_started);
         if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
             utility::log("present out of date, recreating swapchain");
             vk.recreate_swap_chain();
@@ -3589,6 +3594,14 @@ namespace vulkan {
         if (enabled && !this->skybox_pipeline.has_value()) {
             this->warn_missing_feature("skybox", "the skybox has no effect: its pipeline was not created (see the startup log)");
         }
+    }
+
+    void runtime::cpu_phase_add(cpu_phase const phase, std::chrono::steady_clock::time_point const start) noexcept {
+        std::size_t const index = static_cast<std::size_t>(phase);
+        if (index >= this->cpu_phase_frame.size()) {
+            return;
+        }
+        this->cpu_phase_frame[index] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     }
 
     void runtime::cpu_phase_end(cpu_phase const phase, std::chrono::steady_clock::time_point const start) noexcept {

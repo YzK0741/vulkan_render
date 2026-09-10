@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.16.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.16.2  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -138,9 +138,14 @@ namespace vulkan {
                                           shadow,
                                           post,
                                           submit,
+                                          // sub-phases of `submit`, measured apart because that phase is
+                                          // 40% of a light frame (0.14 of 0.35 ms): the queue submission
+                                          // (with its timeline signal) and the present call.
+                                          submit_queue,
+                                          present,
                                           count };
         /** @brief names of the CPU phases, in enum order (for the report line) */
-        static constexpr std::array<std::string_view, static_cast<std::size_t>(cpu_phase::count)> cpu_phase_names = {"pace", "begin", "scene", "cluster*", "shadow*", "post", "submit"}; // * = inside scene
+        static constexpr std::array<std::string_view, static_cast<std::size_t>(cpu_phase::count)> cpu_phase_names = {"pace", "begin", "scene", "cluster*", "shadow*", "post", "submit", "submit-queue*", "present*"}; // * = measured inside another phase
 
         // set while the window is iconified; the restore transition recreates the swapchain
         bool was_minimized = false;
@@ -305,6 +310,7 @@ namespace vulkan {
             cpu_phase_timer(cpu_phase_timer&&) = delete;
             cpu_phase_timer& operator=(cpu_phase_timer&&) = delete;
         };
+        void cpu_phase_add(cpu_phase phase, std::chrono::steady_clock::time_point start) noexcept; // accumulate one measurement
         void cpu_phase_end(cpu_phase phase, std::chrono::steady_clock::time_point start) noexcept;
         std::array<double, static_cast<std::size_t>(cpu_phase::count)> cpu_phase_frame = {}; // the frame being measured
         std::array<double, static_cast<std::size_t>(cpu_phase::count)> cpu_phase_sum = {};   // the window being accumulated
