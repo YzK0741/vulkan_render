@@ -17,7 +17,14 @@ namespace vulkan {
 
     core::core(core_create_info const& options)
         : create_options{options} {
-        init_window(options.window_width, options.window_height, options.window_title);
+        if (options.window.has_value()) {
+            // caller-provided window: bind to it as-is - no glfwInit / glfwCreateWindow here and
+            // no glfwDestroyWindow cleanup (ownership stays with the caller; see
+            // core_create_info::window)
+            window = *options.window;
+        } else {
+            init_window(options.window_width, options.window_height, options.window_title);
+        }
         init_instance();
         init_surface();
         init_device_and_queue();
@@ -42,6 +49,8 @@ namespace vulkan {
         this->do_cleanup();
     }
 
+    // self-owned window path: only taken when core_create_info::window is empty (a caller-provided
+    // window skips glfwInit/glfwCreateWindow entirely and registers no destroy cleanup)
     void core::init_window(int const width, int const height, std::string_view const window_name) noexcept {
         glfwInit();
 

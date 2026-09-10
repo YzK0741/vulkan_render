@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.1.1a  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.2  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -80,6 +80,13 @@ namespace vulkan {
         // and the VK_EXT_debug_utils messenger); off by default - the caller (app_config) keeps
         // the historic Debug-on / Release-off default and can override it per build
         bool validation_layers = false;
+        // optional caller-provided window: when set, the core binds to that window instead of
+        // creating its own - it does NOT call glfwInit/glfwCreateWindow, keeps no ownership and
+        // never destroys it. The caller owns the window, must have initialized GLFW and created
+        // it Vulkan-capable (GLFW_NO_API) before constructing the core; the size/title fields
+        // above are ignored in this mode. The core still installs nothing on the window itself
+        // (no GLFW callbacks), so any caller-side callbacks keep working.
+        std::optional<GLFWwindow*> window = std::nullopt;
     };
 
     export struct core : utility::enable_stack_destruct {
