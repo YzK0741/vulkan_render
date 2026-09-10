@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene set; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.1.6  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.7  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -450,10 +450,6 @@ namespace vulkan {
         // back-to-front order). The GPU material record also carries the flag; this mirror on
         // the primitive lets draw() pick the depth-write state without a GPU readback.
         bool transparent = false;
-        // alphaMode MASK: fragment discard below alpha_cutoff in the main shader. Mirrored here
-        // so the shadow pass can skip masked leaves - the depth-only shadow shader has no alpha
-        // test and would otherwise cast solid shadows.
-        bool alpha_masked = false;
 
         // local-space AABB of this primitive's geometry (model space, i.e. before push.model);
         // filled by the runtime when the geometry is uploaded. has_bounds == false means "no

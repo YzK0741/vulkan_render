@@ -1,6 +1,60 @@
 #version 450
+// the albedo texture is picked by the material record's index (bindless array), like pbr.frag
+#extension GL_EXT_nonuniform_qualifier : enable
 
-// Empty fragment shader for the depth-only shadow pass: the pipeline has no color attachment,
-// rasterization depth (from gl_Position) is all the pass needs, and no output is declared.
+// Depth-only fragment shader for the directional shadow pass, plus the glTF alphaMode MASK test.
+//
+// The pass has no color attachment: rasterization depth is all it writes, and the shader declares
+// no output. What it DOES do is discard below the material's alpha cutoff, so a masked caster
+// (foliage, curtains, grates) casts a cut-out shadow. Before this, the pass skipped masked leaves
+// entirely - the sun poured straight through a Sponza curtain - and casting a SOLID shadow would be
+// just as wrong.
+//
+// The test mirrors pbr.frag's, on the same texture array and the same material record, so the
+// shaded alpha edge and the shadow edge always agree. Opaque materials take the early-out below:
+// their record has flag bit4 clear, so the texture fetch never executes (one uniform branch per
+// draw, decided by the per-draw material_index push constant).
+//
+// The push-constant block must stay byte-identical to shadow.vert's: one pipeline shares a single
+// push-constant range across both stages.
+
+// One entry of the material table; layout matches material_record in vulkan/model.cppm (std430)
+struct Material {
+    uvec4 tex_indices; // albedo, metallic-roughness, normal, occlusion (indices into textures[])
+    uint emissive_index;
+    float alpha_cutoff;       // alphaMode MASK threshold
+    float occlusion_strength; // mix(1, sampled AO, strength)
+    uint _pad;
+    vec4 base_color_factor;
+    vec4 emissive_factor;
+    float metallic_factor;
+    float roughness_factor;
+    float normal_scale;
+    uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK, bit5: alphaMode BLEND
+};
+layout(set = 0, binding = 1) uniform sampler2D textures[];
+layout(set = 0, binding = 5) readonly buffer Materials { Material materials[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint material_index; // index into the material table (the mask test's only input)
+    uint flags;          // unused here: declared to keep the block layout identical to shadow.vert
+    uint skin_base;
+    uint morph_base;
+    uint morph_targets;
+    uint morph_vertices;
+    uint instance_base;
+    mat4 model;
+} push;
+
+layout(location = 0) in vec2 v_uv; // albedo UV from shadow.vert (only the mask test reads it)
+
 void main() {
+    Material mat = materials[push.material_index];
+    if ((mat.flags & 16u) == 0u) {
+        return; // OPAQUE / BLEND: nothing to test, so the albedo texture is never sampled
+    }
+    // same expression as pbr.frag: base_color.a is factor.a * albedo.a
+    if (mat.base_color_factor.a * texture(textures[mat.tex_indices.x], v_uv).a < mat.alpha_cutoff) {
+        discard;
+    }
 }

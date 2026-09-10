@@ -37,7 +37,7 @@ layout(set = 0, binding = 7) uniform LightUBO {
 } light;
 
 layout(push_constant) uniform PushConstants {
-    uint material_index; // unused here (vertex stage), declared to keep the block layout identical to pbr.vert
+    uint material_index; // unused here (vertex stage), declared to keep the block layout identical to pbr.frag
     uint flags;          // bit0: instanced draw -> model comes from instances[instance_base + gl_InstanceIndex]
     uint skin_base;      // start of this primitive's joint block in skins.matrices (0 = identity)
     uint morph_base;     // float index of this primitive's morph block in morph_data.morphs (0 = none)
@@ -46,6 +46,9 @@ layout(push_constant) uniform PushConstants {
     uint instance_base;  // mat4 start of this instanced primitive's transforms (binding 6)
     mat4 model;
 } push;
+
+// Albedo UV, consumed by shadow.frag's alphaMode MASK test (the pass has no other use for it)
+layout(location = 0) out vec2 v_uv;
 
 void main() {
     // morph blend first (same layout as pbr.vert)
@@ -76,11 +79,12 @@ void main() {
     mat4 world = (push.flags & 1u) != 0u ? instances.transforms[push.instance_base + gl_InstanceIndex] : push.model;
     vec4 world_pos = world * local_pos;
     gl_Position = light.light_view_proj * world_pos;
+    v_uv = in_uv;
 
-    // Keep every input without a role in the depth pass alive so the vertex input layout (and
-    // thus the bound buffer stride) matches pbr.vert exactly (64 bytes, locations 0,1,2,4,5).
-    // This branch can never run.
-    if (isnan(in_position.x) && isinf(in_normal.x) && in_uv.x > 1e30) {
+    // Keep the input without a role in the depth pass (location 1, the normal) alive so the vertex
+    // input layout - and thus the bound buffer stride - stays identical to pbr.vert's (64 bytes,
+    // locations 0,1,2,4,5). This branch can never run.
+    if (isnan(in_position.x) && isinf(in_normal.x)) {
         gl_Position = vec4(0.0);
     }
 }

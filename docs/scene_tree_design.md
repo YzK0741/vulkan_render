@@ -300,6 +300,10 @@ scene layout, leaves drawn into the shadow map still work via `draw()` — throu
 the shadow pass's own `render_environment`, whose injected binder always binds the
 shadow pipeline (it ignores the requested pipeline name), so custom leaves that
 would draw with a named pipeline in the main pass still cast their geometry here.
+`alphaMode MASK` leaves are drawn too: `shadow.frag` runs the same alpha-cutoff
+discard as `pbr.frag` off the material record, so a cut-out caster (foliage, a
+curtain) throws a cut-out shadow rather than none or a solid one. `BLEND` leaves
+are still skipped — a depth-only pass cannot blend a transparent shadow.
 
 ### 4.4 Shadow caster culling (`f094c31`, revised)
 

@@ -1391,11 +1391,13 @@ namespace vulkan {
         env.layout = vk.scene_pipeline_layout;
         // draw only the casters that can throw a shadow into the camera frustum (see
         // shadow_casters in begin_recording); the whole scene only when culling is disabled.
-        // BLEND (transparent) and MASK leaves are skipped: the depth-only shadow shader has no
-        // alpha test, so a masked leaf would cast a SOLID shadow (and a transparent leaf a
-        // wrong one) - no shadow is the correct fallback for both.
+        // BLEND (transparent) leaves are skipped: a depth-only pass has no sensible way to blend
+        // an alpha-blended shadow, so "no shadow" stays the correct fallback. MASK leaves ARE
+        // drawn - shadow.frag runs the same alpha-cutoff discard as pbr.frag, on the same texture
+        // array and material record, so a cut-out caster (foliage, a curtain) casts a cut-out
+        // shadow instead of a solid one or, as before, none at all.
         for (primitive const* m : this->shadow_casters) {
-            if (m->transparent || m->alpha_masked) {
+            if (m->transparent) {
                 continue;
             }
             m->draw(env); // depth-only: shadow.vert transforms into light space
@@ -2445,7 +2447,6 @@ namespace vulkan {
         result->push.model = info.model_matrix;
         result->double_sided = info.double_sided;
         result->transparent = info.factors.alpha_blend;
-        result->alpha_masked = info.factors.alpha_mask;
         return result;
     }
 
@@ -2494,7 +2495,6 @@ namespace vulkan {
         result->push.model = glm::mat4(1.0f);
         result->double_sided = source.double_sided;
         result->transparent = source.transparent; // same material semantics as the source geometry
-        result->alpha_masked = source.alpha_masked;
 
         scene_tree::scene_node& leaf = this->get_scene().add_root();
         leaf.name = "pbr";
@@ -2615,10 +2615,9 @@ namespace vulkan {
             result->chunks.push_back(record);
             // A merged batch with any transparent chunk is drawn as ONE transparent unit in the
             // transparent pass (depth-write off). Within the batch the chunk order is the draw
-            // order - the caller packs back-to-front chunks itself. Masked chunks likewise mark
-            // the whole batch so the shadow pass skips it (no alpha test in the depth shader).
+            // order - the caller packs back-to-front chunks itself. Masked chunks need no batch
+            // flag: the alpha test lives in the material record, which shadow.frag reads too.
             result->transparent = result->transparent || chunk.factors.alpha_blend;
-            result->alpha_masked = result->alpha_masked || chunk.factors.alpha_mask;
         }
         if (result->chunks.empty()) {
             return nullptr; // every chunk was empty or out of range: nothing drawable
