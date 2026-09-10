@@ -323,7 +323,7 @@ namespace chores {
         panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("clustered lights", &bindings.clustered_lights));
         // screen-space ambient occlusion (M6): the deferred lighting stage traces the G-buffer.
         // The sliders edit the radius (world units), the applied intensity and the sample count.
-        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("ssao", &bindings.ssao_enabled));
+        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("ssao (deferred path only)", &bindings.ssao_enabled));
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("ssao radius", &bindings.ssao_radius, 0.05f, 3.0f));
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("ssao intensity", &bindings.ssao_intensity, 0.0f, 1.0f));
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("ssao samples", &bindings.ssao_samples, 1.0f, 16.0f));
@@ -379,7 +379,7 @@ namespace chores {
         // decides how smooth a still image gets (higher = smoother, slower to react to lighting
         // changes); the minimum is what a fast-moving pixel falls back to (lower = trusts the current
         // frame more, which trades smoothing for less ghosting).
-        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("taa", &bindings.taa_enabled));
+        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("taa (deferred path only)", &bindings.taa_enabled));
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("taa history (static)", &bindings.taa_blend_static, 0.0f, 0.98f));
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("taa history (min)", &bindings.taa_blend_min, 0.0f, 0.98f));
         // cel/toon shading: quantize the diffuse falloff (and harden shadows/highlights);

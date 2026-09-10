@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.9.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.10.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -748,9 +748,15 @@ namespace vulkan {
         void begin_rendering(VkCommandBuffer command_buffer, uint32_t image_index, VkRenderingFlags flags = 0) const;
 
         // ---- scene resource management (see the members above) ----
-        void init_scene_resources();                                                          // camera UBO buffers + white fallback texture + texture sampler + material table
-        void ensure_shadow_resources();                                                       // (lazily) layered shadow map + light UBO buffers
-        void ensure_cluster_buffers();                                                        // (lazily) per-slot cluster count/index buffers (M5)
+        void init_scene_resources();    // camera UBO buffers + white fallback texture + texture sampler + material table
+        void ensure_shadow_resources(); // (lazily) layered shadow map + light UBO buffers
+        void ensure_cluster_buffers();  // (lazily) per-slot cluster count/index buffers (M5)
+        // Diagnostics for the optional features (see log_feature_status / warn_missing_feature): a
+        // toggle whose prerequisites are missing would otherwise do nothing at all - the user clicks,
+        // nothing changes, and the log has no trace to explain it. Each message is emitted at most
+        // once per session, keyed by the feature name.
+        void warn_missing_feature(std::string_view key, std::string const& message);
+        std::vector<std::string> warned_features = {};
         void ensure_scene_set();                                                              // lazily create one scene set per frame slot and write all bindings
         void write_ibl_bindings() const;                                                      // (re)write bindings 2-4 on every scene set with the current IBL views / placeholders
         void write_light_and_shadow_bindings();                                               // (re)write binding 7 (light UBO) + binding 8 (shadow map) on every scene set
@@ -1235,9 +1241,7 @@ namespace vulkan {
          * @param enabled true (default) draws the environment skybox; false leaves the clear color
          * @note cheap toggle: only affects command recording, no resource rebuild
          */
-        void set_skybox_enabled(bool enabled) noexcept {
-            this->skybox_enabled = enabled;
-        }
+        void set_skybox_enabled(bool enabled) noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -1438,9 +1442,7 @@ namespace vulkan {
          * @note the G-buffer pass runs at 1x whatever MSAA the forward path uses: a multisampled
          *       G-buffer would need per-sample shading, which is the trade the deferred path makes.
          */
-        void set_deferred(bool enabled) noexcept {
-            this->deferred_on = enabled;
-        }
+        void set_deferred(bool enabled) noexcept;
 
         /** @brief whether the deferred lighting stage is enabled (see set_deferred) */
         [[nodiscard]] bool deferred() const noexcept {
@@ -1551,9 +1553,21 @@ namespace vulkan {
          * @note alphaMode BLEND geometry is skipped in this mode: a G-buffer cannot carry a blended
          *       surface, and the transparent pass stays a forward pass around it
          */
-        void set_gbuffer_debug(bool enabled) noexcept {
-            this->gbuffer_debug = enabled;
-        }
+        void set_gbuffer_debug(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief log which optional features are actually available this session
+         *
+         * One line naming every optional pipeline that could NOT be created (deferred lighting,
+         * G-buffer debug view, TAA, FXAA, shadow pass, skybox, clustered light culling). Those
+         * features are toggled from the debug overlay and from the config, and a toggle whose
+         * pipeline is missing does nothing at all - silently, which reads as "this switch is
+         * broken". Call it once after the pipelines are created (main does) so the log answers
+         * that question up front; `warn_missing_feature` additionally reports a toggle that
+         * cannot take effect at the moment it is switched on.
+         */
+        void log_feature_status() const;
 
         /** @brief whether the opaque pass currently writes the G-buffer (see set_gbuffer_debug) */
         [[nodiscard]] bool gbuffer_debug_enabled() const noexcept {

@@ -2564,6 +2564,13 @@ namespace vulkan {
     void runtime::set_taa(bool const enabled, float const blend_static, float const blend_min) noexcept {
         bool const was_on = this->taa_on;
         this->taa_on = enabled;
+        if (enabled) {
+            if (!this->taa_pipeline.has_value()) {
+                this->warn_missing_feature("taa", "TAA has no effect: the taa pipeline was not created (see the startup log)");
+            } else if (!this->deferred_lit_active()) {
+                this->warn_missing_feature("taa", "TAA only applies to the deferred path: switch 'deferred lighting' on ([render] deferred = true), or the forward path keeps its MSAA and this checkbox does nothing");
+            }
+        }
         this->taa_blend_static = std::clamp(blend_static, 0.0f, 0.99f);
         this->taa_blend_min = std::clamp(blend_min, 0.0f, this->taa_blend_static);
         if (enabled && !was_on) {
@@ -3434,6 +3441,65 @@ namespace vulkan {
         this->shadow_map_size = rounded;
     }
 
+    void runtime::warn_missing_feature(std::string_view const key, std::string const& message) {
+        // Only meaningful once the startup is complete: the app applies the config to the runtime
+        // BEFORE the pipelines exist (main sets the toggles, chores then creates the pipelines), so
+        // warning there would claim "the skybox has no effect" one line above "skybox pipeline
+        // created". The scene set is created on the first recorded frame, i.e. once every optional
+        // pipeline exists.
+        if (!this->scene_set_created) {
+            return;
+        }
+        // At most once per feature per session: main() mirrors the overlay's state into the runtime
+        // every frame, so an unconditional log here would print once per FRAME - which is how a
+        // diagnostics feature turns into log spam.
+        for (std::string const& seen : this->warned_features) {
+            if (seen == key) {
+                return;
+            }
+        }
+        this->warned_features.emplace_back(key);
+        utility::log("gui: {}", message);
+    }
+
+    void runtime::set_deferred(bool const enabled) noexcept {
+        this->deferred_on = enabled;
+        if (enabled && !this->deferred_pipeline.has_value()) {
+            this->warn_missing_feature("deferred", "deferred lighting has no effect: the deferred pipeline was not created (see the startup log's 'deferred lighting disabled' line)");
+        }
+    }
+
+    void runtime::set_gbuffer_debug(bool const enabled) noexcept {
+        this->gbuffer_debug = enabled;
+        if (enabled && (!this->gbuffer_pipeline.has_value() || !this->gbuffer_debug_pipeline.has_value())) {
+            this->warn_missing_feature("gbuffer-debug", "the G-buffer debug view has no effect: its pipelines were not created (see the startup log)");
+        }
+    }
+
+    void runtime::set_skybox_enabled(bool const enabled) noexcept {
+        this->skybox_enabled = enabled;
+        if (enabled && !this->skybox_pipeline.has_value()) {
+            this->warn_missing_feature("skybox", "the skybox has no effect: its pipeline was not created (see the startup log)");
+        }
+    }
+
+    void runtime::log_feature_status() const {
+        // One line naming every optional feature, so "why does this switch do nothing?" is answerable
+        // from the log alone. `on` means the pipeline exists and the feature CAN run; whether it is
+        // currently switched on is the overlay's and the config's business.
+        utility::log("features: deferred={} gbuffer-debug={} taa={} fxaa={} shadow={} skybox={} clustered-lights={}",
+                     this->deferred_pipeline.has_value() ? "on" : "UNAVAILABLE",
+                     (this->gbuffer_pipeline.has_value() && this->gbuffer_debug_pipeline.has_value()) ? "on" : "UNAVAILABLE",
+                     this->taa_pipeline.has_value() ? "on" : "UNAVAILABLE",
+                     this->post_fxaa_pipeline.has_value() ? "on" : "UNAVAILABLE",
+                     this->shadow_pipeline.has_value() ? "on" : "UNAVAILABLE",
+                     this->skybox_pipeline.has_value() ? "on" : "UNAVAILABLE",
+                     this->cluster_pipeline.has_value() ? "on" : "UNAVAILABLE");
+        if (!this->deferred_pipeline.has_value()) {
+            utility::log("features: the deferred lighting stage is unavailable, so its dependencies ([render] taa, ssao) have nothing to run in");
+        }
+    }
+
     void runtime::set_ssao(bool const enabled, float const radius, float const intensity, uint32_t const samples) noexcept {
         // CPU-side only (the same rule as set_brdf_model / set_clustered_lights): the values are
         // pushed with the deferred lighting stage each frame, so they are safe to change mid-run.
@@ -3441,6 +3507,9 @@ namespace vulkan {
         this->ssao_radius = std::max(radius, 0.0f);
         this->ssao_intensity = std::clamp(intensity, 0.0f, 1.0f);
         this->ssao_samples = std::clamp(samples, 0u, 16u); // MAX_SSAO_SAMPLES in deferred.frag
+        if (enabled && !this->deferred_lit_active()) {
+            this->warn_missing_feature("ssao", "screen-space AO only applies to the deferred path: switch 'deferred lighting' on ([render] deferred = true) or the checkbox does nothing");
+        }
     }
 
     void runtime::set_clustered_lights(bool const enabled) noexcept {
@@ -3448,6 +3517,9 @@ namespace vulkan {
         // pace_and_acquire() copies light_state into the paced slot's buffer, so the next frame's
         // cluster dispatch and shading both see it (no in-flight buffer is touched).
         this->clustered_lights = enabled;
+        if (enabled && !this->cluster_pipeline.has_value()) {
+            this->warn_missing_feature("clustered", "clustered light culling has no effect: the cluster compute pipeline was not created, so the shading stage loops EVERY active light instead (see the startup log)");
+        }
     }
 
     void runtime::record_cluster_pass(VkCommandBuffer const command_buffer) {
@@ -3878,6 +3950,9 @@ namespace vulkan {
         // skips calc_shadow entirely (fully lit), so no shadow-map clearing is needed - this
         // avoids the per-frame-slot double-buffer race that clearing once could not fix.
         this->light_state.shadow_enabled = (enabled && this->shadows_enabled) ? 1.0f : 0.0f;
+        if (enabled && !this->shadows_enabled) {
+            this->warn_missing_feature("shadow-on", "the shadow pass has no effect: enable_shadows() did not succeed (the startup log says why)");
+        }
         utility::log("shadow pass {}", enabled ? "enabled" : "disabled");
     }
 
@@ -3920,7 +3995,7 @@ namespace vulkan {
         // rendering the composite into an LDR image nothing will ever read back
         this->fxaa_on = enabled && this->post_fxaa_pipeline.has_value();
         if (enabled && !this->fxaa_on) {
-            utility::log("fxaa: requested but no fxaa pipeline exists (is fxaa.frag.spv present?)");
+            this->warn_missing_feature("fxaa", "FXAA has no effect: the fxaa pipeline was not created (is fxaa.frag.spv present?)");
         }
         this->fxaa_subpixel = std::clamp(subpixel, 0.0f, 1.0f);
         // below ~0.05 every shaded gradient counts as an edge (the whole image gets softened),

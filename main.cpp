@@ -292,6 +292,7 @@ int main(int argc, char** argv) {
     // 14. Main render loop: until the window closes or ESC is pressed.
     //     Every Vulkan frame step (fences, acquire, command buffers, render pass, submit, present)
     //     lives inside runtime::render_frame()
+    runtime.log_feature_status(); // one line naming every optional feature that could not be created
     utility::log("rendering '{}' with PBR... left-drag to orbit, wheel to zoom, ESC to exit", model_path);
 
     // Dear ImGui debug overlay on by default ([gui] show)
@@ -610,11 +611,6 @@ int main(int argc, char** argv) {
         // visible - imported model lights were loaded into those slots, so they must stay lit in
         // headless-overlay runs too (the demo slots stay off unless the user enabled them)
         chores::apply_point_lights(runtime, gui, demo_lights);
-        // clustered light culling (M5): mirrored like the other render toggles, so the config and the
-        // overlay checkbox both take effect on the next frame (the flag rides the light UBO)
-        runtime.set_clustered_lights(gui.clustered_lights);
-        // screen-space ambient occlusion (M6): deferred-only, mirrored every frame like the rest
-        runtime.set_ssao(gui.ssao_enabled, gui.ssao_radius, gui.ssao_intensity, static_cast<uint32_t>(std::max(gui.ssao_samples, 0.0f) + 0.5f));
         runtime.set_exposure(gui.exposure);                          // gui exposure slider -> linear scale (post-process pass)
         runtime.set_bloom(gui.bloom_intensity, gui.bloom_threshold); // gui bloom sliders -> post pass
         // FXAA: mirrored every frame like the other post-process values (the runtime clamps them and
@@ -630,6 +626,13 @@ int main(int argc, char** argv) {
         // TAA (the deferred path's answer to MSAA): mirrored like the other render toggles. The
         // jitter follows automatically - it is applied to the projection when TAA is active.
         runtime.set_taa(gui.taa_enabled, gui.taa_blend_static, gui.taa_blend_min);
+
+        // Order matters for the M5/M6 mirrors: their availability checks read the state the lines
+        // above just set (SSAO and TAA only apply to the deferred path, clustered lighting only when
+        // the cluster pipeline exists). Mirroring them before set_deferred() would make the first
+        // frame of every run report 'SSAO does nothing' from a stale deferred flag.
+        runtime.set_clustered_lights(gui.clustered_lights);
+        runtime.set_ssao(gui.ssao_enabled, gui.ssao_radius, gui.ssao_intensity, static_cast<uint32_t>(std::max(gui.ssao_samples, 0.0f) + 0.5f));
         // cel shading: the combo picks a discrete band count (index 0 = off); every entry is a
         // visibly different look, unlike a continuous strength that had dead zones between bands
         constexpr std::array<float, 7> toon_band_counts = {0.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 8.0f};
