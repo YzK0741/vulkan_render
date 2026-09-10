@@ -125,6 +125,7 @@ namespace chores {
         int brdf_model = 0;                // brdf-model combo (0 = GGX+joint, 1 = GGX+height-corr,
                                            // 2 = Beckmann, 3 = Blinn-Phong); write-through to runtime
         int diffuse_model = 0;             // diffuse combo (0 = Lambert, 1 = Oren-Nayar)
+        float exposure = 1.0f;             // linear exposure slider (runtime::set_exposure)
         // demo punctual lights (count matches vulkan::max_punctual_lights): the gui rows below
         // edit these fields live (no per-widget callbacks), and main() pushes the enabled set to
         // the runtime once per frame via chores::apply_point_lights(). Each slot is a point light

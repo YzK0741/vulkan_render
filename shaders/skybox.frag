@@ -25,6 +25,13 @@ vec3 sky_color(vec3 dir) {
     return env;
 }
 
+// Linear exposure scale, pushed by the runtime through the shared scene pipeline layout's push
+// constant range (4 bytes at offset 0, FRAGMENT stage - see runtime::record_main_segment). The
+// skybox binds no descriptor set, so this is how it stays consistent with pbr.frag's exposure.
+layout(push_constant) uniform SkyPush {
+    float exposure;
+} pc;
+
 // Same exposure pipeline as pbr.frag: ACES filmic tonemapping + gamma, so the sky matches the
 // lit models instead of appearing as raw dark linear values on the sRGB swapchain
 vec3 aces_tone_mapping(vec3 color) {
@@ -33,6 +40,7 @@ vec3 aces_tone_mapping(vec3 color) {
 
 void main() {
     vec3 color = sky_color(normalize(v_dir));
+    color *= pc.exposure;
     color = aces_tone_mapping(color);
     color = pow(color, vec3(1.0 / 2.2));
     out_color = vec4(color, 1.0);

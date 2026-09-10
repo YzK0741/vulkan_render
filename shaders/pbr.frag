@@ -81,7 +81,7 @@ layout(set = 0, binding = 7) uniform LightUBO {
     float diffuse_model;
     float _pad;
     uint light_count;
-    float _pad2a; // std140 tail of the CPU's glm::vec4 light_count (bytes 100..111, unused)
+    float exposure; // y lane of the CPU's light_count vec4: linear exposure scale (pre-tonemap)
     float _pad2b;
     float _pad2c;
     PunctualLight punctual_lights[MAX_PUNCTUAL_LIGHTS];
@@ -412,7 +412,10 @@ void main() {
 
     vec3 color = ambient + direct + specular_ibl + emissive;
 
-    // ---- Tonemapping + gamma correction ----
+    // ---- Exposure + tonemapping + gamma correction ----
+    // exposure is applied in linear space right before the tonemapper; the skybox pass applies
+    // the same scale (runtime::set_exposure) so sky and lit geometry stay consistent
+    color *= light.exposure;
     color = aces_tone_mapping(color);
     color = pow(color, vec3(1.0 / 2.2));
 

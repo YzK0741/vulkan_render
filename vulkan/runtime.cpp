@@ -863,6 +863,9 @@ namespace vulkan {
         // read - which is why set_shadow_enabled() / enable_shadows() only touch light_state and
         // never mapped memory directly.
         if (this->light_mapped.size() > static_cast<std::size_t>(frame_slot) && this->light_mapped[frame_slot] != nullptr) {
+            // the light_count lane's y carries the exposure scale (pbr.frag / skybox.frag apply it
+            // in linear space right before the tonemapper)
+            this->light_state.light_count.y = this->exposure_scale;
             std::memcpy(this->light_mapped[frame_slot], &this->light_state, sizeof(light_ubo));
         }
         // Remember the paced slot: the caller's per-frame host writes (set_skin_matrices /
@@ -1438,6 +1441,11 @@ namespace vulkan {
         // must not occlude the scene).
         if (draw_skybox && this->skybox_pipeline && this->skybox_enabled) {
             this->skybox_pipeline->begin_pipeline(command_buffer);
+            // exposure for the sky shader: the skybox shares the scene pipeline layout but binds no
+            // descriptor set, so the scale travels as a 4-byte fragment push constant at offset 0
+            // (see skybox.frag's push_constant block)
+            float const skybox_exposure = this->exposure_scale;
+            vkCmdPushConstants(command_buffer, this->vulkan_core.scene_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &skybox_exposure);
             vkCmdSetCullMode(command_buffer, VK_CULL_MODE_BACK_BIT);
             vkCmdSetDepthWriteEnable(command_buffer, VK_FALSE);
             vkCmdDraw(command_buffer, 3, 1, 0, 0);
@@ -1713,6 +1721,16 @@ namespace vulkan {
 
     void runtime::set_diffuse_model(int const model) noexcept {
         this->light_state.diffuse_model = static_cast<float>(std::clamp(model, 0, 1));
+    }
+
+    void runtime::set_exposure(float const exposure) noexcept {
+        // CPU-side only (same rule as set_brdf_model): remembered here, written into the light
+        // UBO's light_count.y lane by pace_and_acquire() and pushed to the skybox pass
+        this->exposure_scale = std::clamp(exposure, 0.05f, 20.0f);
+    }
+
+    float runtime::exposure() const noexcept {
+        return this->exposure_scale;
     }
 
     void runtime::set_point_lights(std::span<punctual_light const> lights) noexcept {

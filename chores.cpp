@@ -248,6 +248,9 @@ namespace chores {
             std::vector<std::string>{"Lambert", "Oren-Nayar"},
             &bindings.diffuse_model,
             [&runtime](int const index) { runtime.set_diffuse_model(index); }));
+        // linear exposure applied before tonemapping (pbr.frag + skybox.frag); main pushes it
+        // into the runtime every frame like the light slots
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("exposure", &bindings.exposure, 0.1f, 5.0f));
         // ---- punctual lights (demo lights; see apply_point_lights): the widgets edit
         //      bindings.point_lights live and main() pushes the enabled set once per frame.
         //      Each slot is a point light or - with `spot` checked - a cone light -------

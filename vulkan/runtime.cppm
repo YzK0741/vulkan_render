@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.4  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.5  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -223,6 +223,10 @@ namespace vulkan {
         std::vector<vk_buffer> light_buffers = {};
         std::vector<void*> light_mapped = {};
         light_ubo light_state = {};
+        // linear exposure scale applied before tonemapping; copied into light_state.light_count.y
+        // (the light UBO's first unused lane) right before the per-frame UBO upload, and pushed to
+        // the skybox pass through the scene layout's push-constant range (see record_main_segment)
+        float exposure_scale = 1.0f;
         std::optional<vk_pipeline> shadow_pipeline = std::nullopt; // depth-only pass pipeline
         bool shadows_enabled = false;                              // true after enable_shadows() (light UBO filled + pipeline ready)
         // live-tunable depth bias of the shadow pass (dynamic state, set per frame before the
@@ -831,6 +835,20 @@ namespace vulkan {
          * @note same timing rule as set_brdf_model
          */
         void set_diffuse_model(int model) noexcept;
+        /**
+         * @ingroup vulkan_runtime
+         * @brief linear exposure scale applied to the rendered image before tonemapping
+         *        (pbr.frag / skybox.frag read it from the light UBO / skybox push constant)
+         * @param exposure multiplier (1 = unchanged; clamped to a sane 0.05 .. 20 range)
+         * @note same timing rule as set_brdf_model: CPU-side only, copied into the paced slot
+         *       every frame, so this is safe at any time (GUI slider included)
+         */
+        void set_exposure(float exposure) noexcept;
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the current exposure scale (see set_exposure)
+         */
+        [[nodiscard]] float exposure() const noexcept;
 
         /**
          * @ingroup vulkan_runtime

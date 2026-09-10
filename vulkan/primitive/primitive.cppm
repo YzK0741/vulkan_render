@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene set; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.1.3  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.4  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -111,7 +111,7 @@ namespace vulkan {
         float brdf_model = 0.0f;
         float diffuse_model = 0.0f;
         float pad = 0.0f;
-        glm::vec4 light_count = {}; // x = number of active punctual lights (GLSL reads it as uint + vec3 pad)
+        glm::vec4 light_count = {}; // x = active punctual light count (GLSL: uint), y = exposure (GLSL: float), z/w unused
         std::array<point_light, max_punctual_lights> punctual_lights = {};
     };
     // std140 layout guard against the GLSL LightUBO in pbr.frag: light_count is a glm::vec4

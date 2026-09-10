@@ -441,6 +441,7 @@ int main(int argc, char** argv) {
         // visible - imported model lights were loaded into those slots, so they must stay lit in
         // headless-overlay runs too (the demo slots stay off unless the user enabled them)
         chores::apply_point_lights(runtime, gui);
+        runtime.set_exposure(gui.exposure); // gui exposure slider -> linear scale (light UBO y + skybox push)
         // overlay fps mirror: updated unconditionally - the overlay can be hidden with F1 and
         // shown again at runtime, so its data must stay fresh even while it is not drawn
         gui.fps = frame_stats.smoothed_fps();
