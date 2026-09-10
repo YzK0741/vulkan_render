@@ -194,6 +194,16 @@ export swap_chain_support_details query_swap_chain_support(VkPhysicalDevice devi
  * @param vsync true prefers FIFO_KHR (vsync), false prefers MAILBOX_KHR (low latency)
  * @return the chosen present mode
  */
+/**
+ * @brief VK_PRESENT_MODE_FIFO_LATEST_READY (VK_EXT_present_mode_fifo_latest_ready, core in Vulkan 1.4)
+ *
+ * Spelled out numerically so the build does not depend on how new the Vulkan headers are: the value
+ * is fixed by the extension. Like FIFO it is vsync-locked and never tears, but the presentation
+ * engine shows the newest ready image at each vblank instead of draining a queue, so an application
+ * that renders faster than the display does not pay FIFO's extra frame of latency.
+ */
+export constexpr VkPresentModeKHR present_mode_fifo_latest_ready = static_cast<VkPresentModeKHR>(1000361000);
+
 export VkPresentModeKHR choose_swap_present_mode(std::vector<VkPresentModeKHR> const& available_present_modes, bool vsync = false) noexcept;
 
 /**

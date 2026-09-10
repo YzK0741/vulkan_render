@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.6.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -160,8 +160,11 @@ namespace vulkan {
         int window_width = 1080;
         int window_height = 960;
         std::string window_title = "vulkan_render"; // GLFW window title
-        // vsync: false (default) prefers VK_PRESENT_MODE_MAILBOX_KHR, true prefers FIFO_KHR
-        bool vsync = false;
+        // vsync: true (default) prefers VK_PRESENT_MODE_FIFO_LATEST_READY and falls back to FIFO - the
+        // frame goes out at the display's rate and the acquire blocks instead of spinning, which is what
+        // keeps an idle window off the CPU. false prefers VK_PRESENT_MODE_MAILBOX_KHR, the uncapped path
+        // a throughput measurement needs (see the [render] vsync note in config.example.toml).
+        bool vsync = true;
         // MSAA sample count: 0 (default) = auto (device max usable), 1 = OFF (single-sampled, which
         // is what the deferred path and TAA require), otherwise the largest usable count <= the
         // request; the core clamps to the device's max usable when the requested count is not

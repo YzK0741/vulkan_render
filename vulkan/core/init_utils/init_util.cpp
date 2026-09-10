@@ -504,7 +504,13 @@ swap_chain_support_details query_swap_chain_support(VkPhysicalDevice device, VkS
 
 VkPresentModeKHR choose_swap_present_mode(std::vector<VkPresentModeKHR> const& available_present_modes, bool const vsync) noexcept {
     if (vsync) {
-        // FIFO is mandated by the Vulkan spec, so it is always available for vsync
+        // FIFO_LATEST_READY when the surface offers it (the core enables the extension only when the
+        // device has it): vsync-locked like FIFO, but it presents the newest ready image at each
+        // vblank instead of queueing, so a fast application does not pay FIFO's added latency. FIFO
+        // is mandated by the spec, so it is always the fallback.
+        if (std::ranges::find(available_present_modes, present_mode_fifo_latest_ready) != available_present_modes.end()) {
+            return present_mode_fifo_latest_ready;
+        }
         return VK_PRESENT_MODE_FIFO_KHR;
     }
     // Prefer MAILBOX (low latency), else fall back to FIFO (mandated by the Vulkan spec)

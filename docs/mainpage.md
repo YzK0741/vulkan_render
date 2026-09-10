@@ -3,7 +3,7 @@
 A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), built with
 CMake 4.3 + Ninja on MSYS2 clang64.
 
-Current version: **0.2.1** — single source is `project(VERSION)` in `CMakeLists.txt`
+Current version: **0.2.2** — single source is `project(VERSION)` in `CMakeLists.txt`
 (surfaced by `--version`, the startup log banner and the Vulkan `app_info`); bump it there
 and keep this line in sync.
 

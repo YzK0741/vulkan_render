@@ -45,8 +45,12 @@ window_height = 960
 # Window title (static; fps is shown in the ImGui overlay when gui is enabled).
 window_title = "vulkan_render"
 
-# vsync: false = prefer Mailbox (low latency, uncapped); true = FIFO (vsync).
-vsync = false
+# vsync: true = prefer FIFO_LATEST_READY (vsync-locked, never tears, and the acquire blocks instead of
+# spinning, so an idle window stays off the CPU; falls back to FIFO where that extension is missing).
+# false = prefer Mailbox, which presents as fast as the app can render: that is the mode to measure
+# throughput in, because with vsync the presented rate is the display's refresh rate and only the
+# per-pass CPU/GPU timing lines say anything about the renderer.
+vsync = true
 
 # msaa: multisample count. 0 = auto (device max usable, usually 4 or 8);
 #   or a fixed 2/4/8/...; clamped to the device max when unsupported.

@@ -242,7 +242,18 @@ namespace vulkan {
 
         creation_info.queue_families = find_queue_families(this->physical_device, this->surface);
 
+        // Spelled as a string rather than the header macro so the build does not depend on how new the
+        // Vulkan headers are; it is only ever pushed when the device advertises it.
+        constexpr char const* fifo_latest_ready_extension = "VK_EXT_present_mode_fifo_latest_ready";
+
         creation_info.extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+
+        // VK_EXT_present_mode_fifo_latest_ready is asked for only when the device has it, so the
+        // extension is never enabled blindly and the present mode that needs it is only ever chosen
+        // from the surface's own list (see choose_swap_present_mode).
+        if (check_device_extension_support(physical_device, std::vector<char const*>{fifo_latest_ready_extension})) {
+            creation_info.extensions.push_back(fifo_latest_ready_extension);
+        }
 
         if (!check_device_extension_support(physical_device, creation_info.extensions)) {
             utility::panic("Required device extensions not supported");
@@ -278,6 +289,22 @@ namespace vulkan {
 
         auto const [format, color_space] = choose_swap_surface_format(formats);
         VkPresentModeKHR const present_mode = choose_swap_present_mode(present_modes, this->create_options.vsync);
+        {
+            char const* name = "other";
+            if (present_mode == present_mode_fifo_latest_ready) {
+                name = "fifo-latest-ready";
+            } else if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+                name = "mailbox";
+            } else if (present_mode == VK_PRESENT_MODE_FIFO_KHR) {
+                name = "fifo";
+            } else if (present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+                name = "immediate";
+            }
+            // Logged because it decides whether the fps counter can be believed: with a vsync mode the
+            // presented rate is the display's, not the renderer's.
+            utility::log("swapchain: present mode {} (vsync {}, {} modes offered)", name, this->create_options.vsync, present_modes.size());
+        }
+
         VkExtent2D const extent = choose_swap_extent(capabilities, this->window);
 
         uint32_t image_count = capabilities.minImageCount + 1;
