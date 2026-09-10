@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.6  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.7  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -245,6 +245,11 @@ namespace vulkan {
         // (the light UBO's first unused lane) right before the per-frame UBO upload, and pushed to
         // the skybox pass through the scene layout's push-constant range (see record_main_segment)
         float exposure_scale = 1.0f;
+
+        // F12 screenshot request: set edge-triggered by poll_events, consumed by the caller
+        // (see consume_screenshot_request / acquire_current_frame_image)
+        bool screenshot_requested = false;
+        bool screenshot_key_down = false;
         std::optional<vk_pipeline> shadow_pipeline = std::nullopt; // depth-only pass pipeline
         bool shadows_enabled = false;                              // true after enable_shadows() (light UBO filled + pipeline ready)
         // live-tunable depth bias of the shadow pass (dynamic state, set per frame before the
@@ -885,6 +890,36 @@ namespace vulkan {
          * @brief the current exposure scale (see set_exposure)
          */
         [[nodiscard]] float exposure() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief one captured frame image: tightly packed 8-bit RGBA (top-left origin, row-major)
+         */
+        struct frame_image {
+            uint32_t width = 0;
+            uint32_t height = 0;
+            std::vector<unsigned char> rgba = {}; // width * height * 4, R G B A
+        };
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief copy the currently presented swapchain image back to host memory
+         * @return the captured image (8-bit RGBA, swizzled from the swapchain format), or an error
+         *         string when the swapchain is unavailable / has an unsupported format
+         * @note low-frequency debug feature: it waits for the device to go idle, transitions the
+         *       present image to TRANSFER_SRC, copies it into a host-visible buffer and hands it
+         *       back to the WSI (PRESENT_SRC) - expect a visible hitch, do not call per frame.
+         *       Requires a 4-channel 8-bit swapchain format (BGRA/RGBA, sRGB or UNORM); the
+         *       sRGB encoding is preserved, so the PNG matches what was on screen.
+         */
+        std::expected<frame_image, std::string> acquire_current_frame_image();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief read + clear the pending screenshot request (F12, edge-triggered in poll_events)
+         * @return true once per F12 press; the caller decides where to save the capture
+         */
+        [[nodiscard]] bool consume_screenshot_request() noexcept;
 
         /**
          * @ingroup vulkan_runtime

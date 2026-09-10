@@ -304,3 +304,103 @@ utility::xxh3_digest utility::xxh3_128bits(std::span<unsigned char const> const 
     std::memcpy(digest.data.data(), &hash, sizeof(hash));
     return digest;
 }
+namespace {
+    // CRC32 (PNG chunk checksums) - table generated at compile time
+    constexpr std::array<uint32_t, 256> make_crc_table() {
+        std::array<uint32_t, 256> table = {};
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; ++k) {
+                c = (c & 1u) != 0u ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+            }
+            table[i] = c;
+        }
+        return table;
+    }
+    constexpr std::array<uint32_t, 256> crc_table = make_crc_table();
+
+    void append_u32_be(std::vector<unsigned char>& out, uint32_t const value) {
+        out.push_back(static_cast<unsigned char>((value >> 24) & 0xFFu));
+        out.push_back(static_cast<unsigned char>((value >> 16) & 0xFFu));
+        out.push_back(static_cast<unsigned char>((value >> 8) & 0xFFu));
+        out.push_back(static_cast<unsigned char>(value & 0xFFu));
+    }
+
+    void append_png_chunk(std::vector<unsigned char>& out, char const* type, std::span<unsigned char const> const payload) {
+        append_u32_be(out, static_cast<uint32_t>(payload.size()));
+        std::size_t const crc_begin = out.size();
+        for (int i = 0; i < 4; ++i) {
+            out.push_back(static_cast<unsigned char>(type[i]));
+        }
+        out.insert(out.end(), payload.begin(), payload.end());
+
+        uint32_t crc = 0xFFFFFFFFu;
+        for (std::size_t i = crc_begin; i < out.size(); ++i) {
+            crc = crc_table[(crc ^ out[i]) & 0xFFu] ^ (crc >> 8);
+        }
+        append_u32_be(out, crc ^ 0xFFFFFFFFu);
+    }
+} // namespace
+
+std::expected<void, std::string> utility::write_png(std::filesystem::path const& path, uint32_t const width, uint32_t const height, std::span<unsigned char const> const rgba) {
+    std::size_t const expected = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u;
+    if (width == 0 || height == 0 || rgba.size() < expected) {
+        return std::unexpected(std::string("write_png: pixel data does not match the dimensions"));
+    }
+
+    // raw scanlines: one filter byte (0 = none) followed by the RGBA row
+    std::vector<unsigned char> raw;
+    raw.reserve(expected + height);
+    for (uint32_t y = 0; y < height; ++y) {
+        raw.push_back(0);
+        auto const row = rgba.subspan(static_cast<std::size_t>(y) * static_cast<std::size_t>(width) * 4u, static_cast<std::size_t>(width) * 4u);
+        raw.insert(raw.end(), row.begin(), row.end());
+    }
+
+    std::vector<unsigned char> zlib;
+    zlib.reserve(raw.size() + raw.size() / 65535u * 5u + 16u);
+    zlib.push_back(0x78); // CM = 8 (deflate), CINFO = 7 (32K window)
+    zlib.push_back(0x01); // FCHECK so that (0x7801 % 31) == 0
+    std::size_t offset = 0;
+    while (offset < raw.size()) {
+        std::size_t const block = std::min<std::size_t>(raw.size() - offset, 65535u);
+        bool const last = offset + block >= raw.size();
+        zlib.push_back(last ? 1u : 0u);
+        zlib.push_back(static_cast<unsigned char>(block & 0xFFu));
+        zlib.push_back(static_cast<unsigned char>((block >> 8) & 0xFFu));
+        zlib.push_back(static_cast<unsigned char>(~block & 0xFFu));
+        zlib.push_back(static_cast<unsigned char>((~block >> 8) & 0xFFu));
+        zlib.insert(zlib.end(), raw.begin() + static_cast<std::ptrdiff_t>(offset), raw.begin() + static_cast<std::ptrdiff_t>(offset + block));
+        offset += block;
+    }
+    uint32_t adler_a = 1;
+    uint32_t adler_b = 0;
+    for (unsigned char const byte : raw) {
+        adler_a = (adler_a + byte) % 65521u;
+        adler_b = (adler_b + adler_a) % 65521u;
+    }
+    append_u32_be(zlib, (adler_b << 16) | adler_a);
+
+    std::vector<unsigned char> png = {0x89u, 'P', 'N', 'G', 0x0Du, 0x0Au, 0x1Au, 0x0Au};
+    std::vector<unsigned char> ihdr;
+    append_u32_be(ihdr, width);
+    append_u32_be(ihdr, height);
+    ihdr.push_back(8); // bit depth
+    ihdr.push_back(6); // color type: RGBA
+    ihdr.push_back(0); // compression: deflate
+    ihdr.push_back(0); // filter method: adaptive
+    ihdr.push_back(0); // interlace: none
+    append_png_chunk(png, "IHDR", ihdr);
+    append_png_chunk(png, "IDAT", zlib);
+    append_png_chunk(png, "IEND", {});
+
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file) {
+        return std::unexpected(std::format("write_png: cannot open '{}'", path.string()));
+    }
+    file.write(reinterpret_cast<char const*>(png.data()), static_cast<std::streamsize>(png.size()));
+    if (!file) {
+        return std::unexpected(std::format("write_png: write failed for '{}'", path.string()));
+    }
+    return {};
+}

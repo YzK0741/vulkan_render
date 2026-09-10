@@ -1,6 +1,6 @@
 // ============================================================================
 // module: utility
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // Pure-CPU toolkit: data_block, BVH, thread_pool, frame_clock / frame_stats,
 // better_pmr (mimalloc routing), content hashing. Standalone - no Vulkan or app
@@ -161,6 +161,18 @@ namespace utility {
      * @param test callable objects wants to get the invoke time cost
      * @return used time in invoking the argument
      */
+    /**
+     * @ingroup utility
+     * @brief write an 8-bit RGBA image to a PNG file
+     * @param path output file (overwritten)
+     * @param width image width in pixels
+     * @param height image height in pixels
+     * @param rgba tightly packed RGBA rows (width * height * 4 bytes)
+     * @return empty expected on success, an error message otherwise
+     * @note no external dependency: a minimal PNG writer (CRC32 + zlib stream of uncompressed
+     *       deflate blocks + adler32), so captures work without pulling in an image library
+     */
+    export std::expected<void, std::string> write_png(std::filesystem::path const& path, uint32_t width, uint32_t height, std::span<unsigned char const> rgba);
     export std::chrono::milliseconds time_test(std::function<void()> const& test) noexcept;
 
     /**

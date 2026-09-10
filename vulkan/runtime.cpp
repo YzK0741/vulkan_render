@@ -799,6 +799,15 @@ namespace vulkan {
         }
         this->gui_toggle_down = f1_down;
 
+        // F12 requests a screenshot (edge-triggered); the caller consumes the request and saves
+        // the capture (runtime::consume_screenshot_request + acquire_current_frame_image)
+        bool const f12_down = glfwGetKey(window, GLFW_KEY_F12) == GLFW_PRESS;
+        if (f12_down && !this->screenshot_key_down) {
+            this->screenshot_requested = true;
+            utility::log("screenshot requested (F12)");
+        }
+        this->screenshot_key_down = f12_down;
+
         // Minimized: skip this frame (acquiring from an invalidated / 0-sized swapchain would
         //    fail); the restore transition is handled by recreate_if_minimized()
         if (glfwGetWindowAttrib(window, GLFW_ICONIFIED) == GLFW_TRUE) {
@@ -1889,6 +1898,141 @@ namespace vulkan {
 
     float runtime::exposure() const noexcept {
         return this->exposure_scale;
+    }
+
+    std::expected<runtime::frame_image, std::string> runtime::acquire_current_frame_image() {
+        core& vk = this->vulkan_core;
+        if (vk.swap_chain == VK_NULL_HANDLE || vk.swap_chain_images.empty()) {
+            return std::unexpected(std::string("screenshot: no swapchain image available"));
+        }
+
+        VkFormat const format = vk.swap_chain_image_format;
+        bool const bgra = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
+        bool const rgba = format == VK_FORMAT_R8G8B8A8_SRGB || format == VK_FORMAT_R8G8B8A8_UNORM;
+        if (!bgra && !rgba) {
+            return std::unexpected(std::string("screenshot: unsupported swapchain format (need 8-bit RGBA/BGRA)"));
+        }
+
+        VkExtent2D const extent = vk.swap_chain_extent;
+        VkDeviceSize const buffer_size = static_cast<VkDeviceSize>(extent.width) * static_cast<VkDeviceSize>(extent.height) * 4u;
+        uint32_t const image_index = this->current_image_index;
+
+        // The device (and the WSI) must be done with the presented image before it can be
+        // transitioned and copied. Screenshots are a low-frequency debug feature, so a full idle
+        // is acceptable - and it keeps the barrier bookkeeping trivial.
+        vk.wait_idle();
+
+        VkBufferCreateInfo buffer_info = {};
+        buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        buffer_info.size = buffer_size;
+        buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VkBuffer buffer = VK_NULL_HANDLE;
+        if (vkCreateBuffer(vk.device, &buffer_info, nullptr, &buffer) != VK_SUCCESS) {
+            return std::unexpected(std::string("screenshot: buffer creation failed"));
+        }
+
+        VkMemoryRequirements requirements = {};
+        vkGetBufferMemoryRequirements(vk.device, buffer, &requirements);
+        VkPhysicalDeviceMemoryProperties memory_properties = {};
+        vkGetPhysicalDeviceMemoryProperties(vk.physical_device, &memory_properties);
+        uint32_t memory_type = UINT32_MAX;
+        for (uint32_t i = 0; i < memory_properties.memoryTypeCount; ++i) {
+            VkMemoryPropertyFlags const wanted = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            if ((requirements.memoryTypeBits & (1u << i)) != 0u && (memory_properties.memoryTypes[i].propertyFlags & wanted) == wanted) {
+                memory_type = i;
+                break;
+            }
+        }
+        if (memory_type == UINT32_MAX) {
+            vkDestroyBuffer(vk.device, buffer, nullptr);
+            return std::unexpected(std::string("screenshot: no host-visible memory type"));
+        }
+
+        VkMemoryAllocateInfo allocate_info = {};
+        allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocate_info.allocationSize = requirements.size;
+        allocate_info.memoryTypeIndex = memory_type;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        if (vkAllocateMemory(vk.device, &allocate_info, nullptr, &memory) != VK_SUCCESS) {
+            vkDestroyBuffer(vk.device, buffer, nullptr);
+            return std::unexpected(std::string("screenshot: memory allocation failed"));
+        }
+        vkBindBufferMemory(vk.device, buffer, memory, 0);
+
+        VkCommandPoolCreateInfo const pool_info = make_command_pool_info(vk.graphics_family_index);
+        VkCommandPool pool = VK_NULL_HANDLE;
+        vkCreateCommandPool(vk.device, &pool_info, nullptr, &pool);
+        VkCommandBufferAllocateInfo const cb_allocate = make_command_buffer_allocate_info(pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+        VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+        vkAllocateCommandBuffers(vk.device, &cb_allocate, &command_buffer);
+        VkCommandBufferBeginInfo const begin_info = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr);
+        vkBeginCommandBuffer(command_buffer, &begin_info);
+
+        std::array<VkImageMemoryBarrier2, 1> to_transfer = {present_to_transfer_transition};
+        to_transfer[0].image = vk.swap_chain_images[image_index];
+        VkDependencyInfo dependency_info = make_image_dependency_info(1, to_transfer.data());
+        vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+
+        VkBufferImageCopy region = {};
+        region.bufferOffset = 0;
+        region.bufferRowLength = 0;
+        region.bufferImageHeight = 0;
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageOffset = {0, 0, 0};
+        region.imageExtent = {extent.width, extent.height, 1};
+        vkCmdCopyImageToBuffer(command_buffer, vk.swap_chain_images[image_index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
+
+        std::array<VkImageMemoryBarrier2, 1> to_present = {transfer_to_present_transition};
+        to_present[0].image = vk.swap_chain_images[image_index];
+        dependency_info = make_image_dependency_info(1, to_present.data());
+        vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+        vkEndCommandBuffer(command_buffer);
+
+        VkSubmitInfo const submit_info = make_submit_info(&command_buffer);
+        if (vkQueueSubmit(vk.graphics_queue, 1, &submit_info, VK_NULL_HANDLE) != VK_SUCCESS) {
+            vkDestroyCommandPool(vk.device, pool, nullptr);
+            vkFreeMemory(vk.device, memory, nullptr);
+            vkDestroyBuffer(vk.device, buffer, nullptr);
+            return std::unexpected(std::string("screenshot: submit failed"));
+        }
+        vkQueueWaitIdle(vk.graphics_queue);
+
+        frame_image result = {};
+        result.width = extent.width;
+        result.height = extent.height;
+        result.rgba.resize(static_cast<std::size_t>(buffer_size));
+        void* mapped = nullptr;
+        if (vkMapMemory(vk.device, memory, 0, buffer_size, 0, &mapped) == VK_SUCCESS) {
+            auto const* source = static_cast<unsigned char const*>(mapped);
+            if (bgra) {
+                for (std::size_t i = 0; i < result.rgba.size(); i += 4) {
+                    result.rgba[i + 0] = source[i + 2]; // R
+                    result.rgba[i + 1] = source[i + 1]; // G
+                    result.rgba[i + 2] = source[i + 0]; // B
+                    result.rgba[i + 3] = source[i + 3]; // A
+                }
+            } else {
+                std::memcpy(result.rgba.data(), source, static_cast<std::size_t>(buffer_size));
+            }
+            vkUnmapMemory(vk.device, memory);
+        } else {
+            vkDestroyCommandPool(vk.device, pool, nullptr);
+            vkFreeMemory(vk.device, memory, nullptr);
+            vkDestroyBuffer(vk.device, buffer, nullptr);
+            return std::unexpected(std::string("screenshot: mapping the read-back buffer failed"));
+        }
+
+        vkDestroyCommandPool(vk.device, pool, nullptr);
+        vkFreeMemory(vk.device, memory, nullptr);
+        vkDestroyBuffer(vk.device, buffer, nullptr);
+        return result;
+    }
+
+    bool runtime::consume_screenshot_request() noexcept {
+        bool const requested = this->screenshot_requested;
+        this->screenshot_requested = false;
+        return requested;
     }
 
     void runtime::set_point_lights(std::span<punctual_light const> lights) noexcept {

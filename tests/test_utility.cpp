@@ -3,11 +3,15 @@
 // the thread pool, and the BVH frustum culling used by the main pass.
 #include "vk_test.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <iterator>
 #include <span>
 #include <thread>
 #include <vector>
@@ -22,6 +26,74 @@ namespace {
     static_assert(utility::data_block<4>().hash64() == 5558979605539197941ull); // default = zeroed
     static_assert(utility::data_block<4>(golden_bytes) == utility::data_block<4>(golden_bytes));
 
+    // utility::write_png is pure CPU, so the dependency-free PNG encoder is testable headlessly:
+    // the test walks the chunk list and re-checks every CRC32 (a wrong encoder would not survive
+    // a real decoder, but structure + checksums already catch the usual mistakes).
+    void test_write_png() {
+        std::vector<unsigned char> const pixels = {255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255}; // 2x2
+        std::filesystem::path const path = "test_write_png.png";
+        auto const written = utility::write_png(path, 2, 2, pixels);
+        CHECK(written.has_value());
+        if (!written.has_value()) {
+            return;
+        }
+
+        std::ifstream file(path, std::ios::binary);
+        CHECK(file.good());
+        std::vector<unsigned char> const bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        file.close();
+        CHECK(bytes.size() > 16);
+
+        unsigned char const signature[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+        CHECK(std::equal(std::begin(signature), std::end(signature), bytes.begin()));
+
+        auto const read_be32 = [&bytes](std::size_t const at) {
+            return (static_cast<uint32_t>(bytes[at]) << 24) | (static_cast<uint32_t>(bytes[at + 1]) << 16) | (static_cast<uint32_t>(bytes[at + 2]) << 8) | static_cast<uint32_t>(bytes[at + 3]);
+        };
+
+        bool saw_ihdr = false;
+        bool saw_idat = false;
+        bool saw_iend = false;
+        bool crc_ok = true;
+        std::size_t offset = 8;
+        while (offset + 12 <= bytes.size()) {
+            uint32_t const length = read_be32(offset);
+            if (offset + 12 + length > bytes.size()) {
+                crc_ok = false;
+                break;
+            }
+            std::string_view const type(reinterpret_cast<char const*>(bytes.data() + offset + 4), 4);
+
+            uint32_t crc = 0xFFFFFFFFu;
+            for (std::size_t i = offset + 4; i < offset + 8 + length; ++i) {
+                crc ^= bytes[i];
+                for (int k = 0; k < 8; ++k) {
+                    crc = (crc & 1u) != 0u ? (0xEDB88320u ^ (crc >> 1)) : (crc >> 1);
+                }
+            }
+            crc ^= 0xFFFFFFFFu;
+            if (crc != read_be32(offset + 8 + length)) {
+                crc_ok = false;
+            }
+
+            if (type == "IHDR") {
+                saw_ihdr = true;
+                CHECK(read_be32(offset + 8) == 2);  // width
+                CHECK(read_be32(offset + 12) == 2); // height
+            } else if (type == "IDAT") {
+                saw_idat = true;
+            } else if (type == "IEND") {
+                saw_iend = true;
+                break;
+            }
+            offset += 12 + length;
+        }
+        CHECK(saw_ihdr);
+        CHECK(saw_idat);
+        CHECK(saw_iend);
+        CHECK(crc_ok);
+        std::filesystem::remove(path);
+    }
     void test_xxh3_content_hash() {
         unsigned char const a[] = {1, 2, 3, 4, 5};
         unsigned char const b[] = {1, 2, 3, 4, 5};
@@ -176,6 +248,7 @@ namespace {
 
 int main() {
     test_xxh3_content_hash();
+    test_write_png();
     test_data_block_key_semantics();
     test_thread_pool_runs_every_posted_task();
     test_thread_pool_priority_group_wait();

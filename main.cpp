@@ -441,7 +441,23 @@ int main(int argc, char** argv) {
         // visible - imported model lights were loaded into those slots, so they must stay lit in
         // headless-overlay runs too (the demo slots stay off unless the user enabled them)
         chores::apply_point_lights(runtime, gui);
-        runtime.set_exposure(gui.exposure); // gui exposure slider -> linear scale (light UBO y + skybox push)
+        runtime.set_exposure(gui.exposure); // gui exposure slider -> linear scale (post-process pass)
+        // F12 screenshot: the runtime reports the request (edge-triggered in poll_events), main
+        // captures the presented swapchain image and writes it as a PNG (dependency-free encoder)
+        if (runtime.consume_screenshot_request()) {
+            auto const image = runtime.acquire_current_frame_image();
+            if (!image) {
+                utility::log("screenshot failed: {}", image.error());
+            } else {
+                std::filesystem::path const path = std::format("screenshot_{:%Y%m%d_%H%M%S}.png", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
+                auto const written = utility::write_png(path, image->width, image->height, image->rgba);
+                if (written) {
+                    utility::log("screenshot saved: {} ({}x{})", path.string(), image->width, image->height);
+                } else {
+                    utility::log("screenshot save failed: {}", written.error());
+                }
+            }
+        }
         // overlay fps mirror: updated unconditionally - the overlay can be hidden with F1 and
         // shown again at runtime, so its data must stay fresh even while it is not drawn
         gui.fps = frame_stats.smoothed_fps();
