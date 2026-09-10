@@ -319,26 +319,52 @@ namespace {
     }
     constexpr std::array<uint32_t, 256> crc_table = make_crc_table();
 
-    void append_u32_be(std::vector<unsigned char>& out, uint32_t const value) {
-        out.push_back(static_cast<unsigned char>((value >> 24) & 0xFFu));
-        out.push_back(static_cast<unsigned char>((value >> 16) & 0xFFu));
-        out.push_back(static_cast<unsigned char>((value >> 8) & 0xFFu));
-        out.push_back(static_cast<unsigned char>(value & 0xFFu));
+    constexpr uint32_t crc32_update(uint32_t const crc, unsigned char const byte) {
+        return crc_table[(crc ^ byte) & 0xFFu] ^ (crc >> 8);
     }
 
-    void append_png_chunk(std::vector<unsigned char>& out, char const* type, std::span<unsigned char const> const payload) {
-        append_u32_be(out, static_cast<uint32_t>(payload.size()));
-        std::size_t const crc_begin = out.size();
-        for (int i = 0; i < 4; ++i) {
-            out.push_back(static_cast<unsigned char>(type[i]));
-        }
-        out.insert(out.end(), payload.begin(), payload.end());
-
+    uint32_t png_crc32(std::string_view const type, std::span<unsigned char const> const payload) {
         uint32_t crc = 0xFFFFFFFFu;
-        for (std::size_t i = crc_begin; i < out.size(); ++i) {
-            crc = crc_table[(crc ^ out[i]) & 0xFFu] ^ (crc >> 8);
+        for (char const character : type) {
+            crc = crc32_update(crc, static_cast<unsigned char>(character));
         }
-        append_u32_be(out, crc ^ 0xFFFFFFFFu);
+        for (unsigned char const byte : payload) {
+            crc = crc32_update(crc, byte);
+        }
+        return crc ^ 0xFFFFFFFFu;
+    }
+
+    /**
+     * @brief a sink that forwards to another sink while CRC32-ing what passes through
+     * @note this is what lets the (large) IDAT payload stream straight to the file: the chunk's
+     *       checksum is known when the payload ends, so nothing has to be buffered for it
+     */
+    class crc_sink {
+    public:
+        explicit crc_sink(std::ostream& out) noexcept
+            : out(out) {
+        }
+
+        void write(char const* const data, std::size_t const size) {
+            for (std::size_t i = 0; i < size; ++i) {
+                crc = crc32_update(crc, static_cast<unsigned char>(data[i]));
+            }
+            this->out.write(data, static_cast<std::streamsize>(size)); // ostream counts in streamsize
+        }
+
+        [[nodiscard]] uint32_t value() const noexcept {
+            return crc ^ 0xFFFFFFFFu;
+        }
+
+    private:
+        std::ostream& out;
+        uint32_t crc = 0xFFFFFFFFu;
+    };
+
+    // One PNG chunk: big-endian length, the 4 type bytes, the payload, then the CRC32 over
+    // type+payload. The writer is append-only, so the length has to be known up front - which it is.
+    std::expected<void, std::string> write_png_chunk(std::ostream& sink, std::string_view const type, std::span<unsigned char const> const payload) {
+        return utility::write_binary(sink, utility::be(static_cast<uint32_t>(payload.size())), type, payload, utility::be(png_crc32(type, payload)));
     }
 } // namespace
 
@@ -348,57 +374,111 @@ std::expected<void, std::string> utility::write_png(std::filesystem::path const&
         return std::unexpected(std::string("write_png: pixel data does not match the dimensions"));
     }
 
-    // raw scanlines: one filter byte (0 = none) followed by the RGBA row
+    // raw scanlines: one filter byte (0 = none) followed by the RGBA row. The adler32 of that stream
+    // is accumulated in the same pass (the zlib trailer needs it). This is the only buffer the encoder
+    // keeps: a stored-deflate block carries its own length, so its length must be known up front.
     std::vector<unsigned char> raw;
     raw.reserve(expected + height);
-    for (uint32_t y = 0; y < height; ++y) {
-        raw.push_back(0);
-        auto const row = rgba.subspan(static_cast<std::size_t>(y) * static_cast<std::size_t>(width) * 4u, static_cast<std::size_t>(width) * 4u);
-        raw.insert(raw.end(), row.begin(), row.end());
-    }
-
-    std::vector<unsigned char> zlib;
-    zlib.reserve(raw.size() + raw.size() / 65535u * 5u + 16u);
-    zlib.push_back(0x78); // CM = 8 (deflate), CINFO = 7 (32K window)
-    zlib.push_back(0x01); // FCHECK so that (0x7801 % 31) == 0
-    std::size_t offset = 0;
-    while (offset < raw.size()) {
-        std::size_t const block = std::min<std::size_t>(raw.size() - offset, 65535u);
-        bool const last = offset + block >= raw.size();
-        zlib.push_back(last ? 1u : 0u);
-        zlib.push_back(static_cast<unsigned char>(block & 0xFFu));
-        zlib.push_back(static_cast<unsigned char>((block >> 8) & 0xFFu));
-        zlib.push_back(static_cast<unsigned char>(~block & 0xFFu));
-        zlib.push_back(static_cast<unsigned char>((~block >> 8) & 0xFFu));
-        zlib.insert(zlib.end(), raw.begin() + static_cast<std::ptrdiff_t>(offset), raw.begin() + static_cast<std::ptrdiff_t>(offset + block));
-        offset += block;
-    }
     uint32_t adler_a = 1;
     uint32_t adler_b = 0;
-    for (unsigned char const byte : raw) {
+    auto const adler_update = [&adler_a, &adler_b](unsigned char const byte) {
         adler_a = (adler_a + byte) % 65521u;
         adler_b = (adler_b + adler_a) % 65521u;
+    };
+    for (uint32_t y = 0; y < height; ++y) {
+        raw.push_back(0);
+        adler_update(0);
+        auto const row = rgba.subspan(static_cast<std::size_t>(y) * static_cast<std::size_t>(width) * 4u, static_cast<std::size_t>(width) * 4u);
+        raw.insert(raw.end(), row.begin(), row.end());
+        for (unsigned char const byte : row) {
+            adler_update(byte);
+        }
     }
-    append_u32_be(zlib, (adler_b << 16) | adler_a);
 
-    std::vector<unsigned char> png = {0x89u, 'P', 'N', 'G', 0x0Du, 0x0Au, 0x1Au, 0x0Au};
-    std::vector<unsigned char> ihdr;
-    append_u32_be(ihdr, width);
-    append_u32_be(ihdr, height);
-    ihdr.push_back(8); // bit depth
-    ihdr.push_back(6); // color type: RGBA
-    ihdr.push_back(0); // compression: deflate
-    ihdr.push_back(0); // filter method: adaptive
-    ihdr.push_back(0); // interlace: none
-    append_png_chunk(png, "IHDR", ihdr);
-    append_png_chunk(png, "IDAT", zlib);
-    append_png_chunk(png, "IEND", {});
-
+    // Everything is streamed to the file in binary mode (std::ios::binary matters on Windows: text
+    // mode would translate '\n' and corrupt the image). The old encoder held three copies of the
+    // frame - scanlines, the zlib stream and the finished PNG - this one holds the scanlines only.
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     if (!file) {
         return std::unexpected(std::format("write_png: cannot open '{}'", path.string()));
     }
-    file.write(reinterpret_cast<char const*>(png.data()), static_cast<std::streamsize>(png.size()));
+    auto const failed = [&path](std::expected<void, std::string> const& result) -> std::expected<void, std::string> {
+        return std::unexpected(std::format("write_png: {} ('{}')", result.error(), path.string()));
+    };
+
+    constexpr std::array<unsigned char, 8> signature = {0x89u, 'P', 'N', 'G', 0x0Du, 0x0Au, 0x1Au, 0x0Au};
+    if (auto const written = write_binary(file, signature); !written) {
+        return failed(written);
+    }
+
+    // IHDR: 13 big-endian + fixed bytes, assembled through the same writer
+    std::vector<unsigned char> ihdr;
+    ihdr.reserve(13);
+    struct vector_sink {
+        std::vector<unsigned char>& out;
+        void write(char const* data, std::size_t size) {
+            out.insert(out.end(), data, data + size);
+        }
+    };
+    vector_sink ihdr_sink{ihdr}; // non-const: the sink's write() mutates it (a const sink fails byte_sink)
+    if (auto const written = write_binary(ihdr_sink, be(width), be(height), std::array<unsigned char, 5>{8, 6, 0, 0, 0}); !written) {
+        return failed(written);
+    }
+    if (auto const written = write_png_chunk(file, "IHDR", ihdr); !written) {
+        return failed(written);
+    }
+
+    // IDAT: a zlib stream of uncompressed (stored) deflate blocks. Length is known before the bytes:
+    // 2 header + 5 per block header + the data + the 4-byte adler32 trailer.
+    std::size_t const block_count = (raw.size() + 65534u) / 65535u;
+    uint32_t const idat_size = static_cast<uint32_t>(2u + block_count * 5u + raw.size() + 4u);
+    if (auto const written = write_binary(file, be(idat_size)); !written) {
+        return failed(written);
+    }
+    {
+        // the payload goes through a CRC-ing sink so the chunk checksum falls out of the bytes that
+        // actually reached the file - no second pass and no buffered copy of the stream. The chunk
+        // TYPE must pass through it too: a PNG CRC covers type + payload (the length is the only
+        // field outside it).
+        crc_sink payload{file};
+        if (auto const written = write_binary(payload, std::string_view{"IDAT"}); !written) {
+            return failed(written);
+        }
+        if (auto const written = write_binary(payload,
+                                              std::array<unsigned char, 2>{0x78u, 0x01u}); // CM/CINFO + FCHECK
+            !written) {
+            return failed(written);
+        }
+        std::size_t offset = 0;
+        while (offset < raw.size()) {
+            std::size_t const block = std::min<std::size_t>(raw.size() - offset, 65535u);
+            bool const last = offset + block >= raw.size();
+            // stored-block header: BFINAL/BTYPE byte then LEN and its complement, little-endian
+            std::array<unsigned char, 5> header = {
+                static_cast<unsigned char>(last ? 1u : 0u),
+                static_cast<unsigned char>(block & 0xFFu),
+                static_cast<unsigned char>((block >> 8) & 0xFFu),
+                static_cast<unsigned char>(~block & 0xFFu),
+                static_cast<unsigned char>((~block >> 8) & 0xFFu)};
+            if (auto const written = write_binary(payload, header, std::span{raw}.subspan(offset, block)); !written) {
+                return failed(written);
+            }
+            offset += block;
+        }
+        // zlib's adler32 trailer is big-endian
+        if (auto const written = write_binary(payload, be((adler_b << 16) | adler_a)); !written) {
+            return failed(written);
+        }
+        if (auto const written = write_binary(file, be(payload.value())); !written) {
+            return failed(written);
+        }
+    }
+
+    if (auto const written = write_png_chunk(file, "IEND", {}); !written) {
+        return failed(written);
+    }
+
+    file.flush(); // a failed flush loses the tail: report it instead of returning success
     if (!file) {
         return std::unexpected(std::format("write_png: write failed for '{}'", path.string()));
     }

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: utility
-// module version: 0.1.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Pure-CPU toolkit: data_block, BVH, thread_pool, frame_clock / frame_stats,
 // better_pmr (mimalloc routing), content hashing. Standalone - no Vulkan or app
@@ -161,6 +161,252 @@ namespace utility {
      * @param test callable objects wants to get the invoke time cost
      * @return used time in invoking the argument
      */
+    /**
+     * @ingroup utility
+     * @brief byte order of a scalar written through write_binary
+     * @note binary formats are endian-defined (PNG stores its chunk lengths and CRCs big-endian,
+     *       Vulkan/glTF-style data is little-endian), so a plain memcpy of a scalar is only correct
+     *       on a matching host. Tag scalars with be()/le() to say which bytes you mean; a bare
+     *       scalar is written little-endian (and a raw POD struct keeps the host's order).
+     */
+    export enum class endian { little,
+                               big };
+
+    /**
+     * @ingroup utility
+     * @brief a scalar tagged with the byte order it should be written in (see be() / le())
+     * @tparam T the scalar type (integral or floating point; bool has no byte order)
+     * @tparam Order the byte order write_single() writes it with
+     * @note prefer the deducing factories be(value) / le(value) over spelling this type out; it is
+     *       a type (not a namespace or an enum argument) so it can also be a template parameter,
+     *       which a future reader or a generic block-conversion utility will want.
+     */
+    export template <typename T, endian Order = endian::little>
+        requires(std::integral<T> || std::floating_point<T>) && (!std::same_as<T, bool>)
+    struct ordered {
+        T value = {};
+    };
+
+    /** @brief tag @p value to be written big-endian (network byte order, PNG chunk fields) */
+    export template <std::integral T>
+    [[nodiscard]] constexpr ordered<T, endian::big> be(T const value) noexcept {
+        return {value};
+    }
+    /** @brief tag @p value to be written little-endian (Vulkan / most file formats) */
+    export template <std::integral T>
+    [[nodiscard]] constexpr ordered<T, endian::little> le(T const value) noexcept {
+        return {value};
+    }
+    /** @brief tag a floating point @p value to be written big-endian (IEEE-754 bit pattern) */
+    export template <std::floating_point T>
+    [[nodiscard]] constexpr ordered<T, endian::big> be(T const value) noexcept {
+        return {value};
+    }
+    /** @brief tag a floating point @p value to be written little-endian (IEEE-754 bit pattern) */
+    export template <std::floating_point T>
+    [[nodiscard]] constexpr ordered<T, endian::little> le(T const value) noexcept {
+        return {value};
+    }
+
+    /**
+     * @ingroup utility
+     * @brief anything write_single() can append to: a type with write(char const*, size_t)
+     * @note std::ostream / std::ofstream satisfy this, and so does a tiny test sink - which is why
+     *       the writer is not tied to files: bytes can be checked in-memory.
+     */
+    export template <typename S>
+    concept byte_sink = requires(S& sink, char const* data, std::size_t size) {
+        sink.write(data, size);
+    };
+
+    namespace detail {
+        // the concepts below all normalize their argument first: write_binary deduces its pack as
+        // forwarding references, so a concept that only worked on a plain value type would reject
+        // every lvalue (an array argument arrives as `T (&)[N]`, a span as `span<...> const&`).
+        template <typename T>
+        using plain = std::remove_cvref_t<T>;
+
+        template <typename T>
+        struct is_ordered : std::false_type {};
+        template <typename T, endian Order>
+        struct is_ordered<ordered<T, Order>> : std::true_type {};
+
+        template <typename T>
+        concept ordered_value = is_ordered<plain<T>>::value;
+
+        // the byte order an ordered<T, Order> carries
+        template <typename T>
+        struct order_of;
+        template <typename T, endian Order>
+        struct order_of<ordered<T, Order>> {
+            static constexpr endian value = Order;
+        };
+
+        // contiguous and one byte per element: spans/arrays/vectors/strings of bytes and characters
+        template <typename T>
+        concept byte_range = std::ranges::contiguous_range<plain<T>> && (sizeof(std::ranges::range_value_t<plain<T>>) == 1);
+
+        // a byte range, or a contiguous range of trivially copyable elements written as one block
+        // (std::array<float, 3>, std::span<glm::vec3>, std::vector<unsigned int>, ...)
+        template <typename T>
+        concept blittable_range = std::ranges::contiguous_range<plain<T>> && std::is_trivially_copyable_v<std::ranges::range_value_t<plain<T>>>;
+
+        template <typename T>
+        concept pod_value = std::is_trivially_copyable_v<plain<T>> && std::is_standard_layout_v<plain<T>> && (!std::is_pointer_v<plain<T>>) && (!std::is_enum_v<plain<T>>);
+
+        template <typename>
+        inline constexpr bool always_false = false;
+
+        /**
+         * @brief the bytes of a scalar in the requested byte order, correct on either host order
+         * @note integers are assembled byte by byte (host independent); a float goes through its
+         *       IEEE-754 bit pattern, which std::bit_cast hands over in HOST order, so it is
+         *       reversed when the host and the requested order disagree
+         */
+        template <typename T, endian Order>
+        [[nodiscard]] std::array<unsigned char, sizeof(T)> scalar_bytes(T const value) noexcept {
+            std::array<unsigned char, sizeof(T)> bytes = {};
+            if constexpr (std::is_floating_point_v<T>) {
+                bytes = std::bit_cast<std::array<unsigned char, sizeof(T)>>(value);
+                constexpr bool host_is_big = std::endian::native == std::endian::big;
+                if constexpr ((Order == endian::big) != host_is_big) {
+                    std::ranges::reverse(bytes);
+                }
+            } else {
+                using unsigned_type = std::make_unsigned_t<T>;
+                unsigned_type const bits = static_cast<unsigned_type>(value);
+                for (std::size_t i = 0; i < bytes.size(); ++i) {
+                    std::size_t const index = Order == endian::little ? i : bytes.size() - 1u - i;
+                    bytes[index] = static_cast<unsigned char>((bits >> (8u * i)) & 0xFFu);
+                }
+            }
+            return bytes;
+        }
+    } // namespace detail
+
+    /**
+     * @ingroup utility
+     * @brief types write_single()/write_binary() can write
+     * @note the set is deliberately closed and predictable:
+     *       - ordered<T, Order> - one scalar with an explicit byte order (be()/le())
+     *       - a contiguous one-byte range - written as-is, exactly size() bytes, empty writes
+     *         nothing (a string LITERAL is char const[N] and therefore includes its terminator;
+     *         write std::string_view{"IHDR"}, not "IHDR", for a fixed character sequence)
+     *       - a contiguous range of trivially copyable values - one block write, no length prefix
+     *         (add the length yourself when the format wants one)
+     *       - a trivially copyable, standard-layout scalar/struct - native layout, which INCLUDES
+     *         any padding and uses the HOST byte order (use be()/le() for the fields of a real file
+     *         format instead)
+     *       Anything else (a range of non-trivial elements, a pointer, an enum, a class with
+     *       invariants) is rejected at compile time rather than written ambiguously.
+     */
+    export template <typename T>
+    concept binary_writable = detail::ordered_value<T> || detail::byte_range<T> || detail::blittable_range<T> || detail::pod_value<T>;
+
+    /**
+     * @ingroup utility
+     * @brief append one value to a byte sink (see binary_writable for what that can be)
+     * @param sink the destination
+     * @param value the value to append; for scalars use be()/le() to control the byte order
+     * @return empty expected on success, an error message on a sink failure
+     */
+    export template <byte_sink S, typename T>
+        requires binary_writable<T>
+    std::expected<void, std::string> write_single(S& sink, T const& value) {
+        // a sink that exposes its state (std::ostream and friends) is checked after every write, so
+        // a full disk / a broken pipe is reported instead of silently dropping the tail. It takes the
+        // sink as a parameter rather than capturing it: the check is compiled out for a sink without
+        // operator bool, and a named capture that only the discarded branch uses is a warning.
+        auto const check = [](S& out) -> std::expected<void, std::string> {
+            if constexpr (requires { static_cast<bool>(out); }) {
+                if (!out) {
+                    return std::unexpected(std::string("write_single: sink is in a failed state"));
+                }
+            }
+            return {};
+        };
+        auto const append = [&](void const* data, std::size_t const size) -> std::expected<void, std::string> {
+            if (size == 0) {
+                return {}; // never hand a null pointer to the sink
+            }
+            sink.write(static_cast<char const*>(data), size);
+            return check(sink);
+        };
+
+        std::expected<void, std::string> result = {};
+        if constexpr (detail::ordered_value<T>) {
+            // one scalar, written in the order its tag asks for
+            using scalar_type = std::remove_cvref_t<decltype(value.value)>;
+            auto const bytes = detail::scalar_bytes<scalar_type, detail::order_of<std::remove_cvref_t<T>>::value>(value.value);
+            result = append(bytes.data(), bytes.size());
+        } else if constexpr (detail::byte_range<T>) {
+            // one byte per element, written exactly as it lies: no length prefix, no conversion
+            result = append(std::ranges::data(value), std::ranges::size(value));
+        } else if constexpr (detail::blittable_range<T>) {
+            // contiguous trivially copyable elements: one block write (padding inside an element is
+            // written too, the same bytes an element-wise loop would produce)
+            result = append(std::ranges::data(value), std::ranges::size(value) * sizeof(std::ranges::range_value_t<T>));
+        } else if constexpr (detail::pod_value<T>) {
+            // native layout: padding bytes and the host byte order are written as they are
+            result = append(&value, sizeof(T));
+        } else {
+            static_assert(detail::always_false<T>, "write_single: unsupported type - see utility::binary_writable");
+        }
+        return result;
+    }
+
+    /**
+     * @ingroup utility
+     * @brief append several values to a byte sink, stopping at the first failure
+     * @param sink the destination (std::ostream / std::ofstream / any byte_sink)
+     * @param args the values to append in order (see binary_writable; wrap scalars in be()/le())
+     * @return empty expected on success, the first error message otherwise
+     * @note append-only: there is no seek, so a format that has to patch a size afterwards must
+     *       compute it up front (or buffer that part). Use write_binary_file() to open a file.
+     */
+    export template <byte_sink S, typename... Args>
+        requires(binary_writable<Args> && ...)
+    std::expected<void, std::string> write_binary(S& sink, Args&&... args) {
+        std::expected<void, std::string> result = {};
+        auto const write_one = [&sink, &result](auto const& value) {
+            if (result) { // comma fold below is left-to-right and stops writing once it failed
+                result = write_single(sink, value);
+            }
+        };
+        (write_one(args), ...);
+        return result;
+    }
+
+    /**
+     * @ingroup utility
+     * @brief write several values to @p path, overwriting it (opens in binary mode)
+     * @param path output file, created or truncated
+     * @param args the values to append in order (see binary_writable)
+     * @return empty expected on success, an error message on failure
+     * @note the explicit _file suffix keeps the file side effect visible at the call site; the
+     *       stream overload is the one to use when the file is already open or nothing is written
+     *       to disk (tests).
+     */
+    export template <typename... Args>
+        requires(binary_writable<Args> && ...)
+    std::expected<void, std::string> write_binary_file(std::filesystem::path const& path, Args&&... args) {
+        // std::ios::binary matters on Windows: text mode would translate '\n' to "\r\n" and
+        // corrupt every binary format
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        if (!file) {
+            return std::unexpected(std::format("write_binary_file: cannot open '{}'", path.string()));
+        }
+        std::expected<void, std::string> const written = write_binary(file, std::forward<Args>(args)...);
+        if (!written) {
+            return written;
+        }
+        file.flush(); // a failed flush loses the tail: report it rather than returning success
+        if (!file) {
+            return std::unexpected(std::format("write_binary_file: write failed for '{}'", path.string()));
+        }
+        return {};
+    }
+
     /**
      * @ingroup utility
      * @brief write an 8-bit RGBA image to a PNG file
