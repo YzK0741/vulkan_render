@@ -140,6 +140,10 @@ namespace chores {
         // the FXAA state, so these fields carry the config's initial values.
         bool gbuffer_debug = false; // draw the G-buffer + its debug view instead of the shaded scene
         int gbuffer_channel = 1;    // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags
+        // deferred lighting (runtime::set_deferred): shade the opaque scene from the G-buffer instead
+        // of forward. Precedence is deliberate: the debug view wins when both are on, so the checkbox
+        // always shows what is actually stored.
+        bool deferred_enabled = false;
         // demo punctual lights (count matches vulkan::max_punctual_lights): the gui rows below
         // edit these fields live (no per-widget callbacks), and main() pushes the enabled set to
         // the runtime once per frame via chores::apply_point_lights(). Each slot is a point light

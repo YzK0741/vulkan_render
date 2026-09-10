@@ -44,9 +44,13 @@ namespace vulkan {
         float const depth_bias_slope_factor,
         float const depth_bias_clamp) {
         // Single-target convenience form: forward the (0 or 1)-element format list to the
-        // multi-target implementation below.
+        // multi-target implementation below, with the engine's standard src-alpha blending (the
+        // forward pipelines' convention: alpha is coverage, and an opaque draw's alpha 1 reduces the
+        // blend math to the source color).
         std::array<VkFormat, 1> const single_format = {color_format};
+        std::array<VkPipelineColorBlendAttachmentState, 1> const single_blend = {make_color_blend_attachment()};
         std::span<VkFormat const> const color_formats = has_color_attachment ? std::span<VkFormat const>(single_format) : std::span<VkFormat const>{};
+        std::span<VkPipelineColorBlendAttachmentState const> const blend_attachments = has_color_attachment ? std::span<VkPipelineColorBlendAttachmentState const>(single_blend) : std::span<VkPipelineColorBlendAttachmentState const>{};
         return make_pipeline(device,
                              pipeline_layout,
                              color_formats,
@@ -58,7 +62,7 @@ namespace vulkan {
                              depth_bias_constant_factor,
                              depth_bias_slope_factor,
                              depth_bias_clamp,
-                             true); // the forward pipelines blend (alpha is coverage; opaque alpha 1)
+                             blend_attachments);
     }
 
     std::expected<vk_pipeline, std::string_view> make_pipeline( // NOLINT(*-function-cognitive-complexity)
@@ -73,8 +77,11 @@ namespace vulkan {
         float const depth_bias_constant_factor,
         float const depth_bias_slope_factor,
         float const depth_bias_clamp,
-        bool const color_blending) {
+        std::span<VkPipelineColorBlendAttachmentState const> const blend_attachments) {
         using fail = std::unexpected<std::string_view>;
+        if (!blend_attachments.empty() && blend_attachments.size() != color_formats.size()) {
+            return fail("make_pipeline: a blend attachment per color format is required");
+        }
 
         // ---- 1. Parse the vertex stage interface, filter builtins, build vertex input ----
         auto vertex_interface_expected = pipeline::parse_shader_stage_interface(vertex_shader_code, VK_SHADER_STAGE_VERTEX_BIT);
@@ -150,14 +157,14 @@ namespace vulkan {
         VkPipelineDynamicStateCreateInfo const dynamic_state_create_info = make_dynamic_state(dynamic_states.data(), dynamic_state_count);
         VkPipelineRasterizationStateCreateInfo const rasterization_state_create_info = make_rasterization_state(depth_bias_enabled, depth_bias_constant_factor, depth_bias_slope_factor, depth_bias_clamp);
         VkPipelineDepthStencilStateCreateInfo const depth_stencil_state_create_info = make_depth_stencil_state(depth_test_enabled);
-        // one blend attachment per color target: the forward pipelines blend (alpha is coverage, so
-        // an opaque draw's alpha 1 reduces the blend math to the source color), while a G-buffer
-        // pipeline overwrites - there alpha is metallic/roughness/flags data, and src-alpha blending
-        // would mix the stored surface with the cleared target (see
-        // make_color_blend_attachment_opaque)
-        VkPipelineColorBlendAttachmentState const blend_attachment = color_blending ? make_color_blend_attachment() : make_color_blend_attachment_opaque();
-        std::vector<VkPipelineColorBlendAttachmentState> const color_blend_attachments(color_formats.size(), blend_attachment);
-        VkPipelineColorBlendStateCreateInfo const color_blend_state_create_info = make_color_blend_state(color_blend_attachments.data(), static_cast<uint32_t>(color_blend_attachments.size()));
+        // one blend attachment per color target, either the caller's list (a pass that mixes states
+        // per target: the G-buffer overwrites its three surface targets and accumulates into the HDR
+        // target) or the opaque overwrite state (a G-buffer must not blend: there alpha is
+        // metallic/roughness/flags data - see make_color_blend_attachment_opaque)
+        VkPipelineColorBlendAttachmentState const default_blend = make_color_blend_attachment_opaque();
+        std::vector<VkPipelineColorBlendAttachmentState> const opaque_blend_attachments(color_formats.size(), default_blend);
+        std::span<VkPipelineColorBlendAttachmentState const> const blends = blend_attachments.empty() ? std::span<VkPipelineColorBlendAttachmentState const>(opaque_blend_attachments) : blend_attachments;
+        VkPipelineColorBlendStateCreateInfo const color_blend_state_create_info = make_color_blend_state(blends.data(), static_cast<uint32_t>(blends.size()));
         VkPipelineMultisampleStateCreateInfo const multisample_state_create_info = make_multisample_state(msaa_level);
 
         // ---- 4. Pipeline layout: the shared scene layout (passed in) already carries the

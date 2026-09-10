@@ -13,7 +13,8 @@
  * @code
  *  shadow.vert + shadow.frag     depth-only, from the sun, into the per-slot shadow map
  *        |
- *  surface.glsl                  (include) the shared material-surface gather both PBR paths use
+ *  surface.glsl                  (include) the shared material-surface gather, and
+ *  shading.glsl                  (include) the shared lighting - used by BOTH paths below
  *        |
  *  pbr.vert + pbr.frag           forward PBR (or unlit.frag) into the MSAA HDR target,
  *  skybox.vert + skybox.frag     skybox first in the same instance
@@ -29,28 +30,33 @@
  *  Dear ImGui                    overlay, drawn on the final 1x swapchain image
  * @endcode
  *
- * The deferred path (milestone M1 of the deferred-rendering plan) replaces the forward instance's
- * opaque half with a surface write, and adds a debug view while the lighting stage is not written
- * yet:
+ * The deferred path replaces the forward instance's opaque half with a surface write and a
+ * screen-space lighting stage:
  *
  * @code
  *  pbr.vert + gbuffer.frag       opaque geometry -> three 1x G-buffer targets + a 1x depth image
- *                                (albedo+metallic, world normal+roughness, material id+AO+flags)
+ *                                (albedo+metallic, world normal+roughness, material id+AO+flags),
+ *                                and the emissive term ADDED into the HDR target (4th attachment)
  *        |
- *  post.vert + gbuffer_debug.frag  fullscreen: the three targets + depth -> the HDR target, so the
- *                                ordinary post chain above still runs (one channel at a time)
+ *  post.vert + deferred.frag     fullscreen: read the G-buffer + depth, rebuild the world position
+ *                                from the depth, light the surface with shading.glsl, add the result
+ *                                into the HDR target - sky where no geometry wrote depth
+ *        |
+ *  post.vert + gbuffer_debug.frag  (debug alternative, never together with the stage above) show one
+ *                                stored channel instead of lighting it
  * @endcode
  *
- * The G-buffer pass runs only while `runtime::set_gbuffer_debug(true)` (or `[render] gbuffer_debug`),
- * it never runs in the same frame as the forward scene, and alphaMode BLEND geometry stays in the
- * forward transparent pass in both cases (a G-buffer cannot carry a blended surface). Its targets are
- * single-sampled whatever MSAA the forward path uses, and the debug view forces the bloom weight to 0
- * so the channel being inspected is not smeared by a display effect.
+ * The G-buffer pass runs while `runtime::set_deferred(true)` (or `[render] deferred`) or
+ * `runtime::set_gbuffer_debug(true)` (or `[render] gbuffer_debug` - which wins when both are set)
+ * and never in the same frame as the forward opaque scene. Its targets are single-sampled whatever
+ * MSAA the forward path uses, alphaMode BLEND geometry is not part of it (a G-buffer cannot carry a
+ * blended surface), and the debug view forces the bloom weight to 0 so the channel being inspected is
+ * not smeared by a display effect.
  *
  * Which pipeline a primitive draws with is decided per leaf: a default-semantics primitive asks
  * the pass for its default pipeline, so the same geometry renders through `pbr` (lit), `unlit`
  * (flat base color) or the G-buffer write without re-baking anything - see the runtime's render mode
- * combo. The G-buffer pipeline is not in the runtime's named pipeline cache: it declares three color
+ * combo. The G-buffer pipeline is not in the runtime's named pipeline cache: it declares four color
  * attachments, so it is only valid inside the G-buffer instance, and the pass hands it to
  * default-semantics leaves under `runtime::gbuffer_pipeline_name` ("gbuffer").
  *
@@ -62,6 +68,24 @@
  * map with the double-sided flip, and the texture-derived factors. The include declares the descriptor
  * bindings and the push constant block it depends on (bindings 1 and 5, the shared material push
  * block), so a shader including it must not declare them again.
+ *
+ * @section shader_shading The shared lighting (shading.glsl)
+ *
+ * `pbr.frag` (forward) and `deferred.frag` (deferred) shade a surface through the SAME function,
+ * `shade_surface()` in `shaders/shading.glsl`: the directional sun through the shadow test, the
+ * punctual lights, the split-sum IBL ambient, the selectable BRDF/diffuse presets and the cel-shading
+ * bands. The include declares the bindings a shading stage needs (0 camera UBO, 2/3/4 the IBL maps,
+ * 7 the light UBO, 8 the shadow map) and takes a `shade_input` - world position, normal, albedo,
+ * emissive, metallic, roughness, AO. The forward path fills that from its interpolated fragment
+ * inputs, the deferred path from G-buffer texels; the lighting cannot tell the difference, which is
+ * what makes the two render paths comparable instead of merely similar.
+ *
+ * @section shader_sky The shared sky (sky.glsl)
+ *
+ * `sky_color()` is a pure function of a world-space direction with no bindings at all, so both
+ * backgrounds use it: the forward path's `skybox.frag` (a fullscreen triangle evaluated per pixel)
+ * and the deferred path's `deferred.frag` (the pixels whose G-buffer depth is still the far plane).
+ * Two backgrounds from one function means the two paths cannot disagree about the sky.
  *
  * @section shader_bindings The shared scene descriptor set (set 0)
  *

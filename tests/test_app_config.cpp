@@ -19,6 +19,7 @@ namespace {
         CHECK(!settings.render.gpu_timings);
         CHECK(settings.render.gbuffer_debug);
         CHECK(settings.render.gbuffer_channel == 5);
+        CHECK(settings.render.deferred);
         CHECK(!settings.gui.show);
         CHECK(settings.lighting.irr_size == 64);
         CHECK(settings.paths.shaders_dir == "shaders");
@@ -35,6 +36,7 @@ namespace {
         CHECK(settings.render.gpu_timings); // default: pass timings are collected
         CHECK(!settings.render.gbuffer_debug);
         CHECK(settings.render.gbuffer_channel == 1);
+        CHECK(!settings.render.deferred);
         CHECK(settings.gui.show);
     }
 

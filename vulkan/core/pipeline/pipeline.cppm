@@ -68,11 +68,13 @@ namespace vulkan {
      * @param msaa_level MSAA sample count of the render instance (the G-buffer is 1x)
      * @param depth_test_enabled enable depth test + depth write
      * @param depth_bias_* fixed-function rasterization depth bias
-     * @param color_blending true = the engine's standard src-alpha blending on every target (the
-     *        forward pipelines' convention: alpha is coverage and opaque draws have alpha 1);
-     *        false (the default) = blending disabled, the targets are OVERWRITTEN - which is what a
-     *        G-buffer needs, because there alpha carries data (metallic / roughness / flags) and
-     *        src-alpha blending would mix the surface with the cleared target
+     * @param blend_attachments per-color-attachment blend state, in attachment order; EMPTY (the
+     *        default) means every target is overwritten (make_color_blend_attachment_opaque), which
+     *        is what a G-buffer surface target needs - alpha there carries data (metallic /
+     *        roughness / flags), so src-alpha blending would mix the surface with the cleared target.
+     *        A non-empty list must have exactly one entry per color format, and lets a pass mix
+     *        states per target: the G-buffer pass overwrites its three surface targets and accumulates
+     *        into the HDR target it adds emissive to (make_color_blend_attachment_additive)
      * @return vk_pipeline on success, error message on failure
      */
     export std::expected<vk_pipeline, std::string_view> make_pipeline(
@@ -87,5 +89,5 @@ namespace vulkan {
         float depth_bias_constant_factor = 0.0f,
         float depth_bias_slope_factor = 0.0f,
         float depth_bias_clamp = 0.0f,
-        bool color_blending = false);
+        std::span<VkPipelineColorBlendAttachmentState const> blend_attachments = {});
 } // namespace vulkan

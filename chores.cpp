@@ -219,7 +219,15 @@ namespace chores {
                 if (!debug_result) {
                     utility::log("gbuffer debug view disabled: {}", debug_result.error());
                 } else {
-                    utility::log("SUCCESS: gbuffer pipelines created (surface write + debug view)");
+                    // the deferred lighting stage reads the G-buffer through the debug view's set
+                    // layout, so it must be created after it
+                    load_shader(shaders_dir, "deferred.frag.spv", fragment_code);
+                    auto const deferred_result = runtime.make_deferred_pipeline(vertex_code, fragment_code);
+                    if (!deferred_result) {
+                        utility::log("deferred lighting disabled: {}", deferred_result.error());
+                    } else {
+                        utility::log("SUCCESS: gbuffer + deferred pipelines created (surface write, debug view, deferred lighting)");
+                    }
                 }
             }
         }
@@ -331,6 +339,9 @@ namespace chores {
             "gbuffer channel",
             std::vector<std::string>{"albedo", "normal", "roughness", "metallic", "ao", "material id", "depth", "flags"},
             &bindings.gbuffer_channel));
+        // deferred lighting: the render-mode switch for the deferred path (the debug view above wins
+        // when both are on, which is why it is not part of the same combo as pbr/unlit)
+        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("deferred lighting", &bindings.deferred_enabled));
         // cel/toon shading: quantize the diffuse falloff (and harden shadows/highlights);
         // 0 steps leaves plain PBR, softness shrinks toward hard comic edges
         // cel/toon shading is discrete: every listed band count gives a visibly different look

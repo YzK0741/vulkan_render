@@ -1383,10 +1383,26 @@ namespace vulkan {
     std::expected<vk_pipeline, std::string_view> core::make_gbuffer_pipeline(
         std::span<unsigned char const> const vertex_shader_code,
         std::span<unsigned char const> const fragment_shader_code) const {
+        // Four color targets: the three surface targets plus the HDR scene target, into which the pass
+        // ADDS the emissive term (lighting-independent, and it needs the emissive texture and the UVs
+        // the G-buffer does not store - see core::gbuffer_pass_attachment_count). The three surface
+        // targets are overwritten, the HDR one accumulates, so the blend states differ per attachment.
+        std::array<VkFormat, gbuffer_pass_attachment_count> const formats = {
+            gbuffer_formats[0],
+            gbuffer_formats[1],
+            gbuffer_formats[2],
+            hdr_format,
+        };
+        std::array<VkPipelineColorBlendAttachmentState, gbuffer_pass_attachment_count> const blends = {
+            make_color_blend_attachment_opaque(),
+            make_color_blend_attachment_opaque(),
+            make_color_blend_attachment_opaque(),
+            make_color_blend_attachment_additive(),
+        };
         auto result = vulkan::make_pipeline(
             this->device,
             this->scene_pipeline_layout,
-            std::span<VkFormat const>(gbuffer_formats),
+            std::span<VkFormat const>(formats),
             this->depth_format,
             vertex_shader_code,
             fragment_shader_code,
@@ -1394,7 +1410,8 @@ namespace vulkan {
             true,                  // depth test + write: opaque geometry, and the lighting pass needs depth
             0.0f,
             0.0f,
-            0.0f);
+            0.0f,
+            std::span<VkPipelineColorBlendAttachmentState const>(blends));
         if (result) {
             // same fullscreen viewport/scissor default as the forward pipelines (the frame path
             // re-syncs it on every swapchain recreation)

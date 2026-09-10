@@ -377,8 +377,9 @@ int main(int argc, char** argv) {
     gui.fxaa_enabled = settings.render.fxaa;
     gui.gbuffer_debug = settings.render.gbuffer_debug; // gbuffer debug view initial state (M1)
     gui.gbuffer_channel = settings.render.gbuffer_channel;
-    gui.anim_playing = animation.is_playing(); // play checkbox initial state
-    gui.current_camera = current_camera;       // combo selection (the pose seeded above)
+    gui.deferred_enabled = settings.render.deferred; // deferred lighting render mode (M2)
+    gui.anim_playing = animation.is_playing();       // play checkbox initial state
+    gui.current_camera = current_camera;             // combo selection (the pose seeded above)
 
     // ---- authored (glTF) punctual lights -> the editable gui light slots ----
     // KHR_lights_punctual lights load straight into the gui slots (up to
@@ -579,6 +580,9 @@ int main(int argc, char** argv) {
         // so the config, the overlay checkbox and the channel combo all take effect immediately
         runtime.set_gbuffer_debug(gui.gbuffer_debug);
         runtime.set_gbuffer_channel(gui.gbuffer_channel);
+        // deferred lighting (the deferred path's render mode): same mirror rule. It needs the same
+        // pipelines as the debug view, so enabling it without them leaves the forward path running.
+        runtime.set_deferred(gui.deferred_enabled);
         // cel shading: the combo picks a discrete band count (index 0 = off); every entry is a
         // visibly different look, unlike a continuous strength that had dead zones between bands
         constexpr std::array<float, 7> toon_band_counts = {0.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 8.0f};

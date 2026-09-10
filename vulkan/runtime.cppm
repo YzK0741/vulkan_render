@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -206,7 +206,10 @@ namespace vulkan {
         enum class gpu_mark_id : uint32_t {
             frame_begin = 0, // first command of the frame (TOP_OF_PIPE)
             shadow_end,      // after the shadow pass + its sampling barrier
-            main_end,        // after the main rendering instance (opaque segments + transparent)
+            scene_end,       // after the geometry instance: forward main (opaque + transparent), or
+                             // the background + G-buffer pass in the deferred path
+            lighting_end,    // after the deferred lighting stage (~0 in the forward path)
+            main_end,        // after the last scene-side work of the frame (the debug view, when it runs)
             bloom_end,       // after the bloom prefilter/downsample chain
             composite_end,   // after the composite (exposure + ACES + display encode)
             fxaa_end,        // after the FXAA pass (and the overlay, when FXAA draws it)
@@ -218,15 +221,21 @@ namespace vulkan {
         // labels of the intervals between consecutive marks (interval i = mark i -> mark i + 1).
         // new_line starts a new line in the overlay's report, which has to fit one narrow panel
         // row; the log line ignores it and prints everything on one line.
+        // "scene" is the geometry instance of whichever path is active, "lighting" is the deferred
+        // lighting stage (0 ms in the forward path, where the shading happens inside the scene
+        // instance - as does the forward transparent pass, whose cost therefore shows up in "scene"
+        // as well), and "debug" is the G-buffer debug view when it runs.
         struct gpu_timing_label {
             std::string_view name;
             bool new_line; // begin a new line in the overlay report
         };
         static constexpr std::array<gpu_timing_label, gpu_mark_count - 1> gpu_timing_labels = {{
             {"shadow", false},
-            {"main", false},
+            {"scene", false},
+            {"lighting", false},
+            {"debug", true},
             {"bloom", false},
-            {"composite", true},
+            {"composite", false},
             {"fxaa", false},
             {"tail", false},
         }};
@@ -244,26 +253,43 @@ namespace vulkan {
         void collect_gpu_timings(uint32_t slot);
 
         // ---- G-buffer / deferred path ----
-        // M1: the opaque pass can write the G-buffer instead of shading, and a debug view shows the
-        // stored data (the real deferred lighting pass arrives in M2 and replaces that view).
-        // The G-buffer pipeline shades nothing: it writes albedo/metallic, normal/roughness and
-        // material id/AO/flags into core::gbuffer_* (three 1x targets + their own 1x depth), so the
-        // opaque pass runs at 1x whatever MSAA the forward path uses.
+        // M1: the opaque pass writes the G-buffer (three surface targets + the HDR target it adds
+        // emissive into) instead of shading; M2 adds the deferred lighting stage that reads it back.
+        // The G-buffer pipeline shades nothing: albedo/metallic, normal/roughness and material
+        // id/AO/flags go into core::gbuffer_* (1x targets + the pass's own 1x depth), so the opaque
+        // pass runs at 1x whatever MSAA the forward path uses.
         std::optional<vk_pipeline> gbuffer_pipeline = std::nullopt;
         // fullscreen debug view of the G-buffer (reads the three targets + depth, writes the HDR
         // target so the ordinary post chain still runs)
         std::optional<vk_pipeline> gbuffer_debug_pipeline = std::nullopt;
+        // fullscreen deferred lighting stage: reads the same inputs and ADDS the shading into the
+        // HDR target, on top of the sky and the emissive the earlier passes left there
+        std::optional<vk_pipeline> deferred_pipeline = std::nullopt;
         // whether the opaque pass writes the G-buffer this frame (see set_gbuffer_debug). Only
-        // takes effect once both pipelines exist, so the flag can be set before setup finishes.
+        // takes effect once the needed pipelines exist, so the flags can be set before setup ends.
         bool gbuffer_debug = false;
+        // whether the deferred lighting stage shades the frame (see set_deferred). With both flags
+        // on the debug view wins: inspecting the stored data is not a render mode.
+        bool deferred_on = false;
         // which channel the debug view shows (see gbuffer_debug.frag / set_gbuffer_channel)
         int gbuffer_channel_index = 1;
         vk_sampler gbuffer_sampler = {};
         VkDescriptorSetLayout gbuffer_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout gbuffer_pipeline_layout = VK_NULL_HANDLE;
+        // the deferred lighting stage needs BOTH sets: set 0 = the shared scene set (camera, IBL,
+        // light UBO, shadow map), set 1 = the G-buffer inputs. A set layout is index-agnostic, so the
+        // debug view keeps using the same layout object as its set 0.
+        VkPipelineLayout deferred_pipeline_layout = VK_NULL_HANDLE;
         VkDescriptorPool gbuffer_descriptor_pool = VK_NULL_HANDLE;
         uint32_t gbuffer_pool_capacity = 0;                   // swapchain images the pool can hold
         std::vector<VkDescriptorSet> gbuffer_debug_sets = {}; // one per swapchain image
+        // Descriptor pools replaced by a later swapchain generation. A pool may not be destroyed while
+        // any RECORDED command buffer still references sets allocated from it - and the per-slot frame
+        // command buffers stay recorded (executable) between frames - so a replaced pool is retired
+        // here and destroyed with the runtime instead. Both the post chain and the G-buffer path use
+        // this: destroying them in place was a real VUID-vkDestroyDescriptorPool-descriptorPool-00303
+        // ("currently in use by VkCommandBuffer") on every window resize.
+        std::vector<VkDescriptorPool> retired_descriptor_pools = {};
         // the target views the current sets point at, for image 0 (the swapchain generation
         // fingerprint): a recreation invalidates the sets explicitly (on_swapchain_recreated), this
         // is the belt-and-braces check that also catches a rebuilt generation reusing handles
@@ -274,10 +300,19 @@ namespace vulkan {
             float proj_32 = 0.0f;
             float unused = 0.0f;
         };
+        struct deferred_push_constants {
+            glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip (xy from the pixel, z = depth, w = 1) -> world
+        };
+        // the inverse of this frame's view-projection, refreshed with the camera UBO in
+        // pace_and_acquire() (the deferred lighting stage reconstructs world positions from depth)
+        glm::mat4 current_inv_view_proj = glm::mat4(1.0f);
         void ensure_gbuffer_descriptors();
         void record_gbuffer_debug_pass(VkCommandBuffer command_buffer);
+        void record_deferred_lighting_pass(VkCommandBuffer command_buffer);
         /** @brief whether the opaque pass writes the G-buffer this frame (pipelines present + enabled) */
         [[nodiscard]] bool gbuffer_pass_active() const noexcept;
+        /** @brief whether the deferred lighting stage shades this frame (see set_deferred) */
+        [[nodiscard]] bool deferred_lit_active() const noexcept;
         /** @brief the swapchain was rebuilt: drop everything that pointed at the old generation
          *         (the debug overlay's backend + the G-buffer descriptor sets, whose views are gone) */
         void on_swapchain_recreated();
@@ -906,8 +941,8 @@ namespace vulkan {
             // attachment order: one entry (the HDR target) for the forward pass, the G-buffer set
             // when the opaque pass writes the G-buffer. Held by value because the task outlives the
             // call that builds it (it is moved into the task pool).
-            std::array<VkFormat, vulkan::gbuffer_target_count> color_formats = {};
-            uint32_t color_count = 0;                    // formats in use (1 forward, 3 G-buffer)
+            std::array<VkFormat, vulkan::gbuffer_pass_attachment_count> color_formats = {};
+            uint32_t color_count = 0;                    // formats in use (1 forward, 4 G-buffer: surface targets + HDR)
             VkFormat depth_format = VK_FORMAT_UNDEFINED; // main depth attachment format
             VkSampleCountFlagBits rasterization_samples = VK_SAMPLE_COUNT_1_BIT;
             runtime const* owner = nullptr; // recording context (scene set / pipeline caches)
@@ -1222,17 +1257,57 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief create the deferred lighting pipeline (fullscreen: the three G-buffer targets + the
+         *        depth image -> the HDR target, added on top of the background and the emissive)
+         * @param vertex_shader_code raw SPIR-V of post.vert (the fullscreen triangle; the lighting
+         *        stage has no vertex input of its own)
+         * @param fragment_shader_code raw SPIR-V of deferred.frag
+         * @return success, or an error message on failure
+         * @note optional but required for set_deferred(true) to take effect. It shares the G-buffer
+         *       input set layout with the debug view (bound as set 1 here, as set 0 there) and the
+         *       shared scene set as set 0.
+         */
+        std::expected<void, std::string> make_deferred_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief draw the scene's opaque geometry into the G-buffer and shade it in screen space
+         *        (the deferred render mode)
+         * @param enabled when true the opaque pass writes the G-buffer (1x), the sky is drawn as a
+         *        background pass first, and a fullscreen stage then shades every pixel from the
+         *        G-buffer through the SAME lighting code the forward path uses
+         *        (shaders/shading.glsl), adding the result on top of the background and the emissive.
+         *        The post chain is unchanged, so a deferred frame and a forward frame differ only in
+         *        where the shading happened - which is what makes them comparable. Without the
+         *        pipelines from make_gbuffer_pipeline() + make_deferred_pipeline() the flag has no
+         *        effect (the forward path keeps running).
+         * @note alphaMode BLEND geometry is NOT drawn in this mode yet: the forward transparent pass
+         *       needs a pipeline whose sample count matches the G-buffer depth (1x), so it re-enters
+         *       with the 1x/MAA-off path the TAA milestone brings. The runtime logs it once.
+         * @note the G-buffer pass runs at 1x whatever MSAA the forward path uses: a multisampled
+         *       G-buffer would need per-sample shading, which is the trade the deferred path makes.
+         */
+        void set_deferred(bool enabled) noexcept {
+            this->deferred_on = enabled;
+        }
+
+        /** @brief whether the deferred lighting stage is enabled (see set_deferred) */
+        [[nodiscard]] bool deferred() const noexcept {
+            return this->deferred_on;
+        }
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief draw the scene's opaque geometry into the G-buffer and show a debug view of it
-         *        instead of the shaded forward image
+         *        instead of the shaded image
          * @param enabled when true the opaque pass records into the three G-buffer targets (1x) and
          *        a fullscreen pass visualizes one channel into the HDR target, which the post chain
          *        then processes as usual. Without a pipeline from make_gbuffer_pipeline() +
          *        make_gbuffer_debug_pipeline() the flag has no effect (the forward path keeps
-         *        running). alphaMode BLEND geometry is skipped in this mode: a G-buffer cannot carry
-         *        a blended surface, and the transparent pass stays a forward pass by design (M2
-         *        keeps it that way around the deferred lighting).
-         * @note this is the measurement and A/B view for the deferred work - it is not a shipping
-         *       render mode yet
+         *        running). Takes precedence over set_deferred(true): inspecting the stored data is not
+         *        a render mode, so both flags on shows the channels.
+         * @note alphaMode BLEND geometry is skipped in this mode: a G-buffer cannot carry a blended
+         *       surface, and the transparent pass stays a forward pass around it
          */
         void set_gbuffer_debug(bool enabled) noexcept {
             this->gbuffer_debug = enabled;

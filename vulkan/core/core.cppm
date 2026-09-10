@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -93,6 +93,20 @@ namespace vulkan {
         VK_FORMAT_R16G16B16A16_SFLOAT,
         VK_FORMAT_R8G8B8A8_UNORM,
     };
+
+    /**
+     * @ingroup vulkan_core
+     * @brief color attachments the G-buffer pass declares: the three surface targets above plus the
+     *        HDR scene target, which the pass ADDS the emissive term into
+     * @note emissive is lighting-independent, so it does not belong to the deferred lighting stage -
+     *       and it needs the material's emissive texture and the fragment's UVs, neither of which the
+     *       G-buffer stores. Adding it in the base pass is what commercial deferred renderers do (the
+     *       G-buffer pass writes the surface and adds emissive to the scene color), and it is why the
+     *       pass's fourth attachment is blended ONE/ONE while the three surface targets are
+     *       overwritten. The HDR attachment loads (not clears), so the sky drawn before the pass
+     *       survives under the emissive.
+     */
+    export constexpr uint32_t gbuffer_pass_attachment_count = gbuffer_target_count + 1;
 
     /**
      * @ingroup vulkan_core

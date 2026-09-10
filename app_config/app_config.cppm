@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -48,6 +48,7 @@ import utility;
  * fxaa   = false   # anti-alias the final image (adds one fullscreen pass; needs fxaa.frag.spv)
  * gpu_timings = true  # measure + report per-pass GPU milliseconds (timestamp queries)
  * gbuffer_debug = false  # draw the G-buffer + one of its channels instead of the shaded scene
+deferred = false       # shade the opaque scene from the G-buffer (deferred lighting) instead of forward
  * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
  *
@@ -104,7 +105,12 @@ namespace app_config {
         // chain. A development view of the deferred path's data - the deferred lighting pass (M2)
         // takes over the display role and this stays as the inspection tool.
         bool gbuffer_debug = false;
-        int gbuffer_channel = 1;                            // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 material id, 6 depth, 7 flags
+        int gbuffer_channel = 1; // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 material id, 6 depth, 7 flags
+        // deferred lighting ([render] deferred): the opaque scene is stored in the G-buffer and shaded
+        // in screen space afterwards, through the same lighting code the forward path runs per
+        // fragment. The G-buffer pass is 1x whatever MSAA the forward path uses; alpha-blended
+        // geometry is not drawn in this mode yet (see runtime::set_deferred).
+        bool deferred = false;
         bool validation_layers = default_validation_layers; // Vulkan validation layers + debug messenger ([render])
     };
 

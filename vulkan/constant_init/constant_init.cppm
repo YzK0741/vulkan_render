@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.constant_init
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Compile-time Vulkan info-struct conventions: constexpr factories + constinit
 // "transition" defaults for the structs the engine fills identically everywhere
@@ -338,6 +338,26 @@ export namespace vulkan {
                 .clearValue = clear_value};
     }
     /**
+     * @brief color attachment of a rendering instance that LOADS the image's existing contents
+     *        (no clear) and stores the result
+     * @param image_view the color image view to render into
+     * @note the deferred path's HDR target: the background pass and the G-buffer pass's emissive
+     *       already wrote it, and the lighting stage adds on top - clearing it would throw both away
+     */
+    constexpr VkRenderingAttachmentInfo make_load_color_attachment_info(VkImageView const image_view) noexcept {
+        VkClearValue clear_value = {};
+        return {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .pNext = nullptr,
+                .imageView = image_view,
+                .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .resolveMode = VK_RESOLVE_MODE_NONE,
+                .resolveImageView = VK_NULL_HANDLE,
+                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .clearValue = clear_value};
+    }
+    /**
      * @brief dynamic-rendering instance: one layer, at most one color attachment
      * @param flags e.g. VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT
      * @param render_area the area to render into (the pipelines apply their own viewport/scissor)
@@ -490,6 +510,23 @@ export namespace vulkan {
                 .colorBlendOp = VK_BLEND_OP_ADD,
                 .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
                 .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+                .alphaBlendOp = VK_BLEND_OP_ADD,
+                .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT};
+    }
+    /**
+     * @brief blend state for a target that is ACCUMULATED INTO (src + dst): the G-buffer pass's
+     *        emissive attachment, and the deferred lighting pass
+     * @note the destination must be load-preserved by the rendering instance (VK_ATTACHMENT_LOAD_OP_LOAD),
+     *       which is the point: the emissive and the lighting are added on top of the sky the
+     *       background pass already wrote, and a pixel with no geometry contributes exactly 0
+     */
+    constexpr VkPipelineColorBlendAttachmentState make_color_blend_attachment_additive() noexcept {
+        return {.blendEnable = VK_TRUE,
+                .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+                .dstColorBlendFactor = VK_BLEND_FACTOR_ONE,
+                .colorBlendOp = VK_BLEND_OP_ADD,
+                .srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+                .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
                 .alphaBlendOp = VK_BLEND_OP_ADD,
                 .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT};
     }

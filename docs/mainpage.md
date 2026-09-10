@@ -45,11 +45,15 @@ slot completed and averaged over a 60-frame window (logged and shown in the over
 rendering feature below is steered by those numbers rather than by guesswork.
 
 The renderer is being evolved toward a deferred pipeline, one milestone at a time. **M1 (done)** is
-the G-buffer: the opaque pass can store the surface (albedo/metallic, world normal/roughness,
-material id/AO/flags, 16 bytes per pixel in three 1x targets) instead of shading it, with a channel
-debug view - `pbr.frag` (forward) and `gbuffer.frag` (deferred) share `shaders/surface.glsl`, the
-material-surface gather. **M2** adds the deferred lighting pass on top of those targets; the forward
-path stays as the A/B reference and keeps alpha-blended geometry.
+the G-buffer: the opaque pass stores the surface (albedo/metallic, world normal/roughness, material
+id/AO/flags) in three 1x targets, with a channel debug view. **M2 (done)** is the deferred lighting
+stage: `shaders/deferred.frag` shades every pixel from those targets and adds the result into the HDR
+target (sky where no geometry wrote depth), through the *same* function the forward path calls
+(`shaders/shading.glsl`), with emissive added by the base pass and the material-surface gather shared
+in `shaders/surface.glsl`. The forward path stays as the A/B reference - measured on Sponza the two
+agree to 0.32/255 mean absolute luminance difference. The G-buffer pass is 1x by construction;
+alpha-blended geometry rejoins the deferred path with the TAA milestone, which brings the 1x
+pipeline and the MSAA decision with it.
 
 ## Modular composition
 

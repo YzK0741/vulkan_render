@@ -106,6 +106,11 @@ namespace app_config {
                     settings.render.fxaa = *value;
                 }
             }
+            if (toml::node const* node = render->get("deferred")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.deferred = *value;
+                }
+            }
             if (toml::node const* node = render->get("gbuffer_debug")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.gbuffer_debug = *value;

@@ -28,6 +28,8 @@ $pairs = @(
     @("unlit.frag", "unlit.frag.spv"),
     @("gbuffer.frag", "gbuffer.frag.spv"),
     @("gbuffer_debug.frag", "gbuffer_debug.frag.spv"),
+
+    @("deferred.frag", "deferred.frag.spv"),
     @("skybox.vert", "skybox.vert.spv"),
     @("skybox.frag", "skybox.frag.spv"),
     @("shadow.vert", "shadow.vert.spv"),

@@ -80,12 +80,25 @@ gpu_timings = true
 # The opaque pass stores the surface (albedo/metallic, world normal/roughness, material id/AO/flags)
 # into three single-sampled targets and a fullscreen pass displays one channel of it through the
 # ordinary post chain. It is the inspection tool for the deferred work - a wrong normal encoding or
-# a swapped roughness channel looks like "the lighting is a bit off" once the lighting pass consumed
-# it, so being able to look at the raw data matters. Slow (the scene is drawn a second time into
-# different targets) and it skips alpha-blended geometry, so leave it off for normal runs.
+# a swapped roughness channel looks like "the lighting is a bit off" once the lighting stage consumed
+# it, so being able to look at the raw data matters. It wins over `deferred` when both are on, and it
+# skips alpha-blended geometry, so leave it off for normal runs.
 gbuffer_debug = false
 # channel: 0 albedo, 1 world normal, 2 roughness, 3 metallic, 4 ambient occlusion, 5 material id, 6 depth, 7 flags
 gbuffer_channel = 1
+
+# deferred: shade the opaque scene from the G-buffer instead of forward. The same surface data as
+# gbuffer_debug above is stored, but instead of being displayed it is lit in screen space by
+# shaders/deferred.frag - through the same lighting code the forward path runs per fragment
+# (shaders/shading.glsl), so the two are an A/B comparison rather than two different looks: measured
+# on Sponza at 960x720, mean |luminance difference| is 0.32/255 with 0.2% of pixels off by more than
+# 10, and on a single-material model the leftover differences sit on its most specular, darkest
+# surface - which is exactly where an 8-bit G-buffer albedo/metallic loses precision.
+# Notes: the G-buffer pass is 1x whatever `msaa` says (a multisampled G-buffer would need per-sample
+# shading, the trade the deferred path makes), and alpha-blended geometry is not drawn yet - the
+# forward transparent pass needs a 1x pipeline, which arrives with TAA. Emissive is added by the
+# G-buffer pass and the sky by the lighting stage, so neither is lost and neither is counted twice.
+deferred = false
 
 # validation_layers: Vulkan validation layers + debug messenger (VK_LAYER_KHRONOS_validation).
 # Debug builds default to true, Release builds to false; override per build as needed (e.g.
