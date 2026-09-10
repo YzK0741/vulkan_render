@@ -31,6 +31,10 @@ shaders_dir = ""
 #   DamagedHelmet.gltf inside). Empty = auto-locate "gltf_model/" upward.
 model_dir = ""
 
+# screenshot_dir: base directory for F12 screenshots (created on demand).
+#   Empty = the current working directory.
+screenshot_dir = ""
+
 # ---- [render] window / presentation ----
 [render]
 # Initial window size in pixels; the window is resizable, resizing rebuilds the

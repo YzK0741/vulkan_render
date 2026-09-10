@@ -449,7 +449,18 @@ int main(int argc, char** argv) {
             if (!image) {
                 utility::log("screenshot failed: {}", image.error());
             } else {
-                std::filesystem::path const path = std::format("screenshot_{:%Y%m%d_%H%M%S}.png", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
+                // base directory from [paths] screenshot_dir (empty = the current working
+                // directory); created on demand so a fresh checkout can capture immediately
+                std::filesystem::path directory(settings.paths.screenshot_dir);
+                if (!directory.empty()) {
+                    std::error_code ec;
+                    std::filesystem::create_directories(directory, ec);
+                    if (ec) {
+                        utility::log("screenshot: cannot create '{}' - saving to the working directory", directory.string());
+                        directory.clear();
+                    }
+                }
+                std::filesystem::path const path = directory / std::format("screenshot_{:%Y%m%d_%H%M%S}.png", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
                 auto const written = utility::write_png(path, image->width, image->height, image->rgba);
                 if (written) {
                     utility::log("screenshot saved: {} ({}x{})", path.string(), image->width, image->height);

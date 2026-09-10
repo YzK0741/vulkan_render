@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -34,6 +34,7 @@ import utility;
  * [paths]
  * shaders_dir = ""  # shader SPIR-V dir (empty = auto-locate "shaders/" upward)
  * model_dir   = ""  # default model dir used when model is empty (auto-locate gltf_model/)
+ * screenshot_dir = ""  # base directory for F12 screenshots (empty = current working directory)
  *
  * [render]
  * window_width  = 1080
@@ -70,8 +71,9 @@ namespace app_config {
 #endif
 
     export struct path_settings {
-        std::string shaders_dir = {}; // shader SPIR-V dir (empty = auto-locate "shaders/" upward)
-        std::string model_dir = {};   // default model dir used when model is empty (auto-locate gltf_model/ if empty)
+        std::string shaders_dir = {};    // shader SPIR-V dir (empty = auto-locate "shaders/" upward)
+        std::string model_dir = {};      // default model dir used when model is empty (auto-locate gltf_model/ if empty)
+        std::string screenshot_dir = {}; // F12 screenshot base directory (empty = current working directory)
     };
 
     /**

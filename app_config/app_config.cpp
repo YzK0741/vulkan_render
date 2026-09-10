@@ -44,6 +44,12 @@ namespace app_config {
                     settings.paths.model_dir = *value;
                 }
             }
+
+            if (toml::node const* node = paths->get("screenshot_dir")) {
+                if (std::optional<std::string> const value = node->value<std::string>()) {
+                    settings.paths.screenshot_dir = *value;
+                }
+            }
         }
 
         if (toml::table const* render = table.get_as<toml::table>("render")) {

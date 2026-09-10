@@ -18,6 +18,7 @@ namespace {
         CHECK(!settings.gui.show);
         CHECK(settings.lighting.irr_size == 64);
         CHECK(settings.paths.shaders_dir == "shaders");
+        CHECK(settings.paths.screenshot_dir == "captures");
     }
 
     void test_load_settings_missing_file_keeps_defaults() {

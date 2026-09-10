@@ -4,6 +4,7 @@ model = "Models/tri.gltf"
 
 [paths]
 shaders_dir = "shaders"
+screenshot_dir = "captures"
 
 [render]
 window_width = 800
