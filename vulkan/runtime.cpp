@@ -405,8 +405,8 @@ namespace vulkan {
     }
 
     void runtime::ensure_shadow_resources() {
-        if (!this->shadow_images.empty()) {
-            return; // already created (and the cascade count is frozen from here on)
+        if (!this->shadow_images.empty() && this->shadow_allocated_layers == this->shadow_cascades) {
+            return; // already created for this cascade count
         }
         // Shadow map: one layered depth image per frame slot (see the member docs), with one layer
         // per cascade. Depth-only images carry no uploaded content (vma::create_image with data ==
@@ -425,7 +425,11 @@ namespace vulkan {
             // the image is created before [render] shadow_cascades is known (a scene set binds it), so
             // shadow_cascades below only decides how many layers are FITTED, RENDERED and SAMPLED.
             // The cost of the spare layers is memory (2048x2048x4 B each), not bandwidth.
-            shadow_info.array_layers = vulkan::max_shadow_cascades;
+            // One layer per ACTIVE cascade, not max_shadow_cascades: the spare layers the old code
+            // always allocated were 2048x2048x4 B each per frame slot (33.5 MB with the default three
+            // cascades) that nothing ever fitted, rendered or sampled. Growing the count rebuilds these
+            // images (see set_shadow_cascades), which is why the layer count has to be tracked.
+            shadow_info.array_layers = this->shadow_cascades;
             shadow_info.format = this->vulkan_core.depth_format;
             shadow_info.extra_usage = VK_IMAGE_USAGE_SAMPLED_BIT; // sampled by shading.glsl
             vk_image shadow_image = this->vulkan_core.vma.create_image(nullptr, 0, shadow_info, vulkan::image_type::texture_2d_depth);
@@ -440,11 +444,12 @@ namespace vulkan {
             this->shadow_array_views.push_back(this->vulkan_core.make_depth_array_view(detail->image, this->vulkan_core.depth_format));
             std::vector<vk_image_view> layers;
             layers.reserve(this->shadow_cascades);
-            for (uint32_t cascade = 0; cascade < vulkan::max_shadow_cascades; ++cascade) {
+            for (uint32_t cascade = 0; cascade < this->shadow_cascades; ++cascade) {
                 layers.push_back(this->vulkan_core.make_depth_layer_view(detail->image, this->vulkan_core.depth_format, cascade));
             }
             this->shadow_layer_views.push_back(std::move(layers));
         }
+        this->shadow_allocated_layers = this->shadow_cascades;
         this->shadow_sampler = this->vulkan_core.make_shadow_sampler();
 
         // Light UBO (scene set binding 7): one buffer PER FRAME SLOT (host-visible, mapped), so
@@ -1666,12 +1671,9 @@ namespace vulkan {
                 shadow_read_barriers[read_barrier_count].image = shadow_detail->image;
                 shadow_read_barriers[read_barrier_count].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, cascades};
                 ++read_barrier_count;
-                if (cascades < vulkan::max_shadow_cascades) {
-                    shadow_read_barriers[read_barrier_count] = vulkan::undefined_to_depth_sampling_transition;
-                    shadow_read_barriers[read_barrier_count].image = shadow_detail->image;
-                    shadow_read_barriers[read_barrier_count].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, cascades, vulkan::max_shadow_cascades - cascades};
-                    ++read_barrier_count;
-                }
+                // No spare-layer barrier: the image holds exactly one layer per active cascade, so the
+                // array view the descriptor covers is fully rendered above (shadow_allocated_layers is
+                // kept equal to shadow_cascades by set_shadow_cascades).
                 VkDependencyInfo const shadow_read_dependency = make_image_dependency_info(read_barrier_count, shadow_read_barriers.data());
                 vkCmdPipelineBarrier2(*command_buffer, &shadow_read_dependency);
                 this->shadow_rendered_version[frame_slot] = this->shadow_content_version;
@@ -4194,6 +4196,17 @@ namespace vulkan {
         }
         this->shadow_cascades = clamped;
         ++this->shadow_content_version; // a different cascade count refits the splits
+        // Growing past the layers we own has to rebuild the images; the descriptor set is rewritten
+        // afterwards because binding 8 holds their array view. Shrinking keeps the layers (no second
+        // rebuild when the user cycles the combo, and the spare ones simply go unused).
+        if (!this->shadow_images.empty() && clamped > this->shadow_allocated_layers) {
+            vkDeviceWaitIdle(this->vulkan_core.device);
+            this->shadow_images.clear();
+            this->shadow_array_views.clear();
+            this->shadow_layer_views.clear();
+            this->ensure_shadow_resources();
+            this->write_light_and_shadow_bindings();
+        }
         // a different cascade layout invalidates the cached fit (and the one-time density log)
         this->shadow_frustum_valid = false;
         this->shadow_cascade_logged = false;

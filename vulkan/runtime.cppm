@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.17.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.17.2  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -512,6 +512,10 @@ namespace vulkan {
         // import (like set_shadow_cascades, the resources are created when the first scene set binds
         // them); changing it afterwards would need the image, the views and the descriptor rewritten.
         uint32_t shadow_map_size = 2048;
+        // Layers currently owned by shadow_images: one per ACTIVE cascade (see ensure_shadow_resources).
+        // Tracked separately from shadow_cascades because shrinking the count keeps the layers that are
+        // already allocated - only growing it costs a rebuild.
+        uint32_t shadow_allocated_layers = 0;
         // Cascaded shadow maps: ONE 2D-array depth image per frame slot (while slot A is in flight,
         // slot B already rewrites its own map, so the two never race on the same image), with
         // shadow_cascades layers - each layer fitted to its own sub-range of the camera view.
