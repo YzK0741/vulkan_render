@@ -125,15 +125,22 @@ namespace chores {
         int brdf_model = 0;                // brdf-model combo (0 = GGX+joint, 1 = GGX+height-corr,
                                            // 2 = Beckmann, 3 = Blinn-Phong); write-through to runtime
         int diffuse_model = 0;             // diffuse combo (0 = Lambert, 1 = Oren-Nayar)
-        // demo point lights (count matches vulkan::max_punctual_lights): the gui rows below edit these fields live (no per-widget
-        // callbacks), and main() pushes the enabled set to the runtime once per frame via
-        // chores::apply_point_lights(). Plain C arrays keep this interface glm-free.
+        // demo punctual lights (count matches vulkan::max_punctual_lights): the gui rows below
+        // edit these fields live (no per-widget callbacks), and main() pushes the enabled set to
+        // the runtime once per frame via chores::apply_point_lights(). Each slot is a point light
+        // or - with `spot` set - a cone light (direction + inner/outer half-angles in degrees;
+        // apply_point_lights clamps inner <= outer < 90 and converts to the shader's cosines).
+        // Plain C arrays keep this interface glm-free.
         struct light_slot {
             bool enabled = false;
-            float position[3] = {0.0f, 0.0f, 0.0f};
-            float color[3] = {1.0f, 1.0f, 1.0f};
+            bool spot = false;                        // false = point light (omni), true = spot cone
+            float position[3] = {0.0f, 0.0f, 0.0f};   // world position
+            float direction[3] = {0.0f, -1.0f, 0.0f}; // spot axis (spot only; normalized when pushed)
+            float color[3] = {1.0f, 1.0f, 1.0f};      // linear color
             float intensity = 1.0f;
-            float range = 10.0f;
+            float range = 10.0f;          // 0 = infinite falloff
+            float inner_cone_deg = 20.0f; // spot: soft inner half-angle (degrees)
+            float outer_cone_deg = 30.0f; // spot: hard cutoff half-angle (degrees)
         };
         light_slot point_lights[4] = {};
     };
@@ -144,8 +151,10 @@ namespace chores {
      *        runtime and assemble the "vulkan_render debug" panel — fps label, frustum-culling
      *        / skybox / shadow toggles, the camera-target drag, animation playback controls
      *        (label + play + time scrubber + animation dropdown when the controller has an
-     *        active animation), the camera selector (when @p camera_names is non-empty) and
-     *        the shadow depth-bias sliders.
+     *        active animation), the camera selector (when @p camera_names is non-empty), the
+     *        shadow depth-bias sliders and the punctual light rows (per-slot enable / position /
+     *        color / intensity / range plus spot cone editing: spot toggle, direction, inner and
+     *        outer half-angles).
      * @param runtime the initialized runtime (enable_debug_gui() is called here)
      * @param use_gui whether the overlay is wanted ([gui] show); no-op when false
      * @param settings startup settings: [gui] panel size + [render] initial skybox/shadow states
@@ -169,10 +178,12 @@ namespace chores {
 
     /**
      * @ingroup chores
-     * @brief push the enabled point-light slots of @p bindings into the runtime's light UBO.
+     * @brief push the enabled punctual-light slots of @p bindings into the runtime's light UBO.
      *        Called once per frame from main (while the gui is active): the gui widgets edit
      *        bindings.point_lights live, so a drag/toggle becomes visible next frame without
-     *        per-widget callbacks. Cheap no-op when nothing is enabled.
+     *        per-widget callbacks. Each slot is pushed as a point light, or as a spot light when
+     *        its `spot` flag is set (direction + clamped inner/outer cone angles). Cheap no-op
+     *        when nothing is enabled.
      */
     export void apply_point_lights(vulkan::runtime& runtime, gui_bindings const& bindings);
 

@@ -248,8 +248,9 @@ namespace chores {
             std::vector<std::string>{"Lambert", "Oren-Nayar"},
             &bindings.diffuse_model,
             [&runtime](int const index) { runtime.set_diffuse_model(index); }));
-        // ---- punctual lights (demo point lights; see apply_point_lights): the widgets edit
-        //      bindings.point_lights live and main() pushes the enabled set once per frame ---
+        // ---- punctual lights (demo lights; see apply_point_lights): the widgets edit
+        //      bindings.point_lights live and main() pushes the enabled set once per frame.
+        //      Each slot is a point light or - with `spot` checked - a cone light -------
         for (std::size_t i = 0; i < std::size(bindings.point_lights); ++i) {
             gui_bindings::light_slot& slot = bindings.point_lights[i];
             panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
@@ -262,6 +263,15 @@ namespace chores {
                 std::format("  intensity {}", i + 1), &slot.intensity, 0.0f, 50.0f));
             panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
                 std::format("  range {}", i + 1), &slot.range, 0.1f, 100.0f));
+            // spot cone editing (ignored while the slot stays a point light)
+            panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
+                std::format("  spot {}", i + 1), &slot.spot));
+            panel.push_back(std::make_unique<vulkan::gui::vec3_widget>(
+                std::format("  direction {}", i + 1), slot.direction, 0.1f));
+            panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
+                std::format("  inner cone deg {}", i + 1), &slot.inner_cone_deg, 0.0f, 89.0f));
+            panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
+                std::format("  outer cone deg {}", i + 1), &slot.outer_cone_deg, 1.0f, 89.0f));
         }
         // camera orbit target: dragging it moves what the camera looks at / orbits around
         // (camera.target is a glm::vec3, i.e. three contiguous floats; the runtime rebuilds the
@@ -355,6 +365,15 @@ namespace chores {
             light.color = glm::vec3(slot.color[0], slot.color[1], slot.color[2]);
             light.intensity = slot.intensity;
             light.range = slot.range;
+            light.spot = slot.spot;
+            if (slot.spot) {
+                light.spot_direction = glm::vec3(slot.direction[0], slot.direction[1], slot.direction[2]);
+                // clamp the cone (inner <= outer, both < 90 deg) and hand the shader the cosines
+                float const outer_deg = std::clamp(slot.outer_cone_deg, 1.0f, 89.0f);
+                float const inner_deg = std::clamp(slot.inner_cone_deg, 0.0f, outer_deg);
+                light.spot_outer_cos = std::cos(glm::radians(outer_deg));
+                light.spot_inner_cos = std::cos(glm::radians(inner_deg));
+            }
         }
         runtime.set_point_lights(std::span(active.data(), count));
     }
