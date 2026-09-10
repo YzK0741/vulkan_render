@@ -1148,6 +1148,7 @@ namespace vulkan {
     }
 
     frame_status runtime::pace_and_acquire() {
+        cpu_phase_timer const phase_timer{*this, cpu_phase::pace};
         core& vk = this->vulkan_core;
 
         // A zero-sized swapchain (a window that has not been sized yet, or was restored from
@@ -1286,6 +1287,7 @@ namespace vulkan {
     }
 
     frame_status runtime::begin_recording() {
+        cpu_phase_timer const phase_timer{*this, cpu_phase::begin};
         core& vk = this->vulkan_core;
         if (this->bound_scene == nullptr) {
             utility::panic("runtime::begin_recording() called before set_scene() bound a scene");
@@ -1502,6 +1504,7 @@ namespace vulkan {
     }
 
     void runtime::record_main_drawcalls() {
+        cpu_phase_timer const phase_timer{*this, cpu_phase::scene};
         core& vk = this->vulkan_core;
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
         uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
@@ -3229,6 +3232,7 @@ namespace vulkan {
         return true;
     }
     frame_status runtime::end_recording() {
+        cpu_phase_timer const phase_timer{*this, cpu_phase::post};
         core& vk = this->vulkan_core;
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
 
@@ -3268,6 +3272,7 @@ namespace vulkan {
     }
 
     frame_status runtime::submit_and_present() {
+        cpu_phase_timer const phase_timer{*this, cpu_phase::submit};
         core& vk = this->vulkan_core;
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
 
@@ -3551,6 +3556,69 @@ namespace vulkan {
         }
     }
 
+    void runtime::cpu_phase_end(cpu_phase const phase, std::chrono::steady_clock::time_point const start) noexcept {
+        if (!this->gpu_timings_enabled) {
+            return; // one switch for "measure this frame": the GPU marks and these phases together
+        }
+        std::size_t const index = static_cast<std::size_t>(phase);
+        if (index >= this->cpu_phase_frame.size()) {
+            return;
+        }
+        this->cpu_phase_frame[index] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        if (phase != cpu_phase::submit) {
+            return; // one fold per frame, at the phase that ends it
+        }
+        // The frame completed: fold it into the window (a frame that never reaches submit - a
+        // minimized window, a failed acquire - keeps no partial numbers, which is the point of the
+        // per-frame buffer) and report once per window, exactly like the GPU marks do.
+        for (std::size_t i = 0; i < this->cpu_phase_sum.size(); ++i) {
+            this->cpu_phase_sum[i] += this->cpu_phase_frame[i];
+            this->cpu_phase_frame[i] = 0.0;
+        }
+        if (++this->cpu_timing_window_frames < GPU_TIMING_WINDOW) {
+            return;
+        }
+        std::string report = std::format("cpu frame phases (avg of {} frames):", GPU_TIMING_WINDOW);
+        std::string label = std::format("cpu ({}f):", GPU_TIMING_WINDOW);
+        double total = 0.0;
+        for (std::size_t i = 0; i < this->cpu_phase_sum.size(); ++i) {
+            double const mean = this->cpu_phase_sum[i] / static_cast<double>(GPU_TIMING_WINDOW);
+            report += std::format(" {} {:.2f} ms |", cpu_phase_names[i], mean);
+            label += std::format("{} {:>5.2f}", i == 0 ? "" : " |", mean);
+            total += mean;
+            this->cpu_phase_sum[i] = 0.0;
+        }
+        this->cpu_timing_window_frames = 0;
+        report += std::format(" total {:.2f} ms", total);
+        this->cpu_timing_report_label = label + std::format("\n     total {:>5.2f} ms", total);
+        utility::log("{}", report);
+        // The phase accumulators of the frame in progress were reset above; start the next frame's
+        // measurement clean (pace_begin does the same for the very first frame).
+        this->cpu_phase_frame = {};
+    }
+
+    std::string runtime::cpu_timing_summary() const {
+        if (!this->gpu_timings_enabled) {
+            return "cpu timings: off ([render] gpu_timings = false)";
+        }
+        if (this->cpu_timing_report_label.empty()) {
+            return "cpu: collecting...";
+        }
+        // The last COMPLETED window (see the GPU counterpart): an overlay line that changes every
+        // frame re-wraps and twitches, and this one is a report, not a live meter.
+        return this->cpu_timing_report_label;
+    }
+
+    std::array<double, static_cast<std::size_t>(runtime::cpu_phase::count)> runtime::cpu_timing_means() const noexcept {
+        std::array<double, static_cast<std::size_t>(cpu_phase::count)> means = {};
+        if (this->cpu_timing_window_frames == 0) {
+            return means;
+        }
+        for (std::size_t i = 0; i < means.size(); ++i) {
+            means[i] = this->cpu_phase_sum[i] / static_cast<double>(this->cpu_timing_window_frames);
+        }
+        return means;
+    }
     bool runtime::feature_available(std::string_view const name) const noexcept {
         // The single source of truth for "can this feature run at all this session": the overlay asks
         // it to decide what to offer, log_feature_status() prints it, and both therefore agree.

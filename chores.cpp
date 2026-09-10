@@ -305,6 +305,9 @@ namespace chores {
         // per-pass GPU milliseconds (runtime::gpu_timing_summary): the timing that steers the
         // renderer's performance work, so it sits with the fps line at the top of the panel
         panel.push_back(std::make_unique<vulkan::gui::label_widget>([&runtime] { return runtime.gpu_timing_summary(); }));
+        // ... and the CPU phases next to it: above a few hundred fps the frame is CPU/pacing-bound,
+        // so the GPU line alone no longer explains the frame time (see runtime::cpu_phase).
+        panel.push_back(std::make_unique<vulkan::gui::label_widget>([&runtime] { return runtime.cpu_timing_summary(); }));
         panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
             "frustum culling",
             &bindings.cull_enabled,

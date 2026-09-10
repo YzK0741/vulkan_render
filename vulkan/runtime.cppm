@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.13.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.14.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -114,6 +114,26 @@ namespace vulkan {
      */
     export class runtime {
         core vulkan_core;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the CPU frame phases that are measured per frame (see cpu_timing_summary)
+         *
+         * Above a few hundred fps the frame stops being GPU-bound: measured on the RTX 4060 at
+         * 960x720, cutting the GPU frame from 0.52 to 0.41 ms raised fps by 74% while cutting it
+         * further to 0.38 ms changed nothing, and halving the shadow map (which halves the shadow
+         * pass rasterization) changed neither - so what is left is CPU-side recording,
+         * synchronization and presentation. These phases say which: `pace` is the wait for the frame
+         * slot, i.e. where GPU/present backpressure surfaces.
+         */
+        enum class cpu_phase : uint32_t { pace,
+                                          begin,
+                                          scene,
+                                          post,
+                                          submit,
+                                          count };
+        /** @brief names of the CPU phases, in enum order (for the report line) */
+        static constexpr std::array<std::string_view, static_cast<std::size_t>(cpu_phase::count)> cpu_phase_names = {"pace", "begin", "scene", "post", "submit"};
 
         // set while the window is iconified; the restore transition recreates the swapchain
         bool was_minimized = false;
@@ -256,6 +276,33 @@ namespace vulkan {
         std::string gpu_timing_report_label = {};
         uint32_t gpu_timing_marks_measured = 0; // intervals the last measured frame had
         void gpu_mark(VkCommandBuffer command_buffer, gpu_mark_id mark, VkPipelineStageFlagBits stage) noexcept;
+
+        // ---- CPU frame phase timing (same 60-frame window as the GPU marks) ----
+        // A scope timer rather than manual marks: every phase function has early returns
+        // (skipped/minimized/closed) that must still be measured, and an RAII object cannot miss one.
+        struct cpu_phase_timer {
+            runtime* owner = nullptr;
+            cpu_phase phase = cpu_phase::count;
+            std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            cpu_phase_timer(runtime& runtime_ref, cpu_phase const which) noexcept
+                : owner{&runtime_ref}
+                , phase{which} {
+            }
+            ~cpu_phase_timer() {
+                if (this->owner != nullptr) {
+                    this->owner->cpu_phase_end(this->phase, this->start);
+                }
+            }
+            cpu_phase_timer(cpu_phase_timer const&) = delete;
+            cpu_phase_timer& operator=(cpu_phase_timer const&) = delete;
+            cpu_phase_timer(cpu_phase_timer&&) = delete;
+            cpu_phase_timer& operator=(cpu_phase_timer&&) = delete;
+        };
+        void cpu_phase_end(cpu_phase phase, std::chrono::steady_clock::time_point start) noexcept;
+        std::array<double, static_cast<std::size_t>(cpu_phase::count)> cpu_phase_frame = {}; // the frame being measured
+        std::array<double, static_cast<std::size_t>(cpu_phase::count)> cpu_phase_sum = {};   // the window being accumulated
+        uint32_t cpu_timing_window_frames = 0;
+        std::string cpu_timing_report_label = {};
         void collect_gpu_timings(uint32_t slot);
 
         // ---- G-buffer / deferred path ----
@@ -1634,6 +1681,23 @@ namespace vulkan {
             bool transparent = false;   // the forward transparent pass has work to record
         };
         [[nodiscard]] render_features active_features() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the last completed CPU phase window, as the overlay label shows it
+         * @return one line per phase (pace / begin / scene / post / submit) with fixed-width
+         *         millisecond fields, updated once per 60-frame window - the CPU counterpart of
+         *         gpu_timing_summary(), and the instrument for the range where the frame is no
+         *         longer GPU-bound (see cpu_phase)
+         */
+        [[nodiscard]] std::string cpu_timing_summary() const;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief per-phase CPU milliseconds averaged over the window in progress (0 when empty)
+         * @note raw access for diagnostics/tests; the overlay uses cpu_timing_summary()
+         */
+        [[nodiscard]] std::array<double, static_cast<std::size_t>(cpu_phase::count)> cpu_timing_means() const noexcept;
 
         /**
          * @ingroup vulkan_runtime
