@@ -107,6 +107,18 @@ std::chrono::milliseconds utility::time_test(std::function<void()> const& test) 
     return std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 }
 
+double utility::timestamp_delta_milliseconds(uint64_t const begin_ticks, uint64_t const end_ticks, uint32_t const valid_bits, float const nanoseconds_per_tick) noexcept {
+    if (valid_bits == 0 || nanoseconds_per_tick <= 0.0f) {
+        return 0.0;
+    }
+    // Mask both readings into the counter's width (the driver leaves the bits above
+    // timestampValidBits undefined) and take the difference modulo that width, so a wrap inside
+    // the measured span comes out right instead of underflowing to a huge value.
+    uint64_t const mask = valid_bits >= 64 ? ~uint64_t{0} : ((uint64_t{1} << valid_bits) - 1);
+    uint64_t const delta = ((end_ticks - begin_ticks) & mask);
+    return static_cast<double>(delta) * static_cast<double>(nanoseconds_per_tick) * 1.0e-6;
+}
+
 std::optional<std::vector<unsigned char>> utility::read_binary_to_vector(std::filesystem::path const& path) {
     std::error_code error;
     uintmax_t const file_size = std::filesystem::file_size(path, error);

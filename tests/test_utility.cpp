@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -261,6 +262,31 @@ namespace {
         CHECK(x.hash64() != zeros.hash64());
     }
 
+    /** @brief CHECK a computed double against an expected value (the harness has no CHECK_NEAR) */
+    void check_near(double const actual, double const expected, double const tolerance, char const* const what) {
+        CHECK_MSG(std::abs(actual - expected) <= tolerance, what);
+    }
+
+    void test_gpu_timestamp_delta() {
+        // 64-bit counters (the common case): a plain difference scaled by the tick period
+        check_near(utility::timestamp_delta_milliseconds(1000, 1000 + 2'000'000, 64, 1.0f), 2.0, 1e-9, "2 ms at 1 ns/tick");
+        // a sub-nanosecond tick stays exact (timestampPeriod is a float: 1/16 ns here)
+        check_near(utility::timestamp_delta_milliseconds(0, 160, 64, 0.0625f), 1.0e-5, 1e-12, "160 ticks at 0.0625 ns/tick = 10 ns");
+        // zero delta (two marks with no work between them) and a device that cannot timestamp
+        check_near(utility::timestamp_delta_milliseconds(500, 500, 64, 1.0f), 0.0, 1e-12, "empty interval");
+        check_near(utility::timestamp_delta_milliseconds(0, 1000, 0, 1.0f), 0.0, 1e-12, "no valid bits = no measurement");
+        check_near(utility::timestamp_delta_milliseconds(0, 1000, 64, 0.0f), 0.0, 1e-12, "no tick period = no measurement");
+        // 32-bit counter that WRAPPED inside the measured span: the reading after the wrap is
+        // smaller than the one before it, and the masked difference must still be the true elapsed
+        // ticks (0xFFFFFC00 -> 0x00000200 is 0x400 + 0x200 = 1536 ticks, not 4.29 s and not an
+        // underflow). The high bits of both readings are noise - a driver leaves everything above
+        // timestampValidBits undefined, so they must be masked away and not leak into the result.
+        check_near(utility::timestamp_delta_milliseconds(0xDEADBEEF'FFFFFC00ull, 0x12345678'00000200ull, 32, 1.0f), 1536.0e-6, 1e-12, "32-bit wrap with undefined high bits");
+        // the same on a 36-bit counter, whose width is its own: from its maximum to 10 wraps to 11
+        // ticks, and the junk hex digits sit above bit 35 where the mask has to drop them
+        check_near(utility::timestamp_delta_milliseconds(0x1234567F'FFFFFFFFull, 0x98765430'0000000Aull, 36, 1.0f), 11.0e-6, 1e-12, "36-bit wrap");
+    }
+
     void test_thread_pool_runs_every_posted_task() {
         utility::thread_pool pool(2);
         std::atomic<int> counter = 0;
@@ -393,6 +419,7 @@ int main() {
     test_write_binary_failure_stops_the_fold();
     test_write_binary_file_round_trip();
     test_data_block_key_semantics();
+    test_gpu_timestamp_delta();
     test_thread_pool_runs_every_posted_task();
     test_thread_pool_priority_group_wait();
     test_thread_pool_two_concurrent_waiters();

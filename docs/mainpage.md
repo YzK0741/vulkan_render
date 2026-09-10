@@ -39,6 +39,11 @@ PBR (Cook-Torrance + image-based lighting), directional shadows with manual
 percentage-closer filtering, skybox, keyframe animation / skinning / morph playback, and a
 Dear ImGui debug overlay that is on by default (`[gui] show = false` in config disables it).
 
+The frame is also **measured**: with `[render] gpu_timings` (on by default) each pass boundary
+writes a GPU timestamp into a per-frame-slot query pool, and the values are read back after the
+slot completed and averaged over a 60-frame window (logged and shown in the overlay). Every
+rendering feature below is steered by those numbers rather than by guesswork.
+
 ## Modular composition
 
 Most modules are independent building blocks that meet only through narrow

@@ -874,6 +874,78 @@ namespace vulkan {
         }
     }
 
+    void runtime::gpu_mark(VkCommandBuffer const command_buffer, gpu_mark_id const mark, VkPipelineStageFlagBits const stage) noexcept {
+        if (!this->gpu_timings_enabled) {
+            return;
+        }
+        uint32_t const slot = static_cast<uint32_t>(this->vulkan_core.current_frame);
+        // The mark's identity is positional - the interval it closes is the one opened by the mark
+        // before it - so every label in gpu_timing_labels is only correct while the calls happen in
+        // gpu_mark_id order. The core hands out the next index, which makes the violation visible
+        // here instead of only as a mislabeled report.
+        if (this->vulkan_core.gpu_timing_marks[slot] != static_cast<uint32_t>(mark)) {
+            utility::log("runtime: GPU timing marks recorded out of order (mark {} at index {}) - the pass report is mislabeled",
+                         static_cast<uint32_t>(mark),
+                         this->vulkan_core.gpu_timing_marks[slot]);
+            return;
+        }
+        this->vulkan_core.mark_gpu_timing(command_buffer, slot, stage);
+    }
+
+    void runtime::collect_gpu_timings(uint32_t const slot) {
+        gpu_timing_result const result = this->vulkan_core.read_gpu_timings(slot);
+        if (result.mark_count < 2) {
+            return; // nothing measured in that submission (the first frames, or a failed recording)
+        }
+        // result.milliseconds[i] is the interval between mark i and mark i + 1, which is the pass
+        // gpu_timing_labels[i] names: the marks are written in gpu_mark_id order on every frame, and
+        // a pass that did not record left two adjacent marks behind, so its interval reads ~0.
+        uint32_t const intervals = std::min(result.mark_count - 1, static_cast<uint32_t>(gpu_timing_labels.size()));
+        for (uint32_t interval = 0; interval < intervals; ++interval) {
+            this->gpu_timing_sum[interval] += result.milliseconds[interval];
+        }
+        this->gpu_timing_marks_measured = intervals;
+        if (++this->gpu_timing_window_frames < GPU_TIMING_WINDOW) {
+            return;
+        }
+
+        // window complete: report the means (the label keeps reading the running mean, so this only
+        // snapshots and resets) and start over
+        double total = 0.0;
+        std::string report = std::format("gpu pass timings (avg of {} frames):", GPU_TIMING_WINDOW);
+        for (uint32_t interval = 0; interval < intervals; ++interval) {
+            double const mean = this->gpu_timing_sum[interval] / static_cast<double>(GPU_TIMING_WINDOW);
+            report += std::format(" {} {:.2f} ms |", gpu_timing_labels[interval].name, mean);
+            total += mean;
+            this->gpu_timing_sum[interval] = 0.0;
+        }
+        this->gpu_timing_window_frames = 0;
+        report += std::format(" total {:.2f} ms", total);
+        utility::log("{}", report);
+    }
+
+    std::string runtime::gpu_timing_summary() const {
+        if (!this->gpu_timings_enabled) {
+            return "gpu timings: off";
+        }
+        if (!this->vulkan_core.gpu_timing_available()) {
+            return "gpu timings: unavailable on this device";
+        }
+        if (this->gpu_timing_marks_measured == 0 || this->gpu_timing_window_frames == 0) {
+            return "gpu timings: collecting...";
+        }
+        double const samples = static_cast<double>(this->gpu_timing_window_frames);
+        std::string report = "gpu:";
+        double total = 0.0;
+        for (uint32_t interval = 0; interval < this->gpu_timing_marks_measured; ++interval) {
+            gpu_timing_label const& label = gpu_timing_labels[interval];
+            double const mean = this->gpu_timing_sum[interval] / samples;
+            report += std::format("{}{} {:.2f}", label.new_line ? "\n     " : "  ", label.name, mean);
+            total += mean;
+        }
+        return report + std::format("\n     total {:.2f} ms", total);
+    }
+
     frame_status runtime::pace_and_acquire() {
         core& vk = this->vulkan_core;
 
@@ -891,6 +963,9 @@ namespace vulkan {
         //    acquire semaphore with pending operations (VUID-vkAcquireNextImageKHR-semaphore-01779)
         uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
         vk.wait_frame_slot(frame_slot);
+        // The slot's previous submission is complete, so its timestamps are readable: collect them
+        // here, where the wait already guarantees it, and before the slot is recorded again.
+        this->collect_gpu_timings(frame_slot);
 
         // Acquire the next swapchain image; on out-of-date (e.g. the window was resized)
         //    rebuild the swapchain and let the caller retry on the next iteration.
@@ -965,6 +1040,12 @@ namespace vulkan {
         if (vkBeginCommandBuffer(*command_buffer, &begin_info) != VK_SUCCESS) {
             return frame_status::begin_recording_failed;
         }
+        // GPU pass timing: open this frame's timestamp range and take the first mark. Marks are
+        // written in gpu_mark_id order from here on (see gpu_mark); opening the range outside any
+        // rendering instance is required, and this is the first point of the frame where the
+        // command buffer exists.
+        vk.begin_gpu_timing(*command_buffer, static_cast<uint32_t>(vk.current_frame));
+        this->gpu_mark(*command_buffer, gpu_mark_id::frame_begin, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
         // Debug overlay: begin a fresh ImGui frame once per rendered frame (after the acquire,
         // before any UI content is built; the actual draw is recorded at the end of
         // record_main_drawcalls() while the main rendering instance is still open).
@@ -1233,6 +1314,10 @@ namespace vulkan {
                 vkCmdPipelineBarrier2(*command_buffer, &shadow_read_dependency);
             }
         }
+
+        // GPU timing: the shadow pass (and its hand-back barrier) ends here. The pass is optional,
+        // so a frame without shadows just writes this mark next to frame_begin and reports ~0 ms.
+        this->gpu_mark(*command_buffer, gpu_mark_id::shadow_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         // Dynamic rendering has no automatic attachment transitions (a render pass would do
         // them implicitly): move every attachment into its render layout before
@@ -1842,6 +1927,9 @@ namespace vulkan {
     bool runtime::record_post_process(VkCommandBuffer const command_buffer) {
         core const& vk = this->vulkan_core;
         vkCmdEndRendering(command_buffer);
+        // GPU timing: the main rendering instance (skybox, opaque segments, transparent pass) ends
+        // with the instance close above - the post pass starts here.
+        this->gpu_mark(command_buffer, gpu_mark_id::main_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         this->ensure_post_descriptors();
         if (this->post_pipeline == std::nullopt || this->post_hdr_pipeline == std::nullopt || this->post_sets.size() <= this->current_image_index) {
@@ -1924,6 +2012,10 @@ namespace vulkan {
             }
         }
 
+        // GPU timing: the bloom chain ends here (a disabled bloom chain is just the layout fixups
+        // above, so its interval reads ~0).
+        this->gpu_mark(command_buffer, gpu_mark_id::bloom_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+
         // ---- composite: HDR + weighted bloom levels -> exposure -> ACES -> display ----
         // With FXAA enabled the composite cannot write the swapchain (the FXAA pass has to read what
         // it produced, and a pass may not read the image it renders into), so it renders into the
@@ -1972,6 +2064,9 @@ namespace vulkan {
         }
         vkCmdEndRendering(command_buffer);
 
+        // GPU timing: the composite (and the debug overlay, when it draws here) is done.
+        this->gpu_mark(command_buffer, gpu_mark_id::composite_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+
         if (fxaa) {
             // ---- FXAA: gamma-encoded LDR image -> anti-aliased swapchain (+ overlay on top) ----
             barrier_to_read(vk.ldr_images[index]);
@@ -2002,6 +2097,10 @@ namespace vulkan {
             }
             vkCmdEndRendering(command_buffer);
         }
+        // GPU timing: the FXAA pass (and the overlay it carries when it is the last writer) is done.
+        // Without FXAA the composite already ended the frame's display work, so this interval is ~0.
+        this->gpu_mark(command_buffer, gpu_mark_id::fxaa_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+
         // true in both paths: the FXAA pass (or the composite, when FXAA is off) wrote the swapchain
         return true;
     }
@@ -2035,6 +2134,9 @@ namespace vulkan {
 
         VkDependencyInfo const dependency_info = make_image_dependency_info(1, &present_barrier);
         vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
+        // GPU timing: last mark of the frame. The interval it closes is everything after the FXAA
+        // (or composite) pass - the screenshot read-back copy and the present barrier.
+        this->gpu_mark(*command_buffer, gpu_mark_id::frame_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         if (vkEndCommandBuffer(*command_buffer) != VK_SUCCESS) {
             return frame_status::end_recording_failed;
         }

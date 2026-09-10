@@ -160,6 +160,8 @@ int main(int argc, char** argv) {
     // render-stage toggles from config: skybox applies immediately (only affects recording);
     // shadow is applied after enable_shadows() below (it needs the shadow maps to exist)
     runtime.set_skybox_enabled(settings.render.skybox);
+    // per-pass GPU timings (timestamp queries): on by default, reported in the log + overlay
+    runtime.set_gpu_timings(settings.render.gpu_timings);
     auto const runtime_ready = std::chrono::steady_clock::now();
     utility::log("vulkan runtime initialized: {:.1f} ms (async model load + env generation running in background)", std::chrono::duration<double, std::milli>(runtime_ready - startup_start).count());
 

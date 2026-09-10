@@ -38,6 +38,7 @@ namespace vulkan {
         create_descriptor_pool();
         init_scene_layouts();
         create_sync_objects();
+        create_timestamp_query_pool(); // GPU pass timings (a no-op on devices that cannot timestamp)
 
         vma.init(this->instance, this->device, this->physical_device, this->graphics_queue, this->graphics_family_index);
         this->register_cleanup([this] {
@@ -225,6 +226,9 @@ namespace vulkan {
         device_capabilities capabilities;
         capabilities.query(this->physical_device);
         print_device_capabilities(capabilities);
+        // keep the plain properties around (limits such as timestampPeriod drive renderer
+        // decisions like the GPU pass timings) - the capabilities query already fetched them
+        this->device_properties = capabilities.properties_2.properties;
 
         // Dynamic rendering (Vulkan 1.3 core) is mandatory: pick_suitable_device only accepts
         // apiVersion >= 1.3 devices, and frames always record through vkCmdBeginRendering - no
@@ -859,6 +863,105 @@ namespace vulkan {
                 vkDestroySemaphore(device, semaphore, nullptr);
             }
         });
+    }
+
+    void core::create_timestamp_query_pool() noexcept {
+        // Two device facts decide whether pass timings are possible: how wide the timestamp
+        // counter of a graphics queue is (timestampValidBits - a family that cannot write
+        // timestamps reports 0) and how long one tick takes (timestampPeriod, ns/tick).
+        uint32_t family_count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(this->physical_device, &family_count, nullptr);
+        std::vector<VkQueueFamilyProperties> families(family_count);
+        vkGetPhysicalDeviceQueueFamilyProperties(this->physical_device, &family_count, families.data());
+        if (this->graphics_family_index < families.size()) {
+            this->timestamp_valid_bits = families[this->graphics_family_index].timestampValidBits;
+        }
+        this->timestamp_period_ns = this->device_properties.limits.timestampPeriod;
+
+        if (this->timestamp_valid_bits == 0 || this->timestamp_period_ns <= 0.0f) {
+            utility::log("gpu timing: unavailable on this queue ({} valid bits, {} ns/tick) - pass timings are off",
+                         this->timestamp_valid_bits,
+                         static_cast<double>(this->timestamp_period_ns));
+            return;
+        }
+
+        VkQueryPoolCreateInfo const pool_info = make_query_pool_info(VK_QUERY_TYPE_TIMESTAMP, static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT) * gpu_timing_mark_capacity);
+        if (vkCreateQueryPool(this->device, &pool_info, nullptr, &this->timestamp_query_pool) != VK_SUCCESS) {
+            utility::log("gpu timing: timestamp query pool creation failed - pass timings are off");
+            this->timestamp_query_pool = VK_NULL_HANDLE;
+            return;
+        }
+        this->gpu_timing_supported = true;
+        utility::log("gpu timing: {} marks/frame available ({} ns/tick, {} valid bits)",
+                     gpu_timing_mark_capacity,
+                     static_cast<double>(this->timestamp_period_ns),
+                     this->timestamp_valid_bits);
+
+        register_cleanup([this] {
+            if (this->timestamp_query_pool != VK_NULL_HANDLE) {
+                vkDestroyQueryPool(this->device, this->timestamp_query_pool, nullptr);
+            }
+        });
+    }
+
+    void core::begin_gpu_timing(VkCommandBuffer const command_buffer, uint32_t const slot) noexcept {
+        this->gpu_timing_marks[slot] = 0;
+        if (!this->gpu_timing_supported) {
+            return;
+        }
+        // Reset on the GPU timeline: the query range may still be "in use" from the host's point of
+        // view, and a recorded reset is ordered against the writes that follow it in the same
+        // command buffer - a host-side vkResetQueryPool would need the slot to be idle, which is a
+        // constraint the caller would have to remember on every path.
+        vkCmdResetQueryPool(command_buffer, this->timestamp_query_pool, slot * gpu_timing_mark_capacity, gpu_timing_mark_capacity);
+    }
+
+    void core::mark_gpu_timing(VkCommandBuffer const command_buffer, uint32_t const slot, VkPipelineStageFlagBits const stage) noexcept {
+        if (!this->gpu_timing_supported || this->gpu_timing_marks[slot] >= gpu_timing_mark_capacity) {
+            return;
+        }
+        vkCmdWriteTimestamp(command_buffer, stage, this->timestamp_query_pool, slot * gpu_timing_mark_capacity + this->gpu_timing_marks[slot]);
+        ++this->gpu_timing_marks[slot];
+    }
+
+    gpu_timing_result core::read_gpu_timings(uint32_t const slot) {
+        gpu_timing_result result = {};
+        if (!this->gpu_timing_supported) {
+            return result;
+        }
+        // Only read a submitted slot, and only once per submission: the caller paced the slot, so
+        // the queries of its last submission are complete, while a slot whose frame failed before
+        // recording has nothing new to report.
+        uint64_t const submitted = this->frame_done_values[slot];
+        if (submitted == 0 || submitted <= this->gpu_timing_read_value[slot]) {
+            return result;
+        }
+        this->gpu_timing_read_value[slot] = submitted; // this submission is now accounted for
+        uint32_t const marks = this->gpu_timing_marks[slot];
+        if (marks < 2) {
+            return result; // a single mark has no interval to report
+        }
+
+        std::array<uint64_t, gpu_timing_mark_capacity> ticks = {};
+        VkResult const status = vkGetQueryPoolResults(this->device,
+                                                      this->timestamp_query_pool,
+                                                      slot * gpu_timing_mark_capacity,
+                                                      marks,
+                                                      sizeof(uint64_t) * marks,
+                                                      ticks.data(),
+                                                      sizeof(uint64_t),
+                                                      VK_QUERY_RESULT_64_BIT);
+        if (status != VK_SUCCESS) {
+            // VK_NOT_READY (or a lost pool): report "no measurement" rather than waiting - a frame
+            // without a timing line is fine, a stalled frame is not.
+            return result;
+        }
+
+        result.mark_count = marks;
+        for (uint32_t mark = 0; mark + 1 < marks; ++mark) {
+            result.milliseconds[mark] = utility::timestamp_delta_milliseconds(ticks[mark], ticks[mark + 1], this->timestamp_valid_bits, this->timestamp_period_ns);
+        }
+        return result;
     }
 
     vk_command_buffer core::make_command_buffer() const {

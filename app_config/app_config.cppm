@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.1.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -46,6 +46,7 @@ import utility;
  * skybox = true    # draw the environment skybox pass each frame
  * shadow = true    # record the directional shadow pass each frame
  * fxaa   = false   # anti-alias the final image (adds one fullscreen pass; needs fxaa.frag.spv)
+ * gpu_timings = true  # measure + report per-pass GPU milliseconds (timestamp queries)
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
  *
  * [gui]
@@ -92,7 +93,11 @@ namespace app_config {
         bool skybox = true;                                       // draw the environment skybox pass each frame
         bool shadow = true;                                       // record the directional shadow pass each frame
         bool fxaa = false;                                        // FXAA the final image (one extra fullscreen pass)
-        bool validation_layers = default_validation_layers;       // Vulkan validation layers + debug messenger ([render])
+        // measure per-pass GPU time with timestamp queries: one vkCmdWriteTimestamp per pass
+        // boundary, read back after the frame slot completed, averaged over a 60-frame window
+        // (logged + shown in the debug overlay). A no-op on devices that cannot timestamp.
+        bool gpu_timings = true;
+        bool validation_layers = default_validation_layers; // Vulkan validation layers + debug messenger ([render])
     };
 
     /**

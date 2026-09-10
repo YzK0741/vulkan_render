@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.1.6  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -70,6 +70,28 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_core
+     * @brief how many GPU timing marks one frame may write (the query pool is sized
+     *        MAX_FRAMES_IN_FLIGHT * this, and each frame slot owns its own contiguous range)
+     * @note a mark is one vkCmdWriteTimestamp; the frame's pass boundaries use a handful of them,
+     *       and the remaining capacity is headroom for the passes later milestones add. A frame
+     *       that records more marks than this silently stops marking (the extra passes are simply
+     *       not measured) instead of overflowing into the next slot's range.
+     */
+    export constexpr uint32_t gpu_timing_mark_capacity = 16;
+
+    /**
+     * @ingroup vulkan_core
+     * @brief GPU durations of one completed frame, in mark order (see core::mark_gpu_timing)
+     * @note entry i is the time between mark i and mark i + 1, so a frame that wrote
+     *       @p mark_count marks yields mark_count - 1 durations
+     */
+    export struct gpu_timing_result {
+        std::array<double, gpu_timing_mark_capacity> milliseconds = {}; // elapsed per consecutive mark pair
+        uint32_t mark_count = 0;                                        // marks the frame wrote (0 = no measurement)
+    };
+
+    /**
+     * @ingroup vulkan_core
      * @brief everything the core needs at construction, decoupled from the caller (the runtime
      *        assembles this, typically from the app's startup config)
      * @note fields mirror the app_config render settings; defaults keep the historic behavior
@@ -105,6 +127,11 @@ namespace vulkan {
         VkInstance instance = VK_NULL_HANDLE;
         VkDevice device = VK_NULL_HANDLE;
         VkPhysicalDevice physical_device = VK_NULL_HANDLE;
+        // properties of the picked physical device (VkPhysicalDeviceProperties: limits such as
+        // timestampPeriod, bufferImageGranularity, maxPushConstantsSize + the device name).
+        // Filled in init_device_and_queue() from the capabilities query it already runs - no
+        // second vkGetPhysicalDeviceProperties round trip.
+        VkPhysicalDeviceProperties device_properties = {};
         uint32_t graphics_family_index = 0;
         uint32_t present_family_index = 0;
         VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
@@ -230,6 +257,70 @@ namespace vulkan {
         static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
         void create_sync_objects();
+
+        // ---- GPU pass timing (VK_QUERY_TYPE_TIMESTAMP) ----
+        // A timestamp pool with one contiguous range of gpu_timing_mark_capacity queries per frame
+        // slot: the frame records vkCmdResetQueryPool + one vkCmdWriteTimestamp per pass boundary
+        // and the reader converts consecutive marks into milliseconds after the slot's submission
+        // completed (see mark_gpu_timing / read_gpu_timings). Timestamps need no feature bit, but a
+        // queue family that cannot write them reports timestampValidBits == 0, and the tick length
+        // comes from the device limits - either missing means gpu_timing_supported stays false and
+        // every timing call is a no-op, so callers do not have to check the device themselves.
+        VkQueryPool timestamp_query_pool = VK_NULL_HANDLE;
+        float timestamp_period_ns = 0.0f;  // ns per tick (VkPhysicalDeviceLimits::timestampPeriod)
+        uint32_t timestamp_valid_bits = 0; // graphics family counter width (0 = cannot timestamp)
+        bool gpu_timing_supported = false;
+        // marks the CURRENT recording of each slot has written (reset by begin_gpu_timing). Also
+        // read back as "how many queries to fetch" for the submission that just completed, because
+        // a slot is only read after it was paced and before it is recorded again.
+        std::array<uint32_t, MAX_FRAMES_IN_FLIGHT> gpu_timing_marks = {};
+        // frame_done value each slot's timings were last read for: a slot is read at most once per
+        // submission, so a frame that hits an early return cannot fetch the same results twice
+        std::array<uint64_t, MAX_FRAMES_IN_FLIGHT> gpu_timing_read_value = {};
+        void create_timestamp_query_pool() noexcept;
+
+        /**
+         * @ingroup vulkan_core
+         * @brief open this frame's timing range: reset the slot's queries and forget the previous
+         *        frame's marks
+         * @param command_buffer the frame's command buffer (the reset is recorded on the GPU
+         *        timeline, which keeps it off the host/GPU race the pool would otherwise have)
+         * @param slot the frame slot being recorded
+         * @note call once per frame, before any mark and outside a dynamic rendering instance;
+         *       a no-op when the device cannot timestamp
+         */
+        void begin_gpu_timing(VkCommandBuffer command_buffer, uint32_t slot) noexcept;
+
+        /**
+         * @ingroup vulkan_core
+         * @brief write one timing mark into this frame's range
+         * @param command_buffer the frame's command buffer
+         * @param slot the frame slot being recorded
+         * @param stage pipeline stage the mark resolves at: callers use TOP_OF_PIPE for the first
+         *        mark of the frame and BOTTOM_OF_PIPE for every pass boundary, so mark i + 1 minus
+         *        mark i is exactly how long pass i took
+         * @note a no-op when the device cannot timestamp or the frame already wrote
+         *       gpu_timing_mark_capacity marks
+         */
+        void mark_gpu_timing(VkCommandBuffer command_buffer, uint32_t slot, VkPipelineStageFlagBits stage) noexcept;
+
+        /**
+         * @ingroup vulkan_core
+         * @brief convert a completed submission's marks into milliseconds
+         * @param slot the frame slot to read (its last submission must have completed - pace the
+         *        slot first, see wait_frame_slot)
+         * @return the durations between consecutive marks, or a zero mark_count when timings are
+         *         unavailable, the slot never submitted, or this submission was already read
+         * @note never waits on the GPU and never blocks: vkGetQueryPoolResults is called without
+         *       VK_QUERY_RESULT_WAIT_BIT, and an unavailable result reports "no measurement"
+         *       instead of stalling
+         */
+        gpu_timing_result read_gpu_timings(uint32_t slot);
+
+        /** @brief whether this device can measure GPU pass timings (see begin_gpu_timing) */
+        [[nodiscard]] bool gpu_timing_available() const noexcept {
+            return this->gpu_timing_supported;
+        }
 
         core();
         explicit core(core_create_info const& options);

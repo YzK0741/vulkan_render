@@ -16,6 +16,7 @@ namespace {
         CHECK(!settings.render.skybox);
         CHECK(!settings.render.shadow);
         CHECK(settings.render.fxaa);
+        CHECK(!settings.render.gpu_timings);
         CHECK(!settings.gui.show);
         CHECK(settings.lighting.irr_size == 64);
         CHECK(settings.paths.shaders_dir == "shaders");
@@ -29,6 +30,7 @@ namespace {
         CHECK(settings.render.skybox);
         CHECK(settings.render.shadow);
         CHECK(!settings.render.fxaa);
+        CHECK(settings.render.gpu_timings); // default: pass timings are collected
         CHECK(settings.gui.show);
     }
 

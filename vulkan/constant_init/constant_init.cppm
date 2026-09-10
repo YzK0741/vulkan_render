@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.constant_init
-// module version: 0.1.7  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Compile-time Vulkan info-struct conventions: constexpr factories + constinit
 // "transition" defaults for the structs the engine fills identically everywhere
@@ -119,6 +119,20 @@ export namespace vulkan {
         return {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
                 .pNext = nullptr,
                 .flags = 0};
+    }
+    /**
+     * @brief query pool of @p count queries, all of type @p query_type
+     * @param query_type TIMESTAMP for the GPU pass timings, OCCLUSION for visibility queries
+     * @param count number of queries in the pool (a timestamp pool also fixes how many marks a
+     *        frame may write: see core::gpu_timing_mark_capacity)
+     */
+    constexpr VkQueryPoolCreateInfo make_query_pool_info(VkQueryType const query_type, uint32_t const count) noexcept {
+        return {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .queryType = query_type,
+                .queryCount = count,
+                .pipelineStatistics = 0};
     }
     /** @brief host-visible staging buffer: TRANSFER_SRC only, exclusive sharing */
     constexpr VkBufferCreateInfo make_staging_buffer_info(VkDeviceSize const size) noexcept {

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: utility
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Pure-CPU toolkit: data_block, BVH, thread_pool, frame_clock / frame_stats,
 // better_pmr (mimalloc routing), content hashing. Standalone - no Vulkan or app
@@ -420,6 +420,26 @@ namespace utility {
      */
     export std::expected<void, std::string> write_png(std::filesystem::path const& path, uint32_t width, uint32_t height, std::span<unsigned char const> rgba);
     export std::chrono::milliseconds time_test(std::function<void()> const& test) noexcept;
+
+    /**
+     * @ingroup utility
+     * @brief elapsed milliseconds between two GPU timestamp counter readings
+     * @param begin_ticks counter value of the earlier mark
+     * @param end_ticks counter value of the later mark
+     * @param valid_bits counter width of the queue family
+     *        (VkQueueFamilyProperties::timestampValidBits)
+     * @param nanoseconds_per_tick duration of one tick
+     *        (VkPhysicalDeviceLimits::timestampPeriod, ns/tick)
+     * @return elapsed milliseconds, or 0 when the family cannot timestamp (@p valid_bits == 0)
+     *         or the tick duration is not positive
+     * @note the GPU counter is a modulo-2^@p valid_bits ring: queues commonly report 32 or 36
+     *       valid bits, and the driver leaves the bits above that range undefined, so both
+     *       readings are masked into that width and the difference is taken modulo it - a wrap
+     *       inside the measured span comes out right instead of underflowing to a huge value.
+     *       A span longer than one full wrap (2^32 ticks = 4.3 s at 1 ns/tick) is indistinguishable
+     *       from a short one and would alias; no single pass comes close.
+     */
+    export double timestamp_delta_milliseconds(uint64_t begin_ticks, uint64_t end_ticks, uint32_t valid_bits, float nanoseconds_per_tick) noexcept;
 
     /**
      * @ingroup utility

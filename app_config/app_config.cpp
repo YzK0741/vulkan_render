@@ -106,6 +106,11 @@ namespace app_config {
                     settings.render.fxaa = *value;
                 }
             }
+            if (toml::node const* node = render->get("gpu_timings")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.gpu_timings = *value;
+                }
+            }
             if (toml::node const* node = render->get("validation_layers")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.validation_layers = *value;

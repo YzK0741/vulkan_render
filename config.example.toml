@@ -68,6 +68,14 @@ shadow = true
 # in the debug overlay, not here.
 fxaa = false
 
+# gpu_timings: measure how long each pass takes on the GPU (timestamp queries). The frame writes a
+# timestamp at every pass boundary, the values are read back once the frame slot completed and
+# averaged over a 60-frame window: the report goes to the log and to the debug overlay, which is
+# what the renderer's performance work is steered by. Leave it on - the cost is a handful of query
+# writes per frame - and turn it off only for a measurement-free profile run. A device whose queue
+# cannot write timestamps reports "unavailable" and everything else works unchanged.
+gpu_timings = true
+
 # validation_layers: Vulkan validation layers + debug messenger (VK_LAYER_KHRONOS_validation).
 # Debug builds default to true, Release builds to false; override per build as needed (e.g.
 # turn it on in a Release build when tracking a problem, or off in Debug for raw speed).

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.23  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -196,6 +196,52 @@ namespace vulkan {
         bool ibl_ready = false;
         // background pass (fullscreen triangle, no depth test): drawn first every frame
         std::optional<vk_pipeline> skybox_pipeline = std::nullopt;
+
+        // ---- GPU pass timing (see gpu_mark / gpu_timing_summary) ----
+        // Which pass boundaries a frame marks. The sequence is FIXED: a pass that does not record
+        // this frame (shadow off, bloom intensity 0, FXAA off) still writes its mark immediately
+        // after the previous one, so the measured interval is 0 and the label-to-interval mapping
+        // never shifts. Mark i is written at the END of the pass named by gpu_timing_labels[i],
+        // which is why the label table is one entry shorter than the mark list.
+        enum class gpu_mark_id : uint32_t {
+            frame_begin = 0, // first command of the frame (TOP_OF_PIPE)
+            shadow_end,      // after the shadow pass + its sampling barrier
+            main_end,        // after the main rendering instance (opaque segments + transparent)
+            bloom_end,       // after the bloom prefilter/downsample chain
+            composite_end,   // after the composite (exposure + ACES + display encode)
+            fxaa_end,        // after the FXAA pass (and the overlay, when FXAA draws it)
+            frame_end,       // last command of the frame (the screenshot copy + present barrier)
+            count,           // not a mark: the number of marks a frame writes
+        };
+        static constexpr uint32_t gpu_mark_count = static_cast<uint32_t>(gpu_mark_id::count);
+        static_assert(gpu_mark_count <= vulkan::gpu_timing_mark_capacity, "the core's timestamp pool must hold one frame's marks");
+        // labels of the intervals between consecutive marks (interval i = mark i -> mark i + 1).
+        // new_line starts a new line in the overlay's report, which has to fit one narrow panel
+        // row; the log line ignores it and prints everything on one line.
+        struct gpu_timing_label {
+            std::string_view name;
+            bool new_line; // begin a new line in the overlay report
+        };
+        static constexpr std::array<gpu_timing_label, gpu_mark_count - 1> gpu_timing_labels = {{
+            {"shadow", false},
+            {"main", false},
+            {"bloom", false},
+            {"composite", true},
+            {"fxaa", false},
+            {"tail", false},
+        }};
+        // whether to collect pass timings at all ([render] gpu_timings); the device must be able
+        // to timestamp as well, which core::gpu_timing_available() reports
+        bool gpu_timings_enabled = true;
+        // rolling window of measured intervals: every GPU_TIMING_WINDOW frames the collected
+        // samples are averaged, logged, and the window starts over (the GUI label reads the
+        // window's running mean, so it stays live instead of dropping to 0 on the reset)
+        static constexpr uint32_t GPU_TIMING_WINDOW = 60;
+        std::array<double, gpu_mark_count - 1> gpu_timing_sum = {}; // current window's summed ms
+        uint32_t gpu_timing_window_frames = 0;                      // frames sampled in the current window
+        uint32_t gpu_timing_marks_measured = 0;                     // intervals the last measured frame had
+        void gpu_mark(VkCommandBuffer command_buffer, gpu_mark_id mark, VkPipelineStageFlagBits stage) noexcept;
+        void collect_gpu_timings(uint32_t slot);
 
         // ---- post-processing: HDR scene target -> exposure + ACES + gamma -> swapchain ----
         // created by make_post_pipeline(); the descriptor sets rebind lazily whenever the
@@ -1046,6 +1092,48 @@ namespace vulkan {
         [[nodiscard]] bool fxaa() const noexcept {
             return this->fxaa_on;
         }
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief enable/disable the GPU pass timing read-back
+         * @param enabled when true (the default) every frame records one timestamp per pass
+         *        boundary and the completed measurements are averaged over a 60-frame window,
+         *        logged and exposed through gpu_timing_summary(); when false no timestamp is
+         *        written and nothing is read back
+         * @note the switch only matters on devices that can timestamp at all
+         *       (core::gpu_timing_available()); the marks themselves are a handful of
+         *       vkCmdWriteTimestamp calls per frame, so the cost of leaving it on is negligible -
+         *       this exists for a measurement-free profile run
+         */
+        void set_gpu_timings(bool enabled) noexcept {
+            this->gpu_timings_enabled = enabled;
+        }
+
+        /** @brief whether GPU pass timings are being collected (see set_gpu_timings) */
+        [[nodiscard]] bool gpu_timings() const noexcept {
+            return this->gpu_timings_enabled;
+        }
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether this device can measure GPU pass timings at all
+         * @note false when the graphics queue family cannot write timestamps: the timing calls
+         *       become no-ops instead of failing, so a caller can always ask
+         */
+        [[nodiscard]] bool gpu_timings_available() const noexcept {
+            return this->vulkan_core.gpu_timing_available();
+        }
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief report of the current timing window: the mean GPU milliseconds per pass
+         * @return e.g. "gpu:  shadow 0.11  main 0.24  bloom 0.01\n     composite 0.08  fxaa 0.00
+         *         tail 0.00\n     total 0.43 ms" (broken over lines to fit the narrow overlay
+         *         panel), or a short "off"/"unavailable"/"collecting" note
+         * @note safe to call every frame (it formats a string from the running window mean) - the
+         *       debug overlay binds a label to it
+         */
+        [[nodiscard]] std::string gpu_timing_summary() const;
 
         /**
          * @ingroup vulkan_runtime
