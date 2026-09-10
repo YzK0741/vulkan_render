@@ -2000,6 +2000,44 @@ namespace vulkan {
             max_ls = glm::max(max_ls, ls);
         }
 
+        // Casters outside the view still cast into it (a wall behind the camera): fitting only the
+        // frustum corners clips them and sunlight leaks through. Every scene leaf whose light-space
+        // xy overlaps the frustum's is merged into the fit - under the orthographic light a caster's
+        // shadow lands at the caster's own light-space xy, so that overlap test is exact for "can
+        // this shadow land inside the view". This keeps the box tight: geometry whose shadow cannot
+        // reach the view (e.g. the floor far down-light) is not allowed to inflate it.
+        if (this->bound_scene != nullptr) {
+            this->shadow_caster_scratch.clear();
+            for (scene_tree::scene_node const& root : this->bound_scene->roots) {
+                collect_leaf_primitives(root, this->shadow_caster_scratch);
+            }
+            float const cone_min_x = min_ls.x;
+            float const cone_max_x = max_ls.x;
+            float const cone_min_y = min_ls.y;
+            float const cone_max_y = max_ls.y;
+            for (primitive const* const leaf : this->shadow_caster_scratch) {
+                if (leaf == nullptr || !leaf->has_bounds) {
+                    continue;
+                }
+                auto const [wmin, wmax] = leaf->world_aabb();
+                glm::vec3 caster_min(std::numeric_limits<float>::max());
+                glm::vec3 caster_max(std::numeric_limits<float>::lowest());
+                for (int corner = 0; corner < 8; ++corner) {
+                    glm::vec3 const p((corner & 1) != 0 ? wmax.x : wmin.x,
+                                      (corner & 2) != 0 ? wmax.y : wmin.y,
+                                      (corner & 4) != 0 ? wmax.z : wmin.z);
+                    glm::vec3 const ls = glm::vec3(light_rotation * glm::vec4(p, 1.0f));
+                    caster_min = glm::min(caster_min, ls);
+                    caster_max = glm::max(caster_max, ls);
+                }
+                bool const overlaps_view = caster_max.x >= cone_min_x && caster_min.x <= cone_max_x && caster_max.y >= cone_min_y && caster_min.y <= cone_max_y;
+                if (!overlaps_view) {
+                    continue; // this caster's shadow cannot land inside the view frustum
+                }
+                min_ls = glm::min(min_ls, caster_min);
+                max_ls = glm::max(max_ls, caster_max);
+            }
+        }
         // square the box (isotropic resolution) and snap its center to the texel grid
         float const extent = std::max(max_ls.x - min_ls.x, max_ls.y - min_ls.y);
         float const half = std::max(extent * 0.5f, 0.001f);

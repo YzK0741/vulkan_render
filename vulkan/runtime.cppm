@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.14  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.15  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -396,10 +396,13 @@ namespace vulkan {
         std::vector<std::vector<std::pair<VkCommandPool, vk_command_buffer>>> main_segments;
         // per-frame state shared by the split frame steps (the frame steps call them in order,
         // so an external caller can interleave its own work between the same steps)
-        uint32_t current_image_index = 0;                      // swapchain image acquired by pace_and_acquire()
-        float current_aspect = 1.0f;                           // swapchain aspect for the frame's UBO + culling
-        camera_ubo current_ubo = {};                           // camera UBO snapshot written in pace_and_acquire()
-        std::pmr::vector<primitive const*> frame_leaves = {};  // every scene leaf this frame (shadow + cull input)
+        uint32_t current_image_index = 0;                     // swapchain image acquired by pace_and_acquire()
+        float current_aspect = 1.0f;                          // swapchain aspect for the frame's UBO + culling
+        camera_ubo current_ubo = {};                          // camera UBO snapshot written in pace_and_acquire()
+        std::pmr::vector<primitive const*> frame_leaves = {}; // every scene leaf this frame (shadow + cull input)
+        // reused scratch for the shadow-frustum caster fit (see update_shadow_frustum): every
+        // scene leaf is tested here, not just the visible ones, so off-screen casters count
+        std::pmr::vector<primitive const*> shadow_caster_scratch = {};
         std::pmr::vector<primitive const*> frame_visible = {}; // opaque frustum-visible subset (main pass)
         // transparent (alphaMode BLEND) frustum-visible leaves, sorted FAR -> NEAR from the
         // camera each time the cull re-runs: drawn AFTER the opaque pass (depth-write off), so
