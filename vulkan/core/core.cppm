@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.1.5  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.6  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -129,6 +129,10 @@ namespace vulkan {
         std::vector<VkImage> swap_chain_images = {};
         VkFormat swap_chain_image_format = {};
         VkExtent2D swap_chain_extent = {};
+        // Whether the swapchain images were created with VK_IMAGE_USAGE_TRANSFER_SRC_BIT (i.e. the
+        // surface supports it). The screenshot read-back copies from a swapchain image and is only
+        // legal when this is true - see init_swap_chain().
+        bool swapchain_transfer_src_supported = false;
 
         void init_swap_chain() noexcept;
 
@@ -148,6 +152,10 @@ namespace vulkan {
         std::vector<VkDeviceMemory> hdr_image_memories = {};
         std::vector<VkImageView> hdr_image_views = {};
         void create_hdr_resolve_resources();
+        // create_hdr_resolve_resources() runs again on every swapchain recreation (it rebuilds the
+        // HDR/LDR/bloom targets); its teardown must be pushed onto the cleanup stack only once, or
+        // the stack grows one identical lambda per resize.
+        bool resolve_cleanup_registered = false;
         // bloom targets: a 4-level chain (1/2, 1/4, 1/8, 1/16 of the swapchain extent, min 1x1),
         // one chain per swapchain image; the post pass prefilters into level 0, downsamples
         // through the levels and composites a weighted sum of all of them

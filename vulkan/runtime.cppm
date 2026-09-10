@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.21  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.22  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -295,6 +295,8 @@ namespace vulkan {
         // transition on presentable VkImage ... but the image has not been acquired").
         // screenshot_pending = a copy was recorded and is ready to be read once the submit lands.
         bool screenshot_pending = false;
+        // one-time log for "this surface cannot do screenshots" (see record_screenshot_copy)
+        bool screenshot_unsupported_logged = false;
         vk_buffer screenshot_readback = {};                        // host-visible TRANSFER_DST staging
         VkBuffer screenshot_readback_buffer = VK_NULL_HANDLE;      // its VkBuffer (vk_buffer::handle() is the allocator's)
         void* screenshot_readback_mapped = nullptr;                // persistent mapping (vma MAPPED_BIT)

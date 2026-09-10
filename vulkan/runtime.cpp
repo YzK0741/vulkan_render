@@ -2486,6 +2486,16 @@ namespace vulkan {
         if (extent.width == 0 || extent.height == 0 || this->current_image_index >= vk.swap_chain_images.size()) {
             return; // nothing sensible to copy (the frame will be skipped anyway)
         }
+        if (!vk.swapchain_transfer_src_supported) {
+            // The swapchain images lack VK_IMAGE_USAGE_TRANSFER_SRC_BIT, so vkCmdCopyImageToBuffer
+            // from one of them would violate VUID-vkCmdCopyImageToBuffer-srcImage-00186. The surface
+            // cannot do screenshots at all: say it once and leave the request pending-free.
+            if (!this->screenshot_unsupported_logged) {
+                this->screenshot_unsupported_logged = true;
+                utility::log("screenshot: unsupported (swapchain has no TRANSFER_SRC usage) - F12 disabled");
+            }
+            return;
+        }
         if (this->ensure_screenshot_readback(extent) == nullptr) {
             return;
         }

@@ -294,6 +294,18 @@ namespace vulkan {
         create_info.imageExtent = extent;
         create_info.imageArrayLayers = 1;
         create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        // The F12 screenshot read-back copies FROM a swapchain image (vkCmdCopyImageToBuffer), which
+        // requires the image to have been created with TRANSFER_SRC usage
+        // (VUID-vkCmdCopyImageToBuffer-srcImage-00186). Ask for it when the surface supports it -
+        // imageUsage must stay a subset of supportedUsageFlags (VUID-VkSwapchainCreateInfoKHR-
+        // imageUsage-01276) - and remember the answer so the screenshot path can disable itself
+        // instead of performing an illegal copy on a surface that does not.
+        this->swapchain_transfer_src_supported = (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+        if (this->swapchain_transfer_src_supported) {
+            create_info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        } else {
+            utility::log("swapchain: surface does not support VK_IMAGE_USAGE_TRANSFER_SRC_BIT - screenshots disabled");
+        }
 
         queue_family_indices const indices = find_queue_families(this->physical_device, this->surface);
         if (!indices.compute_family || !indices.graphics_family || !indices.present_family) {
@@ -580,6 +592,15 @@ namespace vulkan {
                     device);
             }
         }
+
+        // The teardown is registered ONCE, not once per swapchain generation: this function reruns on
+        // every recreate_swap_chain(), and register_cleanup() *pushes* (LIFO), so registering
+        // unconditionally grew the cleanup stack by one identical lambda per resize. The single
+        // lambda destroys whatever the vectors hold at destruction time, which is what we want.
+        if (this->resolve_cleanup_registered) {
+            return;
+        }
+        this->resolve_cleanup_registered = true;
 
         register_cleanup([this] {
             for (auto const& view : hdr_image_views) {
@@ -989,20 +1010,21 @@ namespace vulkan {
         }
         hdr_image_memories.clear();
 
-        // 2b. Destroy the HDR resolve targets
-        for (auto const& view : hdr_image_views) {
+        // 2c. Destroy the display-referred (FXAA input) targets
+        for (auto const& view : ldr_image_views) {
             vkDestroyImageView(device, view, nullptr);
         }
-        hdr_image_views.clear();
-        for (auto const& image : hdr_images) {
+        ldr_image_views.clear();
+        for (auto const& image : ldr_images) {
             vkDestroyImage(device, image, nullptr);
         }
-        hdr_images.clear();
-        for (auto const& memory : hdr_image_memories) {
+        ldr_images.clear();
+        for (auto const& memory : ldr_image_memories) {
             vkFreeMemory(device, memory, nullptr);
         }
-        hdr_image_memories.clear();
-        // 2c. Destroy the bloom targets (all levels)
+        ldr_image_memories.clear();
+
+        // 2d. Destroy the bloom targets (all levels)
         for (auto const& level_views : bloom_image_views) {
             for (auto const& view : level_views) {
                 vkDestroyImageView(device, view, nullptr);
