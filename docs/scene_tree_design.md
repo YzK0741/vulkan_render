@@ -294,24 +294,29 @@ keep working through `get_primitives` / `scenes::begin()`.)
 
 Unchanged structurally (and now caster-culled, see §4.4): the shadow pass iterates
 the collected casters (a subset of `frame_leaves` — see the runtime's
-`shadow_casters`, built from the frustum-visible leaves plus the up-light
-neighborhood). Because the shadow pipeline shares the vertex layout / push block /
+`shadow_casters`, built from the frustum-visible leaves plus the leaves inside the
+shadow frustum itself). Because the shadow pipeline shares the vertex layout / push block /
 scene layout, leaves drawn into the shadow map still work via `draw()` — through
 the shadow pass's own `render_environment`, whose injected binder always binds the
 shadow pipeline (it ignores the requested pipeline name), so custom leaves that
 would draw with a named pipeline in the main pass still cast their geometry here.
 
-### 4.4 Shadow caster culling (`f094c31`)
+### 4.4 Shadow caster culling (`f094c31`, revised)
 
 The shadow pass used to re-draw every scene leaf each frame ("the whole scene casts
 shadows"), so on large scenes (NodePerformanceTest: 10000 rocks) the camera view
-direction barely moved the fps — only the main pass was culled. Now only leaves
-whose shadow can reach the camera frustum are drawn: the frustum-visible leaves
-plus casters up to `shadow_caster_extent` (scene_radius / 8, set in
-`enable_shadows`) up-light of the frustum, computed in `begin_recording` by
-unioning `cull_visible` with a BVH `frustum_cull` against the camera frustum
-shifted toward the sun. Rebuilt only when the camera moved or the scene changed
-(same reuse rule as the main-pass cull); `record_shadow_content` walks that set.
+direction barely moved the fps — only the main pass was culled. Small scenes
+(<= 1500 leaves) still render **every** leaf: caster culling is only an
+approximation (a caster arbitrarily far up-light still throws its parallel shadow
+column into the view, so a finite camera-frustum margin visibly leaked the sun
+through Sponza's walls) and at that size the full depth render is cheap. Heavier
+scenes draw `cull_visible` unioned with a BVH `frustum_cull` against the
+**shadow frustum** (`light_state.light_view_proj`), which `update_shadow_frustum`
+refits to the camera each frame and widens by every leaf whose shadow column can
+reach the view — so off-screen casters such as the wall behind the camera are
+included, while the set stays far smaller than the whole scene. Rebuilt only when
+the camera moved or the scene changed (same reuse rule as the main-pass cull);
+`record_shadow_content` walks that set.
 
 ## 5. Loader <-> runtime bridge (the key design decision)
 

@@ -1028,43 +1028,38 @@ namespace vulkan {
                 // Built only when the camera moved or the scene changed (reusing the cached
                 // cull_visible otherwise, like the main pass does). Two regimes split on scene
                 // size:
-                //  - SMALL scenes: every leaf goes into the shadow map. Camera-based caster
-                //    culling is only an approximation: a caster can sit arbitrarily far
-                //    up-light and its PARALLEL shadow column still falls into the view, so a
-                //    finite margin (shadow_caster_extent) visibly leaked the sun through
-                //    Sponza's walls. With few leaves the full depth render is cheap - take
-                //    the exact path.
-                //  - HEAVY scenes (tens of thousands of leaves): keep the perf heuristic -
-                //    cull_visible plus the BVH culled against the camera frustum SHIFTED
-                //    toward the sun by shadow_caster_extent. Re-rendering every leaf into the
-                //    shadow map every frame would dominate the frame time on such scenes, and
-                //    open-field stress scenes rarely show the interior leak.
+                //  - SMALL scenes: every leaf goes into the shadow map. Caster culling is only an
+                //    approximation (a caster can sit arbitrarily far up-light and its PARALLEL
+                //    shadow column still lands in the view) and with few leaves the full depth
+                //    render is cheap - take the exact path.
+                //  - HEAVY scenes (tens of thousands of leaves): the camera-visible set plus the
+                //    BVH culled against the SHADOW frustum itself. That frustum is refitted every
+                //    frame to the camera view AND already merges every leaf whose shadow column can
+                //    reach the view (update_shadow_frustum), so it contains the off-screen casters -
+                //    like the wall behind the camera - that the previous "camera frustum shifted
+                //    up-light by shadow_caster_extent" heuristic dropped, while staying far smaller
+                //    than the whole scene.
                 constexpr std::size_t full_scene_shadow_leaf_limit = 1500;
                 if (frame_leaves.size() <= full_scene_shadow_leaf_limit) {
                     this->shadow_casters = this->frame_leaves;
+                } else if (!this->shadows_enabled) {
+                    // no shadow frustum yet (enable_shadows() not called): the set is unused until
+                    // the shadow pass records, so take the exact path instead of culling against a
+                    // zeroed light matrix. enable_shadows() runs before the first frame in
+                    // practice; if it does not, the camera moving refreshes this set.
+                    this->shadow_casters = this->frame_leaves;
                 } else {
-                    // HEAVY scene: revert to the camera + up-light-margin caster subset (see the
-                    // long comment above). Crossing the threshold silently would recreate the
-                    // interior light-leak this heuristic replaced, so say it once.
                     if (!this->shadow_heuristic_logged) {
                         this->shadow_heuristic_logged = true;
-                        utility::log("shadow caster heuristic: scene exceeds {} leaves - shadow casters fall back to the camera-margin cull set (interiors may leak light)",
+                        utility::log("shadow caster culling: scene exceeds {} leaves - shadow casters are the camera-visible plus shadow-frustum sets",
                                      full_scene_shadow_leaf_limit);
                     }
                     this->shadow_casters = this->cull_visible;
                     if (this->cull_bvh.has_value()) {
-                        utility::frustum const shifted_frustum = [this, &ubo] {
-                            utility::frustum frustum = utility::make_frustum(ubo.proj * ubo.view);
-                            glm::vec3 const shift = this->light_direction * this->shadow_caster_extent;
-                            for (glm::vec4& plane : frustum.planes) {
-                                // shift the half-space n.x + w >= 0 by t: n.(x - t) + w >= 0 -> w' = w - n.t
-                                plane.w -= glm::dot(glm::vec3(plane), shift);
-                            }
-                            return frustum;
-                        }();
-                        auto const up_light = this->cull_bvh->frustum_cull(shifted_frustum);
-                        this->shadow_casters.reserve(this->shadow_casters.size() + up_light.size());
-                        for (auto const* node : up_light) {
+                        utility::frustum const light_frustum = utility::make_frustum(this->light_state.light_view_proj);
+                        auto const in_light = this->cull_bvh->frustum_cull(light_frustum);
+                        this->shadow_casters.reserve(this->shadow_casters.size() + in_light.size());
+                        for (auto const* node : in_light) {
                             this->shadow_casters.push_back(node->extra_data);
                         }
                         std::ranges::sort(this->shadow_casters);
@@ -1962,10 +1957,10 @@ namespace vulkan {
 
     // Tighten the directional shadow frustum to the camera's own view frustum every frame. One
     // 2048^2 map cannot cover a whole scene and still resolve a thin caster: the orthographic box
-    // therefore follows the camera. The camera frustum corners (plus the same corners pushed
-    // up-light by shadow_caster_extent, so a caster outside the view still throws its shadow in)
-    // are fitted with an axis-aligned box in light space; the box center is then snapped to the
-    // texel grid, which is what keeps the shadow edges from crawling while the camera moves.
+    // therefore follows the camera - its xy footprint is the camera frustum's, and the depth range
+    // covers the frustum corners plus every caster whose shadow column can reach the view (a wall
+    // behind the camera included). The box center is snapped to the texel grid, which is what keeps
+    // the shadow edges from crawling while the camera moves.
     void runtime::update_shadow_frustum() {
         if (!this->shadows_enabled) {
             return;
@@ -2001,11 +1996,11 @@ namespace vulkan {
         }
 
         // Casters outside the view still cast into it (a wall behind the camera): fitting only the
-        // frustum corners clips them and sunlight leaks through. Every scene leaf whose light-space
-        // xy overlaps the frustum's is merged into the fit - under the orthographic light a caster's
-        // shadow lands at the caster's own light-space xy, so that overlap test is exact for "can
-        // this shadow land inside the view". This keeps the box tight: geometry whose shadow cannot
-        // reach the view (e.g. the floor far down-light) is not allowed to inflate it.
+        // frustum corners clipped them and sunlight leaked through. Every scene leaf whose light-space
+        // xy overlaps the frustum's therefore contributes its light-space DEPTH range to the fit -
+        // under the orthographic light a caster's shadow lands at the caster's own light-space xy, so
+        // that overlap test is exact for "can this shadow land inside the view". Geometry whose shadow
+        // cannot reach the view (e.g. the floor slab behind the camera) is left out entirely.
         if (this->bound_scene != nullptr) {
             this->shadow_caster_scratch.clear();
             for (scene_tree::scene_node const& root : this->bound_scene->roots) {
@@ -2015,8 +2010,16 @@ namespace vulkan {
             float const cone_max_x = max_ls.x;
             float const cone_min_y = min_ls.y;
             float const cone_max_y = max_ls.y;
+            bool unbounded_caster = false;
             for (primitive const* const leaf : this->shadow_caster_scratch) {
-                if (leaf == nullptr || !leaf->has_bounds) {
+                if (leaf == nullptr) {
+                    continue;
+                }
+                if (!leaf->has_bounds) {
+                    // instanced leaf: one draw covering many transforms, so there is no single
+                    // world AABB to merge. It is still rendered into the shadow map, so the fit
+                    // must not pretend it does not exist - widen to the whole scene sphere below.
+                    unbounded_caster = true;
                     continue;
                 }
                 auto const [wmin, wmax] = leaf->world_aabb();
@@ -2034,8 +2037,37 @@ namespace vulkan {
                 if (!overlaps_view) {
                     continue; // this caster's shadow cannot land inside the view frustum
                 }
-                min_ls = glm::min(min_ls, caster_min);
-                max_ls = glm::max(max_ls, caster_max);
+                // Only the merged DEPTH (light-space z) may grow past the camera frustum footprint:
+                // an orthographic sun drops a caster's shadow at the caster's own light-space xy,
+                // and only xy inside the view is ever sampled - so clamping the merged xy to the
+                // cone keeps the box (and thus the texel density) as tight as the camera fit, while
+                // the full z range makes sure the caster's depth actually reaches the map. Merging
+                // the raw AABB instead let one big floor slab inflate the box to the whole scene;
+                // leaving z alone clipped the caster and leaked the sun through it.
+                min_ls = glm::min(min_ls, glm::vec3(std::clamp(caster_min.x, cone_min_x, cone_max_x),
+                                                    std::clamp(caster_min.y, cone_min_y, cone_max_y),
+                                                    caster_min.z));
+                max_ls = glm::max(max_ls, glm::vec3(std::clamp(caster_max.x, cone_min_x, cone_max_x),
+                                                    std::clamp(caster_max.y, cone_min_y, cone_max_y),
+                                                    caster_max.z));
+            }
+            if (unbounded_caster) {
+                // A caster with no world AABB can be anywhere in the scene, so the only sound fit
+                // is the whole scene sphere; the box loses resolution but the alternative is a
+                // caster drawn into the map from outside it, i.e. sunlight leaking through it.
+                glm::vec3 sphere_min(std::numeric_limits<float>::max());
+                glm::vec3 sphere_max(std::numeric_limits<float>::lowest());
+                for (int corner = 0; corner < 8; ++corner) {
+                    glm::vec3 const p = this->shadow_scene_center +
+                                        glm::vec3((corner & 1) != 0 ? this->scene_radius : -this->scene_radius,
+                                                  (corner & 2) != 0 ? this->scene_radius : -this->scene_radius,
+                                                  (corner & 4) != 0 ? this->scene_radius : -this->scene_radius);
+                    glm::vec3 const ls = glm::vec3(light_rotation * glm::vec4(p, 1.0f));
+                    sphere_min = glm::min(sphere_min, ls);
+                    sphere_max = glm::max(sphere_max, ls);
+                }
+                min_ls = glm::min(min_ls, sphere_min);
+                max_ls = glm::max(max_ls, sphere_max);
             }
         }
         // square the box (isotropic resolution) and snap its center to the texel grid
@@ -2047,19 +2079,18 @@ namespace vulkan {
         center_ls.y = std::floor(center_ls.y / texel) * texel;
         glm::vec3 const center_ws = glm::vec3(glm::inverse(light_rotation) * glm::vec4(center_ls, 1.0f));
 
-        // light camera far enough up-sun to see every point, then fit near/far to the points
+        // light camera far enough up-sun to see every fitted point, then fit near/far to the SAME
+        // fitted range. Deriving near/far from the camera frustum corners alone (as this used to)
+        // clipped away every caster merged above that sat further up-light than the corners: its
+        // depth never reached the map, so the sun leaked straight through it. light_rotation is a
+        // pure rotation and lookAt(.., -light_dir, ..) makes light-space z = dot(light_dir, p), so
+        // along the light view (eye = center_ws + light_dir * distance) a point's depth is
+        // center_ls.z + distance - ls_z - the extremes therefore come straight from min_ls/max_ls.z.
         float const distance = std::max(this->scene_radius * 2.0f, 1.0f) + this->shadow_caster_extent;
         glm::vec3 const eye = center_ws + light_dir * distance;
         glm::mat4 const view = glm::lookAt(eye, center_ws, up);
-        float near_plane = std::numeric_limits<float>::max();
-        float far_plane = 0.0f;
-        for (glm::vec3 const& point : points) {
-            float const depth = -(glm::vec3(view * glm::vec4(point, 1.0f)).z);
-            near_plane = std::min(near_plane, depth);
-            far_plane = std::max(far_plane, depth);
-        }
-        near_plane = std::max(near_plane - 1.0f, 0.05f);
-        far_plane = far_plane + 1.0f;
+        float const near_plane = std::max(distance + center_ls.z - max_ls.z - 1.0f, 0.05f);
+        float const far_plane = distance + center_ls.z - min_ls.z + 1.0f;
 
         glm::mat4 proj = glm::orthoRH_ZO(-half, half, -half, half, near_plane, far_plane);
         proj[1][1] *= -1.0f; // same y-flip convention as the camera projection
@@ -2075,6 +2106,8 @@ namespace vulkan {
         // shadow caster culling (begin_recording): casters up to ~1/8 of the scene radius
         // up-light of the camera frustum can still throw a shadow into the view
         this->shadow_caster_extent = std::max(1.0f, scene_radius * 0.125f);
+        // remembered for update_shadow_frustum's fallback fit (a caster without its own world AABB)
+        this->shadow_scene_center = scene_center;
         if (!this->shadow_pipeline || this->light_mapped.empty()) {
             utility::log("shadow mapping not enabled (no shadow pipeline / light buffer)");
             return;

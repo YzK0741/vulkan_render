@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.15  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.16  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -230,9 +230,9 @@ namespace vulkan {
         std::vector<vk_image> shadow_images = {}; // depth images, rendered into every frame
         std::vector<vk_image_view> shadow_image_views = {};
         vk_sampler shadow_sampler = {}; // linear depth-compare (hardware PCF) + clamp-to-edge
-        // one-time log for the shadow-caster heuristic switch (see begin_recording): scenes over
-        // full_scene_shadow_leaf_limit fall back to the camera-margin cull set, which can leak
-        // sunlight through interiors - say so once instead of silently changing behavior
+        // one-time log for the shadow-caster switch (see begin_recording): scenes over
+        // full_scene_shadow_leaf_limit draw a culled subset instead of every leaf - say so once
+        // instead of silently changing behavior
         bool shadow_heuristic_logged = false;
         // Light UBO (scene set binding 7): ONE host-visible buffer per frame slot, like the
         // camera UBO - each slot's scene set points at its own buffer, so the per-frame host
@@ -409,20 +409,22 @@ namespace vulkan {
         // the blend order is back-to-front. Rebuilt in begin_recording together with the cull.
         std::pmr::vector<primitive const*> frame_transparent = {};
         // shadow-pass subset (rebuilt each frame before the shadow recording). SMALL scenes
-        // (<= full_scene_shadow_leaf_limit leaves, begin_recording): EVERY leaf - exact, because
-        // camera-based caster culling is only an approximation (a caster arbitrarily far
-        // up-light still throws its parallel shadow column into the view; a finite margin
-        // leaked sun through interior walls like Sponza's). HEAVY scenes (tens of thousands of
-        // leaves): the frustum-visible leaves PLUS the leaves up to shadow_caster_extent
-        // up-light of them, so the shadow pass does not re-draw every scene leaf every frame.
-        // Instanced / bound-less leaves are always included.
+        // (<= full_scene_shadow_leaf_limit leaves, begin_recording): EVERY leaf - exact and cheap
+        // at that size. HEAVY scenes: the camera-visible leaves plus the leaves the BVH reports
+        // inside the SHADOW frustum itself. That frustum follows the camera and already contains
+        // every caster whose shadow can land in view (update_shadow_frustum merges the per-leaf
+        // boxes whose light-space xy overlaps the camera frustum's, which is exact under the
+        // orthographic light), so - unlike the old camera-frustum-shifted-by-a-margin heuristic -
+        // an off-screen caster such as the wall behind the camera is still included. Instanced /
+        // bound-less leaves are always included.
         std::pmr::vector<primitive const*> shadow_casters = {};
-        // normalized direction toward the analytic sun (mirrors make_directional_light_ubo);
-        // shadow caster culling shifts the camera frustum along this to catch up-light casters
-        glm::vec3 light_direction = glm::normalize(glm::vec3(0.3f, 1.0f, 0.5f));
         // how far up-light of the camera frustum a caster still matters (its shadow can still
         // reach the view). Scene-scale heuristic: max(1, scene_radius / 8); see enable_shadows.
         float shadow_caster_extent = 1.0f;
+        // scene center handed to enable_shadows. update_shadow_frustum falls back to
+        // center +- scene_radius when a shadow caster has no world AABB of its own (instanced
+        // leaves spread over many transforms), so such a caster can never fall outside the fit.
+        glm::vec3 shadow_scene_center = glm::vec3(0.0f);
         // optional Dear ImGui debug overlay; inactive until enable_debug_gui() succeeds. The
         // runtime drives it inside the frame steps (new_frame before recording, record after the
         // runtime's own draw calls) so callers only manage its content via debug_gui().
