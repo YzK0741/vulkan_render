@@ -2015,7 +2015,9 @@ namespace vulkan {
 
     void runtime::set_bloom(float const intensity, float const threshold) noexcept {
         this->bloom_intensity = std::clamp(intensity, 0.0f, 4.0f);
-        this->bloom_threshold = std::clamp(threshold, 0.0f, 16.0f);
+        // above ~0.75 the scene has almost no pixel brighter than the threshold, so nothing
+        // would glow; the gui slider is limited to the same visible range
+        this->bloom_threshold = std::clamp(threshold, 0.0f, 0.75f);
     }
 
     std::expected<runtime::frame_image, std::string> runtime::acquire_current_frame_image() {

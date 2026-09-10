@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.10  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.11  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -907,7 +907,7 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief bloom amount for the post-process pass (bright-pass threshold + blend weight)
          * @param intensity how much of the blurred bright pass is added back (0 disables bloom)
-         * @param threshold linear luminance subtracted in the bright pass (higher = only the
+         * @param threshold linear luminance subtracted in the bright pass (visible range 0..0.75:
          *        brightest highlights glow); both are clamped to sane ranges
          * @note same timing rule as set_exposure: CPU-side, copied into the post push constants
          */

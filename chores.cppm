@@ -126,8 +126,8 @@ namespace chores {
                                            // 2 = Beckmann, 3 = Blinn-Phong); write-through to runtime
         int diffuse_model = 0;             // diffuse combo (0 = Lambert, 1 = Oren-Nayar)
         float exposure = 1.0f;             // linear exposure slider (runtime::set_exposure)
-        float bloom_intensity = 0.0f;      // bloom blend weight slider (runtime::set_bloom)
-        float bloom_threshold = 0.6f;      // bloom bright-pass threshold slider
+        float bloom_intensity = 0.8f;      // bloom blend weight slider (runtime::set_bloom; 0 = off)
+        float bloom_threshold = 0.35f;     // bloom bright-pass threshold (visible range 0..0.75)
         // demo punctual lights (count matches vulkan::max_punctual_lights): the gui rows below
         // edit these fields live (no per-widget callbacks), and main() pushes the enabled set to
         // the runtime once per frame via chores::apply_point_lights(). Each slot is a point light

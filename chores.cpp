@@ -266,8 +266,11 @@ namespace chores {
         // into the runtime every frame like the light slots
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("exposure", &bindings.exposure, 0.1f, 5.0f));
         // bloom (bright-pass threshold + blend weight); 0 intensity disables it
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("bloom intensity", &bindings.bloom_intensity, 0.0f, 2.0f));
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("bloom threshold", &bindings.bloom_threshold, 0.0f, 4.0f));
+        // the useful ranges: a threshold above ~0.75 leaves almost no pixel over it (so nothing
+        // glows), and the intensity needed for a visible glow grows with the threshold - keeping
+        // the threshold low is what makes the whole intensity slider effective
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("bloom intensity", &bindings.bloom_intensity, 0.0f, 3.0f));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("bloom threshold", &bindings.bloom_threshold, 0.0f, 0.75f));
         // ---- punctual lights (demo lights; see apply_point_lights): the widgets edit
         //      bindings.point_lights live and main() pushes the enabled set once per frame.
         //      Each slot is a point light or - with `spot` checked - a cone light -------
