@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.17.2  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.18.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -516,6 +516,11 @@ namespace vulkan {
         // Tracked separately from shadow_cascades because shrinking the count keeps the layers that are
         // already allocated - only growing it costs a rebuild.
         uint32_t shadow_allocated_layers = 0;
+        // Frame limiter (see set_max_fps): the instant the next frame may start, advanced by exactly one
+        // period per frame so a slow frame resyncs instead of banking debt (which would show up as a
+        // burst of catch-up frames) and a fast one does not drift.
+        double max_fps = 0.0;
+        std::chrono::steady_clock::time_point next_frame_deadline = {};
         // Cascaded shadow maps: ONE 2D-array depth image per frame slot (while slot A is in flight,
         // slot B already rewrites its own map, so the two never race on the same image), with
         // shadow_cascades layers - each layer fitted to its own sub-range of the camera view.
@@ -1506,6 +1511,18 @@ namespace vulkan {
          *       into the post push constants every frame (same timing rule as set_exposure)
          */
         void set_fxaa(bool enabled, float subpixel = 0.75f, float edge_threshold = 0.166f) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief cap the render loop at @p fps frames per second (0 or less = uncapped)
+         *
+         * A frame limiter, not a present-mode choice: with Mailbox - and, measured, even with
+         * FIFO_LATEST_READY - the loop free-runs as fast as the CPU can record, which burns most of a
+         * core producing frames nobody sees. The wait lives in pace_and_acquire() so it is attributed
+         * to the pace phase and never happens while a swapchain image is held. 0 is the default because
+         * that is the mode a throughput measurement needs.
+         */
+        void set_max_fps(double fps) noexcept;
 
         /** @brief whether the FXAA pass is currently enabled (see set_fxaa) */
         [[nodiscard]] bool fxaa() const noexcept {

@@ -2,8 +2,10 @@ module;
 
 #include <GLFW/glfw3.h>
 #include <bit> // std::bit_cast for the caster world-matrix hash
+#include <chrono>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <thread> // std::this_thread::yield in the frame limiter
 #include <vulkan/vulkan.h>
 
 module vulkan.runtime;
@@ -1179,6 +1181,25 @@ namespace vulkan {
         // minimized case; nothing was acquired, so no semaphore is left pending.
         if (vk.swap_chain_extent.width == 0 || vk.swap_chain_extent.height == 0) {
             return frame_status::skipped;
+        }
+
+        // Frame limit (set_max_fps): hold the frame until its deadline before touching the swapchain, so
+        // the wait can never happen with an image acquired. yield() and not a timer: on a fast scene the
+        // remaining slack is a few milliseconds at most, and an OS sleep at Windows' default 15.6 ms
+        // granularity overshoots by more than the target period (a 144 Hz target would sag towards 60).
+        // The deadline moves by exactly one period, so overrunning a frame resyncs to now instead of
+        // accumulating debt that would be paid back as a burst.
+        if (this->max_fps > 0.0) {
+            auto const period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / this->max_fps));
+            auto const now = std::chrono::steady_clock::now();
+            this->next_frame_deadline += period;
+            if (this->next_frame_deadline > now) {
+                while (std::chrono::steady_clock::now() < this->next_frame_deadline) {
+                    std::this_thread::yield();
+                }
+            } else {
+                this->next_frame_deadline = now; // fell behind: resync, do not bank debt
+            }
         }
 
         // Pace the frame slot: wait until the previous submission on this slot has completed
@@ -3796,6 +3817,23 @@ namespace vulkan {
         this->ssao_samples = std::clamp(samples, 0u, 16u); // MAX_SSAO_SAMPLES in deferred.frag
         if (enabled && !this->deferred_lit_active()) {
             this->warn_missing_feature("ssao", "screen-space AO only applies to the deferred path: switch 'deferred lighting' on ([render] deferred = true) or the checkbox does nothing");
+        }
+    }
+
+    void runtime::set_max_fps(double const fps) noexcept {
+        double const clamped = fps > 0.0 ? fps : 0.0;
+        // The demo calls this every frame to mirror the GUI, so an unchanged value must be a no-op:
+        // re-arming the deadline here would push it back to the epoch on every frame and the limiter
+        // would never wait for anything (which is exactly what the first version did).
+        if (clamped == this->max_fps) {
+            return;
+        }
+        this->max_fps = clamped;
+        this->next_frame_deadline = {}; // re-arm: the first frame after a change never waits
+        if (this->max_fps > 0.0) {
+            utility::log("runtime: frame rate limited to {:.1f} fps", this->max_fps);
+        } else {
+            utility::log("runtime: frame rate limit removed (uncapped)");
         }
     }
 

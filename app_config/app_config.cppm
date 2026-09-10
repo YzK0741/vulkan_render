@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.10.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.11.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -41,6 +41,7 @@ import utility;
  * window_height = 960
  * window_title  = "vulkan_render"
  * vsync = true     # true = FIFO_LATEST_READY (vsync), false = mailbox (uncapped)
+ * max_fps = 0      # 0 = uncapped (what a throughput measurement needs), else a frame rate cap
  * msaa  = 0        # 0 = auto (device max), else a fixed sample count (4/8/...)
  * clear_color = [0.02, 0.02, 0.03]  # background clear color, RGB in 0..1
  * skybox = true    # draw the environment skybox pass each frame
@@ -92,6 +93,7 @@ namespace app_config {
         int window_height = 960;
         std::string window_title = "vulkan_render";               // GLFW window title
         bool vsync = true;                                        // true = FIFO_LATEST_READY (FIFO fallback), false = mailbox (uncapped)
+        double max_fps = 0.0;                                     // 0 = uncapped; a positive value caps the render loop
         int msaa = 0;                                             // 0 = auto (device max usable), otherwise a fixed sample count
         std::array<float, 3> clear_color = {0.02f, 0.02f, 0.03f}; // background clear color (RGB, 0..1)
         bool skybox = true;                                       // draw the environment skybox pass each frame

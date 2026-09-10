@@ -73,6 +73,14 @@ namespace app_config {
                     settings.render.vsync = *value;
                 }
             }
+            if (toml::node const* node = render->get("max_fps")) {
+                // TOML integers are not doubles: max_fps = 60 must work as written, so try both.
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.max_fps = *value;
+                } else if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.render.max_fps = static_cast<double>(*value);
+                }
+            }
             if (toml::node const* node = render->get("msaa")) {
                 if (std::optional<int64_t> const value = node->value<int64_t>()) {
                     settings.render.msaa = static_cast<int>(*value);

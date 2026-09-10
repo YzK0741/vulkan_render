@@ -51,6 +51,11 @@ window_title = "vulkan_render"
 # throughput in, because with vsync the presented rate is the display's refresh rate and only the
 # per-pass CPU/GPU timing lines say anything about the renderer.
 vsync = true
+# max_fps: cap the render loop. 0 = uncapped, which is what a throughput (fps) measurement needs -
+# with vsync on the displayed rate is the refresh rate either way, but the loop still runs flat out and
+# burns a core, so a desktop build usually wants something like the display's refresh rate here while a
+# benchmark wants 0. Capture runs (--capture-frames) also want 0.
+max_fps = 0
 
 # msaa: multisample count. 0 = auto (device max usable, usually 4 or 8);
 #   or a fixed 2/4/8/...; clamped to the device max when unsupported.
