@@ -74,8 +74,9 @@ off path that is byte-identical to the pre-M6 frame. **M7 (done)** is the collat
 map size became a config knob, the documented example config is parsed and pinned by a unit test,
 and the configuration / GUI / reference documentation cover every milestone. **Shadow-map reuse** (the
 first optimization that reads the pass graph instead of shrinking it) followed: a slot's cascade maps
-are re-rendered only when the fitted matrices (a refit counter) or the caster geometry (an FNV-1a hash
-of every caster's world matrix, of the uploaded skin matrices and of a morph-scratch revision) changed
+are re-rendered only when the fitted matrices (a refit counter) or the caster geometry (an XXH3-64
+fingerprint of every caster's world matrix, of the uploaded skin matrices and of a morph-scratch
+revision) changed
 since that slot last rendered them, so the skip is byte-identical by construction - a skinned caster
 keeps a constant world matrix, which is why the skin upload has to be part of the signal or an
 animated model silently keeps a frozen map. Still ahead on this

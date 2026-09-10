@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.17.0a  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.17.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -1079,6 +1079,22 @@ namespace vulkan {
          */
         [[nodiscard]] bool instanced_world_aabb(primitive const& leaf, glm::vec3& wmin, glm::vec3& wmax) const;
         void record_shadow_content(VkCommandBuffer command_buffer) const;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief fingerprint of everything the shadow pass reads as input: the caster count, every
+         *        caster's world matrix, the uploaded skin matrices and the morph-scratch revision
+         * @return one 64-bit fingerprint, equal across frames exactly when the shadow maps a slot
+         *         already holds are still the maps the frame would render
+         *
+         * The shadow-map reuse compares this against the fingerprint of the frame that last rendered
+         * a slot (see record_main_drawcalls). A skinned caster keeps a CONSTANT world matrix - its
+         * pose lives entirely in the joint matrices - so the skin upload has to be part of the
+         * fingerprint or an animated model keeps a frozen map; morph targets are written through
+         * morph_scratch(), which has no upload hook, so it bumps a revision instead. XXH3 per matrix,
+         * not a byte loop over the concatenation: this runs on every frame, the reused ones included.
+         */
+        [[nodiscard]] uint64_t shadow_geometry_signature() const;
 
         /**
          * @ingroup vulkan_runtime

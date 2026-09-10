@@ -1522,6 +1522,25 @@ namespace vulkan {
         return frame_status::proceed;
     }
 
+    // Everything that decides whether a slot's shadow maps are still valid, folded into one 64-bit
+    // fingerprint: the caster count (the set itself can change - heavy scenes BVH-cull the casters
+    // per frame), each caster's world matrix, the uploaded skin matrices (a skinned mesh keeps a
+    // constant push.model; its pose lives only in those) and the morph-scratch revision. It is XXH3
+    // rather than a byte loop because it runs on every frame, the reused ones included: 0.99 us
+    // against 15.5 us for Sponza's 300 casters. The fold is boost::hash_combine's mix - the values
+    // are hashed rather than compared, so the mix carries the collision resistance.
+    uint64_t runtime::shadow_geometry_signature() const {
+        auto const fold = [](uint64_t const accumulator, uint64_t const value) {
+            return accumulator ^ (value + 0x9e3779b97f4a7c15ull + (accumulator << 6) + (accumulator >> 2));
+        };
+        uint64_t signature = static_cast<uint64_t>(this->shadow_casters.size());
+        for (primitive const* caster : this->shadow_casters) {
+            uint64_t const matrix = utility::xxh3_64bits({reinterpret_cast<unsigned char const*>(&caster->push.model), sizeof(glm::mat4)});
+            signature = fold(signature, matrix);
+        }
+        return fold(fold(signature, this->skin_matrix_hash), this->morph_revision);
+    }
+
     void runtime::record_main_drawcalls() {
         cpu_phase_timer const phase_timer{*this, cpu_phase::scene};
         core& vk = this->vulkan_core;
@@ -1554,35 +1573,13 @@ namespace vulkan {
         // actually read the map - the flat render mode skips it entirely, which is worth ~45% of the
         // frame (see the measured numbers in the struct's documentation).
         render_features const features = this->active_features();
-        // Geometry half of the reuse test: FNV-1a over every caster's world matrix plus the caster
-        // count (the set itself can change on heavy scenes, where the casters are BVH-culled per
-        // frame). ~300 leaves on Sponza: a few microseconds against the ~0.6 ms the pass costs.
-        uint64_t caster_model_hash = 1469598103934665603ull;
-        {
-            auto const mix = [&caster_model_hash](unsigned char const byte) {
-                caster_model_hash ^= byte;
-                caster_model_hash *= 1099511628211ull;
-            };
-            uint32_t const caster_count = static_cast<uint32_t>(this->shadow_casters.size());
-            for (unsigned char const byte : std::bit_cast<std::array<unsigned char, sizeof(uint32_t)>>(caster_count)) {
-                mix(byte);
-            }
-            for (primitive const* caster : this->shadow_casters) {
-                for (unsigned char const byte : std::bit_cast<std::array<unsigned char, sizeof(glm::mat4)>>(caster->push.model)) {
-                    mix(byte);
-                }
-            }
-            for (unsigned char const byte : std::bit_cast<std::array<unsigned char, sizeof(uint64_t)>>(this->skin_matrix_hash)) {
-                mix(byte);
-            }
-            for (unsigned char const byte : std::bit_cast<std::array<unsigned char, sizeof(uint32_t)>>(this->morph_revision)) {
-                mix(byte);
-            }
-        }
+        // Geometry half of the reuse test: one fingerprint of every input the pass reads - see
+        // shadow_geometry_signature().
+        uint64_t const geometry_signature = this->shadow_geometry_signature();
         // Skip the whole pass when this slot's maps are still valid: unchanged fit (content version)
         // AND unchanged caster geometry (hash). The maps stay in SHADER_READ_ONLY and the descriptor
         // set still points at them, so there is nothing to record - not even the read barriers.
-        bool const shadow_reuse = this->shadow_rendered_version[frame_slot] == this->shadow_content_version && this->shadow_rendered_models[frame_slot] == caster_model_hash;
+        bool const shadow_reuse = this->shadow_rendered_version[frame_slot] == this->shadow_content_version && this->shadow_rendered_models[frame_slot] == geometry_signature;
         if (features.shadow && !shadow_reuse) {
             cpu_phase_timer const shadow_timer{*this, cpu_phase::shadow}; // the sub-phase of scene that records every cascade
             auto const* shadow_detail = vk.vma.get_image_detail(this->shadow_images[frame_slot].handle());
@@ -1677,7 +1674,7 @@ namespace vulkan {
                 VkDependencyInfo const shadow_read_dependency = make_image_dependency_info(read_barrier_count, shadow_read_barriers.data());
                 vkCmdPipelineBarrier2(*command_buffer, &shadow_read_dependency);
                 this->shadow_rendered_version[frame_slot] = this->shadow_content_version;
-                this->shadow_rendered_models[frame_slot] = caster_model_hash;
+                this->shadow_rendered_models[frame_slot] = geometry_signature;
             }
         } else if (features.shadow) {
             // Reuse: the maps were rendered into this slot by an earlier frame and nothing that feeds
@@ -4858,14 +4855,10 @@ namespace vulkan {
         }
         std::size_t const bytes = std::min(matrices.size_bytes(), static_cast<std::size_t>(vulkan::scene_skin_capacity) * sizeof(glm::mat4));
         std::memcpy(this->skin_mapped[slot], matrices.data(), bytes);
-        // Content hash of this upload: it is the only per-frame signal that a skinned caster moved.
-        auto const* const uploaded = static_cast<unsigned char const*>(this->skin_mapped[slot]);
-        uint64_t hash = 1469598103934665603ull;
-        for (std::size_t index = 0; index < bytes; ++index) {
-            hash ^= uploaded[index];
-            hash *= 1099511628211ull;
-        }
-        this->skin_matrix_hash = hash;
+        // Content fingerprint of this upload: the only per-frame signal that a skinned caster moved
+        // (its push.model is constant, the pose lives in these matrices). XXH3 rather than a byte
+        // loop - 1.3 us for an 840-joint rig against 43.7 us, and this runs on every frame.
+        this->skin_matrix_hash = utility::xxh3_64bits({static_cast<unsigned char const*>(this->skin_mapped[slot]), bytes});
     }
 
     void* runtime::morph_scratch() noexcept {

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: utility
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Pure-CPU toolkit: data_block, BVH, thread_pool, frame_clock / frame_stats,
 // better_pmr (mimalloc routing), content hashing. Standalone - no Vulkan or app
@@ -569,6 +569,19 @@ namespace utility {
      * @ingroup hash
      */
     export using xxh3_digest = data_block<16>;
+
+    /**
+     * @brief xxh3_64bits hash function
+     * @param data_view bytes to fingerprint
+     * @return the 64-bit fingerprint of @p data_view
+     * @ingroup hash
+     *
+     * The narrow variant is for per-frame change detection (the shadow pass's geometry signature),
+     * where a collision costs one stale frame rather than a silently wrong resource - use
+     * xxh3_128bits() when a collision would be wrong without anyone noticing, as it would be for
+     * content-addressed dedup. It is also the faster of the two on small inputs.
+     */
+    export uint64_t xxh3_64bits(std::span<unsigned char const> data_view);
 
     /**
      * @brief xxh3_128bits hash function

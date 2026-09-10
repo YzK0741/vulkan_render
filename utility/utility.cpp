@@ -309,6 +309,10 @@ void utility::error_message(std::string message) {
 #endif
 }
 
+uint64_t utility::xxh3_64bits(std::span<unsigned char const> const data_view) {
+    return XXH3_64bits(data_view.data(), data_view.size_bytes());
+}
+
 utility::xxh3_digest utility::xxh3_128bits(std::span<unsigned char const> const data_view) {
     // XXH3_128bits returns a {low64, high64} pair; store its bytes in the digest
     xxh3_digest digest = {};
