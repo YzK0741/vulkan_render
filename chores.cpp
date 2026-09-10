@@ -323,7 +323,7 @@ namespace chores {
         // compute pipeline exists - without it the switch cannot do anything.
         {
             auto clustered = std::make_unique<vulkan::gui::checkbox_widget>("clustered lights", &bindings.clustered_lights);
-            clustered->visible_when = [&runtime] { return runtime.feature_available("clustered"); };
+            clustered->visible_when = [&runtime] { return runtime.feature_available("clustered"); }; // offered whenever the compute pass exists (it works in either path)
             panel.push_back(std::move(clustered));
         }
         // screen-space ambient occlusion (M6): the deferred lighting stage traces the G-buffer, so
@@ -331,11 +331,11 @@ namespace chores {
         // The sliders edit the radius (world units), the applied intensity and the sample count.
         {
             auto ssao = std::make_unique<vulkan::gui::checkbox_widget>("ssao", &bindings.ssao_enabled);
-            ssao->visible_when = [&bindings, &runtime] { return runtime.feature_available("deferred") && bindings.deferred_enabled; }; // deferred-only: offer it once that path is on
+            ssao->visible_when = [&runtime] { return runtime.feature_available("deferred") && runtime.feature_active("ssao"); }; // deferred-only, via the feature registry
             panel.push_back(std::move(ssao));
             auto make_ssao_slider = [&](std::string label, float* value, float lo, float hi) {
                 auto slider = std::make_unique<vulkan::gui::slider_widget>(std::move(label), value, lo, hi);
-                slider->visible_when = [&bindings, &runtime] { return runtime.feature_available("deferred") && bindings.deferred_enabled && bindings.ssao_enabled; };
+                slider->visible_when = [&runtime] { return runtime.feature_active("ssao"); };
                 panel.push_back(std::move(slider));
             };
             make_ssao_slider("ssao radius", &bindings.ssao_radius, 0.05f, 3.0f);
@@ -381,7 +381,7 @@ namespace chores {
             // the knobs only matter while FXAA is on (and while the fxaa pipeline exists at all)
             auto make_fxaa_slider = [&](std::string label, float* value, float lo, float hi) {
                 auto slider = std::make_unique<vulkan::gui::slider_widget>(std::move(label), value, lo, hi);
-                slider->visible_when = [&bindings, &runtime] { return runtime.feature_available("fxaa") && bindings.fxaa_enabled; };
+                slider->visible_when = [&runtime] { return runtime.feature_active("fxaa"); };
                 panel.push_back(std::move(slider));
             };
             make_fxaa_slider("fxaa subpixel", &bindings.fxaa_subpixel, 0.0f, 1.0f);
@@ -398,7 +398,7 @@ namespace chores {
                 "gbuffer channel",
                 std::vector<std::string>{"albedo", "normal", "roughness", "metallic", "ao", "material id", "depth", "flags"},
                 &bindings.gbuffer_channel);
-            channel->visible_when = [&bindings, &runtime] { return runtime.feature_available("gbuffer-debug") && bindings.gbuffer_debug; };
+            channel->visible_when = [&runtime] { return runtime.feature_active("gbuffer-debug"); };
             panel.push_back(std::move(channel));
         }
         // deferred lighting: the render-mode switch for the deferred path (the debug view above wins
@@ -415,11 +415,11 @@ namespace chores {
         // with the deferred path - the forward path keeps its MSAA.
         {
             auto taa = std::make_unique<vulkan::gui::checkbox_widget>("taa", &bindings.taa_enabled);
-            taa->visible_when = [&bindings, &runtime] { return bindings.deferred_enabled && runtime.feature_available("taa") && runtime.feature_available("deferred"); }; // deferred-only
+            taa->visible_when = [&runtime] { return runtime.feature_available("taa") && runtime.feature_active("taa"); }; // deferred-only, via the feature registry
             panel.push_back(std::move(taa));
             auto make_taa_slider = [&](std::string label, float* value, float lo, float hi) {
                 auto slider = std::make_unique<vulkan::gui::slider_widget>(std::move(label), value, lo, hi);
-                slider->visible_when = [&bindings, &runtime] { return runtime.feature_available("taa") && bindings.deferred_enabled && bindings.taa_enabled; };
+                slider->visible_when = [&runtime] { return runtime.feature_active("taa"); };
                 panel.push_back(std::move(slider));
             };
             make_taa_slider("taa history (static)", &bindings.taa_blend_static, 0.0f, 0.98f);

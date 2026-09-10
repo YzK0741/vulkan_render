@@ -1525,7 +1525,11 @@ namespace vulkan {
         //      shadow rendering instance (VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT).
         //      The recording is still sequential on the primary thread - rendering is identical
         //      to inline; stage 3 fans the recording out over the task pool.
-        if (this->shadow_pipeline && this->shadows_enabled && this->shadow_enabled) {
+        // Feature registry (runtime::active_features): the pass runs only when a shading stage will
+        // actually read the map - the flat render mode skips it entirely, which is worth ~45% of the
+        // frame (see the measured numbers in the struct's documentation).
+        render_features const features = this->active_features();
+        if (features.shadow) {
             auto const* shadow_detail = vk.vma.get_image_detail(this->shadow_images[frame_slot].handle());
             if (shadow_detail != nullptr) {
                 // Secondary: inherit only the depth attachment (dynamic rendering 1.3). The
@@ -3443,6 +3447,68 @@ namespace vulkan {
         this->shadow_map_size = rounded;
     }
 
+    runtime::render_features runtime::active_features() const noexcept {
+        // The single derivation of "what runs this frame" (see the struct's docs): pass recording,
+        // the overlay's visibility predicates and the log all read THIS, so they cannot drift apart.
+        render_features f;
+        f.unlit = this->unlit_active;
+        f.gbuffer_debug = this->gbuffer_debug && this->gbuffer_pipeline.has_value() && this->gbuffer_debug_pipeline.has_value();
+        f.deferred = !f.gbuffer_debug && this->deferred_on && this->deferred_pipeline.has_value() && this->gbuffer_pipeline.has_value();
+        // The shadow map is only read by the shading stages. The flat render mode samples nothing
+        // (unlit.frag has no lighting include; the deferred stage returns the albedo before any
+        // shading), so recording the pass would be pure waste - it measured 0.22 ms of a 0.5 ms frame.
+        f.shadow = this->shadow_enabled && this->shadows_enabled && this->shadow_pipeline.has_value() && !f.unlit;
+        // Same argument for the cluster pass: flat shading reads no light list, and with no active
+        // punctual light there is nothing to sort in the first place.
+        f.clustered = this->clustered_lights && this->cluster_pipeline.has_value() && this->light_state.light_count.x > 0.5f && !f.unlit;
+        f.taa = this->taa_on && this->taa_pipeline.has_value() && f.deferred;
+        f.ssao = this->ssao_enabled && f.deferred; // shader-side gate: no pass of its own to skip
+        f.bloom = this->bloom_intensity > 0.0f && this->post_hdr_pipeline.has_value() && !f.gbuffer_debug;
+        f.fxaa = this->fxaa_on && this->post_fxaa_pipeline.has_value();
+        // The deferred path evaluates the sky inside its own lighting stage, so the forward skybox
+        // pass has nothing to draw there (this is what record_main_content already did).
+        f.skybox = this->skybox_enabled && this->skybox_pipeline.has_value() && !f.deferred && !f.gbuffer_debug;
+        // The forward transparent pass is skipped whenever the G-buffer pass owns the opaque geometry
+        // (its depth attachment is the 1x G-buffer depth, which the MSAA forward pass cannot match).
+        f.transparent = !f.deferred && !f.gbuffer_debug && !this->frame_transparent.empty();
+        return f;
+    }
+
+    bool runtime::feature_active(std::string_view const name) const noexcept {
+        render_features const f = this->active_features();
+        if (name == "deferred") {
+            return f.deferred;
+        }
+        if (name == "gbuffer-debug") {
+            return f.gbuffer_debug;
+        }
+        if (name == "taa") {
+            return f.taa;
+        }
+        if (name == "fxaa") {
+            return f.fxaa;
+        }
+        if (name == "shadow") {
+            return f.shadow;
+        }
+        if (name == "skybox") {
+            return f.skybox;
+        }
+        if (name == "clustered") {
+            return f.clustered;
+        }
+        if (name == "ssao") {
+            return f.ssao;
+        }
+        if (name == "bloom") {
+            return f.bloom;
+        }
+        if (name == "unlit") {
+            return f.unlit;
+        }
+        return false;
+    }
+
     void runtime::warn_missing_feature(std::string_view const key, std::string const& message) {
         // Only meaningful once the startup is complete: the app applies the config to the runtime
         // BEFORE the pipelines exist (main sets the toggles, chores then creates the pipelines), so
@@ -3560,7 +3626,10 @@ namespace vulkan {
 
     void runtime::record_cluster_pass(VkCommandBuffer const command_buffer) {
         core& vk = this->vulkan_core;
-        if (!this->cluster_pipeline.has_value() || !this->clustered_lights || !this->scene_set_created) {
+        // Feature registry: skipped when no shading stage reads a light list (flat render mode) or
+        // when no punctual light is active - there would be nothing to sort, and the shading stage
+        // then falls back to looping zero lights.
+        if (!this->active_features().clustered || !this->scene_set_created) {
             return;
         }
         uint32_t const tiles_x = this->cluster_tiles_x;

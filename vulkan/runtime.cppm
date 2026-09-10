@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.12.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.13.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -1600,6 +1600,53 @@ namespace vulkan {
          * being shown inert. log_feature_status() prints the same information once at startup.
          */
         [[nodiscard]] bool feature_available(std::string_view name) const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief which render features actually RUN this frame
+         *
+         * One declared place for "what exists, what it needs, and is it on" - every field is derived
+         * from the config/GUI state plus the pipelines that were created, so nothing can disagree.
+         * It is the input to pass recording (the shadow pass and the cluster dispatch are skipped
+         * when no shading stage would read their output) and to `feature_active()`, which the debug
+         * overlay uses to decide what to offer and the log uses to report what ran.
+         *
+         * The gates that are NOT just "the switch is on" are the interesting ones, and each carries
+         * its reason:
+         *  - shadow: skipped in the flat (unlit) render mode - nothing samples the map there, so the
+         *    pass is pure waste (measured: 0.22 ms, ~45% of a 0.5 ms frame).
+         *  - clustered: skipped when no punctual light is active (nothing to sort) and in unlit mode.
+         *  - taa/ssao: deferred-path features (they consume the G-buffer).
+         *  - bloom: off with an intensity of 0 or while the G-buffer debug view is up.
+         *  - transparent: the forward transparent pass, which the G-buffer pass replaces.
+         */
+        struct render_features {
+            bool unlit = false;         // the flat render mode (no lighting anywhere)
+            bool gbuffer_debug = false; // the opaque pass stores the G-buffer for the debug view
+            bool deferred = false;      // the opaque pass stores the G-buffer and lighting is deferred
+            bool shadow = false;        // record the directional shadow pass
+            bool clustered = false;     // record the cluster compute pass
+            bool taa = false;           // resolve TAA
+            bool ssao = false;          // the lighting stage applies screen-space AO (shader-side gate)
+            bool bloom = false;         // run the bloom chain
+            bool fxaa = false;          // run the final FXAA pass
+            bool skybox = false;        // draw the forward skybox background pass
+            bool transparent = false;   // the forward transparent pass has work to record
+        };
+        [[nodiscard]] render_features active_features() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether a feature is available AND switched on right now (name-keyed)
+         * @param name "deferred", "gbuffer-debug", "taa", "fxaa", "shadow", "skybox", "clustered",
+         *        "ssao", "bloom", "unlit" - the same vocabulary as feature_available()
+         *
+         * This is what the overlay gates its controls on (`vulkan::gui::widget::visible_when`): a
+         * control is offered exactly when switching it could change the frame. feature_available()
+         * answers the different question "could this ever run this session", which is what the
+         * startup log reports.
+         */
+        [[nodiscard]] bool feature_active(std::string_view name) const noexcept;
 
         /** @brief whether the opaque pass currently writes the G-buffer (see set_gbuffer_debug) */
         [[nodiscard]] bool gbuffer_debug_enabled() const noexcept {
