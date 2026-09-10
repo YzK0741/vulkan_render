@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -526,6 +526,22 @@ namespace vulkan {
             float depth_bias_constant_factor = 0.0f,
             float depth_bias_slope_factor = 0.0f,
             float depth_bias_clamp = 0.0f) const;
+
+        /**
+         * @ingroup vulkan_core
+         * @brief create the clustered-light-culling COMPUTE pipeline (M5) from raw SPIR-V
+         * @param compute_shader_code raw SPIR-V binary of the compute shader (shaders/light_cluster.comp)
+         * @return vk_pipeline on success, error message on failure
+         *
+         * The engine's first compute pipeline. It uses the SAME shared scene pipeline layout as every
+         * graphics pipeline (one descriptor set + the fixed push block, whose range declares COMPUTE
+         * too), so the cluster pass binds the frame's own scene set - camera UBO, light UBO and the
+         * per-cluster buffers - with no new layout object, and a dispatch is nothing but
+         * vkCmdBindPipeline + vkCmdBindDescriptorSets + vkCmdDispatch. The returned vk_pipeline holds
+         * no viewport/scissor: a compute dispatch must not bind one.
+         */
+        std::expected<vk_pipeline, std::string_view> make_cluster_pipeline(
+            std::span<unsigned char const> compute_shader_code) const;
 
         void recreate_swap_chain();
         // one-time log for the "recreation deferred because the window has no drawable size" case

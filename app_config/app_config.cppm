@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -103,6 +103,11 @@ namespace app_config {
         // range's texel size. Applied BEFORE the scene import - see runtime::set_shadow_cascades.
         int shadow_cascades = 3;
         float shadow_cascade_blend = 0.1f;
+        // Clustered light culling ([render] clustered_lights, M5): the punctual lights are sorted
+        // into a screen-tile x depth-slice grid once per frame and the shading stage loops only its
+        // own cluster's list. false = the brute-force loop over every active light - the reference
+        // path the clustered one is verified against (and what every pre-M5 frame did).
+        bool clustered_lights = true;
         bool fxaa = false; // FXAA the final image (one extra fullscreen pass)
         // measure per-pass GPU time with timestamp queries: one vkCmdWriteTimestamp per pass
         // boundary, read back after the frame slot completed, averaged over a 60-frame window
@@ -138,7 +143,18 @@ namespace app_config {
         int env_mip_count = 5; // prefiltered-environment mip chain length
         int irr_size = 32;     // irradiance cubemap size
         int lut_size = 256;    // BRDF LUT size
+        // demo_lights ([lighting] demo_lights): spawn this many procedural punctual lights around
+        // the scene (a helix at the scene bounds, cycling colors). This is the clustered-light stress
+        // mode: with the debug overlay's four light slots the cluster lists and the brute-force loop
+        // visit the same handful of lights, so the win is invisible. 0 (default) = overlay lights
+        // only; the generated ones are pushed every frame together with the overlay's slots.
+        // Capped at max_demo_lights: the light UBO holds max_punctual_lights lights in total, and the
+        // overlay's own slots share that array.
+        int demo_lights = 0;
     };
+
+    /** @brief upper bound for [lighting] demo_lights (the UBO's light array is vulkan::max_punctual_lights) */
+    export constexpr uint32_t max_demo_lights = 64;
 
     /**
      * @ingroup app_config

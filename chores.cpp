@@ -198,6 +198,21 @@ namespace chores {
         }
 
         {
+            // Clustered light culling compute pass (M5): one dispatch per frame sorts the punctual
+            // lights into the screen-tile x depth-slice grid the shading stage then reads. Optional -
+            // without it (or with [render] clustered_lights = false) shade_surface() loops every
+            // active light, which is the brute-force reference the clustered path is verified on.
+            std::vector<unsigned char> compute_code;
+            load_shader(shaders_dir, "light_cluster.comp.spv", compute_code);
+            auto const cluster_result = runtime.make_cluster_pipeline(compute_code);
+            if (!cluster_result) {
+                utility::log("clustered light culling disabled: {}", cluster_result.error());
+            } else {
+                utility::log("SUCCESS: cluster compute pipeline created (clustered light culling)");
+            }
+        }
+
+        {
             // G-buffer pair (the deferred path's first half): the surface-writing pipeline the
             // opaque pass binds when it writes the G-buffer, and the fullscreen debug view that
             // turns one stored channel into a visible image. Both optional - without them
@@ -302,6 +317,10 @@ namespace chores {
             "shadow",
             &bindings.shadow_enabled,
             [&runtime](bool const enabled) { runtime.set_shadow_enabled(enabled); }));
+        // clustered light culling (M5): off = every active light is evaluated per pixel (the
+        // brute-force reference), on = only the pixel's cluster list. Mirroring it every frame in
+        // main() keeps the config and the checkbox in agreement.
+        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("clustered lights", &bindings.clustered_lights));
         // render mode: pbr (lit) vs unlit (flat base color, no shading). Default-semantics leaves
         // draw with the runtime's default pipeline, so this only records a combo selection here;
         // main() applies it BETWEEN frames via runtime.set_default_pipeline (the registry may
@@ -485,9 +504,12 @@ namespace chores {
         utility::log("gui: Dear ImGui debug overlay enabled");
     }
 
-    void apply_point_lights(vulkan::runtime& runtime, gui_bindings const& bindings) {
+    void apply_point_lights(vulkan::runtime& runtime, gui_bindings const& bindings, std::span<vulkan::punctual_light const> const extra) {
         // build the enabled demo lights into a fixed stack array (limit = the light UBO's
-        // array size) and push it; the span form keeps set_point_lights cheap to call per frame
+        // array size) and push it; the span form keeps set_point_lights cheap to call per frame.
+        // `extra` is the [lighting] demo_lights stress set (M5), appended after the overlay's slots
+        // so the overlay keeps working - both share the UBO's light array, so the overlay's slots
+        // win when the two together would overflow it.
         std::array<vulkan::punctual_light, vulkan::max_punctual_lights> active = {};
         uint32_t count = 0;
         for (gui_bindings::light_slot const& slot : bindings.point_lights) {
@@ -508,6 +530,12 @@ namespace chores {
                 light.spot_outer_cos = std::cos(glm::radians(outer_deg));
                 light.spot_inner_cos = std::cos(glm::radians(inner_deg));
             }
+        }
+        for (vulkan::punctual_light const& light : extra) {
+            if (count >= vulkan::max_punctual_lights) {
+                break;
+            }
+            active[count++] = light;
         }
         runtime.set_point_lights(std::span(active.data(), count));
     }

@@ -17,6 +17,7 @@ skybox = false
 shadow = false
 shadow_cascades = 2
 shadow_cascade_blend = 0.25
+clustered_lights = false
 fxaa = true
 gpu_timings = false
 gbuffer_debug = true
@@ -32,6 +33,7 @@ env_size = 128
 env_mip_count = 5
 irr_size = 64
 lut_size = 128
+demo_lights = 3
 
 [gui]
 show = false

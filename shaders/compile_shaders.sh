@@ -44,6 +44,7 @@ compile gbuffer.frag gbuffer.frag.spv
 compile gbuffer_debug.frag gbuffer_debug.frag.spv
 compile deferred.frag deferred.frag.spv
 compile taa.frag taa.frag.spv
+compile light_cluster.comp light_cluster.comp.spv
 compile skybox.vert skybox.vert.spv
 compile skybox.frag skybox.frag.spv
 compile shadow.vert shadow.vert.spv

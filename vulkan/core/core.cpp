@@ -903,8 +903,8 @@ namespace vulkan {
 
     void core::init_scene_layouts() noexcept {
         // ---- 1. Fixed flat descriptor set layout (see the convention docs in core.cppm) ----
-        std::array<VkDescriptorSetLayoutBinding, 11> bindings = {};
-        bindings[0] = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
+        std::array<VkDescriptorSetLayoutBinding, 13> bindings = {};
+        bindings[0] = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
         bindings[1] = {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = scene_texture_capacity, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         bindings[2] = {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         bindings[3] = {.binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
@@ -915,7 +915,7 @@ namespace vulkan {
         bindings[6] = {.binding = 6, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
         // light UBO: directional sun (light-space view-proj + direction) + BRDF model ids +
         // the punctual-light count/array (read by shadow.vert and pbr.frag)
-        bindings[7] = {.binding = 7, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
+        bindings[7] = {.binding = 7, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
         // shadow map depth texture: LINEAR depth-compare sampler = HARDWARE percentage-closer
         // filtering (one sampler2DShadow texture() returns the lit 2x2 fraction, no manual 3x3)
         bindings[8] = {.binding = 8, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
@@ -925,8 +925,13 @@ namespace vulkan {
         // morph data (floats): per-morphable-primitive delta + weight blocks; written by the
         // caller through the runtime's morph scratch memory (set once + per frame for weights)
         bindings[10] = {.binding = 10, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
+        // clustered light culling (M5): the per-cluster light count and the fixed-capacity index
+        // rows. Written by the cluster COMPUTE pass, read by the fragment stage - hence both stages
+        // in the flags (a binding is only usable from a stage that declares it here).
+        bindings[11] = {.binding = 11, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+        bindings[12] = {.binding = 12, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
 
-        std::array<VkDescriptorBindingFlags, 11> binding_flags = {};
+        std::array<VkDescriptorBindingFlags, 13> binding_flags = {};
         // texture array: only written entries are valid, appended before the render loop starts;
         // non-uniform indexing itself is a device feature, not a layout flag
         binding_flags[1] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
@@ -957,6 +962,9 @@ namespace vulkan {
         // only need the material fields (pbr.vert/frag) still declare their 96-byte block, which is
         // contained in this one.
         VkPushConstantRange push_range = {};
+        // VERTEX|FRAGMENT only - NOT compute: the cluster compute shader declares no push_constant
+        // block, and every stage listed here must also be passed by each vkCmdPushConstants that
+        // touches the range (VUID-vkCmdPushConstants-offset-01796), which the graphics pushes do not.
         push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         push_range.offset = 0;
         push_range.size = scene_push_constant_size + scene_cascade_push_size;
@@ -1570,6 +1578,32 @@ namespace vulkan {
         // viewport/scissor are dynamic states set by the caller before drawing (the shadow map
         // is a fixed-size target, so core::make_pipeline's swapchain-size defaults do not apply)
         return result;
+    }
+
+    std::expected<vk_pipeline, std::string_view> core::make_cluster_pipeline(std::span<unsigned char const> const compute_shader_code) const {
+        using fail = std::unexpected<std::string_view>;
+        std::optional<vk_shader_module> const module = vulkan::make_shader_module(compute_shader_code, this->device);
+        if (!module.has_value()) {
+            return fail("failed to create the cluster compute shader module");
+        }
+        VkPipelineShaderStageCreateInfo stage_info = {};
+        stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage_info.module = **module;
+        stage_info.pName = "main"; // the SPIR-V entry point, as in vulkan::make_pipeline
+
+        VkComputePipelineCreateInfo pipeline_info = {};
+        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.stage = stage_info;
+        // the shared scene layout: the cluster pass reads the camera + light UBOs and writes the
+        // per-cluster buffers through the same set 0 every graphics pipeline uses
+        pipeline_info.layout = this->scene_pipeline_layout;
+
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        if (vkCreateComputePipelines(this->device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+            return fail("vkCreateComputePipelines failed");
+        }
+        return vk_pipeline(pipeline, this->scene_pipeline_layout, this->device);
     }
 
     void core::wait_idle() const noexcept {

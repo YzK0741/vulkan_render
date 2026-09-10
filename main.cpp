@@ -262,6 +262,30 @@ int main(int argc, char** argv) {
     //     instanced draw call (the frame loop is untouched); no-op otherwise.
     chores::add_instancing_grid(runtime, settings.grid_side, scene_radius);
 
+    // 13b. Clustered-light stress ([lighting] demo_lights): spawn N procedural punctual lights on a
+    //      helix around the scene bounds, pushed every frame together with the overlay's slots. The
+    //      clustered path's whole point is a light count the brute-force loop could not afford, and
+    //      the overlay's four slots cannot show that - this is what makes the difference measurable
+    //      (and what the [render] clustered_lights A/B is compared against).
+    std::vector<vulkan::punctual_light> demo_lights;
+    if (settings.lighting.demo_lights > 0) {
+        int const total = std::min(settings.lighting.demo_lights, static_cast<int>(app_config::max_demo_lights));
+        demo_lights.reserve(static_cast<std::size_t>(total));
+        for (int i = 0; i < total; ++i) {
+            float const t = static_cast<float>(i) / static_cast<float>(total);
+            float const angle = t * 6.2831853f * 3.0f; // three turns around the scene
+            float const radius = scene_radius * 0.85f;
+            vulkan::punctual_light light = {};
+            light.position = scene_sink + glm::vec3(std::cos(angle) * radius, scene_radius * (t - 0.5f), std::sin(angle) * radius);
+            // hue cycle: a warm/cool strip of colors makes the per-cluster lists visible as color
+            light.color = glm::vec3(0.5f + 0.5f * std::cos(angle), 0.5f + 0.5f * std::cos(angle + 2.094f), 0.5f + 0.5f * std::cos(angle + 4.188f));
+            light.intensity = 12.0f;
+            light.range = scene_radius * 0.55f; // finite range: what the cluster sphere test culls on
+            demo_lights.push_back(light);
+        }
+        utility::log("demo lights: {} procedural punctual lights around the scene (clustered light stress)", total);
+    }
+
     // 14. Main render loop: until the window closes or ESC is pressed.
     //     Every Vulkan frame step (fences, acquire, command buffers, render pass, submit, present)
     //     lives inside runtime::render_frame()
@@ -385,6 +409,7 @@ int main(int argc, char** argv) {
     gui.taa_enabled = settings.render.taa;                           // temporal anti-aliasing (M3)
     gui.shadow_cascades = settings.render.shadow_cascades - 1;       // cascade combo index (0 = single map)
     gui.shadow_cascade_blend = settings.render.shadow_cascade_blend; // cascaded shadow maps (M4)
+    gui.clustered_lights = settings.render.clustered_lights;         // clustered light culling (M5)
     gui.anim_playing = animation.is_playing();                       // play checkbox initial state
     gui.current_camera = current_camera;                             // combo selection (the pose seeded above)
 
@@ -577,7 +602,10 @@ int main(int argc, char** argv) {
         // punctual lights: push the gui slot set every frame, INDEPENDENT of the overlay being
         // visible - imported model lights were loaded into those slots, so they must stay lit in
         // headless-overlay runs too (the demo slots stay off unless the user enabled them)
-        chores::apply_point_lights(runtime, gui);
+        chores::apply_point_lights(runtime, gui, demo_lights);
+        // clustered light culling (M5): mirrored like the other render toggles, so the config and the
+        // overlay checkbox both take effect on the next frame (the flag rides the light UBO)
+        runtime.set_clustered_lights(gui.clustered_lights);
         runtime.set_exposure(gui.exposure);                          // gui exposure slider -> linear scale (post-process pass)
         runtime.set_bloom(gui.bloom_intensity, gui.bloom_threshold); // gui bloom sliders -> post pass
         // FXAA: mirrored every frame like the other post-process values (the runtime clamps them and

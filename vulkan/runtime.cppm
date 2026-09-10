@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -491,6 +491,20 @@ namespace vulkan {
         float shadow_depth_bias_slope = 1.5f;
         float shadow_depth_bias_clamp = 0.0f;
 
+        // ---- clustered light culling (M5) ----
+        // The cluster COMPUTE pipeline (shaders/light_cluster.comp) sorts the punctual lights into
+        // screen tiles x exponential depth slices once per frame; the shading stage then loops only
+        // its own cluster's list instead of every active light. Optional: without the shader (or
+        // with clustering off) shade_surface() falls back to the brute-force loop, which is exactly
+        // what the clustered path is verified against.
+        std::optional<vk_pipeline> cluster_pipeline = std::nullopt;
+        std::vector<vk_buffer> cluster_count_buffers = {}; // per slot: one uint per cluster
+        std::vector<void*> cluster_count_mapped = {};      // their persistent mappings (memset per frame)
+        std::vector<vk_buffer> cluster_index_buffers = {}; // per slot: cluster_light_capacity uints per cluster
+        bool clustered_lights = true;                      // set_clustered_lights()
+        uint32_t cluster_tiles_x = 0;                      // active grid this frame (from the extent)
+        uint32_t cluster_tiles_y = 0;
+
         // shared CPU worker pool for frame-time parallel stages (run_tasks). Sized to the
         // machine (hardware_concurrency()/4, floor 1) instead of per-consumer pools; tasks
         // are grouped by priority so each consumer waits only for its own group. Declared
@@ -714,6 +728,7 @@ namespace vulkan {
         // ---- scene resource management (see the members above) ----
         void init_scene_resources();                                                          // camera UBO buffers + white fallback texture + texture sampler + material table
         void ensure_shadow_resources();                                                       // (lazily) layered shadow map + light UBO buffers
+        void ensure_cluster_buffers();                                                        // (lazily) per-slot cluster count/index buffers (M5)
         void ensure_scene_set();                                                              // lazily create one scene set per frame slot and write all bindings
         void write_ibl_bindings() const;                                                      // (re)write bindings 2-4 on every scene set with the current IBL views / placeholders
         void write_light_and_shadow_bindings();                                               // (re)write binding 7 (light UBO) + binding 8 (shadow map) on every scene set
@@ -944,6 +959,20 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief dispatch the clustered-light-culling compute pass (M5) and hand its buffers to the
+         *        fragment stages
+         * @param command_buffer the frame's primary command buffer (recorded before any rendering)
+         *
+         * No-op without the cluster pipeline, with clustering off, or before the first paced frame
+         * (the grid comes from the swapchain extent). The per-cluster counts were zeroed by the host
+         * in pace_and_acquire(), so the pass only appends; the buffer barrier after the dispatch is
+         * what makes its SHADER_WRITE visible to the fragment stages that read the lists later in
+         * the same submission.
+         */
+        void record_cluster_pass(VkCommandBuffer command_buffer);
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief record the main-pass scene content into @p command_buffer: bind the shared
          *        scene set, draw the skybox background (when enabled) then every pipeline's
          *        visible leaves. The caller frames it (already inside the main rendering
@@ -1118,6 +1147,35 @@ namespace vulkan {
         std::expected<void, std::string> make_shadow_pipeline(
             std::span<unsigned char const> vertex_shader_code,
             std::span<unsigned char const> fragment_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief create the clustered-light-culling compute pipeline (M5)
+         * @param compute_shader_code raw SPIR-V binary of shaders/light_cluster.comp
+         * @return success, or an error message on failure
+         * @note optional: without it (or with clustering off) the shading stage loops every active
+         *       light instead, which is the brute-force reference the clustered path is verified
+         *       against. The per-slot cluster buffers exist regardless (they are created with the
+         *       scene set), so enabling the pass later needs no resource rebuild.
+         */
+        std::expected<void, std::string> make_cluster_pipeline(std::span<unsigned char const> compute_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief turn clustered light culling on/off (no-op without make_cluster_pipeline())
+         * @param enabled true = the shading stage loops only its own cluster's light list
+         * @note CPU-side only (the flag rides the light UBO's cluster_grid.w lane): the next frame's
+         *       cluster pass and shading both read it, so it is safe to toggle mid-run.
+         */
+        void set_clustered_lights(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the active cluster grid (tile columns, tile rows) - 0 until the first frame
+         */
+        [[nodiscard]] std::pair<uint32_t, uint32_t> cluster_grid_extent() const noexcept {
+            return {this->cluster_tiles_x, this->cluster_tiles_y};
+        }
 
         /**
          * @ingroup vulkan_runtime

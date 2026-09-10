@@ -11,6 +11,7 @@
  * @section shader_passes The pass chain
  *
  * @code
+ *  light_cluster.comp            compute: sorts the punctual lights into the frame cluster grid (M5)
  *  shadow.vert + shadow.frag     depth-only, from the sun, into the per-slot shadow map array
  *                                (one layer per cascade, `[render] shadow_cascades` = 1..4)
  *        |
@@ -117,6 +118,21 @@
  * and the deferred path's `deferred.frag` (the pixels whose G-buffer depth is still the far plane).
  * Two backgrounds from one function means the two paths cannot disagree about the sky.
  *
+ * @section shader_clusters Clustered light culling (M5)
+ *
+ * `shaders/light_cluster.comp` runs once per frame on the graphics queue, one invocation per
+ * cluster: the screen cut into 64 px tiles and 16 EXPONENTIAL depth slices. It rebuilds the
+ * cluster's view-space box (its tile's corner rays unprojected at the slice's near and far depth)
+ * and appends every light whose bounding sphere intersects that box to the cluster's fixed-capacity
+ * index row (`binding 12`, one atomic counter per cluster in `binding 11`). The shading stage
+ * computes the same cluster from `gl_FragCoord` and its view depth - `cluster_slice_of()` in
+ * `shading.glsl` and the compute shader MUST agree on the slice boundaries - then loops only that
+ * row. The `cluster_grid.w` lane switches between the clustered list and the brute-force loop over
+ * `light_count` lights, which is what the clustered path is verified against: the sphere test is
+ * conservative, so the two produce byte-identical images. The grid dims and the slice depth range
+ * ride the light UBO (`cluster_grid` / `cluster_depth`, appended AFTER the light array so the array
+ * offset every other user of the block encodes stays 352).
+ *
  * @section shader_bindings The shared scene descriptor set (set 0)
  *
  * Every shader in the main pass uses the SAME descriptor set layout (created once by
@@ -135,6 +151,8 @@
  * | 8 | `shadow_map` | `sampler2DArrayShadow` | the shadow pass |
  * | 9 | `SkinMatrices` | storage buffer | `set_skin_matrices()` |
  * | 10 | `MorphData` | storage buffer | `morph_scratch()` |
+ * | 11 | `ClusterCounts` (`uint counts[]`) | storage buffer | the cluster compute pass (read: fragment) |
+ * | 12 | `ClusterIndices` (`uint indices[]`) | storage buffer | the cluster compute pass (read: fragment) |
  *
  * @section shader_cascades Cascaded shadows (M4)
  *

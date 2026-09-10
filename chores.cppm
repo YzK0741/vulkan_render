@@ -169,6 +169,9 @@ namespace chores {
             float outer_cone_deg = 30.0f; // spot: hard cutoff half-angle (degrees)
         };
         light_slot point_lights[4] = {};
+        // clustered light culling (M5): checkbox mirrored into the runtime every frame
+        // (runtime::set_clustered_lights); false = the brute-force loop over every light
+        bool clustered_lights = true;
     };
 
     /**
@@ -210,8 +213,13 @@ namespace chores {
      *        per-widget callbacks. Each slot is pushed as a point light, or as a spot light when
      *        its `spot` flag is set (direction + clamped inner/outer cone angles). Cheap no-op
      *        when nothing is enabled.
+     * @param extra additional lights appended after the overlay's slots - the [lighting] demo_lights
+     *        stress set (M5). Both share the UBO's light array, so the overlay's slots win when the
+     *        two together would overflow vulkan::max_punctual_lights.
      */
-    export void apply_point_lights(vulkan::runtime& runtime, gui_bindings const& bindings);
+    export void apply_point_lights(vulkan::runtime& runtime,
+                                   gui_bindings const& bindings,
+                                   std::span<vulkan::punctual_light const> extra = {});
 
     /**
      * @ingroup chores

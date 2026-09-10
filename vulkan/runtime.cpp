@@ -451,6 +451,45 @@ namespace vulkan {
         }
     }
 
+    void runtime::ensure_cluster_buffers() {
+        if (!this->cluster_count_buffers.empty()) {
+            return;
+        }
+        // Clustered light culling (M5), scene set bindings 11/12: one count per cluster and one
+        // fixed-capacity index row per cluster, per frame slot (the compute pass writes them, the
+        // fragment stage reads them, so a slot in flight must not be overwritten).
+        //
+        // Allocated for the MAXIMUM grid (max_cluster_count) once: the active grid is capped to it
+        // every frame, so a resize only changes the grid dims in the light UBO - no reallocation, no
+        // in-flight buffer to retire. Both are host-visible + coherent: the counts are zeroed by the
+        // host each frame (that IS the pass's clear, see pace_and_acquire), and the indices only need
+        // to live on the GPU between the dispatch and the shading.
+        std::size_t const slots = static_cast<std::size_t>(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        std::vector<unsigned char> const zero_counts(static_cast<std::size_t>(vulkan::max_cluster_count) * sizeof(uint32_t), 0);
+        std::vector<unsigned char> const zero_indices(static_cast<std::size_t>(vulkan::max_cluster_count) * vulkan::cluster_light_capacity * sizeof(uint32_t), 0);
+        this->cluster_count_buffers.reserve(slots);
+        this->cluster_count_mapped.reserve(slots);
+        this->cluster_index_buffers.reserve(slots);
+        for (std::size_t slot = 0; slot < slots; ++slot) {
+            vk_buffer counts = this->vulkan_core.vma.create_buffer(zero_counts.data(), zero_counts.size(), vulkan::buffer_type::storage_coherent);
+            if (!counts.valid()) {
+                utility::panic("failed to create cluster count buffer");
+            }
+            auto const* count_detail = this->vulkan_core.vma.get_buffer_detail(counts.handle());
+            if (count_detail == nullptr) {
+                utility::panic("failed to get cluster count buffer detail");
+            }
+            this->cluster_count_buffers.push_back(std::move(counts));
+            this->cluster_count_mapped.push_back(count_detail->allocation_info.pMappedData);
+
+            vk_buffer indices = this->vulkan_core.vma.create_buffer(zero_indices.data(), zero_indices.size(), vulkan::buffer_type::storage_coherent);
+            if (!indices.valid()) {
+                utility::panic("failed to create cluster index buffer");
+            }
+            this->cluster_index_buffers.push_back(std::move(indices));
+        }
+    }
+
     void runtime::ensure_scene_set() {
         if (this->scene_set_created) {
             return;
@@ -459,6 +498,10 @@ namespace vulkan {
         // resources must exist before the writes below - and their creation is deferred to here so
         // the app config that sets the cascade count has already run (see the constructor note)
         this->ensure_shadow_resources();
+        // ... and the clustered-light buffers (M5) for the same reason: binding 11/12 must point at
+        // them before the writes. They are allocated for the maximum grid, so a resize never
+        // rebuilds them - only the active grid dims change per frame.
+        this->ensure_cluster_buffers();
         // One scene descriptor set per frame slot: a slot's set always points at that slot's own
         // camera / shadow / skin / morph resources, so an in-flight frame never observes the next
         // frame's descriptors and no per-frame update-after-bind writes are needed at all.
@@ -516,6 +559,20 @@ namespace vulkan {
                 utility::panic("failed to get morph data buffer detail");
             }
             write_buffer_binding(set, 10, morph_detail->buffer, static_cast<VkDeviceSize>(vulkan::scene_morph_capacity) * sizeof(float), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+
+            // bindings 11/12: THIS slot's clustered-light buffers (M5) - written by the cluster
+            // compute pass, read by the fragment stage
+            auto const* cluster_count_detail = this->vulkan_core.vma.get_buffer_detail(this->cluster_count_buffers[static_cast<std::size_t>(slot)].handle());
+            if (cluster_count_detail == nullptr) {
+                utility::panic("failed to get cluster count buffer detail");
+            }
+            write_buffer_binding(set, 11, cluster_count_detail->buffer, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+
+            auto const* cluster_index_detail = this->vulkan_core.vma.get_buffer_detail(this->cluster_index_buffers[static_cast<std::size_t>(slot)].handle());
+            if (cluster_index_detail == nullptr) {
+                utility::panic("failed to get cluster index buffer detail");
+            }
+            write_buffer_binding(set, 12, cluster_index_detail->buffer, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * vulkan::cluster_light_capacity * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         }
 
         // binding 7 (light UBO, per-slot) + binding 8 (per-slot shadow map) and bindings 2-4 (IBL):
@@ -1179,6 +1236,43 @@ namespace vulkan {
             this->light_state.light_count.y = this->exposure_scale;
             this->light_state.light_count.z = this->toon_steps;
             this->light_state.light_count.w = this->toon_softness;
+
+            // ---- clustered light culling (M5): this frame's grid + the view-depth range its
+            //      exponential slices span, and the host-side clear of the per-cluster counters.
+            //      The grid is derived from the swapchain extent (capped to the allocated tiles) and
+            //      the depth range from the same scene bound the shadow fit uses, so every visible
+            //      fragment lands in a real cluster. A degenerate projection (the first frames, before
+            //      the swapchain has an extent) disables the pass for that frame: shade_surface() then
+            //      loop every light, which is always correct - just slower.
+            {
+                this->cluster_tiles_x = std::min((vk.swap_chain_extent.width + vulkan::cluster_tile_size - 1) / vulkan::cluster_tile_size, vulkan::max_cluster_tiles_x);
+                this->cluster_tiles_y = std::min((vk.swap_chain_extent.height + vulkan::cluster_tile_size - 1) / vulkan::cluster_tile_size, vulkan::max_cluster_tiles_y);
+                glm::mat4 const base_proj = this->current_proj_unjittered;
+                bool const degenerate = !(this->current_aspect > 0.0f) || std::abs(base_proj[2][2]) < 1e-6f;
+                float cluster_near = 0.1f;
+                float cluster_far = 1.0f;
+                if (!degenerate) {
+                    float const camera_near = base_proj[3][2] / base_proj[2][2];
+                    float const camera_far = base_proj[2][2] * camera_near / (1.0f + base_proj[2][2]);
+                    float const scene_far = glm::distance(glm::vec3(this->current_ubo.camera_pos), this->shadow_scene_center) + this->scene_radius;
+                    cluster_near = std::max(camera_near, 0.05f);
+                    cluster_far = std::max(std::min(camera_far, scene_far), cluster_near * 2.0f);
+                }
+                bool const clustered = this->clustered_lights && this->cluster_pipeline.has_value() && !degenerate && this->cluster_tiles_x > 0 && this->cluster_tiles_y > 0;
+                this->light_state.cluster_grid = glm::vec4(static_cast<float>(this->cluster_tiles_x),
+                                                           static_cast<float>(this->cluster_tiles_y),
+                                                           static_cast<float>(vulkan::cluster_slice_count),
+                                                           clustered ? 1.0f : 0.0f);
+                this->light_state.cluster_depth = glm::vec4(cluster_near,
+                                                            cluster_far,
+                                                            static_cast<float>(vk.swap_chain_extent.width),
+                                                            static_cast<float>(vk.swap_chain_extent.height));
+                // the pass only APPENDS, so the counts are cleared here - the buffer is host-coherent
+                // (no flush) and this slot was just paced, so its previous GPU reads are done
+                if (this->cluster_count_mapped.size() > static_cast<std::size_t>(frame_slot) && this->cluster_count_mapped[frame_slot] != nullptr) {
+                    std::memset(this->cluster_count_mapped[frame_slot], 0, static_cast<std::size_t>(vulkan::max_cluster_count) * sizeof(uint32_t));
+                }
+            }
             std::memcpy(this->light_mapped[frame_slot], &this->light_state, sizeof(light_ubo));
         }
         // Remember the paced slot: the caller's per-frame host writes (set_skin_matrices /
@@ -1408,6 +1502,13 @@ namespace vulkan {
         core& vk = this->vulkan_core;
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
         uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
+
+        // ---- Clustered light culling (M5): one compute dispatch before anything renders. It sorts
+        //      the punctual lights into the frame's cluster grid, and the shading stages (forward
+        //      inside the main instance, deferred later in the frame) then loop only their own
+        //      cluster's list. Runs before the shadow pass so the barrier that publishes its buffers
+        //      is as early as possible; nothing before it reads the lists.
+        this->record_cluster_pass(*command_buffer);
 
         // ---- Shadow pass: render the scene's depth from the light into this slot's shadow map.
         //      Drawn before the main pass; the depth-only pipeline shares the flat scene layout
@@ -3289,6 +3390,79 @@ namespace vulkan {
         };
         this->shadow_pipeline->scissor = {{0, 0}, {vulkan::runtime::shadow_map_size, vulkan::runtime::shadow_map_size}};
         return {};
+    }
+
+    std::expected<void, std::string> runtime::make_cluster_pipeline(std::span<unsigned char const> const compute_shader_code) {
+        auto result = this->vulkan_core.make_cluster_pipeline(compute_shader_code);
+        if (!result) {
+            return std::unexpected(std::string(result.error()));
+        }
+        // no viewport/scissor: a compute dispatch binds no graphics state, so the frame path's
+        // viewport resync (which walks the named pipeline cache) never touches this pipeline
+        this->cluster_pipeline = std::move(result).value();
+        return {};
+    }
+
+    void runtime::set_clustered_lights(bool const enabled) noexcept {
+        // CPU-side only, like set_brdf_model: the flag rides light_state's cluster_grid.w lane and
+        // pace_and_acquire() copies light_state into the paced slot's buffer, so the next frame's
+        // cluster dispatch and shading both see it (no in-flight buffer is touched).
+        this->clustered_lights = enabled;
+    }
+
+    void runtime::record_cluster_pass(VkCommandBuffer const command_buffer) {
+        core& vk = this->vulkan_core;
+        if (!this->cluster_pipeline.has_value() || !this->clustered_lights || !this->scene_set_created) {
+            return;
+        }
+        uint32_t const tiles_x = this->cluster_tiles_x;
+        uint32_t const tiles_y = this->cluster_tiles_y;
+        uint32_t const cluster_count = tiles_x * tiles_y * vulkan::cluster_slice_count;
+        if (cluster_count == 0) {
+            return; // no paced frame yet (the grid comes from the swapchain extent)
+        }
+        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
+        if (frame_slot >= this->cluster_count_buffers.size()) {
+            return;
+        }
+        // The dispatch reads the frame's OWN scene set (the paced slot's camera/light UBOs) and
+        // writes the same slot's cluster buffers: a compute stage is not part of a rendering
+        // instance, so this records before vkCmdBeginRendering.
+        VkDescriptorSet const scene_set_handle = *this->scene_sets[static_cast<std::size_t>(frame_slot)];
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, vk.scene_pipeline_layout, 0, 1, &scene_set_handle, 0, nullptr);
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->cluster_pipeline->get_pipeline());
+        constexpr uint32_t group_size = 64; // matches local_size_x in shaders/light_cluster.comp
+        vkCmdDispatch(command_buffer, (cluster_count + group_size - 1) / group_size, 1, 1);
+
+        // Hand the two buffers to the fragment stages that read them later in this submission
+        // (forward shading inside the main instance, and the deferred lighting pass): a compute
+        // SHADER_WRITE is not visible to a later SHADER_READ without this barrier. One barrier per
+        // buffer (VkBufferMemoryBarrier2 covers a single buffer).
+        std::array<VkBufferMemoryBarrier2, 2> barriers = {};
+        auto const* count_detail = vk.vma.get_buffer_detail(this->cluster_count_buffers[static_cast<std::size_t>(frame_slot)].handle());
+        auto const* index_detail = vk.vma.get_buffer_detail(this->cluster_index_buffers[static_cast<std::size_t>(frame_slot)].handle());
+        if (count_detail == nullptr || index_detail == nullptr) {
+            return;
+        }
+        barriers[0].buffer = count_detail->buffer;
+        barriers[1].buffer = index_detail->buffer;
+        for (VkBufferMemoryBarrier2& barrier : barriers) {
+            barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+            barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            // the shader reads counts/indices as storage buffers, not as sampled images
+            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.offset = 0;
+            barrier.size = VK_WHOLE_SIZE;
+        }
+        VkDependencyInfo dependency = {};
+        dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dependency.bufferMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
+        dependency.pBufferMemoryBarriers = barriers.data();
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
     }
 
     // Tighten the directional shadow frustum to the camera's own view frustum every frame. One

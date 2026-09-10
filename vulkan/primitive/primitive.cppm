@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene set; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -94,8 +94,25 @@ namespace vulkan {
         float spot_outer_cos = -0.2f;                            // cos of the outer cone half-angle (spot only)
         std::optional<float> spot_inner_cos = std::nullopt;      // cos of the inner cone half-angle (spot only); nullopt = legacy mix(outer, 1, 0.6)
     };
-    /** @brief max simultaneous punctual lights (LightUBO.punctual_lights / GLSL PunctualLight array) */
-    export constexpr uint32_t max_punctual_lights = 4;
+    /** @brief max simultaneous punctual lights (LightUBO.punctual_lights / GLSL PunctualLight array)
+     * @note 128 lights keep the light UBO at 8576 bytes, inside the 16384-byte
+     *       VkPhysicalDeviceLimits::maxUniformBufferRange every implementation guarantees; the
+     *       clustered path (see the cluster_* constants below) is what makes that many affordable
+     *       per pixel - a brute-force loop over 128 lights would be the whole frame budget. */
+    export constexpr uint32_t max_punctual_lights = 128;
+    /** @brief clustered light culling (M5): the screen is cut into tiles of this many pixels */
+    export constexpr uint32_t cluster_tile_size = 64;
+    /** @brief number of exponential depth slices per tile (the cluster grid's z dimension) */
+    export constexpr uint32_t cluster_slice_count = 16;
+    /** @brief cluster grid capacity: tiles_x * tiles_y * slices clusters are allocated; a larger
+     *         screen clamps its tile count to this capacity (2048x1536 at a 64 px tile) */
+    export constexpr uint32_t max_cluster_tiles_x = 32;
+    export constexpr uint32_t max_cluster_tiles_y = 24;
+    /** @brief lights one cluster can hold; a cluster that overflows keeps the first
+     *         @ref cluster_light_capacity lights the compute pass found (see its shader) */
+    export constexpr uint32_t cluster_light_capacity = 32;
+    /** @brief allocated cluster count (the per-slot count/index buffers are sized for this) */
+    export constexpr uint32_t max_cluster_count = max_cluster_tiles_x * max_cluster_tiles_y * cluster_slice_count;
     /** @brief cascaded shadow maps: the light UBO carries one view-projection per cascade, and the
      *         shadow map is a 2D ARRAY depth texture with this many layers (see light_ubo below) */
     export constexpr uint32_t max_shadow_cascades = 4;
@@ -142,6 +159,14 @@ namespace vulkan {
         float _pad2 = 0.0f;
         glm::vec4 light_count = {}; // x = active punctual light count (GLSL: uint), y = exposure, z = toon shading steps (0 = PBR), w = toon band softness
         std::array<point_light, max_punctual_lights> punctual_lights = {};
+        // Clustered light culling (M5), APPENDED after the light array so the array's offset (352)
+        // stays what every shader and the earlier static_asserts already encode:
+        //   cluster_grid  x = active tile columns, y = active tile rows, z = depth slices,
+        //                 w = 1.0 when the shader reads the per-cluster light lists (0.0 = the
+        //                 brute-force loop over every active light, the A/B path)
+        //   cluster_depth x = near view depth, y = far view depth the slices span (z/w unused)
+        glm::vec4 cluster_grid = {};
+        glm::vec4 cluster_depth = {};
     };
     // std140 layout guard against the GLSL LightUBO: four cascade matrices (256 B), the direction,
     // the two per-cascade vec4s (304 B), four floats, light_count (a glm::vec4 whose x carries the
@@ -152,7 +177,10 @@ namespace vulkan {
     static_assert(offsetof(light_ubo, cascade_texel_world) == max_shadow_cascades * sizeof(glm::mat4) + 2 * sizeof(glm::vec4));
     static_assert(offsetof(light_ubo, light_count) == max_shadow_cascades * sizeof(glm::mat4) + 5 * sizeof(glm::vec4));
     static_assert(offsetof(light_ubo, punctual_lights) == max_shadow_cascades * sizeof(glm::mat4) + 6 * sizeof(glm::vec4));
-    static_assert(sizeof(light_ubo) == max_shadow_cascades * sizeof(glm::mat4) + 6 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
+    static_assert(offsetof(light_ubo, cluster_grid) == max_shadow_cascades * sizeof(glm::mat4) + 6 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
+    static_assert(offsetof(light_ubo, cluster_depth) == max_shadow_cascades * sizeof(glm::mat4) + 7 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
+    static_assert(sizeof(light_ubo) == max_shadow_cascades * sizeof(glm::mat4) + 8 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
+    static_assert(sizeof(light_ubo) <= 16384, "the light UBO must stay inside the guaranteed maxUniformBufferRange (16 KB)");
     static_assert(sizeof(point_light) == 64);
 
     /**

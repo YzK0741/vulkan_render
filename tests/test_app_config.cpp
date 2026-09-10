@@ -17,6 +17,8 @@ namespace {
         CHECK(!settings.render.shadow);
         CHECK(settings.render.shadow_cascades == 2);
         CHECK(settings.render.shadow_cascade_blend > 0.24f && settings.render.shadow_cascade_blend < 0.26f);
+        CHECK(!settings.render.clustered_lights); // fixture turns the M5 cluster pass off
+        CHECK(settings.lighting.demo_lights == 3);
         CHECK(settings.render.fxaa);
         CHECK(!settings.render.gpu_timings);
         CHECK(settings.render.gbuffer_debug);
@@ -45,6 +47,8 @@ namespace {
         CHECK(!settings.render.taa);
         CHECK(settings.render.shadow_cascades == 3); // default: three cascades
         CHECK(settings.render.shadow_cascade_blend > 0.09f && settings.render.shadow_cascade_blend < 0.11f);
+        CHECK(settings.render.clustered_lights); // default: the cluster pass runs
+        CHECK(settings.lighting.demo_lights == 0);
         CHECK(settings.gui.show);
     }
 

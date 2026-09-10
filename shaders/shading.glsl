@@ -53,7 +53,9 @@ layout(set = 0, binding = 4) uniform sampler2D brdf_lut_sampler;     // BRDF int
 // mat4 | vec4 | 4 floats | uint + 3 pad floats | PunctualLight[4] - the CPU mirrors the "uint + pad"
 // slot with one glm::vec4, so the array starts at byte 112 and the block is 368 bytes. (A vec3 pad
 // would force 16-byte alignment to 128 and shift every light by 16.)
-const int MAX_PUNCTUAL_LIGHTS = 4; // vulkan::max_punctual_lights
+const int MAX_PUNCTUAL_LIGHTS = 128; // vulkan::max_punctual_lights
+const int CLUSTER_TILE_SIZE = 64;    // vulkan::cluster_tile_size (pixels per cluster tile)
+const int CLUSTER_LIGHT_CAPACITY = 32; // vulkan::cluster_light_capacity (lights stored per cluster)
 const int MAX_SHADOW_CASCADES = 4; // vulkan::max_shadow_cascades
 
 struct PunctualLight {
@@ -89,7 +91,26 @@ layout(set = 0, binding = 7) uniform LightUBO {
     float toon_steps;   // cel-shading quantization steps (LightUBO.light_count.z; 0 = PBR)
     float toon_softness; // band edge width in normalized [0,1] space (LightUBO.light_count.w)
     PunctualLight punctual_lights[MAX_PUNCTUAL_LIGHTS];
+    // Clustered light culling (M5), appended after the light array so its offset is unchanged:
+    //   cluster_grid  x = active tile columns, y = active tile rows, z = depth slices,
+    //                 w = 1.0 = read the per-cluster light lists, 0.0 = loop every active light
+    //   cluster_depth x = near view depth, y = far view depth the slices span (z/w = screen size,
+    //                 used by the cluster pass only)
+    vec4 cluster_grid;
+    vec4 cluster_depth;
 } light;
+
+// Per-cluster light lists (scene set bindings 11/12), written by shaders/light_cluster.comp: one
+// entry per cluster in cluster_counts (how many lights landed in it) and a fixed-capacity row per
+// cluster in cluster_indices holding the indices into light.punctual_lights. Storage buffers rather
+// than more UBO lanes because the grid is thousands of entries - and small enough (16 lights per
+// cluster) that no per-cluster linked list / prefix sum is needed.
+layout(set = 0, binding = 11) readonly buffer ClusterCounts {
+    uint counts[];
+} cluster_counts;
+layout(set = 0, binding = 12) readonly buffer ClusterIndices {
+    uint indices[];
+} cluster_indices;
 
 // Shadow map (scene set binding 8): a 2D ARRAY of cascades, sampled with a depth-compare sampler
 // (sampler2DArrayShadow) whose LINEAR filtering performs HARDWARE percentage-closer filtering - the
@@ -435,6 +456,66 @@ vec3 get_ibl_radiance_ggx(vec3 n, vec3 v, float roughness) {
 }
 
 /**
+ * @brief depth slice a view-space depth falls into (exponential slicing between the cluster range)
+ * @param view_depth positive distance along the view direction
+ * @param slices active slice count
+ * @return slice index in [0, slices - 1]
+ *
+ * MUST stay identical to the same function in shaders/light_cluster.comp: the compute pass assigns
+ * lights by unprojecting exactly these slice boundaries, so a different rounding here would put a
+ * fragment in a cluster the lights were never assigned to (a light popping out at a slice edge).
+ */
+int cluster_slice_of(float view_depth, int slices) {
+    const float near = max(light.cluster_depth.x, 1e-4);
+    const float far = max(light.cluster_depth.y, near * 1.0001);
+    const float t = clamp(log(max(view_depth, near) / near) / log(far / near), 0.0, 1.0);
+    return clamp(int(t * float(slices)), 0, slices - 1);
+}
+
+/**
+ * @brief cluster index of a fragment, or -1 when clustering is off (the brute-force path)
+ * @param world_pos the shaded fragment's world position (its view depth picks the slice)
+ * @note the tile comes from gl_FragCoord (pixels, y-down - the same convention the compute shader's
+ *       dispatch uses), clamped to the active grid so an oversized screen reads a valid cluster
+ */
+int cluster_index_of(vec3 world_pos) {
+    if (light.cluster_grid.w < 0.5) {
+        return -1;
+    }
+    const int tiles_x = int(light.cluster_grid.x);
+    const int tiles_y = int(light.cluster_grid.y);
+    const int slices = int(light.cluster_grid.z);
+    if (tiles_x <= 0 || tiles_y <= 0 || slices <= 0) {
+        return -1;
+    }
+    const ivec2 tile = clamp(ivec2(gl_FragCoord.xy) / int(CLUSTER_TILE_SIZE), ivec2(0), ivec2(tiles_x - 1, tiles_y - 1));
+    const float view_depth = -(camera.view * vec4(world_pos, 1.0)).z;
+    return (cluster_slice_of(view_depth, slices) * tiles_y + tile.y) * tiles_x + tile.x;
+}
+
+/**
+ * @brief how many punctual lights the loop must visit for this fragment
+ * @param cluster the fragment's cluster index, or -1 for the brute-force path
+ */
+int cluster_light_count_for(int cluster) {
+    if (cluster < 0) {
+        return int(light.light_count);
+    }
+    return int(min(cluster_counts.counts[cluster], uint(CLUSTER_LIGHT_CAPACITY)));
+}
+
+/**
+ * @brief the i-th light index of a cluster (i < cluster_light_count_for(cluster))
+ * @param cluster the fragment's cluster index, or -1: then the light index IS i
+ */
+int cluster_light_index(int cluster, int i) {
+    if (cluster < 0) {
+        return i;
+    }
+    return int(cluster_indices.indices[cluster * int(CLUSTER_LIGHT_CAPACITY) + i]);
+}
+
+/**
  * @brief everything the shading stage needs to know about one surface point
  * @note the forward path fills this from its interpolated fragment inputs, the deferred path from
  *       the G-buffer texels - which is the whole point: the lighting below cannot tell them apart
@@ -474,12 +555,21 @@ vec3 shade_surface(shade_input s) {
     }
     // punctual lights (point/spot, no shadow casting in this version): inverse-square falloff
     // (well-behaved at zero distance) with an optional smooth range cutoff; spots add a soft
-    // cone mask between the inner and outer half-angles
+    // cone mask between the inner and outer half-angles.
+    //
+    // Clustered culling (M5): light_cluster.comp sorted the lights into screen-space tiles x
+    // exponential depth slices, so this loop only touches the lights that can reach THIS pixel -
+    // which is what makes a light count two orders of magnitude past the old four affordable. With
+    // clustering off (cluster_grid.w == 0) the loop walks every active light instead, the
+    // brute-force reference the clustered path is verified against.
+    const int frag_cluster = cluster_index_of(s.world_pos);
+    const int punctual_count = cluster_light_count_for(frag_cluster);
     for (int i = 0; i < MAX_PUNCTUAL_LIGHTS; ++i) {
-        if (i >= int(light.light_count)) {
+        if (i >= punctual_count) {
             break;
         }
-        const PunctualLight pl = light.punctual_lights[i];
+        const int light_index = cluster_light_index(frag_cluster, i);
+        const PunctualLight pl = light.punctual_lights[light_index];
         vec3 to_light = pl.position.xyz - s.world_pos;
         const float dist = length(to_light);
         const vec3 dir = dist > 1e-6 ? to_light / dist : vec3(0.0, 1.0, 0.0);

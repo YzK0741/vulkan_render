@@ -111,6 +111,11 @@ namespace app_config {
                     settings.render.shadow_cascade_blend = static_cast<float>(*value);
                 }
             }
+            if (toml::node const* node = render->get("clustered_lights")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.clustered_lights = *value;
+                }
+            }
             if (toml::node const* node = render->get("fxaa")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.fxaa = *value;
@@ -179,6 +184,11 @@ namespace app_config {
                     settings.lighting.lut_size = static_cast<int>(*value);
                 }
             }
+            if (toml::node const* node = lighting->get("demo_lights")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.lighting.demo_lights = static_cast<int>(*value);
+                }
+            }
         }
 
         if (toml::table const* gui = table.get_as<toml::table>("gui")) {
@@ -214,6 +224,10 @@ namespace app_config {
         if (settings.render.shadow_cascades < 1 || settings.render.shadow_cascades > 4) {
             utility::log("app_config: invalid shadow_cascades {} (use 1..4), falling back to 3", settings.render.shadow_cascades);
             settings.render.shadow_cascades = 3;
+        }
+        if (settings.lighting.demo_lights < 0 || settings.lighting.demo_lights > static_cast<int>(max_demo_lights)) {
+            utility::log("app_config: invalid demo_lights {} (use 0..{}), clamping", settings.lighting.demo_lights, max_demo_lights);
+            settings.lighting.demo_lights = std::clamp(settings.lighting.demo_lights, 0, static_cast<int>(max_demo_lights));
         }
         bool const msaa_valid = settings.render.msaa == 0 || settings.render.msaa == 1 || settings.render.msaa == 2 || settings.render.msaa == 4 || settings.render.msaa == 8 || settings.render.msaa == 16 || settings.render.msaa == 32 || settings.render.msaa == 64;
         if (!msaa_valid) {

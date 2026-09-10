@@ -31,6 +31,7 @@ $pairs = @(
 
     @("deferred.frag", "deferred.frag.spv"),
     @("taa.frag", "taa.frag.spv"),
+    @("light_cluster.comp", "light_cluster.comp.spv"),
     @("skybox.vert", "skybox.vert.spv"),
     @("skybox.frag", "skybox.frag.spv"),
     @("shadow.vert", "shadow.vert.spv"),
