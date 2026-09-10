@@ -16,6 +16,99 @@ import vulkan.runtime;
 // other TUs (vulkan/runtime.cpp) keep their own copy of the same singleton.
 [[maybe_unused]] static auto& pmr = utility::init_pmr(); // NOLINT(keep-alive)
 
+namespace {
+
+    // ---- scripted capture (dev tool) ----
+    // Verifying anything visual used to need a human at the keyboard (F12). Two flags remove
+    // that: `--capture-frames <n>` renders n frames, saves a screenshot through EXACTLY the F12
+    // path (same read-back, same PNG writer, same logged line) and quits; `--capture-camera
+    // <yaw,pitch,distance>` overrides the orbit camera at startup (degrees / scene units) so a
+    // specific view - e.g. looking down-sun, where a shadow leak shows - reproduces on demand.
+    // Both are stripped from argv before app_config sees them, so the positional model /
+    // grid-side slots keep their meaning.
+    struct capture_options {
+        int frames = 0;                                            // 0 = normal interactive run
+        std::optional<std::array<float, 3>> camera = std::nullopt; // yaw(deg), pitch(deg), distance
+        std::optional<glm::vec3> target = std::nullopt;            // orbit target override (optional)
+    };
+
+    // strtof with a full-string check (no exceptions: std::stof would abort under -fno-exceptions)
+    std::optional<float> parse_number(std::string_view const text) {
+        if (text.empty()) {
+            return std::nullopt;
+        }
+        std::string const copy(text); // strtof needs a null-terminated buffer
+        char* end = nullptr;
+        float const value = std::strtof(copy.c_str(), &end);
+        if (end == copy.c_str() || *end != '\0') {
+            return std::nullopt;
+        }
+        return value;
+    }
+
+    capture_options parse_capture_options(int const argc, char** argv, std::vector<char*>& filtered) {
+        capture_options options = {};
+        filtered.push_back(argv[0]);
+        // "--flag value" or "--flag=value"; returns the value and advances i past it
+        auto const take_value = [&](int& i, std::string_view const arg, std::string_view const name) -> std::optional<std::string_view> {
+            if (arg == name) {
+                return i + 1 < argc ? std::optional<std::string_view>(argv[++i]) : std::nullopt;
+            }
+            if (arg.size() > name.size() && arg[name.size()] == '=' && arg.starts_with(name)) {
+                return arg.substr(name.size() + 1);
+            }
+            return std::nullopt;
+        };
+        for (int i = 1; i < argc; ++i) {
+            std::string_view const arg(argv[i]);
+            if (std::optional<std::string_view> const value = take_value(i, arg, "--capture-frames")) {
+                if (std::optional<float> const frames = parse_number(*value)) {
+                    options.frames = static_cast<int>(std::max(0.0f, *frames));
+                } else {
+                    utility::log("capture: ignoring '--capture-frames {}' (expected a frame count)", *value);
+                }
+                continue;
+            }
+            if (std::optional<std::string_view> const value = take_value(i, arg, "--capture-camera")) {
+                // yaw,pitch,distance[,target.x,target.y,target.z] - comma-separated numbers
+                std::array<float, 6> parsed = {};
+                std::size_t cursor = 0;
+                std::size_t count = 0;
+                bool valid = true;
+                while (cursor <= value->size()) {
+                    std::size_t const comma = value->find(',', cursor);
+                    std::string_view const piece = value->substr(cursor, comma == std::string_view::npos ? std::string_view::npos : comma - cursor);
+                    std::optional<float> const number = parse_number(piece);
+                    if (!number || count == parsed.size()) {
+                        valid = false;
+                        break;
+                    }
+                    parsed[count++] = *number;
+                    if (comma == std::string_view::npos) {
+                        break;
+                    }
+                    cursor = comma + 1;
+                }
+                if (valid && (count == 3 || count == 6)) {
+                    options.camera = std::array<float, 3>{parsed[0], parsed[1], parsed[2]};
+                    if (count == 6) {
+                        options.target = glm::vec3(parsed[3], parsed[4], parsed[5]);
+                    }
+                } else {
+                    utility::log("capture: ignoring '--capture-camera {}' (expected yaw,pitch,distance[,target.x,target.y,target.z])", *value);
+                }
+                continue;
+            }
+            filtered.push_back(argv[i]);
+        }
+        if (options.frames > 0) {
+            utility::log("capture mode: {} frames, then screenshot + quit", options.frames);
+        }
+        return options;
+    }
+
+} // namespace
+
 int main(int argc, char** argv) {
     // --version: print the version (single source: project(VERSION) in CMakeLists.txt, injected
     // as VULKAN_RENDER_VERSION_*) and exit before any config / Vulkan init.
@@ -29,8 +122,11 @@ int main(int argc, char** argv) {
     // 1-3. Resolve the startup config in one step (chores): merge the config file (config.toml
     // by default, --config <path> to override) with positional argv overrides (argv[1] = model,
     // argv[2] = grid side (numeric)), then locate the shaders/ dir and pick the model file.
-    // Panics on any missing configured/located resource.
-    chores::startup_config const config = chores::analyse_config(argc, argv);
+    // Panics on any missing configured/located resource. The dev-tool capture flags are removed
+    // from argv first (see parse_capture_options) so they cannot land in the positional slots.
+    std::vector<char*> filtered_argv;
+    capture_options const capture = parse_capture_options(argc, argv, filtered_argv);
+    chores::startup_config const config = chores::analyse_config(static_cast<int>(filtered_argv.size()), filtered_argv.data());
     app_config::app_settings const& settings = config.settings;
     std::filesystem::path const& shaders_dir = config.shaders_dir;
     std::string const& model_path = config.model_path;
@@ -360,6 +456,20 @@ int main(int argc, char** argv) {
     // fine granularity so it can write per-frame data (scene node locals -> culling, skin
     // matrices, morph weights) between pacing and recording.
     int last_render_mode = 0; // gui render-mode combo (0 = pbr); applied between frames below
+    // scripted capture: apply the camera override LAST, so nothing in the setup above (the orbit
+    // framing of the imported scene, an authored glTF camera) can win over the requested view
+    if (capture.camera) {
+        runtime.camera.yaw = glm::radians((*capture.camera)[0]);
+        runtime.camera.pitch = glm::radians((*capture.camera)[1]);
+        runtime.camera.distance = (*capture.camera)[2];
+        if (capture.target) {
+            runtime.camera.target = *capture.target;
+        }
+        utility::log("capture camera: yaw {:.1f} deg, pitch {:.1f} deg, distance {:.2f}, target ({:.2f}, {:.2f}, {:.2f})",
+                     (*capture.camera)[0], (*capture.camera)[1], (*capture.camera)[2],
+                     runtime.camera.target.x, runtime.camera.target.y, runtime.camera.target.z);
+    }
+    int captured_frames = 0; // presented frames so far (scripted capture; see --capture-frames)
     while (true) {
         // Phase 1: poll window events (ESC / native close -> closed, minimized -> skipped)
         vulkan::frame_status const polled = runtime.poll_events();
@@ -425,6 +535,13 @@ int main(int argc, char** argv) {
         // A frame was presented: publish its stamp for cheap readers (frame_clock)
         frame_clock.stamp();
 
+        // scripted capture: once the requested number of frames has been PRESENTED, request the
+        // screenshot from the runtime - the F12 block below consumes the request in this same
+        // iteration, so the capture happens on a fully warmed-up frame
+        if (capture.frames > 0 && ++captured_frames >= capture.frames) {
+            runtime.request_screenshot();
+        }
+
         // gui "render mode": switch the runtime's default pipeline BETWEEN frames (the pipeline
         // registry must not be mutated while a frame records; this point is after submit, before
         // the next frame's recording). Default-semantics leaves re-shade on the next frame.
@@ -473,6 +590,11 @@ int main(int argc, char** argv) {
                 } else {
                     utility::log("screenshot save failed: {}", written.error());
                 }
+            }
+            // scripted capture: the frame is captured (saved or not - do not spin forever on a
+            // failing writer), so leave the render loop and shut down cleanly
+            if (capture.frames > 0) {
+                break;
             }
         }
         // overlay fps mirror: updated unconditionally - the overlay can be hidden with F1 and

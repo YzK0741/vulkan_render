@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.17  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.18  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -965,6 +965,18 @@ namespace vulkan {
          * @return true once per F12 press; the caller decides where to save the capture
          */
         [[nodiscard]] bool consume_screenshot_request() noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief request a screenshot without the F12 key (scripted / automatic captures)
+         * @note sets exactly the request that the F12 edge trigger sets, so the caller still
+         *       consumes it through consume_screenshot_request() and owns the read-back + save;
+         *       lets a headless-ish run (e.g. `--capture-frames`) capture a frame with no human
+         *       at the keyboard
+         */
+        void request_screenshot() noexcept {
+            this->screenshot_requested = true;
+        }
 
         /**
          * @ingroup vulkan_runtime

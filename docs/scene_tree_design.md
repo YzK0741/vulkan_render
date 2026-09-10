@@ -325,6 +325,23 @@ included, while the set stays far smaller than the whole scene. Rebuilt only whe
 the camera moved or the scene changed (same reuse rule as the main-pass cull);
 `record_shadow_content` walks that set.
 
+The fit itself has two pitfalls that both end in "the sun pours through a wall":
+
+- **which** view volume is fitted. The camera projection carries a deliberately
+  generous far plane (`make_orbit_camera_ubo`: `max(100, d + 2r, 8d)`) so zooming
+  never clips the scene. Fitting the shadow box to that whole volume wasted the
+  map on empty space (a 100-unit-deep frustum projected into light space made the
+  box 110 units wide) **and** pushed the up-light end of the fit behind the light
+  camera's near plane, which then clipped the roof and upper walls out of the
+  depth map entirely. `update_shadow_frustum` therefore rebuilds the projection
+  with the far plane clipped at `|eye - scene centre| + scene_radius` — the
+  distance beyond which no scene geometry can exist.
+- the light camera's **distance**: it comes from the fitted light-space depth span
+  (`span / 2 + max(1, shadow_caster_extent)`), not from the scene radius. A
+  radius-based estimate can be smaller than half the span, which put the up-light
+  end of the fit behind the eye; the near plane then clamped to its 0.05 minimum
+  and those casters never reached the map.
+
 ## 5. Loader <-> runtime bridge (the key design decision)
 
 The runtime must not depend on `gltf_loader` types (existing invariant: loader is

@@ -1985,8 +1985,30 @@ namespace vulkan {
         glm::vec3 const light_dir = glm::normalize(glm::vec3(this->light_state.light_dir));
         glm::vec3 const up(0.0f, 1.0f, 0.0f);
 
-        // camera frustum corners in world space (Vulkan NDC: x/y in [-1,1], z in [0,1])
-        glm::mat4 const inverse_view_proj = glm::inverse(this->current_ubo.proj * this->current_ubo.view);
+        // Camera frustum corners in world space (Vulkan NDC: x/y in [-1,1], z in [0,1]).
+        //
+        // The camera's own projection carries a deliberately generous far plane (see
+        // make_orbit_camera_ubo: max(100, distance + 2r, 8 * distance)) so that zooming in never
+        // clips the scene - but fitting the SHADOW box to that whole volume throws the map away on
+        // empty space AND (the actual bug) pushes the up-light end of the fit behind the light
+        // camera's near plane, so the roof and upper walls were clipped out of the depth map
+        // entirely and the sun poured straight through them. Fit only the part of the view volume
+        // that can hold the scene: everything lies within |eye - scene centre| + scene_radius.
+        glm::mat4 fit_proj = this->current_ubo.proj;
+        {
+            // near/far live in the z row of a RH_ZO perspective matrix (see glm::perspectiveRH_ZO):
+            // proj[2][2] = far / (near - far), proj[3][2] = -(far * near) / (far - near)
+            float const camera_near = fit_proj[3][2] / fit_proj[2][2];
+            float const camera_far = fit_proj[2][2] * camera_near / (1.0f + fit_proj[2][2]);
+            float const fit_far = std::min(camera_far,
+                                           glm::distance(glm::vec3(this->current_ubo.camera_pos), this->shadow_scene_center) + this->scene_radius);
+            if (fit_far > camera_near * 1.5f && fit_far < camera_far) {
+                // same projection with a tighter far plane (the x/y scaling = fov + aspect stays)
+                fit_proj[2][2] = fit_far / (camera_near - fit_far);
+                fit_proj[3][2] = -(fit_far * camera_near) / (fit_far - camera_near);
+            }
+        }
+        glm::mat4 const inverse_view_proj = glm::inverse(fit_proj * this->current_ubo.view);
         std::array<glm::vec3, 16> points = {};
         std::size_t count = 0;
         for (int zi = 0; zi < 2; ++zi) {
@@ -2102,7 +2124,13 @@ namespace vulkan {
         // pure rotation and lookAt(.., -light_dir, ..) makes light-space z = dot(light_dir, p), so
         // along the light view (eye = center_ws + light_dir * distance) a point's depth is
         // center_ls.z + distance - ls_z - the extremes therefore come straight from min_ls/max_ls.z.
-        float const distance = std::max(this->scene_radius * 2.0f, 1.0f) + this->shadow_caster_extent;
+        //
+        // distance comes from the fitted DEPTH SPAN, not from the scene radius: the eye has to sit
+        // half a span up-light of the box centre for the box centre's plane to be in front of it, and
+        // a scene-radius estimate can be smaller than that span (a deep fit pushed the up-light end
+        // behind the eye, the near plane clamped to its 0.05 minimum and clipped those casters away).
+        float const half_span_z = 0.5f * (max_ls.z - min_ls.z);
+        float const distance = half_span_z + std::max(1.0f, this->shadow_caster_extent);
         glm::vec3 const eye = center_ws + light_dir * distance;
         glm::mat4 const view = glm::lookAt(eye, center_ws, up);
         float const near_plane = std::max(distance + center_ls.z - max_ls.z - 1.0f, 0.05f);
