@@ -166,7 +166,23 @@ namespace vulkan {
 
         this->pipelines.clear();
 
-        // post-process raw objects (the pipeline/sampler are RAII members; the layouts and the         // descriptor pool are not)         if (this->post_descriptor_pool != VK_NULL_HANDLE) {             vkDestroyDescriptorPool(this->vulkan_core.device, this->post_descriptor_pool, nullptr);             this->post_descriptor_pool = VK_NULL_HANDLE;         }         if (this->post_pipeline_layout != VK_NULL_HANDLE) {             vkDestroyPipelineLayout(this->vulkan_core.device, this->post_pipeline_layout, nullptr);             this->post_pipeline_layout = VK_NULL_HANDLE;         }         if (this->post_set_layout != VK_NULL_HANDLE) {             vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->post_set_layout, nullptr);             this->post_set_layout = VK_NULL_HANDLE;         }
+        // post-process raw objects. The pipeline(s) and the sampler are RAII members; the two
+        // layouts and the descriptor pool are not, so they are destroyed here - and this must stay
+        // real code: an earlier edit collapsed this block onto the comment line above it, which
+        // commented the three destroy calls out and leaked them (validation: "VkDevice has 18
+        // leaked objects ... VkPipelineLayout, VkDescriptorSetLayout, VkDescriptorSet").
+        if (this->post_descriptor_pool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(this->vulkan_core.device, this->post_descriptor_pool, nullptr);
+            this->post_descriptor_pool = VK_NULL_HANDLE;
+        }
+        if (this->post_pipeline_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(this->vulkan_core.device, this->post_pipeline_layout, nullptr);
+            this->post_pipeline_layout = VK_NULL_HANDLE;
+        }
+        if (this->post_set_layout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->post_set_layout, nullptr);
+            this->post_set_layout = VK_NULL_HANDLE;
+        }
 
         // Shared scene resources: views/sets/samplers/buffers/images are RAII and free
         // themselves as this runtime's members destruct (after this body; vulkan_core, which
@@ -845,6 +861,14 @@ namespace vulkan {
     frame_status runtime::pace_and_acquire() {
         core& vk = this->vulkan_core;
 
+        // A zero-sized swapchain (a window that has not been sized yet, or was restored from
+        // minimized into a 0-sized client area) has no valid attachments: recording would set a
+        // 0-wide viewport - a VUID - and produce nothing. Skip the frame exactly like the
+        // minimized case; nothing was acquired, so no semaphore is left pending.
+        if (vk.swap_chain_extent.width == 0 || vk.swap_chain_extent.height == 0) {
+            return frame_status::skipped;
+        }
+
         // Pace the frame slot: wait until the previous submission on this slot has completed
         //    (host-side timeline wait on the slot's last signaled value). This guards both the
         //    command buffer and the acquire semaphore — acquiring first could reuse a binary
@@ -1228,6 +1252,20 @@ namespace vulkan {
             this->skybox_pipeline->viewport = full_viewport;
             this->skybox_pipeline->scissor = full_scissor;
         }
+        // the post-process pipelines are NOT in the named cache above, and begin_pipeline() always
+        // re-emits the stored viewport/scissor: leaving them at the creation-time default made every
+        // post pass set a 0-wide viewport (validation: "pViewports[0].width (0.000000) is not
+        // greater than zero"). The per-pass viewport is set explicitly right after the bind anyway -
+        // this keeps the stored values valid. The shadow pipeline is deliberately excluded: its
+        // viewport is the fixed shadow-map size (set in make_shadow_pipeline).
+        if (this->post_pipeline) {
+            this->post_pipeline->viewport = full_viewport;
+            this->post_pipeline->scissor = full_scissor;
+        }
+        if (this->post_hdr_pipeline) {
+            this->post_hdr_pipeline->viewport = full_viewport;
+            this->post_hdr_pipeline->scissor = full_scissor;
+        }
 
         // Stage 3 of parallel recording: the main-pass visible leaves are split into up-to-N
         // contiguous sub_render_tasks (N = task-pool workers), each recording its own per-slot
@@ -1570,32 +1608,51 @@ namespace vulkan {
             return fail("post: pipeline layout creation failed");
         }
 
-        // fullscreen pipeline: post.vert synthesizes the triangle from gl_VertexIndex, so the
-        // vertex input is empty; no depth attachment, 1x samples, color format = swapchain
-        auto pipeline_result = vulkan::make_pipeline(
-            vk.device,
-            this->post_pipeline_layout,
-            vk.swap_chain_image_format,
-            VK_FORMAT_UNDEFINED,
-            vertex_shader_code,
-            fragment_shader_code,
-            VK_SAMPLE_COUNT_1_BIT,
-            false,
-            true,
-            0.0f,
-            0.0f,
-            0.0f);
-        if (!pipeline_result) {
-            return fail(std::string(pipeline_result.error()));
+        // fullscreen pipelines: post.vert synthesizes the triangle from gl_VertexIndex, so the
+        // vertex input is empty; no depth attachment, 1x samples. TWO of them, one per color
+        // format the pass chain renders into: the composite writes the swapchain, while the
+        // bright-pass prefilter and the three downsample passes write the R16F bloom levels. A
+        // pipeline's VkPipelineRenderingCreateInfo color format must match the attachment it draws
+        // into, so a single swapchain-format pipeline was a validation error (and UB) for the HDR
+        // passes.
+        auto const make_post_variant = [&](VkFormat const color_format) -> std::expected<vk_pipeline, std::string> {
+            auto pipeline_result = vulkan::make_pipeline(
+                vk.device,
+                this->post_pipeline_layout,
+                color_format,
+                VK_FORMAT_UNDEFINED,
+                vertex_shader_code,
+                fragment_shader_code,
+                VK_SAMPLE_COUNT_1_BIT,
+                false,
+                true,
+                0.0f,
+                0.0f,
+                0.0f);
+            if (!pipeline_result) {
+                return std::unexpected(std::string(pipeline_result.error()));
+            }
+            return std::move(pipeline_result).value();
+        };
+
+        auto composite_pipeline = make_post_variant(vk.swap_chain_image_format);
+        if (!composite_pipeline) {
+            return fail(std::move(composite_pipeline.error()));
         }
-        this->post_pipeline = std::move(pipeline_result).value();
+        this->post_pipeline = std::move(composite_pipeline).value();
+
+        auto hdr_pipeline = make_post_variant(vulkan::hdr_format);
+        if (!hdr_pipeline) {
+            return fail(std::move(hdr_pipeline.error()));
+        }
+        this->post_hdr_pipeline = std::move(hdr_pipeline).value();
 
         return {};
     }
 
     void runtime::ensure_post_descriptors() {
         core& vk = this->vulkan_core;
-        if (this->post_pipeline == std::nullopt || this->post_set_layout == VK_NULL_HANDLE) {
+        if (this->post_pipeline == std::nullopt || this->post_hdr_pipeline == std::nullopt || this->post_set_layout == VK_NULL_HANDLE) {
             return;
         }
         std::size_t const image_count = vk.hdr_image_views.size();
@@ -1709,7 +1766,7 @@ namespace vulkan {
         vkCmdEndRendering(command_buffer);
 
         this->ensure_post_descriptors();
-        if (this->post_pipeline == std::nullopt || this->post_sets.size() <= this->current_image_index) {
+        if (this->post_pipeline == std::nullopt || this->post_hdr_pipeline == std::nullopt || this->post_sets.size() <= this->current_image_index) {
             return; // no post pipeline (creation failed): the HDR frame cannot be presented correctly
         }
 
@@ -1742,12 +1799,12 @@ namespace vulkan {
             VkDependencyInfo const dependency_info = make_image_dependency_info(1, barriers.data());
             vkCmdPipelineBarrier2(command_buffer, &dependency_info);
         };
-        auto const run_fullscreen = [&](VkImageView const target, VkExtent2D const extent, VkDescriptorSet const set, float const mode) {
+        auto const run_fullscreen = [&](vk_pipeline const& pipeline, VkImageView const target, VkExtent2D const extent, VkDescriptorSet const set, float const mode) {
             VkClearValue clear = {};
             VkRenderingAttachmentInfo const attachment = make_color_attachment_info(target, clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
             VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, extent}, true, &attachment, nullptr);
             vkCmdBeginRendering(command_buffer, &rendering_info);
-            this->post_pipeline->begin_pipeline(command_buffer);
+            pipeline.begin_pipeline(command_buffer);
             VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0f, 1.0f};
             VkRect2D const scissor = {{0, 0}, extent};
             vkCmdSetViewport(command_buffer, 0, 1, &viewport);
@@ -1765,12 +1822,13 @@ namespace vulkan {
         };
 
         // ---- bloom chain: bright-pass prefilter into level 0, then downsample level by level ----
+        // every stage here renders into an R16F bloom level, so it needs the HDR-format pipeline
         barrier_to_color(vk.bloom_images[0][index]);
-        run_fullscreen(vk.bloom_image_views[0][index], level_size(0), this->post_prefilter_sets[index], 0.0f);
+        run_fullscreen(*this->post_hdr_pipeline, vk.bloom_image_views[0][index], level_size(0), this->post_prefilter_sets[index], 0.0f);
         for (std::size_t level = 0; level < 3; ++level) {
             barrier_to_read(vk.bloom_images[level][index]);
             barrier_to_color(vk.bloom_images[level + 1][index]);
-            run_fullscreen(vk.bloom_image_views[level + 1][index], level_size(static_cast<uint32_t>(level) + 1u), this->post_down_sets[index][level], 1.0f);
+            run_fullscreen(*this->post_hdr_pipeline, vk.bloom_image_views[level + 1][index], level_size(static_cast<uint32_t>(level) + 1u), this->post_down_sets[index][level], 1.0f);
         }
         barrier_to_read(vk.bloom_images[3][index]);
 
@@ -1807,6 +1865,16 @@ namespace vulkan {
 
         // close the scene rendering instance and run the post-process pass (exposure/tonemap)
         this->record_post_process(*command_buffer);
+        // Screenshot: the swapchain image is still in COLOR_ATTACHMENT_OPTIMAL (the composite pass
+        // just wrote it) and still owned by this frame - the only point where a read-back copy is
+        // legal. Doing it here (rather than after the present, as the old path did) also means the
+        // capture needs no extra submit, no re-acquire and no layout hand-back to the WSI.
+        if (this->screenshot_requested) {
+            this->record_screenshot_copy(*command_buffer);
+            if (this->screenshot_pending) {
+                this->screenshot_requested = false; // served; a failed copy stays pending for a retry
+            }
+        }
         // Dynamic rendering has no render pass finalLayout to hand the image back to the
         // presentation engine: transition the swapchain image to PRESENT_SRC_KHR explicitly.
         // With MSAA the resolve target ends up in resolveImageLayout (COLOR_ATTACHMENT_OPTIMAL),
@@ -2230,65 +2298,84 @@ namespace vulkan {
             return std::unexpected(std::string("screenshot: unsupported swapchain format (need 8-bit RGBA/BGRA)"));
         }
 
-        VkExtent2D const extent = vk.swap_chain_extent;
+        // The pixels come from the persistent read-back buffer that record_screenshot_copy() filled
+        // while the frame was being recorded (see the class docs): by the time the caller asks, the
+        // frame has been submitted, so one wait for the GPU is all that is left to do.
+        if (!this->screenshot_readback.valid() || this->screenshot_readback_mapped == nullptr) {
+            return std::unexpected(std::string("screenshot: no captured frame (the read-back copy was never recorded)"));
+        }
+        VkExtent2D const extent = this->screenshot_readback_extent;
         VkDeviceSize const buffer_size = static_cast<VkDeviceSize>(extent.width) * static_cast<VkDeviceSize>(extent.height) * 4u;
-        uint32_t const image_index = this->current_image_index;
-
-        // The device (and the WSI) must be done with the presented image before it can be
-        // transitioned and copied. Screenshots are a low-frequency debug feature, so a full idle
-        // is acceptable - and it keeps the barrier bookkeeping trivial.
         vk.wait_idle();
 
-        VkBufferCreateInfo buffer_info = {};
-        buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        buffer_info.size = buffer_size;
-        buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VkBuffer buffer = VK_NULL_HANDLE;
-        if (vkCreateBuffer(vk.device, &buffer_info, nullptr, &buffer) != VK_SUCCESS) {
-            return std::unexpected(std::string("screenshot: buffer creation failed"));
-        }
-
-        VkMemoryRequirements requirements = {};
-        vkGetBufferMemoryRequirements(vk.device, buffer, &requirements);
-        VkPhysicalDeviceMemoryProperties memory_properties = {};
-        vkGetPhysicalDeviceMemoryProperties(vk.physical_device, &memory_properties);
-        uint32_t memory_type = UINT32_MAX;
-        for (uint32_t i = 0; i < memory_properties.memoryTypeCount; ++i) {
-            VkMemoryPropertyFlags const wanted = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-            if ((requirements.memoryTypeBits & (1u << i)) != 0u && (memory_properties.memoryTypes[i].propertyFlags & wanted) == wanted) {
-                memory_type = i;
-                break;
+        frame_image result = {};
+        result.width = extent.width;
+        result.height = extent.height;
+        result.rgba.resize(static_cast<std::size_t>(buffer_size));
+        auto const* source = static_cast<unsigned char const*>(this->screenshot_readback_mapped);
+        if (bgra) {
+            // the swapchain is BGRA (sRGB); the PNG writer wants RGBA
+            for (std::size_t i = 0; i < result.rgba.size(); i += 4) {
+                result.rgba[i + 0] = source[i + 2]; // R
+                result.rgba[i + 1] = source[i + 1]; // G
+                result.rgba[i + 2] = source[i + 0]; // B
+                result.rgba[i + 3] = source[i + 3]; // A
             }
+        } else {
+            std::memcpy(result.rgba.data(), source, static_cast<std::size_t>(buffer_size));
         }
-        if (memory_type == UINT32_MAX) {
-            vkDestroyBuffer(vk.device, buffer, nullptr);
-            return std::unexpected(std::string("screenshot: no host-visible memory type"));
+        this->screenshot_pending = false;
+        return result;
+    }
+
+    void* runtime::ensure_screenshot_readback(VkExtent2D const extent) {
+        if (extent.width == 0 || extent.height == 0) {
+            return nullptr;
         }
-
-        VkMemoryAllocateInfo allocate_info = {};
-        allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocate_info.allocationSize = requirements.size;
-        allocate_info.memoryTypeIndex = memory_type;
-        VkDeviceMemory memory = VK_NULL_HANDLE;
-        if (vkAllocateMemory(vk.device, &allocate_info, nullptr, &memory) != VK_SUCCESS) {
-            vkDestroyBuffer(vk.device, buffer, nullptr);
-            return std::unexpected(std::string("screenshot: memory allocation failed"));
+        VkDeviceSize const needed = static_cast<VkDeviceSize>(extent.width) * static_cast<VkDeviceSize>(extent.height) * 4u;
+        if (this->screenshot_readback.valid() && this->screenshot_readback_size >= needed && this->screenshot_readback_mapped != nullptr) {
+            this->screenshot_readback_extent = extent; // same size, new swapchain generation: reuse
+            return this->screenshot_readback_mapped;
         }
-        vkBindBufferMemory(vk.device, buffer, memory, 0);
+        // (re)allocate - the first capture, or the swapchain was resized. Assigning the new owner
+        // releases the previous buffer (RAII), and nothing GPU-side references it: the copy that
+        // used it was recorded in an earlier frame that has already been submitted and waited on.
+        this->screenshot_readback = this->vulkan_core.vma.create_buffer(nullptr, needed, vulkan::buffer_type::readback_coherent);
+        this->screenshot_readback_mapped = nullptr;
+        this->screenshot_readback_buffer = VK_NULL_HANDLE;
+        this->screenshot_readback_size = 0;
+        this->screenshot_readback_extent = {0, 0};
+        if (!this->screenshot_readback.valid()) {
+            utility::log("screenshot: read-back buffer creation failed ({} bytes)", needed);
+            return nullptr;
+        }
+        auto const* detail = this->vulkan_core.vma.get_buffer_detail(this->screenshot_readback.handle());
+        if (detail == nullptr) {
+            this->screenshot_readback.reset();
+            return nullptr;
+        }
+        this->screenshot_readback_buffer = detail->buffer;
+        this->screenshot_readback_mapped = detail->allocation_info.pMappedData;
+        this->screenshot_readback_size = needed;
+        this->screenshot_readback_extent = extent;
+        return this->screenshot_readback_mapped;
+    }
 
-        VkCommandPoolCreateInfo const pool_info = make_command_pool_info(vk.graphics_family_index);
-        VkCommandPool pool = VK_NULL_HANDLE;
-        vkCreateCommandPool(vk.device, &pool_info, nullptr, &pool);
-        VkCommandBufferAllocateInfo const cb_allocate = make_command_buffer_allocate_info(pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY);
-        VkCommandBuffer command_buffer = VK_NULL_HANDLE;
-        vkAllocateCommandBuffers(vk.device, &cb_allocate, &command_buffer);
-        VkCommandBufferBeginInfo const begin_info = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr);
-        vkBeginCommandBuffer(command_buffer, &begin_info);
-
-        std::array<VkImageMemoryBarrier2, 1> to_transfer = {present_to_transfer_transition};
-        to_transfer[0].image = vk.swap_chain_images[image_index];
-        VkDependencyInfo dependency_info = make_image_dependency_info(1, to_transfer.data());
+    void runtime::record_screenshot_copy(VkCommandBuffer const command_buffer) {
+        core& vk = this->vulkan_core;
+        VkExtent2D const extent = vk.swap_chain_extent;
+        if (extent.width == 0 || extent.height == 0 || this->current_image_index >= vk.swap_chain_images.size()) {
+            return; // nothing sensible to copy (the frame will be skipped anyway)
+        }
+        if (this->ensure_screenshot_readback(extent) == nullptr) {
+            return;
+        }
+        // The swapchain image is in COLOR_ATTACHMENT_OPTIMAL here (the composite pass just wrote
+        // it, and the overlay with it): COLOR_ATTACHMENT -> TRANSFER_SRC -> copy -> back to
+        // COLOR_ATTACHMENT, so end_recording's present_transition still sees the layout it expects.
+        std::array<VkImageMemoryBarrier2, 1> barriers = {vulkan::color_attachment_to_transfer_transition};
+        barriers[0].image = vk.swap_chain_images[this->current_image_index];
+        VkDependencyInfo dependency_info = make_image_dependency_info(1, barriers.data());
         vkCmdPipelineBarrier2(command_buffer, &dependency_info);
 
         VkBufferImageCopy region = {};
@@ -2298,58 +2385,21 @@ namespace vulkan {
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.imageOffset = {0, 0, 0};
         region.imageExtent = {extent.width, extent.height, 1};
-        vkCmdCopyImageToBuffer(command_buffer, vk.swap_chain_images[image_index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
+        vkCmdCopyImageToBuffer(command_buffer, vk.swap_chain_images[this->current_image_index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, this->screenshot_readback_buffer, 1, &region);
 
-        std::array<VkImageMemoryBarrier2, 1> to_present = {transfer_to_present_transition};
-        to_present[0].image = vk.swap_chain_images[image_index];
-        dependency_info = make_image_dependency_info(1, to_present.data());
+        barriers[0] = vulkan::transfer_to_color_attachment_transition;
+        barriers[0].image = vk.swap_chain_images[this->current_image_index];
+        dependency_info = make_image_dependency_info(1, barriers.data());
         vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-        vkEndCommandBuffer(command_buffer);
 
-        VkSubmitInfo const submit_info = make_submit_info(&command_buffer);
-        if (vkQueueSubmit(vk.graphics_queue, 1, &submit_info, VK_NULL_HANDLE) != VK_SUCCESS) {
-            vkDestroyCommandPool(vk.device, pool, nullptr);
-            vkFreeMemory(vk.device, memory, nullptr);
-            vkDestroyBuffer(vk.device, buffer, nullptr);
-            return std::unexpected(std::string("screenshot: submit failed"));
-        }
-        vkQueueWaitIdle(vk.graphics_queue);
-
-        frame_image result = {};
-        result.width = extent.width;
-        result.height = extent.height;
-        result.rgba.resize(static_cast<std::size_t>(buffer_size));
-        void* mapped = nullptr;
-        if (vkMapMemory(vk.device, memory, 0, buffer_size, 0, &mapped) == VK_SUCCESS) {
-            auto const* source = static_cast<unsigned char const*>(mapped);
-            if (bgra) {
-                for (std::size_t i = 0; i < result.rgba.size(); i += 4) {
-                    result.rgba[i + 0] = source[i + 2]; // R
-                    result.rgba[i + 1] = source[i + 1]; // G
-                    result.rgba[i + 2] = source[i + 0]; // B
-                    result.rgba[i + 3] = source[i + 3]; // A
-                }
-            } else {
-                std::memcpy(result.rgba.data(), source, static_cast<std::size_t>(buffer_size));
-            }
-            vkUnmapMemory(vk.device, memory);
-        } else {
-            vkDestroyCommandPool(vk.device, pool, nullptr);
-            vkFreeMemory(vk.device, memory, nullptr);
-            vkDestroyBuffer(vk.device, buffer, nullptr);
-            return std::unexpected(std::string("screenshot: mapping the read-back buffer failed"));
-        }
-
-        vkDestroyCommandPool(vk.device, pool, nullptr);
-        vkFreeMemory(vk.device, memory, nullptr);
-        vkDestroyBuffer(vk.device, buffer, nullptr);
-        return result;
+        this->screenshot_pending = true;
     }
 
     bool runtime::consume_screenshot_request() noexcept {
-        bool const requested = this->screenshot_requested;
-        this->screenshot_requested = false;
-        return requested;
+        // "was a frame captured for me?" - the copy is recorded during recording (end_recording)
+        // and read back by acquire_current_frame_image(), which is what the caller does next
+        bool const captured = this->screenshot_pending;
+        return captured;
     }
 
     void runtime::set_point_lights(std::span<punctual_light const> lights) noexcept {

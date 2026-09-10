@@ -494,6 +494,13 @@ int main(int argc, char** argv) {
             break;
         }
         if (paced == vulkan::frame_status::skipped) {
+            // zero-sized swapchain (not sized yet / restored minimized): no attachments to render
+            // into - skip this frame's CPU work too, like the minimized case above
+            frame_stats.on_skipped();
+            std::this_thread::yield();
+            continue;
+        }
+        if (paced == vulkan::frame_status::skipped) {
             // Swapchain recreated during acquire: retry next iteration
             frame_stats.on_skipped();
             std::this_thread::yield();

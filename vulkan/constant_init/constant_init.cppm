@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.constant_init
-// module version: 0.1.5  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.6  (independent of the app version in CMakeLists project(VERSION))
 //
 // Compile-time Vulkan info-struct conventions: constexpr factories + constinit
 // "transition" defaults for the structs the engine fills identically everywhere
@@ -527,31 +527,35 @@ export namespace vulkan {
         .image = VK_NULL_HANDLE,
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
-    /** @brief PRESENT_SRC_KHR -> TRANSFER_SRC_OPTIMAL, host screenshot copy (vkCmdCopyImageToBuffer) */
-    inline constexpr VkImageMemoryBarrier2 present_to_transfer_transition = {
+    /** @brief COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC_OPTIMAL, screenshot read-back copy
+     *         (vkCmdCopyImageToBuffer). Recorded INSIDE the frame's own command buffer, while the
+     *         swapchain image is still owned by the app: after vkQueuePresentKHR the presentation
+     *         engine owns it and transitioning it again violates the WSI rules. */
+    inline constexpr VkImageMemoryBarrier2 color_attachment_to_transfer_transition = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext = nullptr,
-        .srcStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-        .srcAccessMask = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
         .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
         .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = VK_NULL_HANDLE,
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
-    /** @brief TRANSFER_SRC_OPTIMAL -> PRESENT_SRC_KHR, hand the screenshotted image back to the WSI */
-    inline constexpr VkImageMemoryBarrier2 transfer_to_present_transition = {
+    /** @brief TRANSFER_SRC_OPTIMAL -> COLOR_ATTACHMENT_OPTIMAL, hand the screenshotted image back
+     *         to the frame so present_transition (COLOR_ATTACHMENT -> PRESENT_SRC) still applies */
+    inline constexpr VkImageMemoryBarrier2 transfer_to_color_attachment_transition = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext = nullptr,
         .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
         .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-        .dstAccessMask = 0,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = VK_NULL_HANDLE,

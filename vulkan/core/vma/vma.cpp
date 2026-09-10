@@ -216,6 +216,14 @@ namespace {
                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
             break;
         }
+        case vulkan::buffer_type::readback_coherent: {
+            // written by the GPU (transfer), read by the host: host-visible local memory, mapped
+            // for random access reads
+            info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+            info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                         VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+            break;
+        }
         }
         return info;
     }
@@ -247,6 +255,10 @@ namespace {
         }
         case vulkan::buffer_type::storage_coherent: {
             info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            break;
+        }
+        case vulkan::buffer_type::readback_coherent: {
+            info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             break;
         }
         }
@@ -459,7 +471,11 @@ namespace vulkan {
             return false;
         }
 
-        memcpy(mapped_data, data, size);
+        // a null data pointer means "allocate only" (the read-back buffer type has no initial
+        // contents - the GPU fills it)
+        if (data != nullptr && size != 0) {
+            memcpy(mapped_data, data, size);
+        }
 
         vmaGetAllocationInfo(this->allocator, allocation, &allocation_info);
         if (!this->is_host_coherent(allocation_info.memoryType)) {
@@ -753,7 +769,9 @@ namespace vulkan {
         case buffer_type::uniform_coherent:
         case buffer_type::uniform_cached:
         case buffer_type::storage_coherent:
-            // Upload via direct mapping
+        case buffer_type::readback_coherent:
+            // Upload via direct mapping (a null data pointer means "allocate only": the read-back
+            // type has nothing to upload, the GPU fills it later)
             upload_success = direct_upload(allocation, alloc_info, data, size_byte);
             break;
 

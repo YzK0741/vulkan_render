@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.18  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.19  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -207,6 +207,12 @@ namespace vulkan {
             float mode = 0.0f;            // 0 = bright-pass + horizontal blur into the bloom target, 1 = vertical blur + composite
         };
         std::optional<vk_pipeline> post_pipeline = std::nullopt;
+        // The SAME shader pair drives two different color formats, so it needs two pipelines:
+        // post_pipeline targets the swapchain (the composite pass) and post_hdr_pipeline targets
+        // hdr_format (the bright-pass prefilter and the three downsample passes, which render into
+        // the R16F bloom levels). Reusing the swapchain-format pipeline for the HDR passes is a
+        // VkPipelineRenderingCreateInfo format mismatch - validation flags it and the write is UB.
+        std::optional<vk_pipeline> post_hdr_pipeline = std::nullopt;
         vk_sampler post_sampler = {};
         VkDescriptorSetLayout post_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout post_pipeline_layout = VK_NULL_HANDLE;
@@ -261,6 +267,18 @@ namespace vulkan {
         // (see consume_screenshot_request / acquire_current_frame_image)
         bool screenshot_requested = false;
         bool screenshot_key_down = false;
+        // Read-back copy of the presented image, recorded INSIDE the frame's own command buffer
+        // (end_recording, right before the present transition) while the swapchain image is still
+        // owned by the app. The old path transitioned the image after vkQueuePresentKHR, which the
+        // spec forbids - the presentation engine owns it by then (validation: "performs a layout
+        // transition on presentable VkImage ... but the image has not been acquired").
+        // screenshot_pending = a copy was recorded and is ready to be read once the submit lands.
+        bool screenshot_pending = false;
+        vk_buffer screenshot_readback = {};                        // host-visible TRANSFER_DST staging
+        VkBuffer screenshot_readback_buffer = VK_NULL_HANDLE;      // its VkBuffer (vk_buffer::handle() is the allocator's)
+        void* screenshot_readback_mapped = nullptr;                // persistent mapping (vma MAPPED_BIT)
+        VkDeviceSize screenshot_readback_size = 0;                 // bytes the buffer currently holds
+        VkExtent2D screenshot_readback_extent = {0, 0};            // extent the copy was recorded at
         std::optional<vk_pipeline> shadow_pipeline = std::nullopt; // depth-only pass pipeline
         bool shadows_enabled = false;                              // true after enable_shadows() (light UBO filled + pipeline ready)
         // live-tunable depth bias of the shadow pass (dynamic state, set per frame before the
@@ -720,6 +738,20 @@ namespace vulkan {
         void record_post_process(VkCommandBuffer command_buffer);
         /** @brief (re)bind the post descriptor sets to the current per-image HDR targets */
         void ensure_post_descriptors();
+        /**
+         * @brief make sure the screenshot read-back buffer holds @p extent (recreating it when the
+         *        swapchain size changed) and keep it persistently mapped
+         * @return the mapped host pointer, or nullptr when the buffer is unavailable
+         */
+        void* ensure_screenshot_readback(VkExtent2D extent);
+        /**
+         * @brief record the screenshot copy (swapchain image -> read-back buffer) into
+         *        @p command_buffer, with the image's own layout transitions around it. Called
+         *        from end_recording while the image still belongs to the frame being recorded -
+         *        after vkQueuePresentKHR the presentation engine owns it and it must not be
+         *        transitioned again.
+         */
+        void record_screenshot_copy(VkCommandBuffer command_buffer);
         void record_main_segment(VkCommandBuffer command_buffer, std::span<primitive const* const> leaves, bool draw_skybox) const;
 
         /**
@@ -948,21 +980,29 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief copy the currently presented swapchain image back to host memory
+         * @brief read back the frame captured by the last screenshot request
          * @return the captured image (8-bit RGBA, swizzled from the swapchain format), or an error
-         *         string when the swapchain is unavailable / has an unsupported format
-         * @note low-frequency debug feature: it waits for the device to go idle, transitions the
-         *       present image to TRANSFER_SRC, copies it into a host-visible buffer and hands it
-         *       back to the WSI (PRESENT_SRC) - expect a visible hitch, do not call per frame.
-         *       Requires a 4-channel 8-bit swapchain format (BGRA/RGBA, sRGB or UNORM); the
-         *       sRGB encoding is preserved, so the PNG matches what was on screen.
+         *         string when nothing was captured / the swapchain format is unsupported
+         * @note the pixels were already copied GPU-side, into a persistent host-visible buffer, by
+         *       record_screenshot_copy() while the frame was recorded (see consume_screenshot_request),
+         *       so this only waits for the device to idle and swizzles - no transition of a
+         *       presentable image (the WSI owns it after vkQueuePresentKHR). Still a low-frequency
+         *       debug feature: expect a visible hitch, do not call per frame. Requires a 4-channel
+         *       8-bit swapchain format (BGRA/RGBA, sRGB or UNORM); the sRGB encoding is preserved,
+         *       so the PNG matches what was on screen.
          */
         std::expected<frame_image, std::string> acquire_current_frame_image();
 
         /**
          * @ingroup vulkan_runtime
-         * @brief read + clear the pending screenshot request (F12, edge-triggered in poll_events)
-         * @return true once per F12 press; the caller decides where to save the capture
+         * @brief ask whether a frame was captured for the pending screenshot request
+         * @return true when the read-back copy has been recorded and is ready to be read by
+         *         acquire_current_frame_image() (which consumes it) - so the caller's pattern stays
+         *         `if (consume_screenshot_request()) { acquire_current_frame_image(); ... }`
+         * @note the request itself (F12 edge in poll_events, or request_screenshot()) is consumed
+         *       during recording: end_recording() records the copy into that frame's own command
+         *       buffer while the swapchain image still belongs to it. A request whose frame could
+         *       not be recorded (zero-sized swapchain) stays pending for a later frame.
          */
         [[nodiscard]] bool consume_screenshot_request() noexcept;
 

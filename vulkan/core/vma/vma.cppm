@@ -49,12 +49,16 @@ namespace vulkan {
      * @brief buffer usage type, decides memory properties and upload strategy
      */
     export enum class buffer_type {
-        vertex,           // GPU_ONLY, requires a staging buffer
-        index,            // GPU_ONLY, requires a staging buffer
-        uniform_gpu_only, // GPU_ONLY, suited for uniforms updated infrequently
-        uniform_coherent, // HOST_VISIBLE | HOST_COHERENT, suited for per-frame uniforms
-        uniform_cached,   // HOST_VISIBLE | HOST_CACHED, suited for read-back
-        storage_coherent, // HOST_VISIBLE | HOST_COHERENT storage buffer (e.g. GPU-visible material table)
+        vertex,            // GPU_ONLY, requires a staging buffer
+        index,             // GPU_ONLY, requires a staging buffer
+        uniform_gpu_only,  // GPU_ONLY, suited for uniforms updated infrequently
+        uniform_coherent,  // HOST_VISIBLE | HOST_COHERENT, suited for per-frame uniforms
+        uniform_cached,    // HOST_VISIBLE | HOST_CACHED, suited for read-back
+        storage_coherent,  // HOST_VISIBLE | HOST_COHERENT storage buffer (e.g. GPU-visible material table)
+        readback_coherent, // HOST_VISIBLE | HOST_COHERENT with TRANSFER_DST: GPU -> CPU read-back
+                           // (e.g. a screenshot copy). Created without initial contents: pass a
+                           // null data pointer + the byte size to create_buffer(), which then only
+                           // allocates (see direct_upload).
     };
 
     /**
