@@ -19,6 +19,10 @@ namespace {
         CHECK(settings.render.shadow_cascade_blend > 0.24f && settings.render.shadow_cascade_blend < 0.26f);
         CHECK(!settings.render.clustered_lights); // fixture turns the M5 cluster pass off
         CHECK(settings.lighting.demo_lights == 3);
+        CHECK(!settings.render.ssao); // fixture turns the M6 screen-space AO off
+        CHECK(settings.render.ssao_radius > 1.49f && settings.render.ssao_radius < 1.51f);
+        CHECK(settings.render.ssao_intensity > 0.49f && settings.render.ssao_intensity < 0.51f);
+        CHECK(settings.render.ssao_samples == 4);
         CHECK(settings.render.fxaa);
         CHECK(!settings.render.gpu_timings);
         CHECK(settings.render.gbuffer_debug);
@@ -49,6 +53,8 @@ namespace {
         CHECK(settings.render.shadow_cascade_blend > 0.09f && settings.render.shadow_cascade_blend < 0.11f);
         CHECK(settings.render.clustered_lights); // default: the cluster pass runs
         CHECK(settings.lighting.demo_lights == 0);
+        CHECK(settings.render.ssao); // default: the deferred path traces screen-space AO
+        CHECK(settings.render.ssao_samples == 8);
         CHECK(settings.gui.show);
     }
 

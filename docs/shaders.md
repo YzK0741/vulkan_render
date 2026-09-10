@@ -133,6 +133,21 @@
  * ride the light UBO (`cluster_grid` / `cluster_depth`, appended AFTER the light array so the array
  * offset every other user of the block encodes stays 352).
  *
+ * @section shader_ssao Screen-space ambient occlusion (M6)
+ *
+ * `deferred.frag` computes the AO itself, from the depth and normal it already reads: a golden-angle
+ * hemisphere spiral around the pixel's view-space position, rotated per pixel by a hash of
+ * `gl_FragCoord`, each sample projected back to screen and compared against the depth buffer (a
+ * sample is occluded when the stored surface is closer to the camera and inside the radius, with the
+ * range check fading the contact out). View-space z is negative in front of the camera, so "closer"
+ * is a GREATER z - the sign that is easy to get backwards. The result multiplies the material's baked
+ * AO into `shade_input.ao`, which `shade_surface()` applies to the IBL ambient (diffuse and
+ * specular) and never to the direct sun. With an intensity of 0 the term returns exactly 1.0, so an
+ * SSAO-off frame is bit for bit the pre-M6 frame. Parameters ride the deferred pass's push block
+ * (the 4x4 inverse view-projection plus the `vec4 ssao`), so nothing new is bound. It is deliberately
+ * hemisphere SSAO rather than horizon-based GTAO, and being screen-space it cannot see occluders off
+ * screen - the usual set of approximations.
+ *
  * @section shader_bindings The shared scene descriptor set (set 0)
  *
  * Every shader in the main pass uses the SAME descriptor set layout (created once by

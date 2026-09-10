@@ -321,6 +321,12 @@ namespace chores {
         // brute-force reference), on = only the pixel's cluster list. Mirroring it every frame in
         // main() keeps the config and the checkbox in agreement.
         panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("clustered lights", &bindings.clustered_lights));
+        // screen-space ambient occlusion (M6): the deferred lighting stage traces the G-buffer.
+        // The sliders edit the radius (world units), the applied intensity and the sample count.
+        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("ssao", &bindings.ssao_enabled));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("ssao radius", &bindings.ssao_radius, 0.05f, 3.0f));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("ssao intensity", &bindings.ssao_intensity, 0.0f, 1.0f));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("ssao samples", &bindings.ssao_samples, 1.0f, 16.0f));
         // render mode: pbr (lit) vs unlit (flat base color, no shading). Default-semantics leaves
         // draw with the runtime's default pipeline, so this only records a combo selection here;
         // main() applies it BETWEEN frames via runtime.set_default_pipeline (the registry may

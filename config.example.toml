@@ -90,6 +90,22 @@ shadow_cascade_blend = 0.1
 # ever needs more - the capacity and the light array size are the two knobs).
 clustered_lights = true
 
+# ssao / ssao_radius / ssao_intensity / ssao_samples: screen-space ambient occlusion on the deferred
+# path (M6). The deferred lighting stage traces a golden-angle hemisphere of samples around each pixel
+# against the G-buffer depth and folds the occlusion into the shade_input ao, which is exactly what a
+# material baked AO map does: it scales the IBL ambient (diffuse and specular) and never the direct
+# sun. No extra pass and no extra render target - the depth and normals it needs are the G-buffer the
+# lighting stage already reads. The radius is in WORLD units, so its apparent strength depends on how
+# close the camera is: 0.5 suits human-scale contact AO, while Sponza seen from 50 units away needs
+# 1..2 to read (that distance dependence is inherent to screen-space AO, not a tuning mistake), and
+# `ssao_samples` trades cost for smoothness (1..16, the shader maximum). `ssao = false` (or an
+# intensity of 0) makes the term return exactly 1.0, so the frame is bit for bit the pre-M6 frame.
+# Deferred-only: the forward path stores neither depth nor normals to trace against.
+ssao = true
+ssao_radius = 0.5
+ssao_intensity = 1.0
+ssao_samples = 8
+
 # fxaa: anti-alias the final image (one extra fullscreen pass over the tonemapped LDR image).
 # Cheap and hardware-independent, but it is a screen-space blur of edges: it softens fine detail and
 # cannot remove sub-pixel shimmer in motion. Its two knobs (sub-pixel strength, edge threshold) live

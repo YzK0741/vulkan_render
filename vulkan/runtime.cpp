@@ -2508,7 +2508,15 @@ namespace vulkan {
         // set 0 = the shared scene set (camera / IBL / light UBO / shadow map), set 1 = the G-buffer
         std::array<VkDescriptorSet, 2> const sets = {*this->scene_sets[static_cast<std::size_t>(vk.current_frame)], this->gbuffer_debug_sets[index]};
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->deferred_pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
-        deferred_push_constants const push = {.inv_view_proj = this->current_inv_view_proj};
+        // SSAO (M6) rides the same block: an intensity of 0 when the feature is off, which makes
+        // ssao_occlusion() return exactly 1.0 - the shaded result is then the pre-M6 value bit for bit
+        deferred_push_constants const push = {
+            .inv_view_proj = this->current_inv_view_proj,
+            .ssao = glm::vec4(this->ssao_radius,
+                              this->ssao_enabled ? this->ssao_intensity : 0.0f,
+                              static_cast<float>(this->ssao_samples),
+                              this->ssao_bias),
+        };
         vkCmdPushConstants(command_buffer, this->deferred_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
         vkCmdEndRendering(command_buffer);
@@ -3401,6 +3409,15 @@ namespace vulkan {
         // viewport resync (which walks the named pipeline cache) never touches this pipeline
         this->cluster_pipeline = std::move(result).value();
         return {};
+    }
+
+    void runtime::set_ssao(bool const enabled, float const radius, float const intensity, uint32_t const samples) noexcept {
+        // CPU-side only (the same rule as set_brdf_model / set_clustered_lights): the values are
+        // pushed with the deferred lighting stage each frame, so they are safe to change mid-run.
+        this->ssao_enabled = enabled;
+        this->ssao_radius = std::max(radius, 0.0f);
+        this->ssao_intensity = std::clamp(intensity, 0.0f, 1.0f);
+        this->ssao_samples = std::clamp(samples, 0u, 16u); // MAX_SSAO_SAMPLES in deferred.frag
     }
 
     void runtime::set_clustered_lights(bool const enabled) noexcept {

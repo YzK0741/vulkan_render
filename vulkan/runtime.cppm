@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -304,7 +304,19 @@ namespace vulkan {
         };
         struct deferred_push_constants {
             glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip (xy from the pixel, z = depth, w = 1) -> world
+            // screen-space ambient occlusion (M6): x = radius, y = intensity (0 = off), z = samples,
+            // w = depth bias. It rides the SAME push block because both are per-frame constants of
+            // the lighting stage, and the shared range (100 bytes) already covers 80.
+            glm::vec4 ssao = glm::vec4(0.5f, 0.0f, 8.0f, 0.02f);
         };
+        // SSAO state (runtime::set_ssao / [render] ssao*): the deferred lighting stage computes the
+        // occlusion from the G-buffer depth + normal and folds it into the shade_input's ao, which
+        // scales the IBL ambient only. Deferred-only: the forward path has no G-buffer to trace.
+        bool ssao_enabled = true;    // master switch (an intensity of 0 is pushed when false)
+        float ssao_radius = 0.5f;    // world-space sample radius
+        float ssao_intensity = 1.0f; // how much occlusion is applied (1 = full)
+        uint32_t ssao_samples = 8;   // samples per pixel, clamped to the shader's MAX_SSAO_SAMPLES
+        float ssao_bias = 0.02f;     // view-depth bias that keeps a surface from occluding itself
         // the inverse of this frame's view-projection, refreshed with the camera UBO in
         // pace_and_acquire() (the deferred lighting stage reconstructs world positions from depth)
         glm::mat4 current_inv_view_proj = glm::mat4(1.0f);
@@ -1457,6 +1469,22 @@ namespace vulkan {
          *       deformed (skinned/morphed) object can ghost slightly - see gbuffer.frag.
          */
         void set_taa(bool enabled, float blend_static = 0.9f, float blend_min = 0.5f) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief screen-space ambient occlusion of the deferred lighting stage (M6)
+         * @param enabled master switch (false pushes an intensity of 0, which the shader returns as
+         *        an exact 1.0 - an SSAO-off frame is bit for bit the pre-M6 frame)
+         * @param radius world-space sample radius (typical: 0.3..1.5, i.e. a fraction of the scene
+         *        scale; the ground-truth mismatch of a screen-space AO is that its apparent strength
+         *        depends on the view distance)
+         * @param intensity how much of the computed occlusion is applied (0..1, 1 = full)
+         * @param samples samples per pixel, clamped to the shader's MAX_SSAO_SAMPLES (16)
+         * @note deferred-path only: the trace needs the G-buffer depth and normals, which the forward
+         *       path does not store. The occlusion scales the IBL ambient (diffuse and specular), not
+         *       the direct sun - see shade_surface().
+         */
+        void set_ssao(bool enabled, float radius = 0.5f, float intensity = 1.0f, uint32_t samples = 8) noexcept;
 
         /** @brief how many shadow cascades are active (1 = the single-map behavior) */
         [[nodiscard]] uint32_t shadow_cascade_count() const noexcept {

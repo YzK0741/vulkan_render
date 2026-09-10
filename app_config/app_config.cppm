@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -108,6 +108,14 @@ namespace app_config {
         // own cluster's list. false = the brute-force loop over every active light - the reference
         // path the clustered one is verified against (and what every pre-M5 frame did).
         bool clustered_lights = true;
+        // Screen-space ambient occlusion (M6): the deferred lighting stage traces a hemisphere of
+        // samples against the G-buffer depth and scales the IBL ambient by the result. `ssao_radius`
+        // is in world units (a fraction of the scene scale), `ssao_samples` is clamped to the
+        // shader maximum of 16. Deferred-only - the forward path stores no depth/normals to trace.
+        bool ssao = true;
+        float ssao_radius = 0.5f;
+        float ssao_intensity = 1.0f;
+        int ssao_samples = 8;
         bool fxaa = false; // FXAA the final image (one extra fullscreen pass)
         // measure per-pass GPU time with timestamp queries: one vkCmdWriteTimestamp per pass
         // boundary, read back after the frame slot completed, averaged over a 60-frame window

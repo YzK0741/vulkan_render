@@ -410,8 +410,12 @@ int main(int argc, char** argv) {
     gui.shadow_cascades = settings.render.shadow_cascades - 1;       // cascade combo index (0 = single map)
     gui.shadow_cascade_blend = settings.render.shadow_cascade_blend; // cascaded shadow maps (M4)
     gui.clustered_lights = settings.render.clustered_lights;         // clustered light culling (M5)
-    gui.anim_playing = animation.is_playing();                       // play checkbox initial state
-    gui.current_camera = current_camera;                             // combo selection (the pose seeded above)
+    gui.ssao_enabled = settings.render.ssao;                         // screen-space AO (M6)
+    gui.ssao_radius = settings.render.ssao_radius;
+    gui.ssao_intensity = settings.render.ssao_intensity;
+    gui.ssao_samples = static_cast<float>(settings.render.ssao_samples);
+    gui.anim_playing = animation.is_playing(); // play checkbox initial state
+    gui.current_camera = current_camera;       // combo selection (the pose seeded above)
 
     // ---- authored (glTF) punctual lights -> the editable gui light slots ----
     // KHR_lights_punctual lights load straight into the gui slots (up to
@@ -606,6 +610,8 @@ int main(int argc, char** argv) {
         // clustered light culling (M5): mirrored like the other render toggles, so the config and the
         // overlay checkbox both take effect on the next frame (the flag rides the light UBO)
         runtime.set_clustered_lights(gui.clustered_lights);
+        // screen-space ambient occlusion (M6): deferred-only, mirrored every frame like the rest
+        runtime.set_ssao(gui.ssao_enabled, gui.ssao_radius, gui.ssao_intensity, static_cast<uint32_t>(std::max(gui.ssao_samples, 0.0f) + 0.5f));
         runtime.set_exposure(gui.exposure);                          // gui exposure slider -> linear scale (post-process pass)
         runtime.set_bloom(gui.bloom_intensity, gui.bloom_threshold); // gui bloom sliders -> post pass
         // FXAA: mirrored every frame like the other post-process values (the runtime clamps them and

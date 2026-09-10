@@ -172,6 +172,11 @@ namespace chores {
         // clustered light culling (M5): checkbox mirrored into the runtime every frame
         // (runtime::set_clustered_lights); false = the brute-force loop over every light
         bool clustered_lights = true;
+        // screen-space ambient occlusion (M6, deferred path): mirrored into the runtime every frame
+        bool ssao_enabled = true;
+        float ssao_radius = 0.5f;
+        float ssao_intensity = 1.0f;
+        float ssao_samples = 8.0f; // slider value; main rounds it into the runtime call
     };
 
     /**
