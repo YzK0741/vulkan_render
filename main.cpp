@@ -441,9 +441,9 @@ int main(int argc, char** argv) {
         // visible - imported model lights were loaded into those slots, so they must stay lit in
         // headless-overlay runs too (the demo slots stay off unless the user enabled them)
         chores::apply_point_lights(runtime, gui);
-        if (use_gui) {
-            gui.fps = frame_stats.smoothed_fps(); // live smoothed value for the overlay
-        }
+        // overlay fps mirror: updated unconditionally - the overlay can be hidden with F1 and
+        // shown again at runtime, so its data must stay fresh even while it is not drawn
+        gui.fps = frame_stats.smoothed_fps();
         if (frame_stats.window_rolled()) {
             // once per second: the fps log line stays for headless / non-gui runs; the overlay
             // shows the same number via smoothed_fps()

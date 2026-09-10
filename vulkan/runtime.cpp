@@ -780,6 +780,20 @@ namespace vulkan {
             return frame_status::closed;
         }
 
+        // F1 toggles the debug overlay (edge-triggered: holding the key toggles once). When the
+        // overlay was never initialized ([gui] show = false at startup) the first press enables
+        // it on demand, so the key also brings the ui back after a disable.
+        bool const f1_down = glfwGetKey(window, GLFW_KEY_F1) == GLFW_PRESS;
+        if (f1_down && !this->gui_toggle_down) {
+            if (!this->debug_overlay.is_active()) {
+                this->debug_gui_shown = this->enable_debug_gui();
+            } else {
+                this->debug_gui_shown = !this->debug_gui_shown;
+            }
+            utility::log("gui overlay: {}", this->debug_gui_shown ? "shown (F1 to hide)" : "hidden (F1 to show)");
+        }
+        this->gui_toggle_down = f1_down;
+
         // Minimized: skip this frame (acquiring from an invalidated / 0-sized swapchain would
         //    fail); the restore transition is handled by recreate_if_minimized()
         if (glfwGetWindowAttrib(window, GLFW_ICONIFIED) == GLFW_TRUE) {
@@ -877,7 +891,7 @@ namespace vulkan {
         // Debug overlay: begin a fresh ImGui frame once per rendered frame (after the acquire,
         // before any UI content is built; the actual draw is recorded at the end of
         // record_main_drawcalls() while the main rendering instance is still open).
-        if (this->debug_overlay.is_active()) {
+        if (this->debug_gui_shown && this->debug_overlay.is_active()) {
             this->debug_overlay.new_frame();
         }
 
@@ -1243,7 +1257,7 @@ namespace vulkan {
                 utility::log("runtime: main secondary begin failed - scene skipped this frame");
             }
             bool gui_recorded = false;
-            if (this->debug_overlay.is_active()) {
+            if (this->debug_gui_shown && this->debug_overlay.is_active()) {
                 if (vkBeginCommandBuffer(gui_secondary, &main_sec_begin) == VK_SUCCESS) {
                     this->debug_overlay.record(gui_secondary);
                     vkEndCommandBuffer(gui_secondary);
@@ -1299,7 +1313,7 @@ namespace vulkan {
         // is never executed.
         record_transparent_pass();
         bool gui_recorded = false;
-        if (this->debug_overlay.is_active()) {
+        if (this->debug_gui_shown && this->debug_overlay.is_active()) {
             if (vkBeginCommandBuffer(gui_secondary, &main_sec_begin) == VK_SUCCESS) {
                 this->debug_overlay.record(gui_secondary);
                 vkEndCommandBuffer(gui_secondary);
@@ -1579,6 +1593,14 @@ namespace vulkan {
 
     bool runtime::debug_gui_active() const noexcept {
         return this->debug_overlay.is_active();
+    }
+
+    bool runtime::debug_gui_visible() const noexcept {
+        return this->debug_overlay.is_active() && this->debug_gui_shown;
+    }
+
+    void runtime::set_debug_gui_visible(bool const visible) noexcept {
+        this->debug_gui_shown = visible;
     }
 
     gui::gui_content& runtime::debug_gui() noexcept {

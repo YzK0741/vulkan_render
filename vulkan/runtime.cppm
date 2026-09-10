@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.3  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.4  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -386,6 +386,12 @@ namespace vulkan {
         // runtime drives it inside the frame steps (new_frame before recording, record after the
         // runtime's own draw calls) so callers only manage its content via debug_gui().
         gui::gui_content debug_overlay;
+        // whether the active overlay is drawn (set_debug_gui_visible / the built-in F1 toggle);
+        // hiding keeps the overlay initialized and its panels intact, so showing is instant
+        bool debug_gui_shown = true;
+        // F1 edge detection for the overlay toggle (true while the key is held, so one press
+        // toggles exactly once - see poll_events)
+        bool gui_toggle_down = false;
         // filtered view over vulkan_core, exposed via operator-> (external code never sees the raw core)
         core_filter filtered_core;
 
@@ -537,14 +543,33 @@ namespace vulkan {
          *       per-frame new_frame/record calls are driven by the runtime once enabled. Call
          *       after the runtime is fully set up (window/device ready). Safe to call again to
          *       re-enable after shutdown; no-op when already active.
+         * @note F1 toggles the overlay at runtime (see set_debug_gui_visible): hide/show the whole
+         *       overlay without losing its panels, and press it once more to bring it back
          */
         bool enable_debug_gui();
 
         /**
          * @ingroup vulkan_runtime
-         * @brief true while the Dear ImGui debug overlay is active
+         * @brief true while the Dear ImGui debug overlay is active (initialized)
          */
         [[nodiscard]] bool debug_gui_active() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether the active overlay is currently drawn (distinct from debug_gui_active():
+         *        the overlay stays initialized while hidden, so showing it again is instant)
+         */
+        [[nodiscard]] bool debug_gui_visible() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief hide / show the whole debug overlay without touching its panels or widgets
+         * @param visible false skips the overlay's per-frame work and leaves the frame to the
+         *        scene only; true draws it again
+         * @note the flag is remembered while the overlay is inactive and takes effect as soon as
+         *       enable_debug_gui() succeeds; the runtime's built-in F1 key toggles this same flag
+         */
+        void set_debug_gui_visible(bool visible) noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -587,7 +612,9 @@ namespace vulkan {
         // ---- frame phases: one frame is these calls in order. render_frame() runs them all
         //      back to back; callers with per-frame host writes run them at fine granularity
         //      (writes go between pace_and_acquire() and begin_recording()) ----
-        /** @brief poll window events; returns closed on ESC/native close, skipped while minimized */
+        /** @brief poll window events; returns closed on ESC/native close, skipped while minimized.
+         *         F1 toggles the debug overlay (initializing it on demand when it was disabled at
+         *         startup), edge-triggered so one press toggles exactly once */
         frame_status poll_events();
         /** @brief recreate the swapchain if the window was minimized (extent 0) since the last frame */
         void recreate_if_minimized();
