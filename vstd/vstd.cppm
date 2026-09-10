@@ -9,7 +9,7 @@
 
 // ============================================================================
 // module: vstd
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.0a  (independent of the app version in CMakeLists project(VERSION))
 //
 // The project's STL module, MODIFIED FROM libc++ (LLVM's C++ standard
 // library): a trimmed copy of libc++'s generated std-module output (upstream
@@ -42,7 +42,7 @@
  *   are upstream-generated and must not be hand-edited (see vstd/README.md).
  * - Byte-bound to the matching libc++ of the MSYS2 clang64 toolchain: refresh
  *   the partitions on toolchain upgrades.
- * @version 0.1.0
+ * @version 0.1.0a
  */
 
 module;

@@ -3,12 +3,12 @@
 A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), built with
 CMake 4.3 + Ninja on MSYS2 clang64.
 
-Current version: **0.1.0** — single source is `project(VERSION)` in `CMakeLists.txt`
+Current version: **0.2.0** — single source is `project(VERSION)` in `CMakeLists.txt`
 (surfaced by `--version`, the startup log banner and the Vulkan `app_info`); bump it there
 and keep this line in sync.
 
 - `vstd` - the project's STL module (modified from libc++ and trimmed to the project's
-  usage; consumed as `import vstd;`, module version 0.1.0 - see `vstd/README.md`)
+  usage; consumed as `import vstd;`, module version 0.1.0a - see `vstd/README.md`)
 - `vulkan.core` - instance / device / swapchain / VMA allocator / pipeline / descriptor plumbing
 - `vulkan.scene_tree` - pure-CPU scene storage (transform hierarchy of scene_node objects with abstract primitive leaves)
 - `vulkan.primitive` - the GPU primitives (normal / instanced / static draws) plus the material / camera / light UBO records of the GPU scene set

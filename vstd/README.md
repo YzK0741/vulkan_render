@@ -56,7 +56,7 @@ has no Windows/Linux/compiler-specific forks of its own.
 repo (banner at the top of `vstd.cppm`, independent of the app version in
 `project(VERSION)`):
 
-- current: **0.1.0**
+- current: **0.1.0a**
 - MAJOR: breaking interface changes
 - MINOR: additive features — including project-local **extensions** (`vstd`
   is the natural home for STL additions beyond libc++; the module is not just a

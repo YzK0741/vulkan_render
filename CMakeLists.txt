@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.3)
-project(vulkan_render VERSION 0.1.0)
+project(vulkan_render VERSION 0.2.0)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)

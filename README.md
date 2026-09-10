@@ -9,23 +9,25 @@ A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), implementin
 
 ## Version
 
-**0.1.0** — single source of truth is `project(VERSION)` in `CMakeLists.txt`; CMake injects
+**0.2.0** — single source of truth is `project(VERSION)` in `CMakeLists.txt`; CMake injects
 `VULKAN_RENDER_VERSION_{MAJOR,MINOR,PATCH}` into the code. To release a new version, bump it
 there and update this line (plus `docs/mainpage.md`). The version is surfaced by `--version`,
 the startup log banner (`vulkan_render x.y.z`), and the Vulkan instance's `app_info`
 (`applicationVersion` / `engineVersion`).
 
 Each **independently reusable module set** also carries its own `module version` annotation
-in a comment block at the top of its main interface unit — `utility`, `gltf_loader`,
-`app_config`, `vulkan.core`, `vulkan.math`, `vulkan.runtime` (incl. its `scene_tree` /
-`render_environment` submodules), `vulkan.animation`, `vulkan.gui` and `vulkan.constant_init`
-(the compile-time Vulkan info-struct builders that `vulkan.core` and `vulkan.runtime`
-embed). All started at 0.1.0; `vulkan.core` and `vulkan.animation` are at 0.1.1,
-`vulkan.runtime` at 0.1.2, `vulkan.constant_init` at 0.1.3.
+in a comment block at the top of its main interface unit — `utility` 0.3.0, `vstd` 0.1.0a
+(the trimmed `std` replacement), `gltf_loader` 0.1.0a, `app_config` 0.10.0, `vulkan.math`
+0.1.0a, `vulkan.constant_init` 0.4.0 (the compile-time Vulkan info-struct builders that
+`vulkan.core` and `vulkan.runtime` embed), `vulkan.core` 0.6.0, `vulkan.runtime` 0.17.0,
+`vulkan.scene_tree` 0.1.3, `vulkan.primitive` 0.4.0, `vulkan.animation` 0.1.1a and
+`vulkan.gui` 0.3.0.
 They evolve on their own cadence (bump MAJOR on breaking interface changes, MINOR on additive
 features, PATCH on fixes), independent of the app version and of each other. An appended `a`
-suffix (e.g. `vulkan.core` 0.1.1a) marks an **internal revision**: source-compatible style or
-implementation changes that do not consume a semver slot.
+suffix marks an **internal revision**: source-compatible style, comment or import-graph changes
+that do not consume a semver slot (e.g. `gltf_loader` 0.1.0a after the switch from the vendored
+`std` module to `vstd`, or `vulkan.animation` 0.1.1a after `vulkan.primitive` was split out of
+`vulkan.scene_tree`).
 
 ## Features
 
