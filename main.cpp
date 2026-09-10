@@ -166,6 +166,9 @@ int main(int argc, char** argv) {
     // is created when the first scene set binds it - see runtime::set_shadow_cascades.
     runtime.set_shadow_cascades(static_cast<uint32_t>(settings.render.shadow_cascades));
     runtime.set_shadow_cascade_blend(settings.render.shadow_cascade_blend);
+    // shadow map edge length: same startup-only rule as the cascade count (the layered image and its
+    // views are created when the first scene set binds them, so this must precede the scene import)
+    runtime.set_shadow_map_size(static_cast<uint32_t>(settings.render.shadow_map_size));
     auto const runtime_ready = std::chrono::steady_clock::now();
     utility::log("vulkan runtime initialized: {:.1f} ms (async model load + env generation running in background)", std::chrono::duration<double, std::milli>(runtime_ready - startup_start).count());
 

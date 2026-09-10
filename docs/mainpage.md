@@ -57,8 +57,23 @@ path: a Halton(2,3) projection jitter, per-pixel camera motion vectors written b
 view-depth guard for disocclusions) - measured against the same frame without TAA, 1.05/255 mean
 difference with 9% less high-frequency energy, and the forward path byte-identical. TAA is the
 deferred path's anti-aliasing because a 1x G-buffer has no MSAA to fall back on, which is why
-`[render] msaa` now distinguishes auto (0) from off (1). Still ahead on this path: alpha-blended
-geometry, per-object motion vectors, cascaded shadow maps and the clustered light cull.
+`[render] msaa` now distinguishes auto (0) from off (1). **M4 (done)** is cascaded shadow maps: the
+sun's shadow pass fills a layered 2D-array depth map (1..4 cascades, three by default), each cascade
+fitting its own light-space box to its own slice of the view range (practical split scheme, lambda
+0.75), with the fragment shader selecting its cascade per pixel from the view depth and blending
+across the boundary - one cascade is byte-identical to the pre-M4 single-map path. **M5 (done)** is
+clustered light culling: `shaders/light_cluster.comp` (the engine's first compute pipeline, on the
+graphics queue) sorts up to 128 punctual lights into a 64 px-tile x 16-exponential-depth-slice grid
+once per frame with one atomic counter per cluster, and the shading stage loops only its own cluster's
+list - measured with 64 lights, the forward shading pass drops 1.28 -> 0.44 ms and the deferred
+lighting pass 0.25 -> 0.08 ms with a byte-identical image, since the cluster test is conservative.
+**M6 (done)** is screen-space ambient occlusion in the deferred lighting stage: a golden-angle
+hemisphere spiral traced against the G-buffer depth and normals, folded into the `shade_input` ao so
+it scales the IBL ambient exactly like a baked AO map, with no extra pass or render target and an
+off path that is byte-identical to the pre-M6 frame. **M7 (done)** is the collation pass: the shadow
+map size became a config knob, the documented example config is parsed and pinned by a unit test,
+and the configuration / GUI / reference documentation cover every milestone. Still ahead on this
+path: alpha-blended geometry in the deferred path and per-object motion vectors.
 
 ## Modular composition
 

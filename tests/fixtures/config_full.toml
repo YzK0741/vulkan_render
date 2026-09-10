@@ -16,6 +16,7 @@ clear_color = [0.1, 0.2, 0.3]
 skybox = false
 shadow = false
 shadow_cascades = 2
+shadow_map_size = 1024
 shadow_cascade_blend = 0.25
 clustered_lights = false
 ssao = false

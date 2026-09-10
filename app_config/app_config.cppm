@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -112,6 +112,11 @@ namespace app_config {
         // samples against the G-buffer depth and scales the IBL ambient by the result. `ssao_radius`
         // is in world units (a fraction of the scene scale), `ssao_samples` is clamped to the
         // shader maximum of 16. Deferred-only - the forward path stores no depth/normals to trace.
+        // Shadow map edge length in texels ([render] shadow_map_size): 1024/2048/4096 are the usual
+        // choices - resolution against the pass cost and memory (the layered map is
+        // shadow_map_size^2 x 4 layers x 4 bytes per cascade set, per frame slot). Applied before the
+        // scene import; the runtime clamps it to 256..8192 and rounds to a power of two.
+        int shadow_map_size = 2048;
         bool ssao = true;
         float ssao_radius = 0.5f;
         float ssao_intensity = 1.0f;

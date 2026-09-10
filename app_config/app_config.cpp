@@ -116,6 +116,11 @@ namespace app_config {
                     settings.render.clustered_lights = *value;
                 }
             }
+            if (toml::node const* node = render->get("shadow_map_size")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.render.shadow_map_size = static_cast<int>(*value);
+                }
+            }
             if (toml::node const* node = render->get("ssao")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.ssao = *value;
@@ -244,6 +249,10 @@ namespace app_config {
         if (settings.render.shadow_cascades < 1 || settings.render.shadow_cascades > 4) {
             utility::log("app_config: invalid shadow_cascades {} (use 1..4), falling back to 3", settings.render.shadow_cascades);
             settings.render.shadow_cascades = 3;
+        }
+        if (settings.render.shadow_map_size < 256 || settings.render.shadow_map_size > 8192) {
+            utility::log("app_config: invalid shadow_map_size {} (use 256..8192), falling back to 2048", settings.render.shadow_map_size);
+            settings.render.shadow_map_size = 2048;
         }
         if (settings.render.ssao_samples < 1 || settings.render.ssao_samples > 16) {
             utility::log("app_config: invalid ssao_samples {} (use 1..16), falling back to 8", settings.render.ssao_samples);

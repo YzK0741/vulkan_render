@@ -75,6 +75,15 @@ shadow = true
 # import: the layered image is created when the first scene set binds it.
 shadow_cascades = 3
 
+# shadow_map_size: the shadow map's edge length in texels (256..8192, rounded to a power of two).
+# 2048 is the default: the layered map is shadow_map_size^2 x 4 cascade layers x 4 bytes per frame
+# slot, so 2048 costs 64 MB per slot and 4096 would cost 256 MB - and the depth pass scans that many
+# texels per cascade per frame. Halving it quarters both and doubles the shadow texel size (a softer,
+# more aliased edge); `[render] shadow_cascades` is usually the better knob to spend resolution on.
+# STARTUP-ONLY, like the cascade count: the image, its per-layer views and the descriptor are created
+# when the first scene set binds them, so this must apply before the scene import.
+shadow_map_size = 2048
+
 # shadow_cascade_blend: fraction of a cascade's range over which it fades into the next one
 # (0.1 = the last 10% of the range). 0 = a hard switch.
 shadow_cascade_blend = 0.1

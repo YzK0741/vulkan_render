@@ -17,6 +17,7 @@ namespace {
         CHECK(!settings.render.shadow);
         CHECK(settings.render.shadow_cascades == 2);
         CHECK(settings.render.shadow_cascade_blend > 0.24f && settings.render.shadow_cascade_blend < 0.26f);
+        CHECK(settings.render.shadow_map_size == 1024);
         CHECK(!settings.render.clustered_lights); // fixture turns the M5 cluster pass off
         CHECK(settings.lighting.demo_lights == 3);
         CHECK(!settings.render.ssao); // fixture turns the M6 screen-space AO off
@@ -55,6 +56,27 @@ namespace {
         CHECK(settings.lighting.demo_lights == 0);
         CHECK(settings.render.ssao); // default: the deferred path traces screen-space AO
         CHECK(settings.render.ssao_samples == 8);
+        CHECK(settings.render.shadow_map_size == 2048); // default: 2048^2 per cascade layer
+        CHECK(settings.gui.show);
+    }
+
+    // The documented example is what users copy: parsing it must succeed and must produce the
+    // values its comments claim, or the docs and the parser have drifted apart (M7 collation).
+    void test_example_config_matches_documentation() {
+        app_config::app_settings const settings = app_config::load_settings(VR_TEST_SOURCE_DIR "/config.example.toml");
+        CHECK(!settings.config_file.empty()); // parsed, not rejected
+        CHECK(!settings.model.empty());
+        CHECK(settings.render.window_width == 1080);
+        CHECK(settings.render.shadow);
+        CHECK(settings.render.shadow_cascades == 3);
+        CHECK(settings.render.shadow_map_size == 2048);
+        CHECK(settings.render.clustered_lights);
+        CHECK(settings.render.ssao);
+        CHECK(settings.render.ssao_samples == 8);
+        CHECK(!settings.render.deferred);
+        CHECK(!settings.render.taa);
+        CHECK(settings.lighting.demo_lights == 0);
+        CHECK(settings.lighting.env_size == 256);
         CHECK(settings.gui.show);
     }
 
@@ -70,6 +92,7 @@ namespace {
 
 int main() {
     test_load_settings_applies_toml();
+    test_example_config_matches_documentation();
     test_load_settings_missing_file_keeps_defaults();
     test_resolve_from_argv_merges_config_and_positional();
     return vk_test::finish("test_app_config");

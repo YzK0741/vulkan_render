@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -434,7 +434,13 @@ namespace vulkan {
         bool shadow_enabled = true;
 
         // ---- directional shadow mapping (scene set binding 7 light UBO + binding 8 shadow map) ----
-        static constexpr uint32_t shadow_map_size = 2048;
+        // Shadow map edge length in texels ([render] shadow_map_size). A MEMBER, not a constant,
+        // because M7 surfaced it as a config knob - every user of it (the layered image, the depth
+        // pass's rendering instance + pipeline viewport, the light UBO's texel size and the fit)
+        // reads this value at creation time. Startup-only: set_shadow_map_size() before the scene
+        // import (like set_shadow_cascades, the resources are created when the first scene set binds
+        // them); changing it afterwards would need the image, the views and the descriptor rewritten.
+        uint32_t shadow_map_size = 2048;
         // Cascaded shadow maps: ONE 2D-array depth image per frame slot (while slot A is in flight,
         // slot B already rewrites its own map, so the two never race on the same image), with
         // shadow_cascades layers - each layer fitted to its own sub-range of the camera view.
@@ -1490,6 +1496,18 @@ namespace vulkan {
         [[nodiscard]] uint32_t shadow_cascade_count() const noexcept {
             return this->shadow_cascades;
         }
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief set the shadow map's edge length in texels ([render] shadow_map_size)
+         * @param size requested edge length; clamped to 256..8192 and rounded to a power of two
+         * @note STARTUP-ONLY, like set_shadow_cascades: the layered image, its per-layer views, the
+         *       descriptor, the depth pass's rendering instance and the shadow pipeline's viewport
+         *       are all created from it, so it must be called before the scene import (the resources
+         *       are created lazily by the first scene set). A later call is ignored with a log line
+         *       rather than silently taking effect on the next resize.</note>
+         */
+        void set_shadow_map_size(uint32_t size) noexcept;
 
         /**
          * @ingroup vulkan_runtime

@@ -401,8 +401,8 @@ namespace vulkan {
         this->shadow_layer_views.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
             vulkan::image_create_info shadow_info = {};
-            shadow_info.width = vulkan::runtime::shadow_map_size;
-            shadow_info.height = vulkan::runtime::shadow_map_size;
+            shadow_info.width = this->shadow_map_size;
+            shadow_info.height = this->shadow_map_size;
             shadow_info.mip_levels = 1;
             // ALWAYS the maximum layer count: the layer count is baked into the image at creation and
             // the image is created before [render] shadow_cascades is known (a scene set binds it), so
@@ -1569,7 +1569,7 @@ namespace vulkan {
                     // (far plane) + storeOp STORE - the map must survive for the lighting pass
                     VkRenderingAttachmentInfo const shadow_depth_attachment = make_depth_attachment_info(*this->shadow_layer_views[frame_slot][cascade], VK_ATTACHMENT_STORE_OP_STORE);
 
-                    VkRenderingInfo const shadow_rendering_info = make_rendering_info(VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT, {{0, 0}, {vulkan::runtime::shadow_map_size, vulkan::runtime::shadow_map_size}}, false, nullptr, &shadow_depth_attachment);
+                    VkRenderingInfo const shadow_rendering_info = make_rendering_info(VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT, {{0, 0}, {this->shadow_map_size, this->shadow_map_size}}, false, nullptr, &shadow_depth_attachment);
                     vkCmdBeginRendering(*command_buffer, &shadow_rendering_info);
 
                     // Run this cascade's pre-recorded secondary (the whole scene casts shadows). Never
@@ -3391,12 +3391,12 @@ namespace vulkan {
         this->shadow_pipeline->viewport = {
             0.0f,
             0.0f,
-            static_cast<float>(vulkan::runtime::shadow_map_size),
-            static_cast<float>(vulkan::runtime::shadow_map_size),
+            static_cast<float>(this->shadow_map_size),
+            static_cast<float>(this->shadow_map_size),
             0.0f,
             1.0f,
         };
-        this->shadow_pipeline->scissor = {{0, 0}, {vulkan::runtime::shadow_map_size, vulkan::runtime::shadow_map_size}};
+        this->shadow_pipeline->scissor = {{0, 0}, {this->shadow_map_size, this->shadow_map_size}};
         return {};
     }
 
@@ -3409,6 +3409,26 @@ namespace vulkan {
         // viewport resync (which walks the named pipeline cache) never touches this pipeline
         this->cluster_pipeline = std::move(result).value();
         return {};
+    }
+
+    void runtime::set_shadow_map_size(uint32_t const size) noexcept {
+        // Startup-only: everything that consumes the size (the layered image + its views + the
+        // descriptor, the depth pass rendering instance, the pipeline viewport, the light UBO texel
+        // size and the fit) is built from it when the scene set is first created, so a change after
+        // that cannot take effect - say so instead of pretending otherwise.
+        if (this->shadow_pipeline.has_value() || !this->shadow_images.empty()) {
+            utility::log("runtime: set_shadow_map_size({}) ignored - the shadow resources already exist (set it before the scene import)", size);
+            return;
+        }
+        uint32_t clamped = std::clamp(size, 256u, 8192u);
+        uint32_t rounded = 256u;
+        while (rounded * 2u <= clamped) {
+            rounded *= 2u;
+        }
+        if (rounded != size) {
+            utility::log("runtime: shadow map size {} -> {} (clamped to 256..8192 and rounded to a power of two)", size, rounded);
+        }
+        this->shadow_map_size = rounded;
     }
 
     void runtime::set_ssao(bool const enabled, float const radius, float const intensity, uint32_t const samples) noexcept {
@@ -3556,7 +3576,7 @@ namespace vulkan {
             return;
         }
 
-        float const map_size = static_cast<float>(vulkan::runtime::shadow_map_size);
+        float const map_size = static_cast<float>(this->shadow_map_size);
         glm::vec3 const light_dir = glm::normalize(glm::vec3(this->light_state.light_dir));
         glm::vec3 const up(0.0f, 1.0f, 0.0f);
         // Light space is a pure ROTATION here (each cascade's translation comes from its own box
@@ -3831,7 +3851,7 @@ namespace vulkan {
         // light UBO: orthographic light view-proj framing the scene + the light direction.
         // Fill the CPU-side mirror only - pace_and_acquire copies it into every slot's own
         // light buffer as each slot is paced (nothing here touches mapped memory directly).
-        this->light_state = make_directional_light_ubo(scene_center, scene_radius, static_cast<float>(vulkan::runtime::shadow_map_size));
+        this->light_state = make_directional_light_ubo(scene_center, scene_radius, static_cast<float>(this->shadow_map_size));
         // the cascade settings are the runtime's, not the UBO builder's: re-apply them over the defaults
         this->light_state.cascade_count = static_cast<float>(std::clamp(this->shadow_cascades, 1u, vulkan::max_shadow_cascades));
         this->light_state.cascade_blend = this->shadow_cascade_blend;
