@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -308,6 +308,10 @@ namespace vulkan {
         // the inverse of this frame's view-projection, refreshed with the camera UBO in
         // pace_and_acquire() (the deferred lighting stage reconstructs world positions from depth)
         glm::mat4 current_inv_view_proj = glm::mat4(1.0f);
+        // This frame's projection WITHOUT the TAA jitter: the shadow fit extracts near/far from
+        // the projection's z-row (a product with the view matrix does not carry those terms) and
+        // rebuilds the sub-frustum corners from it.
+        glm::mat4 current_proj_unjittered = glm::mat4(1.0f);
         void ensure_gbuffer_descriptors();
         void record_gbuffer_debug_pass(VkCommandBuffer command_buffer);
         void record_deferred_lighting_pass(VkCommandBuffer command_buffer);
@@ -419,11 +423,20 @@ namespace vulkan {
 
         // ---- directional shadow mapping (scene set binding 7 light UBO + binding 8 shadow map) ----
         static constexpr uint32_t shadow_map_size = 2048;
-        // One shadow map per frame slot: while slot A is in flight, slot B already rewrites its
-        // own map, so the two never race on the same depth image
-        std::vector<vk_image> shadow_images = {}; // depth images, rendered into every frame
-        std::vector<vk_image_view> shadow_image_views = {};
-        vk_sampler shadow_sampler = {}; // linear depth-compare (hardware PCF) + clamp-to-edge
+        // Cascaded shadow maps: ONE 2D-array depth image per frame slot (while slot A is in flight,
+        // slot B already rewrites its own map, so the two never race on the same image), with
+        // shadow_cascades layers - each layer fitted to its own sub-range of the camera view.
+        // Rendering goes through the per-layer views (one cascade = one dynamic rendering instance),
+        // sampling through the array view (the fragment shader picks its cascade per pixel).
+        std::vector<vk_image> shadow_images = {};                        // layered depth images
+        std::vector<vk_image_view> shadow_array_views = {};              // 2D ARRAY views (sampled)
+        std::vector<std::vector<vk_image_view>> shadow_layer_views = {}; // per slot: one 2D view per cascade
+        // Active cascades (1 = exactly the single-shadow-map behavior; [render] shadow_cascades) and
+        // the fraction of a cascade's range over which the shader blends into the next one.
+        uint32_t shadow_cascades = 1;
+        float shadow_cascade_blend = 0.1f;
+        bool shadow_cascade_logged = false; // one-time per-cascade texel-density log
+        vk_sampler shadow_sampler = {};     // linear depth-compare (hardware PCF) + clamp-to-edge
         // one-time log for the shadow-caster switch (see begin_recording): scenes over
         // full_scene_shadow_leaf_limit draw a culled subset instead of every leaf - say so once
         // instead of silently changing behavior
@@ -587,11 +600,22 @@ namespace vulkan {
         //     record_main_drawcalls), so the GPU can read all secondaries while the slot's
         //     primary executes - they share the primary's lifetime (reused after the slot's
         //     timeline wait, no per-frame allocation, no pool lock).
-        enum class secondary_pass : std::size_t { shadow = 0,
-                                                  gui = 1,
-                                                  transparent = 2,
-                                                  main_seg_0 = 3, // main pass segments follow
-                                                  count = 3 };    // fixed single-segment slots
+        // One SHADOW secondary PER CASCADE (shadow_0 .. shadow_3): a command buffer that was not
+        // recorded with SIMULTANEOUS_USE may only be executed once per primary command buffer, so one
+        // recorded caster pass cannot be replayed for four cascades - and each cascade needs its own
+        // cascade-index push constant, which a secondary must record itself (state is not inherited
+        // from the primary).
+        enum class secondary_pass : std::size_t { shadow_0 = 0,
+                                                  shadow_1 = 1,
+                                                  shadow_2 = 2,
+                                                  shadow_3 = 3,
+                                                  gui = 4,
+                                                  transparent = 5,
+                                                  count = 6 }; // fixed non-segment slots
+        /** @brief the shadow secondary a cascade records into */
+        [[nodiscard]] static constexpr secondary_pass shadow_secondary(uint32_t cascade) noexcept {
+            return static_cast<secondary_pass>(static_cast<std::size_t>(secondary_pass::shadow_0) + cascade);
+        }
         std::vector<std::array<vk_command_buffer, static_cast<std::size_t>(secondary_pass::count)>> secondary_command_buffers;
         // per-slot main-pass parallel segments (stage 3): one {command pool, secondary buffer}
         // PAIR per task-pool worker, in the same style as the vma allocator's command_cache -
@@ -689,7 +713,7 @@ namespace vulkan {
 
         // ---- scene resource management (see the members above) ----
         void init_scene_resources();                                                          // camera UBO buffers + white fallback texture + texture sampler + material table
-        void init_shadow_resources();                                                         // shadow map depth image/view/sampler + light UBO buffer
+        void ensure_shadow_resources();                                                       // (lazily) layered shadow map + light UBO buffers
         void ensure_scene_set();                                                              // lazily create one scene set per frame slot and write all bindings
         void write_ibl_bindings() const;                                                      // (re)write bindings 2-4 on every scene set with the current IBL views / placeholders
         void write_light_and_shadow_bindings();                                               // (re)write binding 7 (light UBO) + binding 8 (shadow map) on every scene set
@@ -1375,6 +1399,26 @@ namespace vulkan {
          *       deformed (skinned/morphed) object can ghost slightly - see gbuffer.frag.
          */
         void set_taa(bool enabled, float blend_static = 0.9f, float blend_min = 0.5f) noexcept;
+
+        /** @brief how many shadow cascades are active (1 = the single-map behavior) */
+        [[nodiscard]] uint32_t shadow_cascade_count() const noexcept {
+            return this->shadow_cascades;
+        }
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief set how many shadow cascades to fit, render and sample
+         * @param cascades 1 (one box over the whole visible range, the historic behavior) up to
+         *        vulkan::max_shadow_cascades; clamped
+         * @note call it BEFORE the scene is imported (the resources exist by then and the cascade
+         *       count only changes which layers are used). The split scheme is a practical
+         *       logarithmic/uniform blend, so cascade 0 gets a fraction of the far cascade's texel
+         *       size - the whole reason a single map cannot serve near and far at once.
+         */
+        void set_shadow_cascades(uint32_t cascades) noexcept;
+
+        /** @brief set the cascade blend band (0 disables blending; 0.1 = the last 10% of a cascade) */
+        void set_shadow_cascade_blend(float blend) noexcept;
 
         /** @brief whether TAA is enabled (see set_taa) */
         [[nodiscard]] bool taa() const noexcept {

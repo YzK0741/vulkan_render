@@ -950,10 +950,17 @@ namespace vulkan {
         }
 
         // ---- 2. Fixed pipeline layout: the scene set + the agreed push constant block ----
+        // ONE range: the 96-byte per-primitive material block plus the pass-wide cascade index that
+        // follows it (see core::scene_cascade_push_offset). One range rather than two because GLSL
+        // allows a single push_constant block per stage: shadow.vert declares one block whose last
+        // member is the cascade index, and that block has to fit inside a matching range. Shaders that
+        // only need the material fields (pbr.vert/frag) still declare their 96-byte block, which is
+        // contained in this one.
         VkPushConstantRange push_range = {};
         push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         push_range.offset = 0;
-        push_range.size = scene_push_constant_size;
+        push_range.size = scene_push_constant_size + scene_cascade_push_size;
+        static_assert(scene_push_constant_size + scene_cascade_push_size <= 128, "the shared push constant range must fit the 128 bytes every Vulkan implementation guarantees");
 
         VkPipelineLayoutCreateInfo pipeline_layout_info = {};
         pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -1426,6 +1433,25 @@ namespace vulkan {
 
     vk_image_view core::make_depth_image_view(VkImage const image, VkFormat const format) const {
         VkImageViewCreateInfo const view_info = make_image_view_info(image, format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+        VkImageView view = VK_NULL_HANDLE;
+        vkCreateImageView(this->device, &view_info, nullptr, &view);
+        return vk_image_view(view, this->device);
+    }
+
+    vk_image_view core::make_depth_array_view(VkImage const image, VkFormat const format) const {
+        // every layer in one view: this is what sample2DArrayShadow reads (see make_depth_layer_view
+        // for the per-layer views the shadow pass renders into)
+        VkImageViewCreateInfo const view_info = make_image_view_info(image, format, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_IMAGE_ASPECT_DEPTH_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+        VkImageView view = VK_NULL_HANDLE;
+        vkCreateImageView(this->device, &view_info, nullptr, &view);
+        return vk_image_view(view, this->device);
+    }
+
+    vk_image_view core::make_depth_layer_view(VkImage const image, VkFormat const format, uint32_t const layer) const {
+        // one layer, as a plain 2D depth view: a dynamic rendering instance renders into exactly one
+        // cascade, and a 2D view keeps that pass identical to the single-shadow-map one
+        VkImageViewCreateInfo view_info = make_image_view_info(image, format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, VK_REMAINING_MIP_LEVELS, 1);
+        view_info.subresourceRange.baseArrayLayer = layer;
         VkImageView view = VK_NULL_HANDLE;
         vkCreateImageView(this->device, &view_info, nullptr, &view);
         return vk_image_view(view, this->device);

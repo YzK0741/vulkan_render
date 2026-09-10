@@ -116,6 +116,8 @@ namespace chores {
         bool shadow_enabled = true;        // shadow checkbox (initial: settings.render.shadow)
         float shadow_bias_constant = 0.0f; // shadow depth-bias sliders (constant factor)
         float shadow_bias_slope = 1.5f;    // shadow depth-bias sliders (slope factor)
+        int shadow_cascades = 3;           // cascade-count combo (1..4; index 0 = single map)
+        float shadow_cascade_blend = 0.1f; // cascade blend-band slider (fraction of the range)
         float anim_time = 0.0f;            // animation time slider (mirror of the controller clock)
         bool anim_playing = true;          // play/pause checkbox (mirror of controller state)
         int anim_index = 0;                // animation combo selection (0 = the auto-played one)

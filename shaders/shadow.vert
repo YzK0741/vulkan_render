@@ -41,11 +41,18 @@ layout(set = 0, binding = 10) readonly buffer MorphData {
     float morphs[];
 } morph_data;
 
-// Light UBO (scene set binding 7): the orthographic light view-proj maps world -> shadow map.
+// Light UBO (scene set binding 7): the orthographic light view-projections map world -> shadow map,
+// one per cascade. Only the matrices and the direction are declared: the vertex stage needs nothing
+// else from the block, and a stage may declare fewer members than the CPU writes.
+const int MAX_SHADOW_CASCADES = 4; // vulkan::max_shadow_cascades
 layout(set = 0, binding = 7) uniform LightUBO {
-    mat4 light_view_proj;
+    mat4 light_view_proj[MAX_SHADOW_CASCADES];
     vec4 light_dir;
+    vec4 cascade_splits;
+    vec4 cascade_texel_world;
 } light;
+
+
 
 layout(push_constant) uniform PushConstants {
     uint material_index; // unused here (vertex stage), declared to keep the block layout identical to pbr.frag
@@ -56,6 +63,11 @@ layout(push_constant) uniform PushConstants {
     uint morph_vertices; // vertex count of this primitive (morph block stride)
     uint instance_base;  // mat4 start of this instanced primitive's transforms (binding 6)
     mat4 model;
+    // Which cascade this pass renders into (runtime::record_shadow content). GLSL allows only ONE
+    // push_constant block per stage, so this rides the SAME block as the material fields - right
+    // after them, at offset 96, which is exactly where the runtime pushes it (the shared layout's
+    // single range covers 100 bytes: the 96-byte material block plus this uint).
+    uint cascade;
 } push;
 
 // Albedo UV, consumed by shadow.frag's alphaMode MASK test (the pass has no other use for it)
@@ -65,7 +77,7 @@ layout(location = 0) out vec2 v_uv;
  * @brief morph, skin, transform into light clip space, and pass the albedo UV through
  *
  * The morph/skin order and math are identical to pbr.vert; the only difference is the final
- * projection (light.light_view_proj instead of camera.proj * camera.view) and the v_uv passthrough
+ * projection (the cascade's light.light_view_proj instead of camera.proj * camera.view) and the v_uv passthrough
  * that shadow.frag's mask test needs.
  */
 void main() {
@@ -96,7 +108,7 @@ void main() {
 
     mat4 world = (push.flags & 1u) != 0u ? instances.transforms[push.instance_base + gl_InstanceIndex] : push.model;
     vec4 world_pos = world * local_pos;
-    gl_Position = light.light_view_proj * world_pos;
+    gl_Position = light.light_view_proj[push.cascade] * world_pos;
     v_uv = in_uv;
 
     // Keep the input without a role in the depth pass (location 1, the normal) alive so the vertex

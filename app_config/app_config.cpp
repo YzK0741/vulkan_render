@@ -101,6 +101,16 @@ namespace app_config {
                     settings.render.shadow = *value;
                 }
             }
+            if (toml::node const* node = render->get("shadow_cascades")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.render.shadow_cascades = static_cast<int>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("shadow_cascade_blend")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.shadow_cascade_blend = static_cast<float>(*value);
+                }
+            }
             if (toml::node const* node = render->get("fxaa")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.fxaa = *value;
@@ -201,6 +211,10 @@ namespace app_config {
         settings.gui.panel_width = std::max(settings.gui.panel_width, 0.0f); // 0 = ImGui auto-size
         settings.gui.panel_height = std::max(settings.gui.panel_height, 0.0f);
         settings.grid_side = std::clamp(settings.grid_side, 0, 90);
+        if (settings.render.shadow_cascades < 1 || settings.render.shadow_cascades > 4) {
+            utility::log("app_config: invalid shadow_cascades {} (use 1..4), falling back to 3", settings.render.shadow_cascades);
+            settings.render.shadow_cascades = 3;
+        }
         bool const msaa_valid = settings.render.msaa == 0 || settings.render.msaa == 1 || settings.render.msaa == 2 || settings.render.msaa == 4 || settings.render.msaa == 8 || settings.render.msaa == 16 || settings.render.msaa == 32 || settings.render.msaa == 64;
         if (!msaa_valid) {
             utility::log("app_config: invalid msaa {} (use 0/1/2/4/8/16/32/64), falling back to auto", settings.render.msaa);

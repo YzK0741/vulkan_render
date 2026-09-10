@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -96,7 +96,14 @@ namespace app_config {
         std::array<float, 3> clear_color = {0.02f, 0.02f, 0.03f}; // background clear color (RGB, 0..1)
         bool skybox = true;                                       // draw the environment skybox pass each frame
         bool shadow = true;                                       // record the directional shadow pass each frame
-        bool fxaa = false;                                        // FXAA the final image (one extra fullscreen pass)
+        // Cascaded shadow maps ([render] shadow_cascades / shadow_cascade_blend): how many cascades the
+        // shadow pass fits, renders and samples (1 = one box over the whole visible range, the historic
+        // single-map behavior) and the fraction of a cascade's range over which the shader blends into
+        // the next one. 3 by default: the cheapest point where the near range stops paying for the far
+        // range's texel size. Applied BEFORE the scene import - see runtime::set_shadow_cascades.
+        int shadow_cascades = 3;
+        float shadow_cascade_blend = 0.1f;
+        bool fxaa = false; // FXAA the final image (one extra fullscreen pass)
         // measure per-pass GPU time with timestamp queries: one vkCmdWriteTimestamp per pass
         // boundary, read back after the frame slot completed, averaged over a 60-frame window
         // (logged + shown in the debug overlay). A no-op on devices that cannot timestamp.

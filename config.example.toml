@@ -62,6 +62,23 @@ skybox = true
 # shadow: record the directional shadow pass each frame (false = no shadows, fully lit)
 shadow = true
 
+# shadow_cascades: how many cascaded shadow maps the sun uses (1..4). One map cannot be dense enough
+# for both the near range and the far one: a single 2048^2 map fitted to a whole scene gives every
+# receiver the same texel size, so with the box fitted to the camera view the pixels close to the
+# camera get the same coarse texels as the ones far away. The fitted view range is split into this
+# many slices (practical split scheme, lambda 0.75), each cascade gets the same map resolution over a
+# much smaller footprint, and the fragment shader picks its cascade per pixel from the view depth
+# (blending across the boundary over `shadow_cascade_blend` of the range - a hard switch shows the
+# resolution step as a line). 1 = exactly the historic single-map behavior; 3 is the default balance,
+# 4 spends the sharpest near range on 4x the shadow memory (the map is a 4-layer array whatever this
+# says - a runtime-selectable count needs the layers to exist up front). Applied before the scene
+# import: the layered image is created when the first scene set binds it.
+shadow_cascades = 3
+
+# shadow_cascade_blend: fraction of a cascade's range over which it fades into the next one
+# (0.1 = the last 10% of the range). 0 = a hard switch.
+shadow_cascade_blend = 0.1
+
 # fxaa: anti-alias the final image (one extra fullscreen pass over the tonemapped LDR image).
 # Cheap and hardware-independent, but it is a screen-space blur of edges: it softens fine detail and
 # cannot remove sub-pixel shimmer in motion. Its two knobs (sub-pixel strength, edge threshold) live

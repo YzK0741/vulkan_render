@@ -162,6 +162,10 @@ int main(int argc, char** argv) {
     runtime.set_skybox_enabled(settings.render.skybox);
     // per-pass GPU timings (timestamp queries): on by default, reported in the log + overlay
     runtime.set_gpu_timings(settings.render.gpu_timings);
+    // Shadow cascades: applied here (BEFORE the scene import) because the shadow map's layered image
+    // is created when the first scene set binds it - see runtime::set_shadow_cascades.
+    runtime.set_shadow_cascades(static_cast<uint32_t>(settings.render.shadow_cascades));
+    runtime.set_shadow_cascade_blend(settings.render.shadow_cascade_blend);
     auto const runtime_ready = std::chrono::steady_clock::now();
     utility::log("vulkan runtime initialized: {:.1f} ms (async model load + env generation running in background)", std::chrono::duration<double, std::milli>(runtime_ready - startup_start).count());
 
@@ -377,10 +381,12 @@ int main(int argc, char** argv) {
     gui.fxaa_enabled = settings.render.fxaa;
     gui.gbuffer_debug = settings.render.gbuffer_debug; // gbuffer debug view initial state (M1)
     gui.gbuffer_channel = settings.render.gbuffer_channel;
-    gui.deferred_enabled = settings.render.deferred; // deferred lighting render mode (M2)
-    gui.taa_enabled = settings.render.taa;           // temporal anti-aliasing (M3)
-    gui.anim_playing = animation.is_playing();       // play checkbox initial state
-    gui.current_camera = current_camera;             // combo selection (the pose seeded above)
+    gui.deferred_enabled = settings.render.deferred;                 // deferred lighting render mode (M2)
+    gui.taa_enabled = settings.render.taa;                           // temporal anti-aliasing (M3)
+    gui.shadow_cascades = settings.render.shadow_cascades - 1;       // cascade combo index (0 = single map)
+    gui.shadow_cascade_blend = settings.render.shadow_cascade_blend; // cascaded shadow maps (M4)
+    gui.anim_playing = animation.is_playing();                       // play checkbox initial state
+    gui.current_camera = current_camera;                             // combo selection (the pose seeded above)
 
     // ---- authored (glTF) punctual lights -> the editable gui light slots ----
     // KHR_lights_punctual lights load straight into the gui slots (up to

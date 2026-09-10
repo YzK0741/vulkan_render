@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -60,6 +60,17 @@ namespace vulkan {
     export constexpr uint32_t scene_texture_capacity = 128;
     // material_push_constants: 6 uints + aligned mat4 = 96 bytes, see vulkan/scene_tree/scene_tree.cppm
     export constexpr uint32_t scene_push_constant_size = 96;
+    /**
+     * @ingroup vulkan_core
+     * @brief offset of the SECOND push constant range of the shared scene layout, right after the
+     *        per-primitive material block
+     * @note currently one uint: the cascade index the shadow pass is rendering. It is a separate
+     *       range rather than extra fields in the material block because that block is exactly 96
+     *       bytes and the two together would exceed the 128 bytes the spec guarantees every
+     *       implementation provides (the engine does not rely on a vendor's larger limit).
+     */
+    export constexpr uint32_t scene_cascade_push_offset = scene_push_constant_size;
+    export constexpr uint32_t scene_cascade_push_size = sizeof(uint32_t);
 
     /**
      * @brief format of the HDR scene target the forward pass renders into and the post-process
@@ -454,6 +465,28 @@ namespace vulkan {
          *       map) need the DEPTH aspect to be sampled as depth
          */
         vk_image_view make_depth_image_view(VkImage image, VkFormat format) const;
+
+        /**
+         * @ingroup vulkan_core
+         * @brief create a 2D ARRAY depth image view covering every layer (DEPTH aspect)
+         * @param image the layered depth image
+         * @param format the view format (a depth format)
+         * @return raii vk_image_view owning the created view
+         * @note the cascaded shadow map is ONE layered image sampled as an array: a fragment shader
+         *       picks its cascade per pixel, and dynamic indexing of a sampler array would require
+         *       dynamically uniform indices, while a texture-array layer is just a coordinate
+         */
+        vk_image_view make_depth_array_view(VkImage image, VkFormat format) const;
+
+        /**
+         * @ingroup vulkan_core
+         * @brief create a 2D depth image view of ONE layer (DEPTH aspect), for rendering into it
+         * @param image the layered depth image
+         * @param format the view format (a depth format)
+         * @param layer the array layer to view
+         * @return raii vk_image_view owning the created view
+         */
+        vk_image_view make_depth_layer_view(VkImage image, VkFormat format, uint32_t layer) const;
 
         /**
          * @ingroup vulkan_core

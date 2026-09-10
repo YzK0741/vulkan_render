@@ -149,7 +149,10 @@ namespace vulkan {
         unsigned const record_workers = static_cast<unsigned>(std::max(1, this->task_pool_threads()));
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
             std::array<vk_command_buffer, static_cast<std::size_t>(secondary_pass::count)> pair = {
-                this->vulkan_core.make_secondary_command_buffer(), // shadow
+                this->vulkan_core.make_secondary_command_buffer(), // shadow cascade 0
+                this->vulkan_core.make_secondary_command_buffer(), // shadow cascade 1
+                this->vulkan_core.make_secondary_command_buffer(), // shadow cascade 2
+                this->vulkan_core.make_secondary_command_buffer(), // shadow cascade 3
                 this->vulkan_core.make_secondary_command_buffer(), // gui
                 this->vulkan_core.make_secondary_command_buffer(), // transparent
             };
@@ -165,7 +168,12 @@ namespace vulkan {
 
         // Shared scene resources: camera UBO buffers, white fallback texture, texture sampler
         this->init_scene_resources();
-        this->init_shadow_resources();
+        // NOTE: the shadow resources (map layers + light UBO buffers) are created LAZILY, by
+        // ensure_shadow_resources() from ensure_scene_set(). The shadow map is a layered 2D array
+        // whose layer count is [render] shadow_cascades, and the app config that carries it is applied
+        // after this constructor returns - creating them here would freeze the count at its default.
+        // Everything between here and the first scene set works with them empty (the light-buffer
+        // writes are guarded, and nothing samples the shadow map before a scene set exists).
     }
 
     // The destructor body runs before member destruction, so vulkan_core (and the VkDevice it
@@ -379,20 +387,30 @@ namespace vulkan {
         }
     }
 
-    void runtime::init_shadow_resources() {
-        // Shadow map: one depth image per frame slot (see the member docs). Depth-only images
-        // carry no uploaded content (vma::create_image with data == nullptr skips the digest /
-        // upload path), so each frame can render the scene's depth from the light's view into it.
+    void runtime::ensure_shadow_resources() {
+        if (!this->shadow_images.empty()) {
+            return; // already created (and the cascade count is frozen from here on)
+        }
+        // Shadow map: one layered depth image per frame slot (see the member docs), with one layer
+        // per cascade. Depth-only images carry no uploaded content (vma::create_image with data ==
+        // nullptr skips the digest / upload path), so each frame can render the scene's depth from
+        // the light's view into every layer.
+        this->shadow_cascades = std::clamp(this->shadow_cascades, 1u, vulkan::max_shadow_cascades);
         this->shadow_images.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        this->shadow_image_views.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        this->shadow_array_views.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        this->shadow_layer_views.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
             vulkan::image_create_info shadow_info = {};
             shadow_info.width = vulkan::runtime::shadow_map_size;
             shadow_info.height = vulkan::runtime::shadow_map_size;
             shadow_info.mip_levels = 1;
-            shadow_info.array_layers = 1;
+            // ALWAYS the maximum layer count: the layer count is baked into the image at creation and
+            // the image is created before [render] shadow_cascades is known (a scene set binds it), so
+            // shadow_cascades below only decides how many layers are FITTED, RENDERED and SAMPLED.
+            // The cost of the spare layers is memory (2048x2048x4 B each), not bandwidth.
+            shadow_info.array_layers = vulkan::max_shadow_cascades;
             shadow_info.format = this->vulkan_core.depth_format;
-            shadow_info.extra_usage = VK_IMAGE_USAGE_SAMPLED_BIT; // sampled by pbr.frag
+            shadow_info.extra_usage = VK_IMAGE_USAGE_SAMPLED_BIT; // sampled by shading.glsl
             vk_image shadow_image = this->vulkan_core.vma.create_image(nullptr, 0, shadow_info, vulkan::image_type::texture_2d_depth);
             if (!shadow_image.valid()) {
                 utility::panic("failed to create shadow map image");
@@ -402,7 +420,13 @@ namespace vulkan {
                 utility::panic("failed to get shadow map image detail");
             }
             this->shadow_images.push_back(std::move(shadow_image));
-            this->shadow_image_views.push_back(this->vulkan_core.make_depth_image_view(detail->image, this->vulkan_core.depth_format));
+            this->shadow_array_views.push_back(this->vulkan_core.make_depth_array_view(detail->image, this->vulkan_core.depth_format));
+            std::vector<vk_image_view> layers;
+            layers.reserve(this->shadow_cascades);
+            for (uint32_t cascade = 0; cascade < vulkan::max_shadow_cascades; ++cascade) {
+                layers.push_back(this->vulkan_core.make_depth_layer_view(detail->image, this->vulkan_core.depth_format, cascade));
+            }
+            this->shadow_layer_views.push_back(std::move(layers));
         }
         this->shadow_sampler = this->vulkan_core.make_shadow_sampler();
 
@@ -431,6 +455,10 @@ namespace vulkan {
         if (this->scene_set_created) {
             return;
         }
+        // the scene set binds the shadow map (binding 8) and the light UBO (binding 7), so those
+        // resources must exist before the writes below - and their creation is deferred to here so
+        // the app config that sets the cascade count has already run (see the constructor note)
+        this->ensure_shadow_resources();
         // One scene descriptor set per frame slot: a slot's set always points at that slot's own
         // camera / shadow / skin / morph resources, so an in-flight frame never observes the next
         // frame's descriptors and no per-frame update-after-bind writes are needed at all.
@@ -530,7 +558,7 @@ namespace vulkan {
             }
             VkDescriptorImageInfo const shadow_info{
                 .sampler = *this->shadow_sampler,
-                .imageView = *this->shadow_image_views[static_cast<std::size_t>(slot)],
+                .imageView = *this->shadow_array_views[static_cast<std::size_t>(slot)],
                 .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             };
 
@@ -1116,6 +1144,7 @@ namespace vulkan {
         // last frame's: several images are in rotation, so the last frame's camera is not what that
         // history shows).
         this->current_ubo.view_proj_unjittered = this->current_ubo.proj * this->current_ubo.view;
+        this->current_proj_unjittered = this->current_ubo.proj; // before the jitter below
         this->current_ubo.prev_view_proj = this->current_image_index < this->image_view_proj.size() ? this->image_view_proj[this->current_image_index] : this->current_ubo.view_proj_unjittered;
         // TAA jitter: offset the projection by a sub-pixel amount so consecutive frames sample the
         // image at different positions. The offset lands in the projection's z-row (the only place a
@@ -1314,11 +1343,16 @@ namespace vulkan {
                     }
                     this->shadow_casters = this->cull_visible;
                     if (this->cull_bvh.has_value()) {
-                        utility::frustum const light_frustum = utility::make_frustum(this->light_state.light_view_proj);
-                        auto const in_light = this->cull_bvh->frustum_cull(light_frustum);
-                        this->shadow_casters.reserve(this->shadow_casters.size() + in_light.size());
-                        for (auto const* node : in_light) {
-                            this->shadow_casters.push_back(node->extra_data);
+                        // every cascade's frustum: a caster that only shadows the far range must still
+                        // be drawn, so the union over the cascades is the exact caster set (a cull per
+                        // cascade is cheap against the BVH)
+                        for (uint32_t cascade = 0; cascade < std::clamp(this->shadow_cascades, 1u, vulkan::max_shadow_cascades); ++cascade) {
+                            utility::frustum const light_frustum = utility::make_frustum(this->light_state.light_view_proj[cascade]);
+                            auto const in_light = this->cull_bvh->frustum_cull(light_frustum);
+                            this->shadow_casters.reserve(this->shadow_casters.size() + in_light.size());
+                            for (auto const* node : in_light) {
+                                this->shadow_casters.push_back(node->extra_data);
+                            }
                         }
                         std::ranges::sort(this->shadow_casters);
                         this->shadow_casters.erase(std::ranges::unique(this->shadow_casters).begin(), this->shadow_casters.end());
@@ -1394,45 +1428,77 @@ namespace vulkan {
                 // shadow map is single-sampled; viewMask 0 = no multiview. The rendering
                 // inheritance struct hangs off VkCommandBufferInheritanceInfo::pNext (NOT the
                 // begin-info pNext), and a secondary buffer must always provide inheritance info.
-                VkCommandBuffer const shadow_secondary = *this->secondary_command_buffers[static_cast<std::size_t>(frame_slot)][static_cast<std::size_t>(secondary_pass::shadow)];
+                // One secondary PER CASCADE: the caster content is identical, but each cascade pushes
+                // its own index (a secondary records that itself - state is not inherited from the
+                // primary), and a buffer without SIMULTANEOUS_USE may not be executed twice in one
+                // primary anyway. The content is only the leaves/pipelines; the per-cascade difference
+                // is that single push.
+                uint32_t const cascades = std::clamp(this->shadow_cascades, 1u, vulkan::max_shadow_cascades);
                 VkCommandBufferInheritanceRenderingInfo const shadow_inheritance = make_inheritance_rendering_info(false, nullptr, vk.depth_format, VK_SAMPLE_COUNT_1_BIT);
                 VkCommandBufferInheritanceInfo const shadow_sec_inherit = make_inheritance_info(&shadow_inheritance);
                 VkCommandBufferBeginInfo const shadow_sec_begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &shadow_sec_inherit);
-                bool shadow_recorded = false;
-                if (vkBeginCommandBuffer(shadow_secondary, &shadow_sec_begin) != VK_SUCCESS) {
-                    utility::log("runtime: shadow secondary command buffer begin failed - shadow pass skipped this frame");
-                } else {
-                    this->record_shadow_content(shadow_secondary);
-                    vkEndCommandBuffer(shadow_secondary);
-                    shadow_recorded = true;
+                std::array<bool, vulkan::max_shadow_cascades> shadow_recorded = {};
+                for (uint32_t cascade = 0; cascade < cascades; ++cascade) {
+                    VkCommandBuffer const cascade_secondary = *this->secondary_command_buffers[static_cast<std::size_t>(frame_slot)][static_cast<std::size_t>(shadow_secondary(cascade))];
+                    if (vkBeginCommandBuffer(cascade_secondary, &shadow_sec_begin) != VK_SUCCESS) {
+                        utility::log("runtime: shadow secondary command buffer begin failed - cascade {} skipped this frame", cascade);
+                        continue;
+                    }
+                    // which cascade these casters are projected into (the vertex stage indexes the light
+                    // UBO's matrix array with it)
+                    vkCmdPushConstants(cascade_secondary, vk.scene_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, vulkan::scene_cascade_push_offset, sizeof(uint32_t), &cascade);
+                    this->record_shadow_content(cascade_secondary);
+                    vkEndCommandBuffer(cascade_secondary);
+                    shadow_recorded[cascade] = true;
                 }
 
-                // Transition the shadow image to a renderable depth attachment (loadOp CLEAR
-                //     discards the previous frame's contents, so UNDEFINED as oldLayout is valid)
-                VkImageMemoryBarrier2 shadow_barrier = depth_attachment_transition;
-                shadow_barrier.image = shadow_detail->image;
-                VkDependencyInfo const shadow_dependency = make_image_dependency_info(1, &shadow_barrier);
-                vkCmdPipelineBarrier2(*command_buffer, &shadow_dependency);
+                // ---- one instance per cascade ----
+                for (uint32_t cascade = 0; cascade < cascades; ++cascade) {
+                    // Transition THIS layer to a renderable depth attachment (loadOp CLEAR discards the
+                    // previous frame's contents, so UNDEFINED as the old layout is valid). One barrier
+                    // per layer: the transition constant's subresource range is single-layer, and each
+                    // layer is a separate attachment here.
+                    VkImageMemoryBarrier2 shadow_barrier = depth_attachment_transition;
+                    shadow_barrier.image = shadow_detail->image;
+                    shadow_barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, cascade, 1};
+                    VkDependencyInfo const shadow_dependency = make_image_dependency_info(1, &shadow_barrier);
+                    vkCmdPipelineBarrier2(*command_buffer, &shadow_dependency);
 
-                // Depth-only rendering into the shadow map (no color attachment): loadOp CLEAR
-                // (far plane) + storeOp STORE - the map must survive for the main pass
-                VkRenderingAttachmentInfo const shadow_depth_attachment = make_depth_attachment_info(*this->shadow_image_views[frame_slot], VK_ATTACHMENT_STORE_OP_STORE);
+                    // Depth-only rendering into this cascade (no color attachment): loadOp CLEAR
+                    // (far plane) + storeOp STORE - the map must survive for the lighting pass
+                    VkRenderingAttachmentInfo const shadow_depth_attachment = make_depth_attachment_info(*this->shadow_layer_views[frame_slot][cascade], VK_ATTACHMENT_STORE_OP_STORE);
 
-                VkRenderingInfo const shadow_rendering_info = make_rendering_info(VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT, {{0, 0}, {vulkan::runtime::shadow_map_size, vulkan::runtime::shadow_map_size}}, false, nullptr, &shadow_depth_attachment);
-                vkCmdBeginRendering(*command_buffer, &shadow_rendering_info);
+                    VkRenderingInfo const shadow_rendering_info = make_rendering_info(VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT, {{0, 0}, {vulkan::runtime::shadow_map_size, vulkan::runtime::shadow_map_size}}, false, nullptr, &shadow_depth_attachment);
+                    vkCmdBeginRendering(*command_buffer, &shadow_rendering_info);
 
-                // Run the pre-recorded shadow secondary (the whole scene casts shadows). Never
-                // execute a secondary whose begin failed - executing an unrecorded command
-                // buffer is a VUID and can wedge the frame slot.
-                if (shadow_recorded) {
-                    vkCmdExecuteCommands(*command_buffer, 1, &shadow_secondary);
+                    // Run this cascade's pre-recorded secondary (the whole scene casts shadows). Never
+                    // execute a secondary whose begin failed - executing an unrecorded command
+                    // buffer is a VUID and can wedge the frame slot.
+                    if (shadow_recorded[cascade]) {
+                        VkCommandBuffer const cascade_secondary = *this->secondary_command_buffers[static_cast<std::size_t>(frame_slot)][static_cast<std::size_t>(shadow_secondary(cascade))];
+                        vkCmdExecuteCommands(*command_buffer, 1, &cascade_secondary);
+                    }
+                    vkCmdEndRendering(*command_buffer);
                 }
-                vkCmdEndRendering(*command_buffer);
 
-                // Hand the shadow map back to the main pass as a sampled texture
-                VkImageMemoryBarrier2 shadow_read_barrier = shadow_map_sampling_transition;
-                shadow_read_barrier.image = shadow_detail->image;
-                VkDependencyInfo const shadow_read_dependency = make_image_dependency_info(1, &shadow_read_barrier);
+                // Hand the cascades back to the lighting stage as a sampled array texture. Two
+                // barriers: the layers that were rendered (depth attachment -> shader read), and - when
+                // fewer cascades are active than the image has layers - the spare layers, which the
+                // descriptor's array view still covers, so they must be in the declared layout too.
+                // UNDEFINED is the honest old layout for a layer nothing has ever written.
+                std::array<VkImageMemoryBarrier2, 2> shadow_read_barriers = {};
+                uint32_t read_barrier_count = 0;
+                shadow_read_barriers[read_barrier_count] = shadow_map_sampling_transition;
+                shadow_read_barriers[read_barrier_count].image = shadow_detail->image;
+                shadow_read_barriers[read_barrier_count].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, cascades};
+                ++read_barrier_count;
+                if (cascades < vulkan::max_shadow_cascades) {
+                    shadow_read_barriers[read_barrier_count] = vulkan::undefined_to_depth_sampling_transition;
+                    shadow_read_barriers[read_barrier_count].image = shadow_detail->image;
+                    shadow_read_barriers[read_barrier_count].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, cascades, vulkan::max_shadow_cascades - cascades};
+                    ++read_barrier_count;
+                }
+                VkDependencyInfo const shadow_read_dependency = make_image_dependency_info(read_barrier_count, shadow_read_barriers.data());
                 vkCmdPipelineBarrier2(*command_buffer, &shadow_read_dependency);
             }
         } else if (this->shadow_pipeline && this->shadow_images.size() > static_cast<std::size_t>(frame_slot)) {
@@ -1447,6 +1513,9 @@ namespace vulkan {
             if (shadow_detail != nullptr) {
                 VkImageMemoryBarrier2 shadow_read_barrier = vulkan::undefined_to_depth_sampling_transition;
                 shadow_read_barrier.image = shadow_detail->image;
+                // every layer, not just layer 0: the constant's range is single-layer and all
+                // cascades must be sampleable (they all are, this frame or the last one)
+                shadow_read_barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, vulkan::max_shadow_cascades};
                 VkDependencyInfo const shadow_read_dependency = make_image_dependency_info(1, &shadow_read_barrier);
                 vkCmdPipelineBarrier2(*command_buffer, &shadow_read_dependency);
             }
@@ -3299,71 +3368,58 @@ namespace vulkan {
         float const map_size = static_cast<float>(vulkan::runtime::shadow_map_size);
         glm::vec3 const light_dir = glm::normalize(glm::vec3(this->light_state.light_dir));
         glm::vec3 const up(0.0f, 1.0f, 0.0f);
-
-        // Camera frustum corners in world space (Vulkan NDC: x/y in [-1,1], z in [0,1]).
-        //
-        // The camera's own projection carries a deliberately generous far plane (see
-        // make_orbit_camera_ubo: max(100, distance + 2r, 8 * distance)) so that zooming in never
-        // clips the scene - but fitting the SHADOW box to that whole volume throws the map away on
-        // empty space AND (the actual bug) pushes the up-light end of the fit behind the light
-        // camera's near plane, so the roof and upper walls were clipped out of the depth map
-        // entirely and the sun poured straight through them. Fit only the part of the view volume
-        // that can hold the scene: everything lies within |eye - scene centre| + scene_radius.
-        glm::mat4 fit_proj = this->current_ubo.view_proj_unjittered; // unjittered: see the cache note above
-        {
-            // near/far live in the z row of a RH_ZO perspective matrix (see glm::perspectiveRH_ZO):
-            // proj[2][2] = far / (near - far), proj[3][2] = -(far * near) / (far - near)
-            float const camera_near = fit_proj[3][2] / fit_proj[2][2];
-            float const camera_far = fit_proj[2][2] * camera_near / (1.0f + fit_proj[2][2]);
-            float const fit_far = std::min(camera_far,
-                                           glm::distance(glm::vec3(this->current_ubo.camera_pos), this->shadow_scene_center) + this->scene_radius);
-            if (fit_far > camera_near * 1.5f && fit_far < camera_far) {
-                // same projection with a tighter far plane (the x/y scaling = fov + aspect stays)
-                fit_proj[2][2] = fit_far / (camera_near - fit_far);
-                fit_proj[3][2] = -(fit_far * camera_near) / (fit_far - camera_near);
-            }
-        }
-        glm::mat4 const inverse_view_proj = glm::inverse(fit_proj); // already view * proj (unjittered)
-        std::array<glm::vec3, 16> points = {};
-        std::size_t count = 0;
-        for (int zi = 0; zi < 2; ++zi) {
-            for (int yi = 0; yi < 2; ++yi) {
-                for (int xi = 0; xi < 2; ++xi) {
-                    glm::vec4 const clip(xi == 0 ? -1.0f : 1.0f, yi == 0 ? -1.0f : 1.0f, zi == 0 ? 0.0f : 1.0f, 1.0f);
-                    glm::vec4 const world = inverse_view_proj * clip;
-                    glm::vec3 const corner = glm::vec3(world) / world.w;
-                    points[count++] = corner;
-                    points[count++] = corner + light_dir * this->shadow_caster_extent;
-                }
-            }
-        }
-
-        // fit the points in light space (rotation only - the translation comes from the center)
+        // Light space is a pure ROTATION here (each cascade's translation comes from its own box
+        // center), so one rotation serves every cascade - and with it one caster AABB pass per frame
+        // instead of one per cascade.
         glm::mat4 const light_rotation = glm::lookAt(glm::vec3(0.0f), -light_dir, up);
-        glm::vec3 min_ls(std::numeric_limits<float>::max());
-        glm::vec3 max_ls(std::numeric_limits<float>::lowest());
-        for (glm::vec3 const& point : points) {
-            glm::vec3 const ls = glm::vec3(light_rotation * glm::vec4(point, 1.0f));
-            min_ls = glm::min(min_ls, ls);
-            max_ls = glm::max(max_ls, ls);
-        }
 
+        // ---- the camera's usable depth range, then the cascade splits over it ----
+        // The camera's own projection carries a deliberately generous far plane (see
+        // make_orbit_camera_ubo: max(100, distance + 2r, 8 * distance)) so that zooming in never clips
+        // the scene - but fitting the SHADOW volume to that whole range throws the map away on empty
+        // space AND (the actual bug this originally fixed) pushes the up-light end of the fit behind
+        // the light camera's near plane, so the roof and upper walls were clipped out of the depth map
+        // entirely and the sun poured straight through them. Fit only the part of the view volume that
+        // can hold the scene: everything lies within |eye - scene centre| + scene_radius.
+        // The PROJECTION, not the view*proj product: near/far live in its z row - for a RH_ZO
+        // perspective matrix proj[2][2] = far / (near - far) and proj[3][2] = -(far * near) /
+        // (far - near) - and the sub-frustum corners below come from its inverse. Extracting them from
+        // the product yields nonsense, because the view rotation mixes the rows: measured, it turned
+        // the near plane into -22 and made every cascade split NaN.
+        glm::mat4 const base_proj = this->current_proj_unjittered;
+        float const camera_near = base_proj[3][2] / base_proj[2][2];
+        float const camera_far = base_proj[2][2] * camera_near / (1.0f + base_proj[2][2]);
+        float const scene_far = glm::distance(glm::vec3(this->current_ubo.camera_pos), this->shadow_scene_center) + this->scene_radius;
+        float const split_near = camera_near;
+        float const split_far = std::max(std::min(camera_far, scene_far), camera_near * 2.0f);
+        uint32_t const cascades = std::clamp(this->shadow_cascades, 1u, vulkan::max_shadow_cascades);
+        // Practical split scheme (Zhang et al.): a logarithmic and a uniform split blended by lambda.
+        // Pure logarithmic puts almost all the resolution in the first few metres (the camera near
+        // plane is 0.1), pure uniform wastes the near range - the blend is what real-time shadows use.
+        // lambda is fixed at 0.75: higher favors the near field, lower the far one.
+        constexpr float split_lambda = 0.75f;
+        auto const split_distance = [&](float const t) {
+            float const logarithmic = split_near * std::pow(split_far / split_near, t);
+            float const uniform = split_near + (split_far - split_near) * t;
+            return split_lambda * logarithmic + (1.0f - split_lambda) * uniform;
+        };
+
+        // ---- every caster's light-space AABB, computed ONCE for all cascades ----
         // Casters outside the view still cast into it (a wall behind the camera): fitting only the
         // frustum corners clipped them and sunlight leaked through. Every scene leaf whose light-space
-        // xy overlaps the frustum's therefore contributes its light-space DEPTH range to the fit -
-        // under the orthographic light a caster's shadow lands at the caster's own light-space xy, so
-        // that overlap test is exact for "can this shadow land inside the view". Geometry whose shadow
-        // cannot reach the view (e.g. the floor slab behind the camera) is left out entirely.
+        // xy overlaps a cascade's footprint therefore contributes its light-space DEPTH range to that
+        // cascade's fit - under the orthographic light a caster's shadow lands at the caster's own
+        // light-space xy, so that overlap test is exact for "can this shadow land inside the view".
+        // Geometry whose shadow cannot reach the view (e.g. the floor slab behind the camera) is left
+        // out entirely.
+        std::vector<std::pair<glm::vec3, glm::vec3>> caster_boxes; // light-space min/max per leaf
         bool unbounded_caster = false;
         if (this->bound_scene != nullptr) {
             this->shadow_caster_scratch.clear();
             for (scene_tree::scene_node const& root : this->bound_scene->roots) {
                 collect_leaf_primitives(root, this->shadow_caster_scratch);
             }
-            float const cone_min_x = min_ls.x;
-            float const cone_max_x = max_ls.x;
-            float const cone_min_y = min_ls.y;
-            float const cone_max_y = max_ls.y;
+            caster_boxes.reserve(this->shadow_caster_scratch.size());
             for (primitive const* const leaf : this->shadow_caster_scratch) {
                 if (leaf == nullptr) {
                     continue;
@@ -3390,17 +3446,73 @@ namespace vulkan {
                     caster_min = glm::min(caster_min, ls);
                     caster_max = glm::max(caster_max, ls);
                 }
+                caster_boxes.emplace_back(caster_min, caster_max);
+            }
+        }
+        // the scene sphere's light-space box, for the unbounded-caster fallback (used by every cascade)
+        std::pair<glm::vec3, glm::vec3> scene_sphere_ls = {glm::vec3(std::numeric_limits<float>::max()), glm::vec3(std::numeric_limits<float>::lowest())};
+        for (int corner = 0; corner < 8; ++corner) {
+            glm::vec3 const p = this->shadow_scene_center +
+                                glm::vec3((corner & 1) != 0 ? this->scene_radius : -this->scene_radius,
+                                          (corner & 2) != 0 ? this->scene_radius : -this->scene_radius,
+                                          (corner & 4) != 0 ? this->scene_radius : -this->scene_radius);
+            glm::vec3 const ls = glm::vec3(light_rotation * glm::vec4(p, 1.0f));
+            scene_sphere_ls.first = glm::min(scene_sphere_ls.first, ls);
+            scene_sphere_ls.second = glm::max(scene_sphere_ls.second, ls);
+        }
+
+        // ---- one fit per cascade ----
+        float last_texel_world = 0.0f;
+        for (uint32_t cascade = 0; cascade < cascades; ++cascade) {
+            float const cascade_near = cascade == 0 ? split_near : split_distance(static_cast<float>(cascade) / static_cast<float>(cascades));
+            float const cascade_far = split_distance(static_cast<float>(cascade + 1) / static_cast<float>(cascades));
+
+            // the camera projection restricted to THIS cascade's depth range (same x/y scaling)
+            glm::mat4 fit_proj = base_proj;
+            fit_proj[2][2] = cascade_far / (cascade_near - cascade_far);
+            fit_proj[3][2] = -(cascade_far * cascade_near) / (cascade_far - cascade_near);
+            glm::mat4 const inverse_view_proj = glm::inverse(fit_proj * this->current_ubo.view);
+
+            // the sub-frustum's corners, each extended up-light by the caster reach: a caster that far
+            // up-sun can still throw its shadow into this cascade
+            std::array<glm::vec3, 16> points = {};
+            std::size_t count = 0;
+            for (int zi = 0; zi < 2; ++zi) {
+                for (int yi = 0; yi < 2; ++yi) {
+                    for (int xi = 0; xi < 2; ++xi) {
+                        glm::vec4 const clip(xi == 0 ? -1.0f : 1.0f, yi == 0 ? -1.0f : 1.0f, zi == 0 ? 0.0f : 1.0f, 1.0f);
+                        glm::vec4 const world = inverse_view_proj * clip;
+                        glm::vec3 const corner = glm::vec3(world) / world.w;
+                        points[count++] = corner;
+                        points[count++] = corner + light_dir * this->shadow_caster_extent;
+                    }
+                }
+            }
+            glm::vec3 min_ls(std::numeric_limits<float>::max());
+            glm::vec3 max_ls(std::numeric_limits<float>::lowest());
+            for (glm::vec3 const& point : points) {
+                glm::vec3 const ls = glm::vec3(light_rotation * glm::vec4(point, 1.0f));
+                min_ls = glm::min(min_ls, ls);
+                max_ls = glm::max(max_ls, ls);
+            }
+
+            // merge the casters that can shadow this cascade (see the note where they were collected)
+            float const cone_min_x = min_ls.x;
+            float const cone_max_x = max_ls.x;
+            float const cone_min_y = min_ls.y;
+            float const cone_max_y = max_ls.y;
+            for (auto const& [caster_min, caster_max] : caster_boxes) {
                 bool const overlaps_view = caster_max.x >= cone_min_x && caster_min.x <= cone_max_x && caster_max.y >= cone_min_y && caster_min.y <= cone_max_y;
                 if (!overlaps_view) {
-                    continue; // this caster's shadow cannot land inside the view frustum
+                    continue; // this caster's shadow cannot land inside this cascade
                 }
-                // Only the merged DEPTH (light-space z) may grow past the camera frustum footprint:
-                // an orthographic sun drops a caster's shadow at the caster's own light-space xy,
-                // and only xy inside the view is ever sampled - so clamping the merged xy to the
-                // cone keeps the box (and thus the texel density) as tight as the camera fit, while
-                // the full z range makes sure the caster's depth actually reaches the map. Merging
-                // the raw AABB instead let one big floor slab inflate the box to the whole scene;
-                // leaving z alone clipped the caster and leaked the sun through it.
+                // Only the merged DEPTH (light-space z) may grow past the cascade footprint: an
+                // orthographic sun drops a caster's shadow at the caster's own light-space xy, and only
+                // xy inside the view is ever sampled - so clamping the merged xy to the cone keeps the
+                // box (and thus the texel density) as tight as the cascade fit, while the full z range
+                // makes sure the caster's depth actually reaches the map. Merging the raw AABB instead
+                // let one big floor slab inflate the box to the whole scene; leaving z alone clipped the
+                // caster and leaked the sun through it.
                 min_ls = glm::min(min_ls, glm::vec3(std::clamp(caster_min.x, cone_min_x, cone_max_x),
                                                     std::clamp(caster_min.y, cone_min_y, cone_max_y),
                                                     caster_min.z));
@@ -3411,71 +3523,104 @@ namespace vulkan {
             if (unbounded_caster) {
                 // A caster we cannot bound can be anywhere in the scene, so the only sound bound is
                 // the whole scene sphere - but only its DEPTH may enter the fit: clamping the sphere's
-                // xy to the camera footprint keeps the box tight (the same argument as above), while
+                // xy to the cascade footprint keeps the box tight (the same argument as above), while
                 // merging the raw sphere restored a box of scene size and made every thin caster's
                 // shadow dissolve in the coarser texels.
-                glm::vec3 sphere_min(std::numeric_limits<float>::max());
-                glm::vec3 sphere_max(std::numeric_limits<float>::lowest());
-                for (int corner = 0; corner < 8; ++corner) {
-                    glm::vec3 const p = this->shadow_scene_center +
-                                        glm::vec3((corner & 1) != 0 ? this->scene_radius : -this->scene_radius,
-                                                  (corner & 2) != 0 ? this->scene_radius : -this->scene_radius,
-                                                  (corner & 4) != 0 ? this->scene_radius : -this->scene_radius);
-                    glm::vec3 const ls = glm::vec3(light_rotation * glm::vec4(p, 1.0f));
-                    sphere_min = glm::min(sphere_min, ls);
-                    sphere_max = glm::max(sphere_max, ls);
-                }
-                min_ls = glm::min(min_ls, glm::vec3(std::clamp(sphere_min.x, cone_min_x, cone_max_x),
-                                                    std::clamp(sphere_min.y, cone_min_y, cone_max_y),
-                                                    sphere_min.z));
-                max_ls = glm::max(max_ls, glm::vec3(std::clamp(sphere_max.x, cone_min_x, cone_max_x),
-                                                    std::clamp(sphere_max.y, cone_min_y, cone_max_y),
-                                                    sphere_max.z));
+                min_ls = glm::min(min_ls, glm::vec3(std::clamp(scene_sphere_ls.first.x, cone_min_x, cone_max_x),
+                                                    std::clamp(scene_sphere_ls.first.y, cone_min_y, cone_max_y),
+                                                    scene_sphere_ls.first.z));
+                max_ls = glm::max(max_ls, glm::vec3(std::clamp(scene_sphere_ls.second.x, cone_min_x, cone_max_x),
+                                                    std::clamp(scene_sphere_ls.second.y, cone_min_y, cone_max_y),
+                                                    scene_sphere_ls.second.z));
             }
+
+            // square the box (isotropic resolution), quantize its size to whole texels and snap its
+            // center to the texel grid. Snapping the CENTER alone keeps the grid aligned while the
+            // camera translates, but the box SIZE follows the fitted footprint continuously, so every
+            // camera move rescaled the whole map and the shadow edges crawled anyway; rounding the size
+            // up to a texel multiple means small moves keep the same texel size. The extra texel is
+            // margin: without it the visible footprint touched the very edge of the map, where the
+            // outermost half texel used to fall outside the box and casters there had no shadow edge.
+            float const extent = std::max(max_ls.x - min_ls.x, max_ls.y - min_ls.y);
+            float const half_raw = std::max(extent * 0.5f, 0.001f);
+            float const texel_raw = (2.0f * half_raw) / map_size;
+            float const half = std::max(std::ceil(half_raw / texel_raw) * texel_raw + texel_raw, 0.001f);
+            float const texel = (2.0f * half) / map_size;
+            glm::vec3 center_ls = (min_ls + max_ls) * 0.5f;
+            center_ls.x = std::floor(center_ls.x / texel) * texel;
+            center_ls.y = std::floor(center_ls.y / texel) * texel;
+            glm::vec3 const center_ws = glm::vec3(glm::inverse(light_rotation) * glm::vec4(center_ls, 1.0f));
+
+            // light camera far enough up-sun to see every fitted point, then fit near/far to the SAME
+            // fitted range. Deriving near/far from the camera frustum corners alone clipped away every
+            // caster merged above that sat further up-light than the corners: its depth never reached
+            // the map, so the sun leaked straight through it. light_rotation is a pure rotation and
+            // lookAt(.., -light_dir, ..) makes light-space z = dot(light_dir, p), so along the light
+            // view (eye = center_ws + light_dir * distance) a point's depth is
+            // center_ls.z + distance - ls_z - the extremes therefore come straight from min_ls/max_ls.z.
+            //
+            // distance comes from the fitted DEPTH SPAN, not from the scene radius: the eye has to sit
+            // half a span up-light of the box centre for the box centre's plane to be in front of it,
+            // and a scene-radius estimate can be smaller than that span (a deep fit pushed the up-light
+            // end behind the eye, the near plane clamped to its 0.05 minimum and clipped those casters).
+            float const half_span_z = 0.5f * (max_ls.z - min_ls.z);
+            float const distance = half_span_z + std::max(1.0f, this->shadow_caster_extent);
+            glm::vec3 const eye = center_ws + light_dir * distance;
+            glm::mat4 const view = glm::lookAt(eye, center_ws, up);
+            float const near_plane = std::max(distance + center_ls.z - max_ls.z - 1.0f, 0.05f);
+            float const far_plane = distance + center_ls.z - min_ls.z + 1.0f;
+
+            glm::mat4 proj = glm::orthoRH_ZO(-half, half, -half, half, near_plane, far_plane);
+            proj[1][1] *= -1.0f; // same y-flip convention as the camera projection
+
+            this->light_state.light_view_proj[cascade] = proj * view;
+            this->light_state.cascade_texel_world[cascade] = (2.0f * half) / map_size;
+            this->light_state.cascade_splits[cascade] = cascade_far;
+            last_texel_world = (2.0f * half) / map_size;
         }
-        // square the box (isotropic resolution), quantize its size to whole texels and snap its center
-        // to the texel grid. Snapping the CENTER alone keeps the grid aligned while the camera
-        // translates, but the box SIZE follows the fitted footprint continuously, so every camera move
-        // rescaled the whole map and the shadow edges crawled anyway; rounding the size up to a texel
-        // multiple means small moves keep the same texel size (a large move still crosses a rounding
-        // step - removing that completely is what cascades or a fixed size ladder would do). The extra
-        // texel is margin: without it the visible footprint touched the very edge of the map, where
-        // the outermost half texel used to fall outside the box and casters there had no shadow edge.
-        float const extent = std::max(max_ls.x - min_ls.x, max_ls.y - min_ls.y);
-        float const half_raw = std::max(extent * 0.5f, 0.001f);
-        float const texel_raw = (2.0f * half_raw) / map_size;
-        float const half = std::max(std::ceil(half_raw / texel_raw) * texel_raw + texel_raw, 0.001f);
-        float const texel = (2.0f * half) / map_size;
-        glm::vec3 center_ls = (min_ls + max_ls) * 0.5f;
-        center_ls.x = std::floor(center_ls.x / texel) * texel;
-        center_ls.y = std::floor(center_ls.y / texel) * texel;
-        glm::vec3 const center_ws = glm::vec3(glm::inverse(light_rotation) * glm::vec4(center_ls, 1.0f));
 
-        // light camera far enough up-sun to see every fitted point, then fit near/far to the SAME
-        // fitted range. Deriving near/far from the camera frustum corners alone (as this used to)
-        // clipped away every caster merged above that sat further up-light than the corners: its
-        // depth never reached the map, so the sun leaked straight through it. light_rotation is a
-        // pure rotation and lookAt(.., -light_dir, ..) makes light-space z = dot(light_dir, p), so
-        // along the light view (eye = center_ws + light_dir * distance) a point's depth is
-        // center_ls.z + distance - ls_z - the extremes therefore come straight from min_ls/max_ls.z.
-        //
-        // distance comes from the fitted DEPTH SPAN, not from the scene radius: the eye has to sit
-        // half a span up-light of the box centre for the box centre's plane to be in front of it, and
-        // a scene-radius estimate can be smaller than that span (a deep fit pushed the up-light end
-        // behind the eye, the near plane clamped to its 0.05 minimum and clipped those casters away).
-        float const half_span_z = 0.5f * (max_ls.z - min_ls.z);
-        float const distance = half_span_z + std::max(1.0f, this->shadow_caster_extent);
-        glm::vec3 const eye = center_ws + light_dir * distance;
-        glm::mat4 const view = glm::lookAt(eye, center_ws, up);
-        float const near_plane = std::max(distance + center_ls.z - max_ls.z - 1.0f, 0.05f);
-        float const far_plane = distance + center_ls.z - min_ls.z + 1.0f;
-
-        glm::mat4 proj = glm::orthoRH_ZO(-half, half, -half, half, near_plane, far_plane);
-        proj[1][1] *= -1.0f; // same y-flip convention as the camera projection
-
-        this->light_state.light_view_proj = proj * view;
+        // Unused cascade lanes must not hold garbage: a shader that samples a lane beyond the active
+        // count (it does not - every path checks cascade_count first) would otherwise read whatever the
+        // previous frame's fit left there. Repeating the last fitted matrix is the honest value.
+        for (uint32_t cascade = cascades; cascade < vulkan::max_shadow_cascades; ++cascade) {
+            this->light_state.light_view_proj[cascade] = this->light_state.light_view_proj[cascades - 1];
+            this->light_state.cascade_texel_world[cascade] = last_texel_world;
+            this->light_state.cascade_splits[cascade] = this->light_state.cascade_splits[cascades - 1];
+        }
+        this->light_state.cascade_count = static_cast<float>(cascades);
         this->light_state.light_dir = glm::vec4(light_dir, 1.0f / map_size);
-        this->light_state.shadow_texel_world = (2.0f * half) / map_size;
+
+        if (!this->shadow_cascade_logged) {
+            this->shadow_cascade_logged = true;
+            utility::log("shadow cascades: {} over the view range [{:.2f}, {:.2f}] (splits {:.2f}/{:.2f}/{:.2f}), texel world sizes {:.4f}/{:.4f}/{:.4f}/{:.4f}",
+                         cascades,
+                         split_near,
+                         split_far,
+                         this->light_state.cascade_splits[0],
+                         this->light_state.cascade_splits[1],
+                         this->light_state.cascade_splits[2],
+                         this->light_state.cascade_texel_world[0],
+                         this->light_state.cascade_texel_world[1],
+                         this->light_state.cascade_texel_world[2],
+                         this->light_state.cascade_texel_world[3]);
+        }
+    }
+    void runtime::set_shadow_cascades(uint32_t const cascades) noexcept {
+        uint32_t const clamped = std::clamp(cascades, 1u, vulkan::max_shadow_cascades);
+        if (clamped == this->shadow_cascades) {
+            return;
+        }
+        this->shadow_cascades = clamped;
+        // a different cascade layout invalidates the cached fit (and the one-time density log)
+        this->shadow_frustum_valid = false;
+        this->shadow_cascade_logged = false;
+        utility::log("shadow cascades set to {}", clamped);
+    }
+
+    void runtime::set_shadow_cascade_blend(float const blend) noexcept {
+        // a band wider than half a cascade would reach back into the previous one
+        this->shadow_cascade_blend = std::clamp(blend, 0.0f, 0.5f);
+        this->light_state.cascade_blend = this->shadow_cascade_blend;
     }
     void runtime::enable_shadows(glm::vec3 const& scene_center, float const scene_radius) {
         // Remember the scene extent even if shadow setup below fails: the camera far plane
@@ -3496,6 +3641,9 @@ namespace vulkan {
         // Fill the CPU-side mirror only - pace_and_acquire copies it into every slot's own
         // light buffer as each slot is paced (nothing here touches mapped memory directly).
         this->light_state = make_directional_light_ubo(scene_center, scene_radius, static_cast<float>(vulkan::runtime::shadow_map_size));
+        // the cascade settings are the runtime's, not the UBO builder's: re-apply them over the defaults
+        this->light_state.cascade_count = static_cast<float>(std::clamp(this->shadow_cascades, 1u, vulkan::max_shadow_cascades));
+        this->light_state.cascade_blend = this->shadow_cascade_blend;
         // respect the current GUI toggle: the flag in the slot's buffer tells pbr.frag whether
         // the depth map was rendered this frame
         this->light_state.shadow_enabled = this->shadow_enabled ? 1.0f : 0.0f;

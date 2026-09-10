@@ -298,6 +298,52 @@ target_include_directories(vulkancorekit
 
 add_executable(vulkan_render main.cpp)
 
+# ---- GLSL -> SPIR-V (optional: needs glslc from the Vulkan SDK) ----
+# The executable loads shaders/<name>.spv at runtime next to the GLSL sources and the repository
+# ships those binaries prebuilt, so editing a .glsl/.frag/.vert without recompiling silently keeps
+# running the OLD SPIR-V - a trap that costs an afternoon ("my shader change does nothing").
+# Where glslc exists, the build owns the step: every SPIR-V binary is regenerated from its source
+# (and the shared includes it pulls in) as part of `cmake --build`. Where it does not - CI installs
+# no shader compiler - nothing is generated and the committed .spv files are used unchanged, so the
+# build stays green either way. shaders/compile_shaders.ps1 / .sh remain the manual path.
+find_program(GLSLC_EXECUTABLE
+    NAMES glslc
+    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
+)
+if(GLSLC_EXECUTABLE)
+    set(VR_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
+    # the shared includes: every generated shader lists them all as dependencies. The chain is
+    # three files and glslc takes milliseconds, so recompiling an unaffected shader is cheaper
+    # than the dependency bookkeeping that would avoid it.
+    set(VR_SHADER_INCLUDES
+        "${VR_SHADER_DIR}/surface.glsl"
+        "${VR_SHADER_DIR}/shading.glsl"
+        "${VR_SHADER_DIR}/sky.glsl"
+    )
+    set(VR_SHADER_SOURCES
+        pbr.vert pbr.frag unlit.frag gbuffer.frag gbuffer_debug.frag deferred.frag taa.frag
+        skybox.vert skybox.frag shadow.vert shadow.frag post.vert post.frag fxaa.frag
+    )
+    set(VR_SHADER_OUTPUTS "")
+    foreach(shader IN LISTS VR_SHADER_SOURCES)
+        add_custom_command(
+            OUTPUT "${VR_SHADER_DIR}/${shader}.spv"
+            COMMAND "${GLSLC_EXECUTABLE}" -I "${VR_SHADER_DIR}" "${VR_SHADER_DIR}/${shader}"
+                    -o "${VR_SHADER_DIR}/${shader}.spv"
+            DEPENDS "${VR_SHADER_DIR}/${shader}" ${VR_SHADER_INCLUDES}
+            COMMENT "glslc ${shader} -> ${shader}.spv"
+            VERBATIM
+        )
+        list(APPEND VR_SHADER_OUTPUTS "${VR_SHADER_DIR}/${shader}.spv")
+    endforeach()
+    add_custom_target(shaders ALL DEPENDS ${VR_SHADER_OUTPUTS})
+    add_dependencies(vulkan_render shaders)
+    message(STATUS "glslc: ${GLSLC_EXECUTABLE} - shaders/*.spv are rebuilt by the build")
+else()
+    message(STATUS "glslc not found: the committed shaders/*.spv are used as-is "
+                   "(recompile with shaders/compile_shaders.ps1 after editing GLSL)")
+endif()
+
 # Release builds link as a Windows GUI-subsystem executable: no console window appears when
 # running. On the MSYS2 clang64 / MinGW-w64 toolchain WIN32_EXECUTABLE maps to -mwindows; the CRT
 # still calls main(), only the subsystem changes. Debug keeps the console for terminal log output.

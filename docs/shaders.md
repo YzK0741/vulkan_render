@@ -11,7 +11,8 @@
  * @section shader_passes The pass chain
  *
  * @code
- *  shadow.vert + shadow.frag     depth-only, from the sun, into the per-slot shadow map
+ *  shadow.vert + shadow.frag     depth-only, from the sun, into the per-slot shadow map array
+ *                                (one layer per cascade, `[render] shadow_cascades` = 1..4)
  *        |
  *  surface.glsl                  (include) the shared material-surface gather, and
  *  shading.glsl                  (include) the shared lighting - used by BOTH paths below
@@ -131,9 +132,29 @@
  * | 5 | `Materials` table | storage buffer | `register_material()` |
  * | 6 | `InstanceTransforms` | storage buffer | `make_instanced_primitive()` |
  * | 7 | `LightUBO` | uniform buffer | `enable_shadows()` + per-frame lanes |
- * | 8 | `shadow_map` | `sampler2DShadow` | the shadow pass |
+ * | 8 | `shadow_map` | `sampler2DArrayShadow` | the shadow pass |
  * | 9 | `SkinMatrices` | storage buffer | `set_skin_matrices()` |
  * | 10 | `MorphData` | storage buffer | `morph_scratch()` |
+ *
+ * @section shader_cascades Cascaded shadows (M4)
+ *
+ * `shadow_map` is a 2D ARRAY of `shadow_cascades` layers rather than an array of separate samplers,
+ * because the layer is chosen per FRAGMENT: indexing a sampler array dynamically needs a
+ * dynamically uniform index, while a texture-array layer is just a coordinate - so the shadow test
+ * can pick its cascade per pixel. `LightUBO` carries one `light_view_proj` matrix per cascade plus
+ * `cascade_splits` (the view-space far distance of each cascade), `cascade_texel_world` (the world
+ * size of one texel of that cascade, which drives the world-space normal offset) and
+ * `cascade_count` / `cascade_blend`. `calc_shadow()` computes the receiver's view-space depth,
+ * picks the cascade whose `[splits[i-1], splits[i]]` range contains it, samples that layer with
+ * `calc_shadow_cascade()`, and - inside the last `cascade_blend` fraction of the range - samples
+ * the next cascade too and mixes the two, so the resolution/offset step between cascades does not
+ * show as a line. A receiver outside its cascade's fitted box is reported lit: each cascade's map
+ * covers its own fitted box only, and `runtime::update_shadow_frustum()` keeps those boxes on the
+ * part of the scene the camera can see. The shadow pass renders the same caster set once per
+ * cascade, each into its own array layer with its own `push_constant` cascade index - `shadow.vert`
+ * declares the material fields AND that trailing `uint cascade` in ONE block, because GLSL allows
+ * only one `push_constant` block per stage, and the shared layout's single range covers both
+ * (`scene_push_constant_size` + `scene_cascade_push_size`).
  *
  * Bindings 0/7/8/9/10 are per frame slot, so a frame in flight never shares a buffer with the
  * frame being written. Indexing `textures[]` with a value from the material table is what needs

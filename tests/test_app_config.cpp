@@ -15,6 +15,8 @@ namespace {
         CHECK(settings.render.vsync);
         CHECK(!settings.render.skybox);
         CHECK(!settings.render.shadow);
+        CHECK(settings.render.shadow_cascades == 2);
+        CHECK(settings.render.shadow_cascade_blend > 0.24f && settings.render.shadow_cascade_blend < 0.26f);
         CHECK(settings.render.fxaa);
         CHECK(!settings.render.gpu_timings);
         CHECK(settings.render.gbuffer_debug);
@@ -41,6 +43,8 @@ namespace {
         CHECK(settings.render.gbuffer_channel == 1);
         CHECK(!settings.render.deferred);
         CHECK(!settings.render.taa);
+        CHECK(settings.render.shadow_cascades == 3); // default: three cascades
+        CHECK(settings.render.shadow_cascade_blend > 0.09f && settings.render.shadow_cascade_blend < 0.11f);
         CHECK(settings.gui.show);
     }
 

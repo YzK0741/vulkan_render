@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene set; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -96,6 +96,9 @@ namespace vulkan {
     };
     /** @brief max simultaneous punctual lights (LightUBO.punctual_lights / GLSL PunctualLight array) */
     export constexpr uint32_t max_punctual_lights = 4;
+    /** @brief cascaded shadow maps: the light UBO carries one view-projection per cascade, and the
+     *         shadow map is a 2D ARRAY depth texture with this many layers (see light_ubo below) */
+    export constexpr uint32_t max_shadow_cascades = 4;
     /** @brief one punctual light in the GPU light UBO (std140, 64 bytes; mirror PunctualLight in pbr.frag) */
     export struct point_light {
         glm::vec4 position = {}; // xyz: world position (w unused)
@@ -106,17 +109,23 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_primitive
-     * @brief light UBO content, layout matches the LightUBO block in pbr.frag / shadow.vert
-     *        (scene set binding 7): light-space view-proj + the light direction, then the
-     *        active punctual light count and the punctual light array
+     * @brief light UBO content, layout matches the LightUBO block in shaders/shading.glsl and
+     *        shadow.vert (scene set binding 7): the per-cascade light-space view-projections, the
+     *        light direction, the cascade ranges/texel sizes, then the punctual light array
      * @note the directional sun is built from the scene bounds (enable_shadows) and the shadow
      *       map samples agree on its direction; punctual lights never cast shadows and ride the
      *       same block after the directional header
+     * @note CASCADES: `light_view_proj[0]` covers the near range, the following entries the ranges
+     *       given by `cascade_splits` (view-space far distance). A frame with cascade_count == 1 is
+     *       exactly the single-map behavior this used to have - one fit over the whole visible
+     *       range - which is what makes the cascaded version an A/B rather than a rewrite.
      */
     export struct light_ubo {
-        glm::mat4 light_view_proj; // world -> light clip space (orthographic)
-        glm::vec4 light_dir;       // xyz: normalized light direction (sun), w: 1 / shadow map size
-        float shadow_enabled;      // 1.0 samples the shadow map, 0.0 skips shadows
+        std::array<glm::mat4, max_shadow_cascades> light_view_proj = {}; // world -> light clip, per cascade
+        glm::vec4 light_dir = {};                                        // xyz: normalized light direction (sun), w: 1 / shadow map size
+        glm::vec4 cascade_splits = {};                                   // view-space FAR distance of each cascade
+        glm::vec4 cascade_texel_world = {};                              // world size of one shadow-map texel, per cascade
+        float shadow_enabled = 0.0f;                                     // 1.0 samples the shadow map, 0.0 skips shadows
         // Selectable BRDF models (set via runtime::set_brdf_model / set_diffuse_model, gui
         // combos). Rides the std140 padding of this block - the shader reads them as floats:
         //   brdf_model:   0 = GGX + joint Smith (default), 1 = GGX + height-correlated Smith,
@@ -124,17 +133,26 @@ namespace vulkan {
         //   diffuse_model: 0 = Lambert (default), 1 = Oren-Nayar
         float brdf_model = 0.0f;
         float diffuse_model = 0.0f;
-        float shadow_texel_world = 0.0f; // world size of one shadow-map texel (normal-offset bias)
-        glm::vec4 light_count = {};      // x = active punctual light count (GLSL: uint), y = exposure, z = toon shading steps (0 = PBR), w = toon band softness
+        // Fraction of a cascade's range over which the shader blends into the next one (0.1 = the
+        // last 10%): a hard switch would show the resolution/offset step as a visible line.
+        float cascade_blend = 0.1f;
+        float cascade_count = 1.0f; // active cascades (1 = the single-map path)
+        float _pad0 = 0.0f;         // keeps light_count on its 16-byte boundary (std140)
+        float _pad1 = 0.0f;
+        float _pad2 = 0.0f;
+        glm::vec4 light_count = {}; // x = active punctual light count (GLSL: uint), y = exposure, z = toon shading steps (0 = PBR), w = toon band softness
         std::array<point_light, max_punctual_lights> punctual_lights = {};
     };
-    // std140 layout guard against the GLSL LightUBO in pbr.frag: light_count is a glm::vec4
-    // (16 B @96, its x carries the count the shader reads as uint) and the punctual light array
-    // must sit at byte 112 with a 368-byte block for max_punctual_lights = 4 (a vec3 pad on the
-    // GLSL side would push the array to 128 and shift every light by 16 bytes - see pbr.frag's
-    // layout comment).
-    static_assert(sizeof(light_ubo) == 112 + max_punctual_lights * sizeof(point_light));
-    static_assert(offsetof(light_ubo, punctual_lights) == 112);
+    // std140 layout guard against the GLSL LightUBO: four cascade matrices (256 B), the direction,
+    // the two per-cascade vec4s (304 B), four floats, light_count (a glm::vec4 whose x carries the
+    // count the shader reads as uint) and the punctual light array - which must start at a 16-byte
+    // boundary. A vec3 pad anywhere on the GLSL side would push the array and shift every light.
+    static_assert(offsetof(light_ubo, light_dir) == max_shadow_cascades * sizeof(glm::mat4));
+    static_assert(offsetof(light_ubo, cascade_splits) == max_shadow_cascades * sizeof(glm::mat4) + sizeof(glm::vec4));
+    static_assert(offsetof(light_ubo, cascade_texel_world) == max_shadow_cascades * sizeof(glm::mat4) + 2 * sizeof(glm::vec4));
+    static_assert(offsetof(light_ubo, light_count) == max_shadow_cascades * sizeof(glm::mat4) + 5 * sizeof(glm::vec4));
+    static_assert(offsetof(light_ubo, punctual_lights) == max_shadow_cascades * sizeof(glm::mat4) + 6 * sizeof(glm::vec4));
+    static_assert(sizeof(light_ubo) == max_shadow_cascades * sizeof(glm::mat4) + 6 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
     static_assert(sizeof(point_light) == 64);
 
     /**

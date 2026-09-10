@@ -444,6 +444,21 @@ namespace chores {
                 on_camera_selected));
             utility::log("gui: camera selector added ({} camera(s))", camera_names.size());
         }
+        // Cascaded shadow maps: how many cascades the sun's shadow pass fills (1 = the historic
+        // single map) and how much of a cascade's range fades into the next one. Both are
+        // write-through: the runtime refits the cascade boxes on the next frame, and the blend is a
+        // shader constant in the light UBO - no pipeline or image rebuild, so they are live.
+        panel.push_back(std::make_unique<vulkan::gui::combo_widget>(
+            "shadow cascades",
+            std::vector<std::string>{"1 (single map)", "2", "3", "4"},
+            &bindings.shadow_cascades,
+            [&runtime](int const index) { runtime.set_shadow_cascades(static_cast<uint32_t>(index) + 1u); }));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
+            "shadow cascade blend",
+            &bindings.shadow_cascade_blend,
+            0.0f,
+            0.5f,
+            [&runtime](float const value) { runtime.set_shadow_cascade_blend(value); }));
         // Shadow depth bias (bottom of the panel - a rarely-used tuning aid): the pass's bias
         // is dynamic state applied every frame; the slope factor removes acne on angled
         // surfaces, the constant adds a fixed push. Note it cannot fix geometry that is simply

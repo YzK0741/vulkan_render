@@ -206,12 +206,20 @@ namespace vulkan {
         proj[1][1] *= -1.0f;
 
         light_ubo ubo;
-        ubo.light_view_proj = proj * view;
+        // Default: ONE cascade covering the whole scene sphere - the fit runtime::update_shadow_frustum
+        // replaces on the first frame (and the cascaded version fills the same slots with one fitted
+        // matrix per cascade). Every lane gets the same matrix here so a frame that renders before the
+        // first fit still samples something sound.
+        for (auto& matrix : ubo.light_view_proj) {
+            matrix = proj * view;
+        }
         ubo.light_dir = glm::vec4(light_dir, 1.0f / shadow_map_size); // w: uv texel size for the pcf taps
         ubo.shadow_enabled = 1.0f;                                    // shadows on by default; runtime::set_shadow_enabled flips it
         ubo.brdf_model = 0.0f;                                        // defaults: GGX + joint Smith, Lambert (see light_ubo docs)
         ubo.diffuse_model = 0.0f;
-        ubo.shadow_texel_world = (2.0f * half) / shadow_map_size; // world size of one shadow texel
+        float const default_texel_world = (2.0f * half) / shadow_map_size;
+        ubo.cascade_texel_world = glm::vec4(default_texel_world); // world size of one shadow texel
+        ubo.cascade_count = 1.0f;
         return ubo;
     }
 } // namespace vulkan

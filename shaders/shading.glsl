@@ -54,6 +54,7 @@ layout(set = 0, binding = 4) uniform sampler2D brdf_lut_sampler;     // BRDF int
 // slot with one glm::vec4, so the array starts at byte 112 and the block is 368 bytes. (A vec3 pad
 // would force 16-byte alignment to 128 and shift every light by 16.)
 const int MAX_PUNCTUAL_LIGHTS = 4; // vulkan::max_punctual_lights
+const int MAX_SHADOW_CASCADES = 4; // vulkan::max_shadow_cascades
 
 struct PunctualLight {
     vec4 position; // xyz: world position (w unused)
@@ -63,9 +64,14 @@ struct PunctualLight {
 };
 
 layout(set = 0, binding = 7) uniform LightUBO {
-    mat4 light_view_proj;
-    vec4 light_dir; // xyz: normalized light direction, w: 1 / shadow map size (uv texel)
-    float shadow_enabled; // 1.0 = sample shadow map, 0.0 = fully lit (runtime::set_shadow_enabled)
+    // One orthographic world -> light-clip matrix per cascade: entry 0 covers the near range, the
+    // rest the ranges given by cascade_splits. With cascade_count == 1 only entry 0 is fitted and
+    // used, which is exactly the single-shadow-map behavior.
+    mat4 light_view_proj[MAX_SHADOW_CASCADES];
+    vec4 light_dir;           // xyz: normalized light direction, w: 1 / shadow map size (uv texel)
+    vec4 cascade_splits;      // view-space FAR distance of each cascade
+    vec4 cascade_texel_world; // world size of one shadow-map texel, per cascade (normal-offset bias)
+    float shadow_enabled; // 1.0 = sample the shadow map, 0.0 = fully lit (runtime::set_shadow_enabled)
     // selectable BRDF theory models (gui combos -> runtime::set_brdf_model / set_diffuse_model,
     // CPU-side, riding the std140 padding of this block):
     //   brdf_model:    0 = GGX + joint Smith (default), 1 = GGX + height-correlated Smith,
@@ -73,7 +79,11 @@ layout(set = 0, binding = 7) uniform LightUBO {
     //   diffuse_model: 0 = Lambert (default), 1 = Oren-Nayar
     float brdf_model;
     float diffuse_model;
-    float shadow_texel_world; // world size of one shadow-map texel (normal-offset bias)
+    float cascade_blend; // fraction of a cascade's range blended into the next one (0.1 = last 10%)
+    float cascade_count; // active cascades (1 = the single-map path)
+    float _pad0;
+    float _pad1;
+    float _pad2;
     uint light_count;
     float exposure; // y lane of the CPU's light_count vec4: linear exposure scale (pre-tonemap)
     float toon_steps;   // cel-shading quantization steps (LightUBO.light_count.z; 0 = PBR)
@@ -81,11 +91,13 @@ layout(set = 0, binding = 7) uniform LightUBO {
     PunctualLight punctual_lights[MAX_PUNCTUAL_LIGHTS];
 } light;
 
-// Shadow map (scene set binding 8): depth-compare sampler (sampler2DShadow) with LINEAR
-// filtering - one texture() call performs HARDWARE percentage-closer filtering: the hardware
-// compares the reference depth against the 2x2 texel neighborhood and returns the lit
-// fraction (no manual 3x3 loop needed).
-layout(set = 0, binding = 8) uniform sampler2DShadow shadow_map;
+// Shadow map (scene set binding 8): a 2D ARRAY of cascades, sampled with a depth-compare sampler
+// (sampler2DArrayShadow) whose LINEAR filtering performs HARDWARE percentage-closer filtering - the
+// hardware compares the reference depth against the 2x2 texel neighborhood of the addressed layer
+// and returns the lit fraction (no manual 3x3 loop needed). An ARRAY texture rather than an array of
+// samplers because the layer is chosen per FRAGMENT: dynamic indexing of a sampler array would need
+// dynamically uniform indices, while a texture-array layer is just a coordinate.
+layout(set = 0, binding = 8) uniform sampler2DArrayShadow shadow_map;
 
 const float PI = 3.14159265359;
 
@@ -109,28 +121,32 @@ float toon_band(float x, float steps, float softness) {
 }
 
 /**
- * @brief shadow factor for a world-space point: normal-offset bias + 3x3 PCF
+ * @brief shadow factor of ONE cascade for a world-space point: normal-offset bias + 3x3 PCF
  * @param world_pos receiver position in world space
  * @param normal receiver world-space normal
+ * @param cascade cascade index (the shadow map array layer)
  * @return 1.0 = fully lit, 0.0 = fully shadowed (also passed through toon_band for cel shading)
  *
  * - the sample point is pushed along the world normal by a couple of light-space texels, which
  *   removes most quantization acne on flat receivers WITHOUT a large depth bias - and a large depth
  *   bias is exactly what erases the shadow of a thin caster (a sword, a railing). The normal offset
- *   lets the depth bias below drop to a fraction of the old 0.0015.
+ *   lets the depth bias below drop to a fraction of the old 0.0015. The offset is per cascade
+ *   because the texel size is: cascade 0's texels are a fraction of cascade 3's, and a fixed world
+ *   offset would over-bias the near range (detaching contact shadows) and under-bias the far one.
  * - the 3x3 grid of hardware 2x2 comparison taps (4x4 texel footprint) smooths the edge; a single
  *   tap flickered badly on thin geometry. The grid is unrotated on purpose: a rotated grid needs TAA
- *   to hide its per-pixel noise, and this renderer has no TAA yet.
- * - outside the light frustum the fragment is reported lit: the map covers the fitted box only, and
- *   runtime::update_shadow_frustum() keeps that box on the part of the scene the camera can see.
+ *   to hide its per-pixel noise (the deferred path has TAA, the forward path does not yet).
+ * - outside the light frustum the fragment is reported lit: each cascade's map covers its own fitted
+ *   box only, and runtime::update_shadow_frustum() keeps those boxes on the part of the scene the
+ *   camera can see.
  */
-float calc_shadow(vec3 world_pos, vec3 normal) {
-    float texel_uv = light.light_dir.w;            // 1 / shadow map size
-    float texel_world = light.shadow_texel_world;  // world size of one texel
+float calc_shadow_cascade(vec3 world_pos, vec3 normal, int cascade) {
+    float texel_uv = light.light_dir.w;                    // 1 / shadow map size
+    float texel_world = light.cascade_texel_world[cascade]; // world size of one texel of this cascade
 
     // normal offset: shift the world position before projecting it into light space
     vec3 offset_pos = world_pos + normal * (texel_world * 2.0);
-    vec4 light_clip = light.light_view_proj * vec4(offset_pos, 1.0);
+    vec4 light_clip = light.light_view_proj[cascade] * vec4(offset_pos, 1.0);
     vec3 ndc = light_clip.xyz / light_clip.w; // ortho projection: w == 1
     vec2 uv = ndc.xy * 0.5 + 0.5;
     float current_depth = ndc.z; // [0,1] (RH_ZO ortho)
@@ -146,12 +162,56 @@ float calc_shadow(vec3 world_pos, vec3 normal) {
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
             vec2 tap = uv + vec2(float(x), float(y)) * texel_uv;
-            lit += texture(shadow_map, vec3(tap, current_depth - bias));
+            lit += texture(shadow_map, vec4(tap, float(cascade), current_depth - bias));
         }
     }
     float shadow = lit / 9.0;
     // cel shading hardens the shadow edge into the same bands as the diffuse falloff
     return toon_band(shadow, light.toon_steps, light.toon_softness);
+}
+
+/**
+ * @brief shadow factor for a world-space point, selecting (and blending between) the cascades
+ * @param world_pos receiver position in world space
+ * @param normal receiver world-space normal
+ * @return 1.0 = fully lit, 0.0 = fully shadowed
+ *
+ * The cascade is picked by the fragment's VIEW-SPACE DEPTH against the per-cascade split distances
+ * the CPU fitted: cascade i covers [splits[i-1], splits[i]], so the near geometry is shadowed by the
+ * small, dense cascade 0 and the far range by the coarse last one - the whole point of cascades is
+ * that a single map cannot be dense enough for both.
+ *
+ * Inside `cascade_blend` of a boundary the two neighbouring cascades are both sampled and mixed:
+ * a hard switch would show as a line where the resolution (and the offset) step is.
+ */
+float calc_shadow(vec3 world_pos, vec3 normal) {
+    if (light.cascade_count < 1.5) {
+        return calc_shadow_cascade(world_pos, normal, 0); // single map: no selection to do
+    }
+    const float view_depth = -(camera.view * vec4(world_pos, 1.0)).z; // positive distance along the view
+    int cascade = int(light.cascade_count + 0.5) - 1;                 // past the last split: the farthest
+    for (int i = 0; i < MAX_SHADOW_CASCADES; ++i) {
+        if (i >= int(light.cascade_count + 0.5)) {
+            break;
+        }
+        if (view_depth <= light.cascade_splits[i]) {
+            cascade = i;
+            break;
+        }
+    }
+    float shadow = calc_shadow_cascade(world_pos, normal, cascade);
+
+    // blend into the next cascade across the boundary band
+    const int next = cascade + 1;
+    if (next < int(light.cascade_count + 0.5)) {
+        const float boundary = light.cascade_splits[cascade];
+        const float band = max(boundary * light.cascade_blend, 1e-4);
+        if (view_depth > boundary - band) {
+            const float t = clamp((view_depth - (boundary - band)) / band, 0.0, 1.0);
+            shadow = mix(shadow, calc_shadow_cascade(world_pos, normal, next), t);
+        }
+    }
+    return shadow;
 }
 
 /**
