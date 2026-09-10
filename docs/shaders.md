@@ -36,13 +36,18 @@
  * @code
  *  pbr.vert + gbuffer.frag       opaque geometry -> three 1x G-buffer targets + a 1x depth image
  *                                (albedo+metallic, world normal+roughness, material id+AO+flags),
- *                                and the emissive term ADDED into the HDR target (4th attachment)
+ *                                the motion-vector target, and the emissive term ADDED into the
+ *                                scene color (5th attachment)
  *        |
  *  post.vert + deferred.frag     fullscreen: read the G-buffer + depth, rebuild the world position
  *                                from the depth, light the surface with shading.glsl, add the result
- *                                into the HDR target - sky where no geometry wrote depth
+ *                                into the scene color - sky where no geometry wrote depth
  *        |
- *  post.vert + gbuffer_debug.frag  (debug alternative, never together with the stage above) show one
+ *  post.vert + taa.frag          fullscreen: blend the scene color with the reprojected, clamped
+ *                                history into the HDR target the post chain reads (optional; the
+ *                                runtime then copies that into the history image for the next frame)
+ *        |
+ *  post.vert + gbuffer_debug.frag  (debug alternative, never together with the stages above) show one
  *                                stored channel instead of lighting it
  * @endcode
  *
@@ -52,6 +57,30 @@
  * MSAA the forward path uses, alphaMode BLEND geometry is not part of it (a G-buffer cannot carry a
  * blended surface), and the debug view forces the bloom weight to 0 so the channel being inspected is
  * not smeared by a display effect.
+ *
+ * @section shader_taa Temporal anti-aliasing
+ *
+ * The deferred path renders at 1x, so `shaders/taa.frag` is its anti-aliasing instead of MSAA:
+ * `runtime::set_taa` jitters the projection by a Halton(2,3) sub-pixel offset every frame (the
+ * G-buffer and the lighting stage both see the jittered projection - geometry and the depth
+ * reconstruction agree about where each sample is), the G-buffer writes a motion vector per pixel
+ * (current - previous, in UV space), and the resolve blends the current frame with the history
+ * sampled at `uv - velocity`, clamped into the current 3x3 neighborhood, with a view-depth guard for
+ * disocclusions. The result goes into the HDR target the post chain reads, and the runtime copies it
+ * into the history image for the next frame that renders that swapchain image.
+ *
+ * Two invariants are worth stating because breaking either one is hard to see and expensive to find:
+ * - the motion vectors come from the UNJITTERED view-projection pair (a jitter in there is read as
+ *   camera motion and reprojects the history by up to a pixel every frame), and
+ * - everything that is not the rendering transform itself uses the unjittered matrices: the shadow
+ *   frustum fit, the BVH cull frustum, the depth-linearization terms. Letting the jitter into the
+ *   shadow fit in particular re-quantizes the light-space box to whole texels every frame, so the
+ *   shadow map's texel grid alternates between two alignments and a grazing-angle surface flickers
+ *   between lit and shadowed - the TAA history then averages that flicker into a dark band.
+ *
+ * The G-buffer motion vectors are CAMERA motion at this milestone: an animated (skinned/morphed)
+ * object moves without the camera and needs its own previous transform, which is a per-primitive
+ * quantity (`gbuffer.frag` documents where it goes). Until then such an object can ghost slightly.
  *
  * Which pipeline a primitive draws with is decided per leaf: a default-semantics primitive asks
  * the pass for its default pipeline, so the same geometry renders through `pbr` (lit), `unlit`

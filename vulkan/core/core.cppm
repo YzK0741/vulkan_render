@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -96,17 +96,26 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_core
-     * @brief color attachments the G-buffer pass declares: the three surface targets above plus the
-     *        HDR scene target, which the pass ADDS the emissive term into
+     * @brief motion-vector format: the fourth G-buffer target, written by the G-buffer pass and read
+     *        by TAA (RG16F because a motion vector is a signed sub-pixel quantity in UV space and
+     *        8-bit would quantize it to ~1/255 of the screen - coarser than the jitter TAA exists to
+     *        resolve)
+     */
+    export constexpr VkFormat gbuffer_velocity_format = VK_FORMAT_R16G16_SFLOAT;
+
+    /**
+     * @ingroup vulkan_core
+     * @brief color attachments the G-buffer pass declares: the three surface targets above, the
+     *        motion-vector target, and the scene-color target it ADDS the emissive term into
      * @note emissive is lighting-independent, so it does not belong to the deferred lighting stage -
      *       and it needs the material's emissive texture and the fragment's UVs, neither of which the
      *       G-buffer stores. Adding it in the base pass is what commercial deferred renderers do (the
-     *       G-buffer pass writes the surface and adds emissive to the scene color), and it is why the
-     *       pass's fourth attachment is blended ONE/ONE while the three surface targets are
-     *       overwritten. The HDR attachment loads (not clears), so the sky drawn before the pass
-     *       survives under the emissive.
+     *       G-buffer pass writes the surface and adds emissive to the scene color), and it is why that
+     *       last attachment is blended ONE/ONE while the surface and velocity targets are overwritten.
+     *       It is CLEARed to zero by the instance, and the deferred lighting stage adds the lighting
+     *       (and the sky, where no geometry wrote depth) on top.
      */
-    export constexpr uint32_t gbuffer_pass_attachment_count = gbuffer_target_count + 1;
+    export constexpr uint32_t gbuffer_pass_attachment_count = gbuffer_target_count + 2; // + velocity + scene color
 
     /**
      * @ingroup vulkan_core
@@ -142,9 +151,10 @@ namespace vulkan {
         std::string window_title = "vulkan_render"; // GLFW window title
         // vsync: false (default) prefers VK_PRESENT_MODE_MAILBOX_KHR, true prefers FIFO_KHR
         bool vsync = false;
-        // MSAA sample count: 0 (default) = auto (device max usable), otherwise a fixed count
-        // (2/4/8/...); the core clamps to the device's max usable when the requested count is
-        // not supported
+        // MSAA sample count: 0 (default) = auto (device max usable), 1 = OFF (single-sampled, which
+        // is what the deferred path and TAA require), otherwise the largest usable count <= the
+        // request; the core clamps to the device's max usable when the requested count is not
+        // supported
         int msaa_samples = 0;
         // Vulkan validation layers + debug messenger (instance layer VK_LAYER_KHRONOS_validation
         // and the VK_EXT_debug_utils messenger); off by default - the caller (app_config) keeps
@@ -255,6 +265,29 @@ namespace vulkan {
         std::vector<VkImage> gbuffer_depth_images = {};
         std::vector<VkDeviceMemory> gbuffer_depth_image_memories = {};
         std::vector<VkImageView> gbuffer_depth_image_views = {};
+        // Motion vectors (gbuffer_velocity_format), one per swapchain image: written by the G-buffer
+        // pass, read by the TAA resolve.
+        std::vector<VkImage> velocity_images = {};
+        std::vector<VkDeviceMemory> velocity_image_memories = {};
+        std::vector<VkImageView> velocity_image_views = {};
+
+        // ---- temporal anti-aliasing (see runtime::set_taa) ----
+        // The scene color TAA resolves FROM, one per swapchain image: when TAA is on, the deferred
+        // path's geometry/lighting stage writes this image instead of the HDR target, and the TAA
+        // resolve blends it with the history into the HDR target - which keeps the whole post chain
+        // (bloom, composite, FXAA) reading exactly what it read before TAA existed.
+        std::vector<VkImage> scene_color_images = {};
+        std::vector<VkDeviceMemory> scene_color_image_memories = {};
+        std::vector<VkImageView> scene_color_image_views = {};
+        // The previous RESOLVED frame, one per swapchain image, read by the TAA resolve as history.
+        // It is a separate image rather than a copy of the HDR target because a pass cannot sample the
+        // image it renders into: the TAA resolve writes the HDR target (for the post chain) and the
+        // runtime copies that into this image afterwards, which is one vkCmdCopyImage per frame - no
+        // ping-pong, no per-frame descriptor rewrites.
+        // TRANSFER_DST | SAMPLED: it is only ever written by the copy and read by the resolve.
+        std::vector<VkImage> taa_history_images = {};
+        std::vector<VkDeviceMemory> taa_history_image_memories = {};
+        std::vector<VkImageView> taa_history_image_views = {};
         void create_msaa_image(
             uint32_t width,
             uint32_t height,

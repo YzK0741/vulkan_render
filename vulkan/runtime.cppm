@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -209,6 +209,7 @@ namespace vulkan {
             scene_end,       // after the geometry instance: forward main (opaque + transparent), or
                              // the background + G-buffer pass in the deferred path
             lighting_end,    // after the deferred lighting stage (~0 in the forward path)
+            taa_end,         // after the TAA resolve + its history copy (~0 when TAA is off)
             main_end,        // after the last scene-side work of the frame (the debug view, when it runs)
             bloom_end,       // after the bloom prefilter/downsample chain
             composite_end,   // after the composite (exposure + ACES + display encode)
@@ -233,6 +234,7 @@ namespace vulkan {
             {"shadow", false},
             {"scene", false},
             {"lighting", false},
+            {"taa", false},
             {"debug", true},
             {"bloom", false},
             {"composite", false},
@@ -309,6 +311,51 @@ namespace vulkan {
         void ensure_gbuffer_descriptors();
         void record_gbuffer_debug_pass(VkCommandBuffer command_buffer);
         void record_deferred_lighting_pass(VkCommandBuffer command_buffer);
+
+        // ---- temporal anti-aliasing (M3, deferred path only) ----
+        // TAA replaces MSAA on the deferred path: the projection is jittered per frame (a Halton
+        // sequence), the G-buffer writes motion vectors, and a resolve pass blends the current frame
+        // with a reprojected, neighborhood-clamped history. The deferred scene writes
+        // core::scene_color and the resolve writes the HDR target, so the whole post chain keeps
+        // reading exactly what it read before TAA existed. A copy of the resolved frame becomes the
+        // next frame's history (no ping-pong, hence no per-frame descriptor rewrites).
+        std::optional<vk_pipeline> taa_pipeline = std::nullopt;
+        vk_sampler taa_sampler = {};
+        VkDescriptorSetLayout taa_set_layout = VK_NULL_HANDLE;
+        VkPipelineLayout taa_pipeline_layout = VK_NULL_HANDLE;
+        VkDescriptorPool taa_descriptor_pool = VK_NULL_HANDLE;
+        uint32_t taa_pool_capacity = 0;
+        std::vector<VkDescriptorSet> taa_sets = {};      // one per swapchain image
+        std::array<VkImageView, 4> taa_bound_views = {}; // views the current sets point at
+        bool taa_on = false;                             // [render] taa
+        float taa_blend_static = 0.9f;                   // history weight for a static pixel
+        float taa_blend_min = 0.5f;                      // history weight floor under motion
+        uint32_t taa_jitter_index = 0;                   // position in the Halton sequence
+        // The view-projection each swapchain image's history was rendered with, and whether that
+        // history holds anything. Remembered PER IMAGE on purpose: with several swapchain images in
+        // rotation, "the previous frame's camera" is not what that image's history was rendered with,
+        // and reprojecting against the wrong matrix is exactly what makes a TAA history smear.
+        std::vector<glm::mat4> image_view_proj = {};
+        std::vector<bool> taa_history_valid = {};
+        struct taa_push_constants {
+            float history_valid = 0.0f; // 1 = trust the history, 0 = first frame for this image
+            float blend_static = 0.9f;  // history weight for a static pixel
+            float blend_min = 0.5f;     // history weight floor under motion
+            float texel_size_x = 0.0f;  // 1 / target width
+            float texel_size_y = 0.0f;  // 1 / target height
+            float depth_scale = 0.0f;   // projection[2][2]: the depth-linearization term
+            float depth_offset = 0.0f;  // projection[3][2]
+            float unused = 0.0f;
+        };
+        void ensure_taa_descriptors();
+        void record_taa_pass(VkCommandBuffer command_buffer);
+        /** @brief whether the TAA resolve runs this frame (enabled + deferred lighting + pipeline) */
+        [[nodiscard]] bool taa_active() const noexcept;
+        /** @brief the image the scene-side passes write into (the TAA input, or the HDR target) */
+        [[nodiscard]] VkImage scene_target_image(uint32_t image_index) const noexcept;
+        [[nodiscard]] VkImageView scene_target_view(uint32_t image_index) const noexcept;
+        /** @brief the sub-pixel jitter for a position in the Halton(2,3) sequence, in PIXELS */
+        [[nodiscard]] static glm::vec2 taa_jitter_offset(uint32_t index) noexcept;
         /** @brief whether the opaque pass writes the G-buffer this frame (pipelines present + enabled) */
         [[nodiscard]] bool gbuffer_pass_active() const noexcept;
         /** @brief whether the deferred lighting stage shades this frame (see set_deferred) */
@@ -591,8 +638,8 @@ namespace vulkan {
         // shadow_fit_view/proj are the camera matrices the current frustum was fitted for;
         // shadow_frustum_valid is cleared by enable_shadows() (new light setup) and bvh_dirty marks
         // a changed scene.
-        glm::mat4 shadow_fit_view = glm::mat4(1.0f);
-        glm::mat4 shadow_fit_proj = glm::mat4(1.0f);
+        glm::mat4 shadow_fit_view_proj = glm::mat4(1.0f); // unjittered view * proj the last fit used
+
         bool shadow_frustum_valid = false;
         // optional Dear ImGui debug overlay; inactive until enable_debug_gui() succeeds. The
         // runtime drives it inside the frame steps (new_frame before recording, record after the
@@ -1294,6 +1341,49 @@ namespace vulkan {
         /** @brief whether the deferred lighting stage is enabled (see set_deferred) */
         [[nodiscard]] bool deferred() const noexcept {
             return this->deferred_on;
+        }
+
+        /** @brief how many jitter positions the Halton(2,3) TAA sequence cycles through */
+        static constexpr uint32_t taa_jitter_count = 8;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief create the TAA resolve pipeline (fullscreen: scene color + history + motion vectors +
+         *        depth -> the HDR target)
+         * @param vertex_shader_code raw SPIR-V of post.vert (the fullscreen triangle)
+         * @param fragment_shader_code raw SPIR-V of taa.frag
+         * @return success, or an error message on failure
+         * @note optional but required for set_taa(true) to take effect
+         */
+        std::expected<void, std::string> make_taa_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief enable/disable temporal anti-aliasing and set its two blend weights
+         * @param enabled when true (and the deferred path is the active render mode) the projection is
+         *        jittered every frame, the G-buffer's motion vectors are resolved against a reprojected
+         *        history, and the result is what the post chain processes. This is the deferred path's
+         *        answer to MSAA: it resolves the sub-pixel detail MSAA would have sampled, AND the
+         *        shimmer in motion that no edge filter can remove. Requires make_taa_pipeline(); without
+         *        it the flag has no effect.
+         * @param blend_static history weight for a pixel that did not move (0.9 = 10% of the current
+         *        frame per frame; higher converges smoother but reacts slower to lighting changes)
+         * @param blend_min history weight floor once a pixel moves a pixel or more per frame (lower =
+         *        trusts the current frame more under motion, which trades smoothing for less ghosting)
+         * @note deferred-path only for now: the forward path has no motion vectors, so it keeps its
+         *       MSAA answer. The G-buffer motion vectors are camera-only at this milestone, so a
+         *       deformed (skinned/morphed) object can ghost slightly - see gbuffer.frag.
+         */
+        void set_taa(bool enabled, float blend_static = 0.9f, float blend_min = 0.5f) noexcept;
+
+        /** @brief whether TAA is enabled (see set_taa) */
+        [[nodiscard]] bool taa() const noexcept {
+            return this->taa_on;
+        }
+
+        /** @brief the halton jitter position the NEXT frame will use (0..taa_jitter_count-1) */
+        [[nodiscard]] uint32_t taa_jitter_position() const noexcept {
+            return this->taa_jitter_index;
         }
 
         /**

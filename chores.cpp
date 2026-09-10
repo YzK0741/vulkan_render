@@ -226,7 +226,15 @@ namespace chores {
                     if (!deferred_result) {
                         utility::log("deferred lighting disabled: {}", deferred_result.error());
                     } else {
-                        utility::log("SUCCESS: gbuffer + deferred pipelines created (surface write, debug view, deferred lighting)");
+                        // TAA resolve (deferred-only): its own set layout (scene color, history,
+                        // motion vectors, depth) and a fullscreen pipeline writing the HDR target
+                        load_shader(shaders_dir, "taa.frag.spv", fragment_code);
+                        auto const taa_result = runtime.make_taa_pipeline(vertex_code, fragment_code);
+                        if (!taa_result) {
+                            utility::log("taa disabled: {}", taa_result.error());
+                        } else {
+                            utility::log("SUCCESS: gbuffer + deferred pipelines created (surface write, debug view, deferred lighting, taa)");
+                        }
                     }
                 }
             }
@@ -342,6 +350,13 @@ namespace chores {
         // deferred lighting: the render-mode switch for the deferred path (the debug view above wins
         // when both are on, which is why it is not part of the same combo as pbr/unlit)
         panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("deferred lighting", &bindings.deferred_enabled));
+        // TAA: the deferred path's anti-aliasing, with the two history-weight knobs. The static weight
+        // decides how smooth a still image gets (higher = smoother, slower to react to lighting
+        // changes); the minimum is what a fast-moving pixel falls back to (lower = trusts the current
+        // frame more, which trades smoothing for less ghosting).
+        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("taa", &bindings.taa_enabled));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("taa history (static)", &bindings.taa_blend_static, 0.0f, 0.98f));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("taa history (min)", &bindings.taa_blend_min, 0.0f, 0.98f));
         // cel/toon shading: quantize the diffuse falloff (and harden shadows/highlights);
         // 0 steps leaves plain PBR, softness shrinks toward hard comic edges
         // cel/toon shading is discrete: every listed band count gives a visibly different look

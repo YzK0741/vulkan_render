@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene set; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.1.7  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -44,16 +44,30 @@ export import vulkan.scene_tree; // the abstract leaf interface these implement
 namespace vulkan {
     /**
      * @ingroup vulkan_primitive
-     * @brief camera UBO content, layout matches the CameraUBO block in pbr.frag (no model
+     * @brief camera UBO content, layout matches the CameraUBO block in shaders/shading.glsl (no model
      *        matrix: the per-primitive world transform lives in the push constants instead,
      *        so the camera UBO can be shared by every primitive)
+     * @note `proj` is the CURRENT frame's projection INCLUDING the TAA jitter when temporal
+     *       anti-aliasing is on (the geometry must be sampled at the jittered offsets), while
+     *       `view_proj_unjittered` and `prev_view_proj` are the unjittered pair the G-buffer's motion
+     *       vectors are computed from: a jitter that leaked into the velocity would be read as camera
+     *       motion and the history would be reprojected to the wrong place every frame.
      */
     export struct camera_ubo {
         glm::mat4 view;
-        glm::mat4 proj;
+        glm::mat4 proj; // jittered when TAA is on (see the note above)
         glm::vec3 camera_pos;
         float padding = 0.0f;
+        glm::mat4 view_proj_unjittered; // current view * projection, jitter removed
+        glm::mat4 prev_view_proj;       // the previous RENDERED frame's view * projection
     };
+    // std140 layout check (same style as light_ubo below): two mat4, a vec4-aligned position, then
+    // the two unjittered matrices the motion vectors read
+    static_assert(sizeof(camera_ubo) == 4 * sizeof(glm::mat4) + sizeof(glm::vec4));
+    static_assert(offsetof(camera_ubo, proj) == sizeof(glm::mat4));
+    static_assert(offsetof(camera_ubo, camera_pos) == 2 * sizeof(glm::mat4));
+    static_assert(offsetof(camera_ubo, view_proj_unjittered) == 2 * sizeof(glm::mat4) + sizeof(glm::vec4));
+    static_assert(offsetof(camera_ubo, prev_view_proj) == 3 * sizeof(glm::mat4) + sizeof(glm::vec4));
 
     /**
      * @ingroup vulkan_primitive

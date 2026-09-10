@@ -144,6 +144,11 @@ namespace chores {
         // of forward. Precedence is deliberate: the debug view wins when both are on, so the checkbox
         // always shows what is actually stored.
         bool deferred_enabled = false;
+        // TAA (runtime::set_taa): the deferred path's anti-aliasing. Mirrored into the runtime every
+        // frame like the other render toggles; the blend weights are the two shader knobs.
+        bool taa_enabled = false;
+        float taa_blend_static = 0.9f; // history weight for a static pixel (0.9 = 10% of the new frame)
+        float taa_blend_min = 0.5f;    // history weight floor under motion (lower = less ghosting)
         // demo punctual lights (count matches vulkan::max_punctual_lights): the gui rows below
         // edit these fields live (no per-widget callbacks), and main() pushes the enabled set to
         // the runtime once per frame via chores::apply_point_lights(). Each slot is a point light

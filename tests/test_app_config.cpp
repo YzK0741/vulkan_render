@@ -20,6 +20,9 @@ namespace {
         CHECK(settings.render.gbuffer_debug);
         CHECK(settings.render.gbuffer_channel == 5);
         CHECK(settings.render.deferred);
+        CHECK(settings.render.taa);
+        CHECK(settings.render.taa_blend_static > 0.79f && settings.render.taa_blend_static < 0.81f);
+        CHECK(settings.render.taa_blend_min > 0.19f && settings.render.taa_blend_min < 0.21f);
         CHECK(!settings.gui.show);
         CHECK(settings.lighting.irr_size == 64);
         CHECK(settings.paths.shaders_dir == "shaders");
@@ -37,6 +40,7 @@ namespace {
         CHECK(!settings.render.gbuffer_debug);
         CHECK(settings.render.gbuffer_channel == 1);
         CHECK(!settings.render.deferred);
+        CHECK(!settings.render.taa);
         CHECK(settings.gui.show);
     }
 

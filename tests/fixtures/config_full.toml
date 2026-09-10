@@ -20,6 +20,9 @@ gpu_timings = false
 gbuffer_debug = true
 gbuffer_channel = 5
 deferred = true
+taa = true
+taa_blend_static = 0.8
+taa_blend_min = 0.2
 validation_layers = false
 
 [lighting]

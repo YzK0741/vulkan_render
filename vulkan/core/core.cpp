@@ -426,12 +426,17 @@ namespace vulkan {
             utility::panic("can't find supported depth format");
         }
 
-        // MSAA sample count: fixed count from the create options when requested (clamped to the
-        // device's max usable), otherwise auto = max usable. VkSampleCountFlagBits values equal
-        // their sample counts (1/2/4/8/...), so the flags compare like plain integers.
+        // MSAA sample count: 0 = auto (the device's max usable), 1 = OFF (single-sampled, which is
+        // what the deferred path and TAA need), N = the largest usable count <= N. VkSampleCountFlagBits
+        // values equal their sample counts (1/2/4/8/...), so the flags compare like plain integers.
+        // NOTE the 1 = off meaning: it used to be lumped in with 0 as "auto", which made `msaa = 1`
+        // silently request 8x - a config that says "no MSAA" and gets MSAA is worse than either
+        // meaning, and the deferred path needs a way to ask for exactly one sample.
         VkSampleCountFlagBits const max_usable = get_max_usable_sample_count(this->physical_device);
-        if (this->create_options.msaa_samples <= 1) {
-            msaa_samples = max_usable; // 0/1 = auto (historic behavior)
+        if (this->create_options.msaa_samples <= 0) {
+            msaa_samples = max_usable; // auto
+        } else if (this->create_options.msaa_samples == 1) {
+            msaa_samples = VK_SAMPLE_COUNT_1_BIT; // off
         } else {
             VkSampleCountFlagBits requested = VK_SAMPLE_COUNT_1_BIT;
             for (VkSampleCountFlagBits const candidate : {VK_SAMPLE_COUNT_2_BIT, VK_SAMPLE_COUNT_4_BIT, VK_SAMPLE_COUNT_8_BIT, VK_SAMPLE_COUNT_16_BIT, VK_SAMPLE_COUNT_32_BIT, VK_SAMPLE_COUNT_64_BIT}) {
@@ -446,6 +451,8 @@ namespace vulkan {
                 utility::log("core: MSAA {}x requested, using {}x", this->create_options.msaa_samples, static_cast<int>(requested));
             }
         }
+        utility::log("core: MSAA {}x ({})", static_cast<int>(msaa_samples), this->create_options.msaa_samples <= 0 ? "auto" : this->create_options.msaa_samples == 1 ? "off"
+                                                                                                                                                                     : "requested");
 
         depth_images.resize(swap_chain_image_views.size());
         depth_image_views.resize(swap_chain_image_views.size());
@@ -515,7 +522,9 @@ namespace vulkan {
 
     void core::create_hdr_resolve_resources() {
         // One single-sample HDR resolve target per swapchain image: the MSAA scene pass resolves
-        // into it and the post-process pass samples it (COLOR_ATTACHMENT + SAMPLED usage).
+        // into it and the post-process pass samples it. TRANSFER_SRC as well, because the TAA resolve
+        // copies the resolved frame it wrote here into the history image (vkCmdCopyImage requires the
+        // source to carry the usage flag).
         hdr_images.resize(swap_chain_image_views.size());
         hdr_image_memories.resize(swap_chain_image_views.size());
         hdr_image_views.resize(swap_chain_image_views.size());
@@ -527,7 +536,7 @@ namespace vulkan {
                 hdr_format,
                 VK_SAMPLE_COUNT_1_BIT,
                 VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                 hdr_images[i],
                 hdr_image_memories[i]);
@@ -596,6 +605,50 @@ namespace vulkan {
                     VK_IMAGE_ASPECT_COLOR_BIT,
                     device);
             }
+        }
+
+        // Motion vectors + the TAA working image (the scene color the resolve reads): same extent and
+        // lifetime as the G-buffer targets, single-sampled, written as attachments and sampled
+        // afterwards.
+        auto const create_sampled_target = [this](std::vector<VkImage>& images, std::vector<VkDeviceMemory>& memories, std::vector<VkImageView>& views, VkFormat const format) {
+            images.resize(swap_chain_image_views.size());
+            memories.resize(swap_chain_image_views.size());
+            views.resize(swap_chain_image_views.size());
+            for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+                create_msaa_image(
+                    swap_chain_extent.width,
+                    swap_chain_extent.height,
+                    format,
+                    VK_SAMPLE_COUNT_1_BIT,
+                    VK_IMAGE_TILING_OPTIMAL,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                    images[i],
+                    memories[i]);
+                views[i] = create_image_view(images[i], format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+            }
+        };
+        create_sampled_target(velocity_images, velocity_image_memories, velocity_image_views, gbuffer_velocity_format);
+        create_sampled_target(scene_color_images, scene_color_image_memories, scene_color_image_views, hdr_format);
+
+        // The resolved-history image only needs TRANSFER_DST (the runtime copies the resolved frame
+        // into it) and SAMPLED (the next frame's resolve reads it).
+        taa_history_images.resize(swap_chain_image_views.size());
+        taa_history_image_memories.resize(swap_chain_image_views.size());
+        taa_history_image_views.resize(swap_chain_image_views.size());
+        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+            create_msaa_image(
+                swap_chain_extent.width,
+                swap_chain_extent.height,
+                hdr_format,
+                VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                taa_history_images[i],
+                taa_history_image_memories[i]);
+
+            taa_history_image_views[i] = create_image_view(taa_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
         }
 
         gbuffer_depth_images.resize(swap_chain_image_views.size());
@@ -717,6 +770,25 @@ namespace vulkan {
                 vkDestroyImage(device, image, nullptr);
             }
             gbuffer_depth_images.clear();
+            // motion vectors + the TAA working images share the same lifetime (see
+            // create_hdr_resolve_resources)
+            auto const destroy_images = [this](std::vector<VkImage>& images, std::vector<VkDeviceMemory>& memories, std::vector<VkImageView>& views) {
+                for (auto const& view : views) {
+                    vkDestroyImageView(device, view, nullptr);
+                }
+                for (auto const& memory : memories) {
+                    vkFreeMemory(device, memory, nullptr);
+                }
+                for (auto const& image : images) {
+                    vkDestroyImage(device, image, nullptr);
+                }
+                views.clear();
+                memories.clear();
+                images.clear();
+            };
+            destroy_images(velocity_images, velocity_image_memories, velocity_image_views);
+            destroy_images(scene_color_images, scene_color_image_memories, scene_color_image_views);
+            destroy_images(taa_history_images, taa_history_image_memories, taa_history_image_views);
             for (auto const& level_views : bloom_image_views) {
                 for (auto const& view : level_views) {
                     vkDestroyImageView(device, view, nullptr);
@@ -1260,6 +1332,25 @@ namespace vulkan {
         }
         gbuffer_depth_image_memories.clear();
 
+        // 2d-3. Destroy the motion-vector / TAA working images (same lifetime as the G-buffer)
+        auto const destroy_target_set = [this](std::vector<VkImage>& images, std::vector<VkDeviceMemory>& memories, std::vector<VkImageView>& views) {
+            for (auto const& view : views) {
+                vkDestroyImageView(device, view, nullptr);
+            }
+            views.clear();
+            for (auto const& image : images) {
+                vkDestroyImage(device, image, nullptr);
+            }
+            images.clear();
+            for (auto const& memory : memories) {
+                vkFreeMemory(device, memory, nullptr);
+            }
+            memories.clear();
+        };
+        destroy_target_set(velocity_images, velocity_image_memories, velocity_image_views);
+        destroy_target_set(scene_color_images, scene_color_image_memories, scene_color_image_views);
+        destroy_target_set(taa_history_images, taa_history_image_memories, taa_history_image_views);
+
         // 2d. Destroy the bloom targets (all levels)
         for (auto const& level_views : bloom_image_views) {
             for (auto const& view : level_views) {
@@ -1383,20 +1474,22 @@ namespace vulkan {
     std::expected<vk_pipeline, std::string_view> core::make_gbuffer_pipeline(
         std::span<unsigned char const> const vertex_shader_code,
         std::span<unsigned char const> const fragment_shader_code) const {
-        // Four color targets: the three surface targets plus the HDR scene target, into which the pass
-        // ADDS the emissive term (lighting-independent, and it needs the emissive texture and the UVs
-        // the G-buffer does not store - see core::gbuffer_pass_attachment_count). The three surface
-        // targets are overwritten, the HDR one accumulates, so the blend states differ per attachment.
+        // Five color targets: the three surface targets, the motion vectors, and the scene color the
+        // pass ADDS the emissive term into (lighting-independent, and it needs the emissive texture and
+        // the UVs the G-buffer does not store - see core::gbuffer_pass_attachment_count). The first
+        // four are overwritten, the scene color accumulates, so the blend states differ per attachment.
         std::array<VkFormat, gbuffer_pass_attachment_count> const formats = {
             gbuffer_formats[0],
             gbuffer_formats[1],
             gbuffer_formats[2],
+            gbuffer_velocity_format,
             hdr_format,
         };
         std::array<VkPipelineColorBlendAttachmentState, gbuffer_pass_attachment_count> const blends = {
             make_color_blend_attachment_opaque(),
             make_color_blend_attachment_opaque(),
             make_color_blend_attachment_opaque(),
+            make_color_blend_attachment_opaque(), // motion vectors are data, not coverage
             make_color_blend_attachment_additive(),
         };
         auto result = vulkan::make_pipeline(

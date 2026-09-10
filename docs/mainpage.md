@@ -51,9 +51,14 @@ stage: `shaders/deferred.frag` shades every pixel from those targets and adds th
 target (sky where no geometry wrote depth), through the *same* function the forward path calls
 (`shaders/shading.glsl`), with emissive added by the base pass and the material-surface gather shared
 in `shaders/surface.glsl`. The forward path stays as the A/B reference - measured on Sponza the two
-agree to 0.32/255 mean absolute luminance difference. The G-buffer pass is 1x by construction;
-alpha-blended geometry rejoins the deferred path with the TAA milestone, which brings the 1x
-pipeline and the MSAA decision with it.
+agree to 0.32/255 mean absolute luminance difference. **M3 (done)** is temporal anti-aliasing on that
+path: a Halton(2,3) projection jitter, per-pixel camera motion vectors written by the G-buffer, and
+`shaders/taa.frag` resolving the jitter against a reprojected, neighborhood-clamped history (with a
+view-depth guard for disocclusions) - measured against the same frame without TAA, 1.05/255 mean
+difference with 9% less high-frequency energy, and the forward path byte-identical. TAA is the
+deferred path's anti-aliasing because a 1x G-buffer has no MSAA to fall back on, which is why
+`[render] msaa` now distinguishes auto (0) from off (1). Still ahead on this path: alpha-blended
+geometry, per-object motion vectors, cascaded shadow maps and the clustered light cull.
 
 ## Modular composition
 

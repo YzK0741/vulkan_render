@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -49,6 +49,7 @@ import utility;
  * gpu_timings = true  # measure + report per-pass GPU milliseconds (timestamp queries)
  * gbuffer_debug = false  # draw the G-buffer + one of its channels instead of the shaded scene
 deferred = false       # shade the opaque scene from the G-buffer (deferred lighting) instead of forward
+taa = false            # temporal anti-aliasing on the deferred path (jitter + resolved history)
  * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
  *
@@ -111,6 +112,13 @@ namespace app_config {
         // fragment. The G-buffer pass is 1x whatever MSAA the forward path uses; alpha-blended
         // geometry is not drawn in this mode yet (see runtime::set_deferred).
         bool deferred = false;
+        // Temporal anti-aliasing ([render] taa / taa_blend_static / taa_blend_min): the deferred path's
+        // answer to MSAA. The projection is jittered every frame and a resolve pass blends the
+        // reprojected, neighborhood-clamped history in - see runtime::set_taa. The forward path keeps
+        // MSAA and writes no motion vectors, so TAA is deferred-only for now.
+        bool taa = false;
+        float taa_blend_static = 0.9f;                      // history weight for a pixel that did not move
+        float taa_blend_min = 0.5f;                         // history weight floor under motion (lower = less ghosting)
         bool validation_layers = default_validation_layers; // Vulkan validation layers + debug messenger ([render])
     };
 

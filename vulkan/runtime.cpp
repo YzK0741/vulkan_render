@@ -218,6 +218,19 @@ namespace vulkan {
             vkDestroyPipelineLayout(this->vulkan_core.device, this->deferred_pipeline_layout, nullptr);
             this->deferred_pipeline_layout = VK_NULL_HANDLE;
         }
+        // ... and the TAA resolve's own objects (its set layout, layout and pool are raw handles)
+        if (this->taa_descriptor_pool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(this->vulkan_core.device, this->taa_descriptor_pool, nullptr);
+            this->taa_descriptor_pool = VK_NULL_HANDLE;
+        }
+        if (this->taa_pipeline_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(this->vulkan_core.device, this->taa_pipeline_layout, nullptr);
+            this->taa_pipeline_layout = VK_NULL_HANDLE;
+        }
+        if (this->taa_set_layout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->taa_set_layout, nullptr);
+            this->taa_set_layout = VK_NULL_HANDLE;
+        }
         // Descriptor pools replaced by a later swapchain generation (see
         // retired_descriptor_pools): they outlived their generation on purpose, because the recorded
         // frame command buffers still name their sets.
@@ -837,15 +850,18 @@ namespace vulkan {
         // attachments - so the MSAA HDR path stays untouched and the lighting/debug pass writes it.
         if (this->gbuffer_pass_active()) {
             std::array<VkRenderingAttachmentInfo, vulkan::gbuffer_pass_attachment_count> gbuffer_attachments = {};
-            VkClearValue clear = {}; // the three surface targets clear to zero: no geometry, no surface
+            VkClearValue clear = {}; // the surface + motion targets clear to zero: no geometry, no motion
             for (uint32_t target = 0; target < vulkan::gbuffer_target_count; ++target) {
                 gbuffer_attachments[target] = make_color_attachment_info(vk.gbuffer_image_views[target][image_index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
             }
-            // the fourth attachment is the HDR target, CLEARed to zero: it accumulates only the
+            gbuffer_attachments[vulkan::gbuffer_target_count] = make_color_attachment_info(vk.velocity_image_views[image_index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
+            // the last attachment is the scene color, CLEARed to zero: it accumulates only the
             // emissive here. The deferred lighting stage then adds the lighting (and the sky, for
-            // pixels no geometry wrote) on top, so a lit pixel is emissive + lighting and a
-            // background pixel is sky - with no background pass anywhere in the deferred path.
-            gbuffer_attachments[vulkan::gbuffer_target_count] = make_color_attachment_info(vk.hdr_image_views[image_index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
+            // pixels no geometry wrote) on top, so a lit pixel is emissive + lighting and a background
+            // pixel is sky - with no background pass anywhere in the deferred path. Under TAA the
+            // scene color is the resolve's input image, and the resolve writes the HDR target the post
+            // chain reads (see runtime::scene_target_view).
+            gbuffer_attachments[vulkan::gbuffer_target_count + 1] = make_color_attachment_info(this->scene_target_view(image_index), clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
             // the G-buffer depth clears to the far plane (1.0), like the main depth attachment
             VkRenderingAttachmentInfo const depth_attachment = make_depth_attachment_info(vk.gbuffer_depth_image_views[image_index], VK_ATTACHMENT_STORE_OP_DONT_CARE);
             VkRenderingInfo const rendering_info = make_rendering_info(flags, {{0, 0}, vk.swap_chain_extent}, gbuffer_attachments.data(), static_cast<uint32_t>(gbuffer_attachments.size()), &depth_attachment);
@@ -956,6 +972,19 @@ namespace vulkan {
             this->post_descriptor_pool = VK_NULL_HANDLE;
             this->post_pool_capacity = 0;
         }
+        this->taa_bound_views = {};
+        this->taa_sets.clear();
+        if (this->taa_descriptor_pool != VK_NULL_HANDLE) {
+            this->retired_descriptor_pools.push_back(this->taa_descriptor_pool);
+            this->taa_descriptor_pool = VK_NULL_HANDLE;
+            this->taa_pool_capacity = 0;
+        }
+        // Every swapchain image's history died with the old generation (and its size may have
+        // changed): forget the matrices and mark the histories invalid, so the next frame for each
+        // image starts a new accumulation instead of blending in a misaligned one.
+        std::size_t const image_count = this->vulkan_core.taa_history_images.size();
+        this->image_view_proj.assign(image_count, this->current_ubo.view_proj_unjittered);
+        this->taa_history_valid.assign(image_count, false);
     }
 
     void runtime::gpu_mark(VkCommandBuffer const command_buffer, gpu_mark_id const mark, VkPipelineStageFlagBits const stage) noexcept {
@@ -1082,13 +1111,31 @@ namespace vulkan {
         } else {
             this->current_ubo = make_orbit_camera_ubo(this->camera.yaw, this->camera.pitch, this->camera.distance, this->camera.target, this->scene_radius, this->current_aspect);
         }
+        // Motion-vector support: the G-buffer computes its vectors from the UNJITTERED pair, and the
+        // previous matrix is the one THIS swapchain image's history was rendered with (not simply the
+        // last frame's: several images are in rotation, so the last frame's camera is not what that
+        // history shows).
+        this->current_ubo.view_proj_unjittered = this->current_ubo.proj * this->current_ubo.view;
+        this->current_ubo.prev_view_proj = this->current_image_index < this->image_view_proj.size() ? this->image_view_proj[this->current_image_index] : this->current_ubo.view_proj_unjittered;
+        // TAA jitter: offset the projection by a sub-pixel amount so consecutive frames sample the
+        // image at different positions. The offset lands in the projection's z-row (the only place a
+        // perspective matrix carries an NDC translation), in NDC units derived from pixels, and it is
+        // part of `proj` - so geometry AND the lighting stage's depth reconstruction agree about where
+        // each sample is. Both unjittered matrices above are already taken, so the jitter cannot leak
+        // into a motion vector.
+        if (this->taa_active()) {
+            glm::vec2 const jitter_pixels = taa_jitter_offset(this->taa_jitter_index);
+            this->current_ubo.proj[2][0] += jitter_pixels.x * 2.0f / static_cast<float>(vk.swap_chain_extent.width);
+            this->current_ubo.proj[2][1] += jitter_pixels.y * 2.0f / static_cast<float>(vk.swap_chain_extent.height);
+            this->taa_jitter_index = (this->taa_jitter_index + 1) % taa_jitter_count;
+        }
+        // The deferred lighting stage reconstructs world positions from the G-buffer depth, so its
+        // inverse must be the projection actually used to render that depth (jitter included).
+        this->current_inv_view_proj = glm::inverse(this->current_ubo.proj * this->current_ubo.view);
+        // ... and only now is the frame's camera UBO complete: upload it.
         if (this->camera_mapped[frame_slot] != nullptr) {
             std::memcpy(this->camera_mapped[frame_slot], &this->current_ubo, sizeof(camera_ubo));
         }
-        // The deferred lighting stage reconstructs world positions from the G-buffer depth, which
-        // needs the inverse of this frame's view-projection. It is computed here, next to the camera
-        // UBO it inverts, so a frame can never light itself with the previous frame's matrix.
-        this->current_inv_view_proj = glm::inverse(this->current_ubo.proj * this->current_ubo.view);
         // Same for the light UBO: copy the CPU-side light_state into THIS slot's own light
         // buffer. The slot was just paced (its previous submission completed) and the other
         // in-flight slot's set points at its own buffer, so this host write can never race a GPU
@@ -1224,7 +1271,9 @@ namespace vulkan {
                     }
                 }
                 if (this->cull_bvh.has_value()) {
-                    utility::frustum const view_frustum = utility::make_frustum(ubo.proj * ubo.view);
+                    // the cull frustum is built from the UNJITTERED view-projection: a jittered one
+                    // would re-cull (and occasionally flicker a leaf in or out) on every TAA frame
+                    utility::frustum const view_frustum = utility::make_frustum(ubo.view_proj_unjittered);
                     auto const inside = this->cull_bvh->frustum_cull(view_frustum);
                     for (auto const* node : inside) {
                         visible.push_back(node->extra_data);
@@ -1414,7 +1463,11 @@ namespace vulkan {
         // instead: the main HDR target is not touched by the opaque pass at all (the debug view
         // writes it afterwards), so it must not be transitioned here.
         bool const gbuffer_pass = this->gbuffer_pass_active();
-        std::array<VkImageMemoryBarrier2, gbuffer_target_count + 1> attachment_barriers = {};
+        // room for every pass attachment plus the depth: three surface targets + the G-buffer's own
+        // depth + the scene color the emissive goes into (the forward path uses at most three of these
+        // slots). Sizing this for the old three-target G-buffer was a stack overflow the moment the
+        // emissive attachment arrived - validation reported the fifth barrier as garbage.
+        std::array<VkImageMemoryBarrier2, vulkan::gbuffer_pass_attachment_count + 1> attachment_barriers = {};
         uint32_t barrier_count = 0;
         auto const add_render_barrier = [&attachment_barriers, &barrier_count](VkImageMemoryBarrier2 const& transition, VkImage const image) {
             VkImageMemoryBarrier2& barrier = attachment_barriers[barrier_count++];
@@ -1426,11 +1479,13 @@ namespace vulkan {
             for (uint32_t target = 0; target < gbuffer_target_count; ++target) {
                 add_render_barrier(color_attachment_transition, vk.gbuffer_images[target][this->current_image_index]);
             }
+            add_render_barrier(color_attachment_transition, vk.velocity_images[this->current_image_index]);
             add_render_barrier(depth_attachment_transition, vk.gbuffer_depth_images[this->current_image_index]);
-            // the HDR target enters the pass as an attachment too (the emissive accumulation target):
-            // it is cleared by the instance below, so UNDEFINED as the old layout is correct and the
-            // deferred lighting stage (or the debug view) finds a defined image afterwards
-            add_render_barrier(color_attachment_transition, vk.hdr_images[this->current_image_index]);
+            // The scene-color target enters the pass as an attachment too (the emissive accumulation
+            // target) - the HDR image normally, scene_color when the TAA resolve owns the HDR target
+            // this frame (see scene_target_image). It is cleared by the instance below, so UNDEFINED as
+            // the old layout is correct whatever it held before.
+            add_render_barrier(color_attachment_transition, this->scene_target_image(this->current_image_index));
         } else if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
             // the MSAA scene color and its HDR resolve target both render in COLOR_ATTACHMENT_OPTIMAL
             add_render_barrier(color_attachment_transition, vk.color_images[this->current_image_index]);
@@ -1503,6 +1558,13 @@ namespace vulkan {
             this->deferred_pipeline->viewport = full_viewport;
             this->deferred_pipeline->scissor = full_scissor;
         }
+        // the TAA resolve is a fullscreen pass too, and begin_pipeline() re-emits the stored viewport:
+        // leaving it at the creation-time zero made every resolve set a 0-wide viewport (the same VUID
+        // the post pipelines hit once)
+        if (this->taa_pipeline) {
+            this->taa_pipeline->viewport = full_viewport;
+            this->taa_pipeline->scissor = full_scissor;
+        }
 
         // Stage 3 of parallel recording: the main-pass visible leaves are split into up-to-N
         // contiguous sub_render_tasks (N = task-pool workers), each recording its own per-slot
@@ -1527,8 +1589,8 @@ namespace vulkan {
         // parallel segment recording serve both passes.
         std::array<VkFormat, vulkan::gbuffer_pass_attachment_count> const pass_color_formats =
             gbuffer_pass ? std::array<VkFormat, vulkan::gbuffer_pass_attachment_count>{
-                               vulkan::gbuffer_formats[0], vulkan::gbuffer_formats[1], vulkan::gbuffer_formats[2], vulkan::hdr_format}
-                         : std::array<VkFormat, vulkan::gbuffer_pass_attachment_count>{vulkan::hdr_format, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED};
+                               vulkan::gbuffer_formats[0], vulkan::gbuffer_formats[1], vulkan::gbuffer_formats[2], vulkan::gbuffer_velocity_format, vulkan::hdr_format}
+                         : std::array<VkFormat, vulkan::gbuffer_pass_attachment_count>{vulkan::hdr_format, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED};
         uint32_t const pass_color_count = gbuffer_pass ? vulkan::gbuffer_pass_attachment_count : 1u;
         VkSampleCountFlagBits const pass_samples = gbuffer_pass ? VK_SAMPLE_COUNT_1_BIT : vk.msaa_samples;
         VkCommandBufferInheritanceRenderingInfo const main_inheritance = make_inheritance_rendering_info(pass_color_formats.data(), pass_color_count, vk.depth_format, pass_samples);
@@ -2228,10 +2290,10 @@ namespace vulkan {
         std::size_t const index = this->current_image_index;
 
         // Transitions, all before vkCmdBeginRendering (a pipeline barrier may not be recorded inside
-        // a dynamic rendering instance): the three surface targets become shader inputs, the
-        // G-buffer depth becomes a shader input, and the HDR target - which the background pass and
-        // the emissive already wrote - stays a color attachment with its contents LOADed, because the
-        // lighting is added on top of them.
+        // a dynamic rendering instance): the three surface targets become shader inputs, the G-buffer
+        // depth becomes a shader input, and the scene color - which the G-buffer pass already filled
+        // with the emissive - stays a color attachment with its contents LOADed, because the lighting
+        // is added on top of them.
         std::array<VkImageMemoryBarrier2, 4> barriers = {};
         for (uint32_t target = 0; target < vulkan::gbuffer_target_count; ++target) {
             barriers[target] = vulkan::hdr_sampling_transition; // COLOR_ATTACHMENT -> SHADER_READ
@@ -2248,22 +2310,23 @@ namespace vulkan {
             // (the post chain samples it) instead of leaving whatever the background/emissive wrote
             // mixed with garbage - and say so once per frame, because a silent black frame is worse
             // than a log line.
-            utility::log("runtime: deferred lighting has no descriptor set - clearing the HDR target");
+            utility::log("runtime: deferred lighting has no descriptor set - clearing the scene target");
             std::array<VkImageMemoryBarrier2, 1> clear_barrier = {vulkan::color_attachment_transition};
-            clear_barrier[0].image = vk.hdr_images[index];
+            clear_barrier[0].image = vk.scene_color_images[index];
             VkDependencyInfo const clear_dependency = make_image_dependency_info(1, clear_barrier.data());
             vkCmdPipelineBarrier2(command_buffer, &clear_dependency);
             VkClearValue clear = {};
-            VkRenderingAttachmentInfo const attachment = make_color_attachment_info(vk.hdr_image_views[index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
+            VkRenderingAttachmentInfo const attachment = make_color_attachment_info(vk.scene_color_image_views[index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
             VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &attachment, nullptr);
             vkCmdBeginRendering(command_buffer, &rendering_info);
             vkCmdEndRendering(command_buffer);
             return;
         }
 
-        // the G-buffer pass left the HDR target in COLOR_ATTACHMENT_OPTIMAL: only the layout of the
+        // The G-buffer pass left the scene color in COLOR_ATTACHMENT_OPTIMAL: only the layout of the
         // attachment changes state here, so a load-op LOAD instance adds to it
-        VkRenderingAttachmentInfo const color_attachment = make_load_color_attachment_info(vk.hdr_image_views[index]);
+        VkImageView const target_view = this->scene_target_view(static_cast<uint32_t>(index));
+        VkRenderingAttachmentInfo const color_attachment = make_load_color_attachment_info(target_view);
         VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &color_attachment, nullptr);
         vkCmdBeginRendering(command_buffer, &rendering_info);
         this->deferred_pipeline->begin_pipeline(command_buffer);
@@ -2279,6 +2342,315 @@ namespace vulkan {
         vkCmdPushConstants(command_buffer, this->deferred_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
         vkCmdEndRendering(command_buffer);
+    }
+
+    // ---- temporal anti-aliasing (M3) ----
+    glm::vec2 runtime::taa_jitter_offset(uint32_t const index) noexcept {
+        // Halton(2,3): the two-radical sequence has the low-discrepancy property that matters here -
+        // consecutive samples fill the pixel evenly instead of clustering, so 8 frames of a static
+        // scene already resolve close to a 4x4 grid. The offsets are centred on the pixel and given in
+        // PIXELS; the caller converts them to a projection offset.
+        auto const halton = [](uint32_t position, uint32_t base) {
+            float result = 0.0f;
+            float fraction = 1.0f;
+            while (position > 0) {
+                fraction /= static_cast<float>(base);
+                result += fraction * static_cast<float>(position % base);
+                position /= base;
+            }
+            return result;
+        };
+        uint32_t const i = index + 1; // Halton starts at 1 (position 0 gives 0 for every base)
+        return {halton(i, 2) - 0.5f, halton(i, 3) - 0.5f};
+    }
+
+    bool runtime::taa_active() const noexcept {
+        // The forward path has no motion vectors (its fragment stage does not write them), so TAA is
+        // the deferred path's answer to MSAA - and only the deferred path's, for now.
+        return this->taa_on && this->taa_pipeline.has_value() && this->deferred_lit_active();
+    }
+
+    VkImage runtime::scene_target_image(uint32_t const image_index) const noexcept {
+        core const& vk = this->vulkan_core;
+        return this->taa_active() ? vk.scene_color_images[image_index] : vk.hdr_images[image_index];
+    }
+
+    VkImageView runtime::scene_target_view(uint32_t const image_index) const noexcept {
+        core const& vk = this->vulkan_core;
+        return this->taa_active() ? vk.scene_color_image_views[image_index] : vk.hdr_image_views[image_index];
+    }
+
+    void runtime::set_taa(bool const enabled, float const blend_static, float const blend_min) noexcept {
+        bool const was_on = this->taa_on;
+        this->taa_on = enabled;
+        this->taa_blend_static = std::clamp(blend_static, 0.0f, 0.99f);
+        this->taa_blend_min = std::clamp(blend_min, 0.0f, this->taa_blend_static);
+        if (enabled && !was_on) {
+            // A fresh history - but only on the off -> on EDGE. The caller mirrors the GUI/config state
+            // into the runtime every frame (see main.cpp), so resetting unconditionally here would
+            // invalidate the history on every frame: the resolve would fall back to the current
+            // (jittered, aliased) frame forever, which looks like TAA running while doing nothing.
+            std::size_t const image_count = this->vulkan_core.taa_history_images.size();
+            this->taa_history_valid.assign(image_count, false);
+            this->image_view_proj.assign(image_count, this->current_ubo.view_proj_unjittered);
+            this->taa_jitter_index = 0;
+        }
+    }
+
+    std::expected<void, std::string> runtime::make_taa_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+        using fail = std::unexpected<std::string>;
+        core& vk = this->vulkan_core;
+
+        // binding 0 = this frame's scene color, 1 = the history image, 2 = the motion vectors,
+        // 3 = the G-buffer depth (the disocclusion guard)
+        std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
+        for (uint32_t b = 0; b < bindings.size(); ++b) {
+            bindings[b].binding = b;
+            bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[b].descriptorCount = 1;
+            bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings[b].pImmutableSamplers = nullptr;
+        }
+        VkDescriptorSetLayoutCreateInfo layout_info = {};
+        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
+        layout_info.pBindings = bindings.data();
+        if (vkCreateDescriptorSetLayout(vk.device, &layout_info, nullptr, &this->taa_set_layout) != VK_SUCCESS) {
+            return fail("taa: descriptor set layout creation failed");
+        }
+
+        VkPushConstantRange push_range = {};
+        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        push_range.offset = 0;
+        push_range.size = sizeof(taa_push_constants);
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &this->taa_set_layout;
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &this->taa_pipeline_layout) != VK_SUCCESS) {
+            return fail("taa: pipeline layout creation failed");
+        }
+
+        // fullscreen triangle (post.vert), no depth attachment, no depth test, writing the HDR target
+        // which the post chain reads - the same target the scene passes would have written without TAA
+        std::array<VkFormat, 1> const color_formats = {vulkan::hdr_format};
+        auto pipeline_result = vulkan::make_pipeline(
+            vk.device,
+            this->taa_pipeline_layout,
+            std::span<VkFormat const>(color_formats),
+            VK_FORMAT_UNDEFINED,
+            vertex_shader_code,
+            fragment_shader_code,
+            VK_SAMPLE_COUNT_1_BIT,
+            false,
+            0.0f,
+            0.0f,
+            0.0f);
+        if (!pipeline_result) {
+            return fail(std::string(pipeline_result.error()));
+        }
+        this->taa_pipeline = std::move(pipeline_result).value();
+
+        // NEAREST: the history must be sampled where the motion vector says, not averaged with its
+        // neighbours (that is what the resolve's own clamp is for)
+        VkSamplerCreateInfo sampler_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
+        sampler_info.magFilter = VK_FILTER_LINEAR; // the scene color is upsampled by its own geometry...
+        sampler_info.minFilter = VK_FILTER_NEAREST;
+        VkSampler sampler = VK_NULL_HANDLE;
+        if (vkCreateSampler(vk.device, &sampler_info, nullptr, &sampler) != VK_SUCCESS) {
+            return fail("taa: sampler creation failed");
+        }
+        this->taa_sampler = vk_sampler(sampler, vk.device);
+        return {};
+    }
+
+    void runtime::ensure_taa_descriptors() {
+        core& vk = this->vulkan_core;
+        if (this->taa_pipeline == std::nullopt || this->taa_set_layout == VK_NULL_HANDLE) {
+            return;
+        }
+        std::size_t const image_count = vk.scene_color_image_views.size();
+        if (image_count == 0 || vk.taa_history_image_views.size() != image_count || vk.velocity_image_views.size() != image_count) {
+            return;
+        }
+        std::array<VkImageView, 4> const signature = {vk.scene_color_image_views[0], vk.taa_history_image_views[0], vk.velocity_image_views[0], vk.gbuffer_depth_image_views[0]};
+        if (this->taa_sets.size() == image_count && this->taa_bound_views == signature) {
+            return; // already bound to the current targets
+        }
+
+        if (this->taa_descriptor_pool == VK_NULL_HANDLE || this->taa_pool_capacity != image_count) {
+            // same retirement rule as the other per-image sets (see on_swapchain_recreated): a pool
+            // whose sets a recorded command buffer still names is retired, never destroyed here
+            if (this->taa_descriptor_pool != VK_NULL_HANDLE) {
+                this->retired_descriptor_pools.push_back(this->taa_descriptor_pool);
+                this->taa_descriptor_pool = VK_NULL_HANDLE;
+            }
+            VkDescriptorPoolSize pool_size = {};
+            pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            pool_size.descriptorCount = static_cast<uint32_t>(image_count * signature.size());
+            VkDescriptorPoolCreateInfo pool_info = {};
+            pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+            pool_info.maxSets = static_cast<uint32_t>(image_count);
+            pool_info.poolSizeCount = 1;
+            pool_info.pPoolSizes = &pool_size;
+            if (vkCreateDescriptorPool(vk.device, &pool_info, nullptr, &this->taa_descriptor_pool) != VK_SUCCESS) {
+                utility::log("runtime: taa descriptor pool creation failed - TAA skipped");
+                this->taa_descriptor_pool = VK_NULL_HANDLE;
+                this->taa_sets.clear();
+                this->taa_bound_views = {};
+                return;
+            }
+            this->taa_pool_capacity = static_cast<uint32_t>(image_count);
+            this->taa_sets.clear();
+        }
+
+        if (this->taa_sets.size() != image_count) {
+            std::vector<VkDescriptorSetLayout> const layouts(image_count, this->taa_set_layout);
+            this->taa_sets.assign(image_count, VK_NULL_HANDLE);
+            VkDescriptorSetAllocateInfo allocate_info = {};
+            allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            allocate_info.descriptorPool = this->taa_descriptor_pool;
+            allocate_info.descriptorSetCount = static_cast<uint32_t>(image_count);
+            allocate_info.pSetLayouts = layouts.data();
+            if (vkAllocateDescriptorSets(vk.device, &allocate_info, this->taa_sets.data()) != VK_SUCCESS) {
+                utility::log("runtime: taa descriptor allocation failed - TAA skipped");
+                this->taa_sets.clear();
+                this->taa_bound_views = {};
+                return;
+            }
+        }
+
+        for (std::size_t i = 0; i < image_count; ++i) {
+            std::array<VkImageView, 4> const views = {vk.scene_color_image_views[i], vk.taa_history_image_views[i], vk.velocity_image_views[i], vk.gbuffer_depth_image_views[i]};
+            std::array<VkDescriptorImageInfo, 4> image_infos = {};
+            std::array<VkWriteDescriptorSet, 4> writes = {};
+            for (uint32_t b = 0; b < views.size(); ++b) {
+                image_infos[b].sampler = *this->taa_sampler;
+                image_infos[b].imageView = views[b];
+                image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[b].dstSet = this->taa_sets[i];
+                writes[b].dstBinding = b;
+                writes[b].descriptorCount = 1;
+                writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[b].pImageInfo = &image_infos[b];
+            }
+            vkUpdateDescriptorSets(vk.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        }
+        this->taa_bound_views = signature;
+    }
+
+    void runtime::record_taa_pass(VkCommandBuffer const command_buffer) {
+        core const& vk = this->vulkan_core;
+        if (!this->taa_active()) {
+            return;
+        }
+        std::size_t const index = this->current_image_index;
+        bool const history_valid = index < this->taa_history_valid.size() && this->taa_history_valid[index];
+
+        this->ensure_taa_descriptors();
+        if (this->taa_sets.size() <= index) {
+            utility::log("runtime: TAA has no descriptor set - the frame is shown unresolved");
+            return;
+        }
+
+        // Layouts, all before vkCmdBeginRendering: the scene color the deferred stage wrote becomes an
+        // input, the motion vectors and the depth become inputs, the history becomes an input, and the
+        // HDR target - still untouched this frame - becomes the resolve's attachment.
+        // The history image is left in SHADER_READ_ONLY by the previous frame's copy (and is only ever
+        // read as a texture), so it needs no barrier at all once it is valid - only its very first use
+        // transitions it out of UNDEFINED (its contents are then garbage, and history_valid is 0, so
+        // the resolve ignores them).
+        std::array<VkImageMemoryBarrier2, 4> barriers = {};
+        barriers[0] = vulkan::hdr_sampling_transition; // scene_color: COLOR_ATTACHMENT -> SHADER_READ
+        barriers[0].image = vk.scene_color_images[index];
+        barriers[1] = vulkan::hdr_sampling_transition; // velocity: same transition, COLOR aspect
+        barriers[1].image = vk.velocity_images[index];
+        barriers[2] = vulkan::undefined_to_depth_sampling_transition; // G-buffer depth -> sampled
+        barriers[2].image = vk.gbuffer_depth_images[index];
+        uint32_t barrier_count = 3;
+        if (!history_valid) {
+            barriers[3] = vulkan::undefined_to_sampling_transition;
+            barriers[3].image = vk.taa_history_images[index];
+            barrier_count = 4;
+        }
+        VkDependencyInfo const dependency = make_image_dependency_info(barrier_count, barriers.data());
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
+
+        std::array<VkImageMemoryBarrier2, 1> output_barrier = {vulkan::color_attachment_transition};
+        output_barrier[0].image = vk.hdr_images[index];
+        VkDependencyInfo const output_dependency = make_image_dependency_info(1, output_barrier.data());
+        vkCmdPipelineBarrier2(command_buffer, &output_dependency);
+
+        VkClearValue clear = {};
+        VkRenderingAttachmentInfo const color_attachment = make_color_attachment_info(vk.hdr_image_views[index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
+        VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &color_attachment, nullptr);
+        vkCmdBeginRendering(command_buffer, &rendering_info);
+        this->taa_pipeline->begin_pipeline(command_buffer);
+        VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height), 0.0f, 1.0f};
+        VkRect2D const scissor = {{0, 0}, vk.swap_chain_extent};
+        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+        vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
+        VkDescriptorSet const set = this->taa_sets[index];
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->taa_pipeline_layout, 0, 1, &set, 0, nullptr);
+        taa_push_constants const push = {
+            .history_valid = history_valid ? 1.0f : 0.0f,
+            .blend_static = this->taa_blend_static,
+            .blend_min = this->taa_blend_min,
+            .texel_size_x = 1.0f / static_cast<float>(vk.swap_chain_extent.width),
+            .texel_size_y = 1.0f / static_cast<float>(vk.swap_chain_extent.height),
+            .depth_scale = this->current_ubo.proj[2][2],
+            .depth_offset = this->current_ubo.proj[3][2],
+            .unused = 0.0f};
+        vkCmdPushConstants(command_buffer, this->taa_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+        vkCmdDraw(command_buffer, 3, 1, 0, 0);
+        vkCmdEndRendering(command_buffer);
+
+        // ---- the resolved frame becomes the next frame's history ----
+        // A copy rather than a ping-pong: the resolve necessarily writes the image the post chain
+        // reads, so the history has to be a separate image, and copying into it keeps every descriptor
+        // set in the frame stable (no per-frame rewrites). The barriers move the HDR target out to
+        // TRANSFER_SRC and back - the post chain still finds it in COLOR_ATTACHMENT_OPTIMAL, exactly
+        // where it expects it.
+        std::array<VkImageMemoryBarrier2, 2> copy_barriers = {};
+        copy_barriers[0] = vulkan::color_attachment_to_transfer_transition; // HDR -> TRANSFER_SRC
+        copy_barriers[0].image = vk.hdr_images[index];
+        copy_barriers[1] = vulkan::sampling_to_transfer_dst_transition; // history: SHADER_READ -> TRANSFER_DST
+        copy_barriers[1].image = vk.taa_history_images[index];
+        VkDependencyInfo const copy_dependency = make_image_dependency_info(static_cast<uint32_t>(copy_barriers.size()), copy_barriers.data());
+        vkCmdPipelineBarrier2(command_buffer, &copy_dependency);
+
+        VkImageCopy const region = {
+            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .srcOffset = {0, 0, 0},
+            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .dstOffset = {0, 0, 0},
+            .extent = {vk.swap_chain_extent.width, vk.swap_chain_extent.height, 1},
+        };
+        vkCmdCopyImage(command_buffer, vk.hdr_images[index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.taa_history_images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        // hand both images on: the HDR target back to the post chain, the history copy to the next
+        // frame's resolve (which will find it in TRANSFER_DST and transition it from there)
+        std::array<VkImageMemoryBarrier2, 2> hand_back = {};
+        hand_back[0] = vulkan::transfer_to_color_attachment_transition; // HDR -> COLOR_ATTACHMENT
+        hand_back[0].image = vk.hdr_images[index];
+        hand_back[1] = vulkan::transfer_dst_to_sampling_transition; // history -> SHADER_READ
+        hand_back[1].image = vk.taa_history_images[index];
+        VkDependencyInfo const hand_back_dependency = make_image_dependency_info(static_cast<uint32_t>(hand_back.size()), hand_back.data());
+        vkCmdPipelineBarrier2(command_buffer, &hand_back_dependency);
+
+        // bookkeeping for the NEXT frame that renders this swapchain image: the matrix its history was
+        // rendered with, and the fact that there is a history now. The slot must be the one this frame
+        // is recorded into - the other slot is still in flight.
+        if (this->image_view_proj.size() > index) {
+            this->image_view_proj[index] = this->current_ubo.view_proj_unjittered;
+        }
+        if (this->taa_history_valid.size() > index) {
+            this->taa_history_valid[index] = true;
+        }
     }
 
     bool runtime::gbuffer_pass_active() const noexcept {
@@ -2460,15 +2832,21 @@ namespace vulkan {
         // pass, or the G-buffer write pass in the deferred path).
         this->gpu_mark(command_buffer, gpu_mark_id::scene_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
-        // Deferred mode: the surface is in the G-buffer and the sky + emissive are in the HDR target;
-        // this stage shades every pixel from the G-buffer and adds the result on top.
+        // Deferred mode: the surface is in the G-buffer and the sky + emissive are in the scene color
+        // target; this stage shades every pixel from the G-buffer and adds the result on top.
         if (this->deferred_lit_active()) {
             this->record_deferred_lighting_pass(command_buffer);
         }
         this->gpu_mark(command_buffer, gpu_mark_id::lighting_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
+        // TAA resolve: blend the scene color with the reprojected history into the HDR target the post
+        // chain reads, then copy the result into the history image for the next frame that renders this
+        // swapchain image (see record_taa_pass).
+        this->record_taa_pass(command_buffer);
+        this->gpu_mark(command_buffer, gpu_mark_id::taa_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+
         // G-buffer debug mode (an inspection of the stored data, never combined with the lighting
-        // stage): turn one channel into a visible image in the HDR target.
+        // stage or TAA): turn one channel into a visible image in the HDR target.
         if (this->gbuffer_pass_active() && !this->deferred_lit_active()) {
             this->record_gbuffer_debug_pass(command_buffer);
         }
@@ -2896,12 +3274,18 @@ namespace vulkan {
         // caster (tens of thousands of transforms on a heavy scene), which is exactly the cost the
         // BVH caster cull exists to avoid. The camera matrices are the fit's only inputs besides the
         // scene, so comparing them (plus the scene-changed flag) is the complete condition.
+        //
+        // The UNJITTERED view-projection is what this must key on and fit to: the TAA jitter is a
+        // sub-pixel rendering offset, and letting it into the fit (a) misses the cache on every single
+        // frame and (b) - the real bug - re-quantizes the light-space box to whole texels every frame,
+        // so the shadow map's texel grid alternates between two alignments. A surface at a grazing
+        // light angle then reads as shadowed in one alignment and lit in the other, and the TAA
+        // history averages the flicker into a dark band across it.
         if (this->shadow_frustum_valid && !this->bvh_dirty &&
-            this->shadow_fit_view == this->current_ubo.view && this->shadow_fit_proj == this->current_ubo.proj) {
+            this->shadow_fit_view_proj == this->current_ubo.view_proj_unjittered) {
             return;
         }
-        this->shadow_fit_view = this->current_ubo.view;
-        this->shadow_fit_proj = this->current_ubo.proj;
+        this->shadow_fit_view_proj = this->current_ubo.view_proj_unjittered;
         this->shadow_frustum_valid = true;
         if (!(this->current_aspect > 0.0f) || this->current_ubo.proj[2][2] == 0.0f) {
             // Degenerate camera (the very first frames, before the swapchain has an extent): the
@@ -2925,7 +3309,7 @@ namespace vulkan {
         // camera's near plane, so the roof and upper walls were clipped out of the depth map
         // entirely and the sun poured straight through them. Fit only the part of the view volume
         // that can hold the scene: everything lies within |eye - scene centre| + scene_radius.
-        glm::mat4 fit_proj = this->current_ubo.proj;
+        glm::mat4 fit_proj = this->current_ubo.view_proj_unjittered; // unjittered: see the cache note above
         {
             // near/far live in the z row of a RH_ZO perspective matrix (see glm::perspectiveRH_ZO):
             // proj[2][2] = far / (near - far), proj[3][2] = -(far * near) / (far - near)
@@ -2939,7 +3323,7 @@ namespace vulkan {
                 fit_proj[3][2] = -(fit_far * camera_near) / (fit_far - camera_near);
             }
         }
-        glm::mat4 const inverse_view_proj = glm::inverse(fit_proj * this->current_ubo.view);
+        glm::mat4 const inverse_view_proj = glm::inverse(fit_proj); // already view * proj (unjittered)
         std::array<glm::vec3, 16> points = {};
         std::size_t count = 0;
         for (int zi = 0; zi < 2; ++zi) {

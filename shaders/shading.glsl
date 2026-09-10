@@ -27,11 +27,17 @@
 #define VULKAN_RENDER_SHADING_GLSL
 
 // Camera UBO (scene set binding 0): view/projection and the world-space eye position (the shading
-// path needs the eye to build the view vector and, for the sky, the view ray).
+// path needs the eye to build the view vector and, for the sky, the view ray). The last two matrices
+// feed the motion vectors: `proj` is the CURRENT projection INCLUDING the TAA jitter (geometry has to
+// be sampled at the jittered offsets), while `view_proj_unjittered` / `prev_view_proj` are the
+// jitter-free pair - a jitter that leaked into a motion vector would be read as camera motion and
+// would reproject the history to the wrong place every frame.
 layout(set = 0, binding = 0) uniform CameraUBO {
     mat4 view;
     mat4 proj;
     vec3 camera_pos;
+    mat4 view_proj_unjittered;
+    mat4 prev_view_proj;
 } camera;
 
 // Split-sum IBL (bindings 2-4): the prefiltered GGX environment (roughness mip chain), the

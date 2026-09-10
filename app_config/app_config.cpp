@@ -106,6 +106,21 @@ namespace app_config {
                     settings.render.fxaa = *value;
                 }
             }
+            if (toml::node const* node = render->get("taa")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.taa = *value;
+                }
+            }
+            if (toml::node const* node = render->get("taa_blend_static")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.taa_blend_static = static_cast<float>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("taa_blend_min")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.taa_blend_min = static_cast<float>(*value);
+                }
+            }
             if (toml::node const* node = render->get("deferred")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.deferred = *value;

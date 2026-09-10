@@ -378,6 +378,7 @@ int main(int argc, char** argv) {
     gui.gbuffer_debug = settings.render.gbuffer_debug; // gbuffer debug view initial state (M1)
     gui.gbuffer_channel = settings.render.gbuffer_channel;
     gui.deferred_enabled = settings.render.deferred; // deferred lighting render mode (M2)
+    gui.taa_enabled = settings.render.taa;           // temporal anti-aliasing (M3)
     gui.anim_playing = animation.is_playing();       // play checkbox initial state
     gui.current_camera = current_camera;             // combo selection (the pose seeded above)
 
@@ -583,6 +584,9 @@ int main(int argc, char** argv) {
         // deferred lighting (the deferred path's render mode): same mirror rule. It needs the same
         // pipelines as the debug view, so enabling it without them leaves the forward path running.
         runtime.set_deferred(gui.deferred_enabled);
+        // TAA (the deferred path's answer to MSAA): mirrored like the other render toggles. The
+        // jitter follows automatically - it is applied to the projection when TAA is active.
+        runtime.set_taa(gui.taa_enabled, gui.taa_blend_static, gui.taa_blend_min);
         // cel shading: the combo picks a discrete band count (index 0 = off); every entry is a
         // visibly different look, unlike a continuous strength that had dead zones between bands
         constexpr std::array<float, 7> toon_band_counts = {0.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 8.0f};

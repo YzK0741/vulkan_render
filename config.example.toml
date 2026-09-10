@@ -100,6 +100,20 @@ gbuffer_channel = 1
 # G-buffer pass and the sky by the lighting stage, so neither is lost and neither is counted twice.
 deferred = false
 
+# taa: temporal anti-aliasing on the deferred path - the answer to the MSAA the forward path uses.
+# The projection is jittered by a Halton(2,3) sequence every frame, the G-buffer carries motion
+# vectors, and a fullscreen resolve blends the current frame with a reprojected, neighborhood-clamped
+# history into the HDR target the post chain reads. It removes what no edge filter can: sub-pixel
+# shimmer in motion. Requires `deferred = true` (the forward path writes no motion vectors) and
+# `msaa = 1` is the natural pairing - a 1x G-buffer has no hardware anti-aliasing to fall back on.
+# The two weights are history (previous frames) weights: `taa_blend_static` for pixels that did not
+# move (0.9 = 10% of the new frame per frame: higher is smoother but slower to react to lighting
+# changes) and `taa_blend_min` once a pixel moves a pixel or more (lower trusts the current frame
+# more, trading smoothing for less ghosting). Both live in the overlay as sliders too.
+taa = false
+taa_blend_static = 0.9
+taa_blend_min = 0.5
+
 # validation_layers: Vulkan validation layers + debug messenger (VK_LAYER_KHRONOS_validation).
 # Debug builds default to true, Release builds to false; override per build as needed (e.g.
 # turn it on in a Release build when tracking a problem, or off in Debug for raw speed).

@@ -8,33 +8,40 @@
  *
  * The deferred path's first half. Instead of evaluating lights (what pbr.frag does), this stage
  * only asks what the fragment is made of and writes that into the G-buffer targets, so the lighting
- * pass can shade every pixel once, from screen space, and screen-space effects (SSAO, SSR, TAA
- * velocity) get the data they need. Both stages gather that surface through the same
- * shaders/surface.glsl, so the deferred and forward views of one object cannot drift apart.
+ * stage can shade every pixel once, from screen space, and screen-space effects (SSAO, SSR, TAA) get
+ * the data they need. Both paths gather that surface through the same shaders/surface.glsl, so the
+ * deferred and forward views of one object cannot drift apart.
  *
- * Targets (attachment order = core::gbuffer_formats, and the location order below):
- * - location 0 (RGBA8_UNORM): albedo.rgb + metallic - base color is linear and stored unencoded,
- *   and 8-bit metallic is plenty for a metallic-roughness workflow (glTF allows 8-bit inputs);
- * - location 1 (RGBA16F): world normal.xyz + roughness - the normal is stored as three floats
- *   rather than octahedral-encoded: 4 bytes per pixel buys the absence of a whole class of
- *   precision bugs while the layout is young;
+ * Targets (attachment order = core::gbuffer_formats + core::gbuffer_velocity_format, and the location
+ * order below):
+ * - location 0 (RGBA8_UNORM): albedo.rgb + metallic - base color is linear and stored unencoded, and
+ *   8-bit metallic is plenty for a metallic-roughness workflow (glTF allows 8-bit inputs);
+ * - location 1 (RGBA16F): world normal.xyz + roughness - the normal is stored as three floats rather
+ *   than octahedral-encoded: 4 bytes per pixel buys the absence of a whole class of precision bugs
+ *   while the layout is young;
  * - location 2 (RGBA8_UNORM): material_id low byte + high byte + ambient occlusion + material flags.
  *   The id is 16 bits split over two 8-bit channels (each an exact k/255 value, so it round-trips
- *   exactly through the UNORM target and a NEAREST fetch): the lighting pass needs it to look up
- *   the material record (emissive, shading model, flags) without the G-buffer having to carry
- *   textures of its own.
+ *   exactly through the UNORM target and a NEAREST fetch): the lighting stage needs it to look up the
+ *   material record (emissive, shading model, flags) without the G-buffer carrying textures of its own;
+ * - location 3 (RG16F): the MOTION VECTOR in UV space (current - previous) that the TAA resolve
+ *   reprojects the history with.
  *
  * Depth is written by this pass (the pipeline's own single-sampled depth image), so the lighting
- * pass reconstructs the world position from it instead of storing one.
+ * stage reconstructs the world position from it instead of storing one.
  *
  * @note alphaMode BLEND materials never reach this pass: the runtime keeps them in the forward
  *       transparent pass (a G-buffer cannot blend a surface into existence). alphaMode MASK
  *       materials DO render here and gather_surface() discards their cut-out texels.
  * @note skybox / background pixels keep the cleared G-buffer values (all zero) - material id 0 is
- *       the reserved default material, and the lighting pass treats a zero normal as "no geometry".
+ *       the reserved default material, and the lighting stage treats a far-plane depth as "no
+ *       geometry" (those pixels are lit as sky).
  */
 
 #include "surface.glsl"
+// ... and the scene state for the motion vector's two matrices. Only the camera UBO is used here;
+// the lighting declarations this include also carries (light UBO, shadow map, the BRDF functions)
+// compile away unused, and their descriptors are part of the shared scene set either way.
+#include "shading.glsl"
 
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_normal;
@@ -43,11 +50,34 @@ layout(location = 2) in vec2 v_uv;
 layout(location = 0) out vec4 out_albedo_metallic;  // rgb albedo, a metallic
 layout(location = 1) out vec4 out_normal_roughness; // xyz world normal, w roughness
 layout(location = 2) out vec4 out_material;         // r/g material id, b ao, a flags
+layout(location = 3) out vec2 out_velocity;         // motion vector in UV space (current - previous)
 
 /**
- * @brief write the fragment's surface into the three G-buffer targets
+ * @brief motion vector of this fragment in UV space: where it was last frame, relative to here
+ * @param world_pos the fragment's world position (this frame)
+ * @return (current_uv - previous_uv), so the TAA resolve samples the history at `uv - velocity`
+ *
+ * The two matrices come from the camera UBO and are deliberately the JITTER-FREE pair: `proj` carries
+ * the TAA jitter, and a jitter that leaked in here would be read as camera motion - the history would
+ * be reprojected by up to a pixel every frame, which is exactly the aliasing TAA removes.
+ *
+ * @note CAMERA motion only. A deformed (skinned/morphed) or otherwise moving object needs its own
+ *       previous transform, which is a per-primitive quantity this stage does not have yet: the
+ *       forward-consistent way to add it is a previous-model matrix per draw (a second push-constant
+ *       block or a per-primitive id into a buffer), and until then such an object ghosts slightly.
+ */
+vec2 motion_vector(vec3 world_pos) {
+    const vec4 current_clip = camera.view_proj_unjittered * vec4(world_pos, 1.0);
+    const vec4 previous_clip = camera.prev_view_proj * vec4(world_pos, 1.0);
+    const vec2 current_uv = (current_clip.xy / current_clip.w) * 0.5 + 0.5;
+    const vec2 previous_uv = (previous_clip.xy / previous_clip.w) * 0.5 + 0.5;
+    return current_uv - previous_uv;
+}
+
+/**
+ * @brief write the fragment's surface into the G-buffer targets
  * @note no lighting, no tonemapping, no output alpha semantics: everything the surface carries that
- *       is not lighting-independent is stored as-is, and the lighting pass decides what to do with it
+ *       is not lighting-independent is stored as-is, and the lighting stage decides what to do with it
  */
 void main() {
     const surface_sample s = gather_surface(v_world_pos, v_normal, v_uv);
@@ -64,4 +94,6 @@ void main() {
         float((id >> 8u) & 0xFFu) / 255.0,
         s.ao,
         float(s.flags & 0xFFu) / 255.0);
+
+    out_velocity = motion_vector(v_world_pos);
 }
