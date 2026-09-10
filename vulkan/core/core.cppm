@@ -155,6 +155,15 @@ namespace vulkan {
         std::array<std::vector<VkImage>, bloom_level_count> bloom_images = {};
         std::array<std::vector<VkDeviceMemory>, bloom_level_count> bloom_image_memories = {};
         std::array<std::vector<VkImageView>, bloom_level_count> bloom_image_views = {};
+        // Display-referred (LDR) targets, one per swapchain image: with FXAA enabled the post
+        // composite renders here instead of straight into the swapchain, FXAA reads it back and
+        // writes the swapchain. hdr_format (R16F) even though the values are display range: FXAA
+        // needs a *gamma-encoded* image to run its luma thresholds on, and a 16F target lets the
+        // composite store that encoding itself (an sRGB attachment would decode it again on read,
+        // and 8-bit would band).
+        std::vector<VkImage> ldr_images = {};
+        std::vector<VkDeviceMemory> ldr_image_memories = {};
+        std::vector<VkImageView> ldr_image_views = {};
         void create_msaa_image(
             uint32_t width,
             uint32_t height,

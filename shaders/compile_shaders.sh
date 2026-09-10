@@ -41,5 +41,8 @@ compile skybox.vert skybox.vert.spv
 compile skybox.frag skybox.frag.spv
 compile shadow.vert shadow.vert.spv
 compile shadow.frag shadow.frag.spv
+compile post.vert post.vert.spv
+compile post.frag post.frag.spv
+compile fxaa.frag fxaa.frag.spv
 
 echo "all shaders compiled successfully."

@@ -45,6 +45,7 @@ import utility;
  * clear_color = [0.02, 0.02, 0.03]  # background clear color, RGB in 0..1
  * skybox = true    # draw the environment skybox pass each frame
  * shadow = true    # record the directional shadow pass each frame
+ * fxaa   = false   # anti-alias the final image (adds one fullscreen pass; needs fxaa.frag.spv)
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
  *
  * [gui]
@@ -90,6 +91,7 @@ namespace app_config {
         std::array<float, 3> clear_color = {0.02f, 0.02f, 0.03f}; // background clear color (RGB, 0..1)
         bool skybox = true;                                       // draw the environment skybox pass each frame
         bool shadow = true;                                       // record the directional shadow pass each frame
+        bool fxaa = false;                                        // FXAA the final image (one extra fullscreen pass)
         bool validation_layers = default_validation_layers;       // Vulkan validation layers + debug messenger ([render])
     };
 

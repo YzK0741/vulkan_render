@@ -523,6 +523,32 @@ namespace vulkan {
                 device);
         }
 
+        // Display-referred (LDR) targets, one per swapchain image, same size and lifetime as the
+        // HDR ones: the post composite renders into them when FXAA is enabled and the FXAA pass
+        // samples them. Format is hdr_format (R16F) on purpose - the values are display range but
+        // stored gamma-encoded so FXAA can threshold them without a per-tap decode.
+        ldr_images.resize(swap_chain_image_views.size());
+        ldr_image_memories.resize(swap_chain_image_views.size());
+        ldr_image_views.resize(swap_chain_image_views.size());
+        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+            create_msaa_image(
+                swap_chain_extent.width,
+                swap_chain_extent.height,
+                hdr_format,
+                VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                ldr_images[i],
+                ldr_image_memories[i]);
+
+            ldr_image_views[i] = create_image_view(
+                ldr_images[i],
+                hdr_format,
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                device);
+        }
+
         // bloom targets: the 4-level chain (halved per level, min 1x1), same lifetime as the HDR
         // targets; each level gets one target per swapchain image
         for (uint32_t level = 0; level < bloom_level_count; ++level) {
@@ -568,6 +594,20 @@ namespace vulkan {
             hdr_image_views.clear();
             hdr_image_memories.clear();
             hdr_images.clear();
+            // the LDR (FXAA input) targets share this lifetime: they are (re)created with the
+            // swapchain in exactly the same way, so they belong to the same cleanup registration
+            for (auto const& view : ldr_image_views) {
+                vkDestroyImageView(device, view, nullptr);
+            }
+            for (auto const& memory : ldr_image_memories) {
+                vkFreeMemory(device, memory, nullptr);
+            }
+            for (auto const& image : ldr_images) {
+                vkDestroyImage(device, image, nullptr);
+            }
+            ldr_image_views.clear();
+            ldr_image_memories.clear();
+            ldr_images.clear();
             for (auto const& level_views : bloom_image_views) {
                 for (auto const& view : level_views) {
                     vkDestroyImageView(device, view, nullptr);

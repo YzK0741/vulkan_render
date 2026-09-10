@@ -1282,6 +1282,10 @@ namespace vulkan {
             this->post_hdr_pipeline->viewport = full_viewport;
             this->post_hdr_pipeline->scissor = full_scissor;
         }
+        if (this->post_fxaa_pipeline) {
+            this->post_fxaa_pipeline->viewport = full_viewport;
+            this->post_fxaa_pipeline->scissor = full_scissor;
+        }
 
         // Stage 3 of parallel recording: the main-pass visible leaves are split into up-to-N
         // contiguous sub_render_tasks (N = task-pool workers), each recording its own per-slot
@@ -1591,8 +1595,10 @@ namespace vulkan {
 
         // binding 0 = the pass input (HDR for the prefilter, the previous bloom level for a
         // downsample), bindings 1..4 = the four bloom levels (only the composite pass samples
-        // them; the other passes bind the same view to every binding so one layout serves all)
-        std::array<VkDescriptorSetLayoutBinding, 5> bindings = {};
+        // them; the other passes bind the same view to every binding so one layout serves all),
+        // binding 5 = the gamma-encoded LDR image (only the FXAA pass samples it; post.frag does not
+        // declare it, so the composite may safely write that image while the set points at it)
+        std::array<VkDescriptorSetLayoutBinding, 6> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
             bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1666,21 +1672,51 @@ namespace vulkan {
         return {};
     }
 
+    std::expected<void, std::string> runtime::make_fxaa_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+        using fail = std::unexpected<std::string>;
+        core& vk = this->vulkan_core;
+        if (this->post_pipeline_layout == VK_NULL_HANDLE) {
+            return fail(std::string("fxaa: create the post-process pipeline first (it owns the set layout)"));
+        }
+        // Same fullscreen triangle and the same swapchain color format as the composite (FXAA writes
+        // the swapchain), but its own shader module: fxaa.frag is what declares binding 5, and
+        // keeping the composite's shader free of that binding is what lets the composite write the
+        // LDR image while its own descriptor set points at it.
+        auto pipeline_result = vulkan::make_pipeline(
+            vk.device,
+            this->post_pipeline_layout,
+            vk.swap_chain_image_format,
+            VK_FORMAT_UNDEFINED,
+            vertex_shader_code,
+            fragment_shader_code,
+            VK_SAMPLE_COUNT_1_BIT,
+            false,
+            true,
+            0.0f,
+            0.0f,
+            0.0f);
+        if (!pipeline_result) {
+            return fail(std::string(pipeline_result.error()));
+        }
+        this->post_fxaa_pipeline = std::move(pipeline_result).value();
+        return {};
+    }
+
     void runtime::ensure_post_descriptors() {
         core& vk = this->vulkan_core;
         if (this->post_pipeline == std::nullopt || this->post_hdr_pipeline == std::nullopt || this->post_set_layout == VK_NULL_HANDLE) {
             return;
         }
         std::size_t const image_count = vk.hdr_image_views.size();
-        if (image_count == 0 || vk.bloom_image_views[0].size() != image_count) {
+        if (image_count == 0 || vk.bloom_image_views[0].size() != image_count || vk.ldr_image_views.size() != image_count) {
             return;
         }
-        if (this->post_sets.size() == image_count && this->post_bound_views == vk.hdr_image_views && this->post_bound_blooms == vk.bloom_image_views[0]) {
-            return; // already bound to the current HDR/bloom targets
+        if (this->post_sets.size() == image_count && this->post_bound_views == vk.hdr_image_views && this->post_bound_blooms == vk.bloom_image_views[0] && this->post_bound_ldr == vk.ldr_image_views) {
+            return; // already bound to the current HDR/bloom/LDR targets
         }
 
         // five sets per swapchain image: prefilter (HDR), three downsample inputs (level 0..2) and
-        // the composite (HDR + all four levels)
+        // the composite (HDR + all four levels + the LDR image for the FXAA pass)
         std::size_t const set_count = image_count * 5;
         if (this->post_descriptor_pool == VK_NULL_HANDLE || this->post_pool_capacity < set_count) {
             vkDeviceWaitIdle(vk.device);
@@ -1690,7 +1726,7 @@ namespace vulkan {
             }
             VkDescriptorPoolSize pool_size = {};
             pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            pool_size.descriptorCount = static_cast<uint32_t>(set_count * 5); // five bindings per set
+            pool_size.descriptorCount = static_cast<uint32_t>(set_count * 6); // six bindings per set
 
             VkDescriptorPoolCreateInfo pool_info = {};
             pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1705,6 +1741,7 @@ namespace vulkan {
                 this->post_down_sets.clear();
                 this->post_bound_views.clear();
                 this->post_bound_blooms.clear();
+                this->post_bound_ldr.clear();
                 return;
             }
             this->post_pool_capacity = static_cast<uint32_t>(set_count);
@@ -1731,6 +1768,7 @@ namespace vulkan {
                 this->post_down_sets.clear();
                 this->post_bound_views.clear();
                 this->post_bound_blooms.clear();
+                this->post_bound_ldr.clear();
                 return;
             }
             for (std::size_t i = 0; i < image_count; ++i) {
@@ -1740,15 +1778,16 @@ namespace vulkan {
             }
         }
 
-        // every set gets all five bindings; unused ones point at the same view as binding 0
-        auto const write_set = [&vk](VkDescriptorSet const set, std::array<VkImageView, 5> const& views, VkSampler const sampler) {
-            std::array<VkDescriptorImageInfo, 5> image_infos = {};
+        // every set gets all six bindings; unused ones point at the same view as binding 0 (binding 5
+        // is the LDR image, which only the FXAA pass reads)
+        auto const write_set = [&vk](VkDescriptorSet const set, std::array<VkImageView, 6> const& views, VkSampler const sampler) {
+            std::array<VkDescriptorImageInfo, 6> image_infos = {};
             for (uint32_t b = 0; b < image_infos.size(); ++b) {
                 image_infos[b].sampler = sampler;
                 image_infos[b].imageView = views[b];
                 image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
-            std::array<VkWriteDescriptorSet, 5> writes = {};
+            std::array<VkWriteDescriptorSet, 6> writes = {};
             for (uint32_t b = 0; b < writes.size(); ++b) {
                 writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 writes[b].dstSet = set;
@@ -1762,20 +1801,22 @@ namespace vulkan {
 
         for (std::size_t i = 0; i < image_count; ++i) {
             VkImageView const hdr = vk.hdr_image_views[i];
-            std::array<VkImageView, 5> const hdr_set = {hdr, hdr, hdr, hdr, hdr};
+            VkImageView const ldr = vk.ldr_image_views[i];
+            std::array<VkImageView, 6> const hdr_set = {hdr, hdr, hdr, hdr, hdr, ldr};
             write_set(this->post_prefilter_sets[i], hdr_set, *this->post_sampler);
 
             for (std::size_t level = 0; level < 3; ++level) {
                 VkImageView const input = vk.bloom_image_views[level][i];
-                std::array<VkImageView, 5> const level_set = {input, input, input, input, input};
+                std::array<VkImageView, 6> const level_set = {input, input, input, input, input, ldr};
                 write_set(this->post_down_sets[i][level], level_set, *this->post_sampler);
             }
 
-            std::array<VkImageView, 5> const composite_set = {hdr, vk.bloom_image_views[0][i], vk.bloom_image_views[1][i], vk.bloom_image_views[2][i], vk.bloom_image_views[3][i]};
+            std::array<VkImageView, 6> const composite_set = {hdr, vk.bloom_image_views[0][i], vk.bloom_image_views[1][i], vk.bloom_image_views[2][i], vk.bloom_image_views[3][i], ldr};
             write_set(this->post_sets[i], composite_set, *this->post_sampler);
         }
         this->post_bound_views = vk.hdr_image_views;
         this->post_bound_blooms = vk.bloom_image_views[0];
+        this->post_bound_ldr = vk.ldr_image_views;
     }
     void runtime::record_post_process(VkCommandBuffer const command_buffer) {
         core const& vk = this->vulkan_core;
@@ -1848,13 +1889,27 @@ namespace vulkan {
         }
         barrier_to_read(vk.bloom_images[3][index]);
 
-        // ---- composite: HDR + weighted bloom levels -> exposure -> ACES -> gamma -> swapchain ----
-        barrier_to_color(vk.swap_chain_images[index]);
+        // ---- composite: HDR + weighted bloom levels -> exposure -> ACES -> display ----
+        // With FXAA enabled the composite cannot write the swapchain (the FXAA pass has to read what
+        // it produced, and a pass may not read the image it renders into), so it renders into the
+        // LDR image instead and the FXAA pass finishes the frame. It also has to leave that image
+        // GAMMA-ENCODED, because FXAA's luma thresholds are defined on display-referred data - which
+        // is why encode_gamma is forced on for this pass even though the target is R16F (nothing
+        // decodes it again on read).
+        bool const fxaa = this->fxaa_on && this->post_fxaa_pipeline.has_value();
+        VkImage const composite_image = fxaa ? vk.ldr_images[index] : vk.swap_chain_images[index];
+        VkImageView const composite_view = fxaa ? vk.ldr_image_views[index] : vk.swap_chain_image_views[index];
+        // ... and therefore also the HDR-format pipeline variant: a pipeline's declared color format
+        // has to match the attachment it renders into, and the LDR image is R16F like the bloom
+        // levels (the shader/descriptor side is identical - only mode and encode_gamma differ).
+        vk_pipeline const& composite_pipeline = fxaa ? *this->post_hdr_pipeline : *this->post_pipeline;
+
+        barrier_to_color(composite_image);
         VkClearValue clear = {};
-        VkRenderingAttachmentInfo const color_attachment = make_color_attachment_info(vk.swap_chain_image_views[index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
+        VkRenderingAttachmentInfo const color_attachment = make_color_attachment_info(composite_view, clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
         VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &color_attachment, nullptr);
         vkCmdBeginRendering(command_buffer, &rendering_info);
-        this->post_pipeline->begin_pipeline(command_buffer);
+        composite_pipeline.begin_pipeline(command_buffer);
         vkCmdSetViewport(command_buffer, 0, 1, &full_viewport);
         vkCmdSetScissor(command_buffer, 0, 1, &full_scissor);
         vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE); // the fullscreen triangle has no facing
@@ -1865,19 +1920,50 @@ namespace vulkan {
             .bloom_intensity = this->bloom_intensity,
             .bloom_threshold = this->bloom_threshold,
             .mode = 2.0f,
-            // The composite writes a LINEAR tonemapped image. An sRGB swapchain attachment encodes it
-            // to display values in hardware, so the shader must NOT apply gamma as well; only a
-            // non-sRGB (UNORM) swapchain needs the manual transfer function.
-            .encode_gamma = is_srgb_format(vk.swap_chain_image_format) ? 0.0f : 1.0f};
+            // Without FXAA the composite writes a LINEAR tonemapped image into an sRGB swapchain
+            // attachment, which encodes it to display values in hardware, so the shader must NOT
+            // apply gamma as well; only a non-sRGB (UNORM) swapchain needs the manual transfer
+            // function. With FXAA the target is the R16F LDR image and the shader must encode.
+            .encode_gamma = fxaa ? 1.0f : (is_srgb_format(vk.swap_chain_image_format) ? 0.0f : 1.0f),
+            .fxaa_subpixel = this->fxaa_subpixel,
+            .fxaa_edge_threshold = this->fxaa_edge_threshold};
         vkCmdPushConstants(command_buffer, this->post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(composite_push), &composite_push);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
-
         // the debug overlay draws on the final 1x swapchain image (initialized with msaa = 1 and
-        // no depth attachment, see enable_debug_gui)
-        if (this->debug_gui_shown && this->debug_overlay.is_active()) {
+        // no depth attachment, see enable_debug_gui). With FXAA it must wait for the FXAA pass, or
+        // the UI text would be anti-aliased into mush.
+        if (!fxaa && this->debug_gui_shown && this->debug_overlay.is_active()) {
             this->debug_overlay.record(command_buffer);
         }
         vkCmdEndRendering(command_buffer);
+
+        if (fxaa) {
+            // ---- FXAA: gamma-encoded LDR image -> anti-aliased swapchain (+ overlay on top) ----
+            barrier_to_read(vk.ldr_images[index]);
+            barrier_to_color(vk.swap_chain_images[index]);
+            VkRenderingAttachmentInfo const fxaa_attachment = make_color_attachment_info(vk.swap_chain_image_views[index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
+            VkRenderingInfo const fxaa_rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &fxaa_attachment, nullptr);
+            vkCmdBeginRendering(command_buffer, &fxaa_rendering_info);
+            this->post_fxaa_pipeline->begin_pipeline(command_buffer);
+            vkCmdSetViewport(command_buffer, 0, 1, &full_viewport);
+            vkCmdSetScissor(command_buffer, 0, 1, &full_scissor);
+            vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
+            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->post_pipeline_layout, 0, 1, &composite_set, 0, nullptr);
+            post_push_constants const fxaa_push = {
+                .exposure = this->exposure_scale,
+                .bloom_intensity = this->bloom_intensity,
+                .bloom_threshold = this->bloom_threshold,
+                .mode = 3.0f,
+                .encode_gamma = 0.0f,
+                .fxaa_subpixel = this->fxaa_subpixel,
+                .fxaa_edge_threshold = this->fxaa_edge_threshold};
+            vkCmdPushConstants(command_buffer, this->post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(fxaa_push), &fxaa_push);
+            vkCmdDraw(command_buffer, 3, 1, 0, 0);
+            if (this->debug_gui_shown && this->debug_overlay.is_active()) {
+                this->debug_overlay.record(command_buffer);
+            }
+            vkCmdEndRendering(command_buffer);
+        }
     }
     frame_status runtime::end_recording() {
         core& vk = this->vulkan_core;
@@ -2303,6 +2389,19 @@ namespace vulkan {
         // above ~0.75 the scene has almost no pixel brighter than the threshold, so nothing
         // would glow; the gui slider is limited to the same visible range
         this->bloom_threshold = std::clamp(threshold, 0.0f, 0.75f);
+    }
+
+    void runtime::set_fxaa(bool const enabled, float const subpixel, float const edge_threshold) noexcept {
+        // no pipeline = the shader was never loaded: keep the flag off rather than silently
+        // rendering the composite into an LDR image nothing will ever read back
+        this->fxaa_on = enabled && this->post_fxaa_pipeline.has_value();
+        if (enabled && !this->fxaa_on) {
+            utility::log("fxaa: requested but no fxaa pipeline exists (is fxaa.frag.spv present?)");
+        }
+        this->fxaa_subpixel = std::clamp(subpixel, 0.0f, 1.0f);
+        // below ~0.05 every shaded gradient counts as an edge (the whole image gets softened),
+        // above ~0.5 almost nothing does; the gui slider uses the same range
+        this->fxaa_edge_threshold = std::clamp(edge_threshold, 0.05f, 0.5f);
     }
 
     std::expected<runtime::frame_image, std::string> runtime::acquire_current_frame_image() {

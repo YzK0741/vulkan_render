@@ -15,6 +15,7 @@ msaa = 8
 clear_color = [0.1, 0.2, 0.3]
 skybox = false
 shadow = false
+fxaa = true
 validation_layers = false
 
 [lighting]

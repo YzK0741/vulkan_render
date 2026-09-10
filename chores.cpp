@@ -165,6 +165,21 @@ namespace chores {
             }
             utility::log("SUCCESS: post-process pipeline created (HDR -> exposure/tonemap -> swapchain)");
         }
+        {
+            // FXAA pipeline (gamma-encoded LDR image -> anti-aliased swapchain). Optional: it
+            // reuses post.vert and the post set layout, so it must come after the post pipeline.
+            // Failure is not fatal - FXAA simply stays unavailable and runtime::set_fxaa() logs it.
+            std::vector<unsigned char> vertex_code;
+            std::vector<unsigned char> fragment_code;
+            load_shader(shaders_dir, "post.vert.spv", vertex_code);
+            load_shader(shaders_dir, "fxaa.frag.spv", fragment_code);
+            auto const fxaa_result = runtime.make_fxaa_pipeline(vertex_code, fragment_code);
+            if (!fxaa_result) {
+                utility::log("fxaa pipeline disabled: {}", fxaa_result.error());
+            } else {
+                utility::log("SUCCESS: fxaa pipeline created (LDR -> anti-aliased swapchain)");
+            }
+        }
 
         {
             // Shadow pass pipeline (depth-only): renders the scene from the light into the shadow
@@ -271,6 +286,13 @@ namespace chores {
         // the threshold low is what makes the whole intensity slider effective
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("bloom intensity", &bindings.bloom_intensity, 0.0f, 3.0f));
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("bloom threshold", &bindings.bloom_threshold, 0.0f, 0.75f));
+        // FXAA: a checkbox plus its two shader knobs (main mirrors all three into the runtime every
+        // frame). The knobs are genuine effects, not strength padding - "subpixel" trades edge
+        // smoothing for the single-pixel sparkle FXAA leaves on near-axis-aligned edges, and the
+        // threshold decides how much contrast counts as an edge (lower = softer whole image).
+        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("fxaa", &bindings.fxaa_enabled));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("fxaa subpixel", &bindings.fxaa_subpixel, 0.0f, 1.0f));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("fxaa edge threshold", &bindings.fxaa_edge_threshold, 0.05f, 0.5f));
         // cel/toon shading: quantize the diffuse falloff (and harden shadows/highlights);
         // 0 steps leaves plain PBR, softness shrinks toward hard comic edges
         // cel/toon shading is discrete: every listed band count gives a visibly different look

@@ -130,6 +130,11 @@ namespace chores {
         int toon_bands_index = 0;          // cel-shading combo: index into toon_band_counts (0 = plain PBR)
         float toon_softness = 0.15f;       // cel-shading band edge softness slider (smaller = harder edges)
         float bloom_threshold = 0.35f;     // bloom bright-pass threshold (visible range 0..0.75)
+        // FXAA (runtime::set_fxaa): checkbox + the two shader knobs. The checkbox is mirrored by
+        // main into the runtime every frame like the other post-process values.
+        bool fxaa_enabled = false;         // FXAA on/off (initial: settings.render.fxaa)
+        float fxaa_subpixel = 0.75f;       // sub-pixel term strength (0 = pure directional blend)
+        float fxaa_edge_threshold = 0.166f; // relative luma contrast below which a pixel is "flat"
         // demo punctual lights (count matches vulkan::max_punctual_lights): the gui rows below
         // edit these fields live (no per-widget callbacks), and main() pushes the enabled set to
         // the runtime once per frame via chores::apply_point_lights(). Each slot is a point light

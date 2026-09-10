@@ -30,7 +30,8 @@ $pairs = @(
     @("shadow.vert", "shadow.vert.spv"),
     @("shadow.frag", "shadow.frag.spv"),
     @("post.vert", "post.vert.spv"),
-    @("post.frag", "post.frag.spv")
+    @("post.frag", "post.frag.spv"),
+    @("fxaa.frag", "fxaa.frag.spv")
 )
 
 foreach ($pair in $pairs) {

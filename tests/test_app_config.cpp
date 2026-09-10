@@ -15,6 +15,7 @@ namespace {
         CHECK(settings.render.vsync);
         CHECK(!settings.render.skybox);
         CHECK(!settings.render.shadow);
+        CHECK(settings.render.fxaa);
         CHECK(!settings.gui.show);
         CHECK(settings.lighting.irr_size == 64);
         CHECK(settings.paths.shaders_dir == "shaders");
@@ -27,6 +28,7 @@ namespace {
         CHECK(settings.render.msaa == 0);
         CHECK(settings.render.skybox);
         CHECK(settings.render.shadow);
+        CHECK(!settings.render.fxaa);
         CHECK(settings.gui.show);
     }
 

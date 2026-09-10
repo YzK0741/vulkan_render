@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.20  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.21  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -208,8 +208,13 @@ namespace vulkan {
             // composite only: 1 = the shader encodes to sRGB itself, 0 = the target is an sRGB
             // attachment and the hardware encodes on write. Filled from the swapchain format every
             // frame - hard-coding either way double-encodes (sRGB attachment) or under-encodes
-            // (UNORM attachment) gamma.
+            // (UNORM attachment) gamma. The FXAA pass also forces it to 1: it renders into the R16F
+            // LDR image, which must hold gamma-encoded values for FXAA's luma thresholds.
             float encode_gamma = 0.0f;
+            // FXAA lanes (fxaa.frag): the sub-pixel term strength (0 = pure directional blend) and
+            // the relative luma contrast below which a pixel counts as flat.
+            float fxaa_subpixel = 0.75f;
+            float fxaa_edge_threshold = 0.166f;
         };
         std::optional<vk_pipeline> post_pipeline = std::nullopt;
         // The SAME shader pair drives two different color formats, so it needs two pipelines:
@@ -218,6 +223,16 @@ namespace vulkan {
         // the R16F bloom levels). Reusing the swapchain-format pipeline for the HDR passes is a
         // VkPipelineRenderingCreateInfo format mismatch - validation flags it and the write is UB.
         std::optional<vk_pipeline> post_hdr_pipeline = std::nullopt;
+        // FXAA pass (fxaa.frag + post.vert): reads the LDR image and writes the swapchain, so it
+        // shares the composite's color format - but it is a separate pipeline because its shader
+        // statically uses a different binding (5, the LDR image), and descriptor validation is per
+        // statically-used binding: putting FXAA into post.frag would make the composite's own set
+        // (which points binding 5 at the image it is currently writing) invalid.
+        std::optional<vk_pipeline> post_fxaa_pipeline = std::nullopt;
+        // FXAA state: enabled + the two knobs the shader takes (see post_push_constants)
+        bool fxaa_on = false;
+        float fxaa_subpixel = 0.75f;
+        float fxaa_edge_threshold = 0.166f;
         vk_sampler post_sampler = {};
         VkDescriptorSetLayout post_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout post_pipeline_layout = VK_NULL_HANDLE;
@@ -228,6 +243,7 @@ namespace vulkan {
         std::vector<VkDescriptorSet> post_sets = {};                     // composite (HDR + all bloom levels)
         std::vector<VkImageView> post_bound_blooms = {};                 // bloom views the current sets point at
         std::vector<VkImageView> post_bound_views = {};                  // HDR views the current sets point at
+        std::vector<VkImageView> post_bound_ldr = {};                    // LDR views the current sets point at
         // per-stage render toggles: whether the skybox / shadow pass actually records this frame.
         // Skybox off leaves just the clear color; shadow off skips the depth pass (the shadow map
         // is cleared to fully-lit so the main pass samples "no shadow"). Both default on.
@@ -851,6 +867,18 @@ namespace vulkan {
         std::expected<void, std::string> make_post_pipeline(
             std::span<unsigned char const> vertex_shader_code,
             std::span<unsigned char const> fragment_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief create the FXAA pipeline (gamma-encoded LDR image -> anti-aliased swapchain)
+         * @param vertex_shader_code post.vert SPIR-V (the same fullscreen triangle)
+         * @param fragment_shader_code fxaa.frag SPIR-V (sampler2D LDR input + push constants)
+         * @note optional: without it set_fxaa() has no effect and the composite keeps writing the
+         *       swapchain directly. Requires make_post_pipeline() first (it owns the set layout).
+         */
+        std::expected<void, std::string> make_fxaa_pipeline(
+            std::span<unsigned char const> vertex_shader_code,
+            std::span<unsigned char const> fragment_shader_code);
         std::expected<void, std::string> make_skybox_pipeline(
             std::span<unsigned char const> vertex_shader_code,
             std::span<unsigned char const> fragment_shader_code);
@@ -972,6 +1000,26 @@ namespace vulkan {
          * @note same timing rule as set_exposure: CPU-side, copied into the post push constants
          */
         void set_bloom(float intensity, float threshold) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief enable/disable FXAA and set its two knobs
+         * @param enabled when true the composite renders into a display-referred (gamma-encoded)
+         *        LDR image and an extra fullscreen pass anti-aliases it into the swapchain; when
+         *        false the composite writes the swapchain directly (no extra pass, no LDR read)
+         * @param subpixel sub-pixel term strength, 0..1 (0 = pure directional blend; higher also
+         *        blends away the single-pixel aliasing FXAA leaves on near-axis-aligned edges)
+         * @param edge_threshold relative luma contrast below which a pixel counts as flat and is
+         *        left untouched (FXAA default 0.166; lower = more edges treated, softer image)
+         * @note requires make_fxaa_pipeline(); without it the flag has no effect. CPU-side, copied
+         *       into the post push constants every frame (same timing rule as set_exposure)
+         */
+        void set_fxaa(bool enabled, float subpixel = 0.75f, float edge_threshold = 0.166f) noexcept;
+
+        /** @brief whether the FXAA pass is currently enabled (see set_fxaa) */
+        [[nodiscard]] bool fxaa() const noexcept {
+            return this->fxaa_on;
+        }
 
         /**
          * @ingroup vulkan_runtime

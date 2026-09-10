@@ -62,6 +62,12 @@ skybox = true
 # shadow: record the directional shadow pass each frame (false = no shadows, fully lit)
 shadow = true
 
+# fxaa: anti-alias the final image (one extra fullscreen pass over the tonemapped LDR image).
+# Cheap and hardware-independent, but it is a screen-space blur of edges: it softens fine detail and
+# cannot remove sub-pixel shimmer in motion. Its two knobs (sub-pixel strength, edge threshold) live
+# in the debug overlay, not here.
+fxaa = false
+
 # validation_layers: Vulkan validation layers + debug messenger (VK_LAYER_KHRONOS_validation).
 # Debug builds default to true, Release builds to false; override per build as needed (e.g.
 # turn it on in a Release build when tracking a problem, or off in Debug for raw speed).
