@@ -1518,10 +1518,11 @@ namespace vulkan {
         // sampler for the HDR scene target (linear, clamp)
         this->post_sampler = vk.make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
 
-        // binding 0 = HDR scene target, binding 1 = bloom target (pass A binds the HDR view twice:
-        // the bloom image is its render target there, so it cannot also be a sampled binding)
-        std::array<VkDescriptorSetLayoutBinding, 2> bindings = {};
-        for (uint32_t b = 0; b < 2; ++b) {
+        // binding 0 = the pass input (HDR for the prefilter, the previous bloom level for a
+        // downsample), bindings 1..4 = the four bloom levels (only the composite pass samples
+        // them; the other passes bind the same view to every binding so one layout serves all)
+        std::array<VkDescriptorSetLayoutBinding, 5> bindings = {};
+        for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
             bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             bindings[b].descriptorCount = 1;
@@ -1581,16 +1582,16 @@ namespace vulkan {
             return;
         }
         std::size_t const image_count = vk.hdr_image_views.size();
-        if (image_count == 0 || vk.bloom_image_views.size() != image_count) {
+        if (image_count == 0 || vk.bloom_image_views[0].size() != image_count) {
             return;
         }
-        if (this->post_sets.size() == image_count && this->post_bound_views == vk.hdr_image_views && this->post_bound_blooms == vk.bloom_image_views) {
+        if (this->post_sets.size() == image_count && this->post_bound_views == vk.hdr_image_views && this->post_bound_blooms == vk.bloom_image_views[0]) {
             return; // already bound to the current HDR/bloom targets
         }
 
-        // two sets per swapchain image: pass A (bright + horizontal blur) and pass B (vertical
-        // blur + composite); the pool is sized for both and rebuilt when the swapchain grows
-        std::size_t const set_count = image_count * 2;
+        // five sets per swapchain image: prefilter (HDR), three downsample inputs (level 0..2) and
+        // the composite (HDR + all four levels)
+        std::size_t const set_count = image_count * 5;
         if (this->post_descriptor_pool == VK_NULL_HANDLE || this->post_pool_capacity < set_count) {
             vkDeviceWaitIdle(vk.device);
             if (this->post_descriptor_pool != VK_NULL_HANDLE) {
@@ -1599,7 +1600,7 @@ namespace vulkan {
             }
             VkDescriptorPoolSize pool_size = {};
             pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            pool_size.descriptorCount = static_cast<uint32_t>(set_count * 2); // two bindings per set
+            pool_size.descriptorCount = static_cast<uint32_t>(set_count * 5); // five bindings per set
 
             VkDescriptorPoolCreateInfo pool_info = {};
             pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1610,19 +1611,22 @@ namespace vulkan {
                 utility::log("runtime: post descriptor pool creation failed - post pass skipped");
                 this->post_descriptor_pool = VK_NULL_HANDLE;
                 this->post_sets.clear();
-                this->post_bright_sets.clear();
+                this->post_prefilter_sets.clear();
+                this->post_down_sets.clear();
                 this->post_bound_views.clear();
                 this->post_bound_blooms.clear();
                 return;
             }
             this->post_pool_capacity = static_cast<uint32_t>(set_count);
             this->post_sets.clear();
-            this->post_bright_sets.clear();
+            this->post_prefilter_sets.clear();
+            this->post_down_sets.clear();
         }
 
-        if (this->post_sets.size() != image_count || this->post_bright_sets.size() != image_count) {
+        if (this->post_sets.size() != image_count || this->post_prefilter_sets.size() != image_count || this->post_down_sets.size() != image_count) {
             this->post_sets.assign(image_count, VK_NULL_HANDLE);
-            this->post_bright_sets.assign(image_count, VK_NULL_HANDLE);
+            this->post_prefilter_sets.assign(image_count, VK_NULL_HANDLE);
+            this->post_down_sets.assign(image_count, {});
             std::vector<VkDescriptorSetLayout> layouts(set_count, this->post_set_layout);
             std::vector<VkDescriptorSet> allocated(set_count, VK_NULL_HANDLE);
             VkDescriptorSetAllocateInfo allocate_info = {};
@@ -1633,28 +1637,29 @@ namespace vulkan {
             if (vkAllocateDescriptorSets(vk.device, &allocate_info, allocated.data()) != VK_SUCCESS) {
                 utility::log("runtime: post descriptor allocation failed - post pass skipped");
                 this->post_sets.clear();
-                this->post_bright_sets.clear();
+                this->post_prefilter_sets.clear();
+                this->post_down_sets.clear();
                 this->post_bound_views.clear();
                 this->post_bound_blooms.clear();
                 return;
             }
             for (std::size_t i = 0; i < image_count; ++i) {
-                this->post_bright_sets[i] = allocated[i];
-                this->post_sets[i] = allocated[image_count + i];
+                this->post_prefilter_sets[i] = allocated[i * 5 + 0];
+                this->post_down_sets[i] = {allocated[i * 5 + 1], allocated[i * 5 + 2], allocated[i * 5 + 3]};
+                this->post_sets[i] = allocated[i * 5 + 4];
             }
         }
 
-        auto const write_set = [&vk](VkDescriptorSet const set, VkImageView const hdr_view, VkImageView const second_view, VkSampler const sampler) {
-            std::array<VkDescriptorImageInfo, 2> image_infos = {};
-            for (uint32_t b = 0; b < 2; ++b) {
+        // every set gets all five bindings; unused ones point at the same view as binding 0
+        auto const write_set = [&vk](VkDescriptorSet const set, std::array<VkImageView, 5> const& views, VkSampler const sampler) {
+            std::array<VkDescriptorImageInfo, 5> image_infos = {};
+            for (uint32_t b = 0; b < image_infos.size(); ++b) {
                 image_infos[b].sampler = sampler;
+                image_infos[b].imageView = views[b];
                 image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
-            image_infos[0].imageView = hdr_view;
-            image_infos[1].imageView = second_view;
-
-            std::array<VkWriteDescriptorSet, 2> writes = {};
-            for (uint32_t b = 0; b < 2; ++b) {
+            std::array<VkWriteDescriptorSet, 5> writes = {};
+            for (uint32_t b = 0; b < writes.size(); ++b) {
                 writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 writes[b].dstSet = set;
                 writes[b].dstBinding = b;
@@ -1666,95 +1671,110 @@ namespace vulkan {
         };
 
         for (std::size_t i = 0; i < image_count; ++i) {
-            write_set(this->post_bright_sets[i], vk.hdr_image_views[i], vk.hdr_image_views[i], *this->post_sampler);
-            write_set(this->post_sets[i], vk.hdr_image_views[i], vk.bloom_image_views[i], *this->post_sampler);
+            VkImageView const hdr = vk.hdr_image_views[i];
+            std::array<VkImageView, 5> const hdr_set = {hdr, hdr, hdr, hdr, hdr};
+            write_set(this->post_prefilter_sets[i], hdr_set, *this->post_sampler);
+
+            for (std::size_t level = 0; level < 3; ++level) {
+                VkImageView const input = vk.bloom_image_views[level][i];
+                std::array<VkImageView, 5> const level_set = {input, input, input, input, input};
+                write_set(this->post_down_sets[i][level], level_set, *this->post_sampler);
+            }
+
+            std::array<VkImageView, 5> const composite_set = {hdr, vk.bloom_image_views[0][i], vk.bloom_image_views[1][i], vk.bloom_image_views[2][i], vk.bloom_image_views[3][i]};
+            write_set(this->post_sets[i], composite_set, *this->post_sampler);
         }
         this->post_bound_views = vk.hdr_image_views;
-        this->post_bound_blooms = vk.bloom_image_views;
+        this->post_bound_blooms = vk.bloom_image_views[0];
     }
     void runtime::record_post_process(VkCommandBuffer const command_buffer) {
         core const& vk = this->vulkan_core;
         vkCmdEndRendering(command_buffer);
-
-        uint32_t const bloom_width = vk.swap_chain_extent.width > 4 ? vk.swap_chain_extent.width / 4 : 1;
-        uint32_t const bloom_height = vk.swap_chain_extent.height > 4 ? vk.swap_chain_extent.height / 4 : 1;
-        bool const bloom_enabled = this->post_pipeline != std::nullopt && this->bloom_intensity > 0.0f && vk.bloom_image_views.size() == vk.hdr_image_views.size();
-
-        // HDR scene target -> fragment-shader read (both post passes read it)
-        {
-            std::array<VkImageMemoryBarrier2, 1> barriers = {vulkan::hdr_sampling_transition};
-            barriers[0].image = vk.hdr_images[this->current_image_index];
-            VkDependencyInfo const dependency_info = make_image_dependency_info(1, barriers.data());
-            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-        }
 
         this->ensure_post_descriptors();
         if (this->post_pipeline == std::nullopt || this->post_sets.size() <= this->current_image_index) {
             return; // no post pipeline (creation failed): the HDR frame cannot be presented correctly
         }
 
+        std::size_t const index = this->current_image_index;
+
+        // HDR scene target -> fragment-shader read (the prefilter and the composite both read it)
+        {
+            std::array<VkImageMemoryBarrier2, 1> barriers = {vulkan::hdr_sampling_transition};
+            barriers[0].image = vk.hdr_images[index];
+            VkDependencyInfo const dependency_info = make_image_dependency_info(1, barriers.data());
+            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+        }
+
         VkViewport const full_viewport = {0.0f, 0.0f, static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height), 0.0f, 1.0f};
         VkRect2D const full_scissor = {{0, 0}, vk.swap_chain_extent};
 
-        // ---- pass A: bright pass + horizontal blur into the quarter-res bloom target ----
-        if (bloom_enabled) {
-            std::array<VkImageMemoryBarrier2, 1> to_attachment = {vulkan::color_attachment_transition};
-            to_attachment[0].image = vk.bloom_images[this->current_image_index];
-            VkDependencyInfo const dependency_info = make_image_dependency_info(1, to_attachment.data());
+        // level L target size: half the swapchain extent per level (min 1x1, matches core)
+        auto const level_size = [&vk](uint32_t const level) {
+            return VkExtent2D{std::max(1u, vk.swap_chain_extent.width >> (level + 1u)), std::max(1u, vk.swap_chain_extent.height >> (level + 1u))};
+        };
+        auto const barrier_to_read = [&command_buffer](VkImage const image) {
+            std::array<VkImageMemoryBarrier2, 1> barriers = {vulkan::hdr_sampling_transition};
+            barriers[0].image = image;
+            VkDependencyInfo const dependency_info = make_image_dependency_info(1, barriers.data());
             vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-
+        };
+        auto const barrier_to_color = [&command_buffer](VkImage const image) {
+            std::array<VkImageMemoryBarrier2, 1> barriers = {vulkan::color_attachment_transition};
+            barriers[0].image = image;
+            VkDependencyInfo const dependency_info = make_image_dependency_info(1, barriers.data());
+            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+        };
+        auto const run_fullscreen = [&](VkImageView const target, VkExtent2D const extent, VkDescriptorSet const set, float const mode) {
             VkClearValue clear = {};
-            VkRenderingAttachmentInfo const bloom_attachment = make_color_attachment_info(vk.bloom_image_views[this->current_image_index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
-            VkRenderingInfo const bloom_rendering = make_rendering_info(0, {{0, 0}, {bloom_width, bloom_height}}, true, &bloom_attachment, nullptr);
-            vkCmdBeginRendering(command_buffer, &bloom_rendering);
-
+            VkRenderingAttachmentInfo const attachment = make_color_attachment_info(target, clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
+            VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, extent}, true, &attachment, nullptr);
+            vkCmdBeginRendering(command_buffer, &rendering_info);
             this->post_pipeline->begin_pipeline(command_buffer);
-            VkViewport const bloom_viewport = {0.0f, 0.0f, static_cast<float>(bloom_width), static_cast<float>(bloom_height), 0.0f, 1.0f};
-            VkRect2D const bloom_scissor = {{0, 0}, {bloom_width, bloom_height}};
-            vkCmdSetViewport(command_buffer, 0, 1, &bloom_viewport);
-            vkCmdSetScissor(command_buffer, 0, 1, &bloom_scissor);
+            VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0f, 1.0f};
+            VkRect2D const scissor = {{0, 0}, extent};
+            vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+            vkCmdSetScissor(command_buffer, 0, 1, &scissor);
             vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
-
-            VkDescriptorSet const bright_set = this->post_bright_sets[this->current_image_index];
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->post_pipeline_layout, 0, 1, &bright_set, 0, nullptr);
-            post_push_constants const bright_push = {.exposure = this->exposure_scale, .bloom_intensity = this->bloom_intensity, .bloom_threshold = this->bloom_threshold, .mode = 0.0f};
-            vkCmdPushConstants(command_buffer, this->post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(bright_push), &bright_push);
+            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->post_pipeline_layout, 0, 1, &set, 0, nullptr);
+            post_push_constants const push = {
+                .exposure = this->exposure_scale,
+                .bloom_intensity = this->bloom_intensity,
+                .bloom_threshold = this->bloom_threshold,
+                .mode = mode};
+            vkCmdPushConstants(command_buffer, this->post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
             vkCmdDraw(command_buffer, 3, 1, 0, 0);
             vkCmdEndRendering(command_buffer);
+        };
 
-            // bloom target -> fragment-shader read for pass B
-            std::array<VkImageMemoryBarrier2, 1> to_sampled = {vulkan::hdr_sampling_transition};
-            to_sampled[0].image = vk.bloom_images[this->current_image_index];
-            VkDependencyInfo const sampled_dependency = make_image_dependency_info(1, to_sampled.data());
-            vkCmdPipelineBarrier2(command_buffer, &sampled_dependency);
+        // ---- bloom chain: bright-pass prefilter into level 0, then downsample level by level ----
+        barrier_to_color(vk.bloom_images[0][index]);
+        run_fullscreen(vk.bloom_image_views[0][index], level_size(0), this->post_prefilter_sets[index], 0.0f);
+        for (std::size_t level = 0; level < 3; ++level) {
+            barrier_to_read(vk.bloom_images[level][index]);
+            barrier_to_color(vk.bloom_images[level + 1][index]);
+            run_fullscreen(vk.bloom_image_views[level + 1][index], level_size(static_cast<uint32_t>(level) + 1u), this->post_down_sets[index][level], 1.0f);
         }
+        barrier_to_read(vk.bloom_images[3][index]);
 
-        // swapchain image -> color attachment for the final composite write
-        {
-            std::array<VkImageMemoryBarrier2, 1> to_color = {vulkan::color_attachment_transition};
-            to_color[0].image = vk.swap_chain_images[this->current_image_index];
-            VkDependencyInfo const dependency_info = make_image_dependency_info(1, to_color.data());
-            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-        }
-
-        // ---- pass B: vertical blur + composite + exposure/tonemap -> swapchain ----
+        // ---- composite: HDR + weighted bloom levels -> exposure -> ACES -> gamma -> swapchain ----
+        barrier_to_color(vk.swap_chain_images[index]);
         VkClearValue clear = {};
-        VkRenderingAttachmentInfo const color_attachment = make_color_attachment_info(vk.swap_chain_image_views[this->current_image_index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
+        VkRenderingAttachmentInfo const color_attachment = make_color_attachment_info(vk.swap_chain_image_views[index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
         VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &color_attachment, nullptr);
         vkCmdBeginRendering(command_buffer, &rendering_info);
-
         this->post_pipeline->begin_pipeline(command_buffer);
         vkCmdSetViewport(command_buffer, 0, 1, &full_viewport);
         vkCmdSetScissor(command_buffer, 0, 1, &full_scissor);
         vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE); // the fullscreen triangle has no facing
-        VkDescriptorSet const set = this->post_sets[this->current_image_index];
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->post_pipeline_layout, 0, 1, &set, 0, nullptr);
-        post_push_constants const push = {
+        VkDescriptorSet const composite_set = this->post_sets[index];
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->post_pipeline_layout, 0, 1, &composite_set, 0, nullptr);
+        post_push_constants const composite_push = {
             .exposure = this->exposure_scale,
-            .bloom_intensity = bloom_enabled ? this->bloom_intensity : 0.0f,
+            .bloom_intensity = this->bloom_intensity,
             .bloom_threshold = this->bloom_threshold,
-            .mode = 1.0f};
-        vkCmdPushConstants(command_buffer, this->post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+            .mode = 2.0f};
+        vkCmdPushConstants(command_buffer, this->post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(composite_push), &composite_push);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
 
         // the debug overlay draws on the final 1x swapchain image (initialized with msaa = 1 and

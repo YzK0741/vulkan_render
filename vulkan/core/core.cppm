@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.1.4  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.5  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -13,6 +13,7 @@
 module;
 
 #include <GLFW/glfw3.h>
+#include <array>
 #include <vulkan/vulkan.h>
 
 export module vulkan.core;
@@ -147,11 +148,13 @@ namespace vulkan {
         std::vector<VkDeviceMemory> hdr_image_memories = {};
         std::vector<VkImageView> hdr_image_views = {};
         void create_hdr_resolve_resources();
-        // bloom targets (quarter resolution, one per swapchain image): the post pass bright-
-        // passes/blurs into them and composites the result in the final post pass
-        std::vector<VkImage> bloom_images = {};
-        std::vector<VkDeviceMemory> bloom_image_memories = {};
-        std::vector<VkImageView> bloom_image_views = {};
+        // bloom targets: a 4-level chain (1/2, 1/4, 1/8, 1/16 of the swapchain extent, min 1x1),
+        // one chain per swapchain image; the post pass prefilters into level 0, downsamples
+        // through the levels and composites a weighted sum of all of them
+        static constexpr uint32_t bloom_level_count = 4;
+        std::array<std::vector<VkImage>, bloom_level_count> bloom_images = {};
+        std::array<std::vector<VkDeviceMemory>, bloom_level_count> bloom_image_memories = {};
+        std::array<std::vector<VkImageView>, bloom_level_count> bloom_image_views = {};
         void create_msaa_image(
             uint32_t width,
             uint32_t height,

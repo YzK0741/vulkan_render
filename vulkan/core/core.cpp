@@ -523,29 +523,36 @@ namespace vulkan {
                 device);
         }
 
-        // bloom targets: quarter resolution (min 1x1), same lifetime as the HDR targets
-        uint32_t const bloom_width = swap_chain_extent.width > 4 ? swap_chain_extent.width / 4 : 1;
-        uint32_t const bloom_height = swap_chain_extent.height > 4 ? swap_chain_extent.height / 4 : 1;
-        bloom_images.resize(swap_chain_image_views.size());
-        bloom_image_memories.resize(swap_chain_image_views.size());
-        bloom_image_views.resize(swap_chain_image_views.size());
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_msaa_image(
-                bloom_width,
-                bloom_height,
-                hdr_format,
-                VK_SAMPLE_COUNT_1_BIT,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                bloom_images[i],
-                bloom_image_memories[i]);
+        // bloom targets: the 4-level chain (halved per level, min 1x1), same lifetime as the HDR
+        // targets; each level gets one target per swapchain image
+        for (uint32_t level = 0; level < bloom_level_count; ++level) {
+            std::vector<VkImage>& level_images = bloom_images[level];
+            std::vector<VkDeviceMemory>& level_memories = bloom_image_memories[level];
+            std::vector<VkImageView>& level_views = bloom_image_views[level];
+            uint32_t const level_width = std::max(1u, swap_chain_extent.width >> (level + 1u));
+            uint32_t const level_height = std::max(1u, swap_chain_extent.height >> (level + 1u));
 
-            bloom_image_views[i] = create_image_view(
-                bloom_images[i],
-                hdr_format,
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                device);
+            level_images.resize(swap_chain_image_views.size());
+            level_memories.resize(swap_chain_image_views.size());
+            level_views.resize(swap_chain_image_views.size());
+            for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+                create_msaa_image(
+                    level_width,
+                    level_height,
+                    hdr_format,
+                    VK_SAMPLE_COUNT_1_BIT,
+                    VK_IMAGE_TILING_OPTIMAL,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                    level_images[i],
+                    level_memories[i]);
+
+                level_views[i] = create_image_view(
+                    level_images[i],
+                    hdr_format,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    device);
+            }
         }
 
         register_cleanup([this] {
@@ -561,18 +568,24 @@ namespace vulkan {
             hdr_image_views.clear();
             hdr_image_memories.clear();
             hdr_images.clear();
-            for (auto const& view : bloom_image_views) {
-                vkDestroyImageView(device, view, nullptr);
+            for (auto const& level_views : bloom_image_views) {
+                for (auto const& view : level_views) {
+                    vkDestroyImageView(device, view, nullptr);
+                }
             }
-            for (auto const& memory : bloom_image_memories) {
-                vkFreeMemory(device, memory, nullptr);
+            for (auto const& level_memories : bloom_image_memories) {
+                for (auto const& memory : level_memories) {
+                    vkFreeMemory(device, memory, nullptr);
+                }
             }
-            for (auto const& image : bloom_images) {
-                vkDestroyImage(device, image, nullptr);
+            for (auto const& level_images : bloom_images) {
+                for (auto const& image : level_images) {
+                    vkDestroyImage(device, image, nullptr);
+                }
             }
-            bloom_image_views.clear();
-            bloom_image_memories.clear();
-            bloom_images.clear();
+            bloom_image_views = {};
+            bloom_image_memories = {};
+            bloom_images = {};
         });
     }
 
@@ -949,19 +962,25 @@ namespace vulkan {
             vkFreeMemory(device, memory, nullptr);
         }
         hdr_image_memories.clear();
-        // 2c. Destroy the bloom targets
-        for (auto const& view : bloom_image_views) {
-            vkDestroyImageView(device, view, nullptr);
+        // 2c. Destroy the bloom targets (all levels)
+        for (auto const& level_views : bloom_image_views) {
+            for (auto const& view : level_views) {
+                vkDestroyImageView(device, view, nullptr);
+            }
         }
-        bloom_image_views.clear();
-        for (auto const& image : bloom_images) {
-            vkDestroyImage(device, image, nullptr);
+        bloom_image_views = {};
+        for (auto const& level_images : bloom_images) {
+            for (auto const& image : level_images) {
+                vkDestroyImage(device, image, nullptr);
+            }
         }
-        bloom_images.clear();
-        for (auto const& memory : bloom_image_memories) {
-            vkFreeMemory(device, memory, nullptr);
+        bloom_images = {};
+        for (auto const& level_memories : bloom_image_memories) {
+            for (auto const& memory : level_memories) {
+                vkFreeMemory(device, memory, nullptr);
+            }
         }
-        bloom_image_memories.clear();
+        bloom_image_memories = {};
 
         // 3. Destroy depth resources
         for (auto const& view : depth_image_views) {

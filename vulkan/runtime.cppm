@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.9  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.10  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -211,11 +211,12 @@ namespace vulkan {
         VkDescriptorSetLayout post_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout post_pipeline_layout = VK_NULL_HANDLE;
         VkDescriptorPool post_descriptor_pool = VK_NULL_HANDLE;
-        uint32_t post_pool_capacity = 0; // descriptor sets the current pool can hold
-        std::vector<VkDescriptorSet> post_sets = {};
-        std::vector<VkDescriptorSet> post_bright_sets = {}; // pass A sets (HDR + a dummy sampler binding)
-        std::vector<VkImageView> post_bound_blooms = {};    // bloom views the current sets point at
-        std::vector<VkImageView> post_bound_views = {};     // HDR views the current sets point at
+        uint32_t post_pool_capacity = 0;                                 // descriptor sets the current pool can hold
+        std::vector<VkDescriptorSet> post_prefilter_sets = {};           // HDR -> bloom level 0 (bright pass)
+        std::vector<std::array<VkDescriptorSet, 3>> post_down_sets = {}; // level k -> level k+1 (k = 0..2)
+        std::vector<VkDescriptorSet> post_sets = {};                     // composite (HDR + all bloom levels)
+        std::vector<VkImageView> post_bound_blooms = {};                 // bloom views the current sets point at
+        std::vector<VkImageView> post_bound_views = {};                  // HDR views the current sets point at
         // per-stage render toggles: whether the skybox / shadow pass actually records this frame.
         // Skybox off leaves just the clear color; shadow off skips the depth pass (the shadow map
         // is cleared to fully-lit so the main pass samples "no shadow"). Both default on.
