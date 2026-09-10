@@ -144,9 +144,26 @@ void main() {
         // this ramp (PostProcessBloom.usf, BloomSetupCommon):
         //     BloomAmount = saturate((Luminance - BloomThreshold) * 0.5);  out = BloomAmount * Color
         // which fades in over a 2.0-wide luminance window above the threshold and keeps the colour.
-        const vec3 color = texture(source_color, v_uv).rgb;
+        vec3 color = texture(source_color, v_uv).rgb;
         const float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
-        const float amount = clamp((luminance - pc.bloom_threshold) * 0.5, 0.0, 1.0);
+
+        // Firefly ceiling. The ramp above bounds the FRACTION a pixel may contribute, not its
+        // magnitude: with a specular highlight three orders of magnitude above the sky, one blown
+        // pixel still entered the chain at full value and the whole pyramid carried it - which is
+        // what turns a tiny highlight into a large round patch that appears and vanishes as the
+        // camera moves. UE clamps the bloom input for exactly this reason (Bloom/BloomClampKernel)
+        // and its own ramp assumes an exposure-scaled input, which ours is not.
+        //
+        // The curve leaves everything at or below the ceiling untouched and folds the rest towards
+        // 2x the ceiling (an excess of 97.5 becomes 4.94 at a ceiling of 2.5) - smoothly, so the
+        // clamp introduces no plateau and no edge. It is a luminance scale, so the hue survives.
+        const float firefly_ceiling = 2.5;
+        const float base = min(luminance, firefly_ceiling);
+        const float excess = max(luminance - firefly_ceiling, 0.0);
+        const float compressed = base + excess / (1.0 + excess / firefly_ceiling);
+        color *= compressed / max(luminance, 1e-5);
+
+        const float amount = clamp((compressed - pc.bloom_threshold) * 0.5, 0.0, 1.0);
         out_color = vec4(color * amount, 1.0);
         return;
     }
