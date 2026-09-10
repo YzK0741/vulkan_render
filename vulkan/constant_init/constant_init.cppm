@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.constant_init
-// module version: 0.1.6  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.7  (independent of the app version in CMakeLists project(VERSION))
 //
 // Compile-time Vulkan info-struct conventions: constexpr factories + constinit
 // "transition" defaults for the structs the engine fills identically everywhere
@@ -527,6 +527,44 @@ export namespace vulkan {
         .image = VK_NULL_HANDLE,
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
+    /** @brief UNDEFINED -> SHADER_READ_ONLY_OPTIMAL for a DEPTH image: keep the shadow map's sampled
+     *         descriptor valid on frames where the shadow pass does not run (shadows toggled off).
+     *         pbr.frag always binds binding 8 and decides at runtime whether to sample it, and a
+     *         descriptor must point at an image in the layout it declares - leaving the map in
+     *         UNDEFINED made every such frame a VUID. Contents are irrelevant (the shader returns
+     *         "fully lit"), so UNDEFINED as the old layout is correct. */
+    inline constexpr VkImageMemoryBarrier2 undefined_to_depth_sampling_transition = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .pNext = nullptr,
+        .srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+        .srcAccessMask = 0,
+        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = VK_NULL_HANDLE,
+        .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
+    };
+    /** @brief UNDEFINED -> SHADER_READ_ONLY_OPTIMAL: make a transient target readable without
+     *         claiming a layout it may not be in (the bloom chain when the passes are skipped - the
+     *         composite still samples those bindings statically, so the layout must be valid, but the
+     *         contents are multiplied by zero) */
+    inline constexpr VkImageMemoryBarrier2 undefined_to_sampling_transition = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .pNext = nullptr,
+        .srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+        .srcAccessMask = 0,
+        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = VK_NULL_HANDLE,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
     /** @brief COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC_OPTIMAL, screenshot read-back copy
      *         (vkCmdCopyImageToBuffer). Recorded INSIDE the frame's own command buffer, while the
      *         swapchain image is still owned by the app: after vkQueuePresentKHR the presentation
@@ -556,6 +594,24 @@ export namespace vulkan {
         .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = VK_NULL_HANDLE,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    /** @brief UNDEFINED -> PRESENT_SRC_KHR: present a frame whose post-process pass was skipped, so
+     *         the swapchain image never entered COLOR_ATTACHMENT_OPTIMAL (contents are undefined -
+     *         this only exists to hand the WSI a validly-laid-out image instead of lying about the
+     *         old layout, which is what present_transition assumes) */
+    inline constexpr VkImageMemoryBarrier2 undefined_to_present_transition = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .pNext = nullptr,
+        .srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+        .srcAccessMask = 0,
+        .dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+        .dstAccessMask = 0,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = VK_NULL_HANDLE,

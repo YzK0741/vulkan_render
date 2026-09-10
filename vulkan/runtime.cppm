@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.22  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.23  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -463,9 +463,17 @@ namespace vulkan {
         // reach the view). Scene-scale heuristic: max(1, scene_radius / 8); see enable_shadows.
         float shadow_caster_extent = 1.0f;
         // scene center handed to enable_shadows. update_shadow_frustum falls back to
-        // center +- scene_radius when a shadow caster has no world AABB of its own (instanced
-        // leaves spread over many transforms), so such a caster can never fall outside the fit.
+        // center +- scene_radius when a shadow caster has no world AABB of its own AND is not an
+        // instanced draw whose instance matrices we can read (see instanced_world_aabb).
         glm::vec3 shadow_scene_center = glm::vec3(0.0f);
+        // Fit cache: rebuilding the light frustum walks every leaf and transforms 8 corners each,
+        // which is O(scene) work for a result that only changes when the camera or the scene moves.
+        // shadow_fit_view/proj are the camera matrices the current frustum was fitted for;
+        // shadow_frustum_valid is cleared by enable_shadows() (new light setup) and bvh_dirty marks
+        // a changed scene.
+        glm::mat4 shadow_fit_view = glm::mat4(1.0f);
+        glm::mat4 shadow_fit_proj = glm::mat4(1.0f);
+        bool shadow_frustum_valid = false;
         // optional Dear ImGui debug overlay; inactive until enable_debug_gui() succeeds. The
         // runtime drives it inside the frame steps (new_frame before recording, record after the
         // runtime's own draw calls) so callers only manage its content via debug_gui().
@@ -728,8 +736,19 @@ namespace vulkan {
          *       parallel recording) - only bind/push/draw commands, no barriers / begin-end.
          */
         /** @brief refit the directional shadow frustum to the current camera view (called once
-         *         per frame from pace_and_acquire; see enable_shadows) */
+         *         per frame from pace_and_acquire; skips the work unless the camera or scene moved,
+         *         see shadow_frustum_valid) */
         void update_shadow_frustum();
+        /**
+         * @brief world-space AABB of an INSTANCED leaf (one draw covering many transforms)
+         * @param leaf the leaf to bound
+         * @param[out] wmin/wmax the union of the source geometry's LOCAL AABB transformed by each of
+         *             the leaf's instance matrices (the vertex shader uses the instance matrix as the
+         *             whole world matrix, so this is exact)
+         * @return false when the leaf is not an instanced draw, its source/bounds are missing, or its
+         *         instance slice cannot be read - the caller then has to fall back to a coarser bound
+         */
+        [[nodiscard]] bool instanced_world_aabb(primitive const& leaf, glm::vec3& wmin, glm::vec3& wmax) const;
         void record_shadow_content(VkCommandBuffer command_buffer) const;
 
         /**
@@ -757,8 +776,13 @@ namespace vulkan {
          *       rendering instance.
          */
         /** @brief close the scene rendering instance and record the post-process pass (HDR ->
-         *         exposure/tonemap -> swapchain) plus the debug overlay on the final image */
-        void record_post_process(VkCommandBuffer command_buffer);
+         *         exposure/tonemap -> swapchain) plus the debug overlay on the final image
+         *  @return true when a fullscreen pass actually wrote the SWAPCHAIN image (so it is in
+         *          COLOR_ATTACHMENT_OPTIMAL and its contents are this frame's post-processed
+         *          result); false when the pass was skipped (no pipeline/descriptors), in which case
+         *          the swapchain image was never transitioned and the caller must not pretend
+         *          otherwise to the present barrier or the screenshot copy */
+        [[nodiscard]] bool record_post_process(VkCommandBuffer command_buffer);
         /** @brief (re)bind the post descriptor sets to the current per-image HDR targets */
         void ensure_post_descriptors();
         /**

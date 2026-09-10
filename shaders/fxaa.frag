@@ -111,5 +111,13 @@ void main() {
         rgb_result = mix(rgb_result, rgb_m, subpixel);
     }
 
-    out_color = vec4(srgb_to_linear(rgb_result), 1.0);
+    // Hand the result back in the encoding the TARGET expects: an sRGB swapchain attachment encodes
+    // linear -> sRGB in hardware, so it must receive linear values (encode_gamma == 0); a UNORM
+    // swapchain does no encoding, so the display-encoded result is stored as-is (encode_gamma == 1).
+    // Ignoring this branch made the UNORM case too dark by a whole gamma.
+    if (pc.encode_gamma > 0.5) {
+        out_color = vec4(rgb_result, 1.0);
+    } else {
+        out_color = vec4(srgb_to_linear(rgb_result), 1.0);
+    }
 }

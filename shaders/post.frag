@@ -55,7 +55,10 @@ vec3 sample_box(sampler2D s, vec2 uv) {
 
 void main() {
     if (pc.mode < 0.5) {
-        // bright pass: soft threshold in linear space, then let the hardware bilinear downsample
+        // bright pass: one fetch into a half-resolution target. Sampling a full-resolution source
+        // from a pixel centre of the half-resolution target lands exactly halfway between four source
+        // texels, so the LINEAR sampler returns their 2x2 average - no box filter needed here - and
+        // the soft threshold is applied to that average.
         vec3 color = texture(source_color, v_uv).rgb;
         out_color = vec4(max(color - vec3(pc.bloom_threshold), vec3(0.0)), 1.0);
         return;

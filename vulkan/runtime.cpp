@@ -1217,6 +1217,21 @@ namespace vulkan {
                 VkDependencyInfo const shadow_read_dependency = make_image_dependency_info(1, &shadow_read_barrier);
                 vkCmdPipelineBarrier2(*command_buffer, &shadow_read_dependency);
             }
+        } else if (this->shadow_pipeline && this->shadow_images.size() > static_cast<std::size_t>(frame_slot)) {
+            // The pass does not run this frame (shadows toggled off, or no light setup yet), but the
+            // scene set still binds the shadow map to binding 8 - pbr.frag uses it statically and only
+            // decides at runtime whether to sample it - and a sampled descriptor must point at an
+            // image that is in the layout the descriptor declares. Leaving the map in UNDEFINED made
+            // every shadow-off frame a VUID ("expects ... SHADER_READ_ONLY_OPTIMAL ... current layout
+            // is UNDEFINED"). Contents do not matter (the shader returns "fully lit"), hence UNDEFINED
+            // as the old layout.
+            auto const* shadow_detail = vk.vma.get_image_detail(this->shadow_images[frame_slot].handle());
+            if (shadow_detail != nullptr) {
+                VkImageMemoryBarrier2 shadow_read_barrier = vulkan::undefined_to_depth_sampling_transition;
+                shadow_read_barrier.image = shadow_detail->image;
+                VkDependencyInfo const shadow_read_dependency = make_image_dependency_info(1, &shadow_read_barrier);
+                vkCmdPipelineBarrier2(*command_buffer, &shadow_read_dependency);
+            }
         }
 
         // Dynamic rendering has no automatic attachment transitions (a render pass would do
@@ -1718,7 +1733,13 @@ namespace vulkan {
         // five sets per swapchain image: prefilter (HDR), three downsample inputs (level 0..2) and
         // the composite (HDR + all four levels + the LDR image for the FXAA pass)
         std::size_t const set_count = image_count * 5;
-        if (this->post_descriptor_pool == VK_NULL_HANDLE || this->post_pool_capacity < set_count) {
+        // Recreate the pool whenever the requirement DIFFERS, not only when it grows: the sets of the
+        // previous swapchain generation are still allocated from the old pool, so after a shrink
+        // (fewer images) allocating the new sets on top exceeded maxSets, vkAllocateDescriptorSets
+        // returned VK_ERROR_OUT_OF_POOL_MEMORY and the post pass stayed dead for the rest of the run
+        // (the failure path cleared post_sets, so every frame retried and failed again). Destroying
+        // the pool frees all of its sets, which is exactly what a new generation wants.
+        if (this->post_descriptor_pool == VK_NULL_HANDLE || this->post_pool_capacity != set_count) {
             vkDeviceWaitIdle(vk.device);
             if (this->post_descriptor_pool != VK_NULL_HANDLE) {
                 vkDestroyDescriptorPool(vk.device, this->post_descriptor_pool, nullptr);
@@ -1818,13 +1839,13 @@ namespace vulkan {
         this->post_bound_blooms = vk.bloom_image_views[0];
         this->post_bound_ldr = vk.ldr_image_views;
     }
-    void runtime::record_post_process(VkCommandBuffer const command_buffer) {
+    bool runtime::record_post_process(VkCommandBuffer const command_buffer) {
         core const& vk = this->vulkan_core;
         vkCmdEndRendering(command_buffer);
 
         this->ensure_post_descriptors();
         if (this->post_pipeline == std::nullopt || this->post_hdr_pipeline == std::nullopt || this->post_sets.size() <= this->current_image_index) {
-            return; // no post pipeline (creation failed): the HDR frame cannot be presented correctly
+            return false; // no post pipeline (creation failed): the HDR frame cannot be presented correctly
         }
 
         std::size_t const index = this->current_image_index;
@@ -1879,15 +1900,29 @@ namespace vulkan {
         };
 
         // ---- bloom chain: bright-pass prefilter into level 0, then downsample level by level ----
-        // every stage here renders into an R16F bloom level, so it needs the HDR-format pipeline
-        barrier_to_color(vk.bloom_images[0][index]);
-        run_fullscreen(*this->post_hdr_pipeline, vk.bloom_image_views[0][index], level_size(0), this->post_prefilter_sets[index], 0.0f);
-        for (std::size_t level = 0; level < 3; ++level) {
-            barrier_to_read(vk.bloom_images[level][index]);
-            barrier_to_color(vk.bloom_images[level + 1][index]);
-            run_fullscreen(*this->post_hdr_pipeline, vk.bloom_image_views[level + 1][index], level_size(static_cast<uint32_t>(level) + 1u), this->post_down_sets[index][level], 1.0f);
+        // every stage here renders into an R16F bloom level, so it needs the HDR-format pipeline.
+        // Skipped entirely when the composite multiplies the bloom sum by 0 (intensity 0): the four
+        // fullscreen passes would be pure cost. The levels are still moved to SHADER_READ_ONLY
+        // (from UNDEFINED - their contents are dead and the composite's static use of those bindings
+        // still requires a valid layout), because the composite samples them and multiplies by 0.
+        bool const bloom_enabled = this->bloom_intensity > 0.0f;
+        if (bloom_enabled) {
+            barrier_to_color(vk.bloom_images[0][index]);
+            run_fullscreen(*this->post_hdr_pipeline, vk.bloom_image_views[0][index], level_size(0), this->post_prefilter_sets[index], 0.0f);
+            for (std::size_t level = 0; level < 3; ++level) {
+                barrier_to_read(vk.bloom_images[level][index]);
+                barrier_to_color(vk.bloom_images[level + 1][index]);
+                run_fullscreen(*this->post_hdr_pipeline, vk.bloom_image_views[level + 1][index], level_size(static_cast<uint32_t>(level) + 1u), this->post_down_sets[index][level], 1.0f);
+            }
+            barrier_to_read(vk.bloom_images[3][index]);
+        } else {
+            for (uint32_t level = 0; level < vulkan::core::bloom_level_count; ++level) {
+                std::array<VkImageMemoryBarrier2, 1> barriers = {vulkan::undefined_to_sampling_transition};
+                barriers[0].image = vk.bloom_images[level][index];
+                VkDependencyInfo const dependency_info = make_image_dependency_info(1, barriers.data());
+                vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+            }
         }
-        barrier_to_read(vk.bloom_images[3][index]);
 
         // ---- composite: HDR + weighted bloom levels -> exposure -> ACES -> display ----
         // With FXAA enabled the composite cannot write the swapchain (the FXAA pass has to read what
@@ -1954,7 +1989,10 @@ namespace vulkan {
                 .bloom_intensity = this->bloom_intensity,
                 .bloom_threshold = this->bloom_threshold,
                 .mode = 3.0f,
-                .encode_gamma = 0.0f,
+                // Same meaning as in the composite: 0 = the swapchain attachment encodes to display
+                // values in hardware, so FXAA must hand it LINEAR values; 1 = the target is a UNORM
+                // format and FXAA's own display-encoded result is what should be stored.
+                .encode_gamma = is_srgb_format(vk.swap_chain_image_format) ? 0.0f : 1.0f,
                 .fxaa_subpixel = this->fxaa_subpixel,
                 .fxaa_edge_threshold = this->fxaa_edge_threshold};
             vkCmdPushConstants(command_buffer, this->post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(fxaa_push), &fxaa_push);
@@ -1964,18 +2002,22 @@ namespace vulkan {
             }
             vkCmdEndRendering(command_buffer);
         }
+        // true in both paths: the FXAA pass (or the composite, when FXAA is off) wrote the swapchain
+        return true;
     }
     frame_status runtime::end_recording() {
         core& vk = this->vulkan_core;
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
 
-        // close the scene rendering instance and run the post-process pass (exposure/tonemap)
-        this->record_post_process(*command_buffer);
-        // Screenshot: the swapchain image is still in COLOR_ATTACHMENT_OPTIMAL (the composite pass
-        // just wrote it) and still owned by this frame - the only point where a read-back copy is
-        // legal. Doing it here (rather than after the present, as the old path did) also means the
-        // capture needs no extra submit, no re-acquire and no layout hand-back to the WSI.
-        if (this->screenshot_requested) {
+        // close the scene rendering instance and run the post-process pass (exposure/tonemap).
+        // The return value says whether a fullscreen pass actually wrote the swapchain image: only
+        // then is it in COLOR_ATTACHMENT_OPTIMAL and only then does it hold this frame's result.
+        bool const post_wrote_swapchain = this->record_post_process(*command_buffer);
+        // Screenshot: while the post pass wrote the swapchain image it is still in
+        // COLOR_ATTACHMENT_OPTIMAL and still owned by this frame - the only point where a read-back
+        // copy is legal. Doing it here (rather than after the present, as the old path did) also
+        // means the capture needs no extra submit, no re-acquire and no layout hand-back to the WSI.
+        if (post_wrote_swapchain && this->screenshot_requested) {
             this->record_screenshot_copy(*command_buffer);
             if (this->screenshot_pending) {
                 this->screenshot_requested = false; // served; a failed copy stays pending for a retry
@@ -1984,8 +2026,11 @@ namespace vulkan {
         // Dynamic rendering has no render pass finalLayout to hand the image back to the
         // presentation engine: transition the swapchain image to PRESENT_SRC_KHR explicitly.
         // With MSAA the resolve target ends up in resolveImageLayout (COLOR_ATTACHMENT_OPTIMAL),
-        // so the barrier is needed on both the direct-render and the resolve paths.
-        VkImageMemoryBarrier2 present_barrier = present_transition;
+        // so the barrier is needed on both the direct-render and the resolve paths. When the post
+        // pass was skipped the image never entered COLOR_ATTACHMENT_OPTIMAL, and claiming that old
+        // layout would be a lie (validation: "oldLayout is not matching with the current layout"):
+        // transition from UNDEFINED instead - the frame has no content to preserve anyway.
+        VkImageMemoryBarrier2 present_barrier = post_wrote_swapchain ? present_transition : vulkan::undefined_to_present_transition;
         present_barrier.image = vk.swap_chain_images[this->current_image_index];
 
         VkDependencyInfo const dependency_info = make_image_dependency_info(1, &present_barrier);
@@ -2151,10 +2196,68 @@ namespace vulkan {
     // covers the frustum corners plus every caster whose shadow column can reach the view (a wall
     // behind the camera included). The box center is snapped to the texel grid, which is what keeps
     // the shadow edges from crawling while the camera moves.
+    bool runtime::instanced_world_aabb(primitive const& leaf, glm::vec3& wmin, glm::vec3& wmax) const {
+        // Instanced draws have no single world AABB (primitive::has_bounds is false for them), but
+        // their bounds are perfectly computable: pbr.vert uses instances[instance_base + i] as the
+        // whole world matrix (push flag bit0), so the union over the instance slice of the SOURCE
+        // geometry's local AABB is exact. Without this the fit had to assume "anywhere in the scene"
+        // and a single instanced draw (the grid stress mode places instances outside the scene
+        // bounds) both lost its own shadows and coarsened everyone else's.
+        if ((leaf.push.flags & 1u) == 0u || this->instance_mapped == nullptr) {
+            return false;
+        }
+        auto const& instanced = static_cast<instanced_draw_primitive const&>(leaf);
+        primitive const* const source = instanced.source;
+        if (source == nullptr || !source->has_bounds || instanced.instance_count == 0) {
+            return false;
+        }
+        std::size_t const base = leaf.push.instance_base;
+        if (base + instanced.instance_count > vulkan::instance_capacity) {
+            return false; // slice outside the shared buffer: cannot read it
+        }
+        auto const* matrices = static_cast<glm::mat4 const*>(this->instance_mapped);
+        glm::vec3 const lo = source->local_aabb_min;
+        glm::vec3 const hi = source->local_aabb_max;
+        wmin = glm::vec3(std::numeric_limits<float>::max());
+        wmax = glm::vec3(std::numeric_limits<float>::lowest());
+        for (uint32_t i = 0; i < instanced.instance_count; ++i) {
+            glm::mat4 const& model = matrices[base + i];
+            for (int corner = 0; corner < 8; ++corner) {
+                glm::vec3 const p((corner & 1) != 0 ? hi.x : lo.x,
+                                  (corner & 2) != 0 ? hi.y : lo.y,
+                                  (corner & 4) != 0 ? hi.z : lo.z);
+                glm::vec3 const world = glm::vec3(model * glm::vec4(p, 1.0f));
+                wmin = glm::min(wmin, world);
+                wmax = glm::max(wmax, world);
+            }
+        }
+        return true;
+    }
+
     void runtime::update_shadow_frustum() {
         if (!this->shadows_enabled) {
             return;
         }
+        // Refit only when the result can change: this walks every leaf and transforms 8 corners per
+        // caster (tens of thousands of transforms on a heavy scene), which is exactly the cost the
+        // BVH caster cull exists to avoid. The camera matrices are the fit's only inputs besides the
+        // scene, so comparing them (plus the scene-changed flag) is the complete condition.
+        if (this->shadow_frustum_valid && !this->bvh_dirty &&
+            this->shadow_fit_view == this->current_ubo.view && this->shadow_fit_proj == this->current_ubo.proj) {
+            return;
+        }
+        this->shadow_fit_view = this->current_ubo.view;
+        this->shadow_fit_proj = this->current_ubo.proj;
+        this->shadow_frustum_valid = true;
+        if (!(this->current_aspect > 0.0f) || this->current_ubo.proj[2][2] == 0.0f) {
+            // Degenerate camera (the very first frames, before the swapchain has an extent): the
+            // frustum corners would come out of an inverse of a singular matrix and the fit would be
+            // garbage (measured: a light-space z span of 1631 for two unrelated scenes). Keep the
+            // enable_shadows() default this frame and try again next frame.
+            this->shadow_frustum_valid = false;
+            return;
+        }
+
         float const map_size = static_cast<float>(vulkan::runtime::shadow_map_size);
         glm::vec3 const light_dir = glm::normalize(glm::vec3(this->light_state.light_dir));
         glm::vec3 const up(0.0f, 1.0f, 0.0f);
@@ -2213,6 +2316,7 @@ namespace vulkan {
         // under the orthographic light a caster's shadow lands at the caster's own light-space xy, so
         // that overlap test is exact for "can this shadow land inside the view". Geometry whose shadow
         // cannot reach the view (e.g. the floor slab behind the camera) is left out entirely.
+        bool unbounded_caster = false;
         if (this->bound_scene != nullptr) {
             this->shadow_caster_scratch.clear();
             for (scene_tree::scene_node const& root : this->bound_scene->roots) {
@@ -2222,19 +2326,22 @@ namespace vulkan {
             float const cone_max_x = max_ls.x;
             float const cone_min_y = min_ls.y;
             float const cone_max_y = max_ls.y;
-            bool unbounded_caster = false;
             for (primitive const* const leaf : this->shadow_caster_scratch) {
                 if (leaf == nullptr) {
                     continue;
                 }
-                if (!leaf->has_bounds) {
-                    // instanced leaf: one draw covering many transforms, so there is no single
-                    // world AABB to merge. It is still rendered into the shadow map, so the fit
-                    // must not pretend it does not exist - widen to the whole scene sphere below.
+                glm::vec3 wmin = {};
+                glm::vec3 wmax = {};
+                if (leaf->has_bounds) {
+                    std::tie(wmin, wmax) = leaf->world_aabb();
+                } else if (instanced_world_aabb(*leaf, wmin, wmax)) {
+                    // exact bounds, computed from this leaf's own instance matrices
+                } else {
+                    // a caster whose geometry we genuinely cannot bound: fall back to the scene
+                    // sphere below, which is sound but costs resolution
                     unbounded_caster = true;
                     continue;
                 }
-                auto const [wmin, wmax] = leaf->world_aabb();
                 glm::vec3 caster_min(std::numeric_limits<float>::max());
                 glm::vec3 caster_max(std::numeric_limits<float>::lowest());
                 for (int corner = 0; corner < 8; ++corner) {
@@ -2264,9 +2371,11 @@ namespace vulkan {
                                                     caster_max.z));
             }
             if (unbounded_caster) {
-                // A caster with no world AABB can be anywhere in the scene, so the only sound fit
-                // is the whole scene sphere; the box loses resolution but the alternative is a
-                // caster drawn into the map from outside it, i.e. sunlight leaking through it.
+                // A caster we cannot bound can be anywhere in the scene, so the only sound bound is
+                // the whole scene sphere - but only its DEPTH may enter the fit: clamping the sphere's
+                // xy to the camera footprint keeps the box tight (the same argument as above), while
+                // merging the raw sphere restored a box of scene size and made every thin caster's
+                // shadow dissolve in the coarser texels.
                 glm::vec3 sphere_min(std::numeric_limits<float>::max());
                 glm::vec3 sphere_max(std::numeric_limits<float>::lowest());
                 for (int corner = 0; corner < 8; ++corner) {
@@ -2278,13 +2387,26 @@ namespace vulkan {
                     sphere_min = glm::min(sphere_min, ls);
                     sphere_max = glm::max(sphere_max, ls);
                 }
-                min_ls = glm::min(min_ls, sphere_min);
-                max_ls = glm::max(max_ls, sphere_max);
+                min_ls = glm::min(min_ls, glm::vec3(std::clamp(sphere_min.x, cone_min_x, cone_max_x),
+                                                    std::clamp(sphere_min.y, cone_min_y, cone_max_y),
+                                                    sphere_min.z));
+                max_ls = glm::max(max_ls, glm::vec3(std::clamp(sphere_max.x, cone_min_x, cone_max_x),
+                                                    std::clamp(sphere_max.y, cone_min_y, cone_max_y),
+                                                    sphere_max.z));
             }
         }
-        // square the box (isotropic resolution) and snap its center to the texel grid
+        // square the box (isotropic resolution), quantize its size to whole texels and snap its center
+        // to the texel grid. Snapping the CENTER alone keeps the grid aligned while the camera
+        // translates, but the box SIZE follows the fitted footprint continuously, so every camera move
+        // rescaled the whole map and the shadow edges crawled anyway; rounding the size up to a texel
+        // multiple means small moves keep the same texel size (a large move still crosses a rounding
+        // step - removing that completely is what cascades or a fixed size ladder would do). The extra
+        // texel is margin: without it the visible footprint touched the very edge of the map, where
+        // the outermost half texel used to fall outside the box and casters there had no shadow edge.
         float const extent = std::max(max_ls.x - min_ls.x, max_ls.y - min_ls.y);
-        float const half = std::max(extent * 0.5f, 0.001f);
+        float const half_raw = std::max(extent * 0.5f, 0.001f);
+        float const texel_raw = (2.0f * half_raw) / map_size;
+        float const half = std::max(std::ceil(half_raw / texel_raw) * texel_raw + texel_raw, 0.001f);
         float const texel = (2.0f * half) / map_size;
         glm::vec3 center_ls = (min_ls + max_ls) * 0.5f;
         center_ls.x = std::floor(center_ls.x / texel) * texel;
@@ -2326,6 +2448,8 @@ namespace vulkan {
         this->shadow_caster_extent = std::max(1.0f, scene_radius * 0.125f);
         // remembered for update_shadow_frustum's fallback fit (a caster without its own world AABB)
         this->shadow_scene_center = scene_center;
+        // a new light setup invalidates the cached fit (see update_shadow_frustum)
+        this->shadow_frustum_valid = false;
         if (!this->shadow_pipeline || this->light_mapped.empty()) {
             utility::log("shadow mapping not enabled (no shadow pipeline / light buffer)");
             return;
@@ -2443,7 +2567,6 @@ namespace vulkan {
         } else {
             std::memcpy(result.rgba.data(), source, static_cast<std::size_t>(buffer_size));
         }
-        this->screenshot_pending = false;
         return result;
     }
 
@@ -2489,11 +2612,13 @@ namespace vulkan {
         if (!vk.swapchain_transfer_src_supported) {
             // The swapchain images lack VK_IMAGE_USAGE_TRANSFER_SRC_BIT, so vkCmdCopyImageToBuffer
             // from one of them would violate VUID-vkCmdCopyImageToBuffer-srcImage-00186. The surface
-            // cannot do screenshots at all: say it once and leave the request pending-free.
+            // cannot do screenshots at all: say it once, drop the request (a permanent condition -
+            // retrying every frame would only spam), and let main see "nothing captured".
             if (!this->screenshot_unsupported_logged) {
                 this->screenshot_unsupported_logged = true;
                 utility::log("screenshot: unsupported (swapchain has no TRANSFER_SRC usage) - F12 disabled");
             }
+            this->screenshot_requested = false;
             return;
         }
         if (this->ensure_screenshot_readback(extent) == nullptr) {
@@ -2525,9 +2650,14 @@ namespace vulkan {
     }
 
     bool runtime::consume_screenshot_request() noexcept {
-        // "was a frame captured for me?" - the copy is recorded during recording (end_recording)
-        // and read back by acquire_current_frame_image(), which is what the caller does next
+        // Could the requested frame be captured? Single-shot by design: the flag is cleared HERE, on
+        // success and on failure alike. A failing read-back (unsupported swapchain format, missing
+        // read-back buffer) used to leave the flag set, so main's loop called
+        // acquire_current_frame_image() - which begins with vkDeviceWaitIdle - and logged an error
+        // every single frame until exit. A dropped capture is the correct outcome; one F12 is one
+        // attempt.
         bool const captured = this->screenshot_pending;
+        this->screenshot_pending = false;
         return captured;
     }
 
