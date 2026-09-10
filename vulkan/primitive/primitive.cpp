@@ -180,7 +180,7 @@ namespace vulkan {
         return ubo;
     }
 
-    light_ubo make_directional_light_ubo(glm::vec3 const& scene_center, float const scene_radius) {
+    light_ubo make_directional_light_ubo(glm::vec3 const& scene_center, float const scene_radius, float const shadow_map_size) {
         // The light direction must match the analytic sky sun (see skybox.frag): the PBR direct
         // light, the visible sun disc and the shadow map all share this single fixed direction.
         // light_dir points TOWARD the sun in the sky (pbr.frag treats it as the surface-to-light
@@ -207,11 +207,11 @@ namespace vulkan {
 
         light_ubo ubo;
         ubo.light_view_proj = proj * view;
-        ubo.light_dir = glm::vec4(light_dir, 0.0f);
-        ubo.shadow_enabled = 1.0f; // shadows on by default; runtime::set_shadow_enabled flips it
-        ubo.brdf_model = 0.0f;     // defaults: GGX + joint Smith, Lambert (see light_ubo docs)
+        ubo.light_dir = glm::vec4(light_dir, 1.0f / shadow_map_size); // w: uv texel size for the pcf taps
+        ubo.shadow_enabled = 1.0f;                                    // shadows on by default; runtime::set_shadow_enabled flips it
+        ubo.brdf_model = 0.0f;                                        // defaults: GGX + joint Smith, Lambert (see light_ubo docs)
         ubo.diffuse_model = 0.0f;
-        ubo.pad = 0.0f;
+        ubo.shadow_texel_world = (2.0f * half) / shadow_map_size; // world size of one shadow texel
         return ubo;
     }
 } // namespace vulkan

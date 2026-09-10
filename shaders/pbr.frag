@@ -70,7 +70,7 @@ struct PunctualLight {
 
 layout(set = 0, binding = 7) uniform LightUBO {
     mat4 light_view_proj;
-    vec4 light_dir; // xyz: normalized light direction
+    vec4 light_dir; // xyz: normalized light direction, w: 1 / shadow map size (uv texel)
     float shadow_enabled; // 1.0 = sample shadow map, 0.0 = fully lit (runtime::set_shadow_enabled)
     // selectable BRDF theory models (gui combos -> runtime::set_brdf_model / set_diffuse_model,
     // CPU-side, riding the std140 padding of this block):
@@ -79,7 +79,7 @@ layout(set = 0, binding = 7) uniform LightUBO {
     //   diffuse_model: 0 = Lambert (default), 1 = Oren-Nayar
     float brdf_model;
     float diffuse_model;
-    float _pad;
+    float shadow_texel_world; // world size of one shadow-map texel (normal-offset bias)
     uint light_count;
     float exposure; // y lane of the CPU's light_count vec4: linear exposure scale (pre-tonemap)
     float toon_steps;   // cel-shading quantization steps (LightUBO.light_count.z; 0 = PBR)
@@ -106,11 +106,21 @@ float toon_band(float x, float steps, float softness) {
     float edge = smoothstep(0.5 - softness, 0.5 + softness, frac);
     return (base + edge) / steps;
 }
-// Percentage-closer filtering over the shadow map (hardware): sample with the fragment's
-// light-space depth as the comparison reference. Lit outside the light frustum.
-float calc_shadow(vec3 world_pos) {
-    // Transform the fragment into the light's clip space
-    vec4 light_clip = light.light_view_proj * vec4(world_pos, 1.0);
+// Shadow lookup: normal-offset bias + 3x3 percentage-closer filtering.
+//   - the sample point is pushed along the world normal by a couple of light-space texels, which
+//     removes most quantization acne on flat receivers WITHOUT a large depth bias - and a large
+//     depth bias is exactly what erases the shadow of a thin caster (a sword, a railing). The
+//     normal offset lets the depth bias below drop to a fraction of the old 0.0015.
+//   - the 3x3 grid of hardware 2x2 comparison taps (4x4 texel footprint) smooths the edge; a
+//     single tap flickered badly on thin geometry. The grid is unrotated on purpose: a rotated
+//     grid needs TAA to hide its per-pixel noise, and this renderer has no TAA yet.
+float calc_shadow(vec3 world_pos, vec3 normal) {
+    float texel_uv = light.light_dir.w;            // 1 / shadow map size
+    float texel_world = light.shadow_texel_world;  // world size of one texel
+
+    // normal offset: shift the world position before projecting it into light space
+    vec3 offset_pos = world_pos + normal * (texel_world * 2.0);
+    vec4 light_clip = light.light_view_proj * vec4(offset_pos, 1.0);
     vec3 ndc = light_clip.xyz / light_clip.w; // ortho projection: w == 1
     vec2 uv = ndc.xy * 0.5 + 0.5;
     float current_depth = ndc.z; // [0,1] (RH_ZO ortho)
@@ -120,16 +130,19 @@ float calc_shadow(vec3 world_pos) {
         return 1.0;
     }
 
-    // Constant depth bias pushes the comparison away from the surface to hide quantization
-    // acne on flat receivers; the shadow pass itself applies a slope-scaled rasterization
-    // depth bias for angled surfaces, so this stays small to avoid shadow detachment. The
-    // sampler's compareOp is LESS_OR_EQUAL, so lit = ref (minus bias) <= stored depth.
-    float bias = 0.0015;
-    float shadow = texture(shadow_map, vec3(uv, current_depth - bias));
+    // The sampler's compareOp is LESS_OR_EQUAL, so lit = (ref - bias) <= stored depth.
+    float bias = 0.0004;
+    float lit = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            vec2 tap = uv + vec2(float(x), float(y)) * texel_uv;
+            lit += texture(shadow_map, vec3(tap, current_depth - bias));
+        }
+    }
+    float shadow = lit / 9.0;
     // cel shading hardens the shadow edge into the same bands as the diffuse falloff
     return toon_band(shadow, light.toon_steps, light.toon_softness);
 }
-
 const float PI = 3.14159265359;
 
 // Normal distribution function: GGX / Trowbridge-Reitz (matches UE's D_GGX)
@@ -391,7 +404,7 @@ void main() {
     vec3 direct = vec3(0.0);
     // directional sun: shadow factor attenuates only this light; IBL ambient stays unshadowed
     {
-        float shadow = (light.shadow_enabled > 0.5) ? calc_shadow(v_world_pos) : 1.0;
+        float shadow = (light.shadow_enabled > 0.5) ? calc_shadow(v_world_pos, n) : 1.0;
         direct += evaluate_direct_light(n, v, base_color.rgb, metallic, roughness, f0, light.light_dir.xyz, vec3(7.5) * shadow);
     }
     // punctual lights (point/spot, no shadow casting in this version): inverse-square falloff

@@ -1970,7 +1970,7 @@ namespace vulkan {
         // light UBO: orthographic light view-proj framing the scene + the light direction.
         // Fill the CPU-side mirror only - pace_and_acquire copies it into every slot's own
         // light buffer as each slot is paced (nothing here touches mapped memory directly).
-        this->light_state = make_directional_light_ubo(scene_center, scene_radius);
+        this->light_state = make_directional_light_ubo(scene_center, scene_radius, static_cast<float>(vulkan::runtime::shadow_map_size));
         // respect the current GUI toggle: the flag in the slot's buffer tells pbr.frag whether
         // the depth map was rendered this frame
         this->light_state.shadow_enabled = this->shadow_enabled ? 1.0f : 0.0f;

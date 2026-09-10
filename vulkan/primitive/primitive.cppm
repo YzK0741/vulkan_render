@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene set; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.1.5  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.6  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -101,7 +101,7 @@ namespace vulkan {
      */
     export struct light_ubo {
         glm::mat4 light_view_proj; // world -> light clip space (orthographic)
-        glm::vec4 light_dir;       // xyz: normalized light direction (sun)
+        glm::vec4 light_dir;       // xyz: normalized light direction (sun), w: 1 / shadow map size
         float shadow_enabled;      // 1.0 samples the shadow map, 0.0 skips shadows
         // Selectable BRDF models (set via runtime::set_brdf_model / set_diffuse_model, gui
         // combos). Rides the std140 padding of this block - the shader reads them as floats:
@@ -110,8 +110,8 @@ namespace vulkan {
         //   diffuse_model: 0 = Lambert (default), 1 = Oren-Nayar
         float brdf_model = 0.0f;
         float diffuse_model = 0.0f;
-        float pad = 0.0f;
-        glm::vec4 light_count = {}; // x = active punctual light count (GLSL: uint), y = exposure, z = toon shading steps (0 = PBR), w = toon band softness
+        float shadow_texel_world = 0.0f; // world size of one shadow-map texel (normal-offset bias)
+        glm::vec4 light_count = {};      // x = active punctual light count (GLSL: uint), y = exposure, z = toon shading steps (0 = PBR), w = toon band softness
         std::array<point_light, max_punctual_lights> punctual_lights = {};
     };
     // std140 layout guard against the GLSL LightUBO in pbr.frag: light_count is a glm::vec4
@@ -661,5 +661,5 @@ namespace vulkan {
      * @note ortho box sized to cover a sphere of the given radius around scene_center; the light
      *       looks down the (0.3, 1.0, 0.5) direction (the same sun as the skybox)
      */
-    export light_ubo make_directional_light_ubo(glm::vec3 const& scene_center, float scene_radius);
+    export light_ubo make_directional_light_ubo(glm::vec3 const& scene_center, float scene_radius, float shadow_map_size);
 } // namespace vulkan
