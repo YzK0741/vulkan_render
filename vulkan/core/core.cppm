@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.1.2  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.3  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -59,6 +59,13 @@ namespace vulkan {
     export constexpr uint32_t scene_texture_capacity = 128;
     // material_push_constants: 6 uints + aligned mat4 = 96 bytes, see vulkan/scene_tree/scene_tree.cppm
     export constexpr uint32_t scene_push_constant_size = 96;
+
+    /**
+     * @brief format of the HDR scene target the forward pass renders into and the post-process
+     *        pass samples: the MSAA color images use it, and each swapchain image owns one
+     *        single-sample resolve target in it (see core::create_hdr_resolve_resources)
+     */
+    export constexpr VkFormat hdr_format = VK_FORMAT_R16G16B16A16_SFLOAT;
 
     /**
      * @ingroup vulkan_core
@@ -134,6 +141,12 @@ namespace vulkan {
         std::vector<VkDeviceMemory> color_image_memories = {};
         std::vector<VkImageView> color_image_views = {}; // MSAA image views
         VkFormat color_format = VK_FORMAT_UNDEFINED;
+        // HDR resolve targets (one per swapchain image): the MSAA scene pass resolves into
+        // them (format hdr_format) and the post-process pass samples them
+        std::vector<VkImage> hdr_images = {};
+        std::vector<VkDeviceMemory> hdr_image_memories = {};
+        std::vector<VkImageView> hdr_image_views = {};
+        void create_hdr_resolve_resources();
         void create_msaa_image(
             uint32_t width,
             uint32_t height,

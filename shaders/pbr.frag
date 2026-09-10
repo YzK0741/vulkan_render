@@ -412,12 +412,10 @@ void main() {
 
     vec3 color = ambient + direct + specular_ibl + emissive;
 
-    // ---- Exposure + tonemapping + gamma correction ----
-    // exposure is applied in linear space right before the tonemapper; the skybox pass applies
-    // the same scale (runtime::set_exposure) so sky and lit geometry stay consistent
-    color *= light.exposure;
-    color = aces_tone_mapping(color);
-    color = pow(color, vec3(1.0 / 2.2));
+    // The scene target is HDR: this forward pass writes linear radiance. Exposure, ACES
+    // tonemapping and gamma now happen once in the post-process pass (post.frag), which also
+    // gives the bloom chain a linear image to work on.
+    color = max(color, vec3(0.0));
 
     // glTF alpha semantics: only alphaMode BLEND materials carry real coverage in the output
     // alpha. OPAQUE and MASK outputs must write alpha = 1 (their base_color.a / albedo alpha

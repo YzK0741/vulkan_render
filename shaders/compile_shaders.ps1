@@ -28,7 +28,9 @@ $pairs = @(
     @("skybox.vert", "skybox.vert.spv"),
     @("skybox.frag", "skybox.frag.spv"),
     @("shadow.vert", "shadow.vert.spv"),
-    @("shadow.frag", "shadow.frag.spv")
+    @("shadow.frag", "shadow.frag.spv"),
+    @("post.vert", "post.vert.spv"),
+    @("post.frag", "post.frag.spv")
 )
 
 foreach ($pair in $pairs) {

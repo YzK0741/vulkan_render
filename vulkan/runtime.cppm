@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.5  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.6  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -196,6 +196,24 @@ namespace vulkan {
         bool ibl_ready = false;
         // background pass (fullscreen triangle, no depth test): drawn first every frame
         std::optional<vk_pipeline> skybox_pipeline = std::nullopt;
+
+        // ---- post-processing: HDR scene target -> exposure + ACES + gamma -> swapchain ----
+        // created by make_post_pipeline(); the descriptor sets rebind lazily whenever the
+        // swapchain (and with it the per-image HDR resolve targets) is recreated
+        struct post_push_constants {
+            float exposure = 1.0f;        // linear exposure scale (see set_exposure)
+            float bloom_intensity = 0.0f; // reserved: bloom blend weight (next step)
+            float bloom_threshold = 0.0f; // reserved: bloom bright-pass threshold
+            float pad = 0.0f;
+        };
+        std::optional<vk_pipeline> post_pipeline = std::nullopt;
+        vk_sampler post_sampler = {};
+        VkDescriptorSetLayout post_set_layout = VK_NULL_HANDLE;
+        VkPipelineLayout post_pipeline_layout = VK_NULL_HANDLE;
+        VkDescriptorPool post_descriptor_pool = VK_NULL_HANDLE;
+        uint32_t post_pool_capacity = 0; // descriptor sets the current pool can hold
+        std::vector<VkDescriptorSet> post_sets = {};
+        std::vector<VkImageView> post_bound_views = {}; // HDR views the current sets point at
         // per-stage render toggles: whether the skybox / shadow pass actually records this frame.
         // Skybox off leaves just the clear color; shadow off skips the depth pass (the shadow map
         // is cleared to fully-lit so the main pass samples "no shadow"). Both default on.
@@ -668,6 +686,11 @@ namespace vulkan {
          *       them in order. Only bind/push/draw commands - caller owns barriers + the
          *       rendering instance.
          */
+        /** @brief close the scene rendering instance and record the post-process pass (HDR ->
+         *         exposure/tonemap -> swapchain) plus the debug overlay on the final image */
+        void record_post_process(VkCommandBuffer command_buffer);
+        /** @brief (re)bind the post descriptor sets to the current per-image HDR targets */
+        void ensure_post_descriptors();
         void record_main_segment(VkCommandBuffer command_buffer, std::span<primitive const* const> leaves, bool draw_skybox) const;
 
         /**
@@ -749,6 +772,19 @@ namespace vulkan {
          * @note drawn first in every frame with depth test/write disabled, so models render over it;
          *       uses the shared scene set (camera UBO binding 0, env cubemap binding 2)
          */
+        /**
+         * @ingroup vulkan_runtime
+         * @brief create the post-process pipeline (HDR scene target -> exposure + ACES tonemap +
+         *        gamma -> swapchain): the fullscreen pass runs after the scene rendering instance
+         *        closes and before the debug overlay, on a 1x swapchain image
+         * @param vertex_shader_code post.vert SPIR-V (synthesizes the fullscreen triangle)
+         * @param fragment_shader_code post.frag SPIR-V (sampler2D HDR input + push constants)
+         * @note call once after the runtime is set up; callers load the SPIR-V (see
+         *       chores::setup_pipeline). Without it the HDR scene target cannot be presented
+         */
+        std::expected<void, std::string> make_post_pipeline(
+            std::span<unsigned char const> vertex_shader_code,
+            std::span<unsigned char const> fragment_shader_code);
         std::expected<void, std::string> make_skybox_pipeline(
             std::span<unsigned char const> vertex_shader_code,
             std::span<unsigned char const> fragment_shader_code);

@@ -33,6 +33,7 @@ namespace vulkan {
         create_depth_resources();
         color_format = swap_chain_image_format;
         create_color_resources();
+        create_hdr_resolve_resources(); // HDR resolve targets: the post-process pass input
         create_command_pool();
         create_descriptor_pool();
         init_scene_layouts();
@@ -465,7 +466,7 @@ namespace vulkan {
             create_msaa_image(
                 swap_chain_extent.width,
                 swap_chain_extent.height,
-                color_format,
+                hdr_format,
                 msaa_samples,
                 VK_IMAGE_TILING_OPTIMAL,
                 VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
@@ -475,7 +476,7 @@ namespace vulkan {
 
             color_image_views[i] = create_image_view(
                 color_images[i],
-                color_format,
+                hdr_format,
                 VK_IMAGE_ASPECT_COLOR_BIT,
                 device);
         }
@@ -493,6 +494,48 @@ namespace vulkan {
             color_image_views.clear();
             color_image_memories.clear();
             color_images.clear();
+        });
+    }
+
+    void core::create_hdr_resolve_resources() {
+        // One single-sample HDR resolve target per swapchain image: the MSAA scene pass resolves
+        // into it and the post-process pass samples it (COLOR_ATTACHMENT + SAMPLED usage).
+        hdr_images.resize(swap_chain_image_views.size());
+        hdr_image_memories.resize(swap_chain_image_views.size());
+        hdr_image_views.resize(swap_chain_image_views.size());
+
+        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+            create_msaa_image(
+                swap_chain_extent.width,
+                swap_chain_extent.height,
+                hdr_format,
+                VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                hdr_images[i],
+                hdr_image_memories[i]);
+
+            hdr_image_views[i] = create_image_view(
+                hdr_images[i],
+                hdr_format,
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                device);
+        }
+
+        register_cleanup([this] {
+            for (auto const& view : hdr_image_views) {
+                vkDestroyImageView(device, view, nullptr);
+            }
+            for (auto const& memory : hdr_image_memories) {
+                vkFreeMemory(device, memory, nullptr);
+            }
+            for (auto const& image : hdr_images) {
+                vkDestroyImage(device, image, nullptr);
+            }
+            hdr_image_views.clear();
+            hdr_image_memories.clear();
+            hdr_images.clear();
         });
     }
 
@@ -842,6 +885,34 @@ namespace vulkan {
             color_image_memories.clear();
         }
 
+        // 2b. Destroy HDR resolve targets
+        for (auto const& view : hdr_image_views) {
+            vkDestroyImageView(device, view, nullptr);
+        }
+        hdr_image_views.clear();
+        for (auto const& image : hdr_images) {
+            vkDestroyImage(device, image, nullptr);
+        }
+        hdr_images.clear();
+        for (auto const& memory : hdr_image_memories) {
+            vkFreeMemory(device, memory, nullptr);
+        }
+        hdr_image_memories.clear();
+
+        // 2b. Destroy the HDR resolve targets
+        for (auto const& view : hdr_image_views) {
+            vkDestroyImageView(device, view, nullptr);
+        }
+        hdr_image_views.clear();
+        for (auto const& image : hdr_images) {
+            vkDestroyImage(device, image, nullptr);
+        }
+        hdr_images.clear();
+        for (auto const& memory : hdr_image_memories) {
+            vkFreeMemory(device, memory, nullptr);
+        }
+        hdr_image_memories.clear();
+
         // 3. Destroy depth resources
         for (auto const& view : depth_image_views) {
             vkDestroyImageView(device, view, nullptr);
@@ -871,9 +942,10 @@ namespace vulkan {
         }
 
         // 6. Recreate all resources
-        this->init_swap_chain();        // rebuild swapchain
-        this->init_image_views();       // rebuild image views
-        this->create_depth_resources(); // rebuild depth resources
+        this->init_swap_chain();              // rebuild swapchain
+        this->init_image_views();             // rebuild image views
+        this->create_depth_resources();       // rebuild depth resources
+        this->create_hdr_resolve_resources(); // rebuild the HDR resolve targets
 
         if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
             this->create_color_resources(); // rebuild MSAA color resources

@@ -151,6 +151,20 @@ namespace chores {
             }
             utility::log("SUCCESS: skybox pipeline created (fullscreen environment background)");
         }
+        {
+            // Post-process pipeline (HDR scene target -> exposure + ACES + gamma -> swapchain):
+            // the forward passes render into an HDR offscreen target, so this pass is required to
+            // present anything meaningful. Panic on failure like the skybox.
+            std::vector<unsigned char> vertex_code;
+            std::vector<unsigned char> fragment_code;
+            load_shader(shaders_dir, "post.vert.spv", vertex_code);
+            load_shader(shaders_dir, "post.frag.spv", fragment_code);
+            auto const post_result = runtime.make_post_pipeline(vertex_code, fragment_code);
+            if (!post_result) {
+                utility::panic(std::source_location::current(), "failed to create post-process pipeline: {}", post_result.error());
+            }
+            utility::log("SUCCESS: post-process pipeline created (HDR -> exposure/tonemap -> swapchain)");
+        }
 
         {
             // Shadow pass pipeline (depth-only): renders the scene from the light into the shadow
