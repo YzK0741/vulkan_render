@@ -304,6 +304,9 @@ would draw with a named pipeline in the main pass still cast their geometry here
 discard as `pbr.frag` off the material record, so a cut-out caster (foliage, a
 curtain) throws a cut-out shadow rather than none or a solid one. `BLEND` leaves
 are still skipped — a depth-only pass cannot blend a transparent shadow.
+The pass also rasterizes **two-sided** (`render_environment::two_sided`): a caster
+must never be dropped for facing away from the light, or a single-sided wall plane
+that faces into the room casts no shadow at all and the sun pours through it.
 
 ### 4.4 Shadow caster culling (`f094c31`, revised)
 

@@ -41,7 +41,7 @@ namespace vulkan {
         env.bind_default();
         env.set_depth_write(!this->transparent);
         VkCommandBuffer const command_buffer = env.command_buffer;
-        vkCmdSetCullMode(command_buffer, this->double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
+        env.set_cull_mode(this->double_sided);
         this->bind_geometry_and_push(env);
         vkCmdDrawIndexed(command_buffer, this->index_count, 1, 0, 0, 0);
     }
@@ -70,7 +70,7 @@ namespace vulkan {
         // geometry belongs to source: bind ITS buffers, then draw it instance_count times;
         // push flag bit0 makes pbr.vert pick instances[gl_InstanceIndex] per instance
         primitive const& geometry_source = *this->source;
-        vkCmdSetCullMode(command_buffer, this->double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
+        env.set_cull_mode(this->double_sided);
         constexpr VkDeviceSize vertex_offset = 0;
         vkCmdBindVertexBuffers(command_buffer, 0, 1, &geometry_source.vertex_detail->buffer, &vertex_offset);
         vkCmdBindIndexBuffer(command_buffer, geometry_source.index_detail->buffer, 0, geometry_source.index_type);
@@ -107,7 +107,7 @@ namespace vulkan {
         // The chunk table is validated at make_static_draw() time (in-range index windows and
         // vertex references), so no draw can go out of bounds.
         for (chunk_record const& chunk : this->chunks) {
-            vkCmdSetCullMode(command_buffer, chunk.double_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
+            env.set_cull_mode(chunk.double_sided);
             material_push_constants const chunk_push = [&] {
                 material_push_constants p = this->push; // model + flags already correct
                 p.material_index = chunk.material_index;

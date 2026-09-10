@@ -39,6 +39,7 @@ namespace vulkan {
      * - layout: the shared scene pipeline layout (every pipeline shares it; push constants
      *   record against it, independent of which pipeline is bound)
      * - bound: the pipeline name currently bound in this session (empty = nothing bound yet)
+     * - two_sided: force two-sided rasterization on this session (the shadow pass; see below)
      *
      * A "default-semantics" primitive (normal / instanced / static draw) does:
      * @code
@@ -57,6 +58,19 @@ namespace vulkan {
         std::function<void(VkCommandBuffer, VkBool32)> set_depth_write_fn = {}; // injected depth-write setter
         VkPipelineLayout layout = VK_NULL_HANDLE;                               // shared scene layout
         std::string_view bound = {};                                            // currently bound name
+        // injected cull-mode setter (core dynamic state since Vulkan 1.3, so one pipeline serves
+        // single- and double-sided materials)
+        std::function<void(VkCommandBuffer, VkCullModeFlags)> set_cull_mode_fn = {};
+        // Session-wide two-sided rasterization. The SHADOW pass sets it, and it is not a nicety: a
+        // caster must never be dropped for facing it away from the light. A single-sided wall plane
+        // whose only face points into the room (Sponza is full of them) is back-facing as seen from
+        // the sun, so a back-face-culled depth pass simply does not record it - and since the camera
+        // inside the room sees that same wall's front face, the wall looks perfectly solid while the
+        // sunlight pours straight through it. Front-face culling fails on exactly the same geometry,
+        // so the depth pass draws both sides (the depth test still keeps the nearest surface).
+        bool two_sided = false;
+        VkCullModeFlags cull_mode_recorded = VK_CULL_MODE_BACK_BIT;
+        bool cull_mode_known = false;
         // depth-write state actually recorded so far. Starts "unknown" (nothing recorded yet):
         // the first set_depth_write() must ALWAYS emit vkCmdSetDepthWriteEnable even when the
         // requested state matches the pipeline default - a dynamic state that is never set is
@@ -96,6 +110,23 @@ namespace vulkan {
                 this->set_depth_write_fn(this->command_buffer, want);
                 this->depth_write_recorded = want;
                 this->depth_write_known = true;
+            }
+        }
+
+        /**
+         * @brief record the cull mode for a material, honoring the session's two-sided flag
+         * @param two_sided_material the primitive's own glTF `doubleSided` flag (renders both faces)
+         * @note callers pass their material flag and let the session decide: the shadow pass forces
+         *       VK_CULL_MODE_NONE regardless (see two_sided), the main pass keeps back-face culling
+         *       for single-sided materials. Deduplicated like set_depth_write(), so consecutive
+         *       leaves sharing a cull mode emit the state once.
+         */
+        void set_cull_mode(bool const two_sided_material) {
+            VkCullModeFlags const want = (this->two_sided || two_sided_material) ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
+            if (!this->cull_mode_known || this->cull_mode_recorded != want) {
+                this->set_cull_mode_fn(this->command_buffer, want);
+                this->cull_mode_recorded = want;
+                this->cull_mode_known = true;
             }
         }
     };

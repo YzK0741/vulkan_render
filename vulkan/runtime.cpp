@@ -1388,6 +1388,15 @@ namespace vulkan {
         env.set_depth_write_fn = [](VkCommandBuffer const cb, VkBool32 const) {
             vkCmdSetDepthWriteEnable(cb, VK_TRUE);
         };
+        // ... and it draws every caster TWO-SIDED: a caster is never culled for facing away from
+        // the light. A single-sided wall plane whose only face points into the room is back-facing
+        // as seen from the sun, so a back-face-culled depth pass never records it and the sunlight
+        // pours straight through a wall the camera sees as solid - the classic "the wall behind the
+        // camera is transparent" leak. See render_environment::two_sided.
+        env.two_sided = true;
+        env.set_cull_mode_fn = [](VkCommandBuffer const cb, VkCullModeFlags const mode) {
+            vkCmdSetCullMode(cb, mode);
+        };
         env.layout = vk.scene_pipeline_layout;
         // draw only the casters that can throw a shadow into the camera frustum (see
         // shadow_casters in begin_recording); the whole scene only when culling is disabled.
@@ -1482,6 +1491,11 @@ namespace vulkan {
         // transparent leaves toggle depth writes off via this (core dynamic state, 1.3)
         env.set_depth_write_fn = [](VkCommandBuffer const cb, VkBool32 const enabled) {
             vkCmdSetDepthWriteEnable(cb, enabled);
+        };
+        // single-sided materials keep back-face culling here (the shadow pass overrides it with
+        // env.two_sided; the main pass must not, or double-sided handling would cost fill rate)
+        env.set_cull_mode_fn = [](VkCommandBuffer const cb, VkCullModeFlags const mode) {
+            vkCmdSetCullMode(cb, mode);
         };
         env.layout = vk.scene_pipeline_layout;
         for (primitive const* const m : leaves) {
