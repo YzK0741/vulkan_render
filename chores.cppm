@@ -128,6 +128,11 @@ namespace chores {
                                            // 2 = Beckmann, 3 = Blinn-Phong); write-through to runtime
         int diffuse_model = 0;             // diffuse combo (0 = Lambert, 1 = Oren-Nayar)
         float exposure = 1.0f;             // linear exposure slider (runtime::set_exposure)
+        // bloom on/off (M9): the checkbox gates the whole chain; the intensity slider keeps its value
+        // while it is off, so toggling back restores the previous look. main() mirrors it by pushing an
+        // intensity of 0 when the box is clear, which is what runtime::active_features() gates the
+        // bloom passes on.
+        bool bloom_enabled = true;
         float bloom_intensity = 0.8f;      // bloom blend weight slider (runtime::set_bloom; 0 = off)
         int toon_bands_index = 0;          // cel-shading combo: index into toon_band_counts (0 = plain PBR)
         float toon_softness = 0.15f;       // cel-shading band edge softness slider (smaller = harder edges)

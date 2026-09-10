@@ -373,8 +373,17 @@ namespace chores {
         // the useful ranges: a threshold above ~0.75 leaves almost no pixel over it (so nothing
         // glows), and the intensity needed for a visible glow grows with the threshold - keeping
         // the threshold low is what makes the whole intensity slider effective
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("bloom intensity", &bindings.bloom_intensity, 0.0f, 3.0f));
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("bloom threshold", &bindings.bloom_threshold, 0.0f, 0.75f));
+        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("bloom", &bindings.bloom_enabled));
+        // the two knobs only matter while the chain runs (main pushes a 0 intensity when the box is clear)
+        {
+            auto bloom_knob = [&](std::string label, float* value, float lo, float hi) {
+                auto slider = std::make_unique<vulkan::gui::slider_widget>(std::move(label), value, lo, hi);
+                slider->visible_when = [&bindings] { return bindings.bloom_enabled; };
+                panel.push_back(std::move(slider));
+            };
+            bloom_knob("bloom intensity", &bindings.bloom_intensity, 0.0f, 3.0f);
+            bloom_knob("bloom threshold", &bindings.bloom_threshold, 0.0f, 0.75f);
+        }
         // FXAA: a checkbox plus its two shader knobs (main mirrors all three into the runtime every
         // frame). The knobs are genuine effects, not strength padding - "subpixel" trades edge
         // smoothing for the single-pixel sparkle FXAA leaves on near-axis-aligned edges, and the
