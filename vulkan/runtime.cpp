@@ -1707,13 +1707,50 @@ namespace vulkan {
         // so a frame without shadows just writes this mark next to frame_begin and reports ~0 ms.
         this->gpu_mark(*command_buffer, gpu_mark_id::shadow_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
-        // Dynamic rendering has no automatic attachment transitions (a render pass would do
-        // them implicitly): move every attachment into its render layout before
-        // vkCmdBeginRendering
-        // The G-buffer mode writes three single-sampled targets plus the pass's own 1x depth image
-        // instead: the main HDR target is not touched by the opaque pass at all (the debug view
-        // writes it afterwards), so it must not be transitioned here.
-        bool const gbuffer_pass = this->gbuffer_pass_active();
+        // ---- the scene pass: two named paths over one shared recorder ----
+        // Everything above is shared: the cluster dispatch, the shadow pass, the attachment
+        // transitions and the pass geometry. From here the frame is either shaded while it draws
+        // (forward) or stored as a surface for the lighting stage that follows it (deferred, see
+        // record_post_process).
+        if (this->gbuffer_pass_active()) {
+            this->record_deferred_scene(*command_buffer);
+        } else {
+            this->record_forward_scene(*command_buffer);
+        }
+    }
+
+    // The scene pass of the FORWARD path: shade while drawing. The opaque leaves bind their own
+    // forward pipelines (record_main_segment picks them, at the swapchain's sample count),
+    // segment 0 draws the skybox behind them, and the alpha-blended leaves compose over the
+    // depth they wrote.
+    void runtime::record_forward_scene(VkCommandBuffer const command_buffer) {
+        this->record_scene_attachments(command_buffer, /*gbuffer_pass=*/false);
+        this->update_pass_geometry();
+        this->record_opaque_scene(command_buffer, /*gbuffer_pass=*/false, /*draw_transparent=*/true);
+    }
+
+    // The scene pass of the DEFERRED path: store the surface, shade later. It records the same
+    // opaque leaves into the single-sampled G-buffer instead, and draws neither the skybox (the
+    // lighting stage writes the sky into the pixels no geometry covered) nor alpha-blended
+    // geometry (blending would have to compose over an already shaded image: a pass of its own,
+    // still ahead). record_post_process() turns the G-buffer into the frame afterwards.
+    void runtime::record_deferred_scene(VkCommandBuffer const command_buffer) {
+        this->record_scene_attachments(command_buffer, /*gbuffer_pass=*/true);
+        this->update_pass_geometry();
+        this->record_opaque_scene(command_buffer, /*gbuffer_pass=*/true, /*draw_transparent=*/false);
+    }
+
+    // Move one path's attachments into their render layouts; see the declaration for why this
+    // cannot be left to a render pass.
+    void runtime::record_scene_attachments(VkCommandBuffer const command_buffer, bool const gbuffer_pass) {
+        core& vk = this->vulkan_core;
+        // Dynamic rendering has no automatic attachment transitions (a render pass would do them
+        // implicitly): move every attachment into its render layout before vkCmdBeginRendering.
+        // Which set that is arrives as a parameter - the forward path's HDR (plus the MSAA color
+        // image) and depth, or the G-buffer mode's three single-sampled surface targets plus the
+        // pass's own 1x depth image. The main HDR target is not touched by the opaque G-buffer pass
+        // at all (the debug view writes it afterwards), so it must not be transitioned here.
+        //
         // room for every pass attachment plus the depth: three surface targets + the G-buffer's own
         // depth + the scene color the emissive goes into (the forward path uses at most three of these
         // slots). Sizing this for the old three-target G-buffer was a stack overflow the moment the
@@ -1748,8 +1785,12 @@ namespace vulkan {
         }
 
         VkDependencyInfo const dependency_info = make_image_dependency_info(barrier_count, attachment_barriers.data());
-        vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
+        vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+    }
 
+    // Resync the cached viewport/scissor of every pipeline that draws this frame.
+    void runtime::update_pass_geometry() {
+        core& vk = this->vulkan_core;
         // Pipelines cache a fullscreen viewport/scissor at creation; after a resize the swapchain
         // extent changed, so resync them from the current extent before drawing (begin_pipeline
         // applies the stored values). Done here on the primary thread (it mutates the cached
@@ -1816,7 +1857,15 @@ namespace vulkan {
             this->taa_pipeline->viewport = full_viewport;
             this->taa_pipeline->scissor = full_scissor;
         }
+    }
 
+    // The opaque scene itself, shared by both paths: the segmentation, the per-segment secondary
+    // lifetime and the execute order are identical, only the pipelines the leaves bind (chosen in
+    // record_main_segment from `gbuffer_pass`) and the two optional extras differ.
+    void runtime::record_opaque_scene(VkCommandBuffer const command_buffer, bool const gbuffer_pass, bool const draw_transparent) {
+        core& vk = this->vulkan_core;
+        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
+        bool const draw_skybox = !gbuffer_pass; // a background for the forward instance only
         // Stage 3 of parallel recording: the main-pass visible leaves are split into up-to-N
         // contiguous sub_render_tasks (N = task-pool workers), each recording its own per-slot
         // SECONDARY command buffer; the batch is posted to the task pool and the recording
@@ -1860,7 +1909,7 @@ namespace vulkan {
         // recorded_* flags gate the execute below: a secondary whose begin failed must never be
         // executed (executing an unrecorded command buffer is a VUID and can wedge the slot).
         VkCommandBuffer const transparent_secondary = *secondaries[static_cast<std::size_t>(secondary_pass::transparent)];
-        bool has_transparent = !gbuffer_pass && !this->frame_transparent.empty();
+        bool has_transparent = draw_transparent && !this->frame_transparent.empty();
         auto const record_transparent_pass = [&] {
             if (!has_transparent) {
                 return;
@@ -1880,20 +1929,20 @@ namespace vulkan {
             VkCommandBuffer const single_main = *main_segments[0].second;
             bool main_recorded = false;
             if (vkBeginCommandBuffer(single_main, &main_sec_begin) == VK_SUCCESS) {
-                this->record_main_content(single_main);
+                this->record_main_segment(single_main, this->frame_visible, draw_skybox);
                 vkEndCommandBuffer(single_main);
                 main_recorded = true;
             } else {
                 utility::log("runtime: main secondary begin failed - scene skipped this frame");
             }
 
-            this->begin_rendering(*command_buffer, this->current_image_index, VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT);
+            this->begin_rendering(command_buffer, this->current_image_index, VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT);
             if (main_recorded) {
-                vkCmdExecuteCommands(*command_buffer, 1, &single_main);
+                vkCmdExecuteCommands(command_buffer, 1, &single_main);
             }
             record_transparent_pass(); // alpha-blended leaves compose over the opaque depth
             if (has_transparent) {
-                vkCmdExecuteCommands(*command_buffer, 1, &transparent_secondary);
+                vkCmdExecuteCommands(command_buffer, 1, &transparent_secondary);
             }
 
             return;
@@ -1918,7 +1967,7 @@ namespace vulkan {
             // the skybox belongs to the first segment, and never to the G-buffer (a background is
             // not a surface: the deferred path treats "no geometry" as the sky, the debug view
             // clears those pixels)
-            task.draw_skybox = s == 0 && !gbuffer_pass;
+            task.draw_skybox = s == 0 && draw_skybox;
             task.color_formats = pass_color_formats;
             task.color_count = pass_color_count;
             task.depth_format = vk.depth_format;
@@ -1936,17 +1985,17 @@ namespace vulkan {
         // is never executed.
         record_transparent_pass();
 
-        this->begin_rendering(*command_buffer, this->current_image_index, VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT);
+        this->begin_rendering(command_buffer, this->current_image_index, VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT);
         for (std::size_t s = 0; s < segment_count; ++s) {
             if (!segment_recorded[s].load(std::memory_order_relaxed)) {
                 continue; // this segment's begin failed - never execute the unrecorded buffer
             }
             VkCommandBuffer const seg_cb = *main_segments[s].second;
-            vkCmdExecuteCommands(*command_buffer, 1, &seg_cb);
+            vkCmdExecuteCommands(command_buffer, 1, &seg_cb);
         }
         // transparent leaves compose over the opaque depth, before the gui overlay
         if (has_transparent) {
-            vkCmdExecuteCommands(*command_buffer, 1, &transparent_secondary);
+            vkCmdExecuteCommands(command_buffer, 1, &transparent_secondary);
         }
     }
 
@@ -2013,20 +2062,6 @@ namespace vulkan {
             }
             m->draw(env); // depth-only: shadow.vert transforms into light space
         }
-    }
-
-    // Main-pass scene content: bind this frame slot's scene set, draw the skybox background
-    // (when enabled) then every pipeline's visible leaves. Pure bind/push/draw commands - the
-    // caller owns the barriers + the color/depth rendering instance around it (and the
-    // viewport/scissor resync, which updates the cached pipeline state on the CPU). Recorded
-    // inline today; stage 2 records the same content into a per-slot secondary command buffer
-    // for parallel pass recording. The debug overlay stays on the primary (it has its own
-    // recording path), so this content is the scene only.
-    void runtime::record_main_content(VkCommandBuffer const command_buffer) const {
-        // the skybox is a background, not a surface: it draws in the forward instance only (the
-        // G-buffer pass leaves those pixels cleared - see the deferred path's debug/lighting pass)
-        bool const draw_skybox = !this->gbuffer_pass_active() && this->skybox_pipeline && this->skybox_enabled;
-        this->record_main_segment(command_buffer, this->frame_visible, draw_skybox);
     }
 
     // One slice of the main-pass leaves (see the declaration); when draw_skybox the skybox is
@@ -3548,7 +3583,7 @@ namespace vulkan {
         f.bloom = this->bloom_intensity > 0.0f && this->post_hdr_pipeline.has_value() && !f.gbuffer_debug;
         f.fxaa = this->fxaa_on && this->post_fxaa_pipeline.has_value();
         // The deferred path evaluates the sky inside its own lighting stage, so the forward skybox
-        // pass has nothing to draw there (this is what record_main_content already did).
+        // pass has nothing to draw there (this is what record_opaque_scene's forward call does).
         f.skybox = this->skybox_enabled && this->skybox_pipeline.has_value() && !f.deferred && !f.gbuffer_debug;
         // The forward transparent pass is skipped whenever the G-buffer pass owns the opaque geometry
         // (its depth attachment is the 1x G-buffer depth, which the MSAA forward pass cannot match).

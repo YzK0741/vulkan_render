@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.17.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.17.0a  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -1096,15 +1096,72 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief record the main-pass scene content into @p command_buffer: bind the shared
-         *        scene set, draw the skybox background (when enabled) then every pipeline's
-         *        visible leaves. The caller frames it (already inside the main rendering
-         *        instance with color+depth attachments).
-         * @note extracted from record_main_drawcalls() so the same content can be recorded
-         *       inline (stage 1) or into a per-slot secondary command buffer (stage 2,
-         *       parallel recording) - only bind/push/draw commands, no barriers / begin-end.
+         * @brief record the scene pass of the FORWARD path into @p command_buffer: move the HDR
+         *        (plus MSAA color) and depth attachments into their render layouts, resync the pass
+         *        geometry, then record the opaque leaves - the skybox behind them (segment 0) and
+         *        the alpha-blended leaves over the depth they wrote.
+         * @param command_buffer the frame's primary command buffer
+         *
+         * Path 1 of 2 (see record_deferred_scene). Both go through record_opaque_scene(), which owns
+         * the segmentation and the secondary lifetime; this one subscribes to the skybox and to the
+         * transparent pass, which only make sense when the pass shades as it draws.
          */
-        void record_main_content(VkCommandBuffer command_buffer) const;
+        void record_forward_scene(VkCommandBuffer command_buffer);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief record the scene pass of the DEFERRED path into @p command_buffer: move the
+         *        single-sampled G-buffer targets (surface + velocity + the pass's own depth) into
+         *        their render layouts, resync the pass geometry, then record the opaque leaves into
+         *        them - no shading at all.
+         * @param command_buffer the frame's primary command buffer
+         *
+         * Path 2 of 2. It draws neither the skybox (the lighting stage writes the sky into the pixels
+         * no geometry covered) nor alpha-blended geometry (blending would have to compose over an
+         * already shaded image - a pass of its own, still ahead). record_post_process() turns the
+         * G-buffer into the frame afterwards through record_deferred_lighting_pass().
+         */
+        void record_deferred_scene(VkCommandBuffer command_buffer);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief move the attachments of one scene path into the layouts its rendering instance
+         *        declares, before vkCmdBeginRendering - dynamic rendering has no automatic
+         *        transitions the way a render pass does
+         * @param command_buffer the frame's primary command buffer
+         * @param gbuffer_pass true for the deferred path's single-sampled G-buffer target set, false
+         *                     for the forward path's HDR (+ MSAA color) and depth
+         */
+        void record_scene_attachments(VkCommandBuffer command_buffer, bool gbuffer_pass);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief resync every pipeline's cached fullscreen viewport/scissor from the current
+         *        swapchain extent, on the primary thread and before the scene content is recorded
+         *
+         * A resize changes the extent the cached values were built from, and begin_pipeline() pushes
+         * the cached values - so they are refreshed once per frame here, for every pipeline that can
+         * draw (the scene pipelines, the skybox/post chain, the G-buffer, deferred lighting and TAA).
+         */
+        void update_pass_geometry();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief record the opaque scene into @p command_buffer: one secondary per task-pool worker
+         *        segment (or a single one for a small frame), each inheriting the instance's color +
+         *        depth attachments, plus the transparent secondary when @p draw_transparent - the
+         *        primary executes them in order inside the rendering instance
+         * @param command_buffer the frame's primary command buffer
+         * @param gbuffer_pass true when the leaves bind the G-buffer pipelines (deferred path)
+         * @param draw_transparent record and execute the alpha-blended leaves (forward path only:
+         *        the deferred path has no shaded image to blend over)
+         *
+         * Shared by both scene paths on purpose - the segmentation, the per-segment secondary
+         * lifetime and the execute order are the same work in either; only the pipelines the leaves
+         * bind (chosen in record_main_segment() from @p gbuffer_pass) and the two optional extras
+         * differ.
+         */
+        void record_opaque_scene(VkCommandBuffer command_buffer, bool gbuffer_pass, bool draw_transparent);
 
         /**
          * @ingroup vulkan_runtime
