@@ -1,6 +1,7 @@
 module;
 
 #include <GLFW/glfw3.h>
+#include <bit> // std::bit_cast for the caster world-matrix hash
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <vulkan/vulkan.h>
@@ -1553,7 +1554,36 @@ namespace vulkan {
         // actually read the map - the flat render mode skips it entirely, which is worth ~45% of the
         // frame (see the measured numbers in the struct's documentation).
         render_features const features = this->active_features();
-        if (features.shadow) {
+        // Geometry half of the reuse test: FNV-1a over every caster's world matrix plus the caster
+        // count (the set itself can change on heavy scenes, where the casters are BVH-culled per
+        // frame). ~300 leaves on Sponza: a few microseconds against the ~0.6 ms the pass costs.
+        uint64_t caster_model_hash = 1469598103934665603ull;
+        {
+            auto const mix = [&caster_model_hash](unsigned char const byte) {
+                caster_model_hash ^= byte;
+                caster_model_hash *= 1099511628211ull;
+            };
+            uint32_t const caster_count = static_cast<uint32_t>(this->shadow_casters.size());
+            for (unsigned char const byte : std::bit_cast<std::array<unsigned char, sizeof(uint32_t)>>(caster_count)) {
+                mix(byte);
+            }
+            for (primitive const* caster : this->shadow_casters) {
+                for (unsigned char const byte : std::bit_cast<std::array<unsigned char, sizeof(glm::mat4)>>(caster->push.model)) {
+                    mix(byte);
+                }
+            }
+            for (unsigned char const byte : std::bit_cast<std::array<unsigned char, sizeof(uint64_t)>>(this->skin_matrix_hash)) {
+                mix(byte);
+            }
+            for (unsigned char const byte : std::bit_cast<std::array<unsigned char, sizeof(uint32_t)>>(this->morph_revision)) {
+                mix(byte);
+            }
+        }
+        // Skip the whole pass when this slot's maps are still valid: unchanged fit (content version)
+        // AND unchanged caster geometry (hash). The maps stay in SHADER_READ_ONLY and the descriptor
+        // set still points at them, so there is nothing to record - not even the read barriers.
+        bool const shadow_reuse = this->shadow_rendered_version[frame_slot] == this->shadow_content_version && this->shadow_rendered_models[frame_slot] == caster_model_hash;
+        if (features.shadow && !shadow_reuse) {
             cpu_phase_timer const shadow_timer{*this, cpu_phase::shadow}; // the sub-phase of scene that records every cascade
             auto const* shadow_detail = vk.vma.get_image_detail(this->shadow_images[frame_slot].handle());
             if (shadow_detail != nullptr) {
@@ -1646,7 +1676,13 @@ namespace vulkan {
                 }
                 VkDependencyInfo const shadow_read_dependency = make_image_dependency_info(read_barrier_count, shadow_read_barriers.data());
                 vkCmdPipelineBarrier2(*command_buffer, &shadow_read_dependency);
+                this->shadow_rendered_version[frame_slot] = this->shadow_content_version;
+                this->shadow_rendered_models[frame_slot] = caster_model_hash;
             }
+        } else if (features.shadow) {
+            // Reuse: the maps were rendered into this slot by an earlier frame and nothing that feeds
+            // them has changed since, so the sampling layout they are already in is the one the
+            // lighting pass needs. Deliberately does nothing.
         } else if (this->shadow_pipeline && this->shadow_images.size() > static_cast<std::size_t>(frame_slot)) {
             // The pass does not run this frame (shadows toggled off, or no light setup yet), but the
             // scene set still binds the shadow map to binding 8 - pbr.frag uses it statically and only
@@ -3490,6 +3526,7 @@ namespace vulkan {
             utility::log("runtime: shadow map size {} -> {} (clamped to 256..8192 and rounded to a power of two)", size, rounded);
         }
         this->shadow_map_size = rounded;
+        ++this->shadow_content_version; // a new map size reallocates the images: every slot must render again
     }
 
     runtime::render_features runtime::active_features() const noexcept {
@@ -3866,6 +3903,7 @@ namespace vulkan {
             return;
         }
         this->shadow_fit_view_proj = this->current_ubo.view_proj_unjittered;
+        ++this->shadow_content_version; // a refit changes the maps: every slot must render again
         this->shadow_frustum_valid = true;
         if (!(this->current_aspect > 0.0f) || this->current_ubo.proj[2][2] == 0.0f) {
             // Degenerate camera (the very first frames, before the swapchain has an extent): the
@@ -4122,6 +4160,7 @@ namespace vulkan {
             return;
         }
         this->shadow_cascades = clamped;
+        ++this->shadow_content_version; // a different cascade count refits the splits
         // a different cascade layout invalidates the cached fit (and the one-time density log)
         this->shadow_frustum_valid = false;
         this->shadow_cascade_logged = false;
@@ -4168,6 +4207,7 @@ namespace vulkan {
             return;
         }
         this->shadow_enabled = enabled;
+        ++this->shadow_content_version;
         // Only the CPU-side flag changes here: the frame loop copies light_state into the paced
         // slot's OWN light buffer (pace_and_acquire), so this call is safe at ANY time (GUI
         // callbacks included) - it never touches memory a frame in flight may be reading. The
@@ -4783,6 +4823,14 @@ namespace vulkan {
         }
         std::size_t const bytes = std::min(matrices.size_bytes(), static_cast<std::size_t>(vulkan::scene_skin_capacity) * sizeof(glm::mat4));
         std::memcpy(this->skin_mapped[slot], matrices.data(), bytes);
+        // Content hash of this upload: it is the only per-frame signal that a skinned caster moved.
+        auto const* const uploaded = static_cast<unsigned char const*>(this->skin_mapped[slot]);
+        uint64_t hash = 1469598103934665603ull;
+        for (std::size_t index = 0; index < bytes; ++index) {
+            hash ^= uploaded[index];
+            hash *= 1099511628211ull;
+        }
+        this->skin_matrix_hash = hash;
     }
 
     void* runtime::morph_scratch() noexcept {
@@ -4793,6 +4841,7 @@ namespace vulkan {
         if (slot >= this->morph_mapped.size()) {
             return nullptr;
         }
+        ++this->morph_revision; // no upload hook: assume the caller is about to deform the mesh
         return this->morph_mapped[slot];
     }
 

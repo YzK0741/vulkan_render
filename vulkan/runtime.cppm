@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.16.2  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.17.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -598,6 +598,23 @@ namespace vulkan {
         // (M9 overhead trim: a per-frame allocation plus one std::function per task is a few
         // microseconds of a ~0.35 ms frame on a light scene).
         std::vector<std::function<void()>> shadow_task_scratch = {};
+        // Shadow-map reuse (M9): the maps depend on the fitted cascade matrices AND on where the
+        // casters actually are, so a slot may skip the pass only when BOTH are unchanged since that
+        // slot last rendered. The fit half is a counter bumped by every real refit and by the shadow
+        // toggles; the geometry half is a hash of the casters' world matrices, computed per frame -
+        // an animated/deformed/programmatic scene changes it (the fit cache does NOT, which is exactly
+        // the trap the animated-Fox test caught), while a static scene repeats it.
+        uint32_t shadow_content_version = 1;
+        std::array<uint32_t, vulkan::core::MAX_FRAMES_IN_FLIGHT> shadow_rendered_version = {};
+        std::array<uint64_t, vulkan::core::MAX_FRAMES_IN_FLIGHT> shadow_rendered_models = {};
+        // The other half of geometry changed: a SKINNED caster keeps a constant push.model, its
+        // pose lives entirely in the joint matrices the vertex shader reads, so those are hashed at
+        // upload instead (set_skin_matrices). Morph targets have no upload hook at all - the caller
+        // writes into morph_scratch() directly - so handing that scratch out bumps a revision and
+        // conservatively blocks reuse. The animated Fox is the regression test for the first half:
+        // hashing push.model alone left it with a frozen shadow map.
+        uint64_t skin_matrix_hash = 1469598103934665603ull;
+        uint32_t morph_revision = 0;
         std::vector<vk_buffer> cluster_count_buffers = {}; // per slot: one uint per cluster
         std::vector<void*> cluster_count_mapped = {};      // their persistent mappings (memset per frame)
         std::vector<vk_buffer> cluster_index_buffers = {}; // per slot: cluster_light_capacity uints per cluster

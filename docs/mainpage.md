@@ -72,7 +72,13 @@ hemisphere spiral traced against the G-buffer depth and normals, folded into the
 it scales the IBL ambient exactly like a baked AO map, with no extra pass or render target and an
 off path that is byte-identical to the pre-M6 frame. **M7 (done)** is the collation pass: the shadow
 map size became a config knob, the documented example config is parsed and pinned by a unit test,
-and the configuration / GUI / reference documentation cover every milestone. Still ahead on this
+and the configuration / GUI / reference documentation cover every milestone. **Shadow-map reuse** (the
+first optimization that reads the pass graph instead of shrinking it) followed: a slot's cascade maps
+are re-rendered only when the fitted matrices (a refit counter) or the caster geometry (an FNV-1a hash
+of every caster's world matrix, of the uploaded skin matrices and of a morph-scratch revision) changed
+since that slot last rendered them, so the skip is byte-identical by construction - a skinned caster
+keeps a constant world matrix, which is why the skin upload has to be part of the signal or an
+animated model silently keeps a frozen map. Still ahead on this
 path: alpha-blended geometry in the deferred path and per-object motion vectors.
 
 ## Modular composition
