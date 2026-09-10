@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.14.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.14.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -126,14 +126,21 @@ namespace vulkan {
          * synchronization and presentation. These phases say which: `pace` is the wait for the frame
          * slot, i.e. where GPU/present backpressure surfaces.
          */
+        // `cluster` and `shadow` are SUB-measurements of `scene` (which spans the whole
+        // record_main_drawcalls() call). The shadow pass records one secondary + one rendering
+        // instance + one barrier PER CASCADE on the primary thread, which makes it the first suspect
+        // for the scene phase's ~1.3 ms, so it is reported separately - and, being inside `scene`, it
+        // is NOT added to the total again.
         enum class cpu_phase : uint32_t { pace,
                                           begin,
                                           scene,
+                                          cluster,
+                                          shadow,
                                           post,
                                           submit,
                                           count };
         /** @brief names of the CPU phases, in enum order (for the report line) */
-        static constexpr std::array<std::string_view, static_cast<std::size_t>(cpu_phase::count)> cpu_phase_names = {"pace", "begin", "scene", "post", "submit"};
+        static constexpr std::array<std::string_view, static_cast<std::size_t>(cpu_phase::count)> cpu_phase_names = {"pace", "begin", "scene", "cluster*", "shadow*", "post", "submit"}; // * = inside scene
 
         // set while the window is iconified; the restore transition recreates the swapchain
         bool was_minimized = false;

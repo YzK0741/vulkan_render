@@ -1121,7 +1121,7 @@ namespace vulkan {
             double const mean = this->gpu_timing_sum[interval] / static_cast<double>(GPU_TIMING_WINDOW);
             report += std::format(" {} {:.2f} ms |", gpu_timing_labels[interval].name, mean);
             label += std::format("{} {:>5.2f}", gpu_timing_labels[interval].new_line ? "\n     " : " |", mean);
-            total += mean;
+            total += mean; // GPU intervals have no sub-phases: every mark interval counts once
             this->gpu_timing_sum[interval] = 0.0;
         }
         this->gpu_timing_window_frames = 0;
@@ -1514,7 +1514,10 @@ namespace vulkan {
         //      inside the main instance, deferred later in the frame) then loop only their own
         //      cluster's list. Runs before the shadow pass so the barrier that publishes its buffers
         //      is as early as possible; nothing before it reads the lists.
-        this->record_cluster_pass(*command_buffer);
+        {
+            cpu_phase_timer const cluster_timer{*this, cpu_phase::cluster};
+            this->record_cluster_pass(*command_buffer);
+        }
 
         // ---- Shadow pass: render the scene's depth from the light into this slot's shadow map.
         //      Drawn before the main pass; the depth-only pipeline shares the flat scene layout
@@ -1533,6 +1536,7 @@ namespace vulkan {
         // frame (see the measured numbers in the struct's documentation).
         render_features const features = this->active_features();
         if (features.shadow) {
+            cpu_phase_timer const shadow_timer{*this, cpu_phase::shadow}; // the sub-phase of scene that records every cascade
             auto const* shadow_detail = vk.vma.get_image_detail(this->shadow_images[frame_slot].handle());
             if (shadow_detail != nullptr) {
                 // Secondary: inherit only the depth attachment (dynamic rendering 1.3). The
@@ -3585,7 +3589,11 @@ namespace vulkan {
             double const mean = this->cpu_phase_sum[i] / static_cast<double>(GPU_TIMING_WINDOW);
             report += std::format(" {} {:.2f} ms |", cpu_phase_names[i], mean);
             label += std::format("{} {:>5.2f}", i == 0 ? "" : " |", mean);
-            total += mean;
+            // The sub-phases (names ending in '*') are measured INSIDE scene: adding them to the
+            // total again would count that time twice.
+            if (cpu_phase_names[i].back() != '*') {
+                total += mean;
+            }
             this->cpu_phase_sum[i] = 0.0;
         }
         this->cpu_timing_window_frames = 0;
