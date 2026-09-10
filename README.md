@@ -17,8 +17,8 @@ the startup log banner (`vulkan_render x.y.z`), and the Vulkan instance's `app_i
 
 Each **independently reusable module set** also carries its own `module version` annotation
 in a comment block at the top of its main interface unit — `utility` 0.4.0, `vstd` 0.1.0a
-(the trimmed `std` replacement), `gltf_loader` 0.1.0a, `app_config` 0.10.0, `vulkan.math`
-0.1.0a, `vulkan.constant_init` 0.4.0 (the compile-time Vulkan info-struct builders that
+(the trimmed `std` replacement), `gltf_loader` 0.1.0a, `app_config` 0.10.0, `vulkan.math` 0.1.1,
+`vulkan.constant_init` 0.4.0 (the compile-time Vulkan info-struct builders that
 `vulkan.core` and `vulkan.runtime` embed), `vulkan.core` 0.6.0, `vulkan.runtime` 0.17.1,
 `vulkan.scene_tree` 0.1.3, `vulkan.primitive` 0.4.0, `vulkan.animation` 0.1.1a and
 `vulkan.gui` 0.3.0.

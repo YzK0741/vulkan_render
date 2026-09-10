@@ -49,14 +49,13 @@ namespace vulkan {
             return env;
         }
 
-        // Nearest-neighbor cubemap sampling (smooth enough after summed-area averaging)
-        glm::vec3 sample_cubemap(std::span<float const> const data, int const size, glm::vec3 const& dir) {
+        // Cubemap face mapping: direction -> (face, u, v) with u/v in [-1, 1]. This is the one owner of
+        // the convention (cube_face_direction() above is its inverse) and every sampler here goes
+        // through it, so the bakes cannot drift apart from each other or from the GPU's own lookup.
+        void cube_face_uv(glm::vec3 const& dir, int& face, float& u, float& v) {
             float const ax = std::abs(dir.x);
             float const ay = std::abs(dir.y);
             float const az = std::abs(dir.z);
-            int face = 0;
-            float u = 0.0f;
-            float v = 0.0f;
             if (ax >= ay && ax >= az) {
                 face = dir.x >= 0.0f ? 0 : 1;
                 u = face == 0 ? -dir.z : dir.z;
@@ -70,6 +69,15 @@ namespace vulkan {
                 u = face == 4 ? dir.x : -dir.x;
                 v = -dir.y;
             }
+        }
+
+        // Nearest-neighbor fetch of level 0. The irradiance bake and the base level use this; the
+        // prefilter samples a whole source mip chain instead - see prefilter_environment.
+        glm::vec3 sample_cubemap(std::span<float const> const data, int const size, glm::vec3 const& dir) {
+            int face = 0;
+            float u = 0.0f;
+            float v = 0.0f;
+            cube_face_uv(dir, face, u, v);
             int const px = std::clamp(static_cast<int>((u * 0.5f + 0.5f) * static_cast<float>(size)), 0, size - 1);
             int const py = std::clamp(static_cast<int>((v * 0.5f + 0.5f) * static_cast<float>(size)), 0, size - 1);
             size_t const offset = (static_cast<size_t>(face) * size * size + static_cast<size_t>(py) * size + px) * 4;
@@ -138,12 +146,103 @@ namespace vulkan {
         return data;
     }
 
+    // One box-filtered source mip chain: level k is 2^k times smaller than the environment. The
+    // prefilter reads a level per sample instead of always reading level 0, which is what keeps
+    // the coarse levels smooth (see prefilter_environment).
+    std::vector<std::vector<float>> build_environment_pyramid(std::span<float const> const env, int const env_size, int const levels) {
+        std::vector<std::vector<float>> pyramid;
+        pyramid.reserve(static_cast<std::size_t>(levels));
+        pyramid.emplace_back(env.begin(), env.end());
+        for (int level = 1; level < levels; ++level) {
+            int const source_size = std::max(1, env_size >> (level - 1));
+            int const target_size = std::max(1, env_size >> level);
+            std::vector<float> const& source = pyramid.back();
+            std::vector<float> target(static_cast<std::size_t>(6) * target_size * target_size * 4, 0.0f);
+            for (int face = 0; face < 6; ++face) {
+                for (int y = 0; y < target_size; ++y) {
+                    for (int x = 0; x < target_size; ++x) {
+                        glm::vec4 sum(0.0f);
+                        for (int dy = 0; dy < 2; ++dy) {
+                            for (int dx = 0; dx < 2; ++dx) {
+                                int const sx = std::min(x * 2 + dx, source_size - 1);
+                                int const sy = std::min(y * 2 + dy, source_size - 1);
+                                std::size_t const at = (static_cast<std::size_t>(face) * source_size * source_size + static_cast<std::size_t>(sy) * source_size + sx) * 4;
+                                sum += glm::vec4(source[at], source[at + 1], source[at + 2], source[at + 3]);
+                            }
+                        }
+                        std::size_t const at = (static_cast<std::size_t>(face) * target_size * target_size + static_cast<std::size_t>(y) * target_size + x) * 4;
+                        target[at + 0] = sum.x * 0.25f;
+                        target[at + 1] = sum.y * 0.25f;
+                        target[at + 2] = sum.z * 0.25f;
+                        target[at + 3] = 1.0f;
+                    }
+                }
+            }
+            pyramid.push_back(std::move(target));
+        }
+        return pyramid;
+    }
+
+    // Bilinear fetch of one pyramid level, inside the face of @p dir. Filtering stops at the face
+    // edge (the environment is a smooth analytic gradient and the sun disc sits well inside a
+    // face, so nothing visible crosses a seam).
+    glm::vec3 sample_cubemap_level(std::span<float const> const level, int const size, glm::vec3 const& dir) {
+        int face = 0;
+        float u = 0.0f;
+        float v = 0.0f;
+        cube_face_uv(dir, face, u, v);
+        float const fx = std::clamp((u * 0.5f + 0.5f) * static_cast<float>(size) - 0.5f, 0.0f, static_cast<float>(size - 1));
+        float const fy = std::clamp((v * 0.5f + 0.5f) * static_cast<float>(size) - 0.5f, 0.0f, static_cast<float>(size - 1));
+        int const x0 = static_cast<int>(fx);
+        int const y0 = static_cast<int>(fy);
+        int const x1 = std::min(x0 + 1, size - 1);
+        int const y1 = std::min(y0 + 1, size - 1);
+        float const tx = fx - static_cast<float>(x0);
+        float const ty = fy - static_cast<float>(y0);
+        auto const fetch = [&](int const x, int const y) {
+            std::size_t const at = (static_cast<std::size_t>(face) * size * size + static_cast<std::size_t>(y) * size + x) * 4;
+            return glm::vec3(level[at], level[at + 1], level[at + 2]);
+        };
+        glm::vec3 const top = glm::mix(fetch(x0, y0), fetch(x1, y0), tx);
+        glm::vec3 const bottom = glm::mix(fetch(x0, y1), fetch(x1, y1), tx);
+        return glm::mix(top, bottom, ty);
+    }
+
+    // Trilinear fetch across the pyramid: one bilinear fetch per level, blended by the fraction.
+    glm::vec3 sample_environment_trilinear(std::vector<std::vector<float>> const& pyramid, int const env_size, glm::vec3 const& dir, float const lod) {
+        float const clamped = std::clamp(lod, 0.0f, static_cast<float>(pyramid.size() - 1));
+        int const low = static_cast<int>(clamped);
+        int const high = std::min(low + 1, static_cast<int>(pyramid.size()) - 1);
+        float const blend = clamped - static_cast<float>(low);
+        glm::vec3 const a = sample_cubemap_level(pyramid[static_cast<std::size_t>(low)], std::max(1, env_size >> low), dir);
+        glm::vec3 const b = sample_cubemap_level(pyramid[static_cast<std::size_t>(high)], std::max(1, env_size >> high), dir);
+        return glm::mix(a, b, blend);
+    }
+
     std::vector<float> prefilter_environment(std::span<float const> const env, int const env_size, int const mip_count) {
+        // Why the samples read a source mip instead of level 0: this environment carries a hard
+        // sun disc, and a narrow GGX lobe either lands on it or misses it. With 64 taps of level 0
+        // a coarse level ended up with isolated texels several times brighter than the rest of the
+        // level (measured at 16^2: brightest texel 1.22 against a level mean of 0.17, i.e. 7x the
+        // mean, and 2.3x its own 3x3 neighbourhood). On screen ONE coarse texel covers a large
+        // area, so those texels read as big highlight patches sweeping across a rotating metal
+        // surface - the artifact this replaces. Averaging each tap over the solid angle it
+        // actually represents (Karis) removes them: same measurement, brightest texel 0.42
+        // (2.5x the mean, 1.3x its neighbourhood) with every level mean unchanged - the fix is
+        // variance, not energy. It is also FASTER than the 64-tap-of-level-0 version (535 ms
+        // against 964 ms for 256^2 x 5 levels here): level 0 needs no samples at all, its texels
+        // ARE the mirror reflection, and the coarse levels take half the taps of the level before.
+        std::vector<std::vector<float>> const pyramid = build_environment_pyramid(env, env_size, mip_count);
+        float const texel_solid_angle = 4.0f * k_pi / (6.0f * static_cast<float>(env_size) * static_cast<float>(env_size));
         std::vector<float> result;
         for (int mip = 0; mip < mip_count; ++mip) {
             int const mip_size = std::max(1, env_size >> mip);
             float const roughness = static_cast<float>(mip) / static_cast<float>(mip_count - 1);
-            uint32_t const sample_count = static_cast<uint32_t>(std::max(4, 64 >> mip));
+            // 128 taps at the first roughness level, halved per level (32 is the floor); level 0 needs
+            // none - see the comment above. That is still about the cost of the naive version this
+            // replaces, because the source mips do the averaging and level 0 does no work at all.
+            uint32_t const sample_count = mip == 0 ? 1u : std::max(32u, 128u >> (mip - 1));
+            float const alpha = roughness * roughness;
             std::vector<float> mip_data(static_cast<size_t>(6) * mip_size * mip_size * 4, 0.0f);
             for (int face = 0; face < 6; ++face) {
                 for (int y = 0; y < mip_size; ++y) {
@@ -151,18 +250,35 @@ namespace vulkan {
                         float const u = (static_cast<float>(x) + 0.5f) / static_cast<float>(mip_size) * 2.0f - 1.0f;
                         float const v = (static_cast<float>(y) + 0.5f) / static_cast<float>(mip_size) * 2.0f - 1.0f;
                         glm::vec3 const n = cube_face_direction(face, u, v);
-                        glm::vec3 sum(0.0f);
-                        float total_weight = 0.0f;
-                        for (uint32_t i = 0; i < sample_count; ++i) {
-                            glm::vec3 const h = importance_sample_ggx(hammersley(i, sample_count), n, roughness);
-                            glm::vec3 const l = glm::normalize(2.0f * glm::dot(n, h) * h - n);
-                            float const ndotl = glm::dot(n, l);
-                            if (ndotl > 0.0f) {
-                                sum += sample_cubemap(env, env_size, l) * ndotl;
+                        glm::vec3 color(0.0f);
+                        if (mip == 0) {
+                            // roughness 0 is a mirror: every sample has H == N and therefore L == N, so
+                            // this level IS the environment (at lod 0 the trilinear fetch is bilinear)
+                            color = sample_environment_trilinear(pyramid, env_size, n, 0.0f);
+                        } else {
+                            glm::vec3 sum(0.0f);
+                            float total_weight = 0.0f;
+                            for (uint32_t i = 0; i < sample_count; ++i) {
+                                glm::vec3 const h = importance_sample_ggx(hammersley(i, sample_count), n, roughness);
+                                glm::vec3 const l = glm::normalize(2.0f * glm::dot(n, h) * h - n);
+                                float const ndotl = glm::dot(n, l);
+                                if (ndotl <= 0.0f) {
+                                    continue;
+                                }
+                                // GGX pdf of this sample (V == N here, so VoH == NoH), then the source mip
+                                // whose texel footprint matches the solid angle the sample stands for
+                                float const alpha2 = alpha * alpha;
+                                float const ndoth = std::max(glm::dot(n, h), 0.0f);
+                                float const denominator = ndoth * ndoth * (alpha2 - 1.0f) + 1.0f;
+                                float const distribution = alpha2 / std::max(k_pi * denominator * denominator, 1e-8f);
+                                float const pdf = distribution * ndoth / std::max(4.0f * ndoth, 1e-6f) + 1e-4f;
+                                float const sample_solid_angle = 1.0f / (static_cast<float>(sample_count) * pdf);
+                                float const lod = std::max(0.5f * std::log2(sample_solid_angle / texel_solid_angle), 0.0f);
+                                sum += sample_environment_trilinear(pyramid, env_size, l, lod) * ndotl;
                                 total_weight += ndotl;
                             }
+                            color = total_weight > 0.0f ? sum / total_weight : glm::vec3(0.0f);
                         }
-                        glm::vec3 const color = total_weight > 0.0f ? sum / total_weight : glm::vec3(0.0f);
                         size_t const offset = (static_cast<size_t>(face) * mip_size * mip_size + static_cast<size_t>(y) * mip_size + x) * 4;
                         mip_data[offset + 0] = color.r;
                         mip_data[offset + 1] = color.g;

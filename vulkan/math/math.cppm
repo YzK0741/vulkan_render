@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.math
-// module version: 0.1.0a  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // CPU-side math: environment cubemap generation / IBL precompute (prefilter,
 // irradiance, BRDF LUT). Pure CPU, no Vulkan dependency.
@@ -30,7 +30,11 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_math
-     * @brief GGX importance-sampled prefilter of the environment into a mip chain
+     * @brief GGX importance-sampled prefilter of the environment into a mip chain, one mip level per
+ *        roughness step, each sample averaged over the source mip that matches its own solid angle
+ *        (so the coarse levels stay smooth instead of picking up isolated bright texels - one of
+ *        those covers a large screen area on a metal surface); level 0 is the mirror reflection and
+ *        is copied rather than sampled
      * @param env the base environment cubemap from generate_environment_cubemap() (read-only view)
      * @param env_size base cubemap size
      * @param mip_count number of mip levels
