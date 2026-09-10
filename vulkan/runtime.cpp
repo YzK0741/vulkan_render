@@ -2519,6 +2519,8 @@ namespace vulkan {
                               this->ssao_enabled ? this->ssao_intensity : 0.0f,
                               static_cast<float>(this->ssao_samples),
                               this->ssao_bias),
+            // render mode: the flat "unlit" default pipeline becomes "write the stored albedo" here
+            .unlit = this->unlit_active ? 1.0f : 0.0f,
         };
         vkCmdPushConstants(command_buffer, this->deferred_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
@@ -3537,6 +3539,13 @@ namespace vulkan {
         if (enabled && !this->deferred_lit_active()) {
             this->warn_missing_feature("ssao", "screen-space AO only applies to the deferred path: switch 'deferred lighting' on ([render] deferred = true) or the checkbox does nothing");
         }
+    }
+
+    void runtime::set_unlit(bool const unlit) noexcept {
+        // CPU-side only, like the other render-mode flags: the value is pushed with the deferred
+        // lighting stage each frame (and the forward path does not need it at all - there the render
+        // mode IS the default pipeline).
+        this->unlit_active = unlit;
     }
 
     void runtime::set_clustered_lights(bool const enabled) noexcept {

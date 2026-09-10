@@ -410,6 +410,7 @@ int main(int argc, char** argv) {
     gui.gbuffer_debug = settings.render.gbuffer_debug; // gbuffer debug view initial state (M1)
     gui.gbuffer_channel = settings.render.gbuffer_channel;
     gui.deferred_enabled = settings.render.deferred;                 // deferred lighting render mode (M2)
+    gui.render_mode = settings.render.unlit ? 1 : 0;                 // render-mode combo (0 = pbr, 1 = unlit)
     gui.taa_enabled = settings.render.taa;                           // temporal anti-aliasing (M3)
     gui.shadow_cascades = settings.render.shadow_cascades - 1;       // cascade combo index (0 = single map)
     gui.shadow_cascade_blend = settings.render.shadow_cascade_blend; // cascaded shadow maps (M4)
@@ -602,6 +603,9 @@ int main(int argc, char** argv) {
             last_render_mode = gui.render_mode;
             std::string_view const mode_name = gui.render_mode == 0 ? "pbr" : "unlit";
             runtime.set_default_pipeline(mode_name);
+            // the deferred path cannot switch pipelines per fragment, so tell its lighting stage that the
+            // default pipeline is the flat one - both paths then mean the same thing by "unlit"
+            runtime.set_unlit(gui.render_mode == 1);
             utility::log("render mode: {} ({})", mode_name, gui.render_mode == 0 ? "lit" : "unlit / flat");
         }
 

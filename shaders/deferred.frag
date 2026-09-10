@@ -56,6 +56,8 @@ layout(push_constant) uniform DeferredPush {
     // z = sample count, w = depth bias. The runtime fills it per frame; an intensity <= 0 makes the
     // term return exactly 1.0, which is what keeps an SSAO-off frame bit for bit the pre-M6 frame.
     vec4 ssao;
+    // 1.0 = "unlit" render mode: write the stored albedo, unshaded (see runtime::set_unlit)
+    float unlit;
 } pc;
 
 /**
@@ -167,6 +169,13 @@ void main() {
     }
 
     const vec4 albedo_metallic = texture(gbuffer_albedo, v_uv);
+    // "unlit" render mode: the forward path draws this geometry with the flat unlit pipeline, so the
+    // deferred path must produce the same thing - the base color with no lighting, no shadows, no
+    // IBL and no AO (the sky above is still the shared sky, exactly as on the forward path).
+    if (pc.unlit > 0.5) {
+        out_color = vec4(albedo_metallic.rgb, 1.0);
+        return;
+    }
     const vec4 normal_roughness = texture(gbuffer_normal, v_uv);
     const vec4 material = texture(gbuffer_material, v_uv);
 

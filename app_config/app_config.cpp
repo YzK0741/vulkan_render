@@ -141,6 +141,11 @@ namespace app_config {
                     settings.render.ssao_samples = static_cast<int>(*value);
                 }
             }
+            if (toml::node const* node = render->get("unlit")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.unlit = *value;
+                }
+            }
             if (toml::node const* node = render->get("fxaa")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.fxaa = *value;

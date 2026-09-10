@@ -119,6 +119,13 @@ ssao_samples = 8
 # Cheap and hardware-independent, but it is a screen-space blur of edges: it softens fine detail and
 # cannot remove sub-pixel shimmer in motion. Its two knobs (sub-pixel strength, edge threshold) live
 # in the debug overlay, not here.
+# unlit: render mode. true draws every surface as its flat base color (factor x albedo texture), with
+# no direct light, shadows, IBL, AO or emissive - a shading-free reference against the lit pass, and
+# useful for assets whose authored data is minimal. It is the "render mode" combo of the debug overlay
+# as a startup setting, and it applies to BOTH render paths: the forward path switches its default
+# pipeline, the deferred path gets told (its lighting stage then writes the stored albedo).
+unlit = false
+
 fxaa = false
 
 # gpu_timings: measure how long each pass takes on the GPU (timestamp queries). The frame writes a

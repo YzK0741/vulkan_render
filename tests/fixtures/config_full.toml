@@ -23,6 +23,7 @@ ssao = false
 ssao_radius = 1.5
 ssao_intensity = 0.5
 ssao_samples = 4
+unlit = true
 fxaa = true
 gpu_timings = false
 gbuffer_debug = true

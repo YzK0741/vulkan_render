@@ -24,6 +24,7 @@ namespace {
         CHECK(settings.render.ssao_radius > 1.49f && settings.render.ssao_radius < 1.51f);
         CHECK(settings.render.ssao_intensity > 0.49f && settings.render.ssao_intensity < 0.51f);
         CHECK(settings.render.ssao_samples == 4);
+        CHECK(settings.render.unlit); // fixture: the flat render mode
         CHECK(settings.render.fxaa);
         CHECK(!settings.render.gpu_timings);
         CHECK(settings.render.gbuffer_debug);
@@ -70,6 +71,7 @@ namespace {
         CHECK(settings.render.shadow);
         CHECK(settings.render.shadow_cascades == 3);
         CHECK(settings.render.shadow_map_size == 2048);
+        CHECK(!settings.render.unlit); // default: the lit PBR path
         CHECK(settings.render.clustered_lights);
         CHECK(settings.render.ssao);
         CHECK(settings.render.ssao_samples == 8);

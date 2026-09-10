@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.10.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -121,6 +121,11 @@ namespace app_config {
         float ssao_radius = 0.5f;
         float ssao_intensity = 1.0f;
         int ssao_samples = 8;
+        // Render mode ([render] unlit): the "pbr (lit)" / "unlit (flat)" combo of the debug overlay
+        // as a startup setting - the flat base-color pass, useful as a shading-free reference. It
+        // selects the runtime's default pipeline, so it applies to forward geometry AND to the
+        // deferred path (the lighting stage then outputs the stored albedo instead of shading it).
+        bool unlit = false;
         bool fxaa = false; // FXAA the final image (one extra fullscreen pass)
         // measure per-pass GPU time with timestamp queries: one vkCmdWriteTimestamp per pass
         // boundary, read back after the frame slot completed, averaged over a 60-frame window

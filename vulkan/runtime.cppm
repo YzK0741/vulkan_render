@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.11.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.12.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -312,6 +312,10 @@ namespace vulkan {
             // w = depth bias. It rides the SAME push block because both are per-frame constants of
             // the lighting stage, and the shared range (100 bytes) already covers 80.
             glm::vec4 ssao = glm::vec4(0.5f, 0.0f, 8.0f, 0.02f);
+            // 1.0 = the app's default pipeline is the flat "unlit" pass: the deferred lighting stage
+            // then writes the G-buffer's albedo instead of shading it, so the render-mode switch
+            // means the same thing on both paths (a flat surface has no lighting to defer).
+            float unlit = 0.0f;
         };
         // SSAO state (runtime::set_ssao / [render] ssao*): the deferred lighting stage computes the
         // occlusion from the G-buffer depth + normal and folds it into the shade_input's ao, which
@@ -321,6 +325,9 @@ namespace vulkan {
         float ssao_intensity = 1.0f; // how much occlusion is applied (1 = full)
         uint32_t ssao_samples = 8;   // samples per pixel, clamped to the shader's MAX_SSAO_SAMPLES
         float ssao_bias = 0.02f;     // view-depth bias that keeps a surface from occluding itself
+        // Render mode on the deferred path: the app's default pipeline is the flat "unlit" one, so
+        // the lighting stage writes the albedo instead of shading (runtime::set_unlit).
+        bool unlit_active = false;
         // the inverse of this frame's view-projection, refreshed with the camera UBO in
         // pace_and_acquire() (the deferred lighting stage reconstructs world positions from depth)
         glm::mat4 current_inv_view_proj = glm::mat4(1.0f);
@@ -1196,6 +1203,19 @@ namespace vulkan {
          *       cluster pass and shading both read it, so it is safe to toggle mid-run.
          */
         void set_clustered_lights(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief tell the runtime that its default pipeline is a flat/unlit one
+         * @param unlit true = the deferred lighting stage writes the stored albedo, unshaded
+         *
+         * The forward path switches pipelines, which the runtime default already covers; the deferred
+         * path cannot (its G-buffer and lighting stages bind their own pipelines), so its lighting
+         * stage needs to be told. Set it together with set_default_pipeline() when the render mode
+         * changes, and both paths then agree about what "unlit" means - a shading-free view of the
+         * geometry, with the sky still drawn behind it.
+         */
+        void set_unlit(bool unlit) noexcept;
 
         /**
          * @ingroup vulkan_runtime
