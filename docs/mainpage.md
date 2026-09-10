@@ -44,6 +44,13 @@ writes a GPU timestamp into a per-frame-slot query pool, and the values are read
 slot completed and averaged over a 60-frame window (logged and shown in the overlay). Every
 rendering feature below is steered by those numbers rather than by guesswork.
 
+The renderer is being evolved toward a deferred pipeline, one milestone at a time. **M1 (done)** is
+the G-buffer: the opaque pass can store the surface (albedo/metallic, world normal/roughness,
+material id/AO/flags, 16 bytes per pixel in three 1x targets) instead of shading it, with a channel
+debug view - `pbr.frag` (forward) and `gbuffer.frag` (deferred) share `shaders/surface.glsl`, the
+material-surface gather. **M2** adds the deferred lighting pass on top of those targets; the forward
+path stays as the A/B reference and keeps alpha-blended geometry.
+
 ## Modular composition
 
 Most modules are independent building blocks that meet only through narrow

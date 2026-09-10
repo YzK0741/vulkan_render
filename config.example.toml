@@ -76,6 +76,17 @@ fxaa = false
 # cannot write timestamps reports "unavailable" and everything else works unchanged.
 gpu_timings = true
 
+# gbuffer_debug / gbuffer_channel: the deferred path's G-buffer, shown instead of the shaded scene.
+# The opaque pass stores the surface (albedo/metallic, world normal/roughness, material id/AO/flags)
+# into three single-sampled targets and a fullscreen pass displays one channel of it through the
+# ordinary post chain. It is the inspection tool for the deferred work - a wrong normal encoding or
+# a swapped roughness channel looks like "the lighting is a bit off" once the lighting pass consumed
+# it, so being able to look at the raw data matters. Slow (the scene is drawn a second time into
+# different targets) and it skips alpha-blended geometry, so leave it off for normal runs.
+gbuffer_debug = false
+# channel: 0 albedo, 1 world normal, 2 roughness, 3 metallic, 4 ambient occlusion, 5 material id, 6 depth, 7 flags
+gbuffer_channel = 1
+
 # validation_layers: Vulkan validation layers + debug messenger (VK_LAYER_KHRONOS_validation).
 # Debug builds default to true, Release builds to false; override per build as needed (e.g.
 # turn it on in a Release build when tracking a problem, or off in Debug for raw speed).

@@ -13,6 +13,8 @@
  * @code
  *  shadow.vert + shadow.frag     depth-only, from the sun, into the per-slot shadow map
  *        |
+ *  surface.glsl                  (include) the shared material-surface gather both PBR paths use
+ *        |
  *  pbr.vert + pbr.frag           forward PBR (or unlit.frag) into the MSAA HDR target,
  *  skybox.vert + skybox.frag     skybox first in the same instance
  *        |
@@ -27,9 +29,39 @@
  *  Dear ImGui                    overlay, drawn on the final 1x swapchain image
  * @endcode
  *
+ * The deferred path (milestone M1 of the deferred-rendering plan) replaces the forward instance's
+ * opaque half with a surface write, and adds a debug view while the lighting stage is not written
+ * yet:
+ *
+ * @code
+ *  pbr.vert + gbuffer.frag       opaque geometry -> three 1x G-buffer targets + a 1x depth image
+ *                                (albedo+metallic, world normal+roughness, material id+AO+flags)
+ *        |
+ *  post.vert + gbuffer_debug.frag  fullscreen: the three targets + depth -> the HDR target, so the
+ *                                ordinary post chain above still runs (one channel at a time)
+ * @endcode
+ *
+ * The G-buffer pass runs only while `runtime::set_gbuffer_debug(true)` (or `[render] gbuffer_debug`),
+ * it never runs in the same frame as the forward scene, and alphaMode BLEND geometry stays in the
+ * forward transparent pass in both cases (a G-buffer cannot carry a blended surface). Its targets are
+ * single-sampled whatever MSAA the forward path uses, and the debug view forces the bloom weight to 0
+ * so the channel being inspected is not smeared by a display effect.
+ *
  * Which pipeline a primitive draws with is decided per leaf: a default-semantics primitive asks
- * the pass for its default pipeline, so the same geometry renders through `pbr` (lit) or `unlit`
- * (flat base color) without re-baking anything - see the runtime's render mode combo.
+ * the pass for its default pipeline, so the same geometry renders through `pbr` (lit), `unlit`
+ * (flat base color) or the G-buffer write without re-baking anything - see the runtime's render mode
+ * combo. The G-buffer pipeline is not in the runtime's named pipeline cache: it declares three color
+ * attachments, so it is only valid inside the G-buffer instance, and the pass hands it to
+ * default-semantics leaves under `runtime::gbuffer_pipeline_name` ("gbuffer").
+ *
+ * @section shader_surface The shared material-surface gather (surface.glsl)
+ *
+ * `pbr.frag` and `gbuffer.frag` answer the same question - "what is this surface made of?" - and both
+ * do it through `gather_surface()` in `shaders/surface.glsl`: the material table lookup, the glTF
+ * alpha tests (the MASK `discard` lives in there, so no pass can forget it), the tangent-space normal
+ * map with the double-sided flip, and the texture-derived factors. The include declares the descriptor
+ * bindings and the push constant block it depends on (bindings 1 and 5, the shared material push
+ * block), so a shader including it must not declare them again.
  *
  * @section shader_bindings The shared scene descriptor set (set 0)
  *
@@ -62,7 +94,9 @@
  * pipeline share a single push-constant range, so any stage that does not need a field still
  * declares it to keep the block layout identical - a mismatch here is silent corruption, not a
  * compile error. The post/FXAA pipelines are separate: they use `post_push_constants` (exposure,
- * bloom intensity/threshold, mode, encode_gamma, FXAA knobs) on their own layout.
+ * bloom intensity/threshold, mode, encode_gamma, FXAA knobs) on their own layout, and the G-buffer
+ * debug view uses its own `gbuffer_debug_push_constants` (channel selector + the two projection
+ * terms that linearize depth) on its own layout.
  *
  * @section shader_compile Compiling
  *
@@ -71,6 +105,7 @@
  *  sh shaders/compile_shaders.sh                                          # POSIX
  * @endcode
  *
+ * Both scripts pass `-I shaders/`, which is what lets the fragment stages `#include "surface.glsl"`.
  * The compiled `.spv` files are tracked in the repository (there is no build-time shader step),
  * so a shader change must be followed by a recompile + commit of both the source and the binary.
  *
@@ -85,6 +120,12 @@
  *   (64-byte interleaved stride, locations 0,1,2,4,5), so shadow.vert declares the unused inputs
  *   and keeps them alive in a never-taken branch; a fragment output must match the pipeline's
  *   color format, which is why the composite and the FXAA pass are separate pipelines.
+ * - **A multi-target pipeline must not use the forward blend state.** `make_color_blend_attachment()`
+ *   blends with src alpha, which is the right convention while alpha means coverage (opaque draws
+ *   have alpha 1, so the math reduces to an overwrite). In a G-buffer alpha carries DATA (metallic,
+ *   roughness, flags), so the same state scales the surface by its own alpha and mixes it with the
+ *   cleared target - a fully-rough fragment would erase its own albedo. G-buffer pipelines pass
+ *   `color_blending = false` and use `make_color_blend_attachment_opaque()`.
  * - **Comments here are the reference.** Every non-obvious decision (bias choices, guards against
  *   NaN at grazing angles, banding, the gamma/encode split) is documented where it is implemented,
  *   and those comments are what Doxygen shows for the matching symbol.

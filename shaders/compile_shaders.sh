@@ -27,16 +27,21 @@ fi
 # directory of this script (shaders/), resolved wherever it is invoked from
 script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
 
-# compile <source> <output-spv>: abort the whole run on the first failure
+# compile <source> <output-spv>: abort the whole run on the first failure.
+# -I: shaders/surface.glsl is #included by pbr.frag / gbuffer.frag (the shared material-surface
+# gather); glslc resolves includes against the given directories.
 compile() {
     src=$1
     dst=$2
-    "$glslc_path" "$script_dir/$src" -o "$script_dir/$dst"
+    "$glslc_path" -I "$script_dir" "$script_dir/$src" -o "$script_dir/$dst"
     echo "compiled: $src -> $dst"
 }
 
 compile pbr.vert pbr.vert.spv
 compile pbr.frag pbr.frag.spv
+compile unlit.frag unlit.frag.spv
+compile gbuffer.frag gbuffer.frag.spv
+compile gbuffer_debug.frag gbuffer_debug.frag.spv
 compile skybox.vert skybox.vert.spv
 compile skybox.frag skybox.frag.spv
 compile shadow.vert shadow.vert.spv

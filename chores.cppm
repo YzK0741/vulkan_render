@@ -135,6 +135,11 @@ namespace chores {
         bool fxaa_enabled = false;         // FXAA on/off (initial: settings.render.fxaa)
         float fxaa_subpixel = 0.75f;       // sub-pixel term strength (0 = pure directional blend)
         float fxaa_edge_threshold = 0.166f; // relative luma contrast below which a pixel is "flat"
+        // G-buffer debug view (runtime::set_gbuffer_debug / set_gbuffer_channel): the deferred
+        // path's stored surface, one channel at a time. Mirrored into the runtime every frame like
+        // the FXAA state, so these fields carry the config's initial values.
+        bool gbuffer_debug = false; // draw the G-buffer + its debug view instead of the shaded scene
+        int gbuffer_channel = 1;    // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags
         // demo punctual lights (count matches vulkan::max_punctual_lights): the gui rows below
         // edit these fields live (no per-widget callbacks), and main() pushes the enabled set to
         // the runtime once per frame via chores::apply_point_lights(). Each slot is a point light

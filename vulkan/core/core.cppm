@@ -70,6 +70,32 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_core
+     * @brief how many color targets the G-buffer pass writes (see gbuffer_formats)
+     */
+    export constexpr uint32_t gbuffer_target_count = 3;
+
+    /**
+     * @ingroup vulkan_core
+     * @brief formats of the G-buffer targets, in attachment order (= the fragment output locations
+     *        of shaders/gbuffer.frag), and the reason the deferred path is cheap to store:
+     *        - 0 RGBA8_UNORM: albedo.rgb (base color, linear) + metallic in a
+     *        - 1 RGBA16F: world normal.xyz (no encoding - the conservative layout trades 4 bytes per
+     *          pixel for not having to reason about octahedral precision) + roughness in a
+     *        - 2 RGBA8_UNORM: material_id low/high byte + ambient occlusion + material flags
+     *        16 bytes per pixel in total; the depth is the pass's own single-sampled depth image.
+     * @note every target is single-sampled (1x) on purpose: a G-buffer cannot be multisampled
+     *       without per-sample shading, which is exactly what the deferred path trades MSAA for
+     *       (the anti-aliasing story is TAA/FXAA on the lit image instead). The forward path keeps
+     *       its MSAA targets - they are separate images, so both can coexist for an A/B.
+     */
+    export constexpr std::array<VkFormat, gbuffer_target_count> gbuffer_formats = {
+        VK_FORMAT_R8G8B8A8_UNORM,
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        VK_FORMAT_R8G8B8A8_UNORM,
+    };
+
+    /**
+     * @ingroup vulkan_core
      * @brief how many GPU timing marks one frame may write (the query pool is sized
      *        MAX_FRAMES_IN_FLIGHT * this, and each frame slot owns its own contiguous range)
      * @note a mark is one vkCmdWriteTimestamp; the frame's pass boundaries use a handful of them,
@@ -199,6 +225,22 @@ namespace vulkan {
         std::vector<VkImage> ldr_images = {};
         std::vector<VkDeviceMemory> ldr_image_memories = {};
         std::vector<VkImageView> ldr_image_views = {};
+
+        // ---- G-buffer targets (see gbuffer_formats): one set per swapchain image, single-sampled,
+        // written by the G-buffer pass and sampled by the deferred lighting / debug view. They are
+        // created and destroyed with the HDR/LDR/bloom targets (create_hdr_resolve_resources +
+        // recreate_swap_chain), so a resize rebuilds them in the same step.
+        std::array<std::vector<VkImage>, gbuffer_target_count> gbuffer_images = {};
+        std::array<std::vector<VkDeviceMemory>, gbuffer_target_count> gbuffer_image_memories = {};
+        std::array<std::vector<VkImageView>, gbuffer_target_count> gbuffer_image_views = {};
+        // The G-buffer pass needs its own depth image: the main depth image follows MSAA, and a
+        // dynamic rendering instance requires every attachment to have the same sample count (a
+        // 1x G-buffer over an 8x depth attachment is invalid, and a multisampled G-buffer is the
+        // thing the deferred path exists to avoid). Single-sampled, sampled (the lighting pass
+        // reads it), cleared by the G-buffer pass like the main depth.
+        std::vector<VkImage> gbuffer_depth_images = {};
+        std::vector<VkDeviceMemory> gbuffer_depth_image_memories = {};
+        std::vector<VkImageView> gbuffer_depth_image_views = {};
         void create_msaa_image(
             uint32_t width,
             uint32_t height,
@@ -406,6 +448,9 @@ namespace vulkan {
             float depth_bias_clamp = 0.0f) const;
 
         void recreate_swap_chain();
+        // one-time log for the "recreation deferred because the window has no drawable size" case
+        // (see recreate_swap_chain); reset as soon as a recreation actually runs
+        bool zero_extent_recreation_logged = false;
 
         /**
          * @ingroup vulkan_core
@@ -430,5 +475,22 @@ namespace vulkan {
             std::span<unsigned char const> vertex_shader_code,
             std::span<unsigned char const> fragment_shader_code,
             bool depth_test_enabled = true) const;
+
+        /**
+         * @ingroup vulkan_core
+         * @brief create the G-buffer pipeline: the shared scene layout, the three gbuffer_formats
+         *        color targets and a single-sampled depth attachment
+         * @param vertex_shader_code raw SPIR-V of the vertex stage (pbr.vert: instancing / skinning /
+         *        morphing are identical to the forward path)
+         * @param fragment_shader_code raw SPIR-V of the fragment stage (gbuffer.frag: writes the
+         *        three targets and shades nothing)
+         * @return vk_pipeline on success, error message on failure
+         * @note single-sampled on purpose (a G-buffer cannot be multisampled without per-sample
+         *       shading), so this pipeline may NOT be recorded into the forward pass's instance:
+         *       its attachments are the core::gbuffer_* targets and the pass that owns them
+         */
+        std::expected<vk_pipeline, std::string_view> make_gbuffer_pipeline(
+            std::span<unsigned char const> vertex_shader_code,
+            std::span<unsigned char const> fragment_shader_code) const;
     };
 } // namespace vulkan

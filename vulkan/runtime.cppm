@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -242,6 +242,45 @@ namespace vulkan {
         uint32_t gpu_timing_marks_measured = 0;                     // intervals the last measured frame had
         void gpu_mark(VkCommandBuffer command_buffer, gpu_mark_id mark, VkPipelineStageFlagBits stage) noexcept;
         void collect_gpu_timings(uint32_t slot);
+
+        // ---- G-buffer / deferred path ----
+        // M1: the opaque pass can write the G-buffer instead of shading, and a debug view shows the
+        // stored data (the real deferred lighting pass arrives in M2 and replaces that view).
+        // The G-buffer pipeline shades nothing: it writes albedo/metallic, normal/roughness and
+        // material id/AO/flags into core::gbuffer_* (three 1x targets + their own 1x depth), so the
+        // opaque pass runs at 1x whatever MSAA the forward path uses.
+        std::optional<vk_pipeline> gbuffer_pipeline = std::nullopt;
+        // fullscreen debug view of the G-buffer (reads the three targets + depth, writes the HDR
+        // target so the ordinary post chain still runs)
+        std::optional<vk_pipeline> gbuffer_debug_pipeline = std::nullopt;
+        // whether the opaque pass writes the G-buffer this frame (see set_gbuffer_debug). Only
+        // takes effect once both pipelines exist, so the flag can be set before setup finishes.
+        bool gbuffer_debug = false;
+        // which channel the debug view shows (see gbuffer_debug.frag / set_gbuffer_channel)
+        int gbuffer_channel_index = 1;
+        vk_sampler gbuffer_sampler = {};
+        VkDescriptorSetLayout gbuffer_set_layout = VK_NULL_HANDLE;
+        VkPipelineLayout gbuffer_pipeline_layout = VK_NULL_HANDLE;
+        VkDescriptorPool gbuffer_descriptor_pool = VK_NULL_HANDLE;
+        uint32_t gbuffer_pool_capacity = 0;                   // swapchain images the pool can hold
+        std::vector<VkDescriptorSet> gbuffer_debug_sets = {}; // one per swapchain image
+        // the target views the current sets point at, for image 0 (the swapchain generation
+        // fingerprint): a recreation invalidates the sets explicitly (on_swapchain_recreated), this
+        // is the belt-and-braces check that also catches a rebuilt generation reusing handles
+        std::array<VkImageView, 4> gbuffer_bound_views = {};
+        struct gbuffer_debug_push_constants {
+            float channel = 1.0f; // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags
+            float proj_22 = 0.0f; // projection[2][2] / [3][2]: the depth-linearization terms
+            float proj_32 = 0.0f;
+            float unused = 0.0f;
+        };
+        void ensure_gbuffer_descriptors();
+        void record_gbuffer_debug_pass(VkCommandBuffer command_buffer);
+        /** @brief whether the opaque pass writes the G-buffer this frame (pipelines present + enabled) */
+        [[nodiscard]] bool gbuffer_pass_active() const noexcept;
+        /** @brief the swapchain was rebuilt: drop everything that pointed at the old generation
+         *         (the debug overlay's backend + the G-buffer descriptor sets, whose views are gone) */
+        void on_swapchain_recreated();
 
         // ---- post-processing: HDR scene target -> exposure + ACES + gamma -> swapchain ----
         // created by make_post_pipeline(); the descriptor sets rebind lazily whenever the
@@ -862,8 +901,13 @@ namespace vulkan {
         struct sub_render_task {
             VkCommandBuffer command_buffer = VK_NULL_HANDLE;
             std::span<primitive const* const> leaves = {};
-            bool draw_skybox = false;                    // segment 0 draws the skybox before its leaves
-            VkFormat color_format = VK_FORMAT_UNDEFINED; // main color attachment format
+            bool draw_skybox = false; // segment 0 draws the skybox before its leaves
+            // Color attachment formats of the instance this secondary is recorded into, in
+            // attachment order: one entry (the HDR target) for the forward pass, the G-buffer set
+            // when the opaque pass writes the G-buffer. Held by value because the task outlives the
+            // call that builds it (it is moved into the task pool).
+            std::array<VkFormat, vulkan::gbuffer_target_count> color_formats = {};
+            uint32_t color_count = 0;                    // formats in use (1 forward, 3 G-buffer)
             VkFormat depth_format = VK_FORMAT_UNDEFINED; // main depth attachment format
             VkSampleCountFlagBits rasterization_samples = VK_SAMPLE_COUNT_1_BIT;
             runtime const* owner = nullptr; // recording context (scene set / pipeline caches)
@@ -1134,6 +1178,84 @@ namespace vulkan {
          *       debug overlay binds a label to it
          */
         [[nodiscard]] std::string gpu_timing_summary() const;
+
+        /** @brief how many channels the G-buffer debug view offers (see set_gbuffer_channel) */
+        static constexpr int gbuffer_channel_count = 8;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief name the G-buffer pass's default pipeline is bound under while it records
+         * @note the G-buffer pipeline is NOT registered in the runtime's named pipeline cache: it
+         *       declares three color attachments, so it can only be used inside the G-buffer
+         *       rendering instance (the named cache's pipelines all declare the single HDR target
+         *       and are usable in the ordinary forward instance). The G-buffer pass therefore hands
+         *       its own pipeline to default-semantics leaves under this name - a leaf with explicit
+         *       pipeline semantics still requests its own name and is skipped with a log, because
+         *       drawing it here would violate the instance's attachment formats.
+         */
+        static constexpr std::string_view gbuffer_pipeline_name = "gbuffer";
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief create the G-buffer pipeline: the deferred path's surface-only fragment stage
+         * @param vertex_shader_code raw SPIR-V of pbr.vert (the G-buffer reuses the forward vertex
+         *        stage: instancing / skinning / morphing / tangents are identical, only the shading
+         *        half differs)
+         * @param fragment_shader_code raw SPIR-V of gbuffer.frag
+         * @return success, or an error message on failure
+         * @note the pipeline declares the three core::gbuffer_formats targets plus the depth format,
+         *       so it is only valid inside a rendering instance with exactly those attachments - the
+         *       one set_gbuffer_debug() builds. Register it like any other pipeline (it is NOT the
+         *       default: the G-buffer pass binds it explicitly).
+         */
+        std::expected<void, std::string> make_gbuffer_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief create the G-buffer debug-view pipeline (fullscreen: the three targets + the depth
+         *        image -> the HDR scene target, so the ordinary post chain still runs)
+         * @return success, or an error message on failure
+         * @note optional but required for set_gbuffer_debug(true) to take effect; on its own it
+         *       changes nothing
+         */
+        std::expected<void, std::string> make_gbuffer_debug_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief draw the scene's opaque geometry into the G-buffer and show a debug view of it
+         *        instead of the shaded forward image
+         * @param enabled when true the opaque pass records into the three G-buffer targets (1x) and
+         *        a fullscreen pass visualizes one channel into the HDR target, which the post chain
+         *        then processes as usual. Without a pipeline from make_gbuffer_pipeline() +
+         *        make_gbuffer_debug_pipeline() the flag has no effect (the forward path keeps
+         *        running). alphaMode BLEND geometry is skipped in this mode: a G-buffer cannot carry
+         *        a blended surface, and the transparent pass stays a forward pass by design (M2
+         *        keeps it that way around the deferred lighting).
+         * @note this is the measurement and A/B view for the deferred work - it is not a shipping
+         *       render mode yet
+         */
+        void set_gbuffer_debug(bool enabled) noexcept {
+            this->gbuffer_debug = enabled;
+        }
+
+        /** @brief whether the opaque pass currently writes the G-buffer (see set_gbuffer_debug) */
+        [[nodiscard]] bool gbuffer_debug_enabled() const noexcept {
+            return this->gbuffer_debug;
+        }
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief select the channel the G-buffer debug view shows
+         * @param channel 0 albedo, 1 world normal, 2 roughness, 3 metallic, 4 ambient occlusion,
+         *        5 material id (colorized), 6 linearized depth, 7 raw material flags; clamped into
+         *        [0, gbuffer_channel_count - 1]
+         */
+        void set_gbuffer_channel(int channel) noexcept;
+
+        /** @brief the channel the G-buffer debug view shows (see set_gbuffer_channel) */
+        [[nodiscard]] int gbuffer_channel() const noexcept {
+            return this->gbuffer_channel_index;
+        }
 
         /**
          * @ingroup vulkan_runtime

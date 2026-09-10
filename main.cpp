@@ -375,6 +375,8 @@ int main(int argc, char** argv) {
     gui.skybox_enabled = settings.render.skybox; // checkbox initial states mirror the config
     gui.shadow_enabled = settings.render.shadow;
     gui.fxaa_enabled = settings.render.fxaa;
+    gui.gbuffer_debug = settings.render.gbuffer_debug; // gbuffer debug view initial state (M1)
+    gui.gbuffer_channel = settings.render.gbuffer_channel;
     gui.anim_playing = animation.is_playing(); // play checkbox initial state
     gui.current_camera = current_camera;       // combo selection (the pose seeded above)
 
@@ -573,6 +575,10 @@ int main(int argc, char** argv) {
         // FXAA: mirrored every frame like the other post-process values (the runtime clamps them and
         // ignores the flag when no fxaa pipeline was created)
         runtime.set_fxaa(gui.fxaa_enabled, gui.fxaa_subpixel, gui.fxaa_edge_threshold);
+        // G-buffer debug view (the deferred path's data): mirrored every frame like the FXAA state,
+        // so the config, the overlay checkbox and the channel combo all take effect immediately
+        runtime.set_gbuffer_debug(gui.gbuffer_debug);
+        runtime.set_gbuffer_channel(gui.gbuffer_channel);
         // cel shading: the combo picks a discrete band count (index 0 = off); every entry is a
         // visibly different look, unlike a continuous strength that had dead zones between bands
         constexpr std::array<float, 7> toon_band_counts = {0.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 8.0f};

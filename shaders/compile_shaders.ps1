@@ -25,6 +25,9 @@ $shaderDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pairs = @(
     @("pbr.vert", "pbr.vert.spv"),
     @("pbr.frag", "pbr.frag.spv"),
+    @("unlit.frag", "unlit.frag.spv"),
+    @("gbuffer.frag", "gbuffer.frag.spv"),
+    @("gbuffer_debug.frag", "gbuffer_debug.frag.spv"),
     @("skybox.vert", "skybox.vert.spv"),
     @("skybox.frag", "skybox.frag.spv"),
     @("shadow.vert", "shadow.vert.spv"),
@@ -37,7 +40,9 @@ $pairs = @(
 foreach ($pair in $pairs) {
     $src = Join-Path $shaderDir $pair[0]
     $dst = Join-Path $shaderDir $pair[1]
-    & $glslcPath $src -o $dst
+    # -I: shaders/surface.glsl is #included by pbr.frag / gbuffer.frag (the shared material-surface
+    # gather); glslc resolves includes against the given directories
+    & $glslcPath -I $shaderDir $src -o $dst
     if ($LASTEXITCODE -ne 0) {
         Write-Error "failed to compile $src"
         exit $LASTEXITCODE

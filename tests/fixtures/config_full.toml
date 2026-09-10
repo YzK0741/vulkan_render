@@ -17,6 +17,8 @@ skybox = false
 shadow = false
 fxaa = true
 gpu_timings = false
+gbuffer_debug = true
+gbuffer_channel = 5
 validation_layers = false
 
 [lighting]

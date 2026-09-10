@@ -565,6 +565,59 @@ namespace vulkan {
                 device);
         }
 
+        // ---- G-buffer targets (see gbuffer_formats) + the pass's own 1x depth image ----
+        // One set per swapchain image, single-sampled whatever MSAA the forward path uses: the
+        // G-buffer cannot be multisampled without per-sample shading, and the deferred path is the
+        // reason MSAA is not the only anti-aliasing answer anymore. COLOR_ATTACHMENT | SAMPLED
+        // because the pass writes them as attachments and the lighting/debug pass samples them.
+        for (uint32_t target = 0; target < gbuffer_target_count; ++target) {
+            std::vector<VkImage>& target_images = gbuffer_images[target];
+            std::vector<VkDeviceMemory>& target_memories = gbuffer_image_memories[target];
+            std::vector<VkImageView>& target_views = gbuffer_image_views[target];
+            target_images.resize(swap_chain_image_views.size());
+            target_memories.resize(swap_chain_image_views.size());
+            target_views.resize(swap_chain_image_views.size());
+
+            for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+                create_msaa_image(
+                    swap_chain_extent.width,
+                    swap_chain_extent.height,
+                    gbuffer_formats[target],
+                    VK_SAMPLE_COUNT_1_BIT,
+                    VK_IMAGE_TILING_OPTIMAL,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                    target_images[i],
+                    target_memories[i]);
+
+                target_views[i] = create_image_view(
+                    target_images[i],
+                    gbuffer_formats[target],
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    device);
+            }
+        }
+
+        gbuffer_depth_images.resize(swap_chain_image_views.size());
+        gbuffer_depth_image_memories.resize(swap_chain_image_views.size());
+        gbuffer_depth_image_views.resize(swap_chain_image_views.size());
+        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+            create_msaa_image(
+                swap_chain_extent.width,
+                swap_chain_extent.height,
+                depth_format,
+                VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gbuffer_depth_images[i],
+                gbuffer_depth_image_memories[i]);
+
+            // the DEPTH aspect (a color view of a depth image is invalid) - same raw-view
+            // convention as the other per-image targets, whose destruction is registered below
+            gbuffer_depth_image_views[i] = create_image_view(gbuffer_depth_images[i], depth_format, VK_IMAGE_ASPECT_DEPTH_BIT, device);
+        }
+
         // bloom targets: the 4-level chain (halved per level, min 1x1), same lifetime as the HDR
         // targets; each level gets one target per swapchain image
         for (uint32_t level = 0; level < bloom_level_count; ++level) {
@@ -633,6 +686,37 @@ namespace vulkan {
             ldr_image_views.clear();
             ldr_image_memories.clear();
             ldr_images.clear();
+            // the G-buffer targets + the pass's own depth image share this lifetime too
+            for (auto const& target_views : gbuffer_image_views) {
+                for (auto const& view : target_views) {
+                    vkDestroyImageView(device, view, nullptr);
+                }
+            }
+            for (auto const& target_memories : gbuffer_image_memories) {
+                for (auto const& memory : target_memories) {
+                    vkFreeMemory(device, memory, nullptr);
+                }
+            }
+            for (auto const& target_images : gbuffer_images) {
+                for (auto const& image : target_images) {
+                    vkDestroyImage(device, image, nullptr);
+                }
+            }
+            gbuffer_image_views = {};
+            gbuffer_image_memories = {};
+            gbuffer_images = {};
+            for (auto const& view : gbuffer_depth_image_views) {
+                vkDestroyImageView(device, view, nullptr);
+            }
+            gbuffer_depth_image_views.clear();
+            for (auto const& memory : gbuffer_depth_image_memories) {
+                vkFreeMemory(device, memory, nullptr);
+            }
+            gbuffer_depth_image_memories.clear();
+            for (auto const& image : gbuffer_depth_images) {
+                vkDestroyImage(device, image, nullptr);
+            }
+            gbuffer_depth_images.clear();
             for (auto const& level_views : bloom_image_views) {
                 for (auto const& view : level_views) {
                     vkDestroyImageView(device, view, nullptr);
@@ -1078,6 +1162,23 @@ namespace vulkan {
     }
 
     void core::recreate_swap_chain() {
+        // 0. A minimized (or otherwise not-yet-sized) window reports currentExtent (0, 0). Building a
+        //    swapchain and the per-image targets from that is invalid - vkCreateSwapchainKHR
+        //    (VUID-VkSwapchainCreateInfoKHR-imageExtent-01689) and every vkCreateImage
+        //    (VUID-VkImageCreateInfo-extent-00944/-00945) reject a zero extent - and there is nothing
+        //    to render into anyway. Keep the current generation untouched and let the caller retry:
+        //    the frame loop already skips frames whose swapchain extent is zero
+        //    (runtime::pace_and_acquire), and a restore / resize produces a sized window shortly.
+        swap_chain_support_details const support = query_swap_chain_support(this->physical_device, this->surface);
+        if (support.capabilities.currentExtent.width == 0 || support.capabilities.currentExtent.height == 0) {
+            if (!this->zero_extent_recreation_logged) {
+                this->zero_extent_recreation_logged = true;
+                utility::log("swapchain recreation deferred: the window has no drawable size yet (minimized / live resize)");
+            }
+            return;
+        }
+        this->zero_extent_recreation_logged = false;
+
         // 1. Wait for the device to be idle
         vkDeviceWaitIdle(device);
 
@@ -1126,6 +1227,38 @@ namespace vulkan {
             vkFreeMemory(device, memory, nullptr);
         }
         ldr_image_memories.clear();
+
+        // 2d-2. Destroy the G-buffer targets + the G-buffer pass's own depth image
+        for (auto const& target_views : gbuffer_image_views) {
+            for (auto const& view : target_views) {
+                vkDestroyImageView(device, view, nullptr);
+            }
+        }
+        gbuffer_image_views = {};
+        for (auto const& target_images : gbuffer_images) {
+            for (auto const& image : target_images) {
+                vkDestroyImage(device, image, nullptr);
+            }
+        }
+        gbuffer_images = {};
+        for (auto const& target_memories : gbuffer_image_memories) {
+            for (auto const& memory : target_memories) {
+                vkFreeMemory(device, memory, nullptr);
+            }
+        }
+        gbuffer_image_memories = {};
+        for (auto const& view : gbuffer_depth_image_views) {
+            vkDestroyImageView(device, view, nullptr);
+        }
+        gbuffer_depth_image_views.clear();
+        for (auto const& image : gbuffer_depth_images) {
+            vkDestroyImage(device, image, nullptr);
+        }
+        gbuffer_depth_images.clear();
+        for (auto const& memory : gbuffer_depth_image_memories) {
+            vkFreeMemory(device, memory, nullptr);
+        }
+        gbuffer_depth_image_memories.clear();
 
         // 2d. Destroy the bloom targets (all levels)
         for (auto const& level_views : bloom_image_views) {
@@ -1234,6 +1367,37 @@ namespace vulkan {
             depth_test_enabled);
         if (result) {
             // Save the fullscreen viewport/scissor for the current swapchain size, used directly before draw
+            result->viewport = {
+                0.0f,
+                0.0f,
+                static_cast<float>(this->swap_chain_extent.width),
+                static_cast<float>(this->swap_chain_extent.height),
+                0.0f,
+                1.0f,
+            };
+            result->scissor = {{0, 0}, this->swap_chain_extent};
+        }
+        return result;
+    }
+
+    std::expected<vk_pipeline, std::string_view> core::make_gbuffer_pipeline(
+        std::span<unsigned char const> const vertex_shader_code,
+        std::span<unsigned char const> const fragment_shader_code) const {
+        auto result = vulkan::make_pipeline(
+            this->device,
+            this->scene_pipeline_layout,
+            std::span<VkFormat const>(gbuffer_formats),
+            this->depth_format,
+            vertex_shader_code,
+            fragment_shader_code,
+            VK_SAMPLE_COUNT_1_BIT, // a G-buffer is never multisampled (see gbuffer_formats)
+            true,                  // depth test + write: opaque geometry, and the lighting pass needs depth
+            0.0f,
+            0.0f,
+            0.0f);
+        if (result) {
+            // same fullscreen viewport/scissor default as the forward pipelines (the frame path
+            // re-syncs it on every swapchain recreation)
             result->viewport = {
                 0.0f,
                 0.0f,

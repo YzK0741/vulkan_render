@@ -55,4 +55,37 @@ namespace vulkan {
         float depth_bias_constant_factor = 0.0f,
         float depth_bias_slope_factor = 0.0f,
         float depth_bias_clamp = 0.0f);
+
+    /**
+     * @ingroup vulkan_pipeline
+     * @brief multi-target variant of make_pipeline(): the pipeline writes @p color_formats.size()
+     *        color attachments (the G-buffer pass writes three - albedo/metallic,
+     *        normal/roughness, material id/AO/flags), one blend attachment per color target
+     * @param color_formats attachment formats in attachment order, which the fragment shader's
+     *        layout(location = i) outputs must match one for one; empty = no color attachment
+     *        (depth-only, the same as has_color_attachment false above)
+     * @param depth_format depth attachment format
+     * @param msaa_level MSAA sample count of the render instance (the G-buffer is 1x)
+     * @param depth_test_enabled enable depth test + depth write
+     * @param depth_bias_* fixed-function rasterization depth bias
+     * @param color_blending true = the engine's standard src-alpha blending on every target (the
+     *        forward pipelines' convention: alpha is coverage and opaque draws have alpha 1);
+     *        false (the default) = blending disabled, the targets are OVERWRITTEN - which is what a
+     *        G-buffer needs, because there alpha carries data (metallic / roughness / flags) and
+     *        src-alpha blending would mix the surface with the cleared target
+     * @return vk_pipeline on success, error message on failure
+     */
+    export std::expected<vk_pipeline, std::string_view> make_pipeline(
+        VkDevice device,
+        VkPipelineLayout pipeline_layout,
+        std::span<VkFormat const> color_formats,
+        VkFormat depth_format,
+        std::span<unsigned char const> vertex_shader_code,
+        std::span<unsigned char const> fragment_shader_code,
+        VkSampleCountFlagBits msaa_level,
+        bool depth_test_enabled = true,
+        float depth_bias_constant_factor = 0.0f,
+        float depth_bias_slope_factor = 0.0f,
+        float depth_bias_clamp = 0.0f,
+        bool color_blending = false);
 } // namespace vulkan

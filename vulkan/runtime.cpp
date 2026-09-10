@@ -199,6 +199,20 @@ namespace vulkan {
             vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->post_set_layout, nullptr);
             this->post_set_layout = VK_NULL_HANDLE;
         }
+        // the same three objects for the G-buffer debug view (its pipeline and sampler are RAII
+        // members; the set layout, the pipeline layout and the pool are not)
+        if (this->gbuffer_descriptor_pool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(this->vulkan_core.device, this->gbuffer_descriptor_pool, nullptr);
+            this->gbuffer_descriptor_pool = VK_NULL_HANDLE;
+        }
+        if (this->gbuffer_pipeline_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(this->vulkan_core.device, this->gbuffer_pipeline_layout, nullptr);
+            this->gbuffer_pipeline_layout = VK_NULL_HANDLE;
+        }
+        if (this->gbuffer_set_layout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->gbuffer_set_layout, nullptr);
+            this->gbuffer_set_layout = VK_NULL_HANDLE;
+        }
 
         // Shared scene resources: views/sets/samplers/buffers/images are RAII and free
         // themselves as this runtime's members destruct (after this body; vulkan_core, which
@@ -795,9 +809,6 @@ namespace vulkan {
     }
 
     void runtime::begin_rendering(VkCommandBuffer const command_buffer, uint32_t const image_index, VkRenderingFlags const flags) const {
-        VkClearValue clear_color = {};
-        clear_color.color = {{this->clear_color.r, this->clear_color.g, this->clear_color.b, 1.0f}};
-
         core const& vk = this->vulkan_core;
 
         // Dynamic rendering (Vulkan 1.3 core, the only path the engine supports): attachments
@@ -806,6 +817,26 @@ namespace vulkan {
         // target (vk.hdr_image_views), without MSAA the HDR target is the color attachment
         // directly. The post-process pass samples that HDR target and writes the swapchain.
         bool const msaa = vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT;
+
+        // G-buffer mode: the opaque pass writes the surface instead of shading it, into three
+        // single-sampled targets + their own 1x depth image. Same primitives, same pipelines
+        // (the default pipeline is the G-buffer one), different attachments - so the MSAA HDR
+        // target stays untouched and a later pass (the debug view / the lighting pass) writes it.
+        if (this->gbuffer_pass_active()) {
+            std::array<VkRenderingAttachmentInfo, vulkan::gbuffer_target_count> gbuffer_attachments = {};
+            VkClearValue clear = {}; // all three targets clear to zero: no geometry, no surface
+            for (uint32_t target = 0; target < vulkan::gbuffer_target_count; ++target) {
+                gbuffer_attachments[target] = make_color_attachment_info(vk.gbuffer_image_views[target][image_index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
+            }
+            // the G-buffer depth clears to the far plane (1.0), like the main depth attachment
+            VkRenderingAttachmentInfo const depth_attachment = make_depth_attachment_info(vk.gbuffer_depth_image_views[image_index], VK_ATTACHMENT_STORE_OP_DONT_CARE);
+            VkRenderingInfo const rendering_info = make_rendering_info(flags, {{0, 0}, vk.swap_chain_extent}, gbuffer_attachments.data(), static_cast<uint32_t>(gbuffer_attachments.size()), &depth_attachment);
+            vkCmdBeginRendering(command_buffer, &rendering_info);
+            return;
+        }
+
+        VkClearValue clear_color = {};
+        clear_color.color = {{this->clear_color.r, this->clear_color.g, this->clear_color.b, 1.0f}};
         VkRenderingAttachmentInfo const color_attachment = make_color_attachment_info(
             msaa ? vk.color_image_views[image_index] : vk.hdr_image_views[image_index],
             clear_color,
@@ -870,7 +901,27 @@ namespace vulkan {
             this->was_minimized = false;
             utility::log("window restored, recreating swapchain");
             vk.recreate_swap_chain();
-            this->debug_overlay.on_swapchain_recreated();
+            this->on_swapchain_recreated();
+        }
+    }
+
+    void runtime::on_swapchain_recreated() {
+        // The swapchain generation changed: every per-image target was destroyed and rebuilt, so
+        // anything that pointed at the old views must be dropped before it is used again.
+        // The overlay's backend has its own swapchain-dependent state; the G-buffer debug sets hold
+        // the old target views, and rewriting a descriptor set an in-flight frame still uses would
+        // be an update-after-bind hazard - so they are dropped (not rewritten) and the next recorded
+        // frame reallocates them for the new generation.
+        // The pool goes with them: a descriptor pool only frees its sets when it is destroyed or
+        // reset, and the new generation needs a full maxSets worth of them. Destroying it here is
+        // safe - vkDeviceWaitIdle already ran inside recreate_swap_chain(), so no frame is using it.
+        this->debug_overlay.on_swapchain_recreated();
+        this->gbuffer_debug_sets.clear();
+        this->gbuffer_bound_views = {};
+        if (this->gbuffer_descriptor_pool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(this->vulkan_core.device, this->gbuffer_descriptor_pool, nullptr);
+            this->gbuffer_descriptor_pool = VK_NULL_HANDLE;
+            this->gbuffer_pool_capacity = 0;
         }
     }
 
@@ -978,7 +1029,7 @@ namespace vulkan {
         if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
             utility::log("swapchain out of date, recreating");
             vk.recreate_swap_chain();
-            this->debug_overlay.on_swapchain_recreated();
+            this->on_swapchain_recreated();
             return frame_status::skipped;
         }
         if (acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
@@ -1322,7 +1373,11 @@ namespace vulkan {
         // Dynamic rendering has no automatic attachment transitions (a render pass would do
         // them implicitly): move every attachment into its render layout before
         // vkCmdBeginRendering
-        std::array<VkImageMemoryBarrier2, 3> attachment_barriers = {};
+        // The G-buffer mode writes three single-sampled targets plus the pass's own 1x depth image
+        // instead: the main HDR target is not touched by the opaque pass at all (the debug view
+        // writes it afterwards), so it must not be transitioned here.
+        bool const gbuffer_pass = this->gbuffer_pass_active();
+        std::array<VkImageMemoryBarrier2, gbuffer_target_count + 1> attachment_barriers = {};
         uint32_t barrier_count = 0;
         auto const add_render_barrier = [&attachment_barriers, &barrier_count](VkImageMemoryBarrier2 const& transition, VkImage const image) {
             VkImageMemoryBarrier2& barrier = attachment_barriers[barrier_count++];
@@ -1330,14 +1385,20 @@ namespace vulkan {
             barrier.image = image;
         };
 
-        if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
+        if (gbuffer_pass) {
+            for (uint32_t target = 0; target < gbuffer_target_count; ++target) {
+                add_render_barrier(color_attachment_transition, vk.gbuffer_images[target][this->current_image_index]);
+            }
+            add_render_barrier(depth_attachment_transition, vk.gbuffer_depth_images[this->current_image_index]);
+        } else if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
             // the MSAA scene color and its HDR resolve target both render in COLOR_ATTACHMENT_OPTIMAL
             add_render_barrier(color_attachment_transition, vk.color_images[this->current_image_index]);
             add_render_barrier(color_attachment_transition, vk.hdr_images[this->current_image_index]);
+            add_render_barrier(depth_attachment_transition, vk.depth_images[this->current_image_index]);
         } else {
             add_render_barrier(color_attachment_transition, vk.hdr_images[this->current_image_index]);
+            add_render_barrier(depth_attachment_transition, vk.depth_images[this->current_image_index]);
         }
-        add_render_barrier(depth_attachment_transition, vk.depth_images[this->current_image_index]);
 
         VkDependencyInfo const dependency_info = make_image_dependency_info(barrier_count, attachment_barriers.data());
         vkCmdPipelineBarrier2(*command_buffer, &dependency_info);
@@ -1386,6 +1447,17 @@ namespace vulkan {
             this->post_fxaa_pipeline->viewport = full_viewport;
             this->post_fxaa_pipeline->scissor = full_scissor;
         }
+        // ... and the same for the G-buffer pair: gbuffer_pipeline is the opaque pass's default
+        // pipeline (begin_pipeline applies the stored viewport) and gbuffer_debug_pipeline is a
+        // fullscreen pass. Neither lives in the named cache above.
+        if (this->gbuffer_pipeline) {
+            this->gbuffer_pipeline->viewport = full_viewport;
+            this->gbuffer_pipeline->scissor = full_scissor;
+        }
+        if (this->gbuffer_debug_pipeline) {
+            this->gbuffer_debug_pipeline->viewport = full_viewport;
+            this->gbuffer_debug_pipeline->scissor = full_scissor;
+        }
 
         // Stage 3 of parallel recording: the main-pass visible leaves are split into up-to-N
         // contiguous sub_render_tasks (N = task-pool workers), each recording its own per-slot
@@ -1403,10 +1475,16 @@ namespace vulkan {
         std::vector<std::pair<VkCommandPool, vk_command_buffer>>& main_segments = this->main_segments[static_cast<std::size_t>(frame_slot)];
 
         // Main secondaries inherit the color + depth attachments (dynamic rendering 1.3): same
-        // formats as begin_rendering() below, rasterization samples follow MSAA. The gui
-        // overlay draws into the same color+depth instance, so it inherits identically.
-        VkFormat const color_format = vulkan::hdr_format; // scene target is HDR (post-process input)
-        VkCommandBufferInheritanceRenderingInfo const main_inheritance = make_inheritance_rendering_info(true, &color_format, vk.depth_format, vk.msaa_samples);
+        // formats as begin_rendering() below, rasterization samples follow MSAA in the forward pass
+        // and are 1x in the G-buffer pass. The gui overlay draws into the same color+depth instance,
+        // so it inherits identically. The G-buffer mode declares its three targets here, which is
+        // what lets the same parallel segment recording serve both passes.
+        std::array<VkFormat, vulkan::gbuffer_target_count> const pass_color_formats =
+            gbuffer_pass ? vulkan::gbuffer_formats
+                         : std::array<VkFormat, vulkan::gbuffer_target_count>{vulkan::hdr_format, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED};
+        uint32_t const pass_color_count = gbuffer_pass ? vulkan::gbuffer_target_count : 1u;
+        VkSampleCountFlagBits const pass_samples = gbuffer_pass ? VK_SAMPLE_COUNT_1_BIT : vk.msaa_samples;
+        VkCommandBufferInheritanceRenderingInfo const main_inheritance = make_inheritance_rendering_info(pass_color_formats.data(), pass_color_count, vk.depth_format, pass_samples);
         VkCommandBufferInheritanceInfo const main_sec_inherit = make_inheritance_info(&main_inheritance);
         VkCommandBufferBeginInfo const main_sec_begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &main_sec_inherit);
 
@@ -1416,11 +1494,13 @@ namespace vulkan {
         // Transparent pass: the alpha-blended leaves, recorded on the PRIMARY thread (usually
         // few + order-sensitive, so no parallel fan-out). Its environment keeps the session
         // default but transparent draws disable depth writes via env.set_depth_write(false)
-        // (each leaf's draw() requests it). Recorded only when there are transparent leaves.
+        // (each leaf's draw() requests it). Recorded only when there are transparent leaves, and
+        // never in G-buffer mode: a blended surface cannot be stored in a G-buffer (the deferred
+        // path keeps alpha-blended geometry as a forward pass, which is the standard hybrid).
         // recorded_* flags gate the execute below: a secondary whose begin failed must never be
         // executed (executing an unrecorded command buffer is a VUID and can wedge the slot).
         VkCommandBuffer const transparent_secondary = *secondaries[static_cast<std::size_t>(secondary_pass::transparent)];
-        bool has_transparent = !this->frame_transparent.empty();
+        bool has_transparent = !gbuffer_pass && !this->frame_transparent.empty();
         auto const record_transparent_pass = [&] {
             if (!has_transparent) {
                 return;
@@ -1475,10 +1555,14 @@ namespace vulkan {
             sub_render_task task = {};
             task.command_buffer = *main_segments[s].second;
             task.leaves = std::span<primitive const* const>(this->frame_visible.data() + seg_first, seg_last - seg_first);
-            task.draw_skybox = s == 0; // the skybox belongs to the first segment
-            task.color_format = color_format;
+            // the skybox belongs to the first segment, and never to the G-buffer (a background is
+            // not a surface: the deferred path treats "no geometry" as the sky, the debug view
+            // clears those pixels)
+            task.draw_skybox = s == 0 && !gbuffer_pass;
+            task.color_formats = pass_color_formats;
+            task.color_count = pass_color_count;
             task.depth_format = vk.depth_format;
-            task.rasterization_samples = vk.msaa_samples;
+            task.rasterization_samples = pass_samples;
             task.owner = this;
             task.recorded = &segment_recorded[s];
             tasks.emplace_back(std::move(task)); // std::function copies the value task
@@ -1579,7 +1663,10 @@ namespace vulkan {
     // for parallel pass recording. The debug overlay stays on the primary (it has its own
     // recording path), so this content is the scene only.
     void runtime::record_main_content(VkCommandBuffer const command_buffer) const {
-        this->record_main_segment(command_buffer, this->frame_visible, this->skybox_pipeline && this->skybox_enabled);
+        // the skybox is a background, not a surface: it draws in the forward instance only (the
+        // G-buffer pass leaves those pixels cleared - see the deferred path's debug/lighting pass)
+        bool const draw_skybox = !this->gbuffer_pass_active() && this->skybox_pipeline && this->skybox_enabled;
+        this->record_main_segment(command_buffer, this->frame_visible, draw_skybox);
     }
 
     // One slice of the main-pass leaves (see the declaration); when draw_skybox the skybox is
@@ -1635,11 +1722,26 @@ namespace vulkan {
         // cannot tear the std::string it points into.
         render_environment env;
         env.command_buffer = command_buffer;
+        // The G-buffer pass binds its own pipeline as the pass default (see gbuffer_pipeline_name):
+        // same leaves, same draw path, but the fragment stage writes the surface into three 1x
+        // targets instead of shading into the HDR one.
+        bool const gbuffer_pass = this->gbuffer_pass_active();
         {
             std::shared_lock const lock(this->access_mutex);
-            env.default_name = this->default_pipeline_name;
+            env.default_name = gbuffer_pass ? gbuffer_pipeline_name : this->default_pipeline_name;
         }
-        env.bind = [this](VkCommandBuffer const cb, std::string_view const name) {
+        env.bind = [this, gbuffer_pass](VkCommandBuffer const cb, std::string_view const name) {
+            if (gbuffer_pass) {
+                if (name == gbuffer_pipeline_name) {
+                    this->gbuffer_pipeline->begin_pipeline(cb);
+                    return;
+                }
+                // a leaf with explicit pipeline semantics cannot draw in the G-buffer instance (the
+                // named pipelines declare the single HDR attachment): say so once per leaf instead
+                // of issuing a draw that would be a validation error
+                utility::log("runtime: leaf requests pipeline '{}' during the G-buffer pass - draw skipped (only default-semantics leaves write the G-buffer)", name);
+                return;
+            }
             if (auto const it = this->pipelines.find(name); it != this->pipelines.end()) {
                 it->second.begin_pipeline(cb);
             } else {
@@ -1667,7 +1769,7 @@ namespace vulkan {
     // fresh each call so the pNext chains point at this invocation's stack structs; safe to run
     // on any pool worker.
     void runtime::sub_render_task::operator()() const {
-        VkCommandBufferInheritanceRenderingInfo const rendering_inherit = make_inheritance_rendering_info(true, &this->color_format, this->depth_format, this->rasterization_samples);
+        VkCommandBufferInheritanceRenderingInfo const rendering_inherit = make_inheritance_rendering_info(this->color_formats.data(), this->color_count, this->depth_format, this->rasterization_samples);
         VkCommandBufferInheritanceInfo const inherit = make_inheritance_info(&rendering_inherit);
         VkCommandBufferBeginInfo const begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &inherit);
         if (vkBeginCommandBuffer(this->command_buffer, &begin) != VK_SUCCESS) {
@@ -1924,12 +2026,257 @@ namespace vulkan {
         this->post_bound_blooms = vk.bloom_image_views[0];
         this->post_bound_ldr = vk.ldr_image_views;
     }
+    // ---- G-buffer / deferred path (M1: the write pass + its debug view) ----
+    // The G-buffer pass is the forward opaque pass with a different fragment stage: same vertex
+    // stage, same primitives, same scene set, same instancing/skinning/morphing. What changes is
+    // where the fragments go (three 1x targets + a 1x depth image instead of the MSAA HDR target)
+    // and that nothing is lit - see shaders/gbuffer.frag.
+    std::expected<void, std::string> runtime::make_gbuffer_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+        auto result = this->vulkan_core.make_gbuffer_pipeline(vertex_shader_code, fragment_shader_code);
+        if (!result) {
+            return std::unexpected(std::string(result.error()));
+        }
+        this->gbuffer_pipeline = std::move(result).value();
+        return {};
+    }
+
+    std::expected<void, std::string> runtime::make_gbuffer_debug_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+        using fail = std::unexpected<std::string>;
+        core& vk = this->vulkan_core;
+
+        // its own set layout (the post chain's six bindings have nothing to do with the G-buffer):
+        // binding 0..2 = the three targets, binding 3 = the pass's depth image
+        std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
+        for (uint32_t b = 0; b < bindings.size(); ++b) {
+            bindings[b].binding = b;
+            bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[b].descriptorCount = 1;
+            bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings[b].pImmutableSamplers = nullptr;
+        }
+        VkDescriptorSetLayoutCreateInfo layout_info = {};
+        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
+        layout_info.pBindings = bindings.data();
+        if (vkCreateDescriptorSetLayout(vk.device, &layout_info, nullptr, &this->gbuffer_set_layout) != VK_SUCCESS) {
+            return fail("gbuffer debug: descriptor set layout creation failed");
+        }
+
+        VkPushConstantRange push_range = {};
+        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        push_range.offset = 0;
+        push_range.size = sizeof(gbuffer_debug_push_constants);
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &this->gbuffer_set_layout;
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &this->gbuffer_pipeline_layout) != VK_SUCCESS) {
+            return fail("gbuffer debug: pipeline layout creation failed");
+        }
+
+        // fullscreen triangle (post.vert), no depth attachment, no depth test: the debug view writes
+        // the HDR scene target, which the ordinary post chain (bloom/composite/FXAA) then consumes
+        VkFormat const hdr_format_only = vulkan::hdr_format;
+        auto pipeline_result = vulkan::make_pipeline(
+            vk.device,
+            this->gbuffer_pipeline_layout,
+            hdr_format_only,
+            VK_FORMAT_UNDEFINED,
+            vertex_shader_code,
+            fragment_shader_code,
+            VK_SAMPLE_COUNT_1_BIT,
+            false,
+            true,
+            0.0f,
+            0.0f,
+            0.0f);
+        if (!pipeline_result) {
+            return fail(std::string(pipeline_result.error()));
+        }
+        this->gbuffer_debug_pipeline = std::move(pipeline_result).value();
+
+        // the sampler reads all four inputs (NEAREST: the debug view must show stored texels, not a
+        // filtered average of them - the point is to inspect the data, not to make it pretty)
+        VkSamplerCreateInfo sampler_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
+        sampler_info.magFilter = VK_FILTER_NEAREST;
+        sampler_info.minFilter = VK_FILTER_NEAREST;
+        VkSampler sampler = VK_NULL_HANDLE;
+        if (vkCreateSampler(vk.device, &sampler_info, nullptr, &sampler) != VK_SUCCESS) {
+            return fail("gbuffer debug: sampler creation failed");
+        }
+        this->gbuffer_sampler = vk_sampler(sampler, vk.device);
+        return {};
+    }
+
+    bool runtime::gbuffer_pass_active() const noexcept {
+        return this->gbuffer_debug && this->gbuffer_pipeline.has_value() && this->gbuffer_debug_pipeline.has_value();
+    }
+
+    void runtime::set_gbuffer_channel(int const channel) noexcept {
+        this->gbuffer_channel_index = std::clamp(channel, 0, gbuffer_channel_count - 1);
+    }
+
+    void runtime::ensure_gbuffer_descriptors() {
+        core& vk = this->vulkan_core;
+        if (this->gbuffer_debug_pipeline == std::nullopt || this->gbuffer_set_layout == VK_NULL_HANDLE) {
+            return;
+        }
+        std::size_t const image_count = vk.gbuffer_image_views[0].size();
+        if (image_count == 0 || vk.gbuffer_depth_image_views.size() != image_count) {
+            return;
+        }
+        // Same rebinding rule as the post chain: the sets belong to the current swapchain generation
+        // until it is rebuilt (on_swapchain_recreated drops them). The view signature is the
+        // belt-and-braces check for a rebuilt generation that happens to reuse the same handles.
+        std::array<VkImageView, 4> const signature = {
+            vk.gbuffer_image_views[0][0],
+            vk.gbuffer_image_views[1][0],
+            vk.gbuffer_image_views[2][0],
+            vk.gbuffer_depth_image_views[0]};
+        if (this->gbuffer_debug_sets.size() == image_count && this->gbuffer_bound_views == signature) {
+            return; // already bound to the current targets
+        }
+
+        if (this->gbuffer_descriptor_pool == VK_NULL_HANDLE || this->gbuffer_pool_capacity != image_count) {
+            vkDeviceWaitIdle(vk.device);
+            if (this->gbuffer_descriptor_pool != VK_NULL_HANDLE) {
+                vkDestroyDescriptorPool(vk.device, this->gbuffer_descriptor_pool, nullptr);
+                this->gbuffer_descriptor_pool = VK_NULL_HANDLE;
+            }
+            VkDescriptorPoolSize pool_size = {};
+            pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            pool_size.descriptorCount = static_cast<uint32_t>(image_count * signature.size());
+            VkDescriptorPoolCreateInfo pool_info = {};
+            pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+            pool_info.maxSets = static_cast<uint32_t>(image_count);
+            pool_info.poolSizeCount = 1;
+            pool_info.pPoolSizes = &pool_size;
+            if (vkCreateDescriptorPool(vk.device, &pool_info, nullptr, &this->gbuffer_descriptor_pool) != VK_SUCCESS) {
+                utility::log("runtime: gbuffer debug descriptor pool creation failed - debug view skipped");
+                this->gbuffer_descriptor_pool = VK_NULL_HANDLE;
+                this->gbuffer_debug_sets.clear();
+                this->gbuffer_bound_views = {};
+                return;
+            }
+            this->gbuffer_pool_capacity = static_cast<uint32_t>(image_count);
+            this->gbuffer_debug_sets.clear();
+        }
+
+        if (this->gbuffer_debug_sets.size() != image_count) {
+            std::vector<VkDescriptorSetLayout> const layouts(image_count, this->gbuffer_set_layout);
+            this->gbuffer_debug_sets.assign(image_count, VK_NULL_HANDLE);
+            VkDescriptorSetAllocateInfo allocate_info = {};
+            allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            allocate_info.descriptorPool = this->gbuffer_descriptor_pool;
+            allocate_info.descriptorSetCount = static_cast<uint32_t>(image_count);
+            allocate_info.pSetLayouts = layouts.data();
+            if (vkAllocateDescriptorSets(vk.device, &allocate_info, this->gbuffer_debug_sets.data()) != VK_SUCCESS) {
+                utility::log("runtime: gbuffer debug descriptor allocation failed - debug view skipped");
+                this->gbuffer_debug_sets.clear();
+                this->gbuffer_bound_views = {};
+                return;
+            }
+        }
+
+        for (std::size_t i = 0; i < image_count; ++i) {
+            std::array<VkDescriptorImageInfo, 4> image_infos = {};
+            std::array<VkImageView, 4> const views = {
+                vk.gbuffer_image_views[0][i],
+                vk.gbuffer_image_views[1][i],
+                vk.gbuffer_image_views[2][i],
+                vk.gbuffer_depth_image_views[i]};
+            std::array<VkWriteDescriptorSet, 4> writes = {};
+            for (uint32_t b = 0; b < views.size(); ++b) {
+                image_infos[b].sampler = *this->gbuffer_sampler;
+                image_infos[b].imageView = views[b];
+                image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[b].dstSet = this->gbuffer_debug_sets[i];
+                writes[b].dstBinding = b;
+                writes[b].descriptorCount = 1;
+                writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[b].pImageInfo = &image_infos[b];
+            }
+            vkUpdateDescriptorSets(vk.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        }
+        this->gbuffer_bound_views = signature;
+    }
+
+    void runtime::record_gbuffer_debug_pass(VkCommandBuffer const command_buffer) {
+        core const& vk = this->vulkan_core;
+        if (this->gbuffer_debug_pipeline == std::nullopt) {
+            return;
+        }
+        std::size_t const index = this->current_image_index;
+
+        // Layout transitions FIRST, and outside the rendering instance: vkCmdPipelineBarrier2 may not
+        // be recorded inside a dynamic rendering instance (VUID-vkCmdPipelineBarrier2-None-09553,
+        // unless dynamic rendering local read is enabled, which the engine does not need). So all
+        // three steps happen before vkCmdBeginRendering:
+        //   1. the HDR target the debug view writes enters COLOR_ATTACHMENT_OPTIMAL (the G-buffer
+        //      pass wrote its own targets, so it was never an attachment this frame). This happens
+        //      even when the descriptor set below is missing, because the post chain that follows
+        //      samples that image: an undefined layout would be a lie, a cleared image is a valid
+        //      black frame.
+        //   2. the three G-buffer targets the pass just wrote become shader inputs.
+        //   3. the G-buffer depth image becomes a shader input too (UNDEFINED -> SHADER_READ: its
+        //      contents are new, so discarding the old layout is correct; the aspect must be DEPTH).
+        std::array<VkImageMemoryBarrier2, 5> barriers = {};
+        barriers[0] = vulkan::color_attachment_transition;
+        barriers[0].image = vk.hdr_images[index];
+        for (uint32_t target = 0; target < vulkan::gbuffer_target_count; ++target) {
+            barriers[target + 1] = vulkan::hdr_sampling_transition; // COLOR_ATTACHMENT -> SHADER_READ
+            barriers[target + 1].image = vk.gbuffer_images[target][index];
+        }
+        barriers[4] = vulkan::undefined_to_depth_sampling_transition;
+        barriers[4].image = vk.gbuffer_depth_images[index];
+        VkDependencyInfo const dependency = make_image_dependency_info(static_cast<uint32_t>(barriers.size()), barriers.data());
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
+
+        this->ensure_gbuffer_descriptors();
+
+        VkClearValue clear = {};
+        VkRenderingAttachmentInfo const color_attachment = make_color_attachment_info(vk.hdr_image_views[index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
+        VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &color_attachment, nullptr);
+        vkCmdBeginRendering(command_buffer, &rendering_info);
+        bool const can_draw = this->gbuffer_debug_sets.size() > index;
+        if (can_draw) {
+            this->gbuffer_debug_pipeline->begin_pipeline(command_buffer);
+            VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height), 0.0f, 1.0f};
+            VkRect2D const scissor = {{0, 0}, vk.swap_chain_extent};
+            vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+            vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+            vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
+            VkDescriptorSet const set = this->gbuffer_debug_sets[index];
+            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->gbuffer_pipeline_layout, 0, 1, &set, 0, nullptr);
+            gbuffer_debug_push_constants const push = {
+                .channel = static_cast<float>(this->gbuffer_channel_index),
+                .proj_22 = this->current_ubo.proj[2][2],
+                .proj_32 = this->current_ubo.proj[3][2],
+                .unused = 0.0f};
+            vkCmdPushConstants(command_buffer, this->gbuffer_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+            vkCmdDraw(command_buffer, 3, 1, 0, 0);
+        } else {
+            utility::log("runtime: gbuffer debug pass has no descriptor set - showing a cleared frame");
+        }
+        vkCmdEndRendering(command_buffer);
+    }
+
     bool runtime::record_post_process(VkCommandBuffer const command_buffer) {
         core const& vk = this->vulkan_core;
         vkCmdEndRendering(command_buffer);
         // GPU timing: the main rendering instance (skybox, opaque segments, transparent pass) ends
         // with the instance close above - the post pass starts here.
         this->gpu_mark(command_buffer, gpu_mark_id::main_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+
+        // G-buffer mode: the instance that just closed was the G-buffer write pass, and the HDR
+        // target is still untouched. The debug view turns the stored surface into a visible image in
+        // the HDR target, which is what the rest of this function (and the whole post chain) expects.
+        if (this->gbuffer_pass_active()) {
+            this->record_gbuffer_debug_pass(command_buffer);
+        }
 
         this->ensure_post_descriptors();
         if (this->post_pipeline == std::nullopt || this->post_hdr_pipeline == std::nullopt || this->post_sets.size() <= this->current_image_index) {
@@ -1993,7 +2340,12 @@ namespace vulkan {
         // fullscreen passes would be pure cost. The levels are still moved to SHADER_READ_ONLY
         // (from UNDEFINED - their contents are dead and the composite's static use of those bindings
         // still requires a valid layout), because the composite samples them and multiplies by 0.
-        bool const bloom_enabled = this->bloom_intensity > 0.0f;
+        // The G-buffer debug view forces the bloom weight to 0 as well: bloom is a display effect,
+        // and a glow smeared over the channel being inspected is the opposite of a debug view (it
+        // would also invent colors that are not in the G-buffer at all).
+        bool const debug_view = this->gbuffer_pass_active();
+        float const bloom_intensity = debug_view ? 0.0f : this->bloom_intensity;
+        bool const bloom_enabled = bloom_intensity > 0.0f;
         if (bloom_enabled) {
             barrier_to_color(vk.bloom_images[0][index]);
             run_fullscreen(*this->post_hdr_pipeline, vk.bloom_image_views[0][index], level_size(0), this->post_prefilter_sets[index], 0.0f);
@@ -2044,7 +2396,7 @@ namespace vulkan {
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->post_pipeline_layout, 0, 1, &composite_set, 0, nullptr);
         post_push_constants const composite_push = {
             .exposure = this->exposure_scale,
-            .bloom_intensity = this->bloom_intensity,
+            .bloom_intensity = bloom_intensity, // 0 while the G-buffer debug view is up (see above)
             .bloom_threshold = this->bloom_threshold,
             .mode = 2.0f,
             // Without FXAA the composite writes a LINEAR tonemapped image into an sRGB swapchain
@@ -2155,7 +2507,7 @@ namespace vulkan {
         if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
             utility::log("present out of date, recreating swapchain");
             vk.recreate_swap_chain();
-            this->debug_overlay.on_swapchain_recreated();
+            this->on_swapchain_recreated();
         } else if (present_result != VK_SUCCESS) {
             return frame_status::present_failed;
         }

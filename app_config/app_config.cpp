@@ -106,6 +106,16 @@ namespace app_config {
                     settings.render.fxaa = *value;
                 }
             }
+            if (toml::node const* node = render->get("gbuffer_debug")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.gbuffer_debug = *value;
+                }
+            }
+            if (toml::node const* node = render->get("gbuffer_channel")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.render.gbuffer_channel = static_cast<int>(*value);
+                }
+            }
             if (toml::node const* node = render->get("gpu_timings")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.gpu_timings = *value;

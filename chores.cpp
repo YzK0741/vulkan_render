@@ -196,6 +196,33 @@ namespace chores {
                 utility::log("SUCCESS: shadow pipeline created (directional shadow map pass)");
             }
         }
+
+        {
+            // G-buffer pair (the deferred path's first half): the surface-writing pipeline the
+            // opaque pass binds when it writes the G-buffer, and the fullscreen debug view that
+            // turns one stored channel into a visible image. Both optional - without them
+            // runtime::set_gbuffer_debug() has no effect and the forward path keeps running.
+            std::vector<unsigned char> vertex_code;
+            std::vector<unsigned char> fragment_code;
+            load_shader(shaders_dir, "pbr.vert.spv", vertex_code); // the vertex stage is the forward one
+            load_shader(shaders_dir, "gbuffer.frag.spv", fragment_code);
+            auto const gbuffer_result = runtime.make_gbuffer_pipeline(vertex_code, fragment_code);
+            if (!gbuffer_result) {
+                utility::log("gbuffer pipeline disabled: {}", gbuffer_result.error());
+            } else {
+                // the debug view is a FULLSCREEN pass: it needs post.vert's synthetic triangle, not
+                // the scene vertex stage (which declares vertex inputs, instancing/skin/morph
+                // descriptors and the scene push block - all of which the debug pass has no use for)
+                load_shader(shaders_dir, "post.vert.spv", vertex_code);
+                load_shader(shaders_dir, "gbuffer_debug.frag.spv", fragment_code);
+                auto const debug_result = runtime.make_gbuffer_debug_pipeline(vertex_code, fragment_code);
+                if (!debug_result) {
+                    utility::log("gbuffer debug view disabled: {}", debug_result.error());
+                } else {
+                    utility::log("SUCCESS: gbuffer pipelines created (surface write + debug view)");
+                }
+            }
+        }
     }
 
     // Optional instancing stress: grid_side > 1 (config or argv) draws the first imported
@@ -296,6 +323,14 @@ namespace chores {
         panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("fxaa", &bindings.fxaa_enabled));
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("fxaa subpixel", &bindings.fxaa_subpixel, 0.0f, 1.0f));
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("fxaa edge threshold", &bindings.fxaa_edge_threshold, 0.05f, 0.5f));
+        // G-buffer debug view: what the deferred path stores - the one part of the renderer whose
+        // contents cannot be judged from a shaded screenshot, so it gets a channel selector rather
+        // than a strength knob. main() mirrors both fields into the runtime every frame.
+        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>("gbuffer debug", &bindings.gbuffer_debug));
+        panel.push_back(std::make_unique<vulkan::gui::combo_widget>(
+            "gbuffer channel",
+            std::vector<std::string>{"albedo", "normal", "roughness", "metallic", "ao", "material id", "depth", "flags"},
+            &bindings.gbuffer_channel));
         // cel/toon shading: quantize the diffuse falloff (and harden shadows/highlights);
         // 0 steps leaves plain PBR, softness shrinks toward hard comic edges
         // cel/toon shading is discrete: every listed band count gives a visibly different look

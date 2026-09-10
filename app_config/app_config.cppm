@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -47,6 +47,8 @@ import utility;
  * shadow = true    # record the directional shadow pass each frame
  * fxaa   = false   # anti-alias the final image (adds one fullscreen pass; needs fxaa.frag.spv)
  * gpu_timings = true  # measure + report per-pass GPU milliseconds (timestamp queries)
+ * gbuffer_debug = false  # draw the G-buffer + one of its channels instead of the shaded scene
+ * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
  *
  * [gui]
@@ -97,6 +99,12 @@ namespace app_config {
         // boundary, read back after the frame slot completed, averaged over a 60-frame window
         // (logged + shown in the debug overlay). A no-op on devices that cannot timestamp.
         bool gpu_timings = true;
+        // G-buffer debug view ([render] gbuffer_debug / gbuffer_channel): draws the opaque scene
+        // into the three G-buffer targets and shows the selected channel through the ordinary post
+        // chain. A development view of the deferred path's data - the deferred lighting pass (M2)
+        // takes over the display role and this stays as the inspection tool.
+        bool gbuffer_debug = false;
+        int gbuffer_channel = 1;                            // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 material id, 6 depth, 7 flags
         bool validation_layers = default_validation_layers; // Vulkan validation layers + debug messenger ([render])
     };
 

@@ -256,6 +256,25 @@ export namespace vulkan {
                 .rasterizationSamples = rasterization_samples};
     }
     /**
+     * @brief dynamic-rendering inheritance with N color attachments: a secondary recorded for a
+     *        multi-target instance (the G-buffer) must declare every format it may write
+     * @param color_formats caller-owned array of @p color_count formats, in attachment order
+     * @param color_count number of color attachments declared
+     * @param depth_format the depth attachment's format (VK_FORMAT_UNDEFINED if none)
+     * @param rasterization_samples follows MSAA (1 for the single-sampled G-buffer)
+     */
+    constexpr VkCommandBufferInheritanceRenderingInfo make_inheritance_rendering_info(VkFormat const* color_formats, uint32_t const color_count, VkFormat const depth_format, VkSampleCountFlagBits const rasterization_samples) noexcept {
+        return {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .viewMask = 0,
+                .colorAttachmentCount = color_count,
+                .pColorAttachmentFormats = color_count > 0 ? color_formats : nullptr,
+                .depthAttachmentFormat = depth_format,
+                .stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
+                .rasterizationSamples = rasterization_samples};
+    }
+    /**
      * @brief one barrier pass: VkDependencyInfo with only image memory barriers
      * @param image_barrier_count number of barriers
      * @param barriers caller-owned barrier array
@@ -335,6 +354,27 @@ export namespace vulkan {
                 .viewMask = 0,
                 .colorAttachmentCount = has_color_attachment ? 1u : 0u,
                 .pColorAttachments = has_color_attachment ? color_attachments : nullptr,
+                .pDepthAttachment = depth_attachment,
+                .pStencilAttachment = nullptr};
+    }
+    /**
+     * @brief dynamic-rendering instance with N color attachments (the G-buffer pass writes three:
+     *        albedo/metallic, normal/roughness, material id/AO/flags)
+     * @param color_attachments caller-owned array of @p color_count attachments (in the order the
+     *        fragment shader's layout(location = i) outputs address)
+     * @param color_count number of color attachments (0 for a depth-only pass, same as passing
+     *        false to the single-attachment overload above)
+     * @param depth_attachment the depth attachment, or nullptr
+     */
+    constexpr VkRenderingInfo make_rendering_info(VkRenderingFlags const flags, VkRect2D const render_area, VkRenderingAttachmentInfo const* color_attachments, uint32_t const color_count, VkRenderingAttachmentInfo const* depth_attachment) noexcept {
+        return {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                .pNext = nullptr,
+                .flags = flags,
+                .renderArea = render_area,
+                .layerCount = 1,
+                .viewMask = 0,
+                .colorAttachmentCount = color_count,
+                .pColorAttachments = color_count > 0 ? color_attachments : nullptr,
                 .pDepthAttachment = depth_attachment,
                 .pStencilAttachment = nullptr};
     }
@@ -433,6 +473,27 @@ export namespace vulkan {
                 .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT};
     }
     /**
+     * @brief blend state for a target that is OVERWRITTEN instead of blended (a G-buffer
+     *        attachment): blending disabled, all four channels written
+     * @note a G-buffer target must use this one. On the forward pipelines alpha is coverage, so
+     *       "src alpha == 1" makes make_color_blend_attachment() reduce to an overwrite - but in a
+     *       G-buffer alpha carries DATA (metallic, roughness, flags), so the same state scales and
+     *       then MIXES the stored surface with the cleared target: an untextured/fully-rough
+     *       fragment (alpha 0) would erase its own albedo and material id. Measured symptom before
+     *       the fix: the albedo target was ~0 everywhere and the material-id target entirely black,
+     *       while the normal target (alpha = roughness, rarely 0) survived but was dimmed by it.
+     */
+    constexpr VkPipelineColorBlendAttachmentState make_color_blend_attachment_opaque() noexcept {
+        return {.blendEnable = VK_FALSE,
+                .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+                .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+                .colorBlendOp = VK_BLEND_OP_ADD,
+                .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+                .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+                .alphaBlendOp = VK_BLEND_OP_ADD,
+                .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT};
+    }
+    /**
      * @brief blend state for one attachment; depth-only pipelines have no color attachment
      * @param attachment caller-owned blend attachment (ignored when has_color_attachment false)
      */
@@ -444,6 +505,21 @@ export namespace vulkan {
                 .logicOp = VK_LOGIC_OP_COPY,
                 .attachmentCount = has_color_attachment ? 1u : 0u,
                 .pAttachments = has_color_attachment ? attachment : nullptr,
+                .blendConstants = {1.0f, 1.0f, 1.0f, 1.0f}};
+    }
+    /**
+     * @brief blend state with N attachments, same blend constants
+     * @param attachments caller-owned array of @p count blend attachments, in attachment order
+     * @param count number of attachments (0 for a depth-only pipeline)
+     */
+    constexpr VkPipelineColorBlendStateCreateInfo make_color_blend_state(VkPipelineColorBlendAttachmentState const* attachments, uint32_t const count) noexcept {
+        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .logicOpEnable = VK_FALSE,
+                .logicOp = VK_LOGIC_OP_COPY,
+                .attachmentCount = count,
+                .pAttachments = count > 0 ? attachments : nullptr,
                 .blendConstants = {1.0f, 1.0f, 1.0f, 1.0f}};
     }
     /** @brief multisample state; rasterizationSamples follows MSAA */
@@ -470,6 +546,23 @@ export namespace vulkan {
                 .viewMask = 0,
                 .colorAttachmentCount = has_color_attachment ? 1u : 0u,
                 .pColorAttachmentFormats = has_color_attachment ? color_format_ptr : nullptr,
+                .depthAttachmentFormat = depth_format,
+                .stencilAttachmentFormat = VK_FORMAT_UNDEFINED};
+    }
+    /**
+     * @brief dynamic-rendering attachment declaration for an N-target pipeline (the G-buffer
+     *        pipeline declares its three targets, in the order its fragment outputs address them)
+     * @param color_formats pointer to the caller's format array (retained by the struct, so it
+     *        must outlive it - pass the core's static gbuffer_formats)
+     * @param color_count number of color attachment formats declared
+     * @param depth_format the depth attachment format (VK_FORMAT_UNDEFINED if none)
+     */
+    constexpr VkPipelineRenderingCreateInfo make_rendering_create_info(VkFormat const* color_formats, uint32_t const color_count, VkFormat const depth_format) noexcept {
+        return {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                .pNext = nullptr,
+                .viewMask = 0,
+                .colorAttachmentCount = color_count,
+                .pColorAttachmentFormats = color_count > 0 ? color_formats : nullptr,
                 .depthAttachmentFormat = depth_format,
                 .stencilAttachmentFormat = VK_FORMAT_UNDEFINED};
     }
