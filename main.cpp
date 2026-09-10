@@ -443,6 +443,7 @@ int main(int argc, char** argv) {
         chores::apply_point_lights(runtime, gui);
         runtime.set_exposure(gui.exposure);                          // gui exposure slider -> linear scale (post-process pass)
         runtime.set_bloom(gui.bloom_intensity, gui.bloom_threshold); // gui bloom sliders -> post pass
+        runtime.set_toon_shading(gui.toon_steps, gui.toon_softness); // gui cel-shading sliders
         // F12 screenshot: the runtime reports the request (edge-triggered in poll_events), main
         // captures the presented swapchain image and writes it as a PNG (dependency-free encoder)
         if (runtime.consume_screenshot_request()) {

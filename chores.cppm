@@ -127,6 +127,8 @@ namespace chores {
         int diffuse_model = 0;             // diffuse combo (0 = Lambert, 1 = Oren-Nayar)
         float exposure = 1.0f;             // linear exposure slider (runtime::set_exposure)
         float bloom_intensity = 0.8f;      // bloom blend weight slider (runtime::set_bloom; 0 = off)
+        float toon_steps = 0.0f;           // cel-shading band count slider (0 = plain PBR)
+        float toon_softness = 0.15f;       // cel-shading band edge softness slider
         float bloom_threshold = 0.35f;     // bloom bright-pass threshold (visible range 0..0.75)
         // demo punctual lights (count matches vulkan::max_punctual_lights): the gui rows below
         // edit these fields live (no per-widget callbacks), and main() pushes the enabled set to

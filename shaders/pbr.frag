@@ -82,8 +82,8 @@ layout(set = 0, binding = 7) uniform LightUBO {
     float _pad;
     uint light_count;
     float exposure; // y lane of the CPU's light_count vec4: linear exposure scale (pre-tonemap)
-    float _pad2b;
-    float _pad2c;
+    float toon_steps;   // cel-shading quantization steps (LightUBO.light_count.z; 0 = PBR)
+    float toon_softness; // band edge width in normalized [0,1] space (LightUBO.light_count.w)
     PunctualLight punctual_lights[MAX_PUNCTUAL_LIGHTS];
 } light;
 
@@ -93,6 +93,19 @@ layout(set = 0, binding = 7) uniform LightUBO {
 // fraction (no manual 3x3 loop needed).
 layout(set = 0, binding = 8) uniform sampler2DShadow shadow_map;
 
+// ---- Cel/toon shading band: quantize x (0..1) into `steps` bands with a soft edge of
+//      +-`softness` around each band boundary. steps < 1.5 returns x unchanged (plain PBR), so
+//      the same code path serves both styles.
+float toon_band(float x, float steps, float softness) {
+    if (steps < 1.5) {
+        return x;
+    }
+    float scaled = clamp(x, 0.0, 1.0) * steps;
+    float base = floor(scaled);
+    float frac = scaled - base;
+    float edge = smoothstep(0.5 - softness, 0.5 + softness, frac);
+    return (base + edge) / steps;
+}
 // Percentage-closer filtering over the shadow map (hardware): sample with the fragment's
 // light-space depth as the comparison reference. Lit outside the light frustum.
 float calc_shadow(vec3 world_pos) {
@@ -112,7 +125,9 @@ float calc_shadow(vec3 world_pos) {
     // depth bias for angled surfaces, so this stays small to avoid shadow detachment. The
     // sampler's compareOp is LESS_OR_EQUAL, so lit = ref (minus bias) <= stored depth.
     float bias = 0.0015;
-    return texture(shadow_map, vec3(uv, current_depth - bias));
+    float shadow = texture(shadow_map, vec3(uv, current_depth - bias));
+    // cel shading hardens the shadow edge into the same bands as the diffuse falloff
+    return toon_band(shadow, light.toon_steps, light.toon_softness);
 }
 
 const float PI = 3.14159265359;
@@ -255,6 +270,17 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
     vec3 kd = (1.0 - f) * (1.0 - metallic);
     float ndotv = max(dot(n, v), 0.0);
     float ndotl = max(dot(n, l), 0.0);
+
+    // ---- cel/toon shading (no-op when LightUBO.toon_steps < 1): quantize the diffuse falloff
+    //      into bands and turn the specular lobe into a single hard highlight block. The
+    //      visibility terms keep their unquantized ndotl, so only the shading response bands -
+    //      the silhouette stays smooth.
+    if (light.toon_steps > 0.5) {
+        ndotl = toon_band(ndotl, light.toon_steps, light.toon_softness);
+        float ndoth = max(dot(n, h), 0.0);
+        float highlight_threshold = 0.5 + 0.5 * (1.0 - roughness); // smooth surfaces -> tighter highlight
+        specular *= smoothstep(highlight_threshold - light.toon_softness, highlight_threshold + light.toon_softness, ndoth);
+    }
 
     // ---- Diffuse by the selected model (LightUBO.diffuse_model): Lambert (default) or the
     //      roughness-dependent Oren-Nayar approximation (0 -> Lambert).

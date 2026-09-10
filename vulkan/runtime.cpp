@@ -894,6 +894,8 @@ namespace vulkan {
             // the light_count lane's y carries the exposure scale (pbr.frag / skybox.frag apply it
             // in linear space right before the tonemapper)
             this->light_state.light_count.y = this->exposure_scale;
+            this->light_state.light_count.z = this->toon_steps;
+            this->light_state.light_count.w = this->toon_softness;
             std::memcpy(this->light_mapped[frame_slot], &this->light_state, sizeof(light_ubo));
         }
         // Remember the paced slot: the caller's per-frame host writes (set_skin_matrices /
@@ -2011,6 +2013,12 @@ namespace vulkan {
 
     float runtime::exposure() const noexcept {
         return this->exposure_scale;
+    }
+
+    void runtime::set_toon_shading(float const steps, float const softness) noexcept {
+        // 0 disables the cel path (plain PBR); the shader rounds to whole bands
+        this->toon_steps = steps < 1.5f ? 0.0f : std::round(std::clamp(steps, 2.0f, 8.0f));
+        this->toon_softness = std::clamp(softness, 0.01f, 0.5f);
     }
 
     void runtime::set_bloom(float const intensity, float const threshold) noexcept {

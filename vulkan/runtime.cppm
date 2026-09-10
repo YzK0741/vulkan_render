@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.1.11  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.12  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -250,6 +250,10 @@ namespace vulkan {
         float exposure_scale = 1.0f;
         float bloom_intensity = 0.0f;
         float bloom_threshold = 0.6f;
+        // cel/toon shading: quantization steps (0 = plain PBR) and the band edge softness;
+        // copied into light_state.light_count.z/w every frame like the exposure lane
+        float toon_steps = 0.0f;
+        float toon_softness = 0.15f;
         // bloom parameters (see set_bloom): blend weight into the HDR image and the bright-pass
         // threshold subtracted in linear space (0 intensity disables the effect)
 
@@ -902,6 +906,17 @@ namespace vulkan {
          * @brief the current exposure scale (see set_exposure)
          */
         [[nodiscard]] float exposure() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief cel/toon shading: quantize the direct-light diffuse falloff (and harden the
+         *        shadow edge / the specular lobe) into @p steps bands
+         * @param steps 0 = plain PBR (default); 2..8 = band count (rounded, clamped)
+         * @param softness band edge width in normalized [0,1] space (0.01..0.5); smaller = harder
+         *        cel edges
+         * @note same timing rule as set_exposure: CPU-side, copied into the light UBO every frame
+         */
+        void set_toon_shading(float steps, float softness) noexcept;
 
         /**
          * @ingroup vulkan_runtime
