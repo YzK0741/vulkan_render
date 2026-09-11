@@ -1,5 +1,6 @@
 module;
 
+#include <sstream>
 #include <toml++/toml.hpp>
 
 module app_config;
@@ -18,6 +19,16 @@ namespace app_config {
             return settings; // config_file stays empty -> caller falls back to defaults
         }
         toml::table const& table = parsed.table();
+
+        // Dump every key the file actually carried, so "which config was loaded and what did it say" is
+        // answerable from the log alone. A key that is missing from this dump fell back to the compiled-in
+        // default - which is precisely what made a frame-rate cap look like a no-op: the file that was
+        // loaded (the one next to the executable, not the one being edited) simply had no max_fps key.
+        {
+            std::ostringstream dumped;
+            dumped << table;
+            utility::log("app_config: '{}' contents:\n{}", path, dumped.str());
+        }
 
         settings.config_file = path;
         // read keys only when present: absent keys keep the struct defaults (an empty model /
