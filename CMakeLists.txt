@@ -494,6 +494,25 @@ endforeach()
 # -fno-exceptions (raise() leaves its arguments unused on the abort() path)
 target_compile_options(gltf_loader PRIVATE -Wno-unused-parameter)
 
+# toml++ is a SYSTEM header-only package, so its code is compiled into OUR translation unit and a
+# sanitizer sees it as ours. app_config is the only TU that includes it (it is the only toml++ user
+# in the project), which is what makes a per-target suppression the honest scope rather than a
+# project-wide one.
+#
+# The finding it silences: toml++'s formatter computes a node's printed width with
+# `static_cast<size_t>(log10(val))`, and for a float in (0, 1) - e.g. the DEFAULT
+# `clear_color = [0.02, 0.02, 0.03]` - log10 is negative, so the cast is UB
+# ("-1.69897 is outside the range of representable values of type 'unsigned long long'",
+# toml++/impl/toml_formatter.inl:94). It is reachable from app_config.cpp:29 alone, which dumps every
+# key of the loaded file into the log. Upstream's bug, not this project's - and it fires from a
+# default config value, so it is not a corner case.
+#
+# Only float-cast-overflow is dropped: every other UBSan check, and all of ASan, stay active for this
+# target, so a real float->int bug elsewhere here is still reported. A __attribute__((no_sanitize))
+# on the dump function does NOT work for this (measured): UBSan attributes the diagnostic to the
+# template instantiation, not to the function it was instantiated from.
+target_compile_options(app_config PRIVATE -fno-sanitize=float-cast-overflow)
+
 # Vendored libs get function/data sections AND -flto in Release too (plain C/C++ flags, no
 # -Werror set involved): without sections --gc-sections can only drop whole objects, so unused
 # imgui / fastgltf / xxhash / mimalloc functions would survive into the exe; without -flto the

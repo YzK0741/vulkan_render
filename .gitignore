@@ -3,6 +3,8 @@ cmake-build-*/
 build-*-clang64/
 build-debug/
 build-release/
+#sanitizer build (ASan/UBSan, local verification only - see tests/)
+build-asan/
 .idea/
 
 #doxygen generated output
@@ -15,3 +17,4 @@ debug.log.old
 imgui_layout.ini
 #local startup config (generated from config.example.toml by the setup scripts)
 config.toml
+.commit-msg.tmp

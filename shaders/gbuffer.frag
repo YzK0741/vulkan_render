@@ -24,11 +24,19 @@
  *   exactly through the UNORM target and a NEAREST fetch): the lighting stage needs it to look up the
  *   material record (emissive, shading model, flags) without the G-buffer carrying textures of its own;
  * - location 3 (RG16F): the MOTION VECTOR in UV space (current - previous) that the TAA resolve
- *   reprojects the history with.
+ *   reprojects the history with;
+ * - location 4 (RGBA16F): the EMISSIVE term, ADDED into the scene color (the attachment blends with
+ *   ONE/ONE). This is the one lighting-independent part of the shading, and it lives here because it
+ *   needs the emissive texture and the UVs, which no G-buffer target stores - see deferred.frag, which
+ *   deliberately does not add it a second time.
  *
  * Depth is written by this pass (the pipeline's own single-sampled depth image), so the lighting
  * stage reconstructs the world position from it instead of storing one.
  *
+ * @note the five color targets are exactly core::gbuffer_pass_attachment_count (three surface targets +
+ *       velocity + scene color); a missing output here leaves its attachment at the value the blend
+ *       equation produces from the fragment's default (0,0,0,1), which for an additive blend is a
+ *       silent no-op rather than an error.
  * @note alphaMode BLEND materials never reach this pass: the runtime keeps them in the forward
  *       transparent pass (a G-buffer cannot blend a surface into existence). alphaMode MASK
  *       materials DO render here and gather_surface() discards their cut-out texels.
@@ -51,6 +59,7 @@ layout(location = 0) out vec4 out_albedo_metallic;  // rgb albedo, a metallic
 layout(location = 1) out vec4 out_normal_roughness; // xyz world normal, w roughness
 layout(location = 2) out vec4 out_material;         // r/g material id, b ao, a flags
 layout(location = 3) out vec2 out_velocity;         // motion vector in UV space (current - previous)
+layout(location = 4) out vec4 out_scene_color;      // the EMISSIVE term, ADDED into the scene color
 
 /**
  * @brief motion vector of this fragment in UV space: where it was last frame, relative to here
@@ -96,4 +105,15 @@ void main() {
         float(s.flags & 0xFFu) / 255.0);
 
     out_velocity = motion_vector(v_world_pos);
+
+    // The emissive term goes STRAIGHT into the scene color, which is why this pass owns it: emissive
+    // is lighting-independent (no light, shadow or BRDF enters it), and it needs the material's
+    // emissive texture and this fragment's UVs - neither of which the G-buffer stores, so the lighting
+    // stage could not reconstruct it afterwards. deferred.frag documents the same split from its side
+    // and deliberately sets its own shade_input.emissive to zero rather than adding it twice.
+    //
+    // out_scene_color's attachment blends with ONE/ONE (make_color_blend_attachment_additive), so this
+    // is an accumulation on top of the sky the earlier passes left there, not an overwrite. The alpha
+    // lane follows the pipeline's srcAlphaBlendFactor = ZERO and contributes nothing.
+    out_scene_color = vec4(s.emissive, 1.0);
 }

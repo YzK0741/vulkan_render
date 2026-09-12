@@ -80,3 +80,73 @@ jobs:
           name: vulkan_render-windows-x64
           path: build/vulkan_render.exe
           if-no-files-found: error
+
+  sanitizers:
+    name: ASan + UBSan (headless tests)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up MSYS2 (clang64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: clang64
+          update: true
+          install: >-
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-lld
+            mingw-w64-clang-x86_64-compiler-rt
+            mingw-w64-clang-x86_64-libc++
+            mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-glm
+            mingw-w64-clang-x86_64-tomlplusplus
+            mingw-w64-clang-x86_64-vulkan-loader
+            mingw-w64-clang-x86_64-vulkan-headers
+
+      # AddressSanitizer + UndefinedBehaviorSanitizer over the headless CPU tests.
+      #
+      # A separate job rather than another gate in build-and-test: this build cannot be shared with
+      # the optimized one (sanitizers need instrumentation and must not be LTO'd), and keeping it
+      # apart means a sanitizer finding does not hide the Release/Debug/clang-tidy result.
+      #
+      # Only the test targets are built. The executable needs a Vulkan SDK that is not installed
+      # here, and it is the one artifact this job must NOT produce: its dependencies (glfw,
+      # vulkan-loader) are not present, so a full `all` build would fail on the link rather than on
+      # anything the sanitizers have to say.
+      #
+      # Why this gate earns its place: the whole test suite is pure CPU with no GPU anywhere, so
+      # memory errors in the loader / utility / config paths are invisible to the Release run. The
+      # glTF reader's non-float-attribute bug is the worked example - four assertions deep in the
+      # vertex builder passed in Release while ASan reported
+      # "READ of size 8 ... 0 bytes after 6-byte region" on the same code.
+      - name: Configure (Debug + ASan + UBSan)
+        run: >-
+          cmake -S . -B build-asan -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          -DVR_BUILD_TESTS=ON
+
+      - name: Build the headless tests
+        run: >-
+          cmake --build build-asan --target
+          test_app_config test_utility test_math test_animation test_gltf_loader
+
+      - name: Run the headless tests under the sanitizers
+        # ASAN_OPTIONS/UBSAN_OPTIONS: halt on the first finding and print a stack trace, so a report
+        # fails the job instead of scrolling past. Two deliberate omissions:
+        #   - `detect_leaks` is NOT set: LeakSanitizer does not exist on Windows and passing the
+        #     option makes EVERY run abort with "detect_leaks is not supported on this platform"
+        #     (measured here - a CI job carrying it would go red on all five tests, reporting the
+        #     flag rather than a bug). It is off by default on this platform anyway.
+        #   - `abort_on_error` stays 0, so a finding produces a non-zero exit code from the test
+        #     binary (which is what ctest reads) rather than a crash dump.
+        env:
+          ASAN_OPTIONS: halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build-asan --output-on-failure
+
