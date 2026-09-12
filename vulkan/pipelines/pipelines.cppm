@@ -131,4 +131,52 @@ namespace vulkan::pipelines {
         out.hdr = std::move(hdr_pipeline).value();
         return out;
     }
+    // gbuffer debug: the owner of the G-buffer set layout. deferred reuses that layout, which is why
+    // the runtime creates this pipeline first and says so in deferred's error message. The nearest
+    // sampler the debug view needs stays with the runtime, next to the descriptor sets that use it.
+    std::expected<gbuffer_owned, std::string> build_gbuffer_debug(core& vk, uint32_t const push_constant_size, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+        using fail = std::unexpected<std::string>;
+        gbuffer_owned out;
+
+        std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
+        for (uint32_t b = 0; b < bindings.size(); ++b) {
+            bindings[b].binding = b;
+            bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[b].descriptorCount = 1;
+            bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings[b].pImmutableSamplers = nullptr;
+        }
+
+        VkDescriptorSetLayoutCreateInfo layout_info = {};
+        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
+        layout_info.pBindings = bindings.data();
+        if (vkCreateDescriptorSetLayout(vk.device, &layout_info, nullptr, &out.set_layout) != VK_SUCCESS) {
+            return fail("gbuffer debug: descriptor set layout creation failed");
+        }
+
+        VkPushConstantRange push_range = {};
+        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        push_range.offset = 0;
+        push_range.size = push_constant_size;
+
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &out.set_layout;
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+            return fail("gbuffer debug: pipeline layout creation failed");
+        }
+
+        VkFormat const hdr_format_only = vulkan::hdr_format;
+        auto pipeline_result = vulkan::make_pipeline(
+            vk.device, out.pipeline_layout, hdr_format_only, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
+        if (!pipeline_result) {
+            return fail(std::string(pipeline_result.error()));
+        }
+        out.debug = std::move(pipeline_result).value();
+        return out;
+    }
 } // namespace vulkan::pipelines

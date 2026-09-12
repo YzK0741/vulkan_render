@@ -2460,70 +2460,23 @@ namespace vulkan {
     }
 
     std::expected<void, std::string> runtime::make_gbuffer_debug_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
-        using fail = std::unexpected<std::string>;
         core& vk = this->vulkan_core;
-
-        // its own set layout (the post chain's six bindings have nothing to do with the G-buffer):
-        // binding 0..2 = the three targets, binding 3 = the pass's depth image
-        std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
-        for (uint32_t b = 0; b < bindings.size(); ++b) {
-            bindings[b].binding = b;
-            bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            bindings[b].descriptorCount = 1;
-            bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-            bindings[b].pImmutableSamplers = nullptr;
+        // the G-buffer set layout is owned here (vulkan.pipelines) because deferred reuses it
+        auto built = pipelines::build_gbuffer_debug(vk, sizeof(gbuffer_debug_push_constants), vertex_shader_code, fragment_shader_code);
+        if (!built) {
+            return std::unexpected(std::move(built.error()));
         }
-        VkDescriptorSetLayoutCreateInfo layout_info = {};
-        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
-        layout_info.pBindings = bindings.data();
-        if (vkCreateDescriptorSetLayout(vk.device, &layout_info, nullptr, &this->gbuffer_set_layout) != VK_SUCCESS) {
-            return fail("gbuffer debug: descriptor set layout creation failed");
-        }
+        this->gbuffer_set_layout = built->set_layout;
+        this->gbuffer_pipeline_layout = built->pipeline_layout;
+        this->gbuffer_debug_pipeline = std::move(built->debug);
 
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        push_range.offset = 0;
-        push_range.size = sizeof(gbuffer_debug_push_constants);
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &this->gbuffer_set_layout;
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &this->gbuffer_pipeline_layout) != VK_SUCCESS) {
-            return fail("gbuffer debug: pipeline layout creation failed");
-        }
-
-        // fullscreen triangle (post.vert), no depth attachment, no depth test: the debug view writes
-        // the HDR scene target, which the ordinary post chain (bloom/composite/FXAA) then consumes
-        VkFormat const hdr_format_only = vulkan::hdr_format;
-        auto pipeline_result = vulkan::make_pipeline(
-            vk.device,
-            this->gbuffer_pipeline_layout,
-            hdr_format_only,
-            VK_FORMAT_UNDEFINED,
-            vertex_shader_code,
-            fragment_shader_code,
-            VK_SAMPLE_COUNT_1_BIT,
-            false,
-            true,
-            0.0f,
-            0.0f,
-            0.0f);
-        if (!pipeline_result) {
-            return fail(std::string(pipeline_result.error()));
-        }
-        this->gbuffer_debug_pipeline = std::move(pipeline_result).value();
-
-        // the sampler reads all four inputs (NEAREST: the debug view must show stored texels, not a
-        // filtered average of them - the point is to inspect the data, not to make it pretty)
+        // nearest, clamp: the debug view reads the G-buffer at exact texel centers
         VkSamplerCreateInfo sampler_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
         sampler_info.magFilter = VK_FILTER_NEAREST;
         sampler_info.minFilter = VK_FILTER_NEAREST;
         VkSampler sampler = VK_NULL_HANDLE;
         if (vkCreateSampler(vk.device, &sampler_info, nullptr, &sampler) != VK_SUCCESS) {
-            return fail("gbuffer debug: sampler creation failed");
+            return std::unexpected(std::string("gbuffer debug: sampler creation failed"));
         }
         this->gbuffer_sampler = vk_sampler(sampler, vk.device);
         return {};
