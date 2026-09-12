@@ -835,10 +835,75 @@ namespace {
 
         constexpr glm::vec2 default_uv(0.0f, 0.0f);
 
-        // ---- attribute count guard: POSITION's byte length fixes the vertex count, but a
-        //      malformed file with a shorter NORMAL/UV/JOINTS/WEIGHTS accessor would make the
-        //      per-vertex reinterpret loops below read out of bounds. Clamp to the shortest
-        //      attribute and log the mismatch (error-tolerant load).
+        // ---- typed attribute reader: one element of @p portion as floats -------------------------
+        // glTF does NOT require POSITION / NORMAL / TEXCOORD_0 to be float: the core spec allows
+        // TEXCOORD_0 as normalized UNSIGNED_BYTE / UNSIGNED_SHORT, and KHR_mesh_quantization extends
+        // that to POSITION / NORMAL as BYTE / SHORT. Reinterpreting such a buffer as glm::vec3 /
+        // glm::vec2 reads 4x (u8) or 2x (u16) past its end, so the component type has to be honoured
+        // on the way in. The index is clamped against the portion's REAL element count for the same
+        // reason: that count is the byte length divided by the component size, which is what a
+        // size()/sizeof(glm::vec3) shortcut gets wrong for every non-float type.
+        //
+        // @param signed_normalized true for a signed normalized integer component, whose full range
+        //        maps to [-1, 1] instead of [0, 1] (glTF's signed normalized conversion) - the case
+        //        a quantized NORMAL hits. Unnormalized integers are converted as-is, which is the
+        //        honest reading of a file whose accessor says so.
+        auto const read_attribute = []<std::size_t N>(gltf::vertex_portion const& portion, std::size_t const index, bool const signed_normalized) -> std::array<float, N> {
+            std::array<float, N> out = {};
+            std::size_t const component_bytes = gltf::get_component_size(portion.component);
+            if (component_bytes == 0) {
+                return out; // unknown component type: nothing to read
+            }
+            std::size_t const elements = portion.data.size() / component_bytes;
+            if (index * N + N > elements) {
+                return out; // short accessor: the count guard below already logged the mismatch
+            }
+            if (portion.component == gltf::component_type::float_t) {
+                auto const* const base = reinterpret_cast<float const*>(portion.data.data());
+                for (std::size_t c = 0; c < N; ++c) {
+                    out[c] = base[index * N + c];
+                }
+                return out;
+            }
+            auto const* const base = portion.data.data();
+            for (std::size_t c = 0; c < N; ++c) {
+                std::size_t const at = index * N + c;
+                switch (portion.component) {
+                case gltf::component_type::unsigned_byte_t:
+                    out[c] = static_cast<float>(base[at]) / 255.0f;
+                    break;
+                case gltf::component_type::byte_t: {
+                    float const raw = static_cast<float>(static_cast<std::int8_t>(base[at]));
+                    out[c] = signed_normalized ? std::max(raw / 127.0f, -1.0f) : raw;
+                    break;
+                }
+                case gltf::component_type::unsigned_short_t: {
+                    auto const* const p = reinterpret_cast<std::uint16_t const*>(base) + at;
+                    out[c] = static_cast<float>(*p) / 65535.0f;
+                    break;
+                }
+                case gltf::component_type::short_t: {
+                    auto const* const p = reinterpret_cast<std::int16_t const*>(base) + at;
+                    float const raw = static_cast<float>(*p);
+                    out[c] = signed_normalized ? std::max(raw / 32767.0f, -1.0f) : raw;
+                    break;
+                }
+                default:
+                    // int / unsigned int / double (and unknown) are not a legal vertex-attribute
+                    // component under the core spec or KHR_mesh_quantization, so the remaining
+                    // elements stay zero rather than being reinterpreted as something else
+                    out[c] = 0.0f;
+                    break;
+                }
+            }
+            return out;
+        };
+
+        // ---- attribute count guard: every attribute's byte length fixes a candidate vertex count,
+        //      and the smallest one wins - the count is the byte length over the component size, so
+        //      a non-float POSITION or a short NORMAL/UV/JOINTS/WEIGHTS accessor cannot make the
+        //      read paths below run past its end. Clamp to the shortest attribute and log the
+        //      mismatch (error-tolerant load). ----
         auto const portion_elements = [](gltf::vertex_portion const& portion, std::size_t const vec_size) -> std::size_t {
             std::size_t component_bytes = 4; // float / int / unsigned int
             switch (portion.component) {
@@ -857,7 +922,7 @@ namespace {
             }
             return portion.data.size() / (component_bytes * vec_size);
         };
-        std::size_t const position_count = position_portion->data.size() / sizeof(glm::vec3);
+        std::size_t const position_count = portion_elements(*position_portion, 3);
         std::size_t vertex_count = position_count;
         auto const guard_vertex_count = [&vertex_count, &portion_elements](gltf::vertex_portion const* portion, std::size_t const vec_size) {
             if (portion != nullptr) {
@@ -877,10 +942,18 @@ namespace {
         positions.reserve(vertex_count);
         uvs.reserve(vertex_count);
         for (size_t i = 0; i < vertex_count; ++i) {
-            auto const* p = reinterpret_cast<glm::vec3 const*>(position_portion->data.data()) + i;
-            auto const* uv = uv_portion == nullptr ? &default_uv : reinterpret_cast<glm::vec2 const*>(uv_portion->data.data()) + i;
-            positions.push_back(*p);
-            uvs.push_back(*uv);
+            // component-type aware: POSITION may be quantized (KHR_mesh_quantization), and TEXCOORD_0
+            // may be normalized u8/u16 in the CORE spec - see read_attribute. N is the accessor's own
+            // component count, so each call strides by exactly its own element size (asking for 3
+            // components of a vec2 UV walks into the next vertex).
+            std::array<float, 3> const p = read_attribute.operator()<3>(*position_portion, i, true);
+            positions.emplace_back(p[0], p[1], p[2]);
+            if (uv_portion == nullptr) {
+                uvs.push_back(default_uv);
+            } else {
+                std::array<float, 2> const uv = read_attribute.operator()<2>(*uv_portion, i, false);
+                uvs.emplace_back(uv[0], uv[1]);
+            }
         }
 
         // Index data: 2 or 4 bytes per index (u8 indices are widened to u16 below). glTF
@@ -933,7 +1006,10 @@ namespace {
         normals.resize(vertex_count);
         if (normal_portion != nullptr) {
             for (size_t i = 0; i < vertex_count; ++i) {
-                normals[i] = *(reinterpret_cast<glm::vec3 const*>(normal_portion->data.data()) + i);
+                // signed_normalized: a quantized NORMAL is a signed normalized integer whose full
+                // range is [-1, 1] (remapping it as [0, 1] would point every normal into one octant)
+                std::array<float, 3> const n = read_attribute.operator()<3>(*normal_portion, i, true);
+                normals[i] = glm::vec3(n[0], n[1], n[2]);
             }
         } else {
             // accumulate area-weighted face normals per vertex over the triangle list (glTF
