@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.21.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.21.2  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -640,7 +640,7 @@ namespace vulkan {
         static int default_task_pool_threads() noexcept;
         utility::thread_pool task_pool = utility::thread_pool{default_task_pool_threads()};
 
-        // Guards the pipeline registry below (pipelines / pipeline_names / default_pipeline_name):
+        // Guards the pipeline registry below (pipelines / default_pipeline_name):
         // parallel recording workers read it through render_environment's binder (shared locks,
         // concurrent), while make_pipeline / set_default_pipeline / resize resync write it
         // (unique lock). A reader/writer lock because reads vastly outnumber writes. Mutable so
@@ -654,13 +654,10 @@ namespace vulkan {
         // lookup, so the string_view-based API (get_pipeline / ...) still works without
         // constructing a std::string per call.
         std::map<std::string, vk_pipeline, std::less<>> pipelines;
-        // stable name table mirroring the pipelines map (same order as insertion): every
-        // make_pipeline() appends the name, nothing removes. A DEQUE (not vector): push_back
-        // never invalidates existing elements, so a pointer to it (handed to
-        // render_environment::available for the recording workers' lifetime) stays valid even
-        // if another thread registers a pipeline concurrently. Only make_pipeline() writes it,
-        // under the unique lock; readers that took the pointer may use it lock-free afterwards.
-        std::deque<std::string> pipeline_names = {};
+        // NOTE: there used to be a `std::deque<std::string> pipeline_names` here, "mirroring the
+        // pipelines map" so a stable pointer could be handed to render_environment::available. That
+        // API does not exist (the recording workers ask the binder by name), so the deque was written
+        // by every make_pipeline() and never read. Removed rather than left as a promise.
         // name of the runtime's default pipeline: primitives with DEFAULT semantics (empty
         // pipeline_name) draw with it. Set implicitly to the FIRST created pipeline, or
         // explicitly via set_default_pipeline(); the shadow pass never consults it (its env
@@ -741,22 +738,18 @@ namespace vulkan {
         //     record_main_drawcalls), so the GPU can read all secondaries while the slot's
         //     primary executes - they share the primary's lifetime (reused after the slot's
         //     timeline wait, no per-frame allocation, no pool lock).
-        // One SHADOW secondary PER CASCADE (shadow_0 .. shadow_3): a command buffer that was not
-        // recorded with SIMULTANEOUS_USE may only be executed once per primary command buffer, so one
-        // recorded caster pass cannot be replayed for four cascades - and each cascade needs its own
-        // cascade-index push constant, which a secondary must record itself (state is not inherited
-        // from the primary).
-        enum class secondary_pass : std::size_t { shadow_0 = 0,
-                                                  shadow_1 = 1,
-                                                  shadow_2 = 2,
-                                                  shadow_3 = 3,
-                                                  gui = 4,
-                                                  transparent = 5,
-                                                  count = 6 }; // fixed non-segment slots
-        /** @brief the shadow secondary a cascade records into */
-        [[nodiscard]] static constexpr secondary_pass shadow_secondary(uint32_t cascade) noexcept {
-            return static_cast<secondary_pass>(static_cast<std::size_t>(secondary_pass::shadow_0) + cascade);
-        }
+        // The slot-scoped secondary the primary thread records alone (the alpha-blended pass), plus
+        // the per-cascade shadow pairs and the main-pass segments that live elsewhere:
+        //  - shadow: one {pool, buffer} PER CASCADE PER SLOT (see shadow_recording), because the
+        //    cascades record concurrently on the task pool and a VkCommandPool is not thread safe;
+        //  - main: SEGMENT secondaries per frame slot (stage 3), one per task-pool worker, in
+        //    main_segments.
+        // This enum used to reserve shadow_0..shadow_3 and gui as well; all five had stopped being
+        // recorded by the time the shadow pass moved to per-cascade pairs and the overlay started
+        // recording inline, so they were five command buffers allocated and freed per slot for
+        // nothing. It is one entry now - the secondaries that are really used.
+        enum class secondary_pass : std::size_t { transparent = 0,
+                                                  count = 1 }; // fixed non-segment slots
         std::vector<std::array<vk_command_buffer, static_cast<std::size_t>(secondary_pass::count)>> secondary_command_buffers;
         // per-slot main-pass parallel segments (stage 3): one {command pool, secondary buffer}
         // PAIR per task-pool worker, in the same style as the vma allocator's command_cache -

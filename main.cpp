@@ -541,14 +541,12 @@ int main(int argc, char** argv) {
             break;
         }
         if (paced == vulkan::frame_status::skipped) {
-            // zero-sized swapchain (not sized yet / restored minimized): no attachments to render
-            // into - skip this frame's CPU work too, like the minimized case above
-            frame_stats.on_skipped();
-            std::this_thread::yield();
-            continue;
-        }
-        if (paced == vulkan::frame_status::skipped) {
-            // Swapchain recreated during acquire: retry next iteration
+            // The swapchain is not usable this iteration - zero-sized (not sized yet / restored
+            // minimized) so there are no attachments to render into, or it was recreated during the
+            // acquire. Either way: skip this frame's CPU work too, like the minimized case above.
+            // (There used to be a SECOND identical check here with a "recreated during acquire"
+            // comment: unreachable, since the first one already covered it - both return the same
+            // status. The reasons differ, the handling does not.)
             frame_stats.on_skipped();
             std::this_thread::yield();
             continue;

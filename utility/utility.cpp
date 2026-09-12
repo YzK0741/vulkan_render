@@ -51,42 +51,8 @@ void utility::enable_stack_destruct::do_cleanup() noexcept {
     }
 }
 
-void utility::enable_stack_destruct::pop_destructor() noexcept {
-    std::lock_guard guard(this->access_mutex);
-    this->destruct_stack.pop();
-}
-
-void utility::enable_stack_destruct::clear_stack() noexcept {
-    std::lock_guard guard(this->access_mutex);
-    std::stack<destruct_type>{}.swap(this->destruct_stack); // swap (not assign): noexcept
-}
-
-namespace {
-    std::stack<std::function<void()>> tasks = {};
-    std::mutex access_mutex = {};
-} // namespace
-
-void utility::at_panic(std::function<void()> const& task) {
-    std::lock_guard guard(access_mutex);
-    tasks.push(task);
-}
-
 [[noreturn]] void utility::panic(std::string_view msg, std::source_location source_location) noexcept {
     error("program panic!");
-
-    error("processing terminate tasks...");
-
-    // Snapshot the registered at_panic tasks under the lock and run them unlocked: a task may
-    // itself call at_panic()/error() (both take this mutex) and would deadlock otherwise.
-    std::stack<std::function<void()>> pending;
-    {
-        std::lock_guard guard(access_mutex);
-        pending.swap(tasks); // noexcept
-    }
-    while (!pending.empty()) {
-        pending.top()();
-        pending.pop();
-    }
 
     if (!msg.empty()) {
         error("error info: {}", msg);
@@ -100,16 +66,6 @@ void utility::at_panic(std::function<void()> const& task) {
     wait_log_all();
 
     std::terminate();
-}
-
-std::chrono::milliseconds utility::time_test(std::function<void()> const& test) noexcept {
-    auto const start = std::chrono::steady_clock::now();
-
-    test();
-
-    auto const end = std::chrono::steady_clock::now();
-
-    return std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 }
 
 double utility::timestamp_delta_milliseconds(uint64_t const begin_ticks, uint64_t const end_ticks, uint32_t const valid_bits, float const nanoseconds_per_tick) noexcept {

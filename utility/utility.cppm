@@ -1,6 +1,6 @@
 // ============================================================================
 // module: utility
-// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Pure-CPU toolkit: data_block, BVH, thread_pool, frame_clock / frame_stats,
 // better_pmr (mimalloc routing), content hashing. Standalone - no Vulkan or app
@@ -107,32 +107,14 @@ namespace utility {
          */
         void register_cleanup(std::function<void()> const& destructor) noexcept;
         /**
-         * @note invoke this function will remove destructor on the stack top
-         */
-        void pop_destructor() noexcept;
-        /**
          * @note pop and invoke all destructor in the stack
          */
         void do_cleanup() noexcept;
-        /**
-         * @note clean the stack without invoke
-         */
-        void clear_stack() noexcept;
     };
 
     /**
      * @ingroup utility
-     * @brief stack-style save the argument and invoke it when panic attached
-     * @param task callable object you want invoke at panic
-     * @note
-     *     - thread safe
-     *     - LIFO
-     */
-    export void at_panic(std::function<void()> const& task);
-
-    /**
-     * @ingroup utility
-     * @brief use when program cause a terminating error, will invoke functions assigned by at_panic()
+     * @brief use when program cause a terminating error
      * @param msg error message
      * @param source_location just use the default argument it will get call position info for better error print
      * @note thread safe
@@ -419,7 +401,6 @@ namespace utility {
      *       deflate blocks + adler32), so captures work without pulling in an image library
      */
     export std::expected<void, std::string> write_png(std::filesystem::path const& path, uint32_t width, uint32_t height, std::span<unsigned char const> rgba);
-    export std::chrono::milliseconds time_test(std::function<void()> const& test) noexcept;
 
     /**
      * @ingroup utility

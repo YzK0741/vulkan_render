@@ -165,12 +165,9 @@ namespace vulkan {
         this->main_segments.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         unsigned const record_workers = static_cast<unsigned>(std::max(1, this->task_pool_threads()));
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            // one entry: the alpha-blended pass's secondary (see secondary_pass). The shadow cascades
+            // and the main-pass segments own their buffers elsewhere, because they record concurrently.
             std::array<vk_command_buffer, static_cast<std::size_t>(secondary_pass::count)> pair = {
-                this->vulkan_core.make_secondary_command_buffer(), // shadow cascade 0
-                this->vulkan_core.make_secondary_command_buffer(), // shadow cascade 1
-                this->vulkan_core.make_secondary_command_buffer(), // shadow cascade 2
-                this->vulkan_core.make_secondary_command_buffer(), // shadow cascade 3
-                this->vulkan_core.make_secondary_command_buffer(), // gui
                 this->vulkan_core.make_secondary_command_buffer(), // transparent
             };
             this->secondary_command_buffers.push_back(std::move(pair));
@@ -3174,7 +3171,6 @@ namespace vulkan {
         {
             std::unique_lock const lock(this->access_mutex);
             this->pipelines.emplace(pipeline_name, std::move(make_result).value());
-            this->pipeline_names.emplace_back(pipeline_name); // stable name table (see runtime.cppm)
             if (this->default_pipeline_name.empty()) {
                 this->default_pipeline_name = pipeline_name; // first pipeline is the implicit default
             }
