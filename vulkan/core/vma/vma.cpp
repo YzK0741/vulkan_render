@@ -200,6 +200,10 @@ namespace {
         }
         case vulkan::buffer_type::uniform_coherent: {
             info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+            // per-frame uniforms written straight into the persistent mapping with no flush: the
+            // coherence the type documents has to be REQUIRED of the driver, not merely hoped for
+            // (see coherent_host_visible_flags)
+            info.requiredFlags = vulkan::coherent_host_visible_flags;
             info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
             break;
@@ -212,6 +216,7 @@ namespace {
         }
         case vulkan::buffer_type::storage_coherent: {
             info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+            info.requiredFlags = vulkan::coherent_host_visible_flags; // see uniform_coherent above
             info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
             break;
@@ -279,6 +284,10 @@ namespace {
         }
         case vulkan::image_type::texture_2d_staging: {
             info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+            // written through the persistent mapping by direct_image_upload, which (like the buffer
+            // types above) does not flush on the per-frame path - so require coherence rather than
+            // hoping for it (see coherent_host_visible_flags)
+            info.requiredFlags = vulkan::coherent_host_visible_flags;
             info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
             break;
@@ -304,8 +313,21 @@ namespace {
 
         switch (type) {
         case vulkan::image_type::texture_2d:
-        case vulkan::image_type::texture_2d_staging:
             image_info.imageType = VK_IMAGE_TYPE_2D;
+            image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                               VK_IMAGE_USAGE_SAMPLED_BIT |
+                               info.extra_usage;
+            break;
+
+        case vulkan::image_type::texture_2d_staging:
+            // LINEAR tiling is what makes this type legal at all: it is uploaded by
+            // direct_image_upload, which writes raw pixel bytes through the host mapping, and the
+            // layout of an OPTIMAL-tiled image is implementation-defined - the write would land in
+            // undefined places (vkGetImageSubresourceLayout, the API that would describe it, is only
+            // valid for LINEAR). Being host-visible, it is also created so the caller can write it
+            // again at any time; the caller owns the layout transitions around that.
+            image_info.imageType = VK_IMAGE_TYPE_2D;
+            image_info.tiling = VK_IMAGE_TILING_LINEAR;
             image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                VK_IMAGE_USAGE_SAMPLED_BIT |
                                info.extra_usage;
@@ -568,7 +590,11 @@ namespace vulkan {
             return false;
         }
 
-        memcpy(mapped_data, data, size);
+        // a null data pointer means "allocate only", the same contract direct_upload() honours for
+        // the buffer types: memcpy from null with a non-zero size is UB, not an empty write
+        if (data != nullptr && size != 0) {
+            memcpy(mapped_data, data, size);
+        }
 
         VmaAllocationInfo alloc_info;
         vmaGetAllocationInfo(this->allocator, allocation, &alloc_info);

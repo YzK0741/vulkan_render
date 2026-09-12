@@ -19,6 +19,24 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_vma
+     * @brief the memory properties the *_coherent buffer types REQUIRE, spelled out instead of
+     *        implied by VMA_MEMORY_USAGE_CPU_TO_GPU.
+     *
+     * VMA's CPU_TO_GPU usage only guarantees HOST_VISIBLE (it *prefers* DEVICE_LOCAL and says
+     * nothing about coherence), so an allocation made through it may land in a non-coherent
+     * host-visible type. That is fine for the create-time upload path, which checks
+     * is_host_coherent() and calls vmaFlushAllocation() - but the per-frame path writes straight
+     * into the persistent mapping and never flushes, because these types are documented as
+     * coherent. Requiring the flag is what makes that documentation true; without it a device that
+     * hands out a non-coherent host-visible type would have the GPU read stale camera / light /
+     * skin / morph data, silently and with no validation error.
+     * @note DEVICE_LOCAL is left to preferredFlags, so a device that can serve coherent
+     *       host-visible DEVICE_LOCAL memory still gets it.
+     */
+    export constexpr VkMemoryPropertyFlags coherent_host_visible_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+    /**
+     * @ingroup vulkan_vma
      * @brief detail of a created buffer: the buffer handle, its allocation and allocation info
      */
     export struct buffer_detail {
@@ -69,7 +87,11 @@ namespace vulkan {
         texture_2d,         // GPU_ONLY, regular texture, needs staging
         texture_2d_color,   // GPU_ONLY, texture with a color format
         texture_2d_depth,   // GPU_ONLY, depth texture
-        texture_2d_staging, // HOST_VISIBLE, for dynamically updated textures
+        texture_2d_staging, // HOST_VISIBLE + HOST_COHERENT, LINEAR tiling: for dynamically updated
+                            // textures. LINEAR is part of the contract, not an implementation
+                            // detail - the type is uploaded by writing pixels through the host
+                            // mapping, and an OPTIMAL-tiled image's layout is implementation-defined
+                            // (see direct_image_upload). The caller owns the layout transitions.
         texture_cubemap,    // GPU_ONLY, cubemap
         render_target,      // GPU_ONLY, render target (readable/writable)
     };
