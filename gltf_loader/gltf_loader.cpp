@@ -1096,7 +1096,14 @@ namespace {
         if (prim.index.empty()) {
             result.index_data = std::move(synthesized_indices); // non-indexed -> synthesized
         } else {
-            result.index_data = prim.index;
+            // The WIDENED bytes, not the accessor's own ones. index_width and index_count above were
+            // both derived from index_bytes, so uploading prim.index instead binds a buffer that
+            // disagrees with the width the draw declares: for a u8 accessor (componentType 5121,
+            // legal glTF, used by every small test asset with <= 256 vertices) the buffer is half the
+            // size the UINT16 index type needs - validation reports "index size (2) * (...) is greater
+            // than the index buffer size", and the draw reads the indices at the wrong stride, so the
+            // triangles come out wrong as well as out of bounds.
+            result.index_data = index_bytes;
         }
         result.index_width = index_width;
         result.index_count = index_count;
