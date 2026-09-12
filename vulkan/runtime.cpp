@@ -10,6 +10,8 @@ module;
 
 module vulkan.runtime;
 
+import vulkan.profiling;
+
 import utility;
 import vulkan.constant_init;
 import vulkan.core.pipeline; // vulkan::make_pipeline for the post-process pipeline
@@ -1172,7 +1174,7 @@ namespace vulkan {
     }
 
     frame_status runtime::pace_and_acquire() {
-        cpu_phase_timer const phase_timer{*this, cpu_phase::pace};
+        vulkan::profiling::cpu_phase_timer const phase_timer{this->cpu_timings, vulkan::profiling::cpu_phase::pace};
         core& vk = this->vulkan_core;
 
         // A zero-sized swapchain (a window that has not been sized yet, or was restored from
@@ -1338,7 +1340,7 @@ namespace vulkan {
     }
 
     frame_status runtime::begin_recording() {
-        cpu_phase_timer const phase_timer{*this, cpu_phase::begin};
+        vulkan::profiling::cpu_phase_timer const phase_timer{this->cpu_timings, vulkan::profiling::cpu_phase::begin};
         core& vk = this->vulkan_core;
         if (this->bound_scene == nullptr) {
             utility::panic("runtime::begin_recording() called before set_scene() bound a scene");
@@ -1574,7 +1576,7 @@ namespace vulkan {
     }
 
     void runtime::record_main_drawcalls() {
-        cpu_phase_timer const phase_timer{*this, cpu_phase::scene};
+        vulkan::profiling::cpu_phase_timer const phase_timer{this->cpu_timings, vulkan::profiling::cpu_phase::scene};
         core& vk = this->vulkan_core;
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
         uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
@@ -1585,7 +1587,7 @@ namespace vulkan {
         //      cluster's list. Runs before the shadow pass so the barrier that publishes its buffers
         //      is as early as possible; nothing before it reads the lists.
         {
-            cpu_phase_timer const cluster_timer{*this, cpu_phase::cluster};
+            vulkan::profiling::cpu_phase_timer const cluster_timer{this->cpu_timings, vulkan::profiling::cpu_phase::cluster};
             this->record_cluster_pass(*command_buffer);
         }
 
@@ -1613,7 +1615,7 @@ namespace vulkan {
         // set still points at them, so there is nothing to record - not even the read barriers.
         bool const shadow_reuse = this->shadow_rendered_version[frame_slot] == this->shadow_content_version && this->shadow_rendered_models[frame_slot] == geometry_signature;
         if (features.shadow && !shadow_reuse) {
-            cpu_phase_timer const shadow_timer{*this, cpu_phase::shadow}; // the sub-phase of scene that records every cascade
+            vulkan::profiling::cpu_phase_timer const shadow_timer{this->cpu_timings, vulkan::profiling::cpu_phase::shadow}; // the sub-phase of scene that records every cascade
             auto const* shadow_detail = vk.vma.get_image_detail(this->shadow_images[frame_slot].handle());
             if (shadow_detail != nullptr) {
                 // Secondary: inherit only the depth attachment (dynamic rendering 1.3). The
@@ -3364,7 +3366,7 @@ namespace vulkan {
         return true;
     }
     frame_status runtime::end_recording() {
-        cpu_phase_timer const phase_timer{*this, cpu_phase::post};
+        vulkan::profiling::cpu_phase_timer const phase_timer{this->cpu_timings, vulkan::profiling::cpu_phase::post};
         core& vk = this->vulkan_core;
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
 
@@ -3404,7 +3406,7 @@ namespace vulkan {
     }
 
     frame_status runtime::submit_and_present() {
-        cpu_phase_timer const phase_timer{*this, cpu_phase::submit};
+        vulkan::profiling::cpu_phase_timer const phase_timer{this->cpu_timings, vulkan::profiling::cpu_phase::submit};
         core& vk = this->vulkan_core;
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
 
@@ -3414,10 +3416,10 @@ namespace vulkan {
         if (vk.submit(*command_buffer, this->current_image_index) != VK_SUCCESS) {
             return frame_status::submit_failed;
         }
-        this->cpu_phase_add(cpu_phase::submit_queue, submit_started);
+        this->cpu_timings.add(vulkan::profiling::cpu_phase::submit_queue, std::chrono::steady_clock::now() - submit_started);
         auto const present_started = std::chrono::steady_clock::now();
         VkResult const present_result = vk.present(this->current_image_index);
-        this->cpu_phase_add(cpu_phase::present, present_started);
+        this->cpu_timings.add(vulkan::profiling::cpu_phase::present, std::chrono::steady_clock::now() - present_started);
         if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
             utility::log("present out of date, recreating swapchain");
             vk.recreate_swap_chain();
@@ -3694,81 +3696,6 @@ namespace vulkan {
         }
     }
 
-    void runtime::cpu_phase_add(cpu_phase const phase, std::chrono::steady_clock::time_point const start) noexcept {
-        std::size_t const index = static_cast<std::size_t>(phase);
-        if (index >= this->cpu_phase_frame.size()) {
-            return;
-        }
-        this->cpu_phase_frame[index] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-    }
-
-    void runtime::cpu_phase_end(cpu_phase const phase, std::chrono::steady_clock::time_point const start) noexcept {
-        if (!this->gpu_timings_enabled) {
-            return; // one switch for "measure this frame": the GPU marks and these phases together
-        }
-        std::size_t const index = static_cast<std::size_t>(phase);
-        if (index >= this->cpu_phase_frame.size()) {
-            return;
-        }
-        this->cpu_phase_frame[index] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-        if (phase != cpu_phase::submit) {
-            return; // one fold per frame, at the phase that ends it
-        }
-        // The frame completed: fold it into the window (a frame that never reaches submit - a
-        // minimized window, a failed acquire - keeps no partial numbers, which is the point of the
-        // per-frame buffer) and report once per window, exactly like the GPU marks do.
-        for (std::size_t i = 0; i < this->cpu_phase_sum.size(); ++i) {
-            this->cpu_phase_sum[i] += this->cpu_phase_frame[i];
-            this->cpu_phase_frame[i] = 0.0;
-        }
-        if (++this->cpu_timing_window_frames < GPU_TIMING_WINDOW) {
-            return;
-        }
-        std::string report = std::format("cpu frame phases (avg of {} frames):", GPU_TIMING_WINDOW);
-        std::string label = std::format("cpu ({}f):", GPU_TIMING_WINDOW);
-        double total = 0.0;
-        for (std::size_t i = 0; i < this->cpu_phase_sum.size(); ++i) {
-            double const mean = this->cpu_phase_sum[i] / static_cast<double>(GPU_TIMING_WINDOW);
-            report += std::format(" {} {:.2f} ms |", cpu_phase_names[i], mean);
-            label += std::format("{} {:>5.2f}", i == 0 ? "" : " |", mean);
-            // The sub-phases (names ending in '*') are measured INSIDE scene: adding them to the
-            // total again would count that time twice.
-            if (cpu_phase_names[i].back() != '*') {
-                total += mean;
-            }
-            this->cpu_phase_sum[i] = 0.0;
-        }
-        this->cpu_timing_window_frames = 0;
-        report += std::format(" total {:.2f} ms", total);
-        this->cpu_timing_report_label = label + std::format("\n     total {:>5.2f} ms", total);
-        utility::log("{}", report);
-        // The phase accumulators of the frame in progress were reset above; start the next frame's
-        // measurement clean (pace_begin does the same for the very first frame).
-        this->cpu_phase_frame = {};
-    }
-
-    std::string runtime::cpu_timing_summary() const {
-        if (!this->gpu_timings_enabled) {
-            return "cpu timings: off ([render] gpu_timings = false)";
-        }
-        if (this->cpu_timing_report_label.empty()) {
-            return "cpu: collecting...";
-        }
-        // The last COMPLETED window (see the GPU counterpart): an overlay line that changes every
-        // frame re-wraps and twitches, and this one is a report, not a live meter.
-        return this->cpu_timing_report_label;
-    }
-
-    std::array<double, static_cast<std::size_t>(runtime::cpu_phase::count)> runtime::cpu_timing_means() const noexcept {
-        std::array<double, static_cast<std::size_t>(cpu_phase::count)> means = {};
-        if (this->cpu_timing_window_frames == 0) {
-            return means;
-        }
-        for (std::size_t i = 0; i < means.size(); ++i) {
-            means[i] = this->cpu_phase_sum[i] / static_cast<double>(this->cpu_timing_window_frames);
-        }
-        return means;
-    }
     bool runtime::feature_available(std::string_view const name) const noexcept {
         // The single source of truth for "can this feature run at all this session": the overlay asks
         // it to decide what to offer, log_feature_status() prints it, and both therefore agree.
@@ -3840,6 +3767,14 @@ namespace vulkan {
         } else {
             utility::log("runtime: frame rate limit removed (uncapped)");
         }
+    }
+
+    std::string runtime::cpu_timing_summary() const {
+        return this->cpu_timings.summary();
+    }
+
+    std::array<double, static_cast<std::size_t>(vulkan::profiling::cpu_phase::count)> runtime::cpu_timing_means() const noexcept {
+        return this->cpu_timings.means();
     }
 
     void runtime::set_unlit(bool const unlit) noexcept {

@@ -21,6 +21,8 @@ module;
 #include <vulkan/vulkan.h>
 
 export module vulkan.runtime;
+
+import vulkan.profiling;
 export import vstd;
 export import vulkan.core;
 export import vulkan.core.filter;
@@ -131,21 +133,6 @@ namespace vulkan {
         // instance + one barrier PER CASCADE on the primary thread, which makes it the first suspect
         // for the scene phase's ~1.3 ms, so it is reported separately - and, being inside `scene`, it
         // is NOT added to the total again.
-        enum class cpu_phase : uint32_t { pace,
-                                          begin,
-                                          scene,
-                                          cluster,
-                                          shadow,
-                                          post,
-                                          submit,
-                                          // sub-phases of `submit`, measured apart because that phase is
-                                          // 40% of a light frame (0.14 of 0.35 ms): the queue submission
-                                          // (with its timeline signal) and the present call.
-                                          submit_queue,
-                                          present,
-                                          count };
-        /** @brief names of the CPU phases, in enum order (for the report line) */
-        static constexpr std::array<std::string_view, static_cast<std::size_t>(cpu_phase::count)> cpu_phase_names = {"pace", "begin", "scene", "cluster*", "shadow*", "post", "submit", "submit-queue*", "present*"}; // * = measured inside another phase
 
         // set while the window is iconified; the restore transition recreates the swapchain
         bool was_minimized = false;
@@ -292,30 +279,7 @@ namespace vulkan {
         // ---- CPU frame phase timing (same 60-frame window as the GPU marks) ----
         // A scope timer rather than manual marks: every phase function has early returns
         // (skipped/minimized/closed) that must still be measured, and an RAII object cannot miss one.
-        struct cpu_phase_timer {
-            runtime* owner = nullptr;
-            cpu_phase phase = cpu_phase::count;
-            std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-            cpu_phase_timer(runtime& runtime_ref, cpu_phase const which) noexcept
-                : owner{&runtime_ref}
-                , phase{which} {
-            }
-            ~cpu_phase_timer() {
-                if (this->owner != nullptr) {
-                    this->owner->cpu_phase_end(this->phase, this->start);
-                }
-            }
-            cpu_phase_timer(cpu_phase_timer const&) = delete;
-            cpu_phase_timer& operator=(cpu_phase_timer const&) = delete;
-            cpu_phase_timer(cpu_phase_timer&&) = delete;
-            cpu_phase_timer& operator=(cpu_phase_timer&&) = delete;
-        };
-        void cpu_phase_add(cpu_phase phase, std::chrono::steady_clock::time_point start) noexcept; // accumulate one measurement
-        void cpu_phase_end(cpu_phase phase, std::chrono::steady_clock::time_point start) noexcept;
-        std::array<double, static_cast<std::size_t>(cpu_phase::count)> cpu_phase_frame = {}; // the frame being measured
-        std::array<double, static_cast<std::size_t>(cpu_phase::count)> cpu_phase_sum = {};   // the window being accumulated
-        uint32_t cpu_timing_window_frames = 0;
-        std::string cpu_timing_report_label = {};
+        vulkan::profiling::cpu_phases cpu_timings;
         void collect_gpu_timings(uint32_t slot);
 
         // ---- G-buffer / deferred path ----
@@ -1543,6 +1507,8 @@ namespace vulkan {
          */
         void set_gpu_timings(bool enabled) noexcept {
             this->gpu_timings_enabled = enabled;
+            // one switch for measure this frame: the CPU phases follow the GPU marks
+            this->cpu_timings.set_enabled(enabled);
         }
 
         /** @brief whether GPU pass timings are being collected (see set_gpu_timings) */
@@ -1832,7 +1798,7 @@ namespace vulkan {
          * @brief per-phase CPU milliseconds averaged over the window in progress (0 when empty)
          * @note raw access for diagnostics/tests; the overlay uses cpu_timing_summary()
          */
-        [[nodiscard]] std::array<double, static_cast<std::size_t>(cpu_phase::count)> cpu_timing_means() const noexcept;
+        [[nodiscard]] std::array<double, static_cast<std::size_t>(vulkan::profiling::cpu_phase::count)> cpu_timing_means() const noexcept;
 
         /**
          * @ingroup vulkan_runtime
