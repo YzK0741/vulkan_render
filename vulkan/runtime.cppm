@@ -405,6 +405,34 @@ namespace vulkan {
         [[nodiscard]] bool gbuffer_pass_active() const noexcept;
         /** @brief whether the deferred lighting stage shades this frame (see set_deferred) */
         [[nodiscard]] bool deferred_lit_active() const noexcept;
+
+        /**
+         * @brief record the barrier that hands the G-buffer depth to the stage that SAMPLES it, and
+         *        return true when a barrier was written
+         * @param command_buffer the frame's command buffer
+         * @param image_index the swapchain image whose G-buffer depth is being sampled
+         *
+         * Three stages read that depth - the deferred lighting stage (binding 3, world-position
+         * reconstruction and SSAO), the TAA resolve (its disocclusion guard) and the G-buffer debug
+         * view (channel 6) - and a frame runs the lighting stage OR the debug view, with TAA layered
+         * on the lighting stage. The layout to transition FROM therefore depends on whether the
+         * G-buffer pass rendered this frame, which is what gbuffer_depth_written tracks; that is why
+         * this is one accessor instead of a `shadow_map_sampling_transition` copy at each of the
+         * three call sites (two of which would then declare an old layout the image is not in).
+         *
+         * The transition itself is shadow_map_sampling_transition: DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+         * as the old layout with the fragment-test src masks, so the attachment write is published
+         * AND the contents survive - unlike undefined_to_depth_sampling_transition, whose UNDEFINED
+         * old layout is only honest for a depth nothing has written (see that constant's warning).
+         * @note must be called outside a rendering instance (it records a pipeline barrier)
+         */
+        bool ensure_gbuffer_depth_sampled(VkCommandBuffer command_buffer, uint32_t image_index);
+        // Per-swapchain-image flag: set by the G-buffer instance, cleared by
+        // ensure_gbuffer_depth_sampled(). Per IMAGE rather than per frame because each image owns
+        // its own depth image, and that depth keeps whatever layout its last recorded frame left it
+        // in until that image comes around again.
+        std::vector<bool> gbuffer_depth_written = {};
+
         /** @brief the swapchain was rebuilt: drop everything that pointed at the old generation
          *         (the debug overlay's backend + the G-buffer descriptor sets, whose views are gone) */
         void on_swapchain_recreated();
@@ -577,7 +605,14 @@ namespace vulkan {
         // conservatively blocks reuse. The animated Fox is the regression test for the first half:
         // hashing push.model alone left it with a frozen shadow map.
         uint64_t skin_matrix_hash = 1469598103934665603ull;
-        uint32_t morph_revision = 0;
+        // ATOMIC because morph_scratch() is reached from the animation controller's sampling
+        // fan-out, i.e. from several task-pool workers at once (animation::controller::update ->
+        // backend::morph_scratch_active -> runtime::morph_scratch). A plain counter there is an
+        // unsynchronized read-modify-write (UB, and a lost increment on top), and this value feeds
+        // shadow_geometry_signature() - so a lost bump keeps a stale shadow map for a frame, which
+        // is exactly the failure the revision exists to prevent. Relaxed is enough: it is only ever
+        // compared for inequality, never used to publish other data.
+        std::atomic<uint32_t> morph_revision = 0;
         std::vector<vk_buffer> cluster_count_buffers = {}; // per slot: one uint per cluster
         std::vector<void*> cluster_count_mapped = {};      // their persistent mappings (memset per frame)
         std::vector<vk_buffer> cluster_index_buffers = {}; // per slot: cluster_light_capacity uints per cluster

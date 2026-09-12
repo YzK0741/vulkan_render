@@ -297,8 +297,9 @@ export namespace vulkan {
      * @brief depth attachment of a rendering instance: loadOp CLEAR with the far-plane value
      *        (1.0, stencil 0 - the engine clears every attachment on load) and no resolve
      * @param image_view the depth image view
-     * @param store_op DONT_CARE for the transient main depth buffer, STORE for the shadow map
-     *        (its contents must survive for the main pass to sample)
+     * @param store_op DONT_CARE only for a depth buffer nothing ever reads back (the forward
+     *        path's main depth); STORE for the shadow map and the G-buffer depth, whose contents
+     *        a later pass in the same submission samples
      */
     constexpr VkRenderingAttachmentInfo make_depth_attachment_info(VkImageView const image_view, VkAttachmentStoreOp const store_op) noexcept {
         VkClearValue clear_value = {};
@@ -626,6 +627,29 @@ export namespace vulkan {
         .image = VK_NULL_HANDLE,
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
+    /** @brief COLOR_ATTACHMENT_OPTIMAL -> COLOR_ATTACHMENT_OPTIMAL: order one rendering instance's
+     *         color-attachment WRITE before the next instance's LOAD of the same image (the scene
+     *         color the G-buffer pass fills with the emissive and the deferred lighting stage then
+     *         loads to add the lighting on top).
+     * @note dynamic rendering inserts no dependency of its own between two instances, and the
+     *       layout does not change here, so this barrier exists purely for the write -> read
+     *       visibility: without it the second instance's loadOp is not ordered after the first
+     *       instance's storeOp - LOAD is a color-attachment access, not a fragment-shader read,
+     *       which is why the sampling transitions of the same image cannot stand in for it. */
+    inline constexpr VkImageMemoryBarrier2 color_attachment_dependency = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .pNext = nullptr,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = VK_NULL_HANDLE,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
     /** @brief UNDEFINED -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL, depth write (main depth buffer + the shadow map) */
     inline constexpr VkImageMemoryBarrier2 depth_attachment_transition = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -676,7 +700,13 @@ export namespace vulkan {
      *         pbr.frag always binds binding 8 and decides at runtime whether to sample it, and a
      *         descriptor must point at an image in the layout it declares - leaving the map in
      *         UNDEFINED made every such frame a VUID. Contents are irrelevant (the shader returns
-     *         "fully lit"), so UNDEFINED as the old layout is correct. */
+     *         "fully lit"), so UNDEFINED as the old layout is correct.
+     * @warning ONLY valid when the contents really are irrelevant. A depth image this command
+     *          buffer just RENDERED and a later pass samples - the G-buffer depth, read by the
+     *          deferred lighting stage, the TAA guard and the debug view - must go through
+     *          shadow_map_sampling_transition instead: there the old layout is known to be
+     *          DEPTH_STENCIL_ATTACHMENT_OPTIMAL and the src masks publish the attachment write,
+     *          so the sampled contents survive. UNDEFINED discards them. */
     inline constexpr VkImageMemoryBarrier2 undefined_to_depth_sampling_transition = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext = nullptr,

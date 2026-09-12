@@ -190,6 +190,12 @@ namespace vulkan {
 
         // Shared scene resources: camera UBO buffers, white fallback texture, texture sampler
         this->init_scene_resources();
+        // The G-buffer depth layout flags are one per swapchain image, and the core has already
+        // built this generation's G-buffer targets (core::create_hdr_resolve_resources runs in the
+        // core constructor), so they can be sized here - before any frame records. Every flag
+        // starts clear, which is what a freshly created depth image is in (UNDEFINED);
+        // on_swapchain_recreated() re-sizes them for every later generation.
+        this->gbuffer_depth_written.assign(this->vulkan_core.gbuffer_depth_images.size(), false);
         // NOTE: the shadow resources (map layers + light UBO buffers) are created LAZILY, by
         // ensure_shadow_resources() from ensure_scene_set(). The shadow map is a layered 2D array
         // whose layer count is [render] shadow_cascades, and the app config that carries it is applied
@@ -409,14 +415,12 @@ namespace vulkan {
             shadow_info.width = this->shadow_map_size;
             shadow_info.height = this->shadow_map_size;
             shadow_info.mip_levels = 1;
-            // ALWAYS the maximum layer count: the layer count is baked into the image at creation and
-            // the image is created before [render] shadow_cascades is known (a scene set binds it), so
-            // shadow_cascades below only decides how many layers are FITTED, RENDERED and SAMPLED.
-            // The cost of the spare layers is memory (2048x2048x4 B each), not bandwidth.
-            // One layer per ACTIVE cascade, not max_shadow_cascades: the spare layers the old code
+            // One layer per ACTIVE cascade, NOT max_shadow_cascades: the spare layers the old code
             // always allocated were 2048x2048x4 B each per frame slot (33.5 MB with the default three
-            // cascades) that nothing ever fitted, rendered or sampled. Growing the count rebuilds these
-            // images (see set_shadow_cascades), which is why the layer count has to be tracked.
+            // cascades) that nothing ever fitted, rendered or sampled. Growing the count rebuilds
+            // these images (see set_shadow_cascades) and SHRINKING keeps the layers already owned,
+            // which is why shadow_allocated_layers - not shadow_cascades - is the image's real layer
+            // count and the value every subresource range over the whole array has to use.
             shadow_info.array_layers = this->shadow_cascades;
             shadow_info.format = this->vulkan_core.depth_format;
             shadow_info.extra_usage = VK_IMAGE_USAGE_SAMPLED_BIT; // sampled by shading.glsl
@@ -644,8 +648,23 @@ namespace vulkan {
         // environment sampler and the white placeholder - so they are written by the bindings; the
         // buffer bindings below and in ensure_scene_set() stay here, because they need this runtime's
         // buffer details and capacities.
-        std::array<VkImageView, 3> const ibl_views = {*this->ibl_views[0], *this->ibl_views[1], *this->ibl_views[2]};
-        this->scene_sets.write_ibl(this->vulkan_core, this->ibl_ready, ibl_views, *this->env_sampler, *this->owned_texture_views[0], *this->texture_sampler);
+        //
+        // The view count is NOT guaranteed here: set_ibl() is what fills ibl_views, and it early-
+        // returns when env_size == 0 (the documented way to run without IBL), while this runs from
+        // ensure_scene_set() - i.e. as soon as the first primitive exists. So a caller that builds
+        // its scene before calling set_ibl() reaches this with the vector still empty, and indexing
+        // it would be an out-of-bounds read. An empty span makes write_ibl bind the white
+        // placeholder to all three slots instead, which is the state an unloaded IBL is meant to be
+        // in; set_ibl() rewrites the bindings once the environment is actually there.
+        std::array<VkImageView, 3> views = {};
+        bool const have_ibl_views = this->ibl_views.size() >= views.size() && *this->ibl_views[0] != VK_NULL_HANDLE && *this->ibl_views[1] != VK_NULL_HANDLE && *this->ibl_views[2] != VK_NULL_HANDLE;
+        if (have_ibl_views) {
+            for (std::size_t i = 0; i < views.size(); ++i) {
+                views[i] = *this->ibl_views[i]; // the wrappers unwrap to the raw VkImageView here
+            }
+        }
+        std::span<VkImageView const> const view_span = have_ibl_views ? std::span<VkImageView const>(views) : std::span<VkImageView const>{};
+        this->scene_sets.write_ibl(this->vulkan_core, this->ibl_ready, view_span, *this->env_sampler, *this->owned_texture_views[0], *this->texture_sampler);
     }
 
     void runtime::set_ibl(ibl_input const& info) {
@@ -929,8 +948,12 @@ namespace vulkan {
             // scene color is the resolve's input image, and the resolve writes the HDR target the post
             // chain reads (see runtime::scene_target_view).
             gbuffer_attachments[vulkan::gbuffer_target_count + 1] = make_color_attachment_info(this->scene_target_view(image_index), clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
-            // the G-buffer depth clears to the far plane (1.0), like the main depth attachment
-            VkRenderingAttachmentInfo const depth_attachment = make_depth_attachment_info(vk.gbuffer_depth_image_views[image_index], VK_ATTACHMENT_STORE_OP_DONT_CARE);
+            // the G-buffer depth clears to the far plane (1.0), like the main depth attachment -
+            // but unlike it, its contents must SURVIVE the instance: the deferred lighting stage,
+            // the TAA resolve and the G-buffer debug view all sample this image later in the same
+            // submission (binding 3 of the G-buffer set). STORE_OP_DONT_CARE leaves the contents
+            // undefined after the instance, which is exactly what those three passes read.
+            VkRenderingAttachmentInfo const depth_attachment = make_depth_attachment_info(vk.gbuffer_depth_image_views[image_index], VK_ATTACHMENT_STORE_OP_STORE);
             VkRenderingInfo const rendering_info = make_rendering_info(flags, {{0, 0}, vk.swap_chain_extent}, gbuffer_attachments.data(), static_cast<uint32_t>(gbuffer_attachments.size()), &depth_attachment);
             vkCmdBeginRendering(command_buffer, &rendering_info);
             return;
@@ -944,7 +967,9 @@ namespace vulkan {
             msaa ? VK_RESOLVE_MODE_AVERAGE_BIT : VK_RESOLVE_MODE_NONE,
             msaa ? vk.hdr_image_views[image_index] : VK_NULL_HANDLE);
 
-        // depth clears to the far plane (1.0): make_depth_attachment_info
+        // depth clears to the far plane (1.0): make_depth_attachment_info. DONT_CARE is correct
+        // HERE - this is the forward path's own depth buffer and nothing samples it afterwards
+        // (the G-buffer path above is the one whose depth is read back, hence its STORE).
         VkRenderingAttachmentInfo const depth_attachment = make_depth_attachment_info(vk.depth_image_views[image_index], VK_ATTACHMENT_STORE_OP_DONT_CARE);
 
         VkRenderingInfo const rendering_info = make_rendering_info(flags, {{0, 0}, vk.swap_chain_extent}, true, &color_attachment, &depth_attachment);
@@ -1035,6 +1060,10 @@ namespace vulkan {
         std::size_t const image_count = this->vulkan_core.taa_history_images.size();
         this->image_view_proj.assign(image_count, this->current_ubo.view_proj_unjittered);
         this->taa_history_valid.assign(image_count, false);
+        // The G-buffer depth images died with the generation too, and a brand new image is in
+        // UNDEFINED until this frame's G-buffer instance renders into it: clear the layout flag so
+        // the first frame of the new generation always takes the attachment -> sampled transition.
+        this->gbuffer_depth_written.assign(this->vulkan_core.gbuffer_depth_images.size(), false);
     }
 
     void runtime::gpu_mark(VkCommandBuffer const command_buffer, gpu_mark_id const mark, VkPipelineStageFlagBits const stage) noexcept {
@@ -1511,7 +1540,7 @@ namespace vulkan {
             uint64_t const matrix = utility::xxh3_64bits({reinterpret_cast<unsigned char const*>(&caster->push.model), sizeof(glm::mat4)});
             signature = fold(signature, matrix);
         }
-        return fold(fold(signature, this->skin_matrix_hash), this->morph_revision);
+        return fold(fold(signature, this->skin_matrix_hash), this->morph_revision.load(std::memory_order_relaxed));
     }
 
     void runtime::record_main_drawcalls() {
@@ -1627,21 +1656,21 @@ namespace vulkan {
                     vkCmdEndRendering(*command_buffer);
                 }
 
-                // Hand the cascades back to the lighting stage as a sampled array texture. Two
-                // barriers: the layers that were rendered (depth attachment -> shader read), and - when
-                // fewer cascades are active than the image has layers - the spare layers, which the
-                // descriptor's array view still covers, so they must be in the declared layout too.
-                // UNDEFINED is the honest old layout for a layer nothing has ever written.
-                std::array<VkImageMemoryBarrier2, 2> shadow_read_barriers = {};
-                uint32_t read_barrier_count = 0;
-                shadow_read_barriers[read_barrier_count] = shadow_map_sampling_transition;
-                shadow_read_barriers[read_barrier_count].image = shadow_detail->image;
-                shadow_read_barriers[read_barrier_count].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, cascades};
-                ++read_barrier_count;
-                // No spare-layer barrier: the image holds exactly one layer per active cascade, so the
-                // array view the descriptor covers is fully rendered above (shadow_allocated_layers is
-                // kept equal to shadow_cascades by set_shadow_cascades).
-                VkDependencyInfo const shadow_read_dependency = make_image_dependency_info(read_barrier_count, shadow_read_barriers.data());
+                // Hand the cascades back to the lighting stage as a sampled array texture: the layers
+                // just rendered go depth-attachment -> shader-read (the src masks publish the
+                // attachment write, so the sampled contents are the ones the pass produced).
+                //
+                // The spare layers - present only after set_shadow_cascades() SHRANK the count, which
+                // deliberately keeps the layers it already owns - are covered here too, by ONE range
+                // over every allocated layer. That is deliberate rather than a second barrier: the
+                // descriptor's array view spans all of them, so a spare layer left in the attachment
+                // layout would be a layout mismatch the moment the shader sampled it, and this range
+                // is what makes "one barrier, whole array" the invariant. It is a no-op for the
+                // rendered layers, whose range this already covers.
+                std::array<VkImageMemoryBarrier2, 1> shadow_read_barrier = {shadow_map_sampling_transition};
+                shadow_read_barrier[0].image = shadow_detail->image;
+                shadow_read_barrier[0].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, this->shadow_allocated_layers};
+                VkDependencyInfo const shadow_read_dependency = make_image_dependency_info(1, shadow_read_barrier.data());
                 vkCmdPipelineBarrier2(*command_buffer, &shadow_read_dependency);
                 this->shadow_rendered_version[frame_slot] = this->shadow_content_version;
                 this->shadow_rendered_models[frame_slot] = geometry_signature;
@@ -1662,9 +1691,13 @@ namespace vulkan {
             if (shadow_detail != nullptr) {
                 VkImageMemoryBarrier2 shadow_read_barrier = vulkan::undefined_to_depth_sampling_transition;
                 shadow_read_barrier.image = shadow_detail->image;
-                // every layer, not just layer 0: the constant's range is single-layer and all
-                // cascades must be sampleable (they all are, this frame or the last one)
-                shadow_read_barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, vulkan::max_shadow_cascades};
+                // Every layer the image OWNS, not just layer 0: the constant's range is single-layer
+                // and the whole array view the descriptor covers must be sampleable. The count is
+                // shadow_allocated_layers - the layer count the image was actually created with - and
+                // NOT max_shadow_cascades: the two differ whenever fewer cascades are active than
+                // were ever allocated (the default is three), and a subresource range reaching past
+                // the image's own layer count is a VUID on every shadow-off frame.
+                shadow_read_barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, this->shadow_allocated_layers};
                 VkDependencyInfo const shadow_read_dependency = make_image_dependency_info(1, &shadow_read_barrier);
                 vkCmdPipelineBarrier2(*command_buffer, &shadow_read_dependency);
             }
@@ -1741,6 +1774,14 @@ namespace vulkan {
             // this frame (see scene_target_image). It is cleared by the instance below, so UNDEFINED as
             // the old layout is correct whatever it held before.
             add_render_barrier(color_attachment_transition, this->scene_target_image(this->current_image_index));
+            // this instance writes the G-buffer depth, so it is in the attachment layout from here on:
+            // the stage that samples it later calls ensure_gbuffer_depth_sampled() (see the accessor).
+            // The flag vector is per swapchain image and sized with the generation; the guard is a
+            // no-op outside that range, so a stale size can never set a flag for an image that does
+            // not exist (and on_swapchain_recreated re-sizes it on every generation change).
+            if (this->current_image_index < this->gbuffer_depth_written.size()) {
+                this->gbuffer_depth_written[this->current_image_index] = true;
+            }
         } else if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
             // the MSAA scene color and its HDR resolve target both render in COLOR_ATTACHMENT_OPTIMAL
             add_render_barrier(color_attachment_transition, vk.color_images[this->current_image_index]);
@@ -2303,19 +2344,35 @@ namespace vulkan {
         std::size_t const index = this->current_image_index;
 
         // Transitions, all before vkCmdBeginRendering (a pipeline barrier may not be recorded inside
-        // a dynamic rendering instance): the three surface targets become shader inputs, the G-buffer
-        // depth becomes a shader input, and the scene color - which the G-buffer pass already filled
-        // with the emissive - stays a color attachment with its contents LOADed, because the lighting
-        // is added on top of them.
+        // a dynamic rendering instance): the three surface targets and the G-buffer depth become
+        // shader inputs, and the scene color - which the G-buffer pass already filled with the
+        // emissive - stays a color attachment with its contents LOADed, because the lighting is
+        // added on top of them.
+        //
+        // The depth uses ensure_gbuffer_depth_sampled(), NOT a bare transition: the G-buffer pass
+        // rendered that depth earlier in THIS command buffer, so its old layout is known to be
+        // DEPTH_STENCIL_ATTACHMENT_OPTIMAL and the src masks have to publish the attachment write.
+        // Declaring UNDEFINED would let the implementation discard precisely the contents the
+        // lighting stage reconstructs world positions from (see the accessor).
+        //
+        // The scene-color dependency is separate and cannot be folded into those three: it does not
+        // change layout, and its consumer is the second instance's LOAD of the attachment, which is
+        // a color-attachment access rather than the FRAGMENT_SHADER read the sampling transitions
+        // publish. Dynamic rendering inserts no dependency of its own between two instances, so
+        // without it the load is not ordered after (nor made visible from) the G-buffer pass's store.
+        // The image comes from scene_target_image(), the same accessor the attachment below uses, so
+        // the barrier always names the image this instance actually LOADs.
+        VkImage const scene_target = this->scene_target_image(static_cast<uint32_t>(index));
         std::array<VkImageMemoryBarrier2, 4> barriers = {};
         for (uint32_t target = 0; target < vulkan::gbuffer_target_count; ++target) {
             barriers[target] = vulkan::hdr_sampling_transition; // COLOR_ATTACHMENT -> SHADER_READ
             barriers[target].image = vk.gbuffer_images[target][index];
         }
-        barriers[3] = vulkan::undefined_to_depth_sampling_transition;
-        barriers[3].image = vk.gbuffer_depth_images[index];
+        barriers[3] = vulkan::color_attachment_dependency; // G-buffer store -> this instance's LOAD
+        barriers[3].image = scene_target;
         VkDependencyInfo const dependency = make_image_dependency_info(static_cast<uint32_t>(barriers.size()), barriers.data());
         vkCmdPipelineBarrier2(command_buffer, &dependency);
+        this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(index));
 
         this->ensure_gbuffer_descriptors();
         if (this->gbuffer_family.set(static_cast<uint32_t>(index), 0) == VK_NULL_HANDLE) {
@@ -2336,8 +2393,9 @@ namespace vulkan {
             return;
         }
 
-        // The G-buffer pass left the scene color in COLOR_ATTACHMENT_OPTIMAL: only the layout of the
-        // attachment changes state here, so a load-op LOAD instance adds to it
+        // The G-buffer pass left the scene color in COLOR_ATTACHMENT_OPTIMAL, and the dependency
+        // barrier above ordered its store before this instance's LOAD, so the attachment needs no
+        // layout change of its own: a load-op LOAD instance adds the lighting on top of the emissive
         VkImageView const target_view = this->scene_target_view(static_cast<uint32_t>(index));
         VkRenderingAttachmentInfo const color_attachment = make_load_color_attachment_info(target_view);
         VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &color_attachment, nullptr);
@@ -2512,16 +2570,17 @@ namespace vulkan {
         barriers[0].image = vk.scene_color_images[index];
         barriers[1] = vulkan::hdr_sampling_transition; // velocity: same transition, COLOR aspect
         barriers[1].image = vk.velocity_images[index];
-        barriers[2] = vulkan::undefined_to_depth_sampling_transition; // G-buffer depth -> sampled
-        barriers[2].image = vk.gbuffer_depth_images[index];
-        uint32_t barrier_count = 3;
+        uint32_t barrier_count = 2;
         if (!history_valid) {
-            barriers[3] = vulkan::undefined_to_sampling_transition;
-            barriers[3].image = vk.taa_history_images[index];
-            barrier_count = 4;
+            barriers[barrier_count] = vulkan::undefined_to_sampling_transition;
+            barriers[barrier_count].image = vk.taa_history_images[index];
+            ++barrier_count;
         }
         VkDependencyInfo const dependency = make_image_dependency_info(barrier_count, barriers.data());
         vkCmdPipelineBarrier2(command_buffer, &dependency);
+        // the G-buffer depth the disocclusion guard samples: its own barrier, written only if the
+        // G-buffer pass actually rendered this frame (the lighting stage normally got here first)
+        this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(index));
 
         std::array<VkImageMemoryBarrier2, 1> output_barrier = {vulkan::color_attachment_transition};
         output_barrier[0].image = vk.hdr_images[index];
@@ -2595,6 +2654,24 @@ namespace vulkan {
         if (this->taa_history_valid.size() > index) {
             this->taa_history_valid[index] = true;
         }
+    }
+
+    bool runtime::ensure_gbuffer_depth_sampled(VkCommandBuffer const command_buffer, uint32_t const image_index) {
+        // Nothing to do when no G-buffer instance ran for this image: the depth is already in the
+        // layout the sampling descriptors declare (it keeps whatever the last frame for this image
+        // left it in), so re-transitioning would only claim a layout the image is not in.
+        if (image_index >= this->gbuffer_depth_written.size() || !this->gbuffer_depth_written[image_index]) {
+            return false;
+        }
+        // The G-buffer pass left it in DEPTH_STENCIL_ATTACHMENT_OPTIMAL: publish the attachment
+        // write and flip it to the layout the sampling descriptors declare. One barrier per frame,
+        // whichever of the three sampling stages gets here first.
+        VkImageMemoryBarrier2 barrier = vulkan::shadow_map_sampling_transition;
+        barrier.image = this->vulkan_core.gbuffer_depth_images[image_index];
+        VkDependencyInfo const dependency = make_image_dependency_info(1, &barrier);
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
+        this->gbuffer_depth_written[image_index] = false;
+        return true;
     }
 
     bool runtime::gbuffer_pass_active() const noexcept {
@@ -2681,19 +2758,19 @@ namespace vulkan {
         //      samples that image: an undefined layout would be a lie, a cleared image is a valid
         //      black frame.
         //   2. the three G-buffer targets the pass just wrote become shader inputs.
-        //   3. the G-buffer depth image becomes a shader input too (UNDEFINED -> SHADER_READ: its
-        //      contents are new, so discarding the old layout is correct; the aspect must be DEPTH).
-        std::array<VkImageMemoryBarrier2, 5> barriers = {};
+        //   3. the G-buffer depth image becomes a shader input too - through the same accessor the
+        //      other two sampling stages use, because its old layout depends on whether the G-buffer
+        //      instance rendered this frame (the aspect must be DEPTH; see the accessor).
+        std::array<VkImageMemoryBarrier2, 4> barriers = {};
         barriers[0] = vulkan::color_attachment_transition;
         barriers[0].image = vk.hdr_images[index];
         for (uint32_t target = 0; target < vulkan::gbuffer_target_count; ++target) {
             barriers[target + 1] = vulkan::hdr_sampling_transition; // COLOR_ATTACHMENT -> SHADER_READ
             barriers[target + 1].image = vk.gbuffer_images[target][index];
         }
-        barriers[4] = vulkan::undefined_to_depth_sampling_transition;
-        barriers[4].image = vk.gbuffer_depth_images[index];
         VkDependencyInfo const dependency = make_image_dependency_info(static_cast<uint32_t>(barriers.size()), barriers.data());
         vkCmdPipelineBarrier2(command_buffer, &dependency);
+        this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(index));
 
         this->ensure_gbuffer_descriptors();
 
@@ -4429,7 +4506,10 @@ namespace vulkan {
         if (slot >= this->morph_mapped.size()) {
             return nullptr;
         }
-        ++this->morph_revision; // no upload hook: assume the caller is about to deform the mesh
+        // relaxed: the fetch_add is only there to make concurrent bumps from the animation
+        // controller's worker threads well defined and non-lossy (see the member docs) - the value
+        // is read back through a plain load in shadow_geometry_signature(), on the frame thread.
+        this->morph_revision.fetch_add(1, std::memory_order_relaxed); // no upload hook: assume the caller is about to deform the mesh
         return this->morph_mapped[slot];
     }
 
