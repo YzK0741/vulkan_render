@@ -474,6 +474,12 @@ namespace utility {
         std::size_t pending = 0; // messages pending write (queued + currently being written)
         std::thread worker = {};
         std::atomic<bool> running = true;
+        // Whether write() still enqueues. Cleared by the destructor BEFORE it signals the worker to
+        // drain and exit, and read under queue_mutex - so a write that arrives during (or after)
+        // teardown is dropped rather than queued for a worker that is already gone. That matters
+        // because wait_all() would then block forever on a pending count nothing will ever decrement,
+        // and panic() calls wait_all() - i.e. the one path that must not hang is the one that would.
+        bool accepting = true;
         std::ofstream file = {}; // Release builds write to debug.log
 
         log_sink();

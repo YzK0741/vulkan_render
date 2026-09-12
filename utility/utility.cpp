@@ -235,6 +235,13 @@ utility::log_sink::log_sink() {
 }
 
 utility::log_sink::~log_sink() {
+    {
+        // Stop accepting BEFORE waking the worker: a message enqueued after the worker has drained
+        // and exited would leave `pending` above zero forever, and wait_all() (called by panic())
+        // would then block the shutdown it is supposed to complete.
+        std::lock_guard lock(this->queue_mutex);
+        this->accepting = false;
+    }
     this->running = false;
     this->queue_cv.notify_all();
     if (this->worker.joinable()) {
@@ -290,6 +297,12 @@ void utility::log_sink::worker_loop() noexcept {
 void utility::log_sink::write(std::string message) {
     {
         std::lock_guard lock(this->queue_mutex);
+        if (!this->accepting) {
+            // The sink is shutting down and its worker will not drain anything else: drop the
+            // message instead of queueing it for nobody. Late writes are the normal case, not an
+            // error - static destructors ordered after this singleton still call log()/error().
+            return;
+        }
         ++this->pending;
         this->messages.push(std::move(message));
     }
@@ -298,7 +311,9 @@ void utility::log_sink::write(std::string message) {
 
 void utility::log_sink::wait_all() {
     std::unique_lock lock(this->queue_mutex);
-    this->drained_cv.wait(lock, [this] { return this->pending == 0; });
+    // Return as soon as the sink stopped accepting: any message still counted in `pending` at that
+    // point belongs to a worker that is on its way out, and waiting for it would hang forever.
+    this->drained_cv.wait(lock, [this] { return this->pending == 0 || !this->accepting; });
 }
 
 void utility::error_message(std::string message) {

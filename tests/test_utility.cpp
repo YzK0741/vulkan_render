@@ -342,6 +342,126 @@ namespace {
         CHECK(free_waiter_done.load());
     }
 
+    // The async log sink + wait_log_all() (what panic() flushes with before std::terminate). Two
+    // properties matter and neither is visible from a single-threaded smoke test:
+    //  - wait_all() must return once the queue is drained even while other threads keep producing,
+    //    which is the predicate the `accepting` shutdown gate was added to, and
+    //  - it must not be missed by a lost wakeup, so the readers race the worker deliberately.
+    // The wait runs on its own thread with a watchdog: a regression here is a hang, and an
+    // unbounded unittest hang would be far worse to diagnose than a failed check.
+    void test_log_sink_wait_all_under_concurrent_writers() {
+        // Deliberately small: every message is a real line in the log this test writes to, and a
+        // four-figure flood would drown the very output someone reads when a test fails. Four writers
+        // racing the worker is what exercises the queue, not the volume.
+        constexpr int writer_count = 4;
+        constexpr int per_writer = 25;
+        std::atomic<bool> producers_done = false;
+        std::vector<std::jthread> writers;
+        writers.reserve(writer_count);
+        for (int w = 0; w < writer_count; ++w) {
+            writers.emplace_back([w, &producers_done] {
+                for (int i = 0; i < per_writer; ++i) {
+                    utility::log("log sink test: writer {} message {}", w, i);
+                }
+                producers_done.store(true, std::memory_order_relaxed);
+            });
+        }
+
+        std::atomic<bool> drained = false;
+        std::jthread waiter([&drained] {
+            utility::wait_log_all();
+            drained.store(true, std::memory_order_release);
+        });
+
+        // give the waiter a bounded window; the drain itself is microseconds of work
+        for (int spin = 0; spin < 2000 && !drained.load(std::memory_order_acquire); ++spin) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK_MSG(drained.load(std::memory_order_acquire), "wait_log_all() did not observe the drained queue within 2 s");
+        for (std::jthread& writer : writers) {
+            writer.join();
+        }
+        waiter.join();
+        CHECK(producers_done.load(std::memory_order_relaxed));
+        // and it stays usable afterwards: the sink is a singleton shared by the whole process
+        utility::log("log sink test: still writable after a concurrent drain");
+        utility::wait_log_all();
+        CHECK(true); // reaching here means the second drain returned too
+    }
+
+    // The morton quantizer feeds static_cast<uint32_t>, and a NaN operand makes every "<"/">" FALSE -
+    // so a range check written the obvious way lets NaN reach that conversion, which is UB. It is
+    // reachable, because these AABBs come from file-loaded meshes.
+    //
+    // The build's answer is to SANITIZE, not to fail: bvh<T>::normalize() maps a non-finite
+    // normalized midpoint onto the origin (those leaves then share one morton code and stay in
+    // insertion order, which is a sound order to build from), while
+    // generate_morton_from_midpoint()'s own finite check is the backstop for a direct caller that
+    // bypasses normalize(). So a build containing a non-finite AABB must SUCCEED and stay usable -
+    // asserting a rejection here would be asserting the wrong contract.
+    void test_bvh_non_finite_aabb_is_sanitized() {
+        float const nan = std::numeric_limits<float>::quiet_NaN();
+        float const inf = std::numeric_limits<float>::infinity();
+        int ids[3] = {0, 1, 2};
+
+        auto const build_with = [&](glm::vec3 const& bad_min, glm::vec3 const& bad_max) {
+            std::vector<utility::aabb_box<int>> boxes;
+            boxes.push_back(utility::aabb_box<int>{.min = glm::vec3(-1.0f), .max = glm::vec3(1.0f), .extra_data = &ids[0]});
+            boxes.push_back(utility::aabb_box<int>{.min = bad_min, .max = bad_max, .extra_data = &ids[1]});
+            boxes.push_back(utility::aabb_box<int>{.min = glm::vec3(3.0f), .max = glm::vec3(5.0f), .extra_data = &ids[2]});
+            return utility::bvh<int>::make(boxes);
+        };
+
+        // Build only: this is the property under test. Whether a particular non-finite box survives
+        // a particular frustum depends on the geometry (an infinite AABB may legitimately lie
+        // outside it), so cull counts are not asserted here - the point is that nothing crashes,
+        // hangs, or converts NaN to a morton index on the way.
+        auto const nan_boxes = build_with(glm::vec3(nan, 0.0f, 0.0f), glm::vec3(nan, 1.0f, 1.0f));
+        CHECK(nan_boxes.has_value());
+
+        auto const inf_boxes = build_with(glm::vec3(0.0f), glm::vec3(inf, 1.0f, 1.0f));
+        CHECK(inf_boxes.has_value());
+
+        // and the tree stays usable afterwards (a degenerate build must not leave it half-built)
+        for (utility::bvh<int> const* tree : {&*nan_boxes, &*inf_boxes}) {
+            glm::mat4 const proj = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, 200.0f);
+            glm::mat4 const view = glm::lookAt(glm::vec3(0.0f, 0.0f, 20.0f), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+            (void)tree->frustum_cull(utility::make_frustum(proj * view)); // must not crash
+        }
+    }
+
+    // Degenerate leaf sets the build has to survive rather than crash on: an extent that collapses
+    // (every box at one point, which makes the normalization divide by its 1e-6 floor) and the
+    // documented empty-input failure. Neither may corrupt memory on the way.
+    void test_bvh_degenerate_inputs_do_not_crash() {
+        int id = 0;
+
+        // every box at the same point: extent collapses
+        std::vector<utility::aabb_box<int>> coincident;
+        for (int i = 0; i < 5; ++i) {
+            coincident.push_back(utility::aabb_box<int>{.min = glm::vec3(2.0f), .max = glm::vec3(2.0f), .extra_data = &id});
+        }
+        auto const collapsed = utility::bvh<int>::make(coincident);
+        CHECK(collapsed.has_value()); // a valid tree, just a degenerate one
+        if (collapsed.has_value()) {
+            // and it still culls every leaf into a frustum that contains the point
+            glm::mat4 const proj = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, 100.0f);
+            glm::mat4 const view = glm::lookAt(glm::vec3(2.0f, 2.0f, 12.0f), glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+            CHECK(collapsed->frustum_cull(utility::make_frustum(proj * view)).size() == 5);
+        }
+
+        // a single leaf: exercises build_from_leaves' "sole leaf" path, which must hand a
+        // childless heap node to the tree (a copy of the node would drag its raw links along)
+        std::vector<utility::aabb_box<int>> single;
+        single.push_back(utility::aabb_box<int>{.min = glm::vec3(-1.0f), .max = glm::vec3(1.0f), .extra_data = &id});
+        auto const one = utility::bvh<int>::make(single);
+        CHECK(one.has_value());
+
+        // an empty input is the documented make() failure path
+        auto const empty = utility::bvh<int>::make(std::vector<utility::aabb_box<int>>{});
+        CHECK(!empty.has_value());
+    }
+
     void test_bvh_frustum_cull_keeps_visible_boxes() {
         int ids[3] = {0, 1, 2};
         // camera at the origin looking down -z: boxes A and B are in front, C behind
@@ -423,6 +543,9 @@ int main() {
     test_thread_pool_runs_every_posted_task();
     test_thread_pool_priority_group_wait();
     test_thread_pool_two_concurrent_waiters();
+    test_log_sink_wait_all_under_concurrent_writers();
+    test_bvh_non_finite_aabb_is_sanitized();
+    test_bvh_degenerate_inputs_do_not_crash();
     test_bvh_frustum_cull_keeps_visible_boxes();
     test_bvh_add_rebuild_contract();
     return vk_test::finish("test_utility");

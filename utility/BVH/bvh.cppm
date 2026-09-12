@@ -99,6 +99,19 @@ namespace utility {
 
     /**
      * @ingroup bvh
+     * @brief whether every component of @p value is finite (neither NaN nor infinite)
+     * @note std::isfinite per component rather than glm's: the vector form lives in
+     *       <glm/gtx/compatibility.hpp> and this module pulls in only the core <glm/glm.hpp>. Used
+     *       where a non-finite value would otherwise reach a float -> integer conversion, which is
+     *       undefined behaviour - every comparison against a NaN is false, so a range check written
+     *       the obvious way lets it through.
+     */
+    [[nodiscard]] inline bool all_finite(glm::vec3 const& value) noexcept {
+        return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    }
+
+    /**
+     * @ingroup bvh
      * @brief generate a morton code from a normalized midpoint
      * @param midpoint point in [0, 1]^3
      * @param scale quantization scale per axis
@@ -122,7 +135,34 @@ namespace utility {
 
         using data_type = std::conditional_t<std::is_void_v<T>, std::monostate, T>;
 
-        data_type* extra_data;
+        // nullptr rather than indeterminate: the build's INTERNAL nodes never have user data, and an
+        // uninitialized pointer is the one member of this struct that a reader could dereference by
+        // accident (the leaves' pointer is always assigned from the caller's aabb_box)
+        data_type* extra_data = nullptr;
+
+        // A node is a node of a graph whose links are raw pointers into storage the containing
+        // bvh<T> owns: internal nodes are heap-allocated and delete their non-leaf children, while
+        // leaf children point INTO bvh<T>::leaves. Copying that would alias the same subtree (two
+        // destructors deleting it) and, for the leaf form, silently outlive nothing at all - so the
+        // shallow copy the compiler would generate is never the right operation. Deleted rather than
+        // documented: the hazard is a double free, and a compile error is a better teacher than a
+        // comment. bvh<T>::add() builds leaves in place so no copy is needed anywhere.
+        bvh_node(bvh_node const&) = delete;
+        bvh_node& operator=(bvh_node const&) = delete;
+        bvh_node(bvh_node&&) = default;
+        bvh_node& operator=(bvh_node&&) = default;
+        bvh_node() = default;
+
+        /** @brief construct a LEAF in place (see the deleted copy operations above) */
+        [[nodiscard]] static bvh_node make_leaf(aabb_box<T> const& box) {
+            bvh_node leaf;
+            leaf.aabb.min = box.min;
+            leaf.aabb.max = box.max;
+            leaf.extra_data = box.extra_data;
+            leaf.code = {}; // recomputed by rebuild()
+            return leaf;
+        }
+
         [[nodiscard]] bool is_leaf() const noexcept {
             return this->left == nullptr && this->right == nullptr;
         }
@@ -183,10 +223,16 @@ namespace utility {
         glm::vec3 origin = glm::vec3(0.0f);
         glm::vec3 scale = glm::vec3(1.0f);
 
-        /** @brief map a world-space midpoint into [0,1]^3 for morton coding */
+        /** @brief map a world-space midpoint into [0,1]^3 for morton coding
+         *  @note glm::clamp PROPAGATES NaN rather than absorbing it (min(max(NaN,0),1) is NaN), so a
+         *        NaN component would sail through the clamp and only be rejected - or become UB - in
+         *        generate_morton_from_midpoint(). A degenerate scene extent (every AABB at one point,
+         *        or an empty set) makes normalize() produce NaN/inf here, so map non-finite results to
+         *        the origin instead: those leaves then share one code and stay in insertion order,
+         *        which is a sound order for the build rather than a rejected input. */
         [[nodiscard]] glm::vec3 normalize(glm::vec3 const& midpoint) const {
             glm::vec3 const normalized = (midpoint - this->origin) * this->scale; // NOLINT
-            return glm::clamp(normalized, glm::vec3(0.0f), glm::vec3(1.0f));
+            return all_finite(normalized) ? glm::clamp(normalized, glm::vec3(0.0f), glm::vec3(1.0f)) : glm::vec3(0.0f);
         }
         /** @brief compute origin/scale from a set of leaf AABBs (scene extent) */
         void set_extent(std::deque<bvh_node<T>> const& leaf_nodes) {
@@ -214,8 +260,13 @@ namespace utility {
             glm::vec3 const& origin,
             glm::vec3 const& scale) {
             using fail = std::unexpected<std::string>;
+            // Same sanitizing guard as bvh<T>::normalize(): glm::clamp propagates NaN, so without it
+            // a NaN component would reach generate_morton_from_midpoint(), whose own finite check
+            // would then turn a degenerate extent into a failed BUILD. Mapping it to the origin
+            // instead keeps the build succeeding with a sound order (see that member's note).
             auto const normalize = [&origin, &scale](glm::vec3 const& midpoint) {
-                return glm::clamp((midpoint - origin) * scale, glm::vec3(0.0f), glm::vec3(1.0f)); // NOLINT
+                glm::vec3 const normalized = (midpoint - origin) * scale; // NOLINT
+                return all_finite(normalized) ? glm::clamp(normalized, glm::vec3(0.0f), glm::vec3(1.0f)) : glm::vec3(0.0f);
             };
             auto leave_it = leaves.begin();
 
@@ -286,7 +337,17 @@ namespace utility {
                 //    ownership directly - copying it would leak the original.
                 bvh_node<T>* const sole = layers.back()[0];
                 if (sole->is_leaf()) {
-                    return std::unique_ptr<bvh_node<T>>(new bvh_node<T>(*sole));
+                    // A fresh childless node carrying the same data, NOT a copy of the node: a node
+                    // would copy the raw child links too, and this one is handed to a unique_ptr
+                    // whose destructor deletes non-leaf children - i.e. it would delete the
+                    // deque-owned leaf it was copied from. That made the correctness of the old
+                    // `new bvh_node<T>(*sole)` depend on the leaf happening to have no links, which
+                    // is exactly the kind of invariant the deleted copy operations now enforce.
+                    auto heap_leaf = std::make_unique<bvh_node<T>>();
+                    heap_leaf->aabb = sole->aabb;
+                    heap_leaf->extra_data = sole->extra_data;
+                    heap_leaf->code = sole->code;
+                    return heap_leaf;
                 }
                 return std::unique_ptr<bvh_node<T>>(sole);
             }
@@ -310,11 +371,9 @@ namespace utility {
 
             std::deque<bvh_node<T>> leaves;
             for (auto const& data : datas) {
-                bvh_node<T> node = {};
-                node.aabb.min = data.min;
-                node.aabb.max = data.max;
-                node.extra_data = data.extra_data;
-                leaves.push_back(node);
+                // make_leaf, not a local + push_back: bvh_node is non-copyable by design (its links
+                // are raw pointers into this deque, so a copy would alias a subtree)
+                leaves.push_back(bvh_node<T>::make_leaf(data));
             }
 
             bvh result;
@@ -379,13 +438,8 @@ namespace utility {
          *       recomputes the scene extent, so out-of-range boxes added here are fine)
          */
         std::expected<void, std::string> add(aabb_box<T> const& box) {
-            bvh_node<T> node = {};
-            node.aabb.min = box.min;
-            node.aabb.max = box.max;
-            node.extra_data = box.extra_data;
-            node.code = {}; // recomputed by rebuild()
-
-            this->leaves.push_back(node);
+            // constructed in place: bvh_node is deliberately non-copyable (see its deleted copy ops)
+            this->leaves.push_back(bvh_node<T>::make_leaf(box));
             return {};
         }
 

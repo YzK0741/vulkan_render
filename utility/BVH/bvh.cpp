@@ -79,6 +79,18 @@ namespace utility {
     std::expected<morton_code, std::string> generate_morton_from_midpoint(glm::vec3 const& midpoint, float const scale) {
         using fail = std::unexpected<std::string>;
 
+        // NaN must be rejected explicitly: every "<" and ">" below is FALSE for a NaN operand, so a
+        // NaN midpoint passes a range check written the obvious way and then reaches
+        // static_cast<uint32_t>(NaN), which is undefined behaviour (not merely a wrong code). A
+        // non-finite or non-positive scale is just as bad - a single NaN component would poison the
+        // whole code, and the BVH's sort order derives from these codes.
+        //
+        // The build does not rely on this to survive a bad asset: bvh<T>::normalize() already maps a
+        // non-finite normalized midpoint onto the origin, so such a leaf is ordered soundly rather
+        // than rejected. This is the backstop for a direct caller that skips that sanitizing step.
+        if (!all_finite(midpoint) || !std::isfinite(scale) || scale <= 0.0f) {
+            return fail("midpoint must be finite and scale a positive finite number");
+        }
         if (midpoint.x < 0.0 || midpoint.y < 0.0 || midpoint.z < 0.0 || midpoint.x > 1.0 || midpoint.y > 1.0 || midpoint.z > 1.0) {
             return fail("position must be in [0, 1]");
         }
