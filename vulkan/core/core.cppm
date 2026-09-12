@@ -50,10 +50,14 @@ namespace vulkan {
      *              binding 5 = Material materials[] (storage buffer: per-material texture indices + factors),
      *              binding 6 = mat4 instance transforms[] (storage buffer, per-instance world matrices),
      *              binding 7 = LightUBO (uniform buffer: directional light view-proj + direction),
-     *              binding 8 = shadow map (sampler2D, NEAREST; manual 3x3 percentage-closer
-     *              filtering in pbr.frag — no depth-comparison / hardware PCF),
+     *              binding 8 = shadow map (sampler2DArrayShadow, one array layer per cascade; LINEAR
+     *              min/mag with compareEnable = VK_TRUE, so the hardware does the 2x2 comparison and
+     *              shading.glsl's calc_shadow_cascade() averages a 3x3 grid of those taps),
      *              binding 9 = mat4 skin matrices[] (storage buffer: identity block + per-skin joints),
-     *              binding 10 = float morph data[] (storage buffer: per-primitive morph deltas + weights)
+     *              binding 10 = float morph data[] (storage buffer: per-primitive morph deltas + weights),
+     *              binding 11/12 = uint cluster light counts[] / uint cluster light indices[] (the
+     *              clustered-culling result: written by the cluster compute pass, read by the
+     *              fragment stage)
      * @note hardcoded instead of parsed from SPIR-V: the indexed layout is flat, so pipelines
      *       skip descriptor / push constant parsing and share one layout object
      */
@@ -537,11 +541,12 @@ namespace vulkan {
          * @return vk_pipeline on success, error message on failure
          *
          * The engine's first compute pipeline. It uses the SAME shared scene pipeline layout as every
-         * graphics pipeline (one descriptor set + the fixed push block, whose range declares COMPUTE
-         * too), so the cluster pass binds the frame's own scene set - camera UBO, light UBO and the
-         * per-cluster buffers - with no new layout object, and a dispatch is nothing but
-         * vkCmdBindPipeline + vkCmdBindDescriptorSets + vkCmdDispatch. The returned vk_pipeline holds
-         * no viewport/scissor: a compute dispatch must not bind one.
+         * graphics pipeline (one descriptor set, plus a push range that covers VERTEX|FRAGMENT only -
+         * light_cluster.comp declares no push_constant block, so it never pushes anything), so the
+         * cluster pass binds the frame's own scene set - camera UBO, light UBO and the per-cluster
+         * buffers - with no new layout object, and a dispatch is nothing but vkCmdBindPipeline +
+         * vkCmdBindDescriptorSets + vkCmdDispatch. The returned vk_pipeline holds no viewport/scissor:
+         * a compute dispatch must not bind one.
          */
         std::expected<vk_pipeline, std::string_view> make_cluster_pipeline(
             std::span<unsigned char const> compute_shader_code) const;
@@ -555,16 +560,23 @@ namespace vulkan {
          * @ingroup vulkan_core
          * @brief submit the recorded command buffer for the current frame slot
          * @param command_buffer the command buffer to submit
-         * @param image_index the acquired swapchain image index (unused: present waits the same
-         *        per-slot timeline that this submit signals)
+         * @param image_index the acquired swapchain image index: it selects the per-image binary
+         *        semaphore this submit signals for present to wait on
          * @return the result of vkQueueSubmit
+         *
+         * Signals two semaphores. This slot's TIMELINE (GPU completion, and the host pacing that
+         * wait_frame_slot() blocks on) and present_ready_semaphores[image_index]. The second is a
+         * BINARY semaphore per swapchain IMAGE rather than per frame slot because vkQueuePresentKHR
+         * cannot wait a timeline semaphore, and present may run on a separate queue - keying the gate
+         * on the image means an image is only re-acquired after its own present finished, which keeps
+         * a re-signal from racing across queues.
          */
         VkResult submit(VkCommandBuffer command_buffer, uint32_t image_index);
 
         /**
          * @ingroup vulkan_core
-         * @brief present the rendered swapchain image; waits on the current frame slot's
-         *        timeline (signaled by submit())
+         * @brief present the rendered swapchain image, waiting on that image's binary present-ready
+         *        semaphore (signaled by submit())
          * @param image_index the swapchain image index to present
          * @return the result of vkQueuePresentKHR
          */

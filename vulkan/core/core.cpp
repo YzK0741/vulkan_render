@@ -328,9 +328,9 @@ namespace vulkan {
         // The F12 screenshot read-back copies FROM a swapchain image (vkCmdCopyImageToBuffer), which
         // requires the image to have been created with TRANSFER_SRC usage
         // (VUID-vkCmdCopyImageToBuffer-srcImage-00186). Ask for it when the surface supports it -
-        // imageUsage must stay a subset of supportedUsageFlags (VUID-VkSwapchainCreateInfoKHR-
-        // imageUsage-01276) - and remember the answer so the screenshot path can disable itself
-        // instead of performing an illegal copy on a surface that does not.
+        // imageUsage has to stay a subset of the surface's supportedUsageFlags - and remember the
+        // answer so the screenshot path can disable itself instead of performing an illegal copy on a
+        // surface that does not.
         this->swapchain_transfer_src_supported = (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
         if (this->swapchain_transfer_src_supported) {
             create_info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
@@ -943,8 +943,9 @@ namespace vulkan {
         // light UBO: directional sun (light-space view-proj + direction) + BRDF model ids +
         // the punctual-light count/array (read by shadow.vert and pbr.frag)
         bindings[7] = {.binding = 7, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        // shadow map depth texture: LINEAR depth-compare sampler = HARDWARE percentage-closer
-        // filtering (one sampler2DShadow texture() returns the lit 2x2 fraction, no manual 3x3)
+        // shadow map depth texture: LINEAR min/mag with compareEnable = VK_TRUE, so one
+        // sampler2DArrayShadow texture() tap already returns the lit fraction of its own 2x2 texel
+        // footprint - the hardware does the comparison (shading.glsl averages a 3x3 grid of taps)
         bindings[8] = {.binding = 8, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         // per-joint skin matrices (mat4 per joint; indices 0-3 are the identity block for
         // unskinned draws; read in pbr.vert / shadow.vert, filled per frame by set_skin_matrices)
@@ -970,10 +971,10 @@ namespace vulkan {
 
         VkDescriptorSetLayoutCreateInfo layout_info = {};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        // No UPDATE_AFTER_BIND_POOL: the only binding flag left is PARTIALLY_BOUND (binding 1),
-        // which does not require the update-after-bind pool flag. Declaring it anyway would
-        // violate VUID-vkAllocateDescriptorSets-03047, because the descriptor pool this layout
-        // is allocated from carries no UPDATE_AFTER_BIND flag.
+        // No UPDATE_AFTER_BIND_POOL: the only binding flag left is PARTIALLY_BOUND (binding 1), which
+        // does not require the update-after-bind pool flag. The layout flag only means anything
+        // together with the pool flag - a set layout created with UPDATE_AFTER_BIND_POOL has to be
+        // allocated from a pool created with UPDATE_AFTER_BIND - and neither is needed here.
         layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
         layout_info.pBindings = bindings.data();
         layout_info.pNext = &flags_info;
