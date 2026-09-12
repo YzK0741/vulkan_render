@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene set; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -404,6 +404,15 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_primitive
+     * @brief max motion slots of the scene's previous-transform buffer (set 0 binding 13), in mat4s
+     * @note Every draw owns at least one slot - an instanced draw owns one per instance - and the
+     *       slots are why the same capacity as the instance buffer is plenty: a scene of N leaves
+     *       uses N, and only an instanced stress draw uses thousands.
+     */
+    export constexpr uint32_t scene_motion_capacity = instance_capacity;
+
+    /**
+     * @ingroup vulkan_primitive
      * @brief max skin matrices of the scene skin buffer (set 0 binding 9 storage buffer), in
      *        mat4s. Indices 0-3 are the identity block (the fallback for unskinned draws:
      *        skin_base = 0), the per-skin joint blocks follow at 4.
@@ -458,6 +467,13 @@ namespace vulkan {
         // (set 0 binding 6): the vertex shader reads instances.transforms[instance_base +
         // gl_InstanceIndex]. Only meaningful when flag bit0 is set; other draw strategies keep 0.
         uint32_t instance_base = 0;
+        // Start of THIS draw's previous-frame world matrices in the scene set's motion buffer
+        // (binding 13), where the vertex shader reads the matrix that turns into TAA's motion
+        // vector. Every draw owns at least one slot (an instanced draw owns one per instance), and
+        // the runtime advances them once per frame from the scene tree's world matrices - see
+        // runtime::advance_motion_transforms(). The field sits in the 4 bytes std430 leaves between
+        // instance_base and model, so the block stays 96 bytes and the pipeline layout is unchanged.
+        uint32_t motion_base = 0;
         // glm::mat4 is only 4-byte aligned by default, but GLSL std430 aligns mat4 to 16 bytes
         // (offset 32 in the block): align explicitly so the CPU layout matches the shader
         alignas(16) glm::mat4 model = glm::mat4(1.0f);
@@ -505,6 +521,17 @@ namespace vulkan {
         std::string_view pipeline_name = {};
         // the material push constants (material_index + model)
         material_push_constants push = {};
+        // This leaf's slot in the runtime's previous-transform buffer (scene set binding 13), which
+        // is where the matrix it had one frame ago lives - the vertex shader reads it through
+        // push.motion_base and the fragment stage turns the difference into TAA's motion vector.
+        // no_motion_slot = not tracked frame to frame (an instanced draw, whose slots are filled
+        // once at setup with its own instance transforms, so its object motion reads as zero).
+        uint32_t motion_slot_index = vulkan::scene_tree::no_motion_slot;
+
+        /** @brief where this leaf's previous world matrix lives (see the member) */
+        [[nodiscard]] uint32_t motion_slot() const noexcept override {
+            return this->motion_slot_index;
+        }
         bool double_sided = false; // glTF doubleSided: disable back-face culling (per draw)
         // alphaMode BLEND: drawn alpha-blended in the transparent pass (depth write off,
         // back-to-front order). The GPU material record also carries the flag; this mirror on

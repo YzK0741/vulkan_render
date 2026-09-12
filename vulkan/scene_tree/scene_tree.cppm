@@ -2,7 +2,7 @@
 // module: vulkan.scene_tree  (peer of vulkan.runtime - the scene tree the
 //         frame facade renders; versioned in lock-step with vulkan.runtime,
 //         see that module's banner: they share the scene / draw interface)
-// module version: 0.1.3  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Scene storage + the abstract leaf interface the GPU primitives implement
 // (pure CPU - glm + vstd only):
@@ -50,6 +50,13 @@ export import vstd;
 namespace vulkan::scene_tree {
     /**
      * @ingroup vulkan_scene_tree
+     * @brief first motion slot of a leaf in the runtime's previous-transform buffer, or
+     *        @c no_motion_slot when the leaf is not tracked frame to frame
+     */
+    export constexpr uint32_t no_motion_slot = 0xFFFFFFFFu;
+
+    /**
+     * @ingroup vulkan_scene_tree
      * @brief abstract primitive leaf of a scene node (the interface the GPU primitives
      *        below implement: normal_draw_primitive / instanced_draw_primitive)
      * @note pure interface: implementations own their GPU geometry and record
@@ -65,6 +72,20 @@ namespace vulkan::scene_tree {
          * @param world parent_world * node.local (computed by update_world)
          */
         virtual void set_world(glm::mat4 const& world) = 0;
+
+        /**
+         * @brief first slot this leaf owns in the runtime's previous-transform buffer (scene set
+         *        binding 13), i.e. where its world matrix from one frame ago is kept
+         * @return the slot, or @c no_motion_slot for a leaf whose object motion is not tracked
+         *         frame to frame (an instanced draw fills its slots at setup instead, because its
+         *         per-instance transforms change far less often than the frame rate)
+         * @note this is on the INTERFACE rather than on vulkan::primitive because the runtime reads
+         *       it while walking the tree, and the walker only knows the interface: RTTI is off, so
+         *       there is no downcast to reach a concrete leaf.
+         */
+        [[nodiscard]] virtual uint32_t motion_slot() const noexcept {
+            return no_motion_slot;
+        }
     };
 
     /**

@@ -54,6 +54,7 @@
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_normal;
 layout(location = 2) in vec2 v_uv;
+layout(location = 3) in vec3 v_prev_world_pos;
 
 layout(location = 0) out vec4 out_albedo_metallic;  // rgb albedo, a metallic
 layout(location = 1) out vec4 out_normal_roughness; // xyz world normal, w roughness
@@ -64,20 +65,27 @@ layout(location = 4) out vec4 out_scene_color;      // the EMISSIVE term, ADDED 
 /**
  * @brief motion vector of this fragment in UV space: where it was last frame, relative to here
  * @param world_pos the fragment's world position (this frame)
+ * @param prev_world_pos where the same vertex was last frame, i.e. through the PREVIOUS frame's
+ *        world matrix (computed by the vertex stage from the scene set's previous-transform block,
+ *        binding 13)
  * @return (current_uv - previous_uv), so the TAA resolve samples the history at `uv - velocity`
  *
- * The two matrices come from the camera UBO and are deliberately the JITTER-FREE pair: `proj` carries
- * the TAA jitter, and a jitter that leaked in here would be read as camera motion - the history would
- * be reprojected by up to a pixel every frame, which is exactly the aliasing TAA removes.
+ * Both matrices come from the camera UBO and are deliberately the JITTER-FREE pair: `proj` carries
+ * the TAA jitter, and a jitter that leaked in here would be read as camera motion - the history
+ * would be reprojected by up to a pixel every frame, which is exactly the aliasing TAA removes.
+ * The previous position is projected with `prev_view_proj` alone, because the object's own motion
+ * is already baked into it; the jitter-free pairing still holds on both sides.
  *
- * @note CAMERA motion only. A deformed (skinned/morphed) or otherwise moving object needs its own
- *       previous transform, which is a per-primitive quantity this stage does not have yet: the
- *       forward-consistent way to add it is a previous-model matrix per draw (a second push-constant
- *       block or a per-primitive id into a buffer), and until then such an object ghosts slightly.
+ * @note This covers CAMERA motion and RIGID object motion (a moving/rotating node, an instance).
+ *       A deforming mesh is still approximate: a skinned or morphed vertex moves inside its own
+ *       object space as well, and the previous-frame skin matrices / morph weights that would
+ *       describe that are not stored yet. Such an object gets its rigid part right and its
+ *       deformation wrong, which is the same residual it had before object motion existed - and
+ *       TAA's neighborhood clamp rejects the worst of it.
  */
-vec2 motion_vector(vec3 world_pos) {
+vec2 motion_vector(vec3 world_pos, vec3 prev_world_pos) {
     const vec4 current_clip = camera.view_proj_unjittered * vec4(world_pos, 1.0);
-    const vec4 previous_clip = camera.prev_view_proj * vec4(world_pos, 1.0);
+    const vec4 previous_clip = camera.prev_view_proj * vec4(prev_world_pos, 1.0);
     const vec2 current_uv = (current_clip.xy / current_clip.w) * 0.5 + 0.5;
     const vec2 previous_uv = (previous_clip.xy / previous_clip.w) * 0.5 + 0.5;
     return current_uv - previous_uv;
@@ -104,7 +112,7 @@ void main() {
         s.ao,
         float(s.flags & 0xFFu) / 255.0);
 
-    out_velocity = motion_vector(v_world_pos);
+    out_velocity = motion_vector(v_world_pos, v_prev_world_pos);
 
     // The emissive term goes STRAIGHT into the scene color, which is why this pass owns it: emissive
     // is lighting-independent (no light, shadow or BRDF enters it), and it needs the material's

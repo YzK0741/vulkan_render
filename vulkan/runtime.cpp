@@ -347,6 +347,28 @@ namespace vulkan {
         this->instance_buffer = std::move(instance_buf);
         this->instance_mapped = instance_detail->allocation_info.pMappedData;
 
+        // Per-motion-slot previous world matrices (set 0 binding 13): ONE buffer per frame slot, like
+        // the skin and morph buffers below, so a frame in flight never shares the buffer the next
+        // frame rewrites. Zero-filled: a leaf's first frame reports "no motion", which is right -
+        // nothing was there to move from. motion_previous is the CPU-side copy of what is currently
+        // in it, advanced by advance_motion_transforms().
+        std::vector<unsigned char> const zeroed_motion(static_cast<size_t>(vulkan::scene_motion_capacity) * sizeof(glm::mat4), 0);
+        this->motion_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        this->motion_mapped.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            vk_buffer motion_buf = this->vulkan_core.vma.create_buffer(zeroed_motion.data(), zeroed_motion.size(), vulkan::buffer_type::storage_coherent);
+            if (!motion_buf.valid()) {
+                utility::panic("failed to create motion transform buffer");
+            }
+            auto const* motion_detail = this->vulkan_core.vma.get_buffer_detail(motion_buf.handle());
+            if (motion_detail == nullptr) {
+                utility::panic("failed to get motion transform buffer detail");
+            }
+            this->motion_buffers.push_back(std::move(motion_buf));
+            this->motion_mapped.push_back(motion_detail->allocation_info.pMappedData);
+        }
+        this->motion_previous.assign(vulkan::scene_motion_capacity, glm::mat4(1.0f));
+
         // Per-joint skin matrices (set 0 binding 9): one buffer PER FRAME SLOT (scene_skin_capacity
         // mat4s each, host-visible) so an in-flight frame never shares the buffer the next frame
         // rewrites. Zero-filled initially (the identity block is written by the setup upload).
@@ -558,6 +580,13 @@ namespace vulkan {
                 utility::panic("failed to get instance transform buffer detail");
             }
             write_buffer_binding(set, 6, instance_detail->buffer, static_cast<VkDeviceSize>(vulkan::instance_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+
+            // binding 13: THIS slot's previous world matrices (advanced once per frame)
+            auto const* motion_detail = this->vulkan_core.vma.get_buffer_detail(this->motion_buffers[static_cast<std::size_t>(slot)].handle());
+            if (motion_detail == nullptr) {
+                utility::panic("failed to get motion transform buffer detail");
+            }
+            write_buffer_binding(set, 13, motion_detail->buffer, static_cast<VkDeviceSize>(vulkan::scene_motion_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 
             // binding 9: THIS slot's skin matrix buffer
             auto const* skin_detail = this->vulkan_core.vma.get_buffer_detail(this->skin_buffers[static_cast<std::size_t>(slot)].handle());
@@ -1304,6 +1333,32 @@ namespace vulkan {
         return frame_status::proceed;
     }
 
+    void runtime::advance_motion_transforms() {
+        if (this->bound_scene == nullptr || this->motion_mapped.empty()) {
+            return;
+        }
+        uint32_t const slot = static_cast<uint32_t>(this->vulkan_core.current_frame);
+        if (slot >= this->motion_mapped.size()) {
+            return; // no buffer for this slot: nothing to publish, and the shader reads slot 0's set
+        }
+        auto* const published = static_cast<glm::mat4*>(this->motion_mapped[slot]);
+        if (published == nullptr) {
+            return;
+        }
+        for (scene_tree::scene_node const& root : this->bound_scene->roots) {
+            scene_tree::visit_primitives(root, this->scene_transform, [this, published](scene_tree::scene_node const& node, glm::mat4 const& world) {
+                uint32_t const index = node.primitive_leaf->motion_slot();
+                if (index == scene_tree::no_motion_slot || index >= vulkan::scene_motion_capacity) {
+                    return; // instanced (filled at setup) or out of range: nothing to advance
+                }
+                // Publish what this leaf looked like one frame ago, THEN remember this frame's world
+                // matrix - so the next frame publishes the matrix this frame is about to draw with.
+                published[index] = this->motion_previous[index];
+                this->motion_previous[index] = world;
+            });
+        }
+    }
+
     frame_status runtime::begin_recording() {
         vulkan::profiling::cpu_phase_timer const phase_timer{this->cpu_timings, vulkan::profiling::cpu_phase::begin};
         core& vk = this->vulkan_core;
@@ -1341,6 +1396,9 @@ namespace vulkan {
         for (scene_tree::scene_node& root : this->bound_scene->roots) {
             scene_tree::update_world(root, this->scene_transform);
         }
+        // ... and, in the same walk's shadow, the previous-frame world matrices that give TAA its
+        // object motion: see the declaration for why this has to happen here and not at draw time.
+        this->advance_motion_transforms();
         // Collect the primitive leaves once (DFS over the whole scene): the shadow pass draws all
         // of them, the main pass draws the subset bound to each pipeline
         this->frame_leaves.clear();
@@ -3928,6 +3986,11 @@ namespace vulkan {
         //         the material index (texture indices / factors / flags live in the GPU table) ----
         result->push.material_index = this->register_material(info);
         result->push.model = info.model_matrix;
+        // Its own motion slot, where advance_motion_transforms() will keep the world matrix this
+        // leaf had one frame ago - and which pbr.vert reads to build the object half of TAA's motion
+        // vector. Allocated here rather than per draw because the shader needs a STABLE index.
+        result->motion_slot_index = this->motion_cursor++;
+        result->push.motion_base = result->motion_slot_index;
         result->double_sided = info.double_sided;
         result->transparent = info.factors.alpha_blend;
         return result;
@@ -3967,6 +4030,22 @@ namespace vulkan {
                     transforms.data(),
                     static_cast<size_t>(count) * sizeof(glm::mat4));
 
+        // The instanced draw owns `count` motion slots, and gets them filled with the SAME matrices
+        // right away: an instance's previous transform is its current one, so its object motion reads
+        // as zero. That is correct for a static grid, and it is where a moving instanced draw would
+        // have to be handled (advance_motion_transforms skips instanced leaves on purpose: their
+        // per-instance matrices are a setup-time quantity, not a per-frame one).
+        uint32_t const motion_base = this->motion_cursor;
+        uint32_t const motion_count = std::min<uint32_t>(count, vulkan::scene_motion_capacity - this->motion_cursor);
+        this->motion_cursor += motion_count;
+        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            auto* const published = static_cast<glm::mat4*>(this->motion_mapped[static_cast<std::size_t>(slot)]);
+            if (published != nullptr && motion_count > 0) {
+                std::memcpy(published + motion_base, transforms.data(), static_cast<std::size_t>(motion_count) * sizeof(glm::mat4));
+            }
+        }
+        std::copy_n(transforms.data(), motion_count, this->motion_previous.begin() + static_cast<std::ptrdiff_t>(motion_base));
+
         auto result = std::make_unique<instanced_draw_primitive>();
         // same pipeline semantics as the source geometry it draws (empty = default semantics)
         result->pipeline_name = source.pipeline_name;
@@ -3975,6 +4054,7 @@ namespace vulkan {
         result->push.material_index = source.push.material_index;
         result->push.flags = 1u; // bit0: pbr.vert picks instances[instance_base + gl_InstanceIndex]
         result->push.instance_base = base;
+        result->push.motion_base = motion_base; // slots run parallel to the instance block
         result->push.model = glm::mat4(1.0f);
         result->double_sided = source.double_sided;
         result->transparent = source.transparent; // same material semantics as the source geometry
@@ -4105,6 +4185,10 @@ namespace vulkan {
         if (result->chunks.empty()) {
             return nullptr; // every chunk was empty or out of range: nothing drawable
         }
+        // The whole batch is one draw of one world, so it tracks object motion through ONE slot,
+        // exactly like a normal primitive (see create_primitive).
+        result->motion_slot_index = this->motion_cursor++;
+        result->push.motion_base = result->motion_slot_index;
 
         scene_tree::scene_node& leaf = this->get_scene().add_root();
         leaf.name = "static";
@@ -4196,6 +4280,10 @@ namespace vulkan {
         if (!any_instanced_left) {
             this->instance_cursor = 0;
         }
+        // The motion cursor is NOT recycled with it: every leaf owns a slot from that cursor, not
+        // just the instanced ones, so resetting it here would hand a surviving leaf's slot to the
+        // next primitive created. It is monotonic for the runtime's lifetime, and recycling it would
+        // need a free list over the slots that just disappeared.
         this->bvh_dirty = true; // leaves removed -> culling BVH must be rebuilt
     }
 

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -57,7 +57,10 @@ namespace vulkan {
      *              binding 10 = float morph data[] (storage buffer: per-primitive morph deltas + weights),
      *              binding 11/12 = uint cluster light counts[] / uint cluster light indices[] (the
      *              clustered-culling result: written by the cluster compute pass, read by the
-     *              fragment stage)
+     *              fragment stage),
+     *              binding 13 = mat4 previous world matrices[] (one per motion slot; the vertex stage
+     *              reads its own entry so the fragment stage can build TAA's motion vector for a
+     *              MOVING object, not only for camera motion)
      * @note hardcoded instead of parsed from SPIR-V: the indexed layout is flat, so pipelines
      *       skip descriptor / push constant parsing and share one layout object
      */

@@ -35,6 +35,17 @@ layout(set = 0, binding = 6) readonly buffer InstanceTransforms {
     mat4 transforms[];
 } instances;
 
+// Previous-frame world matrices (scene set binding 13), one per MOTION SLOT: the runtime walks the
+// scene tree once per frame and writes, for every leaf, the world matrix that leaf had one frame
+// ago. This draw's own entry is indexed by push.motion_base (+ gl_InstanceIndex for an instanced
+// draw, whose slots run parallel to the instance block), and the resulting previous world position
+// is what the fragment stage turns into TAA's motion vector - which is how a MOVING object gets one
+// at all. Without it the vector could only describe camera motion, and a character walking through
+// a static scene smeared.
+layout(set = 0, binding = 13) readonly buffer PreviousTransforms {
+    mat4 matrices[];
+} previous_transforms;
+
 // Per-joint skin matrices (scene set binding 9, written per frame by set_skin_matrices):
 // indices 0-3 are the identity block (the fallback for unskinned draws, skin_base = 0), the
 // per-skin joint blocks follow. Each vertex blends the four matrices selected by its joints.
@@ -57,12 +68,15 @@ layout(push_constant) uniform PushConstants {
     uint morph_targets;  // number of morph targets (0 = not morphable)
     uint morph_vertices; // vertex count of this primitive (morph block stride)
     uint instance_base;  // mat4 start of this instanced primitive's transforms (binding 6)
+    uint motion_base;    // start of this draw's previous-frame world matrices (binding 13); this
+                         // field fits the 4 bytes std430 leaves between instance_base and model
     mat4 model;          // per-model world transform (kept out of the shared camera UBO)
 } push;
 
 layout(location = 0) out vec3 v_world_pos;
 layout(location = 1) out vec3 v_normal;
 layout(location = 2) out vec2 v_uv;
+layout(location = 3) out vec3 v_prev_world_pos; // where this vertex was last frame (see binding 13)
 
 /**
  * @brief morph blend -> skin -> world transform; outputs the world position, normal and UV
@@ -117,5 +131,13 @@ void main() {
     v_world_pos = world_pos.xyz;
     v_normal = normalize(mat3(world) * skinned_normal);
     v_uv = in_uv;
+
+    // The SAME local position through the previous frame's world matrix: exact object motion for a
+    // rigid transform (the only kind of movement a model matrix can describe), and the standard
+    // approximation for a deforming one - a skinned or morphed vertex moved within its own object
+    // space too, and nothing here knows that yet.
+    const uint motion_index = push.motion_base + ((push.flags & 1u) != 0u ? gl_InstanceIndex : 0u);
+    v_prev_world_pos = (previous_transforms.matrices[motion_index] * local_pos).xyz;
+
     gl_Position = camera.proj * camera.view * world_pos;
 }

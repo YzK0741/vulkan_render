@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.23.0a  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.24.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -193,6 +193,16 @@ namespace vulkan {
         vk_buffer instance_buffer = {};
         void* instance_mapped = nullptr;
         uint32_t instance_cursor = 0;
+        // previous-frame world matrices (scene set binding 13): ONE buffer per frame slot, host
+        // visible, scene_motion_capacity mat4s each - the same per-slot rule as the skin and morph
+        // buffers, so the frame being rendered never shares the buffer the next frame rewrites.
+        // Every leaf owns a slice of it (an instanced draw owns one slot per instance and fills them
+        // at setup); motion_previous keeps the CPU-side "world matrix as of one frame ago" that
+        // advance_motion_transforms() writes out and then refreshes.
+        std::vector<vk_buffer> motion_buffers = {};
+        std::vector<void*> motion_mapped = {};
+        std::vector<glm::mat4> motion_previous = {};
+        uint32_t motion_cursor = 0;
         // per-joint skin matrices (scene set binding 9): ONE buffer per frame slot, like the
         // camera UBO — each slot's scene set always points at its own buffer, so a frame being
         // rendered never shares the buffer the next frame rewrites. scene_skin_capacity mat4s
@@ -828,6 +838,29 @@ namespace vulkan {
          *       vulkan::primitive (the GPU primitive implements scene_tree::primitive), so the cast is safe
          */
         static void collect_leaf_primitives(scene_tree::scene_node const& node, std::pmr::vector<primitive const*>& out);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief write every tracked leaf's PREVIOUS world matrix into this frame slot's
+         *        previous-transform buffer (scene set binding 13), then refresh the stored copies to
+         *        the matrices the frame about to be recorded will draw with
+         *
+         * Runs once per frame from begin_recording(), straight after the scene tree's world matrices
+         * are recomputed - and that position is the whole reason it exists. The GPU needs the two
+         * matrices side by side to build a motion vector, and the only per-draw channel that could
+         * carry the previous one is a push constant, which is full (a second mat4 would need 64 of
+         * the 128 guaranteed bytes, and the block is already 96). A buffer written at DRAW time is
+         * not an option either: the main pass records segments on pool workers in parallel, and a
+         * shared mapped buffer written from several threads is a race. Writing it here is a single
+         * thread, before any recording, exactly once per leaf per frame.
+         * @note Frame slot, not frame: each slot has its own buffer and its own scene set, so a
+         *       frame in flight never shares the buffer the next frame rewrites (the same rule the
+         *       skin and morph buffers follow).
+         * @note A leaf that was culled last frame keeps whatever matrix it had then, so the first
+         *       frame it comes back its motion vector is stale. TAA's neighborhood clamp rejects
+         *       that, which is why this is not worth a second walk over the whole tree.
+         */
+        void advance_motion_transforms();
         /**
          * @ingroup vulkan_runtime
          * @brief build a normal_draw_primitive from @p info WITHOUT attaching it to the scene tree:

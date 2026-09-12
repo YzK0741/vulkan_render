@@ -72,9 +72,14 @@
  *   shadow map's texel grid alternates between two alignments and a grazing-angle surface flickers
  *   between lit and shadowed - the TAA history then averages that flicker into a dark band.
  *
- * The G-buffer motion vectors are CAMERA motion at this milestone: an animated (skinned/morphed)
- * object moves without the camera and needs its own previous transform, which is a per-primitive
- * quantity (`gbuffer.frag` documents where it goes). Until then such an object can ghost slightly.
+ * The motion vectors carry CAMERA motion and RIGID object motion both. The camera half is the
+ * unjittered view-projection pair; the object half is binding 13, where `pbr.vert` reads the world
+ * matrix this draw had one frame ago (`runtime::advance_motion_transforms()` publishes it, once per
+ * frame, before anything is recorded) and passes the resulting previous world position down as
+ * `v_prev_world_pos`. A deforming mesh is still approximate: a skinned or morphed vertex moves inside
+ * its own object space as well, and the previous-frame skin matrices / morph weights that would
+ * describe that are not stored - so such an object gets its rigid part right and its deformation
+ * wrong, which is the same residual it had before object motion existed.
  *
  * Which pipeline a primitive draws with is decided per leaf: a default-semantics primitive asks
  * the pass for its default pipeline, so the same geometry renders through `pbr` (lit), `unlit`
@@ -160,6 +165,7 @@
  * | 10 | `MorphData` | storage buffer | `morph_scratch()` |
  * | 11 | `ClusterCounts` (`uint counts[]`) | storage buffer | the cluster compute pass (read: fragment) |
  * | 12 | `ClusterIndices` (`uint indices[]`) | storage buffer | the cluster compute pass (read: fragment) |
+ * | 13 | `PreviousTransforms` (`mat4 matrices[]`) | storage buffer | `runtime::advance_motion_transforms()` per frame slot |
  *
  * @section shader_cascades Cascaded shadows (M4)
  *
