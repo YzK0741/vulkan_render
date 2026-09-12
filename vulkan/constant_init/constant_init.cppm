@@ -316,6 +316,26 @@ export namespace vulkan {
                 .clearValue = clear_value};
     }
     /**
+     * @brief depth attachment of an instance that CONTINUES an existing depth buffer: loadOp LOAD,
+     *        storeOp STORE, so the depth an earlier instance wrote stays intact
+     * @param image_view the depth image view, already in DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+     * @note the deferred path's transparent pass: it depth-tests alpha-blended geometry against the
+     *       opaque surface the G-buffer pass wrote, and must not clear it (that depth is the only
+     *       record of where the opaque geometry is)
+     */
+    constexpr VkRenderingAttachmentInfo make_load_depth_attachment_info(VkImageView const image_view) noexcept {
+        return {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .pNext = nullptr,
+                .imageView = image_view,
+                .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                .resolveMode = VK_RESOLVE_MODE_NONE,
+                .resolveImageView = VK_NULL_HANDLE,
+                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .clearValue = {}};
+    }
+    /**
      * @brief color attachment of a rendering instance: COLOR_ATTACHMENT_OPTIMAL layout,
      *        loadOp CLEAR + storeOp STORE (the swapchain image is presented afterwards)
      * @param image_view the (MSAA or swapchain) color image view
@@ -675,6 +695,26 @@ export namespace vulkan {
         .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = VK_NULL_HANDLE,
+        .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
+    };
+    /** @brief SHADER_READ_ONLY_OPTIMAL -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL, depth test without depth
+     *         write (the G-buffer depth handed back to an attachment for the deferred path's
+     *         transparent pass, which depth-tests against the surface the lighting stage just
+     *         sampled it for) */
+    inline constexpr VkImageMemoryBarrier2 sampling_to_depth_attachment_transition = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .pNext = nullptr,
+        .srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+        // READ and not WRITE: every transparent leaf draws with depth writes disabled (see
+        // primitive::draw), so nothing in that instance writes the depth it tests against
+        .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = VK_NULL_HANDLE,

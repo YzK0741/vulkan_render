@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.21.2  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.22.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -232,7 +232,9 @@ namespace vulkan {
             shadow_end,      // after the shadow pass + its sampling barrier
             scene_end,       // after the geometry instance: forward main (opaque + transparent), or
                              // the background + G-buffer pass in the deferred path
-            lighting_end,    // after the deferred lighting stage (~0 in the forward path)
+            lighting_end,    // after the deferred path's shading work: the lighting stage and, in the
+                             // same interval, the transparent pass that composites over it (~0 in the
+                             // forward path, where both of those happen inside the scene instance)
             taa_end,         // after the TAA resolve + its history copy (~0 when TAA is off)
             main_end,        // after the last scene-side work of the frame (the debug view, when it runs)
             bloom_end,       // after the bloom prefilter/downsample chain
@@ -247,9 +249,10 @@ namespace vulkan {
         // new_line starts a new line in the overlay's report, which has to fit one narrow panel
         // row; the log line ignores it and prints everything on one line.
         // "scene" is the geometry instance of whichever path is active, "lighting" is the deferred
-        // lighting stage (0 ms in the forward path, where the shading happens inside the scene
-        // instance - as does the forward transparent pass, whose cost therefore shows up in "scene"
-        // as well), and "debug" is the G-buffer debug view when it runs.
+        // path's shading work (the lighting stage plus the transparent pass that composites over it;
+        // 0 ms in the forward path, where the shading happens inside the scene instance - as does the
+        // forward transparent pass, whose cost therefore shows up in "scene" as well), and "debug" is
+        // the G-buffer debug view when it runs.
         struct gpu_timing_label {
             std::string_view name;
             bool new_line; // begin a new line in the overlay report
@@ -1143,12 +1146,33 @@ namespace vulkan {
          *        them - no shading at all.
          * @param command_buffer the frame's primary command buffer
          *
-         * Path 2 of 2. It draws neither the skybox (the lighting stage writes the sky into the pixels
-         * no geometry covered) nor alpha-blended geometry (blending would have to compose over an
-         * already shaded image - a pass of its own, still ahead). record_post_process() turns the
+         * Path 2 of 2. It draws no skybox: the lighting stage writes the sky into the pixels no
+         * geometry covered. Alpha-blended geometry is recorded by record_deferred_transparent_pass()
+         * after the lighting stage, because a blended surface has to compose over the SHADED image
+         * (a G-buffer cannot hold a surface that does not exist yet). record_post_process() turns the
          * G-buffer into the frame afterwards through record_deferred_lighting_pass().
          */
         void record_deferred_scene(VkCommandBuffer command_buffer);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief record the deferred path's transparent pass into @p command_buffer: the alpha-blended
+         *        leaves, shaded while they draw and blended over the image the lighting stage just
+         *        wrote, depth-testing against the G-buffer depth
+         * @param command_buffer the frame's primary command buffer
+         *
+         * Runs AFTER record_deferred_lighting_pass(), in an instance of its own, and that order is the
+         * whole reason it is separate. Blending needs a shaded image underneath, and the lighting stage
+         * needs the G-buffer depth as a SAMPLED texture - an image cannot be sampled and used as a depth
+         * attachment in the same instance, so the depth is handed back to attachment layout in between
+         * (sampling_to_depth_attachment_transition). It draws no skybox (the lighting stage already put
+         * the sky in the pixels no geometry covered) and does not write depth (every transparent leaf
+         * draws with depth writes off, see primitive::draw).
+         * @note these leaves carry no motion vectors, so TAA reprojects them with whatever the opaque
+         *       surface behind them reported - good enough while the camera is the only thing moving,
+         *       and the thing to revisit when object motion vectors land.
+         */
+        void record_deferred_transparent_pass(VkCommandBuffer command_buffer);
 
         /**
          * @ingroup vulkan_runtime
@@ -1180,8 +1204,10 @@ namespace vulkan {
          *        primary executes them in order inside the rendering instance
          * @param command_buffer the frame's primary command buffer
          * @param gbuffer_pass true when the leaves bind the G-buffer pipelines (deferred path)
-         * @param draw_transparent record and execute the alpha-blended leaves (forward path only:
-         *        the deferred path has no shaded image to blend over)
+         * @param draw_transparent record and execute the alpha-blended leaves inside THIS instance
+         *        (the forward path, which shades as it draws and therefore already has an image to
+         *        blend over). The deferred path passes false and records them in an instance of its
+         *        own after the lighting stage - see record_deferred_transparent_pass()
          *
          * Shared by both scene paths on purpose - the segmentation, the per-segment secondary
          * lifetime and the execute order are the same work in either; only the pipelines the leaves
@@ -1285,7 +1311,15 @@ namespace vulkan {
          *       (screenshot_staging_mapped / screenshot_readback_extent) that the later read needs
          */
         void record_screenshot_copy(VkCommandBuffer command_buffer);
-        void record_main_segment(VkCommandBuffer command_buffer, std::span<primitive const* const> leaves, bool draw_skybox) const;
+        /**
+         * @brief record one segment of the main pass (see the doc block above record_opaque_scene)
+         * @param gbuffer_pass true = the leaves bind the G-buffer pipeline (the opaque instance of
+         *        the deferred path); false = they bind their own forward pipelines. Passed in rather
+         *        than re-derived from gbuffer_pass_active(), because the deferred path also has
+         *        forward-style segments: its transparent pass runs while the G-buffer pass is the
+         *        active mode, and still shades while it draws.
+         */
+        void record_main_segment(VkCommandBuffer command_buffer, std::span<primitive const* const> leaves, bool draw_skybox, bool gbuffer_pass) const;
 
         /**
          * @ingroup vulkan_runtime
@@ -1311,6 +1345,7 @@ namespace vulkan {
             uint32_t color_count = 0;                    // formats in use (1 forward, 4 G-buffer: surface targets + HDR)
             VkFormat depth_format = VK_FORMAT_UNDEFINED; // main depth attachment format
             VkSampleCountFlagBits rasterization_samples = VK_SAMPLE_COUNT_1_BIT;
+            bool gbuffer_pass = false;      // leaves bind the G-buffer pipeline (not the forward ones)
             runtime const* owner = nullptr; // recording context (scene set / pipeline caches)
             // set to true by operator() when the secondary was actually recorded (begin + end
             // succeeded). Points into a per-frame array owned by the caller of the task batch;

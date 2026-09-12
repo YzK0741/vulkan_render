@@ -1925,7 +1925,7 @@ namespace vulkan {
                 return;
             }
             if (vkBeginCommandBuffer(transparent_secondary, &main_sec_begin) == VK_SUCCESS) {
-                this->record_main_segment(transparent_secondary, this->frame_transparent, false);
+                this->record_main_segment(transparent_secondary, this->frame_transparent, /*draw_skybox=*/false, /*gbuffer_pass=*/false);
                 vkEndCommandBuffer(transparent_secondary);
             } else {
                 utility::log("runtime: transparent secondary begin failed - transparent leaves skipped this frame");
@@ -1939,7 +1939,7 @@ namespace vulkan {
             VkCommandBuffer const single_main = *main_segments[0].second;
             bool main_recorded = false;
             if (vkBeginCommandBuffer(single_main, &main_sec_begin) == VK_SUCCESS) {
-                this->record_main_segment(single_main, this->frame_visible, draw_skybox);
+                this->record_main_segment(single_main, this->frame_visible, draw_skybox, gbuffer_pass);
                 vkEndCommandBuffer(single_main);
                 main_recorded = true;
             } else {
@@ -1982,6 +1982,7 @@ namespace vulkan {
             task.color_count = pass_color_count;
             task.depth_format = vk.depth_format;
             task.rasterization_samples = pass_samples;
+            task.gbuffer_pass = gbuffer_pass;
             task.owner = this;
             task.recorded = &segment_recorded[s];
             tasks.emplace_back(std::move(task)); // std::function copies the value task
@@ -2081,7 +2082,7 @@ namespace vulkan {
     // leaves request the runtime's default pipeline (bind_default, deduplicated), custom leaves
     // request theirs by name - so leaves of several pipelines mix freely in one segment and
     // each pipeline is bound only when the current one differs.
-    void runtime::record_main_segment(VkCommandBuffer const command_buffer, std::span<primitive const* const> const leaves, bool const draw_skybox) const {
+    void runtime::record_main_segment(VkCommandBuffer const command_buffer, std::span<primitive const* const> const leaves, bool const draw_skybox, bool const gbuffer_arg) const {
         core const& vk = this->vulkan_core;
         // Bind this frame slot's scene descriptor set once: every pipeline shares the scene
         // layout, so the set stays valid across pipeline binds and only models vary per draw.
@@ -2129,8 +2130,11 @@ namespace vulkan {
         env.command_buffer = command_buffer;
         // The G-buffer pass binds its own pipeline as the pass default (see gbuffer_pipeline_name):
         // same leaves, same draw path, but the fragment stage writes the surface into three 1x
-        // targets instead of shading into the HDR one.
-        bool const gbuffer_pass = this->gbuffer_pass_active();
+        // targets instead of shading into the HDR one. The flag arrives from the caller rather than
+        // being read back from gbuffer_pass_active(): the deferred path also records forward-style
+        // segments (the transparent pass), and those must bind the forward pipelines even though the
+        // G-buffer pass is the active mode.
+        bool const gbuffer_pass = gbuffer_arg;
         {
             std::shared_lock const lock(this->access_mutex);
             env.default_name = gbuffer_pass ? gbuffer_pipeline_name : this->default_pipeline_name;
@@ -2184,7 +2188,7 @@ namespace vulkan {
             }
             return;
         }
-        this->owner->record_main_segment(this->command_buffer, this->leaves, this->draw_skybox);
+        this->owner->record_main_segment(this->command_buffer, this->leaves, this->draw_skybox, this->gbuffer_pass);
         vkEndCommandBuffer(this->command_buffer);
         if (this->recorded != nullptr) {
             this->recorded->store(true, std::memory_order_relaxed);
@@ -2424,6 +2428,65 @@ namespace vulkan {
         };
         vkCmdPushConstants(command_buffer, this->deferred_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
+        vkCmdEndRendering(command_buffer);
+    }
+
+    // The deferred path's transparent pass. Everything about its position is load-bearing:
+    //  - after the lighting stage, because a blended surface composites over SHADED pixels, and the
+    //    G-buffer instance has no shaded image to composite over;
+    //  - not INSIDE the lighting instance, because that one samples the G-buffer depth as a texture
+    //    while this one needs the same image as its depth ATTACHMENT, and an image cannot be both in
+    //    one instance;
+    //  - before the TAA resolve, so the resolve sees the composited frame.
+    void runtime::record_deferred_transparent_pass(VkCommandBuffer const command_buffer) {
+        if (this->frame_transparent.empty()) {
+            return; // nothing blended this frame: no instance and no barriers to pay for
+        }
+        core& vk = this->vulkan_core;
+        uint32_t const image_index = this->current_image_index;
+        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
+        auto const& secondaries = this->secondary_command_buffers[static_cast<std::size_t>(frame_slot)];
+        VkCommandBuffer const transparent_secondary = *secondaries[static_cast<std::size_t>(secondary_pass::transparent)];
+
+        // The lighting stage sampled the G-buffer depth, so ensure_gbuffer_depth_sampled() left it in
+        // SHADER_READ_ONLY_OPTIMAL: hand it back to attachment layout for the depth test. The scene
+        // target is already in COLOR_ATTACHMENT_OPTIMAL (the lighting instance ended as an attachment
+        // write), but dynamic rendering inserts no dependency between two instances, so that store
+        // still has to be published before this instance LOADs the same image.
+        std::array<VkImageMemoryBarrier2, 2> barriers = {};
+        barriers[0] = vulkan::sampling_to_depth_attachment_transition;
+        barriers[0].image = vk.gbuffer_depth_images[image_index];
+        barriers[1] = vulkan::color_attachment_dependency;
+        barriers[1].image = this->scene_target_image(image_index);
+        VkDependencyInfo const dependency = make_image_dependency_info(static_cast<uint32_t>(barriers.size()), barriers.data());
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
+
+        // Record the leaves into the per-slot transparent secondary, with inheritance matching the
+        // instance below: ONE color attachment (the HDR scene target) at 1x. Deliberately not the
+        // forward path's sample count - there is no MSAA image in a deferred frame.
+        std::array<VkFormat, 1> const color_formats = {vulkan::hdr_format};
+        VkCommandBufferInheritanceRenderingInfo const inheritance = make_inheritance_rendering_info(color_formats.data(), 1, vk.depth_format, VK_SAMPLE_COUNT_1_BIT);
+        VkCommandBufferInheritanceInfo const secondary_inherit = make_inheritance_info(&inheritance);
+        VkCommandBufferBeginInfo const secondary_begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &secondary_inherit);
+        bool recorded = false;
+        if (vkBeginCommandBuffer(transparent_secondary, &secondary_begin) == VK_SUCCESS) {
+            this->record_main_segment(transparent_secondary, this->frame_transparent, /*draw_skybox=*/false, /*gbuffer_pass=*/false);
+            vkEndCommandBuffer(transparent_secondary);
+            recorded = true;
+        } else {
+            utility::log("runtime: deferred transparent secondary begin failed - transparent leaves skipped this frame");
+        }
+
+        // loadOp LOAD on both attachments: the scene target holds the shaded frame and the G-buffer
+        // depth holds the opaque surface, and neither may be cleared. The leaves are sorted far -> near
+        // by the cull, which is the order alpha blending needs.
+        VkRenderingAttachmentInfo const color_attachment = make_load_color_attachment_info(this->scene_target_view(image_index));
+        VkRenderingAttachmentInfo const depth_attachment = make_load_depth_attachment_info(vk.gbuffer_depth_image_views[image_index]);
+        VkRenderingInfo const rendering_info = make_rendering_info(VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT, {{0, 0}, vk.swap_chain_extent}, &color_attachment, 1, &depth_attachment);
+        vkCmdBeginRendering(command_buffer, &rendering_info);
+        if (recorded) {
+            vkCmdExecuteCommands(command_buffer, 1, &transparent_secondary);
+        }
         vkCmdEndRendering(command_buffer);
     }
 
@@ -2810,9 +2873,12 @@ namespace vulkan {
         this->gpu_mark(command_buffer, gpu_mark_id::scene_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         // Deferred mode: the surface is in the G-buffer and the sky + emissive are in the scene color
-        // target; this stage shades every pixel from the G-buffer and adds the result on top.
+        // target; this stage shades every pixel from the G-buffer and adds the result on top, and the
+        // alpha-blended leaves then composite over the shaded image (their own instance - see
+        // record_deferred_transparent_pass).
         if (this->deferred_lit_active()) {
             this->record_deferred_lighting_pass(command_buffer);
+            this->record_deferred_transparent_pass(command_buffer);
         }
         this->gpu_mark(command_buffer, gpu_mark_id::lighting_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
@@ -3263,9 +3329,12 @@ namespace vulkan {
         // The deferred path evaluates the sky inside its own lighting stage, so the forward skybox
         // pass has nothing to draw there (this is what record_opaque_scene's forward call does).
         f.skybox = this->skybox_enabled && this->skybox_pipeline.has_value() && !f.deferred && !f.gbuffer_debug;
-        // The forward transparent pass is skipped whenever the G-buffer pass owns the opaque geometry
-        // (its depth attachment is the 1x G-buffer depth, which the MSAA forward pass cannot match).
-        f.transparent = !f.deferred && !f.gbuffer_debug && !this->frame_transparent.empty();
+        // The transparent pass runs on BOTH paths, in a different instance on each: inside the scene
+        // instance in the forward path (which shades as it draws, so the image it blends over is
+        // already there) and after the lighting stage in the deferred path (where the shaded image
+        // only exists once that stage has run). It never runs in the debug view, which shows the
+        // G-buffer and not a frame.
+        f.transparent = !f.gbuffer_debug && !this->frame_transparent.empty();
         return f;
     }
 

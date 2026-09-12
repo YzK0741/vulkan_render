@@ -56,9 +56,10 @@ $workDir = Join-Path $BuildDir "render-check"
 
 # ---------------------------------------------------------------------------------------------
 # The scenarios. Each is a full config (only the keys that differ from the defaults are listed) plus
-# the frame count; the camera and extent are shared above so a scenario only varies what it means to.
-# Coverage is deliberately small to start - forward, the deferred path with its optional stages, and
-# the shadow-cascade count, because those are the paths whose wiring has actually broken.
+# the frame count; the camera, model and extent are shared above so a scenario only varies what it
+# means to - a scenario may override `model` / `camera` when it has to (see transparent_blend).
+# Coverage is deliberately small to start - forward, the deferred path with its optional stages, the
+# shadow-cascade count and the transparent pass, because those are the paths whose wiring has broken.
 # ---------------------------------------------------------------------------------------------
 $scenarios = @(
     @{ name = "forward";           desc = "forward PBR, MSAA, 3 cascades, bloom";       extra = @{} }
@@ -67,6 +68,13 @@ $scenarios = @(
     @{ name = "deferred_ssao_off"; desc = "deferred with SSAO disabled";               extra = @{ deferred = "true"; msaa = "1"; ssao = "false" } }
     @{ name = "shadow_single";     desc = "one cascade, i.e. the historic shadow path"; extra = @{ shadow_cascades = "1" } }
     @{ name = "unlit";             desc = "flat base colour, no shading";              extra = @{ unlit = "true" } }
+    # The one scenario that uses a different model, and it has to: alphaMode BLEND geometry is drawn
+    # by a pass of its own, so no model without a BLEND material can exercise it - DamagedHelmet has
+    # only OPAQUE/MASK. AlphaBlendModeTest carries one of each alphaMode (OPAQUE / MASK at two cutoffs
+    # / BLEND) plus a decal, so this also covers the G-buffer's MASK discard path.
+    @{ name = "transparent_blend"; desc = "deferred + an alphaMode BLEND material";    extra = @{ deferred = "true"; msaa = "1" }
+       model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\AlphaBlendModeTest\glTF\AlphaBlendModeTest.gltf"
+       camera = "0,5,12.4,0,-4.511,0" }
 )
 
 if ($List) {
@@ -97,8 +105,9 @@ function Write-ScenarioConfig {
         "skybox"            = "true"
         "validation_layers" = "true"
     }
+    $scenarioModel = if ($Scenario.ContainsKey('model')) { $Scenario.model } else { $Model }
     $lines = @(
-        "model = '$($Model.Replace('\','\\'))'",
+        "model = '$($scenarioModel.Replace('\','\\'))'",
         "grid_side = 0",
         "",
         "[paths]",
@@ -137,7 +146,8 @@ function Invoke-Scenario {
 
     # NOT $args: that is PowerShell's automatic argument array, and assigning to it is the kind of
     # thing that works until it does not.
-    $launch = @("--config", $cfg, "--capture-frames", "$Frames", "--capture-camera=$Camera")
+    $scenarioCamera = if ($Scenario.ContainsKey('camera')) { $Scenario.camera } else { $Camera }
+    $launch = @("--config", $cfg, "--capture-frames", "$Frames", "--capture-camera=$scenarioCamera")
     $p = Start-Process -FilePath $exe -ArgumentList $launch -WorkingDirectory $workDir -PassThru -WindowStyle Hidden
     # the capture exits on its own; the timeout is a safety net, not the expected path
     if (-not $p.WaitForExit(180000)) { $p.Kill(); return @{ ok = $false; why = "timed out" } }
