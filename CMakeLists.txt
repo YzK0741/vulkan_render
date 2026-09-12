@@ -120,6 +120,7 @@ target_sources(vulkancorekit
         vulkan/math/math.cppm
         vulkan/constant_init/constant_init.cppm
         vulkan/runtime.cppm
+        vulkan/pipelines/pipelines.cppm
         vulkan/profiling/profiling.cppm
         vulkan/core/pipeline/spirv_parser.cppm
         vulkan/scene_tree/scene_tree.cppm
