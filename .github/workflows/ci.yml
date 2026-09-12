@@ -135,7 +135,7 @@ jobs:
       - name: Build the headless tests
         run: >-
           cmake --build build-asan --target
-          test_app_config test_utility test_math test_animation test_gltf_loader
+          test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit
 
       - name: Run the headless tests under the sanitizers
         # ASAN_OPTIONS/UBSAN_OPTIONS: halt on the first finding and print a stack trace, so a report

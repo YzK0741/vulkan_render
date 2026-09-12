@@ -19,8 +19,9 @@ Each **independently reusable module set** also carries its own `module version`
 in a comment block at the top of its main interface unit — `utility` 0.5.0, `vstd` 0.1.0a
 (the trimmed `std` replacement), `gltf_loader` 0.1.0a, `app_config` 0.11.1, `vulkan.math` 0.1.1,
 `vulkan.constant_init` 0.4.0 (the compile-time Vulkan info-struct builders that
-`vulkan.core` and `vulkan.runtime` embed), `vulkan.core` 0.7.0, `vulkan.runtime` 0.19.4,
-`vulkan.profiling` 0.1.0, `vulkan.pipelines` 0.1.0, `vulkan.bindings` 0.4.0, `vulkan.scene_tree` 0.1.3, `vulkan.primitive` 0.4.0, `vulkan.animation` 0.1.1a and
+`vulkan.core` and `vulkan.runtime` embed), `vulkan.core` 0.7.0, `vulkan.runtime` 0.20.0,
+`vulkan.profiling` 0.1.0, `vulkan.pipelines` 0.1.0, `vulkan.bindings` 0.4.0, `vulkan.shadow_fit` 0.1.0,
+`vulkan.scene_tree` 0.1.3, `vulkan.primitive` 0.4.0, `vulkan.animation` 0.1.1a and
 `vulkan.gui` 0.3.0.
 They evolve on their own cadence (bump MAJOR on breaking interface changes, MINOR on additive
 features, PATCH on fixes), independent of the app version and of each other. An appended `a`
@@ -120,7 +121,8 @@ Related source docs (tracked in the repo):
 ├── Doxyfile                 # Doxygen config (PROJECT_NAME: "vulkan render")
 ├── app_config/              # app_config module (TOML startup config + argv merge)
 ├── vulkan/                  # vulkan modules (core / vma / handles / init_utils / pipeline / spirv_parser / math /
-│                            #   runtime / scene_tree / render_environment / gui / animation)
+│                            #   runtime / bindings / pipelines / profiling / shadow_fit / scene_tree /
+│                            #   render_environment / gui / animation)
 ├── utility/                 # utility module (data_block / better_pmr / BVH / thread_pool / frame_clock)
 ├── gltf_loader/             # gltf_loader module (CPU-side glTF/GLB loading)
 ├── vstd/                     # vstd module — modified from libc++ (LLVM), trimmed to the project's

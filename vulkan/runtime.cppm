@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.19.4  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.20.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -8,8 +8,9 @@
 // vulkan.render_environment (per-worker draw state) - the frame draws through
 // both, so they are versioned as ONE unit because they share the scene / draw
 // interface and evolve together.
-// Depends on vulkan.core (GPU), vulkan.math (IBL) and utility, with the frame
-// struct fills coming from vulkan.constant_init.
+// Depends on vulkan.core (GPU), vulkan.math (IBL), vulkan.shadow_fit (the
+// cascade fit it gathers for and caches) and utility, with the frame struct
+// fills coming from vulkan.constant_init.
 //
 // evolve: bump MAJOR on breaking interface changes, MINOR on additive features,
 //         PATCH on internal fixes - independently of the rest of the project.
@@ -23,7 +24,8 @@ module;
 export module vulkan.runtime;
 
 import vulkan.profiling;
-import vulkan.bindings; // the per-image descriptor-set families (the G-buffer debug view's for now)
+import vulkan.bindings;   // the per-image descriptor-set families (the G-buffer debug view's for now)
+import vulkan.shadow_fit; // the cascade fit itself (pure CPU; the runtime gathers and caches)
 export import vstd;
 export import vulkan.core;
 export import vulkan.core.filter;
@@ -782,16 +784,24 @@ namespace vulkan {
         // how far up-light of the camera frustum a caster still matters (its shadow can still
         // reach the view). Scene-scale heuristic: max(1, scene_radius / 8); see enable_shadows.
         float shadow_caster_extent = 1.0f;
-        // scene center handed to enable_shadows. update_shadow_frustum falls back to
-        // center +- scene_radius when a shadow caster has no world AABB of its own AND is not an
-        // instanced draw whose instance matrices we can read (see instanced_world_aabb).
+        // scene center handed to enable_shadows. The fit falls back to center +- scene_radius when a
+        // shadow caster has no world AABB of its own AND is not an instanced draw whose instance
+        // matrices we can read (see instanced_world_aabb).
         glm::vec3 shadow_scene_center = glm::vec3(0.0f);
         // Fit cache: rebuilding the light frustum walks every leaf and transforms 8 corners each,
         // which is O(scene) work for a result that only changes when the camera or the scene moves.
-        // shadow_fit_view/proj are the camera matrices the current frustum was fitted for;
+        // shadow_fit_view_proj is the camera matrix the current frustum was fitted for;
         // shadow_frustum_valid is cleared by enable_shadows() (new light setup) and bvh_dirty marks
         // a changed scene.
+        //
+        // Only the CACHE stays here. The fit itself (splits, per-cascade boxes, texel snapping, the
+        // orthographic matrices) is vulkan.shadow_fit, which needs nothing but glm - and the
+        // gathering below stays here because it needs scene_tree and primitive.
         glm::mat4 shadow_fit_view_proj = glm::mat4(1.0f); // unjittered view * proj the last fit used
+        // per-frame scratch for the gather: each caster's light-space AABB, then the world boxes it
+        // came from. Reused (capacity kept) so a refit allocates nothing on a steady scene.
+        std::vector<std::pair<glm::vec3, glm::vec3>> shadow_caster_boxes = {};
+        std::vector<std::pair<glm::vec3, glm::vec3>> shadow_caster_world_boxes = {};
 
         bool shadow_frustum_valid = false;
         // optional Dear ImGui debug overlay; inactive until enable_debug_gui() succeeds. The

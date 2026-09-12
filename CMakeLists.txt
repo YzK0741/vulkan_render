@@ -123,6 +123,7 @@ target_sources(vulkancorekit
         vulkan/bindings/bindings.cppm
         vulkan/pipelines/pipelines.cppm
         vulkan/profiling/profiling.cppm
+        vulkan/shadow_fit/shadow_fit.cppm
         vulkan/core/pipeline/spirv_parser.cppm
         vulkan/scene_tree/scene_tree.cppm
         vulkan/primitive/primitive.cppm
@@ -139,6 +140,7 @@ target_sources(vulkancorekit
         vulkan/math/math.cpp
         vulkan/core/pipeline/spirv_parser.cpp
         vulkan/runtime.cpp
+        vulkan/shadow_fit/shadow_fit.cpp
         vulkan/scene_tree/scene_tree.cpp
         vulkan/primitive/primitive.cpp
         vulkan/gui/gui.cpp
@@ -389,7 +391,7 @@ option(VR_BUILD_TESTS "Build the headless unit tests" ON)
 if(VR_BUILD_TESTS)
     enable_testing()
 
-    set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader)
+    set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit)
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-run")
 
     foreach(test_target IN ITEMS ${VR_TEST_TARGETS})
@@ -431,6 +433,15 @@ if(VR_BUILD_TESTS)
     # test loads the repo's gltf_model/DamagedHelmet sample from the working directory.
     target_link_libraries(test_gltf_loader
             gltf_loader
+            glm::glm
+            vstd_lib
+    )
+    # vulkan.shadow_fit is pure CPU arithmetic (no Vulkan object is touched), and the module lives in
+    # vulkancorekit next to vulkan.math; the link chain brings Vulkan/glfw in, which the tests do not
+    # use. This is the first test of the shadow system, which had none: the fit had no device
+    # dependency, it just lived where nothing could reach it.
+    target_link_libraries(test_shadow_fit
+            vulkancorekit
             glm::glm
             vstd_lib
     )
