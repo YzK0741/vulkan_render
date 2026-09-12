@@ -4,6 +4,9 @@ module;
 #include <cstdio> // std::print(stderr, ...) below needs the stderr macro (not exportable via modules)
 #include <cstring>
 extern "C" void utility_platform_sleep_ns(std::int64_t nanoseconds); // implemented in platform_sleep.cpp (see its header comment for why it is not a module)
+// the running executable's directory, written into the caller's buffer; -1 = unavailable. Implemented
+// in platform_path.cpp, a plain TU for the same reason as the sleep above.
+extern "C" int utility_platform_executable_directory(char* out, std::size_t capacity);
 #include <xxhash.h>
 
 module utility;
@@ -338,6 +341,19 @@ void utility::sleep_for_nanoseconds(std::int64_t const nanoseconds) {
     // last fraction of a millisecond if it needs to land exactly on the deadline.
     utility_platform_sleep_ns(nanoseconds);
 }
+
+std::filesystem::path utility::executable_directory() {
+    // The platform half fills a plain buffer (see platform_path.cpp, which keeps <windows.h> out of
+    // the module's global module fragment). A path that does not fit, and a platform with no answer,
+    // both come back empty - the caller then falls back to its own lookup rather than failing.
+    std::array<char, 32768> buffer = {};
+    int const written = utility_platform_executable_directory(buffer.data(), buffer.size());
+    if (written <= 0) {
+        return {};
+    }
+    return std::filesystem::path(std::string(buffer.data(), static_cast<std::size_t>(written)));
+}
+
 utility::xxh3_digest utility::xxh3_128bits(std::span<unsigned char const> const data_view) {
     // XXH3_128bits returns a {low64, high64} pair; store its bytes in the digest
     xxh3_digest digest = {};

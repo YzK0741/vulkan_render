@@ -300,54 +300,6 @@ target_include_directories(vulkancorekit
 )
 
 add_executable(vulkan_render main.cpp)
-
-# ---- GLSL -> SPIR-V (optional: needs glslc from the Vulkan SDK) ----
-# The executable loads shaders/<name>.spv at runtime next to the GLSL sources and the repository
-# ships those binaries prebuilt, so editing a .glsl/.frag/.vert without recompiling silently keeps
-# running the OLD SPIR-V - a trap that costs an afternoon ("my shader change does nothing").
-# Where glslc exists, the build owns the step: every SPIR-V binary is regenerated from its source
-# (and the shared includes it pulls in) as part of `cmake --build`. Where it does not - CI installs
-# no shader compiler - nothing is generated and the committed .spv files are used unchanged, so the
-# build stays green either way. shaders/compile_shaders.ps1 / .sh remain the manual path.
-find_program(GLSLC_EXECUTABLE
-    NAMES glslc
-    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
-)
-if(GLSLC_EXECUTABLE)
-    set(VR_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
-    # the shared includes: every generated shader lists them all as dependencies. The chain is
-    # three files and glslc takes milliseconds, so recompiling an unaffected shader is cheaper
-    # than the dependency bookkeeping that would avoid it.
-    set(VR_SHADER_INCLUDES
-        "${VR_SHADER_DIR}/surface.glsl"
-        "${VR_SHADER_DIR}/shading.glsl"
-        "${VR_SHADER_DIR}/sky.glsl"
-    )
-    set(VR_SHADER_SOURCES
-        pbr.vert pbr.frag unlit.frag gbuffer.frag gbuffer_debug.frag deferred.frag taa.frag
-        light_cluster.comp
-        skybox.vert skybox.frag shadow.vert shadow.frag post.vert post.frag fxaa.frag
-    )
-    set(VR_SHADER_OUTPUTS "")
-    foreach(shader IN LISTS VR_SHADER_SOURCES)
-        add_custom_command(
-            OUTPUT "${VR_SHADER_DIR}/${shader}.spv"
-            COMMAND "${GLSLC_EXECUTABLE}" -I "${VR_SHADER_DIR}" "${VR_SHADER_DIR}/${shader}"
-                    -o "${VR_SHADER_DIR}/${shader}.spv"
-            DEPENDS "${VR_SHADER_DIR}/${shader}" ${VR_SHADER_INCLUDES}
-            COMMENT "glslc ${shader} -> ${shader}.spv"
-            VERBATIM
-        )
-        list(APPEND VR_SHADER_OUTPUTS "${VR_SHADER_DIR}/${shader}.spv")
-    endforeach()
-    add_custom_target(shaders ALL DEPENDS ${VR_SHADER_OUTPUTS})
-    add_dependencies(vulkan_render shaders)
-    message(STATUS "glslc: ${GLSLC_EXECUTABLE} - shaders/*.spv are rebuilt by the build")
-else()
-    message(STATUS "glslc not found: the committed shaders/*.spv are used as-is "
-                   "(recompile with shaders/compile_shaders.ps1 after editing GLSL)")
-endif()
-
 # Release builds link as a Windows GUI-subsystem executable: no console window appears when
 # running. On the MSYS2 clang64 / MinGW-w64 toolchain WIN32_EXECUTABLE maps to -mwindows; the CRT
 # still calls main(), only the subsystem changes. Debug keeps the console for terminal log output.
@@ -589,6 +541,82 @@ else()
     message(WARNING "clang-format not found, skipping auto-format before build")
 endif()
 
-# The frame limiter's portable sleep lives in a plain (non-module) TU so that <windows.h> stays out of
-# the module's global module fragment - see utility/platform_sleep.cpp.
-target_sources(utility PRIVATE utility/platform_sleep.cpp)
+# The platform halves of utility live in plain (non-module) TUs so that <windows.h> stays out of a
+# module's global module fragment - including it there made libc++'s operator new ambiguous in every
+# TU that imported `utility`. One file per platform facility; the module side only sees their C
+# entry points (see utility/platform_sleep.cpp and utility/platform_path.cpp).
+target_sources(utility PRIVATE utility/platform_sleep.cpp utility/platform_path.cpp)
+# ---- GLSL -> SPIR-V: the build owns the step ----
+# Editing a .glsl without recompiling used to leave you running stale SPIR-V ("my shader change does
+# nothing"), so the compiled binaries are no longer committed and are never hand-synced: every build
+# regenerates them from the sources (and the shared includes they pull in). glslc is REQUIRED rather
+# than optional - a configuration without the compiler is exactly the one where a stale binary could
+# be used without anyone noticing, which is the failure this removes.
+#
+# Output goes to the BUILD tree (<build>/shaders), not next to the .glsl:
+#  - the source tree keeps exactly the files a human edits, so .spv is never something to commit,
+#    gitignore by hand, or forget to regenerate;
+#  - the runtime finds it without any search-order guesswork, because that directory is a sibling of
+#    the executable and locate_shaders_dir() prefers a sibling of the running binary;
+#  - -I still points at the SOURCE directory, so #include "surface.glsl" resolves against the real
+#    sources rather than against copies.
+# A mirror/ POST_BUILD step was tried first and is worse: a POST_BUILD command only runs when the
+# executable is RELINKED, so a shader-only edit recompiled the .spv and left the copy stale (measured).
+# Note this assumes a single-configuration generator, which is what this project configures - the
+# executable lands in the build directory, so build/shaders is its sibling. A multi-config generator
+# would put the binary in a per-config subdirectory and the runtime would fall back to its cwd walk.
+#
+# shaders/compile_shaders.ps1 / .sh remain as a manual escape hatch for a machine without CMake; they
+# compile in place, which is what a reader of the source tree would expect from a manual tool.
+set(VR_SHADER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
+set(VR_SHADER_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+if(NOT Vulkan_GLSLC_EXECUTABLE)
+    message(FATAL_ERROR
+        "glslc not found (it ships with the Vulkan SDK, and CMake's FindVulkan reports it as "
+        "Vulkan_GLSLC_EXECUTABLE). The shaders have no prebuilt fallback anymore - install the "
+        "Vulkan SDK, or add glslc to PATH.")
+endif()
+# the shared includes: every generated shader lists them all as dependencies. The chain is three
+# files and glslc takes milliseconds, so recompiling an unaffected shader is cheaper than the
+# dependency bookkeeping that would avoid it.
+set(VR_SHADER_INCLUDES
+    "${VR_SHADER_SRC_DIR}/surface.glsl"
+    "${VR_SHADER_SRC_DIR}/shading.glsl"
+    "${VR_SHADER_SRC_DIR}/sky.glsl"
+)
+set(VR_SHADER_SOURCES
+    pbr.vert pbr.frag unlit.frag gbuffer.frag gbuffer_debug.frag deferred.frag taa.frag
+    light_cluster.comp
+    skybox.vert skybox.frag shadow.vert shadow.frag post.vert post.frag fxaa.frag
+)
+set(VR_SHADER_OUTPUTS "")
+foreach(shader IN LISTS VR_SHADER_SOURCES)
+    add_custom_command(
+        OUTPUT "${VR_SHADER_OUT_DIR}/${shader}.spv"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${VR_SHADER_OUT_DIR}"
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -I "${VR_SHADER_SRC_DIR}" "${VR_SHADER_SRC_DIR}/${shader}"
+                -o "${VR_SHADER_OUT_DIR}/${shader}.spv"
+        DEPENDS "${VR_SHADER_SRC_DIR}/${shader}" ${VR_SHADER_INCLUDES}
+        COMMENT "glslc ${shader} -> ${shader}.spv"
+        VERBATIM
+    )
+    list(APPEND VR_SHADER_OUTPUTS "${VR_SHADER_OUT_DIR}/${shader}.spv")
+endforeach()
+# the runtime's log names the GLSL file it is loading the SPIR-V for, and it looks for that name in
+# the same directory: copy the sources there so the log points at a file a reader of the build tree
+# can actually open. Not a correctness requirement - the .spv beside it is what gets loaded.
+set(VR_SHADER_SOURCE_COPIES "")
+foreach(shader IN LISTS VR_SHADER_SOURCES)
+    list(APPEND VR_SHADER_SOURCE_COPIES "${VR_SHADER_SRC_DIR}/${shader}")
+endforeach()
+add_custom_command(
+    OUTPUT "${VR_SHADER_OUT_DIR}/.sources-copied"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${VR_SHADER_SRC_DIR}" "${VR_SHADER_OUT_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E touch "${VR_SHADER_OUT_DIR}/.sources-copied"
+    DEPENDS ${VR_SHADER_OUTPUTS} ${VR_SHADER_SOURCE_COPIES} ${VR_SHADER_INCLUDES}
+    COMMENT "copying the GLSL sources beside the compiled shaders"
+    VERBATIM
+)
+add_custom_target(shaders ALL DEPENDS ${VR_SHADER_OUTPUTS} "${VR_SHADER_OUT_DIR}/.sources-copied")
+add_dependencies(vulkan_render shaders)
+message(STATUS "glslc: ${Vulkan_GLSLC_EXECUTABLE} - every build compiles shaders/*.spv into ${VR_SHADER_OUT_DIR}")

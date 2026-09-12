@@ -74,6 +74,17 @@ namespace chores {
     // Walk up from the working directory to find the shaders/ directory,
     // so it works when run from the project root or a cmake-build-* directory
     std::optional<std::filesystem::path> locate_shaders_dir() {
+        // The build's own output first: a shaders/ directory beside the executable, written by the
+        // build's shader step. Checking this before the cwd walk is what makes a build-tree run load
+        // the SPIR-V its build just compiled instead of resolving `shaders/` upward into the source
+        // tree - the stale-binary trap the build no longer commits a fallback for.
+        std::filesystem::path const exe_dir = utility::executable_directory();
+        if (!exe_dir.empty()) {
+            std::filesystem::path const candidate = exe_dir / "shaders";
+            if (std::filesystem::is_regular_file(candidate / "pbr.vert.spv")) {
+                return candidate;
+            }
+        }
         std::filesystem::path current = std::filesystem::current_path();
         for (int depth = 0; depth < 4; ++depth) {
             std::filesystem::path candidate = current / "shaders";

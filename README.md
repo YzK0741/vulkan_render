@@ -125,7 +125,7 @@ Related source docs (tracked in the repo):
 ├── gltf_loader/             # gltf_loader module (CPU-side glTF/GLB loading)
 ├── vstd/                     # vstd module — modified from libc++ (LLVM), trimmed to the project's
 │                            #   STL usage (import vstd; see vstd/README.md)
-├── shaders/                 # GLSL sources + precompiled SPIR-V (recompile via compile_shaders.ps1 / .sh);
+├── shaders/                 # GLSL sources (the build compiles them to SPIR-V; the binaries are not tracked);
 │                            #   documented in-source and grouped under the Doxygen "shaders" group
 ├── gltf_model/              # Sample model (DamagedHelmet)
 ├── snapshot/                # Screenshots
@@ -254,14 +254,20 @@ The Dear ImGui debug overlay is on **by default** — disable it with `[gui] sho
 
 ### Recompile shaders
 
-The build does this for you: `CMakeLists.txt` locates `glslc` (the Vulkan SDK's shader compiler,
-found on `PATH` or under `$VULKAN_SDK/Bin`) and regenerates every `shaders/*.spv` from its GLSL
-source as part of `cmake --build` - the shared includes (`surface.glsl`, `shading.glsl`,
-`sky.glsl`) are dependencies, so editing one recompiles the shaders that pull it in. The
-executable loads the `.spv` files next to the sources at runtime, so a shader edit that is never
-compiled silently keeps running the old binary: that is exactly what this rule removes. Where
-`glslc` is missing (CI installs no shader compiler) the build uses the committed `.spv` files
-unchanged and stays green - run the manual script below after editing GLSL in that case.
+The build does this for you, and it is the only path that matters: `CMakeLists.txt` requires `glslc`
+(the Vulkan SDK's shader compiler, which CMake's `FindVulkan` reports as `Vulkan_GLSLC_EXECUTABLE`)
+and regenerates every `shaders/*.spv` from its GLSL source as part of `cmake --build` - the shared
+includes (`surface.glsl`, `shading.glsl`, `sky.glsl`) are dependencies, so editing one recompiles the
+shaders that pull it in. The compiled directory is then mirrored next to the executable, and that
+copy is what the runtime loads, so the shaders a run uses are always the ones its own build produced.
+
+The `.spv` binaries are **not tracked in the repository** - they are a build output, so there is
+nothing to commit, gitignore-by-hand, or forget to recompile. `glslc` is required rather than
+optional: without a shader compiler there is nothing to run, and an optional step is exactly how a
+stale binary gets loaded without anyone noticing.
+
+The two scripts below are a manual escape hatch for a machine without CMake; they compile in place,
+which is what the build does too.
 
 PowerShell (Windows):
 

@@ -605,6 +605,20 @@ namespace utility {
     export void sleep_for_nanoseconds(int64_t nanoseconds);
 
     /**
+     * @brief directory of the running executable, or an empty path when the platform cannot report it
+     * @return the directory with a trailing separator, or an empty path
+     * @ingroup utility
+     *
+     * The build emits the compiled shaders next to the executable, so this is how the runtime prefers
+     * the shaders its own build produced over any directory found by walking up from the working
+     * directory - the difference between running the shaders you just edited and a stale copy.
+     * @note deliberately narrow: it answers "where am I running from", a question only the loader can
+     *       answer, and it answers it from the OS rather than from argv[0] (which may be a bare name
+     *       resolved through PATH).
+     */
+    export std::filesystem::path executable_directory();
+
+    /**
      * @brief xxh3_128bits hash function
      * @param data_view bytes to fingerprint
      * @return 16-byte digest of @p data_view (the raw 128-bit fingerprint)

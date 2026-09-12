@@ -113,10 +113,11 @@ jobs:
       # the optimized one (sanitizers need instrumentation and must not be LTO'd), and keeping it
       # apart means a sanitizer finding does not hide the Release/Debug/clang-tidy result.
       #
-      # Only the test targets are built. The executable needs a Vulkan SDK that is not installed
-      # here, and it is the one artifact this job must NOT produce: its dependencies (glfw,
-      # vulkan-loader) are not present, so a full `all` build would fail on the link rather than on
-      # anything the sanitizers have to say.
+      # Only the test targets are built. The executable needs glfw to LINK, which is why this job
+      # produces the tests but not the binary - a full `all` build would fail on that link rather than
+      # on anything the sanitizers have to say. The Vulkan packages are still needed at configure time:
+      # vulkancorekit links Vulkan::Vulkan as a PUBLIC dependency, and CMakeLists requires glslc from
+      # the same SDK to compile the shaders.
       #
       # Why this gate earns its place: the whole test suite is pure CPU with no GPU anywhere, so
       # memory errors in the loader / utility / config paths are invisible to the Release run. The

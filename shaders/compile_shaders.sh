@@ -1,5 +1,11 @@
 #!/bin/sh
-# Recompile the GLSL shaders in shaders/ to SPIR-V binaries.
+# Recompile the GLSL shaders in shaders/ to SPIR-V binaries, in place.
+#
+# The BUILD already does this (see the GLSL -> SPIR-V section of CMakeLists.txt): `cmake --build`
+# recompiles every .spv from its source, and the resulting directory is mirrored next to the
+# executable, which is the copy the runtime loads. This script is the escape hatch for a machine
+# without CMake - it produces the same binaries in the same place.
+#
 # POSIX-sh companion to compile_shaders.ps1: run it under git-bash / MSYS2 /
 # WSL / any Linux shell. Usage:
 #     sh shaders/compile_shaders.sh      (from the project root, or anywhere)

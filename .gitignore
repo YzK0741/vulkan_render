@@ -11,6 +11,10 @@ build-asan/
 docs/html/
 docs/latex/
 
+#compiled shaders: the build produces them (into <build>/shaders), so they are never committed and
+#never hand-synced with their .glsl sources - editing a shader and rebuilding is the whole workflow
+*.spv
+
 #runtime artifacts (flushed logs + Dear ImGui panel-layout persistence)
 debug.log
 debug.log.old

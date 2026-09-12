@@ -207,14 +207,23 @@
  *
  * @section shader_compile Compiling
  *
+ * The build owns this step: `cmake --build` regenerates every `.spv` from its `.glsl` (and from the
+ * shared includes it lists as dependencies), so editing a shader is just editing a shader. The binaries
+ * are **not** tracked in the repository and are not hand-synced - they are a build output, and the
+ * directory is mirrored next to the executable, which is the copy the runtime loads
+ * (`chores::locate_shaders_dir` prefers a `shaders/` sibling of the running binary over anything found
+ * by walking up from the working directory). glslc is required, not optional: without a shader compiler
+ * there would be nothing to run, and an optional step is how a stale binary gets loaded unnoticed.
+ *
+ * `shaders/compile_shaders.ps1` / `.sh` remain as a manual escape hatch for a machine without CMake -
+ * they compile in place, which is what the build does too:
+ *
  * @code
  *  powershell -ExecutionPolicy Bypass -File shaders/compile_shaders.ps1   # Windows
  *  sh shaders/compile_shaders.sh                                          # POSIX
  * @endcode
  *
  * Both scripts pass `-I shaders/`, which is what lets the fragment stages `#include "surface.glsl"`.
- * The compiled `.spv` files are tracked in the repository (there is no build-time shader step),
- * so a shader change must be followed by a recompile + commit of both the source and the binary.
  *
  * @section shader_conventions Conventions and pitfalls
  *
