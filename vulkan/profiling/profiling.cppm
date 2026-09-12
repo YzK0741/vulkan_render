@@ -24,6 +24,8 @@ module;
 
 export module vulkan.profiling;
 
+import utility; // the completed window is logged once per fold
+
 namespace vulkan::profiling {
     /**
      * @brief the CPU frame phases that are measured per frame
@@ -62,51 +64,86 @@ namespace vulkan::profiling {
     public:
         static constexpr uint32_t window_length = 60;
 
+        /// "[render] gpu_timings" also gates the CPU phases: one switch for "measure this frame"
+        void set_enabled(bool const on) noexcept {
+            this->enabled = on;
+        }
+
+        /// accumulate one phase of the frame being measured (not gated, exactly like the runtime was)
         void add(cpu_phase const phase, std::chrono::steady_clock::duration const elapsed) noexcept {
-            this->frame[static_cast<std::size_t>(phase)] += std::chrono::duration<double, std::milli>(elapsed).count();
+            std::size_t const index = static_cast<std::size_t>(phase);
+            if (index >= this->frame.size()) {
+                return;
+            }
+            this->frame[index] += std::chrono::duration<double, std::milli>(elapsed).count();
         }
 
+        /// end a phase; ending @c submit folds the frame into the window and reports a completed one
         void end(cpu_phase const phase, std::chrono::steady_clock::time_point const start) noexcept {
-            this->add(phase, std::chrono::steady_clock::now() - start);
-        }
-
-        /// close the current window when it is full; call once per frame
-        void fold() noexcept {
+            if (!this->enabled) {
+                return;
+            }
+            std::size_t const index = static_cast<std::size_t>(phase);
+            if (index >= this->frame.size()) {
+                return;
+            }
+            this->frame[index] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            if (phase != cpu_phase::submit) {
+                return; // one fold per frame, at the phase that ends it
+            }
+            // The frame completed: fold it into the window (a frame that never reaches submit - a
+            // minimized window, a failed acquire - keeps no partial numbers), and report once per
+            // window. The report goes to the log; the compact label is what the overlay shows, and it
+            // only changes when a window completes, so the overlay text cannot twitch every frame.
+            for (std::size_t i = 0; i < this->sum.size(); ++i) {
+                this->sum[i] += this->frame[i];
+                this->frame[i] = 0.0;
+            }
             if (++this->window_frames < window_length) {
                 return;
             }
-            std::string label = std::format("cpu frame phases (avg of {} frames):", window_length);
+            std::string report = std::format("cpu frame phases (avg of {} frames):", window_length);
+            std::string label = std::format("cpu ({}f):", window_length);
             double total = 0.0;
-            for (std::size_t i = 0; i < cpu_phase_names.size(); ++i) {
+            for (std::size_t i = 0; i < this->sum.size(); ++i) {
                 double const mean = this->sum[i] / static_cast<double>(window_length);
-                label += std::format(" {} {:.2f} ms |", cpu_phase_names[i], mean);
-                if (!cpu_phase_names[i].ends_with('*')) {
+                report += std::format(" {} {:.2f} ms |", cpu_phase_names[i], mean);
+                label += std::format("{} {:>5.2f}", i == 0 ? "" : " |", mean);
+                // Sub-phases (names ending in '*') are measured INSIDE scene: adding them to the total
+                // again would count that time twice.
+                if (cpu_phase_names[i].back() != '*') {
                     total += mean;
                 }
+                this->sum[i] = 0.0;
             }
-            label += std::format(" total {:.2f} ms", total);
-            this->report_label = std::move(label);
-            this->last_window = this->sum;
-            this->sum = {};
             this->window_frames = 0;
+            report += std::format(" total {:.2f} ms", total);
+            this->report_label = label + std::format("\n     total {:>5.2f} ms", total);
+            utility::log("{}", report);
         }
 
-        [[nodiscard]] std::string const& summary() const noexcept {
+        [[nodiscard]] std::string summary() const {
+            if (!this->enabled) {
+                return "cpu timings: off ([render] gpu_timings = false)";
+            }
+            if (this->report_label.empty()) {
+                return "cpu: collecting...";
+            }
             return this->report_label;
         }
 
         [[nodiscard]] std::array<double, static_cast<std::size_t>(cpu_phase::count)> means() const noexcept {
             std::array<double, static_cast<std::size_t>(cpu_phase::count)> result = {};
             for (std::size_t i = 0; i < result.size(); ++i) {
-                result[i] = this->last_window[i] / static_cast<double>(window_length);
+                result[i] = this->sum[i] / static_cast<double>(this->window_frames == 0 ? window_length : this->window_frames);
             }
             return result;
         }
 
     private:
-        std::array<double, static_cast<std::size_t>(cpu_phase::count)> frame = {};       // the frame being measured
-        std::array<double, static_cast<std::size_t>(cpu_phase::count)> sum = {};         // the window being accumulated
-        std::array<double, static_cast<std::size_t>(cpu_phase::count)> last_window = {}; // the last completed window
+        bool enabled = true;
+        std::array<double, static_cast<std::size_t>(cpu_phase::count)> frame = {}; // the frame being measured
+        std::array<double, static_cast<std::size_t>(cpu_phase::count)> sum = {};   // the window being accumulated
         uint32_t window_frames = 0;
         std::string report_label = {};
     };
