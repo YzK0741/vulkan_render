@@ -1240,7 +1240,10 @@ namespace vulkan {
         // VUID-VkSubmitInfo-pNext-03241: with a timeline in the signal list the value count must
         // equal the semaphore count (the value for the binary is ignored).
         uint32_t const slot = static_cast<uint32_t>(this->current_frame);
-        uint64_t const signal_value = ++this->frame_done_values[slot];
+        // The value this submission asks the slot's timeline to take. It is recorded only once
+        // vkQueueSubmit has accepted the submission (below): wait_frame_slot() waits on the RECORDED
+        // value, so recording one that no submission will ever signal would block this slot forever.
+        uint64_t const signal_value = this->frame_done_values[slot] + 1;
 
         constexpr VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSemaphore signal_semaphores[2] = {this->frame_done_semaphores[slot], this->present_ready_semaphores[image_index]};
@@ -1260,7 +1263,11 @@ namespace vulkan {
         submit_info.pCommandBuffers = &command_buffer;
         submit_info.signalSemaphoreCount = 2;
         submit_info.pSignalSemaphores = signal_semaphores;
-        return vkQueueSubmit(this->graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+        VkResult const result = vkQueueSubmit(this->graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+        if (result == VK_SUCCESS) {
+            this->frame_done_values[slot] = signal_value;
+        }
+        return result;
     }
 
     VkResult core::present(uint32_t const image_index) const {

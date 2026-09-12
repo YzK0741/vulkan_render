@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.7.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
