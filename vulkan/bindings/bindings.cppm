@@ -1,4 +1,4 @@
-// module version: 0.2.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/bindings/bindings.cppm
@@ -26,6 +26,7 @@
 module;
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <span>
@@ -71,6 +72,10 @@ namespace vulkan::bindings {
          *        does), which is exactly the distinction the first version of this class got wrong
          * @param write called for each image that needs (re)binding, with that image's sets
          */
+        /// one fingerprint per thing the family's bindings depend on (the post chain compares the HDR,
+        /// the bloom and the LDR view lists; the others need one)
+        using signatures_t = std::span<std::span<VkImageView const> const>;
+
         [[nodiscard]] bool ensure(core const& vk,
                                   VkDescriptorSetLayout layout,
                                   uint32_t image_count,
@@ -78,6 +83,19 @@ namespace vulkan::bindings {
                                   uint32_t descriptors_per_set,
                                   std::span<VkImageView const> signature_views,
                                   write_sets_fn const& write);
+
+        /**
+         * @brief ensure() for a family whose rebind depends on more than one fingerprint: every list is
+         *        compared and a rebind happens when any of them changed
+         * @param signatures the fingerprints (empty is rejected like a null layout)
+         */
+        [[nodiscard]] bool ensure_all(core const& vk,
+                                      VkDescriptorSetLayout layout,
+                                      uint32_t image_count,
+                                      uint32_t sets_per_image,
+                                      uint32_t descriptors_per_set,
+                                      signatures_t signatures,
+                                      write_sets_fn const& write);
 
         /// every set of image @p image_index, or an empty span when the family is not ready
         [[nodiscard]] std::span<VkDescriptorSet const> sets(uint32_t image_index) const noexcept;
@@ -104,9 +122,10 @@ namespace vulkan::bindings {
         VkDescriptorPool pool = VK_NULL_HANDLE;
         uint32_t pool_capacity = 0;
         uint32_t sets_per_image = 0;
-        std::vector<VkDescriptorSet> flat_sets = {};   // sets_per_image entries per image
-        std::vector<VkImageView> bound_signature = {}; // what the current sets point at
-        std::vector<VkDescriptorPool> retired = {};    // destroyed with the runtime, never earlier
+        std::vector<VkDescriptorSet> flat_sets = {};                 // sets_per_image entries per image
+        std::vector<std::vector<VkImageView>> bound_signatures = {}; // what the current sets point at
+        uint32_t images = 0;                                         // how many images they serve
+        std::vector<VkDescriptorPool> retired = {};                  // destroyed with the runtime, never earlier
     };
     // ---- image_set_family --------------------------------------------------------------------------
     // The algorithm the three per-image families shared: ready check, image count check, signature
@@ -116,6 +135,18 @@ namespace vulkan::bindings {
     namespace {
         [[nodiscard]] bool same_views(std::vector<VkImageView> const& bound, std::span<VkImageView const> const wanted) {
             return bound.size() == wanted.size() && std::equal(bound.begin(), bound.end(), wanted.begin());
+        }
+
+        [[nodiscard]] bool same_signatures(std::vector<std::vector<VkImageView>> const& bound, std::span<std::span<VkImageView const> const> const wanted) {
+            if (bound.size() != wanted.size()) {
+                return false;
+            }
+            for (std::size_t i = 0; i < bound.size(); ++i) {
+                if (!same_views(bound[i], wanted[i])) {
+                    return false;
+                }
+            }
+            return true;
         }
     } // namespace
 
@@ -132,13 +163,19 @@ namespace vulkan::bindings {
 
     bool image_set_family::ensure(core const& vk, VkDescriptorSetLayout const layout, uint32_t const image_count, uint32_t const per_image,
                                   uint32_t const descriptors_per_set, std::span<VkImageView const> const signature_views, write_sets_fn const& write) {
+        std::array<std::span<VkImageView const>, 1> const one = {signature_views};
+        return this->ensure_all(vk, layout, image_count, per_image, descriptors_per_set, one, write);
+    }
+
+    bool image_set_family::ensure_all(core const& vk, VkDescriptorSetLayout const layout, uint32_t const image_count, uint32_t const per_image,
+                                      uint32_t const descriptors_per_set, signatures_t const signatures, write_sets_fn const& write) {
         this->device = vk.device;
-        if (layout == VK_NULL_HANDLE || !static_cast<bool>(write) || image_count == 0 || per_image == 0) {
+        if (layout == VK_NULL_HANDLE || !static_cast<bool>(write) || image_count == 0 || per_image == 0 || signatures.empty()) {
             return false;
         }
         // The property that keeps descriptor writes off the frame path: the sets stay allocated, and their
         // contents are rewritten only when the views they point at actually change.
-        if (this->sets_per_image == per_image && this->flat_sets.size() == image_count * per_image && same_views(this->bound_signature, signature_views)) {
+        if (this->sets_per_image == per_image && this->flat_sets.size() == static_cast<std::size_t>(image_count) * per_image && same_signatures(this->bound_signatures, signatures)) {
             return true;
         }
 
@@ -163,13 +200,13 @@ namespace vulkan::bindings {
                 this->pool_capacity = 0;
                 this->sets_per_image = 0;
                 this->flat_sets.clear();
-                this->bound_signature.clear();
+                this->bound_signatures.clear();
                 return false;
             }
             this->pool_capacity = image_count;
             this->sets_per_image = per_image;
             this->flat_sets.clear();
-            this->bound_signature.clear();
+            this->bound_signatures.clear();
         }
 
         if (this->flat_sets.size() != image_count * per_image) {
@@ -182,7 +219,7 @@ namespace vulkan::bindings {
             allocate_info.pSetLayouts = layouts.data();
             if (vkAllocateDescriptorSets(this->device, &allocate_info, this->flat_sets.data()) != VK_SUCCESS) {
                 this->flat_sets.clear();
-                this->bound_signature.clear();
+                this->bound_signatures.clear();
                 return false;
             }
         }
@@ -190,7 +227,12 @@ namespace vulkan::bindings {
         for (std::size_t i = 0; i < image_count; ++i) {
             write(vk, static_cast<uint32_t>(i), std::span<VkDescriptorSet const>(this->flat_sets.data() + i * per_image, per_image));
         }
-        this->bound_signature.assign(signature_views.begin(), signature_views.end());
+        this->bound_signatures.clear();
+        this->bound_signatures.reserve(signatures.size());
+        for (std::span<VkImageView const> const views : signatures) {
+            this->bound_signatures.emplace_back(views.begin(), views.end());
+        }
+        this->images = image_count;
         return true;
     }
 
@@ -211,11 +253,11 @@ namespace vulkan::bindings {
     }
 
     bool image_set_family::ready() const noexcept {
-        return this->sets_per_image != 0 && this->flat_sets.size() == this->bound_signature.size() * this->sets_per_image;
+        return this->sets_per_image != 0 && this->images != 0 && this->flat_sets.size() == static_cast<std::size_t>(this->images) * this->sets_per_image;
     }
 
     uint32_t image_set_family::image_count() const noexcept {
-        return this->sets_per_image == 0 ? 0u : static_cast<uint32_t>(this->flat_sets.size() / this->sets_per_image);
+        return this->images;
     }
 
     void image_set_family::retire_all() {
@@ -225,7 +267,8 @@ namespace vulkan::bindings {
         }
         this->pool_capacity = 0;
         this->sets_per_image = 0;
+        this->images = 0;
         this->flat_sets.clear();
-        this->bound_signature.clear();
+        this->bound_signatures.clear();
     }
 } // namespace vulkan::bindings

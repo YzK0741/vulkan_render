@@ -213,15 +213,11 @@ namespace vulkan {
 
         this->pipelines.clear();
 
-        // post-process raw objects. The pipeline(s) and the sampler are RAII members; the two
-        // layouts and the descriptor pool are not, so they are destroyed here - and this must stay
-        // real code: an earlier edit collapsed this block onto the comment line above it, which
-        // commented the three destroy calls out and leaked them (validation: "VkDevice has 18
-        // leaked objects ... VkPipelineLayout, VkDescriptorSetLayout, VkDescriptorSet").
-        if (this->post_descriptor_pool != VK_NULL_HANDLE) {
-            vkDestroyDescriptorPool(this->vulkan_core.device, this->post_descriptor_pool, nullptr);
-            this->post_descriptor_pool = VK_NULL_HANDLE;
-        }
+        // post-process raw objects. The pipeline(s) and the sampler are RAII members; the two layouts
+        // are not, so they are destroyed here - and this must stay real code: an earlier edit collapsed
+        // this block onto the comment line above it, which commented the destroy calls out and leaked
+        // them (validation: "VkDevice has 18 leaked objects ... VkPipelineLayout,
+        // VkDescriptorSetLayout, VkDescriptorSet"). The pool belongs to post_family now.
         if (this->post_pipeline_layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(this->vulkan_core.device, this->post_pipeline_layout, nullptr);
             this->post_pipeline_layout = VK_NULL_HANDLE;
@@ -255,13 +251,6 @@ namespace vulkan {
             vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->taa_set_layout, nullptr);
             this->taa_set_layout = VK_NULL_HANDLE;
         }
-        // Descriptor pools replaced by a later swapchain generation (see
-        // retired_descriptor_pools): they outlived their generation on purpose, because the recorded
-        // frame command buffers still name their sets.
-        for (VkDescriptorPool const pool : this->retired_descriptor_pools) {
-            vkDestroyDescriptorPool(this->vulkan_core.device, pool, nullptr);
-        }
-        this->retired_descriptor_pools.clear();
 
         // Shared scene resources: views/sets/samplers/buffers/images are RAII and free
         // themselves as this runtime's members destruct (after this body; vulkan_core, which
@@ -1063,17 +1052,9 @@ namespace vulkan {
         // The debug view's family does all three: it forgets the views its sets were bound to and the
         // sets themselves (so the next recorded frame allocates fresh ones) and retires its pool.
         this->gbuffer_family.retire_all();
-        this->post_bound_views.clear();
-        this->post_bound_blooms.clear();
-        this->post_bound_ldr.clear();
-        this->post_sets.clear();
-        this->post_prefilter_sets.clear();
-        this->post_down_sets.clear();
-        if (this->post_descriptor_pool != VK_NULL_HANDLE) {
-            this->retired_descriptor_pools.push_back(this->post_descriptor_pool);
-            this->post_descriptor_pool = VK_NULL_HANDLE;
-            this->post_pool_capacity = 0;
-        }
+        // The post chain's family forgets its sets and retires its pool (five sets per image, so the
+        // largest of the three); the next frame allocates fresh ones from a fresh pool.
+        this->post_family.retire_all();
         // Same for the TAA resolve's family: forget the sets, retire the pool rather than destroy it.
         this->taa_family.retire_all();
         // Every swapchain image's history died with the old generation (and its size may have
@@ -2238,121 +2219,50 @@ namespace vulkan {
         if (image_count == 0 || vk.bloom_image_views[0].size() != image_count || vk.ldr_image_views.size() != image_count) {
             return;
         }
-        if (this->post_sets.size() == image_count && this->post_bound_views == vk.hdr_image_views && this->post_bound_blooms == vk.bloom_image_views[0] && this->post_bound_ldr == vk.ldr_image_views) {
-            return; // already bound to the current HDR/bloom/LDR targets
-        }
+        // The family owns the rebinding rule, the pool sizing (five sets per image, six descriptors
+        // each) and the retirement (see vulkan.bindings); what stays here is what is specific to the
+        // post chain: three fingerprints - HDR, bloom and LDR views - and how one image's five sets
+        // are written.
+        std::array<std::span<VkImageView const>, 3> const fingerprints = {vk.hdr_image_views, vk.bloom_image_views[0], vk.ldr_image_views};
+        auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
+            // every set gets all six bindings; the unused ones point at the same view as binding 0
+            // (binding 5 is the LDR image, which only the FXAA pass reads)
+            auto const write_set = [&vk_ref, this](VkDescriptorSet const set, std::array<VkImageView, 6> const& views) {
+                std::array<VkDescriptorImageInfo, 6> image_infos = {};
+                for (uint32_t b = 0; b < image_infos.size(); ++b) {
+                    image_infos[b].sampler = *this->post_sampler;
+                    image_infos[b].imageView = views[b];
+                    image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                }
+                std::array<VkWriteDescriptorSet, 6> writes = {};
+                for (uint32_t b = 0; b < writes.size(); ++b) {
+                    writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    writes[b].dstSet = set;
+                    writes[b].dstBinding = b;
+                    writes[b].descriptorCount = 1;
+                    writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                    writes[b].pImageInfo = &image_infos[b];
+                }
+                vkUpdateDescriptorSets(vk_ref.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            };
 
-        // five sets per swapchain image: prefilter (HDR), three downsample inputs (level 0..2) and
-        // the composite (HDR + all four levels + the LDR image for the FXAA pass)
-        std::size_t const set_count = image_count * 5;
-        // Recreate the pool whenever the requirement DIFFERS, not only when it grows: the sets of the
-        // previous swapchain generation are still allocated from the old pool, so after a shrink
-        // (fewer images) allocating the new sets on top exceeded maxSets, vkAllocateDescriptorSets
-        // returned VK_ERROR_OUT_OF_POOL_MEMORY and the post pass stayed dead for the rest of the run
-        // (the failure path cleared post_sets, so every frame retried and failed again). Destroying
-        // the pool frees all of its sets, which is exactly what a new generation wants.
-        if (this->post_descriptor_pool == VK_NULL_HANDLE || this->post_pool_capacity != set_count) {
-            // Retire the old pool instead of destroying it: the frame command buffers that recorded
-            // descriptor sets from it are still executable, and destroying a pool they reference is
-            // VUID-vkDestroyDescriptorPool-descriptorPool-00303. The sets of the retired pool are
-            // simply unused from here on; the runtime destroys the pools on teardown.
-            if (this->post_descriptor_pool != VK_NULL_HANDLE) {
-                this->retired_descriptor_pools.push_back(this->post_descriptor_pool);
-                this->post_descriptor_pool = VK_NULL_HANDLE;
-            }
-            VkDescriptorPoolSize pool_size = {};
-            pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            pool_size.descriptorCount = static_cast<uint32_t>(set_count * 6); // six bindings per set
-
-            VkDescriptorPoolCreateInfo pool_info = {};
-            pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-            pool_info.maxSets = static_cast<uint32_t>(set_count);
-            pool_info.poolSizeCount = 1;
-            pool_info.pPoolSizes = &pool_size;
-            if (vkCreateDescriptorPool(vk.device, &pool_info, nullptr, &this->post_descriptor_pool) != VK_SUCCESS) {
-                utility::log("runtime: post descriptor pool creation failed - post pass skipped");
-                this->post_descriptor_pool = VK_NULL_HANDLE;
-                this->post_sets.clear();
-                this->post_prefilter_sets.clear();
-                this->post_down_sets.clear();
-                this->post_bound_views.clear();
-                this->post_bound_blooms.clear();
-                this->post_bound_ldr.clear();
-                return;
-            }
-            this->post_pool_capacity = static_cast<uint32_t>(set_count);
-            this->post_sets.clear();
-            this->post_prefilter_sets.clear();
-            this->post_down_sets.clear();
-        }
-
-        if (this->post_sets.size() != image_count || this->post_prefilter_sets.size() != image_count || this->post_down_sets.size() != image_count) {
-            this->post_sets.assign(image_count, VK_NULL_HANDLE);
-            this->post_prefilter_sets.assign(image_count, VK_NULL_HANDLE);
-            this->post_down_sets.assign(image_count, {});
-            std::vector<VkDescriptorSetLayout> layouts(set_count, this->post_set_layout);
-            std::vector<VkDescriptorSet> allocated(set_count, VK_NULL_HANDLE);
-            VkDescriptorSetAllocateInfo allocate_info = {};
-            allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-            allocate_info.descriptorPool = this->post_descriptor_pool;
-            allocate_info.descriptorSetCount = static_cast<uint32_t>(set_count);
-            allocate_info.pSetLayouts = layouts.data();
-            if (vkAllocateDescriptorSets(vk.device, &allocate_info, allocated.data()) != VK_SUCCESS) {
-                utility::log("runtime: post descriptor allocation failed - post pass skipped");
-                this->post_sets.clear();
-                this->post_prefilter_sets.clear();
-                this->post_down_sets.clear();
-                this->post_bound_views.clear();
-                this->post_bound_blooms.clear();
-                this->post_bound_ldr.clear();
-                return;
-            }
-            for (std::size_t i = 0; i < image_count; ++i) {
-                this->post_prefilter_sets[i] = allocated[i * 5 + 0];
-                this->post_down_sets[i] = {allocated[i * 5 + 1], allocated[i * 5 + 2], allocated[i * 5 + 3]};
-                this->post_sets[i] = allocated[i * 5 + 4];
-            }
-        }
-
-        // every set gets all six bindings; unused ones point at the same view as binding 0 (binding 5
-        // is the LDR image, which only the FXAA pass reads)
-        auto const write_set = [&vk](VkDescriptorSet const set, std::array<VkImageView, 6> const& views, VkSampler const sampler) {
-            std::array<VkDescriptorImageInfo, 6> image_infos = {};
-            for (uint32_t b = 0; b < image_infos.size(); ++b) {
-                image_infos[b].sampler = sampler;
-                image_infos[b].imageView = views[b];
-                image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            }
-            std::array<VkWriteDescriptorSet, 6> writes = {};
-            for (uint32_t b = 0; b < writes.size(); ++b) {
-                writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[b].dstSet = set;
-                writes[b].dstBinding = b;
-                writes[b].descriptorCount = 1;
-                writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                writes[b].pImageInfo = &image_infos[b];
-            }
-            vkUpdateDescriptorSets(vk.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-        };
-
-        for (std::size_t i = 0; i < image_count; ++i) {
-            VkImageView const hdr = vk.hdr_image_views[i];
-            VkImageView const ldr = vk.ldr_image_views[i];
+            VkImageView const hdr = vk_ref.hdr_image_views[image_index];
+            VkImageView const ldr = vk_ref.ldr_image_views[image_index];
             std::array<VkImageView, 6> const hdr_set = {hdr, hdr, hdr, hdr, hdr, ldr};
-            write_set(this->post_prefilter_sets[i], hdr_set, *this->post_sampler);
+            write_set(sets[0], hdr_set);
 
             for (std::size_t level = 0; level < 3; ++level) {
-                VkImageView const input = vk.bloom_image_views[level][i];
+                VkImageView const input = vk_ref.bloom_image_views[level][image_index];
                 std::array<VkImageView, 6> const level_set = {input, input, input, input, input, ldr};
-                write_set(this->post_down_sets[i][level], level_set, *this->post_sampler);
+                write_set(sets[1 + level], level_set);
             }
 
-            std::array<VkImageView, 6> const composite_set = {hdr, vk.bloom_image_views[0][i], vk.bloom_image_views[1][i], vk.bloom_image_views[2][i], vk.bloom_image_views[3][i], ldr};
-            write_set(this->post_sets[i], composite_set, *this->post_sampler);
+            std::array<VkImageView, 6> const composite_set = {hdr, vk_ref.bloom_image_views[0][image_index], vk_ref.bloom_image_views[1][image_index], vk_ref.bloom_image_views[2][image_index], vk_ref.bloom_image_views[3][image_index], ldr};
+            write_set(sets[4], composite_set);
+        };
+        if (!this->post_family.ensure_all(vk, this->post_set_layout, static_cast<uint32_t>(image_count), 5u, 6u, fingerprints, write_sets)) {
+            utility::log("runtime: post descriptor sets unavailable - post pass skipped");
         }
-        this->post_bound_views = vk.hdr_image_views;
-        this->post_bound_blooms = vk.bloom_image_views[0];
-        this->post_bound_ldr = vk.ldr_image_views;
     }
     // ---- G-buffer / deferred path (M1: the write pass + its debug view) ----
     // The G-buffer pass is the forward opaque pass with a different fragment stage: same vertex
@@ -2870,7 +2780,7 @@ namespace vulkan {
         this->gpu_mark(command_buffer, gpu_mark_id::main_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         this->ensure_post_descriptors();
-        if (this->post_pipeline == std::nullopt || this->post_hdr_pipeline == std::nullopt || this->post_sets.size() <= this->current_image_index) {
+        if (this->post_pipeline == std::nullopt || this->post_hdr_pipeline == std::nullopt || this->post_family.set(static_cast<uint32_t>(this->current_image_index), 4) == VK_NULL_HANDLE) {
             return false; // no post pipeline (creation failed): the HDR frame cannot be presented correctly
         }
 
@@ -2943,11 +2853,11 @@ namespace vulkan {
         bool const bloom_enabled = bloom_intensity > 0.0f;
         if (bloom_enabled) {
             barrier_to_color(vk.bloom_images[0][index]);
-            run_fullscreen(*this->post_hdr_pipeline, vk.bloom_image_views[0][index], level_size(0), this->post_prefilter_sets[index], 0.0f);
+            run_fullscreen(*this->post_hdr_pipeline, vk.bloom_image_views[0][index], level_size(0), this->post_family.set(static_cast<uint32_t>(index), 0), 0.0f);
             for (std::size_t level = 0; level < 3; ++level) {
                 barrier_to_read(vk.bloom_images[level][index]);
                 barrier_to_color(vk.bloom_images[level + 1][index]);
-                run_fullscreen(*this->post_hdr_pipeline, vk.bloom_image_views[level + 1][index], level_size(static_cast<uint32_t>(level) + 1u), this->post_down_sets[index][level], 1.0f);
+                run_fullscreen(*this->post_hdr_pipeline, vk.bloom_image_views[level + 1][index], level_size(static_cast<uint32_t>(level) + 1u), this->post_family.set(static_cast<uint32_t>(index), static_cast<uint32_t>(level) + 1u), 1.0f);
             }
             barrier_to_read(vk.bloom_images[3][index]);
         } else {
@@ -2987,7 +2897,7 @@ namespace vulkan {
         vkCmdSetViewport(command_buffer, 0, 1, &full_viewport);
         vkCmdSetScissor(command_buffer, 0, 1, &full_scissor);
         vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE); // the fullscreen triangle has no facing
-        VkDescriptorSet const composite_set = this->post_sets[index];
+        VkDescriptorSet const composite_set = this->post_family.set(static_cast<uint32_t>(index), 4);
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->post_pipeline_layout, 0, 1, &composite_set, 0, nullptr);
         post_push_constants const composite_push = {
             .exposure = this->exposure_scale,

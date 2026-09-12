@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.19.2  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.19.3  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -314,14 +314,10 @@ namespace vulkan {
         // The debug view's sets, one per swapchain image, allocated from a pool this family owns and
         // retires itself (see vulkan.bindings: the pool lifetime rule is only about the pools).
         bindings::image_set_family gbuffer_family;
-        // Descriptor pools replaced by a later swapchain generation. A pool may not be destroyed while
-        // any RECORDED command buffer still references sets allocated from it - and the per-slot frame
-        // command buffers stay recorded (executable) between frames - so a replaced pool is retired
-        // here and destroyed with the runtime instead. The post chain and TAA keep their pools here;
-        // the G-buffer family owns its own. Destroying them in place was a real
-        // VUID-vkDestroyDescriptorPool-descriptorPool-00303
-        // ("currently in use by VkCommandBuffer") on every window resize.
-        std::vector<VkDescriptorPool> retired_descriptor_pools = {};
+        // The per-image descriptor-set families (bindings::image_set_family) own their pools, including
+        // the ones a later swapchain generation replaced: a pool may not be destroyed while a recorded
+        // command buffer still references its sets (VUID-vkDestroyDescriptorPool-descriptorPool-00303),
+        // which is what used to make every window resize a validation error here.
 
         struct gbuffer_debug_push_constants {
             float channel = 1.0f; // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags
@@ -452,14 +448,10 @@ namespace vulkan {
         vk_sampler post_sampler = {};
         VkDescriptorSetLayout post_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout post_pipeline_layout = VK_NULL_HANDLE;
-        VkDescriptorPool post_descriptor_pool = VK_NULL_HANDLE;
-        uint32_t post_pool_capacity = 0;                                 // descriptor sets the current pool can hold
-        std::vector<VkDescriptorSet> post_prefilter_sets = {};           // HDR -> bloom level 0 (bright pass)
-        std::vector<std::array<VkDescriptorSet, 3>> post_down_sets = {}; // level k -> level k+1 (k = 0..2)
-        std::vector<VkDescriptorSet> post_sets = {};                     // composite (HDR + all bloom levels)
-        std::vector<VkImageView> post_bound_blooms = {};                 // bloom views the current sets point at
-        std::vector<VkImageView> post_bound_views = {};                  // HDR views the current sets point at
-        std::vector<VkImageView> post_bound_ldr = {};                    // LDR views the current sets point at
+        // The post chain's sets: five per swapchain image (prefilter, three downsample inputs and the
+        // composite), the only family whose rebind depends on three fingerprints. It is also the last
+        // one to leave the runtime - with it, no pool is left in this class to retire by hand.
+        bindings::image_set_family post_family;
         // per-stage render toggles: whether the skybox / shadow pass actually records this frame.
         // Skybox off leaves just the clear color; shadow off skips the depth pass (the shadow map
         // is cleared to fully-lit so the main pass samples "no shadow"). Both default on.
