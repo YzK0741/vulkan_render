@@ -1,4 +1,4 @@
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.1  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/bindings/bindings.cppm
@@ -61,14 +61,19 @@ namespace vulkan::bindings {
          *        and point at @p signature_views; returns false when the inputs are not usable yet
          * @param vk the core (device, and the per-image views the caller passes in the callback)
          * @param layout the set layout the family allocates from (owned by the pass, see vulkan.pipelines)
+         * @param image_count how many images the family must serve (the swapchain generation's count)
          * @param sets_per_image how many sets each image needs (1 unless a chain like post's needs more)
          * @param descriptors_per_set how many combined-image-sampler descriptors one of those sets holds
          *        (the caller decides the pool size, so a wrong count shows up as an allocation failure)
-         * @param signature_views one view per image whose identity decides whether a rebind is needed
+         * @param signature_views the views whose identity decides whether a rebind is needed: one per
+         *        image, or - as the G-buffer debug view passes it - the few views of image 0 that
+         *        identify the generation. It says NOTHING about how many images there are (image_count
+         *        does), which is exactly the distinction the first version of this class got wrong
          * @param write called for each image that needs (re)binding, with that image's sets
          */
         [[nodiscard]] bool ensure(core const& vk,
                                   VkDescriptorSetLayout layout,
+                                  uint32_t image_count,
                                   uint32_t sets_per_image,
                                   uint32_t descriptors_per_set,
                                   std::span<VkImageView const> signature_views,
@@ -125,10 +130,9 @@ namespace vulkan::bindings {
         }
     }
 
-    bool image_set_family::ensure(core const& vk, VkDescriptorSetLayout const layout, uint32_t const per_image, uint32_t const descriptors_per_set,
-                                  std::span<VkImageView const> const signature_views, write_sets_fn const& write) {
+    bool image_set_family::ensure(core const& vk, VkDescriptorSetLayout const layout, uint32_t const image_count, uint32_t const per_image,
+                                  uint32_t const descriptors_per_set, std::span<VkImageView const> const signature_views, write_sets_fn const& write) {
         this->device = vk.device;
-        std::size_t const image_count = signature_views.size();
         if (layout == VK_NULL_HANDLE || !static_cast<bool>(write) || image_count == 0 || per_image == 0) {
             return false;
         }
@@ -148,10 +152,10 @@ namespace vulkan::bindings {
             }
             VkDescriptorPoolSize pool_size = {};
             pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            pool_size.descriptorCount = static_cast<uint32_t>(image_count * per_image * descriptors_per_set);
+            pool_size.descriptorCount = static_cast<uint32_t>(static_cast<std::size_t>(image_count) * per_image * descriptors_per_set);
             VkDescriptorPoolCreateInfo pool_info = {};
             pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-            pool_info.maxSets = static_cast<uint32_t>(image_count * per_image);
+            pool_info.maxSets = static_cast<uint32_t>(static_cast<std::size_t>(image_count) * per_image);
             pool_info.poolSizeCount = 1;
             pool_info.pPoolSizes = &pool_size;
             if (vkCreateDescriptorPool(this->device, &pool_info, nullptr, &this->pool) != VK_SUCCESS) {
@@ -162,7 +166,7 @@ namespace vulkan::bindings {
                 this->bound_signature.clear();
                 return false;
             }
-            this->pool_capacity = static_cast<uint32_t>(image_count);
+            this->pool_capacity = image_count;
             this->sets_per_image = per_image;
             this->flat_sets.clear();
             this->bound_signature.clear();

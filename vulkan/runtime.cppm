@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.19.0a  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.19.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -23,6 +23,7 @@ module;
 export module vulkan.runtime;
 
 import vulkan.profiling;
+import vulkan.bindings; // the per-image descriptor-set families (the G-buffer debug view's for now)
 export import vstd;
 export import vulkan.core;
 export import vulkan.core.filter;
@@ -310,20 +311,18 @@ namespace vulkan {
         // light UBO, shadow map), set 1 = the G-buffer inputs. A set layout is index-agnostic, so the
         // debug view keeps using the same layout object as its set 0.
         VkPipelineLayout deferred_pipeline_layout = VK_NULL_HANDLE;
-        VkDescriptorPool gbuffer_descriptor_pool = VK_NULL_HANDLE;
-        uint32_t gbuffer_pool_capacity = 0;                   // swapchain images the pool can hold
-        std::vector<VkDescriptorSet> gbuffer_debug_sets = {}; // one per swapchain image
+        // The debug view's sets, one per swapchain image, allocated from a pool this family owns and
+        // retires itself (see vulkan.bindings: the pool lifetime rule is only about the pools).
+        bindings::image_set_family gbuffer_family;
         // Descriptor pools replaced by a later swapchain generation. A pool may not be destroyed while
         // any RECORDED command buffer still references sets allocated from it - and the per-slot frame
         // command buffers stay recorded (executable) between frames - so a replaced pool is retired
-        // here and destroyed with the runtime instead. Both the post chain and the G-buffer path use
-        // this: destroying them in place was a real VUID-vkDestroyDescriptorPool-descriptorPool-00303
+        // here and destroyed with the runtime instead. The post chain and TAA keep their pools here;
+        // the G-buffer family owns its own. Destroying them in place was a real
+        // VUID-vkDestroyDescriptorPool-descriptorPool-00303
         // ("currently in use by VkCommandBuffer") on every window resize.
         std::vector<VkDescriptorPool> retired_descriptor_pools = {};
-        // the target views the current sets point at, for image 0 (the swapchain generation
-        // fingerprint): a recreation invalidates the sets explicitly (on_swapchain_recreated), this
-        // is the belt-and-braces check that also catches a rebuilt generation reusing handles
-        std::array<VkImageView, 4> gbuffer_bound_views = {};
+
         struct gbuffer_debug_push_constants {
             float channel = 1.0f; // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags
             float proj_22 = 0.0f; // projection[2][2] / [3][2]: the depth-linearization terms

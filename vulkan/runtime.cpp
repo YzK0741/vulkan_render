@@ -12,6 +12,7 @@ module vulkan.runtime;
 
 import vulkan.profiling;
 import vulkan.pipelines;
+import vulkan.bindings;
 
 import utility;
 import vulkan.constant_init;
@@ -229,12 +230,8 @@ namespace vulkan {
             vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->post_set_layout, nullptr);
             this->post_set_layout = VK_NULL_HANDLE;
         }
-        // the same three objects for the G-buffer debug view (its pipeline and sampler are RAII
-        // members; the set layout, the pipeline layout and the pool are not)
-        if (this->gbuffer_descriptor_pool != VK_NULL_HANDLE) {
-            vkDestroyDescriptorPool(this->vulkan_core.device, this->gbuffer_descriptor_pool, nullptr);
-            this->gbuffer_descriptor_pool = VK_NULL_HANDLE;
-        }
+        // the same objects for the G-buffer debug view, minus the pool: that one belongs to
+        // gbuffer_family, whose destructor destroys it (and the generations it retired)
         if (this->gbuffer_pipeline_layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(this->vulkan_core.device, this->gbuffer_pipeline_layout, nullptr);
             this->gbuffer_pipeline_layout = VK_NULL_HANDLE;
@@ -1066,13 +1063,9 @@ namespace vulkan {
         //    frame can still be running - a freshly allocated set is referenced by nothing, so
         //    allocating instead of updating sidesteps that entirely.
         this->debug_overlay.on_swapchain_recreated();
-        this->gbuffer_bound_views = {};
-        this->gbuffer_debug_sets.clear();
-        if (this->gbuffer_descriptor_pool != VK_NULL_HANDLE) {
-            this->retired_descriptor_pools.push_back(this->gbuffer_descriptor_pool);
-            this->gbuffer_descriptor_pool = VK_NULL_HANDLE;
-            this->gbuffer_pool_capacity = 0;
-        }
+        // The debug view's family does all three: it forgets the views its sets were bound to and the
+        // sets themselves (so the next recorded frame allocates fresh ones) and retires its pool.
+        this->gbuffer_family.retire_all();
         this->post_bound_views.clear();
         this->post_bound_blooms.clear();
         this->post_bound_ldr.clear();
@@ -2451,7 +2444,7 @@ namespace vulkan {
         vkCmdPipelineBarrier2(command_buffer, &dependency);
 
         this->ensure_gbuffer_descriptors();
-        if (this->gbuffer_debug_sets.size() <= index) {
+        if (this->gbuffer_family.set(static_cast<uint32_t>(index), 0) == VK_NULL_HANDLE) {
             // No descriptor set: nothing can be shaded. Clear the HDR target so the frame is defined
             // (the post chain samples it) instead of leaving whatever the background/emissive wrote
             // mixed with garbage - and say so once per frame, because a silent black frame is worse
@@ -2482,7 +2475,7 @@ namespace vulkan {
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
         vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
         // set 0 = the shared scene set (camera / IBL / light UBO / shadow map), set 1 = the G-buffer
-        std::array<VkDescriptorSet, 2> const sets = {*this->scene_sets[static_cast<std::size_t>(vk.current_frame)], this->gbuffer_debug_sets[index]};
+        std::array<VkDescriptorSet, 2> const sets = {*this->scene_sets[static_cast<std::size_t>(vk.current_frame)], this->gbuffer_family.set(static_cast<uint32_t>(index), 0)};
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->deferred_pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
         // SSAO (M6) rides the same block: an intensity of 0 when the feature is off, which makes
         // ssao_occlusion() return exactly 1.0 - the shaded result is then the pre-M6 value bit for bit
@@ -2799,87 +2792,42 @@ namespace vulkan {
         if (image_count == 0 || vk.gbuffer_depth_image_views.size() != image_count) {
             return;
         }
-        // Same rebinding rule as the post chain: the sets stay allocated for the runtime's lifetime,
-        // and only their CONTENTS are rewritten when the targets change (a rebuilt swapchain
-        // generation, or the first frame after setup). on_swapchain_recreated() clears the fingerprint
-        // to force that rewrite.
+        // The family owns the rebinding rule now (see vulkan.bindings): the sets stay allocated, their
+        // contents are rewritten only when the targets below change, and a pool replaced by a later
+        // generation is retired rather than destroyed, because recorded frame command buffers still
+        // name its sets. on_swapchain_recreated() retires the family, which is what forces the rewrite.
         std::array<VkImageView, 4> const signature = {
             vk.gbuffer_image_views[0][0],
             vk.gbuffer_image_views[1][0],
             vk.gbuffer_image_views[2][0],
             vk.gbuffer_depth_image_views[0]};
-        if (this->gbuffer_debug_sets.size() == image_count && this->gbuffer_bound_views == signature) {
-            return; // already bound to the current targets
-        }
-
-        if (this->gbuffer_descriptor_pool == VK_NULL_HANDLE || this->gbuffer_pool_capacity != image_count) {
-            // The generation's image count changed (or this is the first frame): the pool must be sized
-            // for exactly this generation and its sets reallocated - a pool cannot grow, and its old
-            // sets are still allocated. The old pool is RETIRED, not destroyed: its sets are still
-            // named by recorded frame command buffers, and destroying it is
-            // VUID-vkDestroyDescriptorPool-descriptorPool-00303 (the same reason on_swapchain_recreated
-            // does not touch it). It is destroyed with the runtime.
-            if (this->gbuffer_descriptor_pool != VK_NULL_HANDLE) {
-                this->retired_descriptor_pools.push_back(this->gbuffer_descriptor_pool);
-                this->gbuffer_descriptor_pool = VK_NULL_HANDLE;
-            }
-            VkDescriptorPoolSize pool_size = {};
-            pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            pool_size.descriptorCount = static_cast<uint32_t>(image_count * signature.size());
-            VkDescriptorPoolCreateInfo pool_info = {};
-            pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-            pool_info.maxSets = static_cast<uint32_t>(image_count);
-            pool_info.poolSizeCount = 1;
-            pool_info.pPoolSizes = &pool_size;
-            if (vkCreateDescriptorPool(vk.device, &pool_info, nullptr, &this->gbuffer_descriptor_pool) != VK_SUCCESS) {
-                utility::log("runtime: gbuffer debug descriptor pool creation failed - debug view skipped");
-                this->gbuffer_descriptor_pool = VK_NULL_HANDLE;
-                this->gbuffer_debug_sets.clear();
-                this->gbuffer_bound_views = {};
-                return;
-            }
-            this->gbuffer_pool_capacity = static_cast<uint32_t>(image_count);
-            this->gbuffer_debug_sets.clear();
-        }
-
-        if (this->gbuffer_debug_sets.size() != image_count) {
-            std::vector<VkDescriptorSetLayout> const layouts(image_count, this->gbuffer_set_layout);
-            this->gbuffer_debug_sets.assign(image_count, VK_NULL_HANDLE);
-            VkDescriptorSetAllocateInfo allocate_info = {};
-            allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-            allocate_info.descriptorPool = this->gbuffer_descriptor_pool;
-            allocate_info.descriptorSetCount = static_cast<uint32_t>(image_count);
-            allocate_info.pSetLayouts = layouts.data();
-            if (vkAllocateDescriptorSets(vk.device, &allocate_info, this->gbuffer_debug_sets.data()) != VK_SUCCESS) {
-                utility::log("runtime: gbuffer debug descriptor allocation failed - debug view skipped");
-                this->gbuffer_debug_sets.clear();
-                this->gbuffer_bound_views = {};
-                return;
-            }
-        }
-
-        for (std::size_t i = 0; i < image_count; ++i) {
+        // One set per image with one descriptor per binding: the three stored targets plus the depth.
+        // image_count is the generation''s, signature is only the fingerprint of image 0 above - the two
+        // are different things and the family needs both (see vulkan.bindings).
+        auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
             std::array<VkDescriptorImageInfo, 4> image_infos = {};
             std::array<VkImageView, 4> const views = {
-                vk.gbuffer_image_views[0][i],
-                vk.gbuffer_image_views[1][i],
-                vk.gbuffer_image_views[2][i],
-                vk.gbuffer_depth_image_views[i]};
+                vk_ref.gbuffer_image_views[0][image_index],
+                vk_ref.gbuffer_image_views[1][image_index],
+                vk_ref.gbuffer_image_views[2][image_index],
+                vk_ref.gbuffer_depth_image_views[image_index]};
             std::array<VkWriteDescriptorSet, 4> writes = {};
             for (uint32_t b = 0; b < views.size(); ++b) {
                 image_infos[b].sampler = *this->gbuffer_sampler;
                 image_infos[b].imageView = views[b];
                 image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[b].dstSet = this->gbuffer_debug_sets[i];
+                writes[b].dstSet = sets[0];
                 writes[b].dstBinding = b;
                 writes[b].descriptorCount = 1;
                 writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                 writes[b].pImageInfo = &image_infos[b];
             }
-            vkUpdateDescriptorSets(vk.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            vkUpdateDescriptorSets(vk_ref.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        };
+        if (!this->gbuffer_family.ensure(vk, this->gbuffer_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
+            utility::log("runtime: gbuffer debug descriptor sets unavailable - debug view skipped");
         }
-        this->gbuffer_bound_views = signature;
     }
 
     void runtime::record_gbuffer_debug_pass(VkCommandBuffer const command_buffer) {
@@ -2919,7 +2867,7 @@ namespace vulkan {
         VkRenderingAttachmentInfo const color_attachment = make_color_attachment_info(vk.hdr_image_views[index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
         VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &color_attachment, nullptr);
         vkCmdBeginRendering(command_buffer, &rendering_info);
-        bool const can_draw = this->gbuffer_debug_sets.size() > index;
+        bool const can_draw = this->gbuffer_family.set(static_cast<uint32_t>(index), 0) != VK_NULL_HANDLE;
         if (can_draw) {
             this->gbuffer_debug_pipeline->begin_pipeline(command_buffer);
             VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height), 0.0f, 1.0f};
@@ -2927,7 +2875,7 @@ namespace vulkan {
             vkCmdSetViewport(command_buffer, 0, 1, &viewport);
             vkCmdSetScissor(command_buffer, 0, 1, &scissor);
             vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
-            VkDescriptorSet const set = this->gbuffer_debug_sets[index];
+            VkDescriptorSet const set = this->gbuffer_family.set(static_cast<uint32_t>(index), 0);
             vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->gbuffer_pipeline_layout, 0, 1, &set, 0, nullptr);
             gbuffer_debug_push_constants const push = {
                 .channel = static_cast<float>(this->gbuffer_channel_index),
