@@ -2236,27 +2236,11 @@ namespace vulkan {
         if (this->post_pipeline_layout == VK_NULL_HANDLE) {
             return fail(std::string("fxaa: create the post-process pipeline first (it owns the set layout)"));
         }
-        // Same fullscreen triangle and the same swapchain color format as the composite (FXAA writes
-        // the swapchain), but its own shader module: fxaa.frag is what declares binding 5, and
-        // keeping the composite's shader free of that binding is what lets the composite write the
-        // LDR image while its own descriptor set points at it.
-        auto pipeline_result = vulkan::make_pipeline(
-            vk.device,
-            this->post_pipeline_layout,
-            vk.swap_chain_image_format,
-            VK_FORMAT_UNDEFINED,
-            vertex_shader_code,
-            fragment_shader_code,
-            VK_SAMPLE_COUNT_1_BIT,
-            false,
-            true,
-            0.0f,
-            0.0f,
-            0.0f);
-        if (!pipeline_result) {
-            return fail(std::string(pipeline_result.error()));
+        auto built = pipelines::build_fxaa(vk, this->post_pipeline_layout, vertex_shader_code, fragment_shader_code);
+        if (!built) {
+            return std::unexpected(std::move(built.error()));
         }
-        this->post_fxaa_pipeline = std::move(pipeline_result).value();
+        this->post_fxaa_pipeline = std::move(*built);
         return {};
     }
 
@@ -2406,56 +2390,18 @@ namespace vulkan {
         using fail = std::unexpected<std::string>;
         core& vk = this->vulkan_core;
         if (this->gbuffer_set_layout == VK_NULL_HANDLE) {
-            // the lighting stage reads the G-buffer through the same set layout the debug view
-            // declares; the debug pipeline owns creating it, so it must come first
             return fail(std::string("deferred: create the G-buffer debug pipeline first (it owns the G-buffer set layout)"));
         }
         if (vk.scene_descriptor_set_layout == VK_NULL_HANDLE) {
             return fail(std::string("deferred: the shared scene descriptor set layout is missing"));
         }
-
-        // Two sets: 0 = the shared scene set (camera UBO, IBL maps, light UBO, shadow map - the
-        // lighting stage needs all of them), 1 = the G-buffer inputs. The scene set is exactly the
-        // one every scene pipeline binds, so the lighting stage sees the same lights and shadows as
-        // the forward path by construction.
-        std::array<VkDescriptorSetLayout, 2> const set_layouts = {vk.scene_descriptor_set_layout, this->gbuffer_set_layout};
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        push_range.offset = 0;
-        push_range.size = sizeof(deferred_push_constants);
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = static_cast<uint32_t>(set_layouts.size());
-        pipeline_layout_info.pSetLayouts = set_layouts.data();
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &this->deferred_pipeline_layout) != VK_SUCCESS) {
-            return fail("deferred: pipeline layout creation failed");
-        }
-
-        // fullscreen triangle (post.vert), no depth attachment, no depth test: every pixel is shaded
-        // exactly once from the G-buffer, which is the point of the deferred path
-        // The target is ADDED to, not overwritten: the sky (background pass) and the emissive
-        // (G-buffer pass) are already in the HDR target, and a pixel with no geometry emits exactly 0.
-        std::array<VkFormat, 1> const color_formats = {vulkan::hdr_format};
         std::array<VkPipelineColorBlendAttachmentState, 1> const blend = {make_color_blend_attachment_additive()};
-        auto pipeline_result = vulkan::make_pipeline(
-            vk.device,
-            this->deferred_pipeline_layout,
-            std::span<VkFormat const>(color_formats),
-            VK_FORMAT_UNDEFINED,
-            vertex_shader_code,
-            fragment_shader_code,
-            VK_SAMPLE_COUNT_1_BIT,
-            false, // no depth attachment: the G-buffer depth is sampled, not tested against
-            0.0f,
-            0.0f,
-            0.0f,
-            std::span<VkPipelineColorBlendAttachmentState const>(blend));
-        if (!pipeline_result) {
-            return fail(std::string(pipeline_result.error()));
+        auto built = pipelines::build_deferred(vk, vk.scene_descriptor_set_layout, this->gbuffer_set_layout, sizeof(deferred_push_constants), std::span<VkPipelineColorBlendAttachmentState const>(blend), vertex_shader_code, fragment_shader_code);
+        if (!built) {
+            return std::unexpected(std::move(built.error()));
         }
-        this->deferred_pipeline = std::move(pipeline_result).value();
+        this->deferred_pipeline_layout = built->pipeline_layout;
+        this->deferred_pipeline = std::move(built->lighting);
         return {};
     }
 

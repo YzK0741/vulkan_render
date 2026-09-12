@@ -61,8 +61,15 @@ namespace vulkan::pipelines {
     export std::expected<taa_owned, std::string> build_taa(core& vk, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
 
     /// the passes that reuse a layout someone else owns, so theirs comes in as a parameter
-    export std::expected<vk_pipeline, std::string> build_fxaa(core& vk, VkPipelineLayout post_pipeline_layout, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
-    export std::expected<vk_pipeline, std::string> build_deferred(core& vk, VkPipelineLayout pipeline_layout, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export std::expected<vk_pipeline, std::string> build_fxaa(core& vk, VkPipelineLayout post_pipeline_layout, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export struct deferred_owned {
+        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+        std::optional<vk_pipeline> lighting;
+    };
+
+    /// the additive blend state comes in as a parameter: the helper that builds it is a local of the
+    /// runtime, next to the passes whose blend modes it describes
+    export std::expected<deferred_owned, std::string> build_deferred(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<VkPipelineColorBlendAttachmentState const> color_blend, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     // post: the composite chain's owner. The set layout, its pipeline layout and the two fullscreen
     // pipelines (one per color format the chain renders into) are created here; the sampler stays with
     // the runtime, which owns the descriptor sets that use it. The caller passes the size of its push
@@ -226,5 +233,41 @@ namespace vulkan::pipelines {
         }
         out.resolve = std::move(pipeline_result).value();
         return out;
+    }
+    std::expected<deferred_owned, std::string> build_deferred(core& vk, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<VkPipelineColorBlendAttachmentState const> const color_blend, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+        using fail = std::unexpected<std::string>;
+        deferred_owned out;
+        std::array<VkDescriptorSetLayout, 2> const set_layouts = {scene_layout, gbuffer_layout};
+        VkPushConstantRange push_range = {};
+        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        push_range.offset = 0;
+        push_range.size = push_constant_size;
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = static_cast<uint32_t>(set_layouts.size());
+        pipeline_layout_info.pSetLayouts = set_layouts.data();
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+            return fail("deferred: pipeline layout creation failed");
+        }
+        std::array<VkFormat, 1> const color_formats = {vulkan::hdr_format};
+        auto pipeline_result = vulkan::make_pipeline(
+            vk.device, out.pipeline_layout, std::span<VkFormat const>(color_formats), VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, 0.0f, 0.0f, 0.0f, color_blend);
+        if (!pipeline_result) {
+            return fail(std::string(pipeline_result.error()));
+        }
+        out.lighting = std::move(pipeline_result).value();
+        return out;
+    }
+
+    std::expected<vk_pipeline, std::string> build_fxaa(core& vk, VkPipelineLayout const post_pipeline_layout, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+        using fail = std::unexpected<std::string>;
+        auto pipeline_result = vulkan::make_pipeline(
+            vk.device, post_pipeline_layout, vk.swap_chain_image_format, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
+        if (!pipeline_result) {
+            return fail(std::string(pipeline_result.error()));
+        }
+        return std::move(pipeline_result).value();
     }
 } // namespace vulkan::pipelines
