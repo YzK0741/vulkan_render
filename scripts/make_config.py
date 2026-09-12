@@ -146,11 +146,35 @@ def write_toml(path: str, cfg: dict) -> None:
         f"window_height = {cfg['window_height']}",
         f"window_title = \"{fmt_toml_string(cfg['window_title'])}\"",
         f"vsync = {str(cfg['vsync']).lower()}",
+        f"max_fps = {cfg['max_fps']}",
         f"msaa = {cfg['msaa']}",
         "clear_color = [{0}, {1}, {2}]".format(*cfg["clear_color"]),
         f"skybox = {str(cfg['skybox']).lower()}",
         f"shadow = {str(cfg['shadow']).lower()}",
         f"validation_layers = {str(cfg['validation_layers']).lower()}",
+        "",
+        "# ---- [render] shadow mapping ----",
+        f"shadow_cascades = {cfg['shadow_cascades']}",
+        f"shadow_map_size = {cfg['shadow_map_size']}",
+        f"shadow_cascade_blend = {cfg['shadow_cascade_blend']}",
+        "",
+        "# ---- [render] shading + post-processing features ----",
+        f"unlit = {str(cfg['unlit']).lower()}",
+        f"deferred = {str(cfg['deferred']).lower()}",
+        f"taa = {str(cfg['taa']).lower()}",
+        f"taa_blend_static = {cfg['taa_blend_static']}",
+        f"taa_blend_min = {cfg['taa_blend_min']}",
+        f"fxaa = {str(cfg['fxaa']).lower()}",
+        f"gbuffer_debug = {str(cfg['gbuffer_debug']).lower()}",
+        f"gbuffer_channel = {cfg['gbuffer_channel']}",
+        f"gpu_timings = {str(cfg['gpu_timings']).lower()}",
+        "",
+        "# ---- [render] punctual lights + screen-space AO ----",
+        f"clustered_lights = {str(cfg['clustered_lights']).lower()}",
+        f"ssao = {str(cfg['ssao']).lower()}",
+        f"ssao_radius = {cfg['ssao_radius']}",
+        f"ssao_intensity = {cfg['ssao_intensity']}",
+        f"ssao_samples = {cfg['ssao_samples']}",
         "",
         "# ---- [gui] debug overlay ----",
         "[gui]",
@@ -195,6 +219,7 @@ def ask_all(output_dir: str) -> dict:
     window_height = ask_int("render.window_height", 960, 1, hint="pixels")
     window_title = ask_text("render.window_title", "vulkan_render")
     vsync = ask_bool("render.vsync", False, hint="false = Mailbox (uncapped), true = FIFO")
+    max_fps = ask_int("render.max_fps", 0, 0, hint="0 = uncapped; e.g. 240 to match a 240 Hz panel")
     msaa_choices = [str(c) for c in MSAA_CHOICES]
     msaa_raw = ask_choice(
         "render.msaa: multisample count", msaa_choices, "0", hint="0 = auto (device max); or 2/4/8/16"
@@ -207,16 +232,57 @@ def ask_all(output_dir: str) -> dict:
         "render.validation_layers", True, hint="Debug defaults on; Release off - override here if needed"
     )
 
+    print("\n-- render (shadow mapping) --")
+    shadow_cascades = ask_int(
+        "render.shadow_cascades", 3, 1, 4, hint="1 = the single-map baseline; 2..4 = cascaded"
+    )
+    shadow_map_size = ask_int(
+        "render.shadow_map_size", 2048, 256, 8192, hint="edge length in texels; per cascade layer"
+    )
+    shadow_cascade_blend = ask_float(
+        "render.shadow_cascade_blend", 0.1, 0.0, 0.5, hint="fraction of a cascade's range blended into the next"
+    )
+
+    print("\n-- render (shading + post-processing; every one of these is also a live overlay toggle) --")
+    unlit = ask_bool("render.unlit", False, hint="flat base color instead of PBR (a shading-free reference)")
+    deferred = ask_bool(
+        "render.deferred", False, hint="G-buffer + screen-space lighting instead of forward shading"
+    )
+    taa = ask_bool(
+        "render.taa", False, hint="temporal AA; requires deferred = true and pairs naturally with msaa = 1"
+    )
+    taa_blend_static = ask_float("render.taa_blend_static", 0.9, 0.0, 1.0, hint="history weight for a still pixel")
+    taa_blend_min = ask_float("render.taa_blend_min", 0.5, 0.0, 1.0, hint="history weight floor under motion")
+    fxaa = ask_bool("render.fxaa", False, hint="final anti-aliasing pass; costs nothing when off")
+    gbuffer_debug = ask_bool("render.gbuffer_debug", False, hint="show a stored G-buffer channel (needs deferred)")
+    gbuffer_channel = ask_int(
+        "render.gbuffer_channel", 1, 0, 7, hint="0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags"
+    )
+    gpu_timings = ask_bool("render.gpu_timings", True, hint="per-pass GPU timestamps (a no-op if the device cannot)")
+
+    print("\n-- render (punctual lights + screen-space AO) --")
+    clustered_lights = ask_bool(
+        "render.clustered_lights", True, hint="false = the brute-force reference the clustered path is checked against"
+    )
+    ssao = ask_bool("render.ssao", True, hint="screen-space ambient occlusion (deferred path only)")
+    ssao_radius = ask_float("render.ssao_radius", 0.5, 0.0, 100.0, hint="world-space sample radius")
+    ssao_intensity = ask_float("render.ssao_intensity", 1.0, 0.0, 1.0, hint="1 = full occlusion, 0 = off")
+    ssao_samples = ask_int("render.ssao_samples", 8, 1, 16, hint="samples per pixel")
+
     print("\n-- gui (debug overlay) --")
     gui_show = ask_bool("gui.show", True, hint="Dear ImGui debug overlay on by default")
     panel_width = ask_int("gui.panel_width", 380, 0, hint="0 = ImGui auto-size")
     panel_height = ask_int("gui.panel_height", 140, 0, hint="0 = ImGui auto-size")
 
     print("\n-- lighting (IBL precompute resolutions; lower = faster startup) --")
-    env_size = ask_int("lighting.env_size", 256, 64, 1024, hint="environment cubemap size")
-    env_mip_count = ask_int("lighting.env_mip_count", 5, 1, 10, hint="prefiltered env mip chain length")
-    irr_size = ask_int("lighting.irr_size", 32, 8, 256, hint="irradiance cubemap size")
-    lut_size = ask_int("lighting.lut_size", 256, 32, 1024, hint="BRDF LUT size")
+    # Bounds mirror app_config::load_settings' clamps exactly: a generator that could emit a value the
+    # loader then rejects would be a trap, and these four feed the CPU bake that runs before anything
+    # validates them (env_size = 0 indexes an empty source buffer, a negative one dies on the size
+    # arithmetic, env_mip_count < 2 wraps the sampler's level math).
+    env_size = ask_int("lighting.env_size", 256, 16, 4096, hint="environment cubemap size")
+    env_mip_count = ask_int("lighting.env_mip_count", 5, 2, 12, hint="prefiltered env mip chain length")
+    irr_size = ask_int("lighting.irr_size", 32, 1, 1024, hint="irradiance cubemap size")
+    lut_size = ask_int("lighting.lut_size", 256, 1, 1024, hint="BRDF LUT size")
 
     print(f"\nwriting config.toml to: {output_dir}")
     return {
@@ -228,11 +294,29 @@ def ask_all(output_dir: str) -> dict:
         "window_height": window_height,
         "window_title": window_title,
         "vsync": vsync,
+        "max_fps": max_fps,
         "msaa": msaa,
         "clear_color": clear_color,
         "skybox": skybox,
         "shadow": shadow,
         "validation_layers": validation_layers,
+        "shadow_cascades": shadow_cascades,
+        "shadow_map_size": shadow_map_size,
+        "shadow_cascade_blend": shadow_cascade_blend,
+        "unlit": unlit,
+        "deferred": deferred,
+        "taa": taa,
+        "taa_blend_static": taa_blend_static,
+        "taa_blend_min": taa_blend_min,
+        "fxaa": fxaa,
+        "gbuffer_debug": gbuffer_debug,
+        "gbuffer_channel": gbuffer_channel,
+        "gpu_timings": gpu_timings,
+        "clustered_lights": clustered_lights,
+        "ssao": ssao,
+        "ssao_radius": ssao_radius,
+        "ssao_intensity": ssao_intensity,
+        "ssao_samples": ssao_samples,
         "gui_show": gui_show,
         "panel_width": panel_width,
         "panel_height": panel_height,

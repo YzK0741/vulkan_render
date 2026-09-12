@@ -1,0 +1,8 @@
+# Every [lighting] value here is out of the range the IBL precompute supports. The CPU bake runs
+# straight after load_settings() and before anything validates, so these must be clamped or the
+# process reads out of bounds / dies with a length_error. See app_config::load_settings.
+[lighting]
+env_size = 0
+env_mip_count = 1
+irr_size = -4
+lut_size = 999999

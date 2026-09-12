@@ -284,6 +284,29 @@ namespace app_config {
         }
         settings.render.ssao_radius = std::clamp(settings.render.ssao_radius, 0.0f, 100.0f);
         settings.render.ssao_intensity = std::clamp(settings.render.ssao_intensity, 0.0f, 1.0f);
+        // IBL resolutions drive the CPU precompute that runs BEFORE the runtime validates anything
+        // (main.cpp bakes the cubemap right after analyse_config), so an out-of-range value is not a
+        // quality knob but a crash: env_size = 0 indexes an empty source buffer inside
+        // build_environment_pyramid (its source_size floors at 1, so every fetch runs off the end),
+        // a negative one turns "6 * size * size * 4" into a huge size_t (length_error -> terminate
+        // with exceptions disabled), and env_mip_count < 2 makes the sampler's
+        // "pyramid.size() - 1" wrap around. Clamp to the range the precompute actually supports.
+        if (settings.lighting.env_size < 16 || settings.lighting.env_size > 4096) {
+            utility::log("app_config: invalid env_size {} (use 16..4096), falling back to 256", settings.lighting.env_size);
+            settings.lighting.env_size = 256;
+        }
+        if (settings.lighting.env_mip_count < 2 || settings.lighting.env_mip_count > 12) {
+            utility::log("app_config: invalid env_mip_count {} (use 2..12), falling back to 5", settings.lighting.env_mip_count);
+            settings.lighting.env_mip_count = 5;
+        }
+        if (settings.lighting.irr_size < 1 || settings.lighting.irr_size > 1024) {
+            utility::log("app_config: invalid irr_size {} (use 1..1024), falling back to 32", settings.lighting.irr_size);
+            settings.lighting.irr_size = 32;
+        }
+        if (settings.lighting.lut_size < 1 || settings.lighting.lut_size > 1024) {
+            utility::log("app_config: invalid lut_size {} (use 1..1024), falling back to 256", settings.lighting.lut_size);
+            settings.lighting.lut_size = 256;
+        }
         if (settings.lighting.demo_lights < 0 || settings.lighting.demo_lights > static_cast<int>(max_demo_lights)) {
             utility::log("app_config: invalid demo_lights {} (use 0..{}), clamping", settings.lighting.demo_lights, max_demo_lights);
             settings.lighting.demo_lights = std::clamp(settings.lighting.demo_lights, 0, static_cast<int>(max_demo_lights));
