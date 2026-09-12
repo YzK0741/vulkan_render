@@ -501,7 +501,7 @@ namespace vulkan {
     }
 
     void runtime::ensure_scene_set() {
-        if (this->scene_set_created) {
+        if (this->scene_sets.created()) {
             return;
         }
         // the scene set binds the shadow map (binding 8) and the light UBO (binding 7), so those
@@ -515,10 +515,7 @@ namespace vulkan {
         // One scene descriptor set per frame slot: a slot's set always points at that slot's own
         // camera / shadow / skin / morph resources, so an in-flight frame never observes the next
         // frame's descriptors and no per-frame update-after-bind writes are needed at all.
-        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            this->scene_sets[static_cast<std::size_t>(slot)] = this->vulkan_core.make_descriptor_set(this->vulkan_core.scene_descriptor_set_layout);
-        }
-        this->scene_set_created = true;
+        this->scene_sets.create(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout);
 
         auto const write_buffer_binding = [this](VkDescriptorSet const set, uint32_t const binding, VkBuffer const buffer, VkDeviceSize const size, VkDescriptorType const type) {
             VkDescriptorBufferInfo const info{buffer, 0, size};
@@ -533,7 +530,7 @@ namespace vulkan {
         };
 
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            VkDescriptorSet const set = *this->scene_sets[static_cast<std::size_t>(slot)];
+            VkDescriptorSet const set = this->scene_sets.set(static_cast<uint32_t>(slot));
 
             // binding 0: THIS slot's camera UBO buffer
             auto const* camera_detail = this->vulkan_core.vma.get_buffer_detail(this->camera_buffers[static_cast<std::size_t>(slot)].handle());
@@ -591,21 +588,14 @@ namespace vulkan {
         this->write_ibl_bindings();
     }
 
-    void runtime::update_all_scene_sets(VkWriteDescriptorSet const* writes, uint32_t const write_count) {
-        if (!this->scene_set_created) {
-            return;
-        }
-        std::vector<VkWriteDescriptorSet> per_set(writes, writes + write_count);
-        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            for (VkWriteDescriptorSet& write : per_set) {
-                write.dstSet = *this->scene_sets[static_cast<std::size_t>(slot)];
-            }
-            vkUpdateDescriptorSets(this->vulkan_core.device, write_count, per_set.data(), 0, nullptr);
-        }
+    void runtime::update_all_scene_sets(VkWriteDescriptorSet const* const writes, uint32_t const write_count) {
+        // the sets, the per-slot dstSet substitution and the "not created yet" case belong to the
+        // bindings, because a material registered before setup finished has nothing to write to
+        this->scene_sets.update_all(this->vulkan_core, writes, write_count);
     }
 
     void runtime::write_light_and_shadow_bindings() {
-        if (!this->scene_set_created) {
+        if (!this->scene_sets.created()) {
             return;
         }
         // binding 7 (light UBO) + binding 8 (shadow map): BOTH point at THIS slot's own
@@ -613,7 +603,7 @@ namespace vulkan {
         // per-frame re-pointing is needed and an in-flight frame never shares a buffer the next
         // frame rewrites.
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            VkDescriptorSet const set = *this->scene_sets[static_cast<std::size_t>(slot)];
+            VkDescriptorSet const set = this->scene_sets.set(static_cast<uint32_t>(slot));
             auto const* light_detail = this->vulkan_core.vma.get_buffer_detail(this->light_buffers[static_cast<std::size_t>(slot)].handle());
             if (light_detail == nullptr) {
                 utility::panic("failed to get light ubo buffer detail");
@@ -647,33 +637,15 @@ namespace vulkan {
     }
 
     void runtime::write_ibl_bindings() const {
-        if (!this->scene_set_created) {
+        if (!this->scene_sets.created()) {
             return;
         }
-        std::array<VkDescriptorImageInfo, 3> image_infos = {};
-        VkImageView const placeholder_view = *this->owned_texture_views[0]; // white
-        VkSampler const placeholder_sampler = *this->texture_sampler;
-        for (int i = 0; i < 3; ++i) {
-            image_infos[static_cast<std::size_t>(i)] = {
-                .sampler = this->ibl_ready ? *this->env_sampler : placeholder_sampler,
-                .imageView = this->ibl_ready ? *this->ibl_views[static_cast<std::size_t>(i)] : placeholder_view,
-                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            };
-        }
-        // write bindings 2-4 on every scene set
-        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            VkDescriptorSet const set = *this->scene_sets[static_cast<std::size_t>(slot)];
-            std::array<VkWriteDescriptorSet, 3> writes = {};
-            for (int i = 0; i < 3; ++i) {
-                writes[static_cast<std::size_t>(i)].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[static_cast<std::size_t>(i)].dstSet = set;
-                writes[static_cast<std::size_t>(i)].dstBinding = static_cast<uint32_t>(2 + i);
-                writes[static_cast<std::size_t>(i)].descriptorCount = 1;
-                writes[static_cast<std::size_t>(i)].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                writes[static_cast<std::size_t>(i)].pImageInfo = &image_infos[static_cast<std::size_t>(i)];
-            }
-            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-        }
+        // The IBL bindings need nothing but plain handles - the three environment views, the
+        // environment sampler and the white placeholder - so they are written by the bindings; the
+        // buffer bindings below and in ensure_scene_set() stay here, because they need this runtime's
+        // buffer details and capacities.
+        std::array<VkImageView, 3> const ibl_views = {*this->ibl_views[0], *this->ibl_views[1], *this->ibl_views[2]};
+        this->scene_sets.write_ibl(this->vulkan_core, this->ibl_ready, ibl_views, *this->env_sampler, *this->owned_texture_views[0], *this->texture_sampler);
     }
 
     void runtime::set_ibl(ibl_input const& info) {
@@ -823,7 +795,7 @@ namespace vulkan {
 
             image_infos[write_count] = {.sampler = sampler, .imageView = *this->owned_texture_views.back(), .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
             writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[write_count].dstSet = *this->scene_sets[0]; // dstSet is replaced per set by update_all_scene_sets
+            writes[write_count].dstSet = this->scene_sets.set(0u); // dstSet is replaced per set by update_all_scene_sets
             writes[write_count].dstBinding = 1;
             writes[write_count].dstArrayElement = index;
             writes[write_count].descriptorCount = 1;
@@ -841,7 +813,7 @@ namespace vulkan {
             };
             VkWriteDescriptorSet white_write = {};
             white_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            white_write.dstSet = *this->scene_sets[0]; // dstSet is replaced per set by update_all_scene_sets
+            white_write.dstSet = this->scene_sets.set(0u); // dstSet is replaced per set by update_all_scene_sets
             white_write.dstBinding = 1;
             white_write.dstArrayElement = this->white_texture_index;
             white_write.descriptorCount = 1;
@@ -2002,8 +1974,8 @@ namespace vulkan {
     void runtime::record_shadow_content(VkCommandBuffer const command_buffer) const {
         core const& vk = this->vulkan_core;
         uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
-        if (this->scene_set_created) {
-            VkDescriptorSet const scene_set_handle = *this->scene_sets[static_cast<std::size_t>(frame_slot)];
+        if (this->scene_sets.created()) {
+            VkDescriptorSet const scene_set_handle = this->scene_sets.set(static_cast<uint32_t>(frame_slot));
             vkCmdBindDescriptorSets(command_buffer,
                                     VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     vk.scene_pipeline_layout,
@@ -2071,8 +2043,8 @@ namespace vulkan {
         // Bind this frame slot's scene descriptor set once: every pipeline shares the scene
         // layout, so the set stays valid across pipeline binds and only models vary per draw.
         // Each slot's set always points at that slot's own camera/shadow/skin/morph resources.
-        if (this->scene_set_created) {
-            VkDescriptorSet const scene_set_handle = *this->scene_sets[static_cast<std::size_t>(vk.current_frame)];
+        if (this->scene_sets.created()) {
+            VkDescriptorSet const scene_set_handle = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
             vkCmdBindDescriptorSets(command_buffer,
                                     VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     vk.scene_pipeline_layout,
@@ -2377,7 +2349,7 @@ namespace vulkan {
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
         vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
         // set 0 = the shared scene set (camera / IBL / light UBO / shadow map), set 1 = the G-buffer
-        std::array<VkDescriptorSet, 2> const sets = {*this->scene_sets[static_cast<std::size_t>(vk.current_frame)], this->gbuffer_family.set(static_cast<uint32_t>(index), 0)};
+        std::array<VkDescriptorSet, 2> const sets = {this->scene_sets.set(static_cast<uint32_t>(vk.current_frame)), this->gbuffer_family.set(static_cast<uint32_t>(index), 0)};
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->deferred_pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
         // SSAO (M6) rides the same block: an intensity of 0 when the feature is off, which makes
         // ssao_occlusion() return exactly 1.0 - the shaded result is then the pre-M6 value bit for bit
@@ -3256,7 +3228,7 @@ namespace vulkan {
         // warning there would claim "the skybox has no effect" one line above "skybox pipeline
         // created". The scene set is created on the first recorded frame, i.e. once every optional
         // pipeline exists.
-        if (!this->scene_set_created) {
+        if (!this->scene_sets.created()) {
             return;
         }
         // At most once per feature per session: main() mirrors the overlay's state into the runtime
@@ -3395,7 +3367,7 @@ namespace vulkan {
         // Feature registry: skipped when no shading stage reads a light list (flat render mode) or
         // when no punctual light is active - there would be nothing to sort, and the shading stage
         // then falls back to looping zero lights.
-        if (!this->active_features().clustered || !this->scene_set_created) {
+        if (!this->active_features().clustered || !this->scene_sets.created()) {
             return;
         }
         uint32_t const tiles_x = this->cluster_tiles_x;
@@ -3411,7 +3383,7 @@ namespace vulkan {
         // The dispatch reads the frame's OWN scene set (the paced slot's camera/light UBOs) and
         // writes the same slot's cluster buffers: a compute stage is not part of a rendering
         // instance, so this records before vkCmdBeginRendering.
-        VkDescriptorSet const scene_set_handle = *this->scene_sets[static_cast<std::size_t>(frame_slot)];
+        VkDescriptorSet const scene_set_handle = this->scene_sets.set(static_cast<uint32_t>(frame_slot));
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, vk.scene_pipeline_layout, 0, 1, &scene_set_handle, 0, nullptr);
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->cluster_pipeline->get_pipeline());
         constexpr uint32_t group_size = 64; // matches local_size_x in shaders/light_cluster.comp

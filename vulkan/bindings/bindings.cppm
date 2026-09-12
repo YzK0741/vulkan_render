@@ -1,4 +1,4 @@
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/bindings/bindings.cppm
@@ -51,6 +51,48 @@ namespace vulkan::bindings {
      * @note the sets are flattened: set(image, which) is the @c which -th set of @c image, with
      *       @c sets_per_image entries per image (post: 0=prefilter, 1..3=downsamples, 4=composite).
      */
+    /**
+     * @brief the frame slots' scene descriptor sets: one set per slot, never re-pointed
+     * @ingroup vulkan_bindings
+     *
+     * The scene set is what every pipeline that draws the scene binds first (camera UBO, IBL, material
+     * table, instance transforms, per-slot light UBO and shadow map, per-slot skin/morph and cluster
+     * buffers). Its shape differs from image_set_family in two ways that matter: there is one set per
+     * FRAME SLOT rather than per swapchain image, and its sets come from the core
+     * (core::make_descriptor_set), so there is no pool of its own to size and retire - which is why
+     * this class is small and the pool lifetime rule stays entirely with image_set_family.
+     *
+     * What it does own is the rule the old scattered arrays also encoded: a slot's set always points
+     * at that slot's own camera / shadow / skin resources, so an in-flight frame never observes the
+     * next frame's descriptors, and update_all() applies one batch of writes to every slot rather
+     * than to one.
+     *
+     * The bindings that need the runtime's buffer details (the camera / material / instance / skin /
+     * morph / cluster buffers, binding 0 and 5-12) still get written by the runtime: only the ones
+     * that take plain handles - the IBL views (2-4) - are written here.
+     */
+    export class scene_bindings {
+    public:
+        /// create one set per frame slot from the scene layout; a no-op once they exist
+        void create(core const& vk, VkDescriptorSetLayout layout);
+
+        /// whether the sets exist (before that, set() is null and the writers are no-ops)
+        [[nodiscard]] bool created() const noexcept;
+
+        /// the scene set of @p slot, or VK_NULL_HANDLE when there is none
+        [[nodiscard]] VkDescriptorSet set(uint32_t slot) const noexcept;
+
+        /// apply one batch of writes to every slot's set: dstSet is replaced per slot
+        void update_all(core const& vk, VkWriteDescriptorSet const* writes, uint32_t write_count) const;
+
+        /// bindings 2-4: the three environment views, or the white placeholder while IBL is not loaded
+        void write_ibl(core const& vk, bool ibl_ready, std::span<VkImageView const> ibl_views, VkSampler env_sampler, VkImageView placeholder_view, VkSampler placeholder_sampler) const;
+
+    private:
+        std::array<vk_descriptor_set, core::MAX_FRAMES_IN_FLIGHT> sets = {};
+        bool created_flag = false;
+    };
+
     export class image_set_family {
     public:
         /// describes one image's sets to the family: the caller writes them (bindings depend on the
@@ -127,6 +169,69 @@ namespace vulkan::bindings {
         uint32_t images = 0;                                         // how many images they serve
         std::vector<VkDescriptorPool> retired = {};                  // destroyed with the runtime, never earlier
     };
+    // ---- scene_bindings ----------------------------------------------------------------------------
+    void scene_bindings::create(core const& vk, VkDescriptorSetLayout const layout) {
+        if (this->created_flag || layout == VK_NULL_HANDLE) {
+            return;
+        }
+        for (std::size_t slot = 0; slot < this->sets.size(); ++slot) {
+            this->sets[slot] = vk.make_descriptor_set(layout);
+        }
+        this->created_flag = true;
+    }
+
+    bool scene_bindings::created() const noexcept {
+        return this->created_flag;
+    }
+
+    VkDescriptorSet scene_bindings::set(uint32_t const slot) const noexcept {
+        if (!this->created_flag || slot >= this->sets.size()) {
+            return VK_NULL_HANDLE;
+        }
+        return *this->sets[slot];
+    }
+
+    void scene_bindings::update_all(core const& vk, VkWriteDescriptorSet const* writes, uint32_t const write_count) const {
+        if (!this->created_flag || write_count == 0) {
+            return;
+        }
+        std::vector<VkWriteDescriptorSet> per_set(writes, writes + write_count);
+        for (vk_descriptor_set const& scene_set : this->sets) {
+            for (VkWriteDescriptorSet& write : per_set) {
+                write.dstSet = *scene_set;
+            }
+            vkUpdateDescriptorSets(vk.device, write_count, per_set.data(), 0, nullptr);
+        }
+    }
+
+    void scene_bindings::write_ibl(core const& vk, bool const ibl_ready, std::span<VkImageView const> const ibl_views, VkSampler const env_sampler,
+                                   VkImageView const placeholder_view, VkSampler const placeholder_sampler) const {
+        if (!this->created_flag) {
+            return;
+        }
+        std::array<VkDescriptorImageInfo, 3> image_infos = {};
+        for (std::size_t i = 0; i < image_infos.size(); ++i) {
+            bool const use_env = ibl_ready && i < ibl_views.size();
+            image_infos[i] = {
+                .sampler = use_env ? env_sampler : placeholder_sampler,
+                .imageView = use_env ? ibl_views[i] : placeholder_view,
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            };
+        }
+        for (vk_descriptor_set const& scene_set : this->sets) {
+            std::array<VkWriteDescriptorSet, 3> writes = {};
+            for (std::size_t i = 0; i < writes.size(); ++i) {
+                writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[i].dstSet = *scene_set;
+                writes[i].dstBinding = static_cast<uint32_t>(2 + i);
+                writes[i].descriptorCount = 1;
+                writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[i].pImageInfo = &image_infos[i];
+            }
+            vkUpdateDescriptorSets(vk.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        }
+    }
+
     // ---- image_set_family --------------------------------------------------------------------------
     // The algorithm the three per-image families shared: ready check, image count check, signature
     // comparison, pool (re)creation with retirement, allocation, then the caller's writes. Everything a

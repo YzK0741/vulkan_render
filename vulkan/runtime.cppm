@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.19.3  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.19.4  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -208,8 +208,8 @@ namespace vulkan {
         // 9 skin / 10 morph) always point at that slot's own resources and never change, so an
         // in-flight frame can never observe the next frame's descriptors (no update-after-bind
         // race).
-        std::array<vk_descriptor_set, vulkan::core::MAX_FRAMES_IN_FLIGHT> scene_sets = {};
-        bool scene_set_created = false;
+        // one set per frame slot: created lazily, never re-pointed between frames (see vulkan.bindings)
+        bindings::scene_bindings scene_sets;
         // the frame slot paced by the last successful pace_and_acquire();
         // per-frame host writes (set_skin_matrices / morph_scratch) target this slot's buffers
         uint32_t active_slot = 0;
