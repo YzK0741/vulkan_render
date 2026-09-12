@@ -110,11 +110,6 @@ namespace app_config {
                     }
                 }
             }
-            if (toml::node const* node = render->get("skybox")) {
-                if (std::optional<bool> const value = node->value<bool>()) {
-                    settings.render.skybox = *value;
-                }
-            }
             if (toml::node const* node = render->get("shadow")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.shadow = *value;
@@ -183,11 +178,6 @@ namespace app_config {
             if (toml::node const* node = render->get("taa_blend_min")) {
                 if (std::optional<double> const value = node->value<double>()) {
                     settings.render.taa_blend_min = static_cast<float>(*value);
-                }
-            }
-            if (toml::node const* node = render->get("deferred")) {
-                if (std::optional<bool> const value = node->value<bool>()) {
-                    settings.render.deferred = *value;
                 }
             }
             if (toml::node const* node = render->get("gbuffer_debug")) {

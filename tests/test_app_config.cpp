@@ -13,7 +13,6 @@ namespace {
         CHECK(settings.model == "Models/tri.gltf");
         CHECK(settings.render.msaa == 8);
         CHECK(settings.render.vsync);
-        CHECK(!settings.render.skybox);
         CHECK(!settings.render.shadow);
         CHECK(settings.render.shadow_cascades == 2);
         CHECK(settings.render.shadow_cascade_blend > 0.24f && settings.render.shadow_cascade_blend < 0.26f);
@@ -29,7 +28,6 @@ namespace {
         CHECK(!settings.render.gpu_timings);
         CHECK(settings.render.gbuffer_debug);
         CHECK(settings.render.gbuffer_channel == 5);
-        CHECK(settings.render.deferred);
         CHECK(settings.render.taa);
         CHECK(settings.render.taa_blend_static > 0.79f && settings.render.taa_blend_static < 0.81f);
         CHECK(settings.render.taa_blend_min > 0.19f && settings.render.taa_blend_min < 0.21f);
@@ -43,19 +41,17 @@ namespace {
         app_config::app_settings const settings = app_config::load_settings(VR_TEST_SOURCE_DIR "/tests/fixtures/does_not_exist.toml");
         CHECK(settings.model.empty());
         CHECK(settings.render.msaa == 0);
-        CHECK(settings.render.skybox);
         CHECK(settings.render.shadow);
         CHECK(!settings.render.fxaa);
         CHECK(settings.render.gpu_timings); // default: pass timings are collected
         CHECK(!settings.render.gbuffer_debug);
         CHECK(settings.render.gbuffer_channel == 1);
-        CHECK(!settings.render.deferred);
         CHECK(!settings.render.taa);
         CHECK(settings.render.shadow_cascades == 3); // default: three cascades
         CHECK(settings.render.shadow_cascade_blend > 0.09f && settings.render.shadow_cascade_blend < 0.11f);
         CHECK(settings.render.clustered_lights); // default: the cluster pass runs
         CHECK(settings.lighting.demo_lights == 0);
-        CHECK(settings.render.ssao); // default: the deferred path traces screen-space AO
+        CHECK(settings.render.ssao); // default: screen-space AO runs
         CHECK(settings.render.ssao_samples == 8);
         CHECK(settings.render.shadow_map_size == 2048); // default: 2048^2 per cascade layer
         CHECK(settings.gui.show);
@@ -75,7 +71,6 @@ namespace {
         CHECK(settings.render.clustered_lights);
         CHECK(settings.render.ssao);
         CHECK(settings.render.ssao_samples == 8);
-        CHECK(!settings.render.deferred);
         CHECK(!settings.render.taa);
         CHECK(settings.lighting.demo_lights == 0);
         CHECK(settings.lighting.env_size == 256);
@@ -121,7 +116,6 @@ namespace {
         CHECK(settings.render.shadow_map_size == 2048);
         CHECK(settings.render.shadow_cascade_blend > 0.09f && settings.render.shadow_cascade_blend < 0.11f);
         // [render] shading + post-processing: the eleven keys the generator used to omit
-        CHECK(settings.render.deferred);
         CHECK(settings.render.taa);
         CHECK(settings.render.taa_blend_static > 0.89f && settings.render.taa_blend_static < 0.91f);
         CHECK(settings.render.taa_blend_min > 0.49f && settings.render.taa_blend_min < 0.51f);
@@ -135,8 +129,7 @@ namespace {
         CHECK(settings.render.ssao_radius > 0.49f && settings.render.ssao_radius < 0.51f);
         CHECK(settings.render.ssao_intensity > 0.99f && settings.render.ssao_intensity < 1.01f);
         CHECK(settings.render.ssao_samples == 8);
-        // [render] validation + skybox
-        CHECK(settings.render.skybox);
+        // [render] validation
         CHECK(settings.render.validation_layers);
         // [gui]
         CHECK(settings.gui.show);

@@ -28,7 +28,6 @@ vsync = false
 max_fps = 240
 msaa = 8
 clear_color = [0.02, 0.02, 0.03]
-skybox = true
 shadow = true
 validation_layers = true
 
@@ -39,7 +38,6 @@ shadow_cascade_blend = 0.1
 
 # ---- [render] shading + post-processing features ----
 unlit = false
-deferred = true
 taa = true
 taa_blend_static = 0.9
 taa_blend_min = 0.5

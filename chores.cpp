@@ -136,9 +136,8 @@ namespace chores {
     }
 
     // Create the demo pipelines up front: the standard PBR pipeline (used by the imported scene)
-    // plus the skybox background (fullscreen environment pass) and the directional shadow pass
-    // (depth-only). The legacy triangle demo pipeline is deliberately not created here - nothing
-    // draws it anymore.
+    // and the directional shadow pass (depth-only). The legacy triangle demo pipeline is
+    // deliberately not created here - nothing draws it anymore.
     void setup_pipeline(vulkan::runtime& runtime, std::filesystem::path const& shaders_dir) {
         // Standard PBR pipeline: the imported scene's primitives bind to it (the FIRST pipeline
         // created becomes the runtime's implicit default)
@@ -149,19 +148,6 @@ namespace chores {
         // "pbr" and "unlit" (gui "render mode") re-shades the whole scene without re-baking.
         load_and_create_pipeline(runtime, shaders_dir, "unlit", "pbr.vert.spv", "unlit.frag.spv");
 
-        {
-            // Skybox background pipeline (fullscreen environment pass): drawn first every frame,
-            // behind the scene. Panic on failure - the frame needs a background to clear to.
-            std::vector<unsigned char> vertex_code;
-            std::vector<unsigned char> fragment_code;
-            load_shader(shaders_dir, "skybox.vert.spv", vertex_code);
-            load_shader(shaders_dir, "skybox.frag.spv", fragment_code);
-            auto const skybox_result = runtime.make_skybox_pipeline(vertex_code, fragment_code);
-            if (!skybox_result) {
-                utility::panic(std::source_location::current(), "failed to create skybox pipeline: {}", skybox_result.error());
-            }
-            utility::log("SUCCESS: skybox pipeline created (fullscreen environment background)");
-        }
         {
             // Post-process pipeline (HDR scene target -> exposure + ACES + gamma -> swapchain):
             // the forward passes render into an HDR offscreen target, so this pass is required to
@@ -324,10 +310,6 @@ namespace chores {
             &bindings.cull_enabled,
             [&runtime](bool const enabled) { runtime.set_frustum_culling(enabled); }));
         panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
-            "skybox",
-            &bindings.skybox_enabled,
-            [&runtime](bool const enabled) { runtime.set_skybox_enabled(enabled); }));
-        panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
             "shadow",
             &bindings.shadow_enabled,
             [&runtime](bool const enabled) { runtime.set_shadow_enabled(enabled); }));
@@ -424,18 +406,11 @@ namespace chores {
             channel->visible_when = [&runtime] { return runtime.feature_active("gbuffer-debug"); };
             panel.push_back(std::move(channel));
         }
-        // deferred lighting: the render-mode switch for the deferred path (the debug view above wins
-        // when both are on, which is why it is not part of the same combo as pbr/unlit)
-        {
-            auto deferred = std::make_unique<vulkan::gui::checkbox_widget>("deferred lighting", &bindings.deferred_enabled);
-            deferred->visible_when = [&runtime] { return runtime.feature_available("deferred"); };
-            panel.push_back(std::move(deferred));
-        }
-        // TAA: the deferred path's anti-aliasing, with the two history-weight knobs. The static weight
-        // decides how smooth a still image gets (higher = smoother, slower to react to lighting
-        // changes); the minimum is what a fast-moving pixel falls back to (lower = trusts the current
-        // frame more, which trades smoothing for less ghosting). Deferred-only, so the group appears
-        // with the deferred path - the forward path keeps its MSAA.
+        // TAA: the engine's anti-aliasing (there is no MSAA on a G-buffer), with the two
+        // history-weight knobs. The static weight decides how smooth a still image gets (higher =
+        // smoother, slower to react to lighting changes); the minimum is what a fast-moving pixel
+        // falls back to (lower = trusts the current frame more, which trades smoothing for less
+        // ghosting).
         {
             auto taa = std::make_unique<vulkan::gui::checkbox_widget>("taa", &bindings.taa_enabled);
             taa->visible_when = [&runtime] { return runtime.feature_available("taa") && runtime.feature_active("taa"); }; // deferred-only, via the feature registry

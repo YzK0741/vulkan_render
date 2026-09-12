@@ -58,21 +58,20 @@ $workDir = Join-Path $BuildDir "render-check"
 # The scenarios. Each is a full config (only the keys that differ from the defaults are listed) plus
 # the frame count; the camera, model and extent are shared above so a scenario only varies what it
 # means to - a scenario may override `model` / `camera` when it has to (see transparent_blend).
-# Coverage is deliberately small to start - forward, the deferred path with its optional stages, the
+# Coverage is deliberately small to start - the G-buffer path with its optional stages, the
 # shadow-cascade count and the transparent pass, because those are the paths whose wiring has broken.
 # ---------------------------------------------------------------------------------------------
 $scenarios = @(
-    @{ name = "forward";           desc = "forward PBR, MSAA, 3 cascades, bloom";       extra = @{} }
-    @{ name = "deferred";          desc = "deferred G-buffer + lighting, no AA stage";  extra = @{ deferred = "true"; msaa = "1" } }
-    @{ name = "deferred_taa_fxaa"; desc = "deferred + TAA + FXAA (the AA path)";        extra = @{ deferred = "true"; msaa = "1"; taa = "true"; fxaa = "true" } }
-    @{ name = "deferred_ssao_off"; desc = "deferred with SSAO disabled";               extra = @{ deferred = "true"; msaa = "1"; ssao = "false" } }
-    @{ name = "shadow_single";     desc = "one cascade, i.e. the historic shadow path"; extra = @{ shadow_cascades = "1" } }
-    @{ name = "unlit";             desc = "flat base colour, no shading";              extra = @{ unlit = "true" } }
+    @{ name = "deferred";          desc = "deferred G-buffer + lighting, no AA stage";  extra = @{ msaa = "1" } }
+    @{ name = "deferred_taa_fxaa"; desc = "deferred + TAA + FXAA (the AA path)";        extra = @{ msaa = "1"; taa = "true"; fxaa = "true" } }
+    @{ name = "deferred_ssao_off"; desc = "deferred with SSAO disabled";               extra = @{ msaa = "1"; ssao = "false" } }
+    @{ name = "shadow_single";     desc = "one cascade, i.e. the historic shadow path"; extra = @{ shadow_cascades = "1"; msaa = "1" } }
+    @{ name = "unlit";             desc = "flat base colour, no shading";              extra = @{ unlit = "true"; msaa = "1" } }
     # The one scenario that uses a different model, and it has to: alphaMode BLEND geometry is drawn
     # by a pass of its own, so no model without a BLEND material can exercise it - DamagedHelmet has
     # only OPAQUE/MASK. AlphaBlendModeTest carries one of each alphaMode (OPAQUE / MASK at two cutoffs
     # / BLEND) plus a decal, so this also covers the G-buffer's MASK discard path.
-    @{ name = "transparent_blend"; desc = "deferred + an alphaMode BLEND material";    extra = @{ deferred = "true"; msaa = "1" }
+    @{ name = "transparent_blend"; desc = "deferred + an alphaMode BLEND material";    extra = @{ msaa = "1" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\AlphaBlendModeTest\glTF\AlphaBlendModeTest.gltf"
        camera = "0,5,12.4,0,-4.511,0" }
 )
@@ -102,7 +101,6 @@ function Write-ScenarioConfig {
         "max_fps"           = "240"
         "msaa"              = "8"
         "shadow"            = "true"
-        "skybox"            = "true"
         "validation_layers" = "true"
     }
     $scenarioModel = if ($Scenario.ContainsKey('model')) { $Scenario.model } else { $Model }
@@ -155,6 +153,14 @@ function Invoke-Scenario {
 
     $shot = Get-ChildItem $workDir -Filter "screenshot_*.png" | Select-Object -First 1
     if (-not $shot) { return @{ ok = $false; why = "no screenshot produced" } }
+
+    # Keep this run's image under a name that survives the NEXT run: the app writes a timestamped
+    # screenshot_*.png and every scenario deletes those before it starts, so returning $shot.FullName
+    # handed the caller a path that the second determinism run had already deleted - which is exactly
+    # when the caller wants it (to save the diff of a CHANGED scenario).
+    $kept = Join-Path $workDir "$($Scenario.name).last.png"
+    Copy-Item $shot.FullName $kept -Force
+    $shot = Get-Item $kept
 
     # the run has to have been VALIDATION clean: a difference in validation output is a finding on its
     # own, and a scenario that silently stopped being validation-clean should not be accepted as a

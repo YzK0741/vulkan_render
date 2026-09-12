@@ -149,7 +149,6 @@ def write_toml(path: str, cfg: dict) -> None:
         f"max_fps = {cfg['max_fps']}",
         f"msaa = {cfg['msaa']}",
         "clear_color = [{0}, {1}, {2}]".format(*cfg["clear_color"]),
-        f"skybox = {str(cfg['skybox']).lower()}",
         f"shadow = {str(cfg['shadow']).lower()}",
         f"validation_layers = {str(cfg['validation_layers']).lower()}",
         "",
@@ -160,7 +159,6 @@ def write_toml(path: str, cfg: dict) -> None:
         "",
         "# ---- [render] shading + post-processing features ----",
         f"unlit = {str(cfg['unlit']).lower()}",
-        f"deferred = {str(cfg['deferred']).lower()}",
         f"taa = {str(cfg['taa']).lower()}",
         f"taa_blend_static = {cfg['taa_blend_static']}",
         f"taa_blend_min = {cfg['taa_blend_min']}",
@@ -226,7 +224,6 @@ def ask_all(output_dir: str) -> dict:
     )
     msaa = int(msaa_raw)
     clear_color = ask_float3("render.clear_color (RGB 0..1)", (0.02, 0.02, 0.03))
-    skybox = ask_bool("render.skybox", True, hint="draw the environment skybox pass")
     shadow = ask_bool("render.shadow", True, hint="record the directional shadow pass")
     validation_layers = ask_bool(
         "render.validation_layers", True, hint="Debug defaults on; Release off - override here if needed"
@@ -245,16 +242,13 @@ def ask_all(output_dir: str) -> dict:
 
     print("\n-- render (shading + post-processing; every one of these is also a live overlay toggle) --")
     unlit = ask_bool("render.unlit", False, hint="flat base color instead of PBR (a shading-free reference)")
-    deferred = ask_bool(
-        "render.deferred", False, hint="G-buffer + screen-space lighting instead of forward shading"
-    )
     taa = ask_bool(
-        "render.taa", False, hint="temporal AA; requires deferred = true and pairs naturally with msaa = 1"
+        "render.taa", False, hint="temporal AA; the engine's anti-aliasing (a G-buffer cannot be multisampled)"
     )
     taa_blend_static = ask_float("render.taa_blend_static", 0.9, 0.0, 1.0, hint="history weight for a still pixel")
     taa_blend_min = ask_float("render.taa_blend_min", 0.5, 0.0, 1.0, hint="history weight floor under motion")
     fxaa = ask_bool("render.fxaa", False, hint="final anti-aliasing pass; costs nothing when off")
-    gbuffer_debug = ask_bool("render.gbuffer_debug", False, hint="show a stored G-buffer channel (needs deferred)")
+    gbuffer_debug = ask_bool("render.gbuffer_debug", False, hint="show a stored G-buffer channel")
     gbuffer_channel = ask_int(
         "render.gbuffer_channel", 1, 0, 7, hint="0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags"
     )
@@ -264,7 +258,7 @@ def ask_all(output_dir: str) -> dict:
     clustered_lights = ask_bool(
         "render.clustered_lights", True, hint="false = the brute-force reference the clustered path is checked against"
     )
-    ssao = ask_bool("render.ssao", True, hint="screen-space ambient occlusion (deferred path only)")
+    ssao = ask_bool("render.ssao", True, hint="screen-space ambient occlusion")
     ssao_radius = ask_float("render.ssao_radius", 0.5, 0.0, 100.0, hint="world-space sample radius")
     ssao_intensity = ask_float("render.ssao_intensity", 1.0, 0.0, 1.0, hint="1 = full occlusion, 0 = off")
     ssao_samples = ask_int("render.ssao_samples", 8, 1, 16, hint="samples per pixel")
@@ -297,14 +291,12 @@ def ask_all(output_dir: str) -> dict:
         "max_fps": max_fps,
         "msaa": msaa,
         "clear_color": clear_color,
-        "skybox": skybox,
         "shadow": shadow,
         "validation_layers": validation_layers,
         "shadow_cascades": shadow_cascades,
         "shadow_map_size": shadow_map_size,
         "shadow_cascade_blend": shadow_cascade_blend,
         "unlit": unlit,
-        "deferred": deferred,
         "taa": taa,
         "taa_blend_static": taa_blend_static,
         "taa_blend_min": taa_blend_min,

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.11.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.12.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -44,13 +44,11 @@ import utility;
  * max_fps = 0      # 0 = uncapped (what a throughput measurement needs), else a frame rate cap
  * msaa  = 0        # 0 = auto (device max), else a fixed sample count (4/8/...)
  * clear_color = [0.02, 0.02, 0.03]  # background clear color, RGB in 0..1
- * skybox = true    # draw the environment skybox pass each frame
  * shadow = true    # record the directional shadow pass each frame
  * fxaa   = false   # anti-alias the final image (adds one fullscreen pass; needs fxaa.frag.spv)
  * gpu_timings = true  # measure + report per-pass GPU milliseconds (timestamp queries)
  * gbuffer_debug = false  # draw the G-buffer + one of its channels instead of the shaded scene
-deferred = false       # shade the opaque scene from the G-buffer (deferred lighting) instead of forward
-taa = false            # temporal anti-aliasing on the deferred path (jitter + resolved history)
+ * taa = false            # temporal anti-aliasing (jitter + resolved history)
  * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
  *
@@ -96,7 +94,6 @@ namespace app_config {
         double max_fps = 0.0;                                     // 0 = uncapped; a positive value caps the render loop
         int msaa = 0;                                             // 0 = auto (device max usable), otherwise a fixed sample count
         std::array<float, 3> clear_color = {0.02f, 0.02f, 0.03f}; // background clear color (RGB, 0..1)
-        bool skybox = true;                                       // draw the environment skybox pass each frame
         bool shadow = true;                                       // record the directional shadow pass each frame
         // Cascaded shadow maps ([render] shadow_cascades / shadow_cascade_blend): how many cascades the
         // shadow pass fits, renders and samples (1 = one box over the whole visible range, the historic
@@ -110,10 +107,10 @@ namespace app_config {
         // own cluster's list. false = the brute-force loop over every active light - the reference
         // path the clustered one is verified against (and what every pre-M5 frame did).
         bool clustered_lights = true;
-        // Screen-space ambient occlusion (M6): the deferred lighting stage traces a hemisphere of
-        // samples against the G-buffer depth and scales the IBL ambient by the result. `ssao_radius`
-        // is in world units (a fraction of the scene scale), `ssao_samples` is clamped to the
-        // shader maximum of 16. Deferred-only - the forward path stores no depth/normals to trace.
+        // Screen-space ambient occlusion (M6): the lighting stage traces a hemisphere of samples
+        // against the G-buffer depth and scales the IBL ambient by the result. `ssao_radius` is in
+        // world units (a fraction of the scene scale), `ssao_samples` is clamped to the shader
+        // maximum of 16.
         // Shadow map edge length in texels ([render] shadow_map_size): 1024/2048/4096 are the usual
         // choices - resolution against the pass cost and memory (the layered map is
         // shadow_map_size^2 x 4 layers x 4 bytes per cascade set, per frame slot). Applied before the
@@ -124,9 +121,10 @@ namespace app_config {
         float ssao_intensity = 1.0f;
         int ssao_samples = 8;
         // Render mode ([render] unlit): the "pbr (lit)" / "unlit (flat)" combo of the debug overlay
-        // as a startup setting - the flat base-color pass, useful as a shading-free reference. It
-        // selects the runtime's default pipeline, so it applies to forward geometry AND to the
-        // deferred path (the lighting stage then outputs the stored albedo instead of shading it).
+        // as a startup setting - the flat base-color reference, useful as a shading-free view. It
+        // selects the runtime's default pipeline for the transparent pass, and the lighting stage is
+        // told explicitly (set_unlit) because it binds its own pipeline and cannot follow a per-leaf
+        // switch: it then outputs the stored albedo instead of shading it.
         bool unlit = false;
         bool fxaa = false; // FXAA the final image (one extra fullscreen pass)
         // measure per-pass GPU time with timestamp queries: one vkCmdWriteTimestamp per pass

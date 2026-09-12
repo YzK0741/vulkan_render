@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.constant_init
-// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Compile-time Vulkan info-struct conventions: constexpr factories + constinit
 // "transition" defaults for the structs the engine fills identically everywhere

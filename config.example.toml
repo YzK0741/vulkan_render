@@ -65,8 +65,6 @@ msaa = 0
 #   over it, so it only shows where the environment pass leaves the background.
 clear_color = [0.02, 0.02, 0.03]
 
-# skybox: draw the environment skybox background pass each frame (false = clear color only)
-skybox = true
 
 # shadow: record the directional shadow pass each frame (false = no shadows, fully lit)
 shadow = true
@@ -100,16 +98,16 @@ shadow_cascade_blend = 0.1
 # clustered_lights: sort the punctual lights into a screen-tile x depth-slice grid once per frame (a
 # compute pass, shaders/light_cluster.comp) and evaluate only the pixel own cluster list instead of
 # every active light. This is what makes a light count far past the old four affordable: measured on
-# Sponza with 64 procedural lights at 960x720, the shading pass drops from 1.28 ms to 0.44 ms in the
-# forward path and the deferred lighting pass from 0.25 ms to 0.08 ms, with a byte-identical image.
+# Sponza with 64 procedural lights at 960x720, the shading pass drops from 1.28 ms to 0.44 ms (and the
+# same change measured 0.25 ms to 0.08 ms in the pre-M5 forward path), with a byte-identical image.
 # false = the brute-force loop over every active light (the reference path the clustered one is
 # verified against). The grid is 64 px tiles x 16 exponential depth slices, 32 lights per cluster;
 # a cluster that overflows drops the extra lights (raise vulkan::cluster_light_capacity if a scene
 # ever needs more - the capacity and the light array size are the two knobs).
 clustered_lights = true
 
-# ssao / ssao_radius / ssao_intensity / ssao_samples: screen-space ambient occlusion on the deferred
-# path (M6). The deferred lighting stage traces a golden-angle hemisphere of samples around each pixel
+# ssao / ssao_radius / ssao_intensity / ssao_samples: screen-space ambient occlusion (M6). The
+# lighting stage traces a golden-angle hemisphere of samples around each pixel
 # against the G-buffer depth and folds the occlusion into the shade_input ao, which is exactly what a
 # material baked AO map does: it scales the IBL ambient (diffuse and specular) and never the direct
 # sun. No extra pass and no extra render target - the depth and normals it needs are the G-buffer the
@@ -118,7 +116,6 @@ clustered_lights = true
 # 1..2 to read (that distance dependence is inherent to screen-space AO, not a tuning mistake), and
 # `ssao_samples` trades cost for smoothness (1..16, the shader maximum). `ssao = false` (or an
 # intensity of 0) makes the term return exactly 1.0, so the frame is bit for bit the pre-M6 frame.
-# Deferred-only: the forward path stores neither depth nor normals to trace against.
 ssao = true
 ssao_radius = 0.5
 ssao_intensity = 1.0
@@ -131,8 +128,8 @@ ssao_samples = 8
 # unlit: render mode. true draws every surface as its flat base color (factor x albedo texture), with
 # no direct light, shadows, IBL, AO or emissive - a shading-free reference against the lit pass, and
 # useful for assets whose authored data is minimal. It is the "render mode" combo of the debug overlay
-# as a startup setting, and it applies to BOTH render paths: the forward path switches its default
-# pipeline, the deferred path gets told (its lighting stage then writes the stored albedo).
+# as a startup setting: the lighting stage is told explicitly (set_unlit) and then writes the stored
+# albedo instead of shading it, because it binds its own pipeline and cannot follow a per-leaf switch.
 unlit = false
 
 fxaa = false
@@ -145,36 +142,21 @@ fxaa = false
 # cannot write timestamps reports "unavailable" and everything else works unchanged.
 gpu_timings = true
 
-# gbuffer_debug / gbuffer_channel: the deferred path's G-buffer, shown instead of the shaded scene.
+# gbuffer_debug / gbuffer_channel: the G-buffer, shown instead of the shaded scene.
 # The opaque pass stores the surface (albedo/metallic, world normal/roughness, material id/AO/flags)
 # into three single-sampled targets and a fullscreen pass displays one channel of it through the
-# ordinary post chain. It is the inspection tool for the deferred work - a wrong normal encoding or
+# ordinary post chain. It is the inspection tool for the G-buffer - a wrong normal encoding or
 # a swapped roughness channel looks like "the lighting is a bit off" once the lighting stage consumed
-# it, so being able to look at the raw data matters. It wins over `deferred` when both are on, and it
-# skips alpha-blended geometry, so leave it off for normal runs.
+# it, so being able to look at the raw data matters. It replaces the lighting stage while it is on,
+# and it skips alpha-blended geometry, so leave it off for normal runs.
 gbuffer_debug = false
-# channel: 0 albedo, 1 world normal, 2 roughness, 3 metallic, 4 ambient occlusion, 5 material id, 6 depth, 7 flags
-gbuffer_channel = 1
+# gbuffer_channel: 0 albedo, 1 world normal, 2 roughness, 3 metallic, 4 ambient occlusion, 5 material id, 6 depth, 7 flags
 
-# deferred: shade the opaque scene from the G-buffer instead of forward. The same surface data as
-# gbuffer_debug above is stored, but instead of being displayed it is lit in screen space by
-# shaders/deferred.frag - through the same lighting code the forward path runs per fragment
-# (shaders/shading.glsl), so the two are an A/B comparison rather than two different looks: measured
-# on Sponza at 960x720, mean |luminance difference| is 0.32/255 with 0.2% of pixels off by more than
-# 10, and on a single-material model the leftover differences sit on its most specular, darkest
-# surface - which is exactly where an 8-bit G-buffer albedo/metallic loses precision.
-# Notes: the G-buffer pass is 1x whatever `msaa` says (a multisampled G-buffer would need per-sample
-# shading, the trade the deferred path makes), and alpha-blended geometry is not drawn yet - the
-# forward transparent pass needs a 1x pipeline, which arrives with TAA. Emissive is added by the
-# G-buffer pass and the sky by the lighting stage, so neither is lost and neither is counted twice.
-deferred = false
-
-# taa: temporal anti-aliasing on the deferred path - the answer to the MSAA the forward path uses.
-# The projection is jittered by a Halton(2,3) sequence every frame, the G-buffer carries motion
-# vectors, and a fullscreen resolve blends the current frame with a reprojected, neighborhood-clamped
-# history into the HDR target the post chain reads. It removes what no edge filter can: sub-pixel
-# shimmer in motion. Requires `deferred = true` (the forward path writes no motion vectors) and
-# `msaa = 1` is the natural pairing - a 1x G-buffer has no hardware anti-aliasing to fall back on.
+# taa: temporal anti-aliasing. The projection is jittered by a Halton(2,3) sequence every frame, the
+# G-buffer carries motion vectors, and a fullscreen resolve blends the current frame with a
+# reprojected, neighborhood-clamped history into the HDR target the post chain reads. It removes what
+# no edge filter can: sub-pixel shimmer in motion. There is no MSAA to fall back on - a G-buffer cannot
+# be multisampled without per-sample shading - so this is the engine's anti-aliasing.
 # The two weights are history (previous frames) weights: `taa_blend_static` for pixels that did not
 # move (0.9 = 10% of the new frame per frame: higher is smoother but slower to react to lighting
 # changes) and `taa_blend_min` once a pixel moves a pixel or more (lower trusts the current frame
@@ -194,8 +176,8 @@ show = true   # show the Dear ImGui debug overlay by default (F1 toggles it at r
 # Default debug-panel window size (0 = ImGui auto-size). It only applies on FIRST use:
 # a later drag - persisted in imgui_layout.ini next to the working directory - overrides it
 # (delete that file to get these values back). 560 is tall enough that the render-path
-# controls are visible without scrolling; the panel only offers the controls the current
-# render path can actually use (TAA/SSAO appear once deferred lighting is on, the FXAA knobs
+# controls are visible without scrolling; the panel only offers the controls that can actually do
+# something this session (TAA/SSAO appear once the G-buffer pipelines exist, the FXAA knobs
 # once FXAA is on, ...) and says why in the log when something cannot run.
 panel_width  = 420
 panel_height = 560

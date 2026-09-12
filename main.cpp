@@ -157,9 +157,7 @@ int main(int argc, char** argv) {
     core_options.validation_layers = settings.render.validation_layers;
     vulkan::runtime runtime{core_options};
     runtime.clear_color = glm::vec3(settings.render.clear_color[0], settings.render.clear_color[1], settings.render.clear_color[2]);
-    // render-stage toggles from config: skybox applies immediately (only affects recording);
     // shadow is applied after enable_shadows() below (it needs the shadow maps to exist)
-    runtime.set_skybox_enabled(settings.render.skybox);
     // per-pass GPU timings (timestamp queries): on by default, reported in the log + overlay
     runtime.set_gpu_timings(settings.render.gpu_timings);
     // Shadow cascades: applied here (BEFORE the scene import) because the shadow map's layered image
@@ -173,7 +171,7 @@ int main(int argc, char** argv) {
     utility::log("vulkan runtime initialized: {:.1f} ms (async model load + env generation running in background)", std::chrono::duration<double, std::milli>(runtime_ready - startup_start).count());
 
     // 6. Pipelines up front (chores::setup_pipeline): the standard PBR pipeline (used by the
-    //    imported scene) plus the skybox background and the directional shadow pass. The legacy
+    //    imported scene) and the directional shadow pass. The legacy
     //    triangle demo pipeline is no longer created - nothing draws it.
     chores::setup_pipeline(runtime, shaders_dir);
 
@@ -397,19 +395,17 @@ int main(int argc, char** argv) {
     // so imported lights are adjustable in the overlay like the demo ones.
 
     // Optional Dear ImGui debug overlay: chores::setup_gui enables it on the runtime (when
-    // use_gui) and assembles the whole panel - fps label, frustum-culling / skybox / shadow
+    // use_gui) and assembles the whole panel - fps label, frustum-culling / shadow
     // toggles, the camera-target drag, animation playback controls, the camera selector and
     // the shadow-bias sliders. The widgets bind to the live gui_bindings below (checkbox and
     // slider mirrors + the animation mirrors, which the frame loop keeps in sync each frame);
     // authored-camera names and the orbit-seeding callback are passed in, so chores never
     // touches glTF types.
     chores::gui_bindings gui;
-    gui.skybox_enabled = settings.render.skybox; // checkbox initial states mirror the config
-    gui.shadow_enabled = settings.render.shadow;
+    gui.shadow_enabled = settings.render.shadow; // checkbox initial states mirror the config
     gui.fxaa_enabled = settings.render.fxaa;
     gui.gbuffer_debug = settings.render.gbuffer_debug; // gbuffer debug view initial state (M1)
     gui.gbuffer_channel = settings.render.gbuffer_channel;
-    gui.deferred_enabled = settings.render.deferred;                 // deferred lighting render mode (M2)
     gui.render_mode = settings.render.unlit ? 1 : 0;                 // render-mode combo (0 = pbr, 1 = unlit)
     gui.taa_enabled = settings.render.taa;                           // temporal anti-aliasing (M3)
     gui.shadow_cascades = settings.render.shadow_cascades - 1;       // cascade combo index (0 = single map)
@@ -601,8 +597,9 @@ int main(int argc, char** argv) {
             last_render_mode = gui.render_mode;
             std::string_view const mode_name = gui.render_mode == 0 ? "pbr" : "unlit";
             runtime.set_default_pipeline(mode_name);
-            // the deferred path cannot switch pipelines per fragment, so tell its lighting stage that the
-            // default pipeline is the flat one - both paths then mean the same thing by "unlit"
+            // the lighting stage cannot switch pipelines per fragment, so tell it that the default
+            // pipeline is the flat one - it then writes the stored albedo instead of shading, so
+            // "unlit" means the same thing for the opaque scene and for the transparent pass
             runtime.set_unlit(gui.render_mode == 1);
             utility::log("render mode: {} ({})", mode_name, gui.render_mode == 0 ? "lit" : "unlit / flat");
         }
@@ -619,21 +616,18 @@ int main(int argc, char** argv) {
         // FXAA: mirrored every frame like the other post-process values (the runtime clamps them and
         // ignores the flag when no fxaa pipeline was created)
         runtime.set_fxaa(gui.fxaa_enabled, gui.fxaa_subpixel, gui.fxaa_edge_threshold);
-        // G-buffer debug view (the deferred path's data): mirrored every frame like the FXAA state,
+        // G-buffer debug view (the G-buffer's stored data): mirrored every frame like the FXAA state,
         // so the config, the overlay checkbox and the channel combo all take effect immediately
         runtime.set_gbuffer_debug(gui.gbuffer_debug);
         runtime.set_gbuffer_channel(gui.gbuffer_channel);
-        // deferred lighting (the deferred path's render mode): same mirror rule. It needs the same
-        // pipelines as the debug view, so enabling it without them leaves the forward path running.
-        runtime.set_deferred(gui.deferred_enabled);
-        // TAA (the deferred path's answer to MSAA): mirrored like the other render toggles. The
-        // jitter follows automatically - it is applied to the projection when TAA is active.
+        // TAA (the engine's anti-aliasing): mirrored like the other render toggles. The jitter
+        // follows automatically - it is applied to the projection when TAA is active.
         runtime.set_taa(gui.taa_enabled, gui.taa_blend_static, gui.taa_blend_min);
 
         // Order matters for the M5/M6 mirrors: their availability checks read the state the lines
-        // above just set (SSAO and TAA only apply to the deferred path, clustered lighting only when
-        // the cluster pipeline exists). Mirroring them before set_deferred() would make the first
-        // frame of every run report 'SSAO does nothing' from a stale deferred flag.
+        // above just set (the debug view replaces the lighting stage, clustered lighting only exists
+        // when the cluster pipeline does), so mirroring them earlier would report a stale answer for
+        // the first frame of every run.
         runtime.set_clustered_lights(gui.clustered_lights);
         runtime.set_ssao(gui.ssao_enabled, gui.ssao_radius, gui.ssao_intensity, static_cast<uint32_t>(std::max(gui.ssao_samples, 0.0f) + 0.5f));
         // cel shading: the combo picks a discrete band count (index 0 = off); every entry is a

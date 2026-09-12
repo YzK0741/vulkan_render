@@ -16,12 +16,28 @@
  *                                (one layer per cascade, `[render] shadow_cascades` = 1..4)
  *        |
  *  surface.glsl                  (include) the shared material-surface gather, and
- *  shading.glsl                  (include) the shared lighting - used by BOTH paths below
+ *  shading.glsl                  (include) the shared lighting - used by the G-buffer path below and
+ *                                by the transparent pass
  *        |
- *  pbr.vert + pbr.frag           forward PBR (or unlit.frag) into the MSAA HDR target,
- *  skybox.vert + skybox.frag     skybox first in the same instance
+ *  pbr.vert + gbuffer.frag       opaque geometry -> three 1x G-buffer targets + a 1x depth image
+ *                                (albedo+metallic, world normal+roughness, material id+AO+flags),
+ *                                the motion-vector target, and the emissive term ADDED into the
+ *                                scene color (5th attachment)
  *        |
- *  (resolve)                     MSAA HDR target -> single-sample HDR resolve target
+ *  post.vert + deferred.frag     fullscreen: read the G-buffer + depth, rebuild the world position
+ *                                from the depth, light the surface with shading.glsl, add the result
+ *                                into the scene color - sky where no geometry wrote depth
+ *        |
+ *  pbr.vert + pbr.frag/unlit.frag  the TRANSPARENT pass: alphaMode BLEND geometry, shaded while it
+ *                                draws and blended over the shaded frame (a G-buffer cannot carry a
+ *                                blended surface)
+ *        |
+ *  post.vert + taa.frag          fullscreen: blend the scene color with the reprojected, clamped
+ *                                history into the HDR target the post chain reads (optional; the
+ *                                runtime then copies that into the history image for the next frame)
+ *        |
+ *  post.vert + gbuffer_debug.frag  (debug alternative, never together with the lighting stage) show
+ *                                one stored channel instead of lighting it
  *        |
  *  post.vert + post.frag         mode 0 bright-pass prefilter (HDR -> bloom L0)
  *                                mode 1 downsample x3 (L0 -> L1 -> L2 -> L3)
@@ -32,37 +48,13 @@
  *  Dear ImGui                    overlay, drawn on the final 1x swapchain image
  * @endcode
  *
- * The deferred path replaces the forward instance's opaque half with a surface write and a
- * screen-space lighting stage:
- *
- * @code
- *  pbr.vert + gbuffer.frag       opaque geometry -> three 1x G-buffer targets + a 1x depth image
- *                                (albedo+metallic, world normal+roughness, material id+AO+flags),
- *                                the motion-vector target, and the emissive term ADDED into the
- *                                scene color (5th attachment)
- *        |
- *  post.vert + deferred.frag     fullscreen: read the G-buffer + depth, rebuild the world position
- *                                from the depth, light the surface with shading.glsl, add the result
- *                                into the scene color - sky where no geometry wrote depth
- *        |
- *  post.vert + taa.frag          fullscreen: blend the scene color with the reprojected, clamped
- *                                history into the HDR target the post chain reads (optional; the
- *                                runtime then copies that into the history image for the next frame)
- *        |
- *  post.vert + gbuffer_debug.frag  (debug alternative, never together with the stages above) show one
- *                                stored channel instead of lighting it
- * @endcode
- *
- * The G-buffer pass runs while `runtime::set_deferred(true)` (or `[render] deferred`) or
- * `runtime::set_gbuffer_debug(true)` (or `[render] gbuffer_debug` - which wins when both are set)
- * and never in the same frame as the forward opaque scene. Its targets are single-sampled whatever
- * MSAA the forward path uses, alphaMode BLEND geometry is not part of it (a G-buffer cannot carry a
- * blended surface), and the debug view forces the bloom weight to 0 so the channel being inspected is
- * not smeared by a display effect.
+ * That is the whole frame: `pbr.vert + gbuffer.frag` is the engine's only scene path (the opaque
+ * surface write), and everything after it shades or composites the result. A 1x G-buffer cannot be
+ * multisampled without per-sample shading, so there is no MSAA - `taa.frag` is the anti-aliasing.
  *
  * @section shader_taa Temporal anti-aliasing
  *
- * The deferred path renders at 1x, so `shaders/taa.frag` is its anti-aliasing instead of MSAA:
+ * The scene renders at 1x, so `shaders/taa.frag` is the engine's anti-aliasing instead of MSAA:
  * `runtime::set_taa` jitters the projection by a Halton(2,3) sub-pixel offset every frame (the
  * G-buffer and the lighting stage both see the jittered projection - geometry and the depth
  * reconstruction agree about where each sample is), the G-buffer writes a motion vector per pixel

@@ -107,12 +107,11 @@ namespace chores {
      *        fps text and the animation mirrors in sync each frame); setup_gui() wires the
      *        widgets to these fields.
      * @note defaults mirror the historic demo values; main overrides the ones that come from
-     *       config ([render] skybox/shadow toggles) or runtime state (animation playing)
+     *       config ([render] shadow toggles) or runtime state (animation playing)
      */
     export struct gui_bindings {
         double fps = 0.0;                  // fps text (updated once per second when use_gui)
         bool cull_enabled = true;          // frustum-culling checkbox (write-through to the runtime)
-        bool skybox_enabled = true;        // skybox checkbox (initial: settings.render.skybox)
         bool shadow_enabled = true;        // shadow checkbox (initial: settings.render.shadow)
         float shadow_bias_constant = 0.0f; // shadow depth-bias sliders (constant factor)
         float shadow_bias_slope = 1.5f;    // shadow depth-bias sliders (slope factor)
@@ -147,11 +146,7 @@ namespace chores {
         // the FXAA state, so these fields carry the config's initial values.
         bool gbuffer_debug = false; // draw the G-buffer + its debug view instead of the shaded scene
         int gbuffer_channel = 1;    // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags
-        // deferred lighting (runtime::set_deferred): shade the opaque scene from the G-buffer instead
-        // of forward. Precedence is deliberate: the debug view wins when both are on, so the checkbox
-        // always shows what is actually stored.
-        bool deferred_enabled = false;
-        // TAA (runtime::set_taa): the deferred path's anti-aliasing. Mirrored into the runtime every
+        // TAA (runtime::set_taa): the engine's anti-aliasing. Mirrored into the runtime every
         // frame like the other render toggles; the blend weights are the two shader knobs.
         bool taa_enabled = false;
         float taa_blend_static = 0.9f; // history weight for a static pixel (0.9 = 10% of the new frame)

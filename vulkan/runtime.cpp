@@ -924,18 +924,12 @@ namespace vulkan {
     void runtime::begin_rendering(VkCommandBuffer const command_buffer, uint32_t const image_index, VkRenderingFlags const flags) const {
         core const& vk = this->vulkan_core;
 
-        // Dynamic rendering (Vulkan 1.3 core, the only path the engine supports): attachments
-        // are described inline, no render pass / framebuffer objects exist. The scene renders
-        // into an HDR target: with MSAA the MSAA image resolves into the per-image HDR resolve
-        // target (vk.hdr_image_views), without MSAA the HDR target is the color attachment
-        // directly. The post-process pass samples that HDR target and writes the swapchain.
-        bool const msaa = vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT;
-
-        // G-buffer mode: the opaque pass writes the surface instead of shading it, into three
-        // single-sampled targets + their own 1x depth image, and adds its emissive into the HDR
-        // target (which the skybox pass, drawn before this instance, cleared and filled). Same
-        // primitives, same pipelines (the default pipeline is the G-buffer one), different
-        // attachments - so the MSAA HDR path stays untouched and the lighting/debug pass writes it.
+        // Dynamic rendering (Vulkan 1.3 core, the only path the engine supports): attachments are
+        // described inline, no render pass / framebuffer objects exist. The scene instance is always
+        // the G-buffer pass: the opaque pass writes the surface instead of shading it, into three
+        // single-sampled targets + the motion-vector target + the G-buffer's own 1x depth image, and
+        // adds the emissive into the scene color target. The lighting stage then shades it into the
+        // image the post chain reads (scene_target_view).
         if (this->gbuffer_pass_active()) {
             std::array<VkRenderingAttachmentInfo, vulkan::gbuffer_pass_attachment_count> gbuffer_attachments = {};
             VkClearValue clear = {}; // the surface + motion targets clear to zero: no geometry, no motion
@@ -944,34 +938,35 @@ namespace vulkan {
             }
             gbuffer_attachments[vulkan::gbuffer_target_count] = make_color_attachment_info(vk.velocity_image_views[image_index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
             // the last attachment is the scene color, CLEARed to zero: it accumulates only the
-            // emissive here. The deferred lighting stage then adds the lighting (and the sky, for
-            // pixels no geometry wrote) on top, so a lit pixel is emissive + lighting and a background
-            // pixel is sky - with no background pass anywhere in the deferred path. Under TAA the
-            // scene color is the resolve's input image, and the resolve writes the HDR target the post
-            // chain reads (see runtime::scene_target_view).
+            // emissive here. The lighting stage then adds the lighting (and the sky, for pixels no
+            // geometry wrote) on top, so a lit pixel is emissive + lighting and a background pixel is
+            // sky - with no background pass anywhere. Under TAA the scene color is the resolve's input
+            // image, and the resolve writes the HDR target the post chain reads (see
+            // runtime::scene_target_view).
             gbuffer_attachments[vulkan::gbuffer_target_count + 1] = make_color_attachment_info(this->scene_target_view(image_index), clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
-            // the G-buffer depth clears to the far plane (1.0), like the main depth attachment -
-            // but unlike it, its contents must SURVIVE the instance: the deferred lighting stage,
-            // the TAA resolve and the G-buffer debug view all sample this image later in the same
-            // submission (binding 3 of the G-buffer set). STORE_OP_DONT_CARE leaves the contents
-            // undefined after the instance, which is exactly what those three passes read.
+            // the G-buffer depth clears to the far plane (1.0) - but unlike the old forward path's
+            // main depth, its contents must SURVIVE the instance: the lighting stage, the transparent
+            // pass, the TAA resolve and the debug view all read this image later in the same
+            // submission (binding 3 of the G-buffer set). STORE_OP_DONT_CARE would leave the contents
+            // undefined, which is exactly what those four read.
             VkRenderingAttachmentInfo const depth_attachment = make_depth_attachment_info(vk.gbuffer_depth_image_views[image_index], VK_ATTACHMENT_STORE_OP_STORE);
             VkRenderingInfo const rendering_info = make_rendering_info(flags, {{0, 0}, vk.swap_chain_extent}, gbuffer_attachments.data(), static_cast<uint32_t>(gbuffer_attachments.size()), &depth_attachment);
             vkCmdBeginRendering(command_buffer, &rendering_info);
             return;
         }
 
+        // No G-buffer pipeline: no scene can be drawn. Open an empty instance anyway, so every frame
+        // still has a matching vkCmdEndRendering and the post chain samples a defined target.
         VkClearValue clear_color = {};
         clear_color.color = {{this->clear_color.r, this->clear_color.g, this->clear_color.b, 1.0f}};
         VkRenderingAttachmentInfo const color_attachment = make_color_attachment_info(
-            msaa ? vk.color_image_views[image_index] : vk.hdr_image_views[image_index],
+            vk.hdr_image_views[image_index],
             clear_color,
-            msaa ? VK_RESOLVE_MODE_AVERAGE_BIT : VK_RESOLVE_MODE_NONE,
-            msaa ? vk.hdr_image_views[image_index] : VK_NULL_HANDLE);
+            VK_RESOLVE_MODE_NONE,
+            VK_NULL_HANDLE);
 
-        // depth clears to the far plane (1.0): make_depth_attachment_info. DONT_CARE is correct
-        // HERE - this is the forward path's own depth buffer and nothing samples it afterwards
-        // (the G-buffer path above is the one whose depth is read back, hence its STORE).
+        // depth clears to the far plane (1.0): make_depth_attachment_info. DONT_CARE is correct here -
+        // nothing samples this depth (the G-buffer depth above is the one that is read back).
         VkRenderingAttachmentInfo const depth_attachment = make_depth_attachment_info(vk.depth_image_views[image_index], VK_ATTACHMENT_STORE_OP_DONT_CARE);
 
         VkRenderingInfo const rendering_info = make_rendering_info(flags, {{0, 0}, vk.swap_chain_extent}, true, &color_attachment, &depth_attachment);
@@ -1709,54 +1704,31 @@ namespace vulkan {
         // so a frame without shadows just writes this mark next to frame_begin and reports ~0 ms.
         this->gpu_mark(*command_buffer, gpu_mark_id::shadow_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
-        // ---- the scene pass: two named paths over one shared recorder ----
-        // Everything above is shared: the cluster dispatch, the shadow pass, the attachment
-        // transitions and the pass geometry. From here the frame is either shaded while it draws
-        // (forward) or stored as a surface for the lighting stage that follows it (deferred, see
-        // record_post_process).
-        if (this->gbuffer_pass_active()) {
-            this->record_deferred_scene(*command_buffer);
-        } else {
-            this->record_forward_scene(*command_buffer);
-        }
+        // The scene pass: the opaque leaves write the G-buffer, and everything else follows from it
+        // in record_scene_tail (lighting, the transparent pass over the shaded image, TAA).
+        this->record_scene(*command_buffer);
     }
 
-    // The scene pass of the FORWARD path: shade while drawing. The opaque leaves bind their own
-    // forward pipelines (record_main_segment picks them, at the swapchain's sample count),
-    // segment 0 draws the skybox behind them, and the alpha-blended leaves compose over the
-    // depth they wrote.
-    void runtime::record_forward_scene(VkCommandBuffer const command_buffer) {
-        this->record_scene_attachments(command_buffer, /*gbuffer_pass=*/false);
+    void runtime::record_scene(VkCommandBuffer const command_buffer) {
+        this->record_scene_attachments(command_buffer);
         this->update_pass_geometry();
-        this->record_opaque_scene(command_buffer, /*gbuffer_pass=*/false, /*draw_transparent=*/true);
+        this->record_opaque_scene(command_buffer);
     }
 
-    // The scene pass of the DEFERRED path: store the surface, shade later. It records the same
-    // opaque leaves into the single-sampled G-buffer instead, and draws neither the skybox (the
-    // lighting stage writes the sky into the pixels no geometry covered) nor alpha-blended
-    // geometry (blending would have to compose over an already shaded image: a pass of its own,
-    // still ahead). record_post_process() turns the G-buffer into the frame afterwards.
-    void runtime::record_deferred_scene(VkCommandBuffer const command_buffer) {
-        this->record_scene_attachments(command_buffer, /*gbuffer_pass=*/true);
-        this->update_pass_geometry();
-        this->record_opaque_scene(command_buffer, /*gbuffer_pass=*/true, /*draw_transparent=*/false);
-    }
-
-    // Move one path's attachments into their render layouts; see the declaration for why this
+    // Move the scene pass's attachments into their render layouts; see the declaration for why this
     // cannot be left to a render pass.
-    void runtime::record_scene_attachments(VkCommandBuffer const command_buffer, bool const gbuffer_pass) {
+    void runtime::record_scene_attachments(VkCommandBuffer const command_buffer) {
         core& vk = this->vulkan_core;
         // Dynamic rendering has no automatic attachment transitions (a render pass would do them
-        // implicitly): move every attachment into its render layout before vkCmdBeginRendering.
-        // Which set that is arrives as a parameter - the forward path's HDR (plus the MSAA color
-        // image) and depth, or the G-buffer mode's three single-sampled surface targets plus the
-        // pass's own 1x depth image. The main HDR target is not touched by the opaque G-buffer pass
-        // at all (the debug view writes it afterwards), so it must not be transitioned here.
+        // implicitly): move every attachment into its render layout before vkCmdBeginRendering. The
+        // set is the G-buffer mode's three single-sampled surface targets, the motion-vector target
+        // and the scene color the emissive goes into, plus the pass's own 1x depth image. The main
+        // HDR target is not touched by the opaque G-buffer pass at all (the debug view writes it
+        // afterwards), so it must not be transitioned here.
         //
-        // room for every pass attachment plus the depth: three surface targets + the G-buffer's own
-        // depth + the scene color the emissive goes into (the forward path uses at most three of these
-        // slots). Sizing this for the old three-target G-buffer was a stack overflow the moment the
-        // emissive attachment arrived - validation reported the fifth barrier as garbage.
+        // room for every pass attachment plus the depth. Sizing this for the old three-target
+        // G-buffer was a stack overflow the moment the emissive attachment arrived - validation
+        // reported the fifth barrier as garbage.
         std::array<VkImageMemoryBarrier2, vulkan::gbuffer_pass_attachment_count + 1> attachment_barriers = {};
         uint32_t barrier_count = 0;
         auto const add_render_barrier = [&attachment_barriers, &barrier_count](VkImageMemoryBarrier2 const& transition, VkImage const image) {
@@ -1765,7 +1737,7 @@ namespace vulkan {
             barrier.image = image;
         };
 
-        if (gbuffer_pass) {
+        {
             for (uint32_t target = 0; target < gbuffer_target_count; ++target) {
                 add_render_barrier(color_attachment_transition, vk.gbuffer_images[target][this->current_image_index]);
             }
@@ -1784,14 +1756,6 @@ namespace vulkan {
             if (this->current_image_index < this->gbuffer_depth_written.size()) {
                 this->gbuffer_depth_written[this->current_image_index] = true;
             }
-        } else if (vk.msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-            // the MSAA scene color and its HDR resolve target both render in COLOR_ATTACHMENT_OPTIMAL
-            add_render_barrier(color_attachment_transition, vk.color_images[this->current_image_index]);
-            add_render_barrier(color_attachment_transition, vk.hdr_images[this->current_image_index]);
-            add_render_barrier(depth_attachment_transition, vk.depth_images[this->current_image_index]);
-        } else {
-            add_render_barrier(color_attachment_transition, vk.hdr_images[this->current_image_index]);
-            add_render_barrier(depth_attachment_transition, vk.depth_images[this->current_image_index]);
         }
 
         VkDependencyInfo const dependency_info = make_image_dependency_info(barrier_count, attachment_barriers.data());
@@ -1822,10 +1786,6 @@ namespace vulkan {
                 pipeline.viewport = full_viewport;
                 pipeline.scissor = full_scissor;
             }
-        }
-        if (this->skybox_pipeline && this->skybox_enabled) {
-            this->skybox_pipeline->viewport = full_viewport;
-            this->skybox_pipeline->scissor = full_scissor;
         }
         // the post-process pipelines are NOT in the named cache above, and begin_pipeline() always
         // re-emits the stored viewport/scissor: leaving them at the creation-time default made every
@@ -1869,13 +1829,11 @@ namespace vulkan {
         }
     }
 
-    // The opaque scene itself, shared by both paths: the segmentation, the per-segment secondary
-    // lifetime and the execute order are identical, only the pipelines the leaves bind (chosen in
-    // record_main_segment from `gbuffer_pass`) and the two optional extras differ.
-    void runtime::record_opaque_scene(VkCommandBuffer const command_buffer, bool const gbuffer_pass, bool const draw_transparent) {
+    // The opaque scene: the surface write pass. Alpha-blended geometry is NOT here - it is
+    // composited over the shaded frame by record_transparent_pass(), after the lighting stage.
+    void runtime::record_opaque_scene(VkCommandBuffer const command_buffer) {
         core& vk = this->vulkan_core;
         uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
-        bool const draw_skybox = !gbuffer_pass; // a background for the forward instance only
         // Stage 3 of parallel recording: the main-pass visible leaves are split into up-to-N
         // contiguous sub_render_tasks (N = task-pool workers), each recording its own per-slot
         // SECONDARY command buffer; the batch is posted to the task pool and the recording
@@ -1885,53 +1843,22 @@ namespace vulkan {
         // segment); only the recording is parallel. Shadow + attachment barriers stay on the
         // primary (see above). The gui overlay (same rendering instance) records on the last
         // worker as one more task.
-        auto const& secondaries = this->secondary_command_buffers[static_cast<std::size_t>(frame_slot)];
-
         // one {pool, secondary} pair per task-pool worker (see the member docs): a worker never
         // shares its pool, so parallel recording cannot race on a VkCommandPool
         std::vector<std::pair<VkCommandPool, vk_command_buffer>>& main_segments = this->main_segments[static_cast<std::size_t>(frame_slot)];
 
-        // Main secondaries inherit the color + depth attachments (dynamic rendering 1.3): same
-        // formats as begin_rendering() below, rasterization samples follow MSAA in the forward pass
-        // and are 1x in the G-buffer pass. The gui overlay draws into the same color+depth instance,
-        // so it inherits identically. The G-buffer mode declares its four targets here (the three
-        // surface targets + the HDR target it adds emissive into), which is what lets the same
-        // parallel segment recording serve both passes.
-        std::array<VkFormat, vulkan::gbuffer_pass_attachment_count> const pass_color_formats =
-            gbuffer_pass ? std::array<VkFormat, vulkan::gbuffer_pass_attachment_count>{
-                               vulkan::gbuffer_formats[0], vulkan::gbuffer_formats[1], vulkan::gbuffer_formats[2], vulkan::gbuffer_velocity_format, vulkan::hdr_format}
-                         : std::array<VkFormat, vulkan::gbuffer_pass_attachment_count>{vulkan::hdr_format, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED};
-        uint32_t const pass_color_count = gbuffer_pass ? vulkan::gbuffer_pass_attachment_count : 1u;
-        VkSampleCountFlagBits const pass_samples = gbuffer_pass ? VK_SAMPLE_COUNT_1_BIT : vk.msaa_samples;
-        VkCommandBufferInheritanceRenderingInfo const main_inheritance = make_inheritance_rendering_info(pass_color_formats.data(), pass_color_count, vk.depth_format, pass_samples);
+        // Main secondaries inherit the color + depth attachments (dynamic rendering 1.3): the three
+        // surface targets + the velocity target + the scene color the emissive is added into, at 1x.
+        // The gui overlay draws into the same color+depth instance, so it inherits identically.
+        std::array<VkFormat, vulkan::gbuffer_pass_attachment_count> const pass_color_formats = {
+            vulkan::gbuffer_formats[0], vulkan::gbuffer_formats[1], vulkan::gbuffer_formats[2], vulkan::gbuffer_velocity_format, vulkan::hdr_format};
+        uint32_t const pass_color_count = vulkan::gbuffer_pass_attachment_count;
+        VkCommandBufferInheritanceRenderingInfo const main_inheritance = make_inheritance_rendering_info(pass_color_formats.data(), pass_color_count, vk.depth_format, VK_SAMPLE_COUNT_1_BIT);
         VkCommandBufferInheritanceInfo const main_sec_inherit = make_inheritance_info(&main_inheritance);
         VkCommandBufferBeginInfo const main_sec_begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &main_sec_inherit);
 
         std::size_t const leaf_count = this->frame_visible.size();
         std::size_t const segment_count = std::min<std::size_t>(main_segments.size(), std::max<std::size_t>(1, leaf_count));
-
-        // Transparent pass: the alpha-blended leaves, recorded on the PRIMARY thread (usually
-        // few + order-sensitive, so no parallel fan-out). Its environment keeps the session
-        // default but transparent draws disable depth writes via env.set_depth_write(false)
-        // (each leaf's draw() requests it). Recorded only when there are transparent leaves, and
-        // never in G-buffer mode: a blended surface cannot be stored in a G-buffer (the deferred
-        // path keeps alpha-blended geometry as a forward pass, which is the standard hybrid).
-        // recorded_* flags gate the execute below: a secondary whose begin failed must never be
-        // executed (executing an unrecorded command buffer is a VUID and can wedge the slot).
-        VkCommandBuffer const transparent_secondary = *secondaries[static_cast<std::size_t>(secondary_pass::transparent)];
-        bool has_transparent = draw_transparent && !this->frame_transparent.empty();
-        auto const record_transparent_pass = [&] {
-            if (!has_transparent) {
-                return;
-            }
-            if (vkBeginCommandBuffer(transparent_secondary, &main_sec_begin) == VK_SUCCESS) {
-                this->record_main_segment(transparent_secondary, this->frame_transparent, /*draw_skybox=*/false, /*gbuffer_pass=*/false);
-                vkEndCommandBuffer(transparent_secondary);
-            } else {
-                utility::log("runtime: transparent secondary begin failed - transparent leaves skipped this frame");
-                has_transparent = false; // do not execute the unrecorded buffer
-            }
-        };
 
         if (segment_count == 1 || leaf_count < 4) {
             // Few leaves: parallel recording would cost more than it saves - record the whole
@@ -1939,7 +1866,7 @@ namespace vulkan {
             VkCommandBuffer const single_main = *main_segments[0].second;
             bool main_recorded = false;
             if (vkBeginCommandBuffer(single_main, &main_sec_begin) == VK_SUCCESS) {
-                this->record_main_segment(single_main, this->frame_visible, draw_skybox, gbuffer_pass);
+                this->record_main_segment(single_main, this->frame_visible, /*gbuffer_pass=*/true);
                 vkEndCommandBuffer(single_main);
                 main_recorded = true;
             } else {
@@ -1950,21 +1877,17 @@ namespace vulkan {
             if (main_recorded) {
                 vkCmdExecuteCommands(command_buffer, 1, &single_main);
             }
-            record_transparent_pass(); // alpha-blended leaves compose over the opaque depth
-            if (has_transparent) {
-                vkCmdExecuteCommands(command_buffer, 1, &transparent_secondary);
-            }
 
             return;
         }
 
         // Parallel: slice frame_visible into segment_count contiguous spans; one sub_render_task
-        // per segment records its own secondary on a pool worker (segment 0 also draws the
-        // skybox). The tasks only read shared state (scene set / pipeline caches / the leaf
-        // pointers) and write their own command buffer, so they run concurrently; the recording
-        // priority group is waited on before the primary executes the segments in order. Each
-        // task's recorded flag is set only on a successful begin+end; the primary skips a
-        // segment whose flag stayed false (executing an unrecorded secondary is a VUID).
+        // per segment records its own secondary on a pool worker. The tasks only read shared state
+        // (scene set / pipeline caches / the leaf pointers) and write their own command buffer, so
+        // they run concurrently; the recording priority group is waited on before the primary
+        // executes the segments in order. Each task's recorded flag is set only on a successful
+        // begin+end; the primary skips a segment whose flag stayed false (executing an unrecorded
+        // secondary is a VUID).
         std::vector<std::function<void()>> tasks;
         tasks.reserve(segment_count);
         std::vector<std::atomic<bool>> segment_recorded(segment_count);
@@ -1974,27 +1897,16 @@ namespace vulkan {
             sub_render_task task = {};
             task.command_buffer = *main_segments[s].second;
             task.leaves = std::span<primitive const* const>(this->frame_visible.data() + seg_first, seg_last - seg_first);
-            // the skybox belongs to the first segment, and never to the G-buffer (a background is
-            // not a surface: the deferred path treats "no geometry" as the sky, the debug view
-            // clears those pixels)
-            task.draw_skybox = s == 0 && draw_skybox;
             task.color_formats = pass_color_formats;
             task.color_count = pass_color_count;
             task.depth_format = vk.depth_format;
-            task.rasterization_samples = pass_samples;
-            task.gbuffer_pass = gbuffer_pass;
+            task.rasterization_samples = VK_SAMPLE_COUNT_1_BIT;
+            task.gbuffer_pass = true;
             task.owner = this;
             task.recorded = &segment_recorded[s];
             tasks.emplace_back(std::move(task)); // std::function copies the value task
         }
         this->run_tasks(tasks, vulkan::task_priority::recording);
-
-        // The gui overlay + the transparent pass record on the PRIMARY thread (the gui recorder
-        // touches Dear ImGui global state via ImGui::Render()/GetDrawData; transparent leaves
-        // are few + order-sensitive) - the pool workers above only recorded scene secondaries,
-        // so nothing races them. Like the single-segment branch, a secondary whose begin failed
-        // is never executed.
-        record_transparent_pass();
 
         this->begin_rendering(command_buffer, this->current_image_index, VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT);
         for (std::size_t s = 0; s < segment_count; ++s) {
@@ -2003,10 +1915,6 @@ namespace vulkan {
             }
             VkCommandBuffer const seg_cb = *main_segments[s].second;
             vkCmdExecuteCommands(command_buffer, 1, &seg_cb);
-        }
-        // transparent leaves compose over the opaque depth, before the gui overlay
-        if (has_transparent) {
-            vkCmdExecuteCommands(command_buffer, 1, &transparent_secondary);
         }
     }
 
@@ -2082,7 +1990,7 @@ namespace vulkan {
     // leaves request the runtime's default pipeline (bind_default, deduplicated), custom leaves
     // request theirs by name - so leaves of several pipelines mix freely in one segment and
     // each pipeline is bound only when the current one differs.
-    void runtime::record_main_segment(VkCommandBuffer const command_buffer, std::span<primitive const* const> const leaves, bool const draw_skybox, bool const gbuffer_arg) const {
+    void runtime::record_main_segment(VkCommandBuffer const command_buffer, std::span<primitive const* const> const leaves, bool const gbuffer_arg) const {
         core const& vk = this->vulkan_core;
         // Bind this frame slot's scene descriptor set once: every pipeline shares the scene
         // layout, so the set stays valid across pipeline binds and only models vary per draw.
@@ -2097,21 +2005,6 @@ namespace vulkan {
                                     &scene_set_handle,
                                     0,
                                     nullptr);
-        }
-
-        // Background pass first (only the segment that carries it): the skybox draws a fullscreen
-        // triangle (no vertex/index buffers) with depth test/write disabled, then the models
-        // render over it. Cull mode is dynamic state: set it explicitly (previously it leaked
-        // from the shadow pass's inline draws; with secondaries that leak is gone). Depth write
-        // is dynamic state too (transparency): the skybox pipeline declares it, so it must be
-        // set once before the draw - OFF, the skybox never writes depth (it sits at z=0.0 and
-        // must not occlude the scene).
-        if (draw_skybox && this->skybox_pipeline && this->skybox_enabled) {
-            this->skybox_pipeline->begin_pipeline(command_buffer);
-            // the skybox outputs linear HDR; exposure + tonemapping happen in the post pass
-            vkCmdSetCullMode(command_buffer, VK_CULL_MODE_BACK_BIT);
-            vkCmdSetDepthWriteEnable(command_buffer, VK_FALSE);
-            vkCmdDraw(command_buffer, 3, 1, 0, 0);
         }
 
         // Main pass: one render_environment per segment (per recording thread - never shared
@@ -2188,7 +2081,7 @@ namespace vulkan {
             }
             return;
         }
-        this->owner->record_main_segment(this->command_buffer, this->leaves, this->draw_skybox, this->gbuffer_pass);
+        this->owner->record_main_segment(this->command_buffer, this->leaves, this->gbuffer_pass);
         vkEndCommandBuffer(this->command_buffer);
         if (this->recorded != nullptr) {
             this->recorded->store(true, std::memory_order_relaxed);
@@ -2342,7 +2235,7 @@ namespace vulkan {
         return {};
     }
 
-    void runtime::record_deferred_lighting_pass(VkCommandBuffer const command_buffer) {
+    void runtime::record_lighting_pass(VkCommandBuffer const command_buffer) {
         core const& vk = this->vulkan_core;
         if (this->deferred_pipeline == std::nullopt) {
             return;
@@ -2438,7 +2331,7 @@ namespace vulkan {
     //    while this one needs the same image as its depth ATTACHMENT, and an image cannot be both in
     //    one instance;
     //  - before the TAA resolve, so the resolve sees the composited frame.
-    void runtime::record_deferred_transparent_pass(VkCommandBuffer const command_buffer) {
+    void runtime::record_transparent_pass(VkCommandBuffer const command_buffer) {
         if (this->frame_transparent.empty()) {
             return; // nothing blended this frame: no instance and no barriers to pay for
         }
@@ -2470,7 +2363,7 @@ namespace vulkan {
         VkCommandBufferBeginInfo const secondary_begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &secondary_inherit);
         bool recorded = false;
         if (vkBeginCommandBuffer(transparent_secondary, &secondary_begin) == VK_SUCCESS) {
-            this->record_main_segment(transparent_secondary, this->frame_transparent, /*draw_skybox=*/false, /*gbuffer_pass=*/false);
+            this->record_main_segment(transparent_secondary, this->frame_transparent, /*gbuffer_pass=*/false);
             vkEndCommandBuffer(transparent_secondary);
             recorded = true;
         } else {
@@ -2533,7 +2426,7 @@ namespace vulkan {
             if (!this->taa_pipeline.has_value()) {
                 this->warn_missing_feature("taa", "TAA has no effect: the taa pipeline was not created (see the startup log)");
             } else if (!this->deferred_lit_active()) {
-                this->warn_missing_feature("taa", "TAA only applies to the deferred path: switch 'deferred lighting' on ([render] deferred = true), or the forward path keeps its MSAA and this checkbox does nothing");
+                this->warn_missing_feature("taa", "TAA has no effect: the G-buffer pass or its lighting stage was not created (see the startup log)");
             }
         }
         this->taa_blend_static = std::clamp(blend_static, 0.0f, 0.99f);
@@ -2746,13 +2639,13 @@ namespace vulkan {
         if (this->gbuffer_debug) {
             return this->gbuffer_debug_pipeline.has_value();
         }
-        return this->deferred_on && this->deferred_pipeline.has_value();
+        return this->deferred_pipeline.has_value();
     }
 
     bool runtime::deferred_lit_active() const noexcept {
-        // the debug view wins when both are on: looking at the stored data is an inspection, not a
-        // render mode (and the two write the HDR target in incompatible ways)
-        return this->gbuffer_pass_active() && this->deferred_on && !this->gbuffer_debug;
+        // the debug view wins when both are available: looking at the stored data is an inspection,
+        // not a render mode (and the two write the HDR target in incompatible ways)
+        return this->gbuffer_pass_active() && !this->gbuffer_debug;
     }
 
     void runtime::set_gbuffer_channel(int const channel) noexcept {
@@ -2875,10 +2768,10 @@ namespace vulkan {
         // Deferred mode: the surface is in the G-buffer and the sky + emissive are in the scene color
         // target; this stage shades every pixel from the G-buffer and adds the result on top, and the
         // alpha-blended leaves then composite over the shaded image (their own instance - see
-        // record_deferred_transparent_pass).
+        // record_transparent_pass).
         if (this->deferred_lit_active()) {
-            this->record_deferred_lighting_pass(command_buffer);
-            this->record_deferred_transparent_pass(command_buffer);
+            this->record_lighting_pass(command_buffer);
+            this->record_transparent_pass(command_buffer);
         }
         this->gpu_mark(command_buffer, gpu_mark_id::lighting_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
@@ -3314,35 +3207,29 @@ namespace vulkan {
         render_features f;
         f.unlit = this->unlit_active;
         f.gbuffer_debug = this->gbuffer_debug && this->gbuffer_pipeline.has_value() && this->gbuffer_debug_pipeline.has_value();
-        f.deferred = !f.gbuffer_debug && this->deferred_on && this->deferred_pipeline.has_value() && this->gbuffer_pipeline.has_value();
+        // The G-buffer pass and its lighting stage are the engine's only scene path, so there is no
+        // flag for them: taa/ssao below ask this instead, and the debug view stands in for the
+        // lighting stage rather than running alongside it (the two write the HDR target differently).
+        bool const shaded_scene = !f.gbuffer_debug && this->deferred_pipeline.has_value() && this->gbuffer_pipeline.has_value();
         // The shadow map is only read by the shading stages. The flat render mode samples nothing
-        // (unlit.frag has no lighting include; the deferred stage returns the albedo before any
+        // (unlit.frag has no lighting include; the lighting stage returns the albedo before any
         // shading), so recording the pass would be pure waste - it measured 0.22 ms of a 0.5 ms frame.
         f.shadow = this->shadow_enabled && this->shadows_enabled && this->shadow_pipeline.has_value() && !f.unlit;
         // Same argument for the cluster pass: flat shading reads no light list, and with no active
         // punctual light there is nothing to sort in the first place.
         f.clustered = this->clustered_lights && this->cluster_pipeline.has_value() && this->light_state.light_count.x > 0.5f && !f.unlit;
-        f.taa = this->taa_on && this->taa_pipeline.has_value() && f.deferred;
-        f.ssao = this->ssao_enabled && f.deferred; // shader-side gate: no pass of its own to skip
+        f.taa = this->taa_on && this->taa_pipeline.has_value() && shaded_scene;
+        f.ssao = this->ssao_enabled && shaded_scene; // shader-side gate: no pass of its own to skip
         f.bloom = this->bloom_intensity > 0.0f && this->post_hdr_pipeline.has_value() && !f.gbuffer_debug;
         f.fxaa = this->fxaa_on && this->post_fxaa_pipeline.has_value();
-        // The deferred path evaluates the sky inside its own lighting stage, so the forward skybox
-        // pass has nothing to draw there (this is what record_opaque_scene's forward call does).
-        f.skybox = this->skybox_enabled && this->skybox_pipeline.has_value() && !f.deferred && !f.gbuffer_debug;
-        // The transparent pass runs on BOTH paths, in a different instance on each: inside the scene
-        // instance in the forward path (which shades as it draws, so the image it blends over is
-        // already there) and after the lighting stage in the deferred path (where the shaded image
-        // only exists once that stage has run). It never runs in the debug view, which shows the
-        // G-buffer and not a frame.
+        // The transparent pass composites over the shaded frame, so it needs that frame to exist -
+        // and it is skipped in the debug view, which shows the G-buffer rather than a frame.
         f.transparent = !f.gbuffer_debug && !this->frame_transparent.empty();
         return f;
     }
 
     bool runtime::feature_active(std::string_view const name) const noexcept {
         render_features const f = this->active_features();
-        if (name == "deferred") {
-            return f.deferred;
-        }
         if (name == "gbuffer-debug") {
             return f.gbuffer_debug;
         }
@@ -3354,9 +3241,6 @@ namespace vulkan {
         }
         if (name == "shadow") {
             return f.shadow;
-        }
-        if (name == "skybox") {
-            return f.skybox;
         }
         if (name == "clustered") {
             return f.clustered;
@@ -3376,7 +3260,7 @@ namespace vulkan {
     void runtime::warn_missing_feature(std::string_view const key, std::string const& message) {
         // Only meaningful once the startup is complete: the app applies the config to the runtime
         // BEFORE the pipelines exist (main sets the toggles, chores then creates the pipelines), so
-        // warning there would claim "the skybox has no effect" one line above "skybox pipeline
+        // warning there would claim "TAA has no effect" one line above "TAA pipeline
         // created". The scene set is created on the first recorded frame, i.e. once every optional
         // pipeline exists.
         if (!this->scene_sets.created()) {
@@ -3394,13 +3278,6 @@ namespace vulkan {
         utility::log("gui: {}", message);
     }
 
-    void runtime::set_deferred(bool const enabled) noexcept {
-        this->deferred_on = enabled;
-        if (enabled && !this->deferred_pipeline.has_value()) {
-            this->warn_missing_feature("deferred", "deferred lighting has no effect: the deferred pipeline was not created (see the startup log's 'deferred lighting disabled' line)");
-        }
-    }
-
     void runtime::set_gbuffer_debug(bool const enabled) noexcept {
         this->gbuffer_debug = enabled;
         if (enabled && (!this->gbuffer_pipeline.has_value() || !this->gbuffer_debug_pipeline.has_value())) {
@@ -3408,19 +3285,9 @@ namespace vulkan {
         }
     }
 
-    void runtime::set_skybox_enabled(bool const enabled) noexcept {
-        this->skybox_enabled = enabled;
-        if (enabled && !this->skybox_pipeline.has_value()) {
-            this->warn_missing_feature("skybox", "the skybox has no effect: its pipeline was not created (see the startup log)");
-        }
-    }
-
     bool runtime::feature_available(std::string_view const name) const noexcept {
         // The single source of truth for "can this feature run at all this session": the overlay asks
         // it to decide what to offer, log_feature_status() prints it, and both therefore agree.
-        if (name == "deferred") {
-            return this->deferred_pipeline.has_value();
-        }
         if (name == "gbuffer-debug") {
             return this->gbuffer_pipeline.has_value() && this->gbuffer_debug_pipeline.has_value();
         }
@@ -3433,9 +3300,6 @@ namespace vulkan {
         if (name == "shadow") {
             return this->shadow_pipeline.has_value();
         }
-        if (name == "skybox") {
-            return this->skybox_pipeline.has_value();
-        }
         if (name == "clustered") {
             return this->cluster_pipeline.has_value();
         }
@@ -3446,16 +3310,14 @@ namespace vulkan {
         // One line naming every optional feature, so "why does this switch do nothing?" is answerable
         // from the log alone. `on` means the pipeline exists and the feature CAN run; whether it is
         // currently switched on is the overlay's and the config's business.
-        utility::log("features: deferred={} gbuffer-debug={} taa={} fxaa={} shadow={} skybox={} clustered-lights={}",
-                     this->feature_available("deferred") ? "on" : "UNAVAILABLE",
+        utility::log("features: gbuffer-debug={} taa={} fxaa={} shadow={} clustered-lights={}",
                      this->feature_available("gbuffer-debug") ? "on" : "UNAVAILABLE",
                      this->feature_available("taa") ? "on" : "UNAVAILABLE",
                      this->feature_available("fxaa") ? "on" : "UNAVAILABLE",
                      this->feature_available("shadow") ? "on" : "UNAVAILABLE",
-                     this->feature_available("skybox") ? "on" : "UNAVAILABLE",
                      this->feature_available("clustered") ? "on" : "UNAVAILABLE");
-        if (!this->feature_available("deferred")) {
-            utility::log("features: the deferred lighting stage is unavailable, so its dependencies ([render] taa, ssao) have nothing to run in");
+        if (!this->gbuffer_pipeline.has_value() || !this->deferred_pipeline.has_value()) {
+            utility::log("features: the G-buffer pass or its lighting stage was not created, so NO SCENE IS DRAWN this session (see the startup log's 'deferred lighting disabled' line)");
         }
     }
 
@@ -3467,7 +3329,7 @@ namespace vulkan {
         this->ssao_intensity = std::clamp(intensity, 0.0f, 1.0f);
         this->ssao_samples = std::clamp(samples, 0u, 16u); // MAX_SSAO_SAMPLES in deferred.frag
         if (enabled && !this->deferred_lit_active()) {
-            this->warn_missing_feature("ssao", "screen-space AO only applies to the deferred path: switch 'deferred lighting' on ([render] deferred = true) or the checkbox does nothing");
+            this->warn_missing_feature("ssao", "screen-space AO has no effect: the G-buffer pass or its lighting stage was not created (see the startup log)");
         }
     }
 
@@ -4001,16 +3863,6 @@ namespace vulkan {
         }
     }
 
-    std::expected<void, std::string> runtime::make_skybox_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code) {
-        using fail = std::unexpected<std::string>;
-        // no depth test / write: the skybox is a background pass drawn before the models
-        auto make_result = this->vulkan_core.make_pipeline(vertex_shader_code, fragment_shader_code, false);
-        if (!make_result) {
-            return fail(make_result.error());
-        }
-        this->skybox_pipeline = std::move(make_result).value();
-        return {};
-    }
     vk_pipeline const* runtime::get_pipeline(std::string_view const pipeline_name) const noexcept {
         std::shared_lock const lock(this->access_mutex);
         auto const it = this->pipelines.find(pipeline_name);
