@@ -14,6 +14,12 @@ name: ci
 # a Debug build (assert-enabled compile gate - catches paths Release skips),
 # and clang-tidy over the pure-CPU modules (app_config + utility), which is
 # kept warning-free so --warnings-as-errors fails on any regression.
+#
+# glslc comes from the MSYS2 shaderc package, NOT from the Vulkan SDK: this
+# runner has no SDK installed, and CMakeLists requires glslc (the compiled
+# SPIR-V is no longer committed, so a configuration without the compiler is
+# exactly the one that could silently run stale shaders). FindVulkan picks it up
+# off PATH, which is why the package is enough.
 
 on:
   push:
@@ -47,6 +53,7 @@ jobs:
             mingw-w64-clang-x86_64-tomlplusplus
             mingw-w64-clang-x86_64-vulkan-loader
             mingw-w64-clang-x86_64-vulkan-headers
+            mingw-w64-clang-x86_64-shaderc
 
       - name: Configure (Release, Ninja)
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -102,10 +109,12 @@ jobs:
             mingw-w64-clang-x86_64-libc++
             mingw-w64-clang-x86_64-cmake
             mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-glfw
             mingw-w64-clang-x86_64-glm
             mingw-w64-clang-x86_64-tomlplusplus
             mingw-w64-clang-x86_64-vulkan-loader
             mingw-w64-clang-x86_64-vulkan-headers
+            mingw-w64-clang-x86_64-shaderc
 
       # AddressSanitizer + UndefinedBehaviorSanitizer over the headless CPU tests.
       #
@@ -113,11 +122,19 @@ jobs:
       # the optimized one (sanitizers need instrumentation and must not be LTO'd), and keeping it
       # apart means a sanitizer finding does not hide the Release/Debug/clang-tidy result.
       #
-      # Only the test targets are built. The executable needs glfw to LINK, which is why this job
-      # produces the tests but not the binary - a full `all` build would fail on that link rather than
-      # on anything the sanitizers have to say. The Vulkan packages are still needed at configure time:
-      # vulkancorekit links Vulkan::Vulkan as a PUBLIC dependency, and CMakeLists requires glslc from
-      # the same SDK to compile the shaders.
+      # Only the test targets are built, even though this job now installs everything the executable
+      # would need: the binary is never run here, so compiling and linking it under the sanitizers
+      # would cost minutes to produce an artifact nobody executes.
+      #
+      # glfw is not optional here, which is not obvious from "headless tests". vulkan.math,
+      # vulkan.animation and vulkan.shadow_fit all live in vulkancorekit, whose PUBLIC link interface
+      # carries imgui - so building test_math / test_animation / test_shadow_fit compiles
+      # imgui_impl_glfw.cpp and a missing GLFW/glfw3.h fails the build before any test runs (measured:
+      # that is what turned this job red, not a sanitizer finding).
+      #
+      # The Vulkan packages are needed for two separate reasons: vulkancorekit links Vulkan::Vulkan as
+      # a PUBLIC dependency, and CMakeLists requires glslc to compile the shaders even in a build that
+      # asks for test targets only - the requirement is checked at configure time.
       #
       # Why this gate earns its place: the whole test suite is pure CPU with no GPU anywhere, so
       # memory errors in the loader / utility / config paths are invisible to the Release run. The
@@ -142,7 +159,7 @@ jobs:
         # fails the job instead of scrolling past. Two deliberate omissions:
         #   - `detect_leaks` is NOT set: LeakSanitizer does not exist on Windows and passing the
         #     option makes EVERY run abort with "detect_leaks is not supported on this platform"
-        #     (measured here - a CI job carrying it would go red on all five tests, reporting the
+        #     (measured here - a CI job carrying it would go red on all six tests, reporting the
         #     flag rather than a bug). It is off by default on this platform anyway.
         #   - `abort_on_error` stays 0, so a finding produces a non-zero exit code from the test
         #     binary (which is what ctest reads) rather than a crash dump.
