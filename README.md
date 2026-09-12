@@ -133,8 +133,8 @@ Related source docs (tracked in the repo):
 ├── gltf_model/              # Sample model (DamagedHelmet)
 ├── snapshot/                # Screenshots
 ├── docs/                    # Usage guides + reference shaders; Doxygen HTML is generated on demand (gitignored)
-├── scripts/                 # Platform-split helpers: windows/ (PowerShell build/run/docs; only setup.sh
-│                            #   is sh — it must run inside MSYS2) and posix/ (sh), plus config
+├── scripts/                 # Platform-split helpers: windows/ (PowerShell build/run/docs/render-check;
+│                            #   only setup.sh is sh — it must run inside MSYS2) and posix/ (sh), plus config
 │                            #   generators; build_docs = windows/build_docs.ps1 + posix/build_docs.sh
 └── third_party/             # Vendored dependencies (spirv-reflect, imgui, xxhash, fastgltf, simdjson, stb_image, mimalloc)
 ```
@@ -250,6 +250,32 @@ Two extra dev-tool flags make a render reproducible without a human at the keybo
 ```
 
 The PNG goes to `[paths] screenshot_dir` and the log line prints its full path. Note the scene is placed in world space around the **orbit target** (`main` sinks the imported model so its centre sits at the target), so a "inside the building" camera needs target coordinates in that shifted space, not the loader's.
+
+### Screenshot regression check (local)
+
+`scripts/windows/check_render.ps1` renders a fixed set of scenarios (fixed config, fixed camera,
+fixed frame count), screenshots each, and compares it to a reference captured earlier **on this
+machine**. It answers "did the frame change", not "is it better" - a difference means a change, and
+accepting one is the explicit `-Update` step that keeps it visible in review.
+
+```powershell
+pwsh -File scripts/windows/check_render.ps1 -List      # the scenarios
+pwsh -File scripts/windows/check_render.ps1            # compare
+pwsh -File scripts/windows/check_render.ps1 -Update    # accept the current output as the reference
+```
+
+It is deliberately **not** a CI test: CI has no GPU, and the references are tied to this machine's GPU
+and driver, so a shared baseline would be red for everyone else. The references therefore live outside
+the repository (`$env:LOCALAPPDATA\vulkan_render\baseline`, overridable with
+`VR_RENDER_BASELINE_DIR`) and an unseeded run says so instead of failing.
+
+Two properties it depends on, both measured rather than assumed. The frame is only deterministic with
+`[gui] show = false` - the overlay prints a live fps counter, and three consecutive runs of one binary
+produced three different hashes with it on and one hash with it off - so every scenario pins its own
+config file and the overlay off. And TAA accumulates over frames, so the frame count is fixed. Check
+mode runs each scenario **twice** and requires the two runs to agree before comparing against the
+reference, so a non-deterministic scenario is reported as flaky rather than as a regression; it also
+refuses to accept a run whose log carries validation errors.
 
 The Dear ImGui debug overlay is on **by default** — disable it with `[gui] show = false` in the config.
 
