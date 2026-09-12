@@ -2,10 +2,10 @@
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
+ * @defgroup vulkan_pipelines Per-Pass Pipeline Builders
  * @brief The engine's per-pass pipelines: one builder per pass, next to the generic builder in
  *        vulkan.core.pipeline (that one knows HOW to build a pipeline, this one knows what each pass's
  *        pipeline looks like - formats, sample counts, blend state, push-constant ranges).
- * @ingroup vulkan_pipelines
  *
  * Extracted from vulkan.runtime, whose implementation had grown past 4900 lines. The builders are
  * stateless: the caller passes the core and the set layouts the pass reuses and gets the created

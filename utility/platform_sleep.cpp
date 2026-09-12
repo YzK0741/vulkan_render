@@ -1,6 +1,6 @@
 /**
  * @file utility/platform_sleep.cpp
- * @brief The platform half of utility::sleep_until - a plain (non-module) translation unit.
+ * @brief The platform half of utility::sleep_for_nanoseconds - a plain (non-module) translation unit.
  * @ingroup utility
  *
  * Deliberately NOT a module implementation unit: <windows.h> pulls in (via crtdbg) placement forms of

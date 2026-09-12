@@ -2,9 +2,9 @@
 
 /**
  * @file vulkan/profiling/profiling.cppm
+ * @defgroup vulkan_profiling Frame Timing Instrumentation
  * @brief Frame timing instrumentation: the CPU frame phases, measured per frame and reported as a
  *        60-frame window (see cpu_phases), with the RAII scope timer the pass recorders use.
- * @ingroup vulkan_profiling
  *
  * Extracted from vulkan.runtime, whose implementation had grown past 4900 lines with the timing, the
  * pass recorders, the pipelines and the resources all in one file. It is a module rather than an

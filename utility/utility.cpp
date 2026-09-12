@@ -289,7 +289,7 @@ uint64_t utility::xxh3_64bits(std::span<unsigned char const> const data_view) {
     return XXH3_64bits(data_view.data(), data_view.size_bytes());
 }
 
-void utility::sleep_for_nanoseconds(std::int64_t const nanoseconds) {
+void utility::sleep_for_nanoseconds(int64_t const nanoseconds) {
     if (nanoseconds <= 0) {
         return;
     }

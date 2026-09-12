@@ -2,9 +2,9 @@
 
 /**
  * @file vulkan/bindings/bindings.cppm
+ * @defgroup vulkan_bindings Descriptor Set Families
  * @brief The descriptor-set side of the runtime: the per-swapchain-image set families and the
  *        per-frame-slot scene sets, with the pool lifetime rule that belongs to them.
- * @ingroup vulkan_bindings
  *
  * Extracted from vulkan.runtime. What made this worth its own module is that the three per-image
  * families - the post chain's, the G-buffer debug view's and TAA's - are THE SAME ALGORITHM read line
