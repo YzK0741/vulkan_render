@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.21.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.21.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -1215,10 +1215,72 @@ namespace vulkan {
          *          COLOR_ATTACHMENT_OPTIMAL and its contents are this frame's post-processed
          *          result); false when the pass was skipped (no pipeline/descriptors), in which case
          *          the swapchain image was never transitioned and the caller must not pretend
-         *          otherwise to the present barrier or the screenshot copy */
+         *          otherwise to the present barrier or the screenshot copy
+         *  @note this function only SEQUENCES the frame's back half: the scene-side tail, the bloom
+         *        chain and the composite/FXAA are recorded by record_scene_tail, record_bloom_chain
+         *        and record_composite. It used to be all three in one 209-line body, whose real
+         *        problem was not its length but that a change to any one of them had to be located
+         *        inside the other two. */
         [[nodiscard]] bool record_post_process(VkCommandBuffer command_buffer);
         /** @brief (re)bind the post descriptor sets to the current per-image HDR targets */
         void ensure_post_descriptors();
+        /**
+         * @brief close the geometry instance and record the scene-side stages that follow it
+         *        (deferred lighting, the TAA resolve, the G-buffer debug view), each with its own
+         *        GPU timing mark
+         * @note the marks are unconditional even when a stage does not run this frame: the
+         *       label-to-interval mapping is positional, so a skipped stage writes its mark
+         *       immediately after the previous one and its interval reads 0
+         */
+        void record_scene_tail(VkCommandBuffer command_buffer);
+        /**
+         * @brief record the bloom chain: bright-pass prefilter into level 0, then one downsample per
+         *        level, plus the layout fixups that keep the levels sampleable when it is disabled
+         * @param command_buffer the frame's command buffer
+         * @param image_index the swapchain image whose bloom levels this is
+         * @param bloom_intensity the weight the composite will apply; 0 disables the passes (the
+         *        levels are still transitioned, because the composite samples those bindings
+         *        statically and a descriptor must name a valid layout)
+         */
+        void record_bloom_chain(VkCommandBuffer command_buffer, uint32_t image_index, float bloom_intensity);
+        /**
+         * @brief record the composite (HDR + weighted bloom -> exposure -> ACES -> display) and,
+         *        when it is enabled, the FXAA pass over its result
+         * @param command_buffer the frame's command buffer
+         * @param image_index the swapchain image being presented
+         * @param bloom_intensity the weighted bloom sum the composite adds; 0 while the G-buffer
+         *        debug view is up
+         * @return true when a swapchain write happened (the composite without FXAA, or the FXAA
+         *         pass) - the caller uses it to know whether the image is in the expected layout
+         */
+        [[nodiscard]] bool record_composite(VkCommandBuffer command_buffer, uint32_t image_index, float bloom_intensity);
+        /**
+         * @brief bind the shared render state of every fullscreen post pass and draw the triangle
+         * @param command_buffer the frame's command buffer
+         * @param pipeline the pass's pipeline (the HDR-format variant when the target is a bloom
+         *        level or the LDR image, the swapchain-format one when it is the swapchain)
+         * @param target_view the color attachment to render into
+         * @param extent its extent (the viewport and scissor are set for it)
+         * @param set the pass's descriptor set (bindings differ per pass - the caller binds it
+         *        before calling, because only it knows which stage of the chain it is)
+         * @param push the pass's push constants (mode selects the stage, encode_gamma the transfer)
+         * @param overlay_after draw the debug overlay into the SAME instance after the triangle, so it
+         *        lands on top of the pass's result. It is a parameter rather than a wrapper because the
+         *        overlay is not a fullscreen pass: it has no loadOp of its own, so opening a second
+         *        instance over the same attachment would CLEAR what the pass just wrote (measured: a
+         *        capture with the overlay disabled came out as a wiped image). Passes whose result must
+         *        stay clean (the bloom levels, the FXAA input) keep the default.
+         * @note records inside the caller's open rendering instance; the caller owns
+         *       vkCmdBeginRendering / vkCmdEndRendering and the layout barriers around it
+         */
+        void record_fullscreen_triangle(VkCommandBuffer command_buffer, vk_pipeline const& pipeline, VkImageView target_view, VkExtent2D extent, VkDescriptorSet set, post_push_constants const& push, bool overlay_after = false);
+        /** @brief the overlay, when it should draw into @p command_buffer (inside the caller's instance) */
+        void record_overlay_if_enabled(VkCommandBuffer command_buffer);
+        /** @brief transition @p image to SHADER_READ_ONLY (a barrier must not be recorded inside a
+         *         rendering instance, so this is always called before vkCmdBeginRendering) */
+        void barrier_image_to_sampling(VkCommandBuffer command_buffer, VkImage image);
+        /** @brief transition @p image to COLOR_ATTACHMENT_OPTIMAL (see above) */
+        void barrier_image_to_color_attachment(VkCommandBuffer command_buffer, VkImage image);
         /**
          * @brief record the screenshot copy (swapchain image -> read-back buffer) into
          *        @p command_buffer, with the image's own layout transitions around it. Called

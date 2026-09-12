@@ -2718,7 +2718,7 @@ namespace vulkan {
             vk.gbuffer_image_views[2][0],
             vk.gbuffer_depth_image_views[0]};
         // One set per image with one descriptor per binding: the three stored targets plus the depth.
-        // image_count is the generation''s, signature is only the fingerprint of image 0 above - the two
+        // image_count is the generation's, signature is only the fingerprint of image 0 above - the two
         // are different things and the family needs both (see vulkan.bindings).
         auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
             std::array<VkDescriptorImageInfo, 4> image_infos = {};
@@ -2806,8 +2806,7 @@ namespace vulkan {
         vkCmdEndRendering(command_buffer);
     }
 
-    bool runtime::record_post_process(VkCommandBuffer const command_buffer) {
-        core const& vk = this->vulkan_core;
+    void runtime::record_scene_tail(VkCommandBuffer const command_buffer) {
         vkCmdEndRendering(command_buffer);
         // GPU timing: the geometry instance ends with the instance close above (the forward main
         // pass, or the G-buffer write pass in the deferred path).
@@ -2832,88 +2831,86 @@ namespace vulkan {
             this->record_gbuffer_debug_pass(command_buffer);
         }
         this->gpu_mark(command_buffer, gpu_mark_id::main_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    }
 
-        this->ensure_post_descriptors();
-        if (this->post_pipeline == std::nullopt || this->post_hdr_pipeline == std::nullopt || this->post_family.set(static_cast<uint32_t>(this->current_image_index), 4) == VK_NULL_HANDLE) {
-            return false; // no post pipeline (creation failed): the HDR frame cannot be presented correctly
+    void runtime::barrier_image_to_sampling(VkCommandBuffer const command_buffer, VkImage const image) {
+        // A pipeline barrier may not be recorded inside a dynamic rendering instance
+        // (VUID-vkCmdPipelineBarrier2-None-09553), which is why every caller of this runs BEFORE its
+        // vkCmdBeginRendering.
+        std::array<VkImageMemoryBarrier2, 1> barriers = {vulkan::hdr_sampling_transition};
+        barriers[0].image = image;
+        VkDependencyInfo const dependency_info = make_image_dependency_info(1, barriers.data());
+        vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+    }
+
+    void runtime::barrier_image_to_color_attachment(VkCommandBuffer const command_buffer, VkImage const image) {
+        // UNDEFINED as the old layout: every caller renders into the image with loadOp CLEAR, so the
+        // previous contents are irrelevant whatever layout they were in (see the transition constants).
+        std::array<VkImageMemoryBarrier2, 1> barriers = {vulkan::color_attachment_transition};
+        barriers[0].image = image;
+        VkDependencyInfo const dependency_info = make_image_dependency_info(1, barriers.data());
+        vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+    }
+
+    void runtime::record_overlay_if_enabled(VkCommandBuffer const command_buffer) {
+        if (this->debug_gui_shown && this->debug_overlay.is_active()) {
+            this->debug_overlay.record(command_buffer);
         }
+    }
 
-        std::size_t const index = this->current_image_index;
-
-        // HDR scene target -> fragment-shader read (the prefilter and the composite both read it)
-        {
-            std::array<VkImageMemoryBarrier2, 1> barriers = {vulkan::hdr_sampling_transition};
-            barriers[0].image = vk.hdr_images[index];
-            VkDependencyInfo const dependency_info = make_image_dependency_info(1, barriers.data());
-            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+    void runtime::record_fullscreen_triangle(VkCommandBuffer const command_buffer, vk_pipeline const& pipeline, VkImageView const target_view, VkExtent2D const extent, VkDescriptorSet const set, post_push_constants const& push, bool const overlay_after) {
+        VkClearValue clear = {};
+        VkRenderingAttachmentInfo const attachment = make_color_attachment_info(target_view, clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
+        VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, extent}, true, &attachment, nullptr);
+        vkCmdBeginRendering(command_buffer, &rendering_info);
+        pipeline.begin_pipeline(command_buffer);
+        VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0f, 1.0f};
+        VkRect2D const scissor = {{0, 0}, extent};
+        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+        vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE); // the fullscreen triangle has no facing
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->post_pipeline_layout, 0, 1, &set, 0, nullptr);
+        vkCmdPushConstants(command_buffer, this->post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+        vkCmdDraw(command_buffer, 3, 1, 0, 0);
+        // Inside THIS instance, before it closes: the overlay is not a fullscreen pass and has no
+        // loadOp of its own, so a pass of its own would CLEAR the image the triangle just wrote.
+        if (overlay_after) {
+            this->record_overlay_if_enabled(command_buffer);
         }
+        vkCmdEndRendering(command_buffer);
+    }
 
-        VkViewport const full_viewport = {0.0f, 0.0f, static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height), 0.0f, 1.0f};
-        VkRect2D const full_scissor = {{0, 0}, vk.swap_chain_extent};
+    void runtime::record_bloom_chain(VkCommandBuffer const command_buffer, uint32_t const image_index, float const bloom_intensity) {
+        core const& vk = this->vulkan_core;
+        std::size_t const index = image_index;
 
         // level L target size: half the swapchain extent per level (min 1x1, matches core)
         auto const level_size = [&vk](uint32_t const level) {
             return VkExtent2D{std::max(1u, vk.swap_chain_extent.width >> (level + 1u)), std::max(1u, vk.swap_chain_extent.height >> (level + 1u))};
         };
-        auto const barrier_to_read = [&command_buffer](VkImage const image) {
-            std::array<VkImageMemoryBarrier2, 1> barriers = {vulkan::hdr_sampling_transition};
-            barriers[0].image = image;
-            VkDependencyInfo const dependency_info = make_image_dependency_info(1, barriers.data());
-            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-        };
-        auto const barrier_to_color = [&command_buffer](VkImage const image) {
-            std::array<VkImageMemoryBarrier2, 1> barriers = {vulkan::color_attachment_transition};
-            barriers[0].image = image;
-            VkDependencyInfo const dependency_info = make_image_dependency_info(1, barriers.data());
-            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-        };
-        auto const run_fullscreen = [&](vk_pipeline const& pipeline, VkImageView const target, VkExtent2D const extent, VkDescriptorSet const set, float const mode) {
-            VkClearValue clear = {};
-            VkRenderingAttachmentInfo const attachment = make_color_attachment_info(target, clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
-            VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, extent}, true, &attachment, nullptr);
-            vkCmdBeginRendering(command_buffer, &rendering_info);
-            pipeline.begin_pipeline(command_buffer);
-            VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0f, 1.0f};
-            VkRect2D const scissor = {{0, 0}, extent};
-            vkCmdSetViewport(command_buffer, 0, 1, &viewport);
-            vkCmdSetScissor(command_buffer, 0, 1, &scissor);
-            vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->post_pipeline_layout, 0, 1, &set, 0, nullptr);
-            post_push_constants const push = {
+        auto const bloom_push = [this](float const mode) {
+            return post_push_constants{
                 .exposure = this->exposure_scale,
                 .bloom_intensity = this->bloom_intensity,
                 .bloom_threshold = this->bloom_threshold,
                 .mode = mode};
-            vkCmdPushConstants(command_buffer, this->post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
-            vkCmdDraw(command_buffer, 3, 1, 0, 0);
-            vkCmdEndRendering(command_buffer);
         };
 
         // ---- bloom chain: bright-pass prefilter into level 0, then downsample level by level ----
-        // every stage here renders into an R16F bloom level, so it needs the HDR-format pipeline.
-        // Skipped entirely when the composite multiplies the bloom sum by 0 (intensity 0): the four
-        // fullscreen passes would be pure cost. The levels are still moved to SHADER_READ_ONLY
-        // (from UNDEFINED - their contents are dead and the composite's static use of those bindings
-        // still requires a valid layout), because the composite samples them and multiplies by 0.
-        // The G-buffer debug view forces the bloom weight to 0 as well: bloom is a display effect,
-        // and a glow smeared over the channel being inspected is the opposite of a debug view (it
-        // would also invent colors that are not in the G-buffer at all).
-        // The G-buffer pass forces the bloom weight to 0 as well when its data is being displayed:
-        // a display effect smeared over the channel being inspected is the opposite of a debug view
-        // (it would also invent colors that are not in the G-buffer at all). The deferred LIT image
-        // is a real image, so bloom stays on for it.
-        bool const debug_view = this->gbuffer_pass_active() && !this->deferred_lit_active();
-        float const bloom_intensity = debug_view ? 0.0f : this->bloom_intensity;
-        bool const bloom_enabled = bloom_intensity > 0.0f;
-        if (bloom_enabled) {
-            barrier_to_color(vk.bloom_images[0][index]);
-            run_fullscreen(*this->post_hdr_pipeline, vk.bloom_image_views[0][index], level_size(0), this->post_family.set(static_cast<uint32_t>(index), 0), 0.0f);
+        // Every stage here renders into an R16F bloom level, so it uses the HDR-format pipeline
+        // variant. Skipped entirely when the composite multiplies the bloom sum by 0: the four
+        // fullscreen passes would be pure cost. The levels are still moved to SHADER_READ_ONLY (from
+        // UNDEFINED - their contents are dead and the composite's static use of those bindings still
+        // requires a valid layout), because the composite samples them and multiplies by 0.
+        if (bloom_intensity > 0.0f) {
+            this->barrier_image_to_color_attachment(command_buffer, vk.bloom_images[0][index]);
+            this->record_fullscreen_triangle(command_buffer, *this->post_hdr_pipeline, vk.bloom_image_views[0][index], level_size(0), this->post_family.set(image_index, 0), bloom_push(0.0f));
             for (std::size_t level = 0; level < 3; ++level) {
-                barrier_to_read(vk.bloom_images[level][index]);
-                barrier_to_color(vk.bloom_images[level + 1][index]);
-                run_fullscreen(*this->post_hdr_pipeline, vk.bloom_image_views[level + 1][index], level_size(static_cast<uint32_t>(level) + 1u), this->post_family.set(static_cast<uint32_t>(index), static_cast<uint32_t>(level) + 1u), 1.0f);
+                this->barrier_image_to_sampling(command_buffer, vk.bloom_images[level][index]);
+                this->barrier_image_to_color_attachment(command_buffer, vk.bloom_images[level + 1][index]);
+                this->record_fullscreen_triangle(command_buffer, *this->post_hdr_pipeline, vk.bloom_image_views[level + 1][index], level_size(static_cast<uint32_t>(level) + 1u), this->post_family.set(image_index, static_cast<uint32_t>(level) + 1u), bloom_push(1.0f));
             }
-            barrier_to_read(vk.bloom_images[3][index]);
+            this->barrier_image_to_sampling(command_buffer, vk.bloom_images[3][index]);
         } else {
             for (uint32_t level = 0; level < vulkan::core::bloom_level_count; ++level) {
                 std::array<VkImageMemoryBarrier2, 1> barriers = {vulkan::undefined_to_sampling_transition};
@@ -2926,6 +2923,12 @@ namespace vulkan {
         // GPU timing: the bloom chain ends here (a disabled bloom chain is just the layout fixups
         // above, so its interval reads ~0).
         this->gpu_mark(command_buffer, gpu_mark_id::bloom_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    }
+
+    bool runtime::record_composite(VkCommandBuffer const command_buffer, uint32_t const image_index, float const bloom_intensity) {
+        core const& vk = this->vulkan_core;
+        std::size_t const index = image_index;
+        VkExtent2D const full_extent = vk.swap_chain_extent;
 
         // ---- composite: HDR + weighted bloom levels -> exposure -> ACES -> display ----
         // With FXAA enabled the composite cannot write the swapchain (the FXAA pass has to read what
@@ -2941,72 +2944,46 @@ namespace vulkan {
         // has to match the attachment it renders into, and the LDR image is R16F like the bloom
         // levels (the shader/descriptor side is identical - only mode and encode_gamma differ).
         vk_pipeline const& composite_pipeline = fxaa ? *this->post_hdr_pipeline : *this->post_pipeline;
+        // Without FXAA the composite writes a LINEAR tonemapped image into an sRGB swapchain
+        // attachment, which encodes it to display values in hardware, so the shader must NOT apply
+        // gamma as well; only a non-sRGB (UNORM) swapchain needs the manual transfer function. With
+        // FXAA the target is the R16F LDR image and the shader must encode.
+        float const composite_encode_gamma = fxaa ? 1.0f : (is_srgb_format(vk.swap_chain_image_format) ? 0.0f : 1.0f);
 
-        barrier_to_color(composite_image);
-        VkClearValue clear = {};
-        VkRenderingAttachmentInfo const color_attachment = make_color_attachment_info(composite_view, clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
-        VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &color_attachment, nullptr);
-        vkCmdBeginRendering(command_buffer, &rendering_info);
-        composite_pipeline.begin_pipeline(command_buffer);
-        vkCmdSetViewport(command_buffer, 0, 1, &full_viewport);
-        vkCmdSetScissor(command_buffer, 0, 1, &full_scissor);
-        vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE); // the fullscreen triangle has no facing
-        VkDescriptorSet const composite_set = this->post_family.set(static_cast<uint32_t>(index), 4);
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->post_pipeline_layout, 0, 1, &composite_set, 0, nullptr);
+        // The overlay draws on the final 1x swapchain image (initialized with msaa = 1 and no depth
+        // attachment, see enable_debug_gui) and must be the LAST writer, so it goes inside the same
+        // instance as the pass it sits on top of. With FXAA that is the FXAA pass, not the composite:
+        // drawing it here would let the edge filter blur the UI text into mush.
+        this->barrier_image_to_color_attachment(command_buffer, composite_image);
         post_push_constants const composite_push = {
             .exposure = this->exposure_scale,
-            .bloom_intensity = bloom_intensity, // 0 while the G-buffer debug view is up (see above)
+            .bloom_intensity = bloom_intensity,
             .bloom_threshold = this->bloom_threshold,
             .mode = 2.0f,
-            // Without FXAA the composite writes a LINEAR tonemapped image into an sRGB swapchain
-            // attachment, which encodes it to display values in hardware, so the shader must NOT
-            // apply gamma as well; only a non-sRGB (UNORM) swapchain needs the manual transfer
-            // function. With FXAA the target is the R16F LDR image and the shader must encode.
-            .encode_gamma = fxaa ? 1.0f : (is_srgb_format(vk.swap_chain_image_format) ? 0.0f : 1.0f),
+            .encode_gamma = composite_encode_gamma,
             .fxaa_subpixel = this->fxaa_subpixel,
             .fxaa_edge_threshold = this->fxaa_edge_threshold};
-        vkCmdPushConstants(command_buffer, this->post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(composite_push), &composite_push);
-        vkCmdDraw(command_buffer, 3, 1, 0, 0);
-        // the debug overlay draws on the final 1x swapchain image (initialized with msaa = 1 and
-        // no depth attachment, see enable_debug_gui). With FXAA it must wait for the FXAA pass, or
-        // the UI text would be anti-aliased into mush.
-        if (!fxaa && this->debug_gui_shown && this->debug_overlay.is_active()) {
-            this->debug_overlay.record(command_buffer);
-        }
-        vkCmdEndRendering(command_buffer);
+        this->record_fullscreen_triangle(command_buffer, composite_pipeline, composite_view, full_extent, this->post_family.set(image_index, 4), composite_push, /*overlay_after=*/!fxaa);
 
         // GPU timing: the composite (and the debug overlay, when it draws here) is done.
         this->gpu_mark(command_buffer, gpu_mark_id::composite_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         if (fxaa) {
             // ---- FXAA: gamma-encoded LDR image -> anti-aliased swapchain (+ overlay on top) ----
-            barrier_to_read(vk.ldr_images[index]);
-            barrier_to_color(vk.swap_chain_images[index]);
-            VkRenderingAttachmentInfo const fxaa_attachment = make_color_attachment_info(vk.swap_chain_image_views[index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
-            VkRenderingInfo const fxaa_rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &fxaa_attachment, nullptr);
-            vkCmdBeginRendering(command_buffer, &fxaa_rendering_info);
-            this->post_fxaa_pipeline->begin_pipeline(command_buffer);
-            vkCmdSetViewport(command_buffer, 0, 1, &full_viewport);
-            vkCmdSetScissor(command_buffer, 0, 1, &full_scissor);
-            vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->post_pipeline_layout, 0, 1, &composite_set, 0, nullptr);
+            // Same meaning of encode_gamma as in the composite: 0 = the swapchain attachment encodes
+            // to display values in hardware, so FXAA must hand it LINEAR values; 1 = the target is a
+            // UNORM format and FXAA's own display-encoded result is what should be stored.
             post_push_constants const fxaa_push = {
                 .exposure = this->exposure_scale,
                 .bloom_intensity = this->bloom_intensity,
                 .bloom_threshold = this->bloom_threshold,
                 .mode = 3.0f,
-                // Same meaning as in the composite: 0 = the swapchain attachment encodes to display
-                // values in hardware, so FXAA must hand it LINEAR values; 1 = the target is a UNORM
-                // format and FXAA's own display-encoded result is what should be stored.
                 .encode_gamma = is_srgb_format(vk.swap_chain_image_format) ? 0.0f : 1.0f,
                 .fxaa_subpixel = this->fxaa_subpixel,
                 .fxaa_edge_threshold = this->fxaa_edge_threshold};
-            vkCmdPushConstants(command_buffer, this->post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(fxaa_push), &fxaa_push);
-            vkCmdDraw(command_buffer, 3, 1, 0, 0);
-            if (this->debug_gui_shown && this->debug_overlay.is_active()) {
-                this->debug_overlay.record(command_buffer);
-            }
-            vkCmdEndRendering(command_buffer);
+            this->barrier_image_to_sampling(command_buffer, vk.ldr_images[index]);
+            this->barrier_image_to_color_attachment(command_buffer, vk.swap_chain_images[index]);
+            this->record_fullscreen_triangle(command_buffer, *this->post_fxaa_pipeline, vk.swap_chain_image_views[index], full_extent, this->post_family.set(image_index, 4), fxaa_push, /*overlay_after=*/true);
         }
         // GPU timing: the FXAA pass (and the overlay it carries when it is the last writer) is done.
         // Without FXAA the composite already ended the frame's display work, so this interval is ~0.
@@ -3014,6 +2991,33 @@ namespace vulkan {
 
         // true in both paths: the FXAA pass (or the composite, when FXAA is off) wrote the swapchain
         return true;
+    }
+
+    bool runtime::record_post_process(VkCommandBuffer const command_buffer) {
+        core const& vk = this->vulkan_core;
+
+        // ---- the scene side: close the geometry instance, then the stages that consume the G-buffer
+        this->record_scene_tail(command_buffer);
+
+        this->ensure_post_descriptors();
+        if (this->post_pipeline == std::nullopt || this->post_hdr_pipeline == std::nullopt || this->post_family.set(static_cast<uint32_t>(this->current_image_index), 4) == VK_NULL_HANDLE) {
+            return false; // no post pipeline (creation failed): the HDR frame cannot be presented correctly
+        }
+
+        std::size_t const index = this->current_image_index;
+
+        // HDR scene target -> fragment-shader read (the prefilter and the composite both read it)
+        this->barrier_image_to_sampling(command_buffer, vk.hdr_images[index]);
+
+        // The G-buffer debug view forces the bloom weight to 0: bloom is a display effect, and a glow
+        // smeared over the channel being inspected is the opposite of a debug view (it would also
+        // invent colors that are not in the G-buffer at all). The deferred LIT image is a real image,
+        // so bloom stays on for it - which is why this is not simply `this->bloom_intensity`.
+        bool const debug_view = this->gbuffer_pass_active() && !this->deferred_lit_active();
+        float const bloom_intensity = debug_view ? 0.0f : this->bloom_intensity;
+
+        this->record_bloom_chain(command_buffer, static_cast<uint32_t>(index), bloom_intensity);
+        return this->record_composite(command_buffer, static_cast<uint32_t>(index), bloom_intensity);
     }
     frame_status runtime::end_recording() {
         vulkan::profiling::cpu_phase_timer const phase_timer{this->cpu_timings, vulkan::profiling::cpu_phase::post};
