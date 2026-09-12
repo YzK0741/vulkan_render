@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.12.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.13.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -42,7 +42,6 @@ import utility;
  * window_title  = "vulkan_render"
  * vsync = true     # true = FIFO_LATEST_READY (vsync), false = mailbox (uncapped)
  * max_fps = 0      # 0 = uncapped (what a throughput measurement needs), else a frame rate cap
- * msaa  = 0        # 0 = auto (device max), else a fixed sample count (4/8/...)
  * clear_color = [0.02, 0.02, 0.03]  # background clear color, RGB in 0..1
  * shadow = true    # record the directional shadow pass each frame
  * fxaa   = false   # anti-alias the final image (adds one fullscreen pass; needs fxaa.frag.spv)
@@ -92,7 +91,6 @@ namespace app_config {
         std::string window_title = "vulkan_render";               // GLFW window title
         bool vsync = true;                                        // true = FIFO_LATEST_READY (FIFO fallback), false = mailbox (uncapped)
         double max_fps = 0.0;                                     // 0 = uncapped; a positive value caps the render loop
-        int msaa = 0;                                             // 0 = auto (device max usable), otherwise a fixed sample count
         std::array<float, 3> clear_color = {0.02f, 0.02f, 0.03f}; // background clear color (RGB, 0..1)
         bool shadow = true;                                       // record the directional shadow pass each frame
         // Cascaded shadow maps ([render] shadow_cascades / shadow_cascade_blend): how many cascades the
@@ -139,13 +137,13 @@ namespace app_config {
         int gbuffer_channel = 1; // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 material id, 6 depth, 7 flags
         // deferred lighting ([render] deferred): the opaque scene is stored in the G-buffer and shaded
         // in screen space afterwards, through the same lighting code the forward path runs per
-        // fragment. The G-buffer pass is 1x whatever MSAA the forward path uses; alpha-blended
+        // fragment; alpha-blended
         // geometry is not drawn in this mode yet (see runtime::set_deferred).
         bool deferred = false;
         // Temporal anti-aliasing ([render] taa / taa_blend_static / taa_blend_min): the deferred path's
-        // answer to MSAA. The projection is jittered every frame and a resolve pass blends the
+        // anti-aliasing (a G-buffer cannot be multisampled, so there is no MSAA to fall back on). The projection is jittered every frame and a resolve pass blends the
         // reprojected, neighborhood-clamped history in - see runtime::set_taa. The forward path keeps
-        // MSAA and writes no motion vectors, so TAA is deferred-only for now.
+        // object motion yet: the G-buffer motion vectors are camera-only for now.
         bool taa = false;
         float taa_blend_static = 0.9f;                      // history weight for a pixel that did not move
         float taa_blend_min = 0.5f;                         // history weight floor under motion (lower = less ghosting)

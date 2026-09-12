@@ -62,16 +62,16 @@ $workDir = Join-Path $BuildDir "render-check"
 # shadow-cascade count and the transparent pass, because those are the paths whose wiring has broken.
 # ---------------------------------------------------------------------------------------------
 $scenarios = @(
-    @{ name = "deferred";          desc = "deferred G-buffer + lighting, no AA stage";  extra = @{ msaa = "1" } }
-    @{ name = "deferred_taa_fxaa"; desc = "deferred + TAA + FXAA (the AA path)";        extra = @{ msaa = "1"; taa = "true"; fxaa = "true" } }
-    @{ name = "deferred_ssao_off"; desc = "deferred with SSAO disabled";               extra = @{ msaa = "1"; ssao = "false" } }
-    @{ name = "shadow_single";     desc = "one cascade, i.e. the historic shadow path"; extra = @{ shadow_cascades = "1"; msaa = "1" } }
-    @{ name = "unlit";             desc = "flat base colour, no shading";              extra = @{ unlit = "true"; msaa = "1" } }
+    @{ name = "deferred";          desc = "deferred G-buffer + lighting, no AA stage";  extra = @{} }
+    @{ name = "deferred_taa_fxaa"; desc = "deferred + TAA + FXAA (the AA path)";        extra = @{ taa = "true"; fxaa = "true" } }
+    @{ name = "deferred_ssao_off"; desc = "deferred with SSAO disabled";               extra = @{ ssao = "false" } }
+    @{ name = "shadow_single";     desc = "one cascade, i.e. the historic shadow path"; extra = @{ shadow_cascades = "1" } }
+    @{ name = "unlit";             desc = "flat base colour, no shading";              extra = @{ unlit = "true" } }
     # The one scenario that uses a different model, and it has to: alphaMode BLEND geometry is drawn
     # by a pass of its own, so no model without a BLEND material can exercise it - DamagedHelmet has
     # only OPAQUE/MASK. AlphaBlendModeTest carries one of each alphaMode (OPAQUE / MASK at two cutoffs
     # / BLEND) plus a decal, so this also covers the G-buffer's MASK discard path.
-    @{ name = "transparent_blend"; desc = "deferred + an alphaMode BLEND material";    extra = @{ msaa = "1" }
+    @{ name = "transparent_blend"; desc = "deferred + an alphaMode BLEND material";    extra = @{}
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\AlphaBlendModeTest\glTF\AlphaBlendModeTest.gltf"
        camera = "0,5,12.4,0,-4.511,0" }
 )
@@ -91,15 +91,14 @@ function Write-ScenarioConfig {
     # deterministic at all. [gui] show = false is the determinism prerequisite (see the header), and
     # max_fps/vsync are pinned so two runs of one scenario pace identically.
     #
-    # `msaa` is only a default here: a scenario that overrides it must not get both lines, because TOML
-    # forbids a duplicate key and toml++ rejects the whole file (which reads as "the scenario silently
-    # fell back to the compiled-in defaults"). Hence the -notcontains filter below.
+    # A scenario's `extra` keys must not repeat a default line: TOML forbids a duplicate key and
+    # toml++ rejects the whole file (which reads as "the scenario silently fell back to the
+    # compiled-in defaults"). Hence the -notcontains filter below.
     $defaults = [ordered]@{
         "window_width"      = "$Width"
         "window_height"     = "$Height"
         "vsync"             = "false"
         "max_fps"           = "240"
-        "msaa"              = "8"
         "shadow"            = "true"
         "validation_layers" = "true"
     }

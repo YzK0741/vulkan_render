@@ -29,7 +29,7 @@ namespace vulkan {
      * @param depth_format depth attachment format
      * @param vertex_shader_code raw SPIR-V binary of the vertex shader
      * @param fragment_shader_code raw SPIR-V binary of the fragment shader
-     * @param msaa_level MSAA sample count used by the render instance
+     * @param msaa_level the render instance's sample count (1 in this engine)
      * @param depth_test_enabled enable depth test + depth write (false e.g. for the skybox pass)
      * @param has_color_attachment whether the pipeline renders color (false for depth-only
      *        passes like the shadow map: no color attachment, no color blending)
@@ -65,7 +65,7 @@ namespace vulkan {
      *        layout(location = i) outputs must match one for one; empty = no color attachment
      *        (depth-only, the same as has_color_attachment false above)
      * @param depth_format depth attachment format
-     * @param msaa_level MSAA sample count of the render instance (the G-buffer is 1x)
+     * @param msaa_level the render instance's sample count (the G-buffer is 1x)
      * @param depth_test_enabled enable depth test + depth write
      * @param depth_bias_* fixed-function rasterization depth bias
      * @param blend_attachments per-color-attachment blend state, in attachment order; EMPTY (the

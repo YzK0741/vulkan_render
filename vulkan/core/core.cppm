@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.7.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -78,8 +78,8 @@ namespace vulkan {
 
     /**
      * @brief format of the HDR scene target the forward pass renders into and the post-process
-     *        pass samples: the MSAA color images use it, and each swapchain image owns one
-     *        single-sample resolve target in it (see core::create_hdr_resolve_resources)
+     *        pass samples: the scene color target uses it, and each swapchain image owns one
+     *        single-sample resolve target in it (see core::create_render_targets)
      */
     export constexpr VkFormat hdr_format = VK_FORMAT_R16G16B16A16_SFLOAT;
 
@@ -99,9 +99,8 @@ namespace vulkan {
      *        - 2 RGBA8_UNORM: material_id low/high byte + ambient occlusion + material flags
      *        16 bytes per pixel in total; the depth is the pass's own single-sampled depth image.
      * @note every target is single-sampled (1x) on purpose: a G-buffer cannot be multisampled
-     *       without per-sample shading, which is exactly what the deferred path trades MSAA for
-     *       (the anti-aliasing story is TAA/FXAA on the lit image instead). The forward path keeps
-     *       its MSAA targets - they are separate images, so both can coexist for an A/B.
+     *       without per-sample shading, which is the trade that makes TAA the anti-aliasing
+     *       (the anti-aliasing story is TAA/FXAA on the lit image instead).
      */
     export constexpr std::array<VkFormat, gbuffer_target_count> gbuffer_formats = {
         VK_FORMAT_R8G8B8A8_UNORM,
@@ -169,11 +168,6 @@ namespace vulkan {
         // keeps an idle window off the CPU. false prefers VK_PRESENT_MODE_MAILBOX_KHR, the uncapped path
         // a throughput measurement needs (see the [render] vsync note in config.example.toml).
         bool vsync = true;
-        // MSAA sample count: 0 (default) = auto (device max usable), 1 = OFF (single-sampled, which
-        // is what the deferred path and TAA require), otherwise the largest usable count <= the
-        // request; the core clamps to the device's max usable when the requested count is not
-        // supported
-        int msaa_samples = 0;
         // Vulkan validation layers + debug messenger (instance layer VK_LAYER_KHRONOS_validation
         // and the VK_EXT_debug_utils messenger); off by default - the caller (app_config) keeps
         // the historic Debug-on / Release-off default and can override it per build
@@ -188,8 +182,8 @@ namespace vulkan {
     };
 
     export struct core : utility::enable_stack_destruct {
-        // creation options this core was built with (window size, vsync, msaa); the window is
-        // created from them and the swap chain / MSAA targets honor them
+        // creation options this core was built with (window size, vsync); the window and the
+        // swap chain honor them
         core_create_info create_options = {};
 
         VkInstance instance = VK_NULL_HANDLE;
@@ -231,25 +225,24 @@ namespace vulkan {
 
         void init_swap_chain() noexcept;
 
+        // MSAA used to live here. It is gone with the forward path that was its only consumer: a
+        // G-buffer cannot be multisampled without per-sample shading, so the scene has always
+        // rendered at 1x, and with no second path there is nothing left for the setting to select.
+        // The anti-aliasing story is TAA (and FXAA) on the shaded image instead.
         std::vector<VkImageView> swap_chain_image_views = {};
 
         void init_image_views() noexcept;
 
-        // MSAA related
-        VkSampleCountFlagBits msaa_samples = VK_SAMPLE_COUNT_1_BIT; // no MSAA by default
-        std::vector<VkImage> color_images = {};                     // MSAA color buffer images
-        std::vector<VkDeviceMemory> color_image_memories = {};
-        std::vector<VkImageView> color_image_views = {}; // MSAA image views
         VkFormat color_format = VK_FORMAT_UNDEFINED;
-        // HDR resolve targets (one per swapchain image): the MSAA scene pass resolves into
-        // them (format hdr_format) and the post-process pass samples them
+        // HDR scene targets (one per swapchain image, format hdr_format): the lighting stage (or the
+        // TAA resolve, when TAA is on) writes them, and the post-process pass samples them
         std::vector<VkImage> hdr_images = {};
         std::vector<VkDeviceMemory> hdr_image_memories = {};
         std::vector<VkImageView> hdr_image_views = {};
-        void create_hdr_resolve_resources();
-        // create_hdr_resolve_resources() runs again on every swapchain recreation (it rebuilds the
-        // HDR/LDR/bloom targets); its teardown must be pushed onto the cleanup stack only once, or
-        // the stack grows one identical lambda per resize.
+        void create_render_targets();
+        // create_render_targets() runs again on every swapchain recreation (it rebuilds the
+        // HDR/LDR/bloom/G-buffer targets); its teardown must be pushed onto the cleanup stack only
+        // once, or the stack grows one identical lambda per resize.
         bool resolve_cleanup_registered = false;
         // bloom targets: a 4-level chain (1/2, 1/4, 1/8, 1/16 of the swapchain extent, min 1x1),
         // one chain per swapchain image; the post pass prefilters into level 0, downsamples
@@ -270,15 +263,15 @@ namespace vulkan {
 
         // ---- G-buffer targets (see gbuffer_formats): one set per swapchain image, single-sampled,
         // written by the G-buffer pass and sampled by the deferred lighting / debug view. They are
-        // created and destroyed with the HDR/LDR/bloom targets (create_hdr_resolve_resources +
+        // created and destroyed with the HDR/LDR/bloom targets (create_render_targets +
         // recreate_swap_chain), so a resize rebuilds them in the same step.
         std::array<std::vector<VkImage>, gbuffer_target_count> gbuffer_images = {};
         std::array<std::vector<VkDeviceMemory>, gbuffer_target_count> gbuffer_image_memories = {};
         std::array<std::vector<VkImageView>, gbuffer_target_count> gbuffer_image_views = {};
-        // The G-buffer pass needs its own depth image: the main depth image follows MSAA, and a
-        // dynamic rendering instance requires every attachment to have the same sample count (a
-        // 1x G-buffer over an 8x depth attachment is invalid, and a multisampled G-buffer is the
-        // thing the deferred path exists to avoid). Single-sampled, sampled (the lighting pass
+        // The G-buffer pass has its own depth image rather than sharing the main one: a dynamic
+        // rendering instance requires every attachment to have the same sample count, and keeping
+        // them separate lets the G-buffer depth be SAMPLED later while the main one is never read.
+        // Single-sampled, sampled (the lighting pass
         // reads it), cleared by the G-buffer pass like the main depth.
         std::vector<VkImage> gbuffer_depth_images = {};
         std::vector<VkDeviceMemory> gbuffer_depth_image_memories = {};
@@ -290,10 +283,10 @@ namespace vulkan {
         std::vector<VkImageView> velocity_image_views = {};
 
         // ---- temporal anti-aliasing (see runtime::set_taa) ----
-        // The scene color TAA resolves FROM, one per swapchain image: when TAA is on, the deferred
-        // path's geometry/lighting stage writes this image instead of the HDR target, and the TAA
-        // resolve blends it with the history into the HDR target - which keeps the whole post chain
-        // (bloom, composite, FXAA) reading exactly what it read before TAA existed.
+        // The scene color TAA resolves FROM, one per swapchain image: when TAA is on, the geometry
+        // and lighting stages write this image instead of the HDR target, and the TAA resolve blends
+        // it with the history into the HDR target - which keeps the whole post chain (bloom,
+        // composite, FXAA) reading exactly what it read before TAA existed.
         std::vector<VkImage> scene_color_images = {};
         std::vector<VkDeviceMemory> scene_color_image_memories = {};
         std::vector<VkImageView> scene_color_image_views = {};
@@ -306,11 +299,21 @@ namespace vulkan {
         std::vector<VkImage> taa_history_images = {};
         std::vector<VkDeviceMemory> taa_history_image_memories = {};
         std::vector<VkImageView> taa_history_image_views = {};
-        void create_msaa_image(
+        /**
+         * @brief create a single-sampled device-local image with its memory, and return both
+         * @param width / @param height the extent in texels
+         * @param format the image format
+         * @param tiling OPTIMAL or LINEAR (staging images that are mapped on the host)
+         * @param usage the usage flags the image is created with
+         * @param properties the memory type the image is bound to
+         * @note every target the engine creates is single-sampled: the only multisampled images it
+         *       ever had were the forward path's, and that path is gone. The sample count is fixed
+         *       rather than a parameter so there is one less thing a caller can get wrong.
+         */
+        void create_target_image(
             uint32_t width,
             uint32_t height,
             VkFormat format,
-            VkSampleCountFlagBits num_samples,
             VkImageTiling tiling,
             VkImageUsageFlags usage,
             VkMemoryPropertyFlags properties,

@@ -55,9 +55,9 @@ agree to 0.32/255 mean absolute luminance difference. **M3 (done)** is temporal 
 path: a Halton(2,3) projection jitter, per-pixel camera motion vectors written by the G-buffer, and
 `shaders/taa.frag` resolving the jitter against a reprojected, neighborhood-clamped history (with a
 view-depth guard for disocclusions) - measured against the same frame without TAA, 1.05/255 mean
-difference with 9% less high-frequency energy, and the forward path byte-identical. TAA is the
-deferred path's anti-aliasing because a 1x G-buffer has no MSAA to fall back on, which is why
-`[render] msaa` now distinguishes auto (0) from off (1). **M4 (done)** is cascaded shadow maps: the
+difference with 9% less high-frequency energy, and the previous forward path byte-identical. TAA is
+the engine's anti-aliasing because a 1x G-buffer cannot be multisampled. **M4 (done)** is cascaded
+shadow maps: the
 sun's shadow pass fills a layered 2D-array depth map (1..4 cascades, three by default), each cascade
 fitting its own light-space box to its own slice of the view range (practical split scheme, lambda
 0.75), with the fragment shader selecting its cascade per pixel from the view depth and blending

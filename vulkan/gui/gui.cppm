@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.gui
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Dear ImGui debug overlay: widget / panel layer driven from the runtime's frame
 // steps (runtime::debug_gui). Kept as its own unit so the overlay can be swapped
@@ -37,7 +37,7 @@ export import vstd;
  *      - the runtime owns a gui_content member (optional, enabled via enable_debug_gui());
  *        when active, the runtime calls new_frame() before recording and record() after
  *        record_main_drawcalls() while the main rendering instance is still open, so the UI
- *        draws on top of the scene inside the same pass (and the same MSAA resolve)
+ *        draws on top of the scene inside the same pass
  */
 namespace vulkan::gui {
     /**
@@ -56,10 +56,9 @@ namespace vulkan::gui {
         uint32_t graphics_queue_family = 0; // queue family of @p graphics_queue
         VkQueue graphics_queue = VK_NULL_HANDLE;
         // the overlay draws into the OPEN main rendering instance, so its pipeline must match
-        // the frame's attachments: swapchain color format + the scene's depth format + MSAA
+        // the frame's attachments: swapchain color format + the scene's depth format
         VkFormat color_format = VK_FORMAT_UNDEFINED;
         VkFormat depth_format = VK_FORMAT_UNDEFINED; // must match the main pass' depth attachment
-        VkSampleCountFlagBits msaa_samples = VK_SAMPLE_COUNT_1_BIT;
         // frames in flight (the backend sizes its per-frame render-buffer ring to this)
         uint32_t frames_in_flight = 2;
     };

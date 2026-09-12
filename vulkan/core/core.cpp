@@ -32,8 +32,7 @@ namespace vulkan {
         init_image_views();
         create_depth_resources();
         color_format = swap_chain_image_format;
-        create_color_resources();
-        create_hdr_resolve_resources(); // HDR resolve targets: the post-process pass input
+        create_render_targets(); // the scene's render targets: the post-process pass input
         create_command_pool();
         create_descriptor_pool();
         init_scene_layouts();
@@ -412,7 +411,7 @@ namespace vulkan {
         image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
         image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-        image_info.samples = this->msaa_samples;
+        image_info.samples = VK_SAMPLE_COUNT_1_BIT;
         image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         if (vkCreateImage(device, &image_info, nullptr, &image) != VK_SUCCESS) {
@@ -453,33 +452,10 @@ namespace vulkan {
             utility::panic("can't find supported depth format");
         }
 
-        // MSAA sample count: 0 = auto (the device's max usable), 1 = OFF (single-sampled, which is
-        // what the deferred path and TAA need), N = the largest usable count <= N. VkSampleCountFlagBits
-        // values equal their sample counts (1/2/4/8/...), so the flags compare like plain integers.
-        // NOTE the 1 = off meaning: it used to be lumped in with 0 as "auto", which made `msaa = 1`
-        // silently request 8x - a config that says "no MSAA" and gets MSAA is worse than either
-        // meaning, and the deferred path needs a way to ask for exactly one sample.
-        VkSampleCountFlagBits const max_usable = get_max_usable_sample_count(this->physical_device);
-        if (this->create_options.msaa_samples <= 0) {
-            msaa_samples = max_usable; // auto
-        } else if (this->create_options.msaa_samples == 1) {
-            msaa_samples = VK_SAMPLE_COUNT_1_BIT; // off
-        } else {
-            VkSampleCountFlagBits requested = VK_SAMPLE_COUNT_1_BIT;
-            for (VkSampleCountFlagBits const candidate : {VK_SAMPLE_COUNT_2_BIT, VK_SAMPLE_COUNT_4_BIT, VK_SAMPLE_COUNT_8_BIT, VK_SAMPLE_COUNT_16_BIT, VK_SAMPLE_COUNT_32_BIT, VK_SAMPLE_COUNT_64_BIT}) {
-                if (static_cast<int>(candidate) <= this->create_options.msaa_samples) {
-                    requested = candidate; // largest supported-looking flag <= requested count
-                }
-            }
-            msaa_samples = static_cast<int>(requested) <= static_cast<int>(max_usable) ? requested : max_usable;
-            if (static_cast<int>(requested) > static_cast<int>(max_usable)) {
-                utility::log("core: requested MSAA {}x unsupported, clamped to {}x", static_cast<int>(requested), static_cast<int>(max_usable));
-            } else if (this->create_options.msaa_samples > static_cast<int>(requested)) {
-                utility::log("core: MSAA {}x requested, using {}x", this->create_options.msaa_samples, static_cast<int>(requested));
-            }
-        }
-        utility::log("core: MSAA {}x ({})", static_cast<int>(msaa_samples), this->create_options.msaa_samples <= 0 ? "auto" : this->create_options.msaa_samples == 1 ? "off"
-                                                                                                                                                                     : "requested");
+        // Single-sampled, always: the scene renders into a 1x G-buffer whose depth is its own, and
+        // this main depth image is what the no-G-buffer fallback instance (and nothing else) uses.
+        // There is no sample count to resolve here - the [render] msaa setting went with the forward
+        // path, which was its only consumer.
 
         depth_images.resize(swap_chain_image_views.size());
         depth_image_views.resize(swap_chain_image_views.size());
@@ -506,62 +482,20 @@ namespace vulkan {
         });
     }
 
-    void core::create_color_resources() {
-
-        color_images.resize(swap_chain_image_views.size());
-        color_image_memories.resize(swap_chain_image_views.size());
-        color_image_views.resize(swap_chain_image_views.size());
-
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_msaa_image(
-                swap_chain_extent.width,
-                swap_chain_extent.height,
-                hdr_format,
-                msaa_samples,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                color_images[i],
-                color_image_memories[i]);
-
-            color_image_views[i] = create_image_view(
-                color_images[i],
-                hdr_format,
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                device);
-        }
-
-        register_cleanup([this] {
-            for (auto const& view : color_image_views) {
-                vkDestroyImageView(device, view, nullptr);
-            }
-            for (auto const& memory : color_image_memories) {
-                vkFreeMemory(device, memory, nullptr);
-            }
-            for (auto const& image : color_images) {
-                vkDestroyImage(device, image, nullptr);
-            }
-            color_image_views.clear();
-            color_image_memories.clear();
-            color_images.clear();
-        });
-    }
-
-    void core::create_hdr_resolve_resources() {
-        // One single-sample HDR resolve target per swapchain image: the MSAA scene pass resolves
-        // into it and the post-process pass samples it. TRANSFER_SRC as well, because the TAA resolve
-        // copies the resolved frame it wrote here into the history image (vkCmdCopyImage requires the
+    void core::create_render_targets() {
+        // One HDR scene target per swapchain image: the lighting stage (or the TAA resolve, when TAA
+        // is on) writes it and the post-process pass samples it. TRANSFER_SRC as well, because the TAA
+        // resolve copies the frame it wrote here into the history image (vkCmdCopyImage requires the
         // source to carry the usage flag).
         hdr_images.resize(swap_chain_image_views.size());
         hdr_image_memories.resize(swap_chain_image_views.size());
         hdr_image_views.resize(swap_chain_image_views.size());
 
         for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_msaa_image(
+            create_target_image(
                 swap_chain_extent.width,
                 swap_chain_extent.height,
                 hdr_format,
-                VK_SAMPLE_COUNT_1_BIT,
                 VK_IMAGE_TILING_OPTIMAL,
                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -583,11 +517,10 @@ namespace vulkan {
         ldr_image_memories.resize(swap_chain_image_views.size());
         ldr_image_views.resize(swap_chain_image_views.size());
         for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_msaa_image(
+            create_target_image(
                 swap_chain_extent.width,
                 swap_chain_extent.height,
                 hdr_format,
-                VK_SAMPLE_COUNT_1_BIT,
                 VK_IMAGE_TILING_OPTIMAL,
                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -602,10 +535,10 @@ namespace vulkan {
         }
 
         // ---- G-buffer targets (see gbuffer_formats) + the pass's own 1x depth image ----
-        // One set per swapchain image, single-sampled whatever MSAA the forward path uses: the
-        // G-buffer cannot be multisampled without per-sample shading, and the deferred path is the
-        // reason MSAA is not the only anti-aliasing answer anymore. COLOR_ATTACHMENT | SAMPLED
-        // because the pass writes them as attachments and the lighting/debug pass samples them.
+        // One set per swapchain image, single-sampled: a G-buffer cannot be multisampled without
+        // per-sample shading, which is the trade that makes TAA the engine's anti-aliasing.
+        // COLOR_ATTACHMENT | SAMPLED because the pass writes them as attachments and the
+        // lighting/transparent/TAA/debug passes sample them.
         for (uint32_t target = 0; target < gbuffer_target_count; ++target) {
             std::vector<VkImage>& target_images = gbuffer_images[target];
             std::vector<VkDeviceMemory>& target_memories = gbuffer_image_memories[target];
@@ -615,11 +548,10 @@ namespace vulkan {
             target_views.resize(swap_chain_image_views.size());
 
             for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-                create_msaa_image(
+                create_target_image(
                     swap_chain_extent.width,
                     swap_chain_extent.height,
                     gbuffer_formats[target],
-                    VK_SAMPLE_COUNT_1_BIT,
                     VK_IMAGE_TILING_OPTIMAL,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -642,11 +574,10 @@ namespace vulkan {
             memories.resize(swap_chain_image_views.size());
             views.resize(swap_chain_image_views.size());
             for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-                create_msaa_image(
+                create_target_image(
                     swap_chain_extent.width,
                     swap_chain_extent.height,
                     format,
-                    VK_SAMPLE_COUNT_1_BIT,
                     VK_IMAGE_TILING_OPTIMAL,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -664,11 +595,10 @@ namespace vulkan {
         taa_history_image_memories.resize(swap_chain_image_views.size());
         taa_history_image_views.resize(swap_chain_image_views.size());
         for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_msaa_image(
+            create_target_image(
                 swap_chain_extent.width,
                 swap_chain_extent.height,
                 hdr_format,
-                VK_SAMPLE_COUNT_1_BIT,
                 VK_IMAGE_TILING_OPTIMAL,
                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -682,11 +612,10 @@ namespace vulkan {
         gbuffer_depth_image_memories.resize(swap_chain_image_views.size());
         gbuffer_depth_image_views.resize(swap_chain_image_views.size());
         for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_msaa_image(
+            create_target_image(
                 swap_chain_extent.width,
                 swap_chain_extent.height,
                 depth_format,
-                VK_SAMPLE_COUNT_1_BIT,
                 VK_IMAGE_TILING_OPTIMAL,
                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -711,11 +640,10 @@ namespace vulkan {
             level_memories.resize(swap_chain_image_views.size());
             level_views.resize(swap_chain_image_views.size());
             for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-                create_msaa_image(
+                create_target_image(
                     level_width,
                     level_height,
                     hdr_format,
-                    VK_SAMPLE_COUNT_1_BIT,
                     VK_IMAGE_TILING_OPTIMAL,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -798,7 +726,7 @@ namespace vulkan {
             }
             gbuffer_depth_images.clear();
             // motion vectors + the TAA working images share the same lifetime (see
-            // create_hdr_resolve_resources)
+            // create_render_targets)
             auto const destroy_images = [this](std::vector<VkImage>& images, std::vector<VkDeviceMemory>& memories, std::vector<VkImageView>& views) {
                 for (auto const& view : views) {
                     vkDestroyImageView(device, view, nullptr);
@@ -851,11 +779,10 @@ namespace vulkan {
         });
     }
 
-    void core::create_msaa_image(
+    void core::create_target_image(
         uint32_t width,
         uint32_t height,
         VkFormat format,
-        VkSampleCountFlagBits num_samples,
         VkImageTiling tiling,
         VkImageUsageFlags usage,
         VkMemoryPropertyFlags properties,
@@ -873,11 +800,11 @@ namespace vulkan {
         image_info.tiling = tiling;
         image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         image_info.usage = usage;
-        image_info.samples = num_samples; // key: set the sample count
+        image_info.samples = VK_SAMPLE_COUNT_1_BIT;
         image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         if (vkCreateImage(device, &image_info, nullptr, &image) != VK_SUCCESS) {
-            utility::panic("can't create msaa image");
+            utility::panic("can't create target image");
         }
 
         VkMemoryRequirements mem_requirements;
@@ -892,7 +819,7 @@ namespace vulkan {
             physical_device);
 
         if (vkAllocateMemory(device, &alloc_info, nullptr, &image_memory) != VK_SUCCESS) {
-            utility::panic("can't allocate msaa image memory");
+            utility::panic("can't allocate target image memory");
         }
 
         vkBindImageMemory(device, image, image_memory, 0);
@@ -1304,25 +1231,7 @@ namespace vulkan {
         // 1. Wait for the device to be idle
         vkDeviceWaitIdle(device);
 
-        // 2. Destroy MSAA color resources
-        if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-            for (auto const& view : color_image_views) {
-                vkDestroyImageView(device, view, nullptr);
-            }
-            color_image_views.clear();
-
-            for (auto const& image : color_images) {
-                vkDestroyImage(device, image, nullptr);
-            }
-            color_images.clear();
-
-            for (auto const& memory : color_image_memories) {
-                vkFreeMemory(device, memory, nullptr);
-            }
-            color_image_memories.clear();
-        }
-
-        // 2b. Destroy HDR resolve targets
+        // 2. Destroy the scene targets (the G-buffer/velocity/HDR/LDR/bloom set is rebuilt below)
         for (auto const& view : hdr_image_views) {
             vkDestroyImageView(device, view, nullptr);
         }
@@ -1450,14 +1359,10 @@ namespace vulkan {
         }
 
         // 6. Recreate all resources
-        this->init_swap_chain();              // rebuild swapchain
-        this->init_image_views();             // rebuild image views
-        this->create_depth_resources();       // rebuild depth resources
-        this->create_hdr_resolve_resources(); // rebuild the HDR resolve targets
-
-        if (msaa_samples > VK_SAMPLE_COUNT_1_BIT) {
-            this->create_color_resources(); // rebuild MSAA color resources
-        }
+        this->init_swap_chain();        // rebuild swapchain
+        this->init_image_views();       // rebuild image views
+        this->create_depth_resources(); // rebuild depth resources
+        this->create_render_targets();  // rebuild the scene targets
 
         // Present-ready semaphores are allocated per image index; destroy and rebuild when the
         // count changes (device is idle here). The per-slot timeline + binary acquire
@@ -1523,7 +1428,10 @@ namespace vulkan {
             this->depth_format,
             vertex_shader_code,
             fragment_shader_code,
-            this->msaa_samples,
+            // 1x, always: the scene renders into a single-sampled G-buffer, so no pipeline this
+            // engine builds can rasterize multisampled. The builders keep the parameter (it is a
+            // pipeline property, not an engine setting), and this is the only value passed.
+            VK_SAMPLE_COUNT_1_BIT,
             depth_test_enabled);
         if (result) {
             // Save the fullscreen viewport/scissor for the current swapchain size, used directly before draw

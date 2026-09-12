@@ -243,14 +243,6 @@ export VkFormat find_depth_format(VkPhysicalDevice physical_device) noexcept;
 
 /**
  * @ingroup vulkan_init_utils
- * @brief get the maximum usable MSAA sample count of the physical device
- * @param physical_device the physical device to query
- * @return the maximum supported sample count flag
- */
-export VkSampleCountFlagBits get_max_usable_sample_count(VkPhysicalDevice physical_device) noexcept;
-
-/**
- * @ingroup vulkan_init_utils
  * @brief create an image view for the given image
  * @param image the source image
  * @param format the image format

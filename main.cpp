@@ -147,13 +147,12 @@ int main(int argc, char** argv) {
     auto load_future = gltf::load_model_async(model_path);
 
     // 5. Construct vulkan::runtime from the startup render settings (window size / title /
-    //    vsync / MSAA; the defaults in render_settings mirror the historic hardcoded values)
+    //    vsync; the defaults in render_settings mirror the historic hardcoded values)
     vulkan::core_create_info core_options = {};
     core_options.window_width = settings.render.window_width;
     core_options.window_height = settings.render.window_height;
     core_options.window_title = settings.render.window_title;
     core_options.vsync = settings.render.vsync;
-    core_options.msaa_samples = settings.render.msaa;
     core_options.validation_layers = settings.render.validation_layers;
     vulkan::runtime runtime{core_options};
     runtime.clear_color = glm::vec3(settings.render.clear_color[0], settings.render.clear_color[1], settings.render.clear_color[2]);

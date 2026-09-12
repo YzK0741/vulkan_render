@@ -2066,7 +2066,7 @@ namespace vulkan {
     }
 
     // One parallel recording job (see the declaration): begin the secondary command buffer with
-    // dynamic-rendering inheritance (color + depth attachments, MSAA sample count), record the
+    // dynamic-rendering inheritance (color + depth attachments, sample count), record the
     // segment's leaves (skybox on the carrying segment) and end it. Self-contained - built
     // fresh each call so the pNext chains point at this invocation's stack structs; safe to run
     // on any pool worker.
@@ -2179,7 +2179,7 @@ namespace vulkan {
     // ---- G-buffer / deferred path (M1: the write pass + its debug view) ----
     // The G-buffer pass is the forward opaque pass with a different fragment stage: same vertex
     // stage, same primitives, same scene set, same instancing/skinning/morphing. What changes is
-    // where the fragments go (three 1x targets + a 1x depth image instead of the MSAA HDR target)
+    // where the fragments go (three 1x targets + a 1x depth image instead of the scene color)
     // and that nothing is lit - see shaders/gbuffer.frag.
     std::expected<void, std::string> runtime::make_gbuffer_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
         auto result = this->vulkan_core.make_gbuffer_pipeline(vertex_shader_code, fragment_shader_code);
@@ -2356,7 +2356,7 @@ namespace vulkan {
 
         // Record the leaves into the per-slot transparent secondary, with inheritance matching the
         // instance below: ONE color attachment (the HDR scene target) at 1x. Deliberately not the
-        // forward path's sample count - there is no MSAA image in a deferred frame.
+        // forward path's sample count - there is no multisampled image in a frame.
         std::array<VkFormat, 1> const color_formats = {vulkan::hdr_format};
         VkCommandBufferInheritanceRenderingInfo const inheritance = make_inheritance_rendering_info(color_formats.data(), 1, vk.depth_format, VK_SAMPLE_COUNT_1_BIT);
         VkCommandBufferInheritanceInfo const secondary_inherit = make_inheritance_info(&inheritance);
@@ -2405,7 +2405,7 @@ namespace vulkan {
 
     bool runtime::taa_active() const noexcept {
         // The forward path has no motion vectors (its fragment stage does not write them), so TAA is
-        // the deferred path's answer to MSAA - and only the deferred path's, for now.
+        // the engine's answer to aliasing, now that there is no MSAA to fall back on.
         return this->taa_on && this->taa_pipeline.has_value() && this->deferred_lit_active();
     }
 
@@ -2906,7 +2906,7 @@ namespace vulkan {
         // FXAA the target is the R16F LDR image and the shader must encode.
         float const composite_encode_gamma = fxaa ? 1.0f : (is_srgb_format(vk.swap_chain_image_format) ? 0.0f : 1.0f);
 
-        // The overlay draws on the final 1x swapchain image (initialized with msaa = 1 and no depth
+        // The overlay draws on the final 1x swapchain image (no depth attachment,
         // attachment, see enable_debug_gui) and must be the LAST writer, so it goes inside the same
         // instance as the pass it sits on top of. With FXAA that is the FXAA pass, not the composite:
         // drawing it here would let the edge filter blur the UI text into mush.
@@ -2995,12 +2995,11 @@ namespace vulkan {
             }
         }
         // Dynamic rendering has no render pass finalLayout to hand the image back to the
-        // presentation engine: transition the swapchain image to PRESENT_SRC_KHR explicitly.
-        // With MSAA the resolve target ends up in resolveImageLayout (COLOR_ATTACHMENT_OPTIMAL),
-        // so the barrier is needed on both the direct-render and the resolve paths. When the post
-        // pass was skipped the image never entered COLOR_ATTACHMENT_OPTIMAL, and claiming that old
-        // layout would be a lie (validation: "oldLayout is not matching with the current layout"):
-        // transition from UNDEFINED instead - the frame has no content to preserve anyway.
+        // presentation engine: transition the swapchain image to PRESENT_SRC_KHR explicitly. The
+        // post pass leaves the image in COLOR_ATTACHMENT_OPTIMAL, so the barrier is needed whenever
+        // it ran. When it was skipped the image never entered COLOR_ATTACHMENT_OPTIMAL, and claiming
+        // that old layout would be a lie (validation: "oldLayout is not matching with the current
+        // layout"): transition from UNDEFINED instead - the frame has no content to preserve anyway.
         VkImageMemoryBarrier2 present_barrier = post_wrote_swapchain ? present_transition : vulkan::undefined_to_present_transition;
         present_barrier.image = vk.swap_chain_images[this->current_image_index];
 
@@ -3085,8 +3084,7 @@ namespace vulkan {
         info.graphics_queue_family = vk.graphics_family_index;
         info.graphics_queue = vk.graphics_queue;
         info.color_format = vk.swap_chain_image_format;
-        info.depth_format = VK_FORMAT_UNDEFINED;   // the post/gui pass has no depth attachment
-        info.msaa_samples = VK_SAMPLE_COUNT_1_BIT; // the overlay draws on the 1x swapchain after the post pass
+        info.depth_format = VK_FORMAT_UNDEFINED; // the post/gui pass has no depth attachment
         info.frames_in_flight = static_cast<uint32_t>(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         return this->debug_overlay.init(info);
     }

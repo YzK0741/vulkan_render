@@ -242,7 +242,7 @@ export namespace vulkan {
      * @param color_format_ptr caller-owned color format (ignored when has_color_attachment
      *        is false)
      * @param depth_format the depth attachment's format (VK_FORMAT_UNDEFINED if none)
-     * @param rasterization_samples follows MSAA (1 for the single-sampled shadow map)
+     * @param rasterization_samples the instance's sample count (always 1 in this engine)
      */
     constexpr VkCommandBufferInheritanceRenderingInfo make_inheritance_rendering_info(bool const has_color_attachment, VkFormat const* color_format_ptr, VkFormat const depth_format, VkSampleCountFlagBits const rasterization_samples) noexcept {
         return {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO,
@@ -261,7 +261,7 @@ export namespace vulkan {
      * @param color_formats caller-owned array of @p color_count formats, in attachment order
      * @param color_count number of color attachments declared
      * @param depth_format the depth attachment's format (VK_FORMAT_UNDEFINED if none)
-     * @param rasterization_samples follows MSAA (1 for the single-sampled G-buffer)
+     * @param rasterization_samples the instance's sample count (always 1 in this engine)
      */
     constexpr VkCommandBufferInheritanceRenderingInfo make_inheritance_rendering_info(VkFormat const* color_formats, uint32_t const color_count, VkFormat const depth_format, VkSampleCountFlagBits const rasterization_samples) noexcept {
         return {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO,
@@ -338,10 +338,10 @@ export namespace vulkan {
     /**
      * @brief color attachment of a rendering instance: COLOR_ATTACHMENT_OPTIMAL layout,
      *        loadOp CLEAR + storeOp STORE (the swapchain image is presented afterwards)
-     * @param image_view the (MSAA or swapchain) color image view
+     * @param image_view the color image view
      * @param clear_value the runtime clear color
-     * @param resolve_mode NONE without MSAA, AVERAGE with MSAA
-     * @param resolve_image_view swapchain resolve target when MSAA, VK_NULL_HANDLE otherwise.
+     * @param resolve_mode the resolve mode (the engine always renders at 1x, so NONE)
+     * @param resolve_image_view the resolve target when resolve_mode is not NONE, else VK_NULL_HANDLE.
      *        NOTE: the resolve layout must not be PRESENT_SRC_KHR
      *        (VUID-VkRenderingAttachmentInfo-imageView-06146) - the swapchain image moves to
      *        PRESENT_SRC_KHR only after vkCmdEndRendering
@@ -580,7 +580,7 @@ export namespace vulkan {
                 .pAttachments = count > 0 ? attachments : nullptr,
                 .blendConstants = {1.0f, 1.0f, 1.0f, 1.0f}};
     }
-    /** @brief multisample state; rasterizationSamples follows MSAA */
+    /** @brief multisample state (rasterizationSamples is the instance's sample count) */
     constexpr VkPipelineMultisampleStateCreateInfo make_multisample_state(VkSampleCountFlagBits const samples) noexcept {
         return {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                 .pNext = nullptr,
@@ -632,7 +632,7 @@ export namespace vulkan {
     // place). The attachment transitions discard the old contents: loadOp CLEAR makes
     // UNDEFINED as oldLayout valid whatever the image's actual current layout is - no
     // per-frame layout tracking needed.
-    /** @brief UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL, color-attachment write (MSAA color image + swapchain resolve target) */
+    /** @brief UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL, color-attachment write (a scene target being rendered into) */
     inline constexpr VkImageMemoryBarrier2 color_attachment_transition = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext = nullptr,

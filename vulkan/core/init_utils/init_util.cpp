@@ -597,35 +597,6 @@ VkFormat find_depth_format(VkPhysicalDevice physical_device) noexcept {
     utility::panic("failed to find supported depth format!");
 }
 
-VkSampleCountFlagBits get_max_usable_sample_count(VkPhysicalDevice physical_device) noexcept {
-    VkPhysicalDeviceProperties physical_device_properties;
-    vkGetPhysicalDeviceProperties(physical_device, &physical_device_properties);
-
-    VkSampleCountFlags const counts = physical_device_properties.limits.framebufferColorSampleCounts &
-                                      physical_device_properties.limits.framebufferDepthSampleCounts;
-
-    if (counts & VK_SAMPLE_COUNT_64_BIT) {
-        return VK_SAMPLE_COUNT_64_BIT;
-    }
-    if (counts & VK_SAMPLE_COUNT_32_BIT) {
-        return VK_SAMPLE_COUNT_32_BIT;
-    }
-    if (counts & VK_SAMPLE_COUNT_16_BIT) {
-        return VK_SAMPLE_COUNT_16_BIT;
-    }
-    if (counts & VK_SAMPLE_COUNT_8_BIT) {
-        return VK_SAMPLE_COUNT_8_BIT;
-    }
-    if (counts & VK_SAMPLE_COUNT_4_BIT) {
-        return VK_SAMPLE_COUNT_4_BIT;
-    }
-    if (counts & VK_SAMPLE_COUNT_2_BIT) {
-        return VK_SAMPLE_COUNT_2_BIT;
-    }
-
-    return VK_SAMPLE_COUNT_1_BIT;
-}
-
 VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device) noexcept {
     // 2D view, identity swizzle, one mip + one layer (see vulkan::make_image_view_info)
     VkImageViewCreateInfo const view_info = vulkan::make_image_view_info(image, format, VK_IMAGE_VIEW_TYPE_2D, aspect_flags, 1, 1);

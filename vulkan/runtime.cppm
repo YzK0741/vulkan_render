@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.23.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.23.0a  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -293,7 +293,7 @@ namespace vulkan {
         // emissive into) instead of shading; M2 adds the deferred lighting stage that reads it back.
         // The G-buffer pipeline shades nothing: albedo/metallic, normal/roughness and material
         // id/AO/flags go into core::gbuffer_* (1x targets + the pass's own 1x depth), so the opaque
-        // pass runs at 1x whatever MSAA the forward path uses.
+        // pass runs at 1x.
         std::optional<vk_pipeline> gbuffer_pipeline = std::nullopt;
         // fullscreen debug view of the G-buffer (reads the three targets + depth, writes the HDR
         // target so the ordinary post chain still runs)
@@ -361,7 +361,7 @@ namespace vulkan {
         void record_lighting_pass(VkCommandBuffer command_buffer);
 
         // ---- temporal anti-aliasing (M3, deferred path only) ----
-        // TAA replaces MSAA on the deferred path: the projection is jittered per frame (a Halton
+        // TAA is the engine's anti-aliasing: the projection is jittered per frame (a Halton
         // sequence), the G-buffer writes motion vectors, and a resolve pass blends the current frame
         // with a reprojected, neighborhood-clamped history. The deferred scene writes
         // core::scene_color and the resolve writes the HDR target, so the whole post chain keeps
@@ -947,14 +947,14 @@ namespace vulkan {
         /**
          * @ingroup vulkan_runtime
          * @brief construct the runtime: performs the full core initialization (window / instance /
-         *        device / swapchain / resources) from @p options (window size, vsync, MSAA), and
+         *        device / swapchain / resources) from @p options (window size, vsync), and
          *        registers the orbit camera mouse callbacks on the window
          */
         explicit runtime(core_create_info const& options);
 
         /**
          * @ingroup vulkan_runtime
-         * @brief construct the runtime with default core options (1080x960 window, auto MSAA,
+         * @brief construct the runtime with default core options (1080x960 window,
          *        mailbox present mode)
          */
         runtime();
@@ -1166,7 +1166,7 @@ namespace vulkan {
          *        transitions the way a render pass does
          * @param command_buffer the frame's primary command buffer
          * @param gbuffer_pass true for the deferred path's single-sampled G-buffer target set, false
-         *                     for the forward path's HDR (+ MSAA color) and depth
+         *                     the G-buffer targets and the scene color
          */
         void record_scene_attachments(VkCommandBuffer command_buffer);
 
@@ -1709,7 +1709,7 @@ namespace vulkan {
          * @param enabled when true (and the deferred path is the active render mode) the projection is
          *        jittered every frame, the G-buffer's motion vectors are resolved against a reprojected
          *        history, and the result is what the post chain processes. This is the deferred path's
-         *        answer to MSAA: it resolves the sub-pixel detail MSAA would have sampled, AND the
+         *        anti-aliasing: it resolves sub-pixel detail no edge filter can, AND the
          *        shimmer in motion that no edge filter can remove. Requires make_taa_pipeline(); without
          *        it the flag has no effect.
          * @param blend_static history weight for a pixel that did not move (0.9 = 10% of the current
@@ -1717,7 +1717,7 @@ namespace vulkan {
          * @param blend_min history weight floor once a pixel moves a pixel or more per frame (lower =
          *        trusts the current frame more under motion, which trades smoothing for less ghosting)
          * @note deferred-path only for now: the forward path has no motion vectors, so it keeps its
-         *       MSAA answer. The G-buffer motion vectors are camera-only at this milestone, so a
+         *       fix for it. The G-buffer motion vectors are camera-only at this milestone, so a
          *       deformed (skinned/morphed) object can ghost slightly - see gbuffer.frag.
          */
         void set_taa(bool enabled, float blend_static = 0.9f, float blend_min = 0.5f) noexcept;

@@ -92,11 +92,6 @@ namespace app_config {
                     settings.render.max_fps = static_cast<double>(*value);
                 }
             }
-            if (toml::node const* node = render->get("msaa")) {
-                if (std::optional<int64_t> const value = node->value<int64_t>()) {
-                    settings.render.msaa = static_cast<int>(*value);
-                }
-            }
             if (toml::node const* node = render->get("clear_color")) {
                 if (toml::array const* color = node->as_array()) {
                     std::size_t i = 0;
@@ -300,11 +295,6 @@ namespace app_config {
         if (settings.lighting.demo_lights < 0 || settings.lighting.demo_lights > static_cast<int>(max_demo_lights)) {
             utility::log("app_config: invalid demo_lights {} (use 0..{}), clamping", settings.lighting.demo_lights, max_demo_lights);
             settings.lighting.demo_lights = std::clamp(settings.lighting.demo_lights, 0, static_cast<int>(max_demo_lights));
-        }
-        bool const msaa_valid = settings.render.msaa == 0 || settings.render.msaa == 1 || settings.render.msaa == 2 || settings.render.msaa == 4 || settings.render.msaa == 8 || settings.render.msaa == 16 || settings.render.msaa == 32 || settings.render.msaa == 64;
-        if (!msaa_valid) {
-            utility::log("app_config: invalid msaa {} (use 0/1/2/4/8/16/32/64), falling back to auto", settings.render.msaa);
-            settings.render.msaa = 0;
         }
         return settings;
     }

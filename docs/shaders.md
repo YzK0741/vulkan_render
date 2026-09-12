@@ -6,7 +6,7 @@
  * The renderer has no shader reflection and no runtime shader compilation: `dsh`-style `.spv`
  * files sit next to their sources, are loaded by `chores::setup_pipeline()` and are turned into
  * `vk_pipeline` objects through the `runtime::make_*_pipeline()` calls (which own the render
- * state: color format, depth, MSAA, and the shared scene pipeline layout).
+ * state: color format, depth, and the shared scene pipeline layout).
  *
  * @section shader_passes The pass chain
  *

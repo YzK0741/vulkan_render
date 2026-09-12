@@ -18,7 +18,6 @@ import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_MODEL = "gltf_model/DamagedHelmet.gltf"  # relative to the renderer's cwd
-MSAA_CHOICES = [0, 2, 4, 8, 16]  # 0 = auto (device max usable)
 
 
 # ---- small input helpers -------------------------------------------------
@@ -147,7 +146,6 @@ def write_toml(path: str, cfg: dict) -> None:
         f"window_title = \"{fmt_toml_string(cfg['window_title'])}\"",
         f"vsync = {str(cfg['vsync']).lower()}",
         f"max_fps = {cfg['max_fps']}",
-        f"msaa = {cfg['msaa']}",
         "clear_color = [{0}, {1}, {2}]".format(*cfg["clear_color"]),
         f"shadow = {str(cfg['shadow']).lower()}",
         f"validation_layers = {str(cfg['validation_layers']).lower()}",
@@ -218,11 +216,6 @@ def ask_all(output_dir: str) -> dict:
     window_title = ask_text("render.window_title", "vulkan_render")
     vsync = ask_bool("render.vsync", False, hint="false = Mailbox (uncapped), true = FIFO")
     max_fps = ask_int("render.max_fps", 0, 0, hint="0 = uncapped; e.g. 240 to match a 240 Hz panel")
-    msaa_choices = [str(c) for c in MSAA_CHOICES]
-    msaa_raw = ask_choice(
-        "render.msaa: multisample count", msaa_choices, "0", hint="0 = auto (device max); or 2/4/8/16"
-    )
-    msaa = int(msaa_raw)
     clear_color = ask_float3("render.clear_color (RGB 0..1)", (0.02, 0.02, 0.03))
     shadow = ask_bool("render.shadow", True, hint="record the directional shadow pass")
     validation_layers = ask_bool(
@@ -289,7 +282,6 @@ def ask_all(output_dir: str) -> dict:
         "window_title": window_title,
         "vsync": vsync,
         "max_fps": max_fps,
-        "msaa": msaa,
         "clear_color": clear_color,
         "shadow": shadow,
         "validation_layers": validation_layers,

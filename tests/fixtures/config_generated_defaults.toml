@@ -26,7 +26,6 @@ window_height = 960
 window_title = "vulkan_render"
 vsync = false
 max_fps = 240
-msaa = 8
 clear_color = [0.02, 0.02, 0.03]
 shadow = true
 validation_layers = true

@@ -11,7 +11,6 @@ namespace {
     void test_load_settings_applies_toml() {
         app_config::app_settings const settings = app_config::load_settings(VR_TEST_SOURCE_DIR "/tests/fixtures/config_full.toml");
         CHECK(settings.model == "Models/tri.gltf");
-        CHECK(settings.render.msaa == 8);
         CHECK(settings.render.vsync);
         CHECK(!settings.render.shadow);
         CHECK(settings.render.shadow_cascades == 2);
@@ -40,7 +39,6 @@ namespace {
     void test_load_settings_missing_file_keeps_defaults() {
         app_config::app_settings const settings = app_config::load_settings(VR_TEST_SOURCE_DIR "/tests/fixtures/does_not_exist.toml");
         CHECK(settings.model.empty());
-        CHECK(settings.render.msaa == 0);
         CHECK(settings.render.shadow);
         CHECK(!settings.render.fxaa);
         CHECK(settings.render.gpu_timings); // default: pass timings are collected
@@ -108,7 +106,6 @@ namespace {
         CHECK(settings.render.window_title == "vulkan_render");
         CHECK(!settings.render.vsync); // generator default: Mailbox (uncapped)
         CHECK(settings.render.max_fps == 240);
-        CHECK(settings.render.msaa == 8);
         CHECK(!settings.render.unlit);
         // [render] shadow mapping
         CHECK(settings.render.shadow);
@@ -148,7 +145,6 @@ namespace {
             app_config::resolve_from_argv(3, argv, VR_TEST_SOURCE_DIR "/tests/fixtures/config_full.toml");
         CHECK(settings.model == "Models/tri.gltf");
         CHECK(settings.grid_side == 3);
-        CHECK(settings.render.msaa == 8); // still comes from the config file
     }
 } // namespace
 

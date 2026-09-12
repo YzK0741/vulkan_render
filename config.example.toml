@@ -57,9 +57,7 @@ vsync = true
 # benchmark wants 0. Capture runs (--capture-frames) also want 0.
 max_fps = 0
 
-# msaa: multisample count. 0 = auto (device max usable, usually 4 or 8);
 #   or a fixed 2/4/8/...; clamped to the device max when unsupported.
-msaa = 0
 
 # clear_color: per-frame background clear color (RGB, 0..1). The skybox is drawn
 #   over it, so it only shows where the environment pass leaves the background.

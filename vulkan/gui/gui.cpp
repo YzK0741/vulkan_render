@@ -78,7 +78,7 @@ namespace vulkan::gui {
         backend_info.MinImageCount = info.frames_in_flight;
         backend_info.ImageCount = info.frames_in_flight;
         backend_info.UseDynamicRendering = true;
-        backend_info.PipelineInfoMain.MSAASamples = info.msaa_samples;
+        backend_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT; // the overlay draws on the 1x swapchain
         // The overlay records into the still-open main rendering instance, which carries the
         // scene's depth attachment. Dynamic rendering requires a bound pipeline's
         // depthAttachmentFormat to equal the attachment's format (VUID-vkCmdDrawIndexed-
@@ -107,7 +107,7 @@ namespace vulkan::gui {
 
         this->active = true;
         this->frames_in_flight = info.frames_in_flight;
-        utility::log("gui_content: ImGui overlay initialized (dynamic rendering, MSAA {})", static_cast<int>(info.msaa_samples));
+        utility::log("gui_content: ImGui overlay initialized (dynamic rendering, 1x swapchain)");
         return true;
     }
 
