@@ -11,6 +11,7 @@ module;
 module vulkan.runtime;
 
 import vulkan.profiling;
+import vulkan.pipelines;
 
 import utility;
 import vulkan.constant_init;
@@ -2212,88 +2213,20 @@ namespace vulkan {
     // ---- post-processing: HDR scene target -> exposure + ACES + gamma -> swapchain ----
     // The bloom chain lands here next; the push constants already reserve its parameters.
     std::expected<void, std::string> runtime::make_post_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
-        using fail = std::unexpected<std::string>;
         core& vk = this->vulkan_core;
-
-        // sampler for the HDR scene target (linear, clamp)
+        // sampler for the HDR scene target (linear, clamp) - the descriptor sets use it
         this->post_sampler = vk.make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
 
-        // binding 0 = the pass input (HDR for the prefilter, the previous bloom level for a
-        // downsample), bindings 1..4 = the four bloom levels (only the composite pass samples
-        // them; the other passes bind the same view to every binding so one layout serves all),
-        // binding 5 = the gamma-encoded LDR image (only the FXAA pass samples it; post.frag does not
-        // declare it, so the composite may safely write that image while the set points at it)
-        std::array<VkDescriptorSetLayoutBinding, 6> bindings = {};
-        for (uint32_t b = 0; b < bindings.size(); ++b) {
-            bindings[b].binding = b;
-            bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            bindings[b].descriptorCount = 1;
-            bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-            bindings[b].pImmutableSamplers = nullptr;
+        // the layout and both composites come from vulkan.pipelines; the push constant block stays here
+        // (it must match post.frag, so it lives next to the code that fills it)
+        auto built = pipelines::build_post(vk, sizeof(post_push_constants), vertex_shader_code, fragment_shader_code);
+        if (!built) {
+            return std::unexpected(std::move(built.error()));
         }
-
-        VkDescriptorSetLayoutCreateInfo layout_info = {};
-        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
-        layout_info.pBindings = bindings.data();
-        if (vkCreateDescriptorSetLayout(vk.device, &layout_info, nullptr, &this->post_set_layout) != VK_SUCCESS) {
-            return fail("post: descriptor set layout creation failed");
-        }
-
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        push_range.offset = 0;
-        push_range.size = sizeof(post_push_constants);
-
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &this->post_set_layout;
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &this->post_pipeline_layout) != VK_SUCCESS) {
-            return fail("post: pipeline layout creation failed");
-        }
-
-        // fullscreen pipelines: post.vert synthesizes the triangle from gl_VertexIndex, so the
-        // vertex input is empty; no depth attachment, 1x samples. TWO of them, one per color
-        // format the pass chain renders into: the composite writes the swapchain, while the
-        // bright-pass prefilter and the three downsample passes write the R16F bloom levels. A
-        // pipeline's VkPipelineRenderingCreateInfo color format must match the attachment it draws
-        // into, so a single swapchain-format pipeline was a validation error (and UB) for the HDR
-        // passes.
-        auto const make_post_variant = [&](VkFormat const color_format) -> std::expected<vk_pipeline, std::string> {
-            auto pipeline_result = vulkan::make_pipeline(
-                vk.device,
-                this->post_pipeline_layout,
-                color_format,
-                VK_FORMAT_UNDEFINED,
-                vertex_shader_code,
-                fragment_shader_code,
-                VK_SAMPLE_COUNT_1_BIT,
-                false,
-                true,
-                0.0f,
-                0.0f,
-                0.0f);
-            if (!pipeline_result) {
-                return std::unexpected(std::string(pipeline_result.error()));
-            }
-            return std::move(pipeline_result).value();
-        };
-
-        auto composite_pipeline = make_post_variant(vk.swap_chain_image_format);
-        if (!composite_pipeline) {
-            return fail(std::move(composite_pipeline.error()));
-        }
-        this->post_pipeline = std::move(composite_pipeline).value();
-
-        auto hdr_pipeline = make_post_variant(vulkan::hdr_format);
-        if (!hdr_pipeline) {
-            return fail(std::move(hdr_pipeline.error()));
-        }
-        this->post_hdr_pipeline = std::move(hdr_pipeline).value();
-
+        this->post_set_layout = built->set_layout;
+        this->post_pipeline_layout = built->pipeline_layout;
+        this->post_pipeline = std::move(built->composite);
+        this->post_hdr_pipeline = std::move(built->hdr);
         return {};
     }
 

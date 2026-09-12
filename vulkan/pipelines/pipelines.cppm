@@ -19,6 +19,7 @@
 
 module;
 
+#include <array>
 #include <cstdint>
 #include <expected>
 #include <optional>
@@ -55,11 +56,79 @@ namespace vulkan::pipelines {
         std::optional<vk_pipeline> resolve;
     };
 
-    export std::expected<post_owned, std::string> build_post(core& vk, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
-    export std::expected<gbuffer_owned, std::string> build_gbuffer_debug(core& vk, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
-    export std::expected<taa_owned, std::string> build_taa(core& vk, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export std::expected<post_owned, std::string> build_post(core& vk, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export std::expected<gbuffer_owned, std::string> build_gbuffer_debug(core& vk, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export std::expected<taa_owned, std::string> build_taa(core& vk, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
 
     /// the passes that reuse a layout someone else owns, so theirs comes in as a parameter
-    export std::expected<vk_pipeline, std::string> build_fxaa(core& vk, VkPipelineLayout post_pipeline_layout, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
-    export std::expected<vk_pipeline, std::string> build_deferred(core& vk, VkPipelineLayout pipeline_layout, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export std::expected<vk_pipeline, std::string> build_fxaa(core& vk, VkPipelineLayout post_pipeline_layout, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export std::expected<vk_pipeline, std::string> build_deferred(core& vk, VkPipelineLayout pipeline_layout, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    // post: the composite chain's owner. The set layout, its pipeline layout and the two fullscreen
+    // pipelines (one per color format the chain renders into) are created here; the sampler stays with
+    // the runtime, which owns the descriptor sets that use it. The caller passes the size of its push
+    // constant block because that structure is the runtime's (it must match post.frag).
+    std::expected<post_owned, std::string> build_post(core& vk, uint32_t const push_constant_size, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+        using fail = std::unexpected<std::string>;
+        post_owned out;
+
+        // binding 0 = the pass input (HDR for the prefilter, the previous bloom level for a
+        // downsample), bindings 1..4 = the four bloom levels, binding 5 = the gamma-encoded LDR image
+        std::array<VkDescriptorSetLayoutBinding, 6> bindings = {};
+        for (uint32_t b = 0; b < bindings.size(); ++b) {
+            bindings[b].binding = b;
+            bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[b].descriptorCount = 1;
+            bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            bindings[b].pImmutableSamplers = nullptr;
+        }
+
+        VkDescriptorSetLayoutCreateInfo layout_info = {};
+        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
+        layout_info.pBindings = bindings.data();
+        if (vkCreateDescriptorSetLayout(vk.device, &layout_info, nullptr, &out.set_layout) != VK_SUCCESS) {
+            return fail("post: descriptor set layout creation failed");
+        }
+
+        VkPushConstantRange push_range = {};
+        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        push_range.offset = 0;
+        push_range.size = push_constant_size;
+
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &out.set_layout;
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+            return fail("post: pipeline layout creation failed");
+        }
+
+        // TWO variants, one per color format the chain renders into: the composite writes the
+        // swapchain, the bright-pass prefilter and the downsample passes write the R16F bloom levels. A
+        // pipeline's rendering color format must match its attachment, so one swapchain-format pipeline
+        // was a validation error for the HDR passes.
+        auto const make_post_variant = [&](VkFormat const color_format) -> std::expected<vk_pipeline, std::string> {
+            auto pipeline_result = vulkan::make_pipeline(
+                vk.device, out.pipeline_layout, color_format, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
+            if (!pipeline_result) {
+                return std::unexpected(std::string(pipeline_result.error()));
+            }
+            return std::move(pipeline_result).value();
+        };
+
+        auto composite_pipeline = make_post_variant(vk.swap_chain_image_format);
+        if (!composite_pipeline) {
+            return fail(std::move(composite_pipeline.error()));
+        }
+        out.composite = std::move(composite_pipeline).value();
+
+        auto hdr_pipeline = make_post_variant(vulkan::hdr_format);
+        if (!hdr_pipeline) {
+            return fail(std::move(hdr_pipeline.error()));
+        }
+        out.hdr = std::move(hdr_pipeline).value();
+        return out;
+    }
 } // namespace vulkan::pipelines
