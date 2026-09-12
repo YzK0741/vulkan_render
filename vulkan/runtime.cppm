@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.20.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.21.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -9,7 +9,8 @@
 // both, so they are versioned as ONE unit because they share the scene / draw
 // interface and evolve together.
 // Depends on vulkan.core (GPU), vulkan.math (IBL), vulkan.shadow_fit (the
-// cascade fit it gathers for and caches) and utility, with the frame struct
+// cascade fit it gathers for and caches), vulkan.readback (the screenshot's
+// staging buffer and host read) and utility, with the frame struct
 // fills coming from vulkan.constant_init.
 //
 // evolve: bump MAJOR on breaking interface changes, MINOR on additive features,
@@ -26,6 +27,7 @@ export module vulkan.runtime;
 import vulkan.profiling;
 import vulkan.bindings;   // the per-image descriptor-set families (the G-buffer debug view's for now)
 import vulkan.shadow_fit; // the cascade fit itself (pure CPU; the runtime gathers and caches)
+import vulkan.readback;   // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
 export import vstd;
 export import vulkan.core;
 export import vulkan.core.filter;
@@ -559,11 +561,19 @@ namespace vulkan {
         bool screenshot_pending = false;
         // one-time log for "this surface cannot do screenshots" (see record_screenshot_copy)
         bool screenshot_unsupported_logged = false;
-        vk_buffer screenshot_readback = {};                        // host-visible TRANSFER_DST staging
-        VkBuffer screenshot_readback_buffer = VK_NULL_HANDLE;      // its VkBuffer (vk_buffer::handle() is the allocator's)
-        void* screenshot_readback_mapped = nullptr;                // persistent mapping (vma MAPPED_BIT)
-        VkDeviceSize screenshot_readback_size = 0;                 // bytes the buffer currently holds
-        VkExtent2D screenshot_readback_extent = {0, 0};            // extent the copy was recorded at
+        // What stays here is what is actually about the frame: the staging pointer the recorded copy
+        // wrote into, and the extent it was recorded at.
+        void* screenshot_staging_mapped = nullptr;
+        VkExtent2D screenshot_readback_extent = {0, 0};
+        // The read-back staging (buffer, size tracking, mapped view, the one-shot submit and wait) is
+        // vulkan.readback's, because "copy a buffer to CPU memory" is not a screenshot concern - the
+        // screenshot is one caller of it (see record_screenshot_copy / acquire_current_frame_image).
+        //
+        // Declared HERE, above filtered_core, and built in the runtime's initializer list: readback owns
+        // GPU resources and is deliberately neither copyable nor movable (two owners of one staging
+        // buffer is the bug its deletion prevents), so it cannot be constructed in the constructor
+        // body. Only the core is needed to build either, so their relative order is free.
+        readback readback_staging;
         std::optional<vk_pipeline> shadow_pipeline = std::nullopt; // depth-only pass pipeline
         bool shadows_enabled = false;                              // true after enable_shadows() (light UBO filled + pipeline ready)
         // live-tunable depth bias of the shadow pass (dynamic state, set per frame before the
@@ -1210,17 +1220,14 @@ namespace vulkan {
         /** @brief (re)bind the post descriptor sets to the current per-image HDR targets */
         void ensure_post_descriptors();
         /**
-         * @brief make sure the screenshot read-back buffer holds @p extent (recreating it when the
-         *        swapchain size changed) and keep it persistently mapped
-         * @return the mapped host pointer, or nullptr when the buffer is unavailable
-         */
-        void* ensure_screenshot_readback(VkExtent2D extent);
-        /**
          * @brief record the screenshot copy (swapchain image -> read-back buffer) into
          *        @p command_buffer, with the image's own layout transitions around it. Called
          *        from end_recording while the image still belongs to the frame being recorded -
          *        after vkQueuePresentKHR the presentation engine owns it and it must not be
          *        transitioned again.
+         * @note the staging buffer and its mapping come from vulkan.readback; what this owns is the
+         *       image side (the layouts, the region, the format) and the record-time bookkeeping
+         *       (screenshot_staging_mapped / screenshot_readback_extent) that the later read needs
          */
         void record_screenshot_copy(VkCommandBuffer command_buffer);
         void record_main_segment(VkCommandBuffer command_buffer, std::span<primitive const* const> leaves, bool draw_skybox) const;

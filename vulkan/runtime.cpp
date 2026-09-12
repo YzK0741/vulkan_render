@@ -138,6 +138,11 @@ namespace vulkan {
 
     runtime::runtime(core_create_info const& options)
         : vulkan_core{options}
+        // readback owns GPU resources and is deliberately neither copyable nor movable (two owners of
+        // one staging buffer is the bug its deletion prevents), so it must be constructed here - which
+        // is why its member declaration sits ABOVE filtered_core's, matching this order. Both only need
+        // the core, so the order between them is otherwise free.
+        , readback_staging{vulkan_core}
         , filtered_core{vulkan_core} {
         glfwSetWindowUserPointer(this->vulkan_core.window, this);
         glfwSetMouseButtonCallback(this->vulkan_core.window, mouse_button_callback);
@@ -3774,10 +3779,11 @@ namespace vulkan {
             return std::unexpected(std::string("screenshot: unsupported swapchain format (need 8-bit RGBA/BGRA)"));
         }
 
-        // The pixels come from the persistent read-back buffer that record_screenshot_copy() filled
-        // while the frame was being recorded (see the class docs): by the time the caller asks, the
-        // frame has been submitted, so one wait for the GPU is all that is left to do.
-        if (!this->screenshot_readback.valid() || this->screenshot_readback_mapped == nullptr) {
+        // The pixels come from the staging buffer record_screenshot_copy() filled while the frame was
+        // being recorded (see the class docs): by the time the caller asks, the frame has been
+        // submitted, so one wait for the GPU is all that is left - and the staging's owner is
+        // vulkan.readback, which is also what sized the buffer and handed out the mapping.
+        if (this->screenshot_staging_mapped == nullptr || this->screenshot_readback_extent.width == 0) {
             return std::unexpected(std::string("screenshot: no captured frame (the read-back copy was never recorded)"));
         }
         VkExtent2D const extent = this->screenshot_readback_extent;
@@ -3788,7 +3794,7 @@ namespace vulkan {
         result.width = extent.width;
         result.height = extent.height;
         result.rgba.resize(static_cast<std::size_t>(buffer_size));
-        auto const* source = static_cast<unsigned char const*>(this->screenshot_readback_mapped);
+        auto const* source = static_cast<unsigned char const*>(this->screenshot_staging_mapped);
         if (bgra) {
             // the swapchain is BGRA (sRGB); the PNG writer wants RGBA
             for (std::size_t i = 0; i < result.rgba.size(); i += 4) {
@@ -3801,39 +3807,6 @@ namespace vulkan {
             std::memcpy(result.rgba.data(), source, static_cast<std::size_t>(buffer_size));
         }
         return result;
-    }
-
-    void* runtime::ensure_screenshot_readback(VkExtent2D const extent) {
-        if (extent.width == 0 || extent.height == 0) {
-            return nullptr;
-        }
-        VkDeviceSize const needed = static_cast<VkDeviceSize>(extent.width) * static_cast<VkDeviceSize>(extent.height) * 4u;
-        if (this->screenshot_readback.valid() && this->screenshot_readback_size >= needed && this->screenshot_readback_mapped != nullptr) {
-            this->screenshot_readback_extent = extent; // same size, new swapchain generation: reuse
-            return this->screenshot_readback_mapped;
-        }
-        // (re)allocate - the first capture, or the swapchain was resized. Assigning the new owner
-        // releases the previous buffer (RAII), and nothing GPU-side references it: the copy that
-        // used it was recorded in an earlier frame that has already been submitted and waited on.
-        this->screenshot_readback = this->vulkan_core.vma.create_buffer(nullptr, needed, vulkan::buffer_type::readback_coherent);
-        this->screenshot_readback_mapped = nullptr;
-        this->screenshot_readback_buffer = VK_NULL_HANDLE;
-        this->screenshot_readback_size = 0;
-        this->screenshot_readback_extent = {0, 0};
-        if (!this->screenshot_readback.valid()) {
-            utility::log("screenshot: read-back buffer creation failed ({} bytes)", needed);
-            return nullptr;
-        }
-        auto const* detail = this->vulkan_core.vma.get_buffer_detail(this->screenshot_readback.handle());
-        if (detail == nullptr) {
-            this->screenshot_readback.reset();
-            return nullptr;
-        }
-        this->screenshot_readback_buffer = detail->buffer;
-        this->screenshot_readback_mapped = detail->allocation_info.pMappedData;
-        this->screenshot_readback_size = needed;
-        this->screenshot_readback_extent = extent;
-        return this->screenshot_readback_mapped;
     }
 
     void runtime::record_screenshot_copy(VkCommandBuffer const command_buffer) {
@@ -3854,9 +3827,16 @@ namespace vulkan {
             this->screenshot_requested = false;
             return;
         }
-        if (this->ensure_screenshot_readback(extent) == nullptr) {
+        // The staging buffer and its mapping are vulkan.readback's; only the IMAGE side is this
+        // function's business (the layout transitions, the region, the format the caller will unpack).
+        auto const staged = this->readback_staging.stage_for_copy(static_cast<VkDeviceSize>(extent.width) * static_cast<VkDeviceSize>(extent.height) * 4u);
+        if (!staged) {
+            utility::log("screenshot: read-back staging buffer unavailable");
             return;
         }
+        this->screenshot_staging_mapped = staged->mapped;
+        this->screenshot_readback_extent = extent;
+
         // The swapchain image is in COLOR_ATTACHMENT_OPTIMAL here (the composite pass just wrote
         // it, and the overlay with it): COLOR_ATTACHMENT -> TRANSFER_SRC -> copy -> back to
         // COLOR_ATTACHMENT, so end_recording's present_transition still sees the layout it expects.
@@ -3872,7 +3852,7 @@ namespace vulkan {
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.imageOffset = {0, 0, 0};
         region.imageExtent = {extent.width, extent.height, 1};
-        vkCmdCopyImageToBuffer(command_buffer, vk.swap_chain_images[this->current_image_index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, this->screenshot_readback_buffer, 1, &region);
+        vkCmdCopyImageToBuffer(command_buffer, vk.swap_chain_images[this->current_image_index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staged->buffer, 1, &region);
 
         barriers[0] = vulkan::transfer_to_color_attachment_transition;
         barriers[0].image = vk.swap_chain_images[this->current_image_index];

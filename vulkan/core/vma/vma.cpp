@@ -402,6 +402,18 @@ namespace vulkan {
         return (properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
     }
 
+    void vma_allocator::flush_if_not_coherent(VmaAllocation const allocation, uint32_t const memory_type_index, VkDeviceSize const offset, VkDeviceSize const size) const {
+        if (!this->is_host_coherent(memory_type_index)) {
+            vmaFlushAllocation(this->allocator, allocation, offset, size);
+        }
+    }
+
+    void vma_allocator::invalidate_if_not_coherent(VmaAllocation const allocation, uint32_t const memory_type_index, VkDeviceSize const offset, VkDeviceSize const size) const {
+        if (!this->is_host_coherent(memory_type_index)) {
+            vmaInvalidateAllocation(this->allocator, allocation, offset, size);
+        }
+    }
+
     void vma_allocator::destroy() {
         if (this->allocator != VK_NULL_HANDLE) {
             std::lock_guard guard(this->access_mutex);

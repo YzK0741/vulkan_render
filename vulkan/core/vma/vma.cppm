@@ -224,6 +224,32 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_vma
+         * @brief make host writes visible to the GPU, for the memory type that needs it
+         * @param allocation the allocation that was written through its mapping
+         * @param memory_type_index its memory type index (VmaAllocationInfo::memoryType)
+         * @param offset first byte written
+         * @param size bytes written
+         * @note a no-op for HOST_COHERENT memory, which is why the coherent buffer types need no call:
+         *       this exists for the paths that write through a mapping VMA did not promise coherency
+         *       for (or chose not to provide), where skipping it is a silent stale-data bug
+         */
+        void flush_if_not_coherent(VmaAllocation allocation, uint32_t memory_type_index, VkDeviceSize offset, VkDeviceSize size) const;
+
+        /**
+         * @ingroup vulkan_vma
+         * @brief make GPU writes visible to the host, for the memory type that needs it
+         * @param allocation the allocation the GPU wrote
+         * @param memory_type_index its memory type index
+         * @param offset first byte to invalidate
+         * @param size bytes to invalidate
+         * @note the read-back counterpart of flush_if_not_coherent: the HOST_COHERENT types need no
+         *       call, but a device that served the allocation from a non-coherent host-visible type
+         *       would otherwise hand the CPU a stale cache line
+         */
+        void invalidate_if_not_coherent(VmaAllocation allocation, uint32_t memory_type_index, VkDeviceSize offset, VkDeviceSize size) const;
+
+        /**
+         * @ingroup vulkan_vma
          * @brief release the underlying VmaAllocator and cached upload resources
          */
         void destroy();

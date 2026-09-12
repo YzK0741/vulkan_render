@@ -124,6 +124,7 @@ target_sources(vulkancorekit
         vulkan/pipelines/pipelines.cppm
         vulkan/profiling/profiling.cppm
         vulkan/shadow_fit/shadow_fit.cppm
+        vulkan/readback/readback.cppm
         vulkan/core/pipeline/spirv_parser.cppm
         vulkan/scene_tree/scene_tree.cppm
         vulkan/primitive/primitive.cppm
@@ -141,6 +142,7 @@ target_sources(vulkancorekit
         vulkan/core/pipeline/spirv_parser.cpp
         vulkan/runtime.cpp
         vulkan/shadow_fit/shadow_fit.cpp
+        vulkan/readback/readback.cpp
         vulkan/scene_tree/scene_tree.cpp
         vulkan/primitive/primitive.cpp
         vulkan/gui/gui.cpp
