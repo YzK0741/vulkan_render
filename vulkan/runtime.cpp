@@ -245,11 +245,8 @@ namespace vulkan {
             vkDestroyPipelineLayout(this->vulkan_core.device, this->deferred_pipeline_layout, nullptr);
             this->deferred_pipeline_layout = VK_NULL_HANDLE;
         }
-        // ... and the TAA resolve's own objects (its set layout, layout and pool are raw handles)
-        if (this->taa_descriptor_pool != VK_NULL_HANDLE) {
-            vkDestroyDescriptorPool(this->vulkan_core.device, this->taa_descriptor_pool, nullptr);
-            this->taa_descriptor_pool = VK_NULL_HANDLE;
-        }
+        // ... and the TAA resolve's own objects (its set layout and layout are raw handles; the pool
+        // belongs to taa_family, whose destructor destroys it and the generations it retired)
         if (this->taa_pipeline_layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(this->vulkan_core.device, this->taa_pipeline_layout, nullptr);
             this->taa_pipeline_layout = VK_NULL_HANDLE;
@@ -1077,13 +1074,8 @@ namespace vulkan {
             this->post_descriptor_pool = VK_NULL_HANDLE;
             this->post_pool_capacity = 0;
         }
-        this->taa_bound_views = {};
-        this->taa_sets.clear();
-        if (this->taa_descriptor_pool != VK_NULL_HANDLE) {
-            this->retired_descriptor_pools.push_back(this->taa_descriptor_pool);
-            this->taa_descriptor_pool = VK_NULL_HANDLE;
-            this->taa_pool_capacity = 0;
-        }
+        // Same for the TAA resolve's family: forget the sets, retire the pool rather than destroy it.
+        this->taa_family.retire_all();
         // Every swapchain image's history died with the old generation (and its size may have
         // changed): forget the matrices and mark the histories invalid, so the next frame for each
         // image starts a new accumulation instead of blending in a misaligned one.
@@ -2586,54 +2578,11 @@ namespace vulkan {
             return;
         }
         std::array<VkImageView, 4> const signature = {vk.scene_color_image_views[0], vk.taa_history_image_views[0], vk.velocity_image_views[0], vk.gbuffer_depth_image_views[0]};
-        if (this->taa_sets.size() == image_count && this->taa_bound_views == signature) {
-            return; // already bound to the current targets
-        }
-
-        if (this->taa_descriptor_pool == VK_NULL_HANDLE || this->taa_pool_capacity != image_count) {
-            // same retirement rule as the other per-image sets (see on_swapchain_recreated): a pool
-            // whose sets a recorded command buffer still names is retired, never destroyed here
-            if (this->taa_descriptor_pool != VK_NULL_HANDLE) {
-                this->retired_descriptor_pools.push_back(this->taa_descriptor_pool);
-                this->taa_descriptor_pool = VK_NULL_HANDLE;
-            }
-            VkDescriptorPoolSize pool_size = {};
-            pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            pool_size.descriptorCount = static_cast<uint32_t>(image_count * signature.size());
-            VkDescriptorPoolCreateInfo pool_info = {};
-            pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-            pool_info.maxSets = static_cast<uint32_t>(image_count);
-            pool_info.poolSizeCount = 1;
-            pool_info.pPoolSizes = &pool_size;
-            if (vkCreateDescriptorPool(vk.device, &pool_info, nullptr, &this->taa_descriptor_pool) != VK_SUCCESS) {
-                utility::log("runtime: taa descriptor pool creation failed - TAA skipped");
-                this->taa_descriptor_pool = VK_NULL_HANDLE;
-                this->taa_sets.clear();
-                this->taa_bound_views = {};
-                return;
-            }
-            this->taa_pool_capacity = static_cast<uint32_t>(image_count);
-            this->taa_sets.clear();
-        }
-
-        if (this->taa_sets.size() != image_count) {
-            std::vector<VkDescriptorSetLayout> const layouts(image_count, this->taa_set_layout);
-            this->taa_sets.assign(image_count, VK_NULL_HANDLE);
-            VkDescriptorSetAllocateInfo allocate_info = {};
-            allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-            allocate_info.descriptorPool = this->taa_descriptor_pool;
-            allocate_info.descriptorSetCount = static_cast<uint32_t>(image_count);
-            allocate_info.pSetLayouts = layouts.data();
-            if (vkAllocateDescriptorSets(vk.device, &allocate_info, this->taa_sets.data()) != VK_SUCCESS) {
-                utility::log("runtime: taa descriptor allocation failed - TAA skipped");
-                this->taa_sets.clear();
-                this->taa_bound_views = {};
-                return;
-            }
-        }
-
-        for (std::size_t i = 0; i < image_count; ++i) {
-            std::array<VkImageView, 4> const views = {vk.scene_color_image_views[i], vk.taa_history_image_views[i], vk.velocity_image_views[i], vk.gbuffer_depth_image_views[i]};
+        // The family owns the rebinding rule and the pool lifetime now (see vulkan.bindings): the sets
+        // stay allocated, their contents are rewritten only when the views above change, and a pool a
+        // later generation replaces is retired rather than destroyed.
+        auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
+            std::array<VkImageView, 4> const views = {vk_ref.scene_color_image_views[image_index], vk_ref.taa_history_image_views[image_index], vk_ref.velocity_image_views[image_index], vk_ref.gbuffer_depth_image_views[image_index]};
             std::array<VkDescriptorImageInfo, 4> image_infos = {};
             std::array<VkWriteDescriptorSet, 4> writes = {};
             for (uint32_t b = 0; b < views.size(); ++b) {
@@ -2641,15 +2590,18 @@ namespace vulkan {
                 image_infos[b].imageView = views[b];
                 image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[b].dstSet = this->taa_sets[i];
+                writes[b].dstSet = sets[0];
                 writes[b].dstBinding = b;
                 writes[b].descriptorCount = 1;
                 writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                 writes[b].pImageInfo = &image_infos[b];
             }
-            vkUpdateDescriptorSets(vk.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            vkUpdateDescriptorSets(vk_ref.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        };
+        // image_count is the generation's, signature is the fingerprint of image 0 above: two things.
+        if (!this->taa_family.ensure(vk, this->taa_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
+            utility::log("runtime: taa descriptor sets unavailable - TAA skipped");
         }
-        this->taa_bound_views = signature;
     }
 
     void runtime::record_taa_pass(VkCommandBuffer const command_buffer) {
@@ -2661,7 +2613,7 @@ namespace vulkan {
         bool const history_valid = index < this->taa_history_valid.size() && this->taa_history_valid[index];
 
         this->ensure_taa_descriptors();
-        if (this->taa_sets.size() <= index) {
+        if (this->taa_family.set(static_cast<uint32_t>(index), 0) == VK_NULL_HANDLE) {
             utility::log("runtime: TAA has no descriptor set - the frame is shown unresolved");
             return;
         }
@@ -2704,7 +2656,7 @@ namespace vulkan {
         vkCmdSetViewport(command_buffer, 0, 1, &viewport);
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
         vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
-        VkDescriptorSet const set = this->taa_sets[index];
+        VkDescriptorSet const set = this->taa_family.set(static_cast<uint32_t>(index), 0);
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->taa_pipeline_layout, 0, 1, &set, 0, nullptr);
         taa_push_constants const push = {
             .history_valid = history_valid ? 1.0f : 0.0f,

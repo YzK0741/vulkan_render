@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.19.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.19.2  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -373,14 +373,13 @@ namespace vulkan {
         vk_sampler taa_sampler = {};
         VkDescriptorSetLayout taa_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout taa_pipeline_layout = VK_NULL_HANDLE;
-        VkDescriptorPool taa_descriptor_pool = VK_NULL_HANDLE;
-        uint32_t taa_pool_capacity = 0;
-        std::vector<VkDescriptorSet> taa_sets = {};      // one per swapchain image
-        std::array<VkImageView, 4> taa_bound_views = {}; // views the current sets point at
-        bool taa_on = false;                             // [render] taa
-        float taa_blend_static = 0.9f;                   // history weight for a static pixel
-        float taa_blend_min = 0.5f;                      // history weight floor under motion
-        uint32_t taa_jitter_index = 0;                   // position in the Halton sequence
+        // The resolve's sets, one per swapchain image: the same per-image family the G-buffer debug
+        // view uses, for the same reason - the rebinding rule and the pool lifetime belong to the sets.
+        bindings::image_set_family taa_family;
+        bool taa_on = false;           // [render] taa
+        float taa_blend_static = 0.9f; // history weight for a static pixel
+        float taa_blend_min = 0.5f;    // history weight floor under motion
+        uint32_t taa_jitter_index = 0; // position in the Halton sequence
         // The view-projection each swapchain image's history was rendered with, and whether that
         // history holds anything. Remembered PER IMAGE on purpose: with several swapchain images in
         // rotation, "the previous frame's camera" is not what that image's history was rendered with,
