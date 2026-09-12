@@ -2615,69 +2615,23 @@ namespace vulkan {
     }
 
     std::expected<void, std::string> runtime::make_taa_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
-        using fail = std::unexpected<std::string>;
         core& vk = this->vulkan_core;
-
-        // binding 0 = this frame's scene color, 1 = the history image, 2 = the motion vectors,
-        // 3 = the G-buffer depth (the disocclusion guard)
-        std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
-        for (uint32_t b = 0; b < bindings.size(); ++b) {
-            bindings[b].binding = b;
-            bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            bindings[b].descriptorCount = 1;
-            bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-            bindings[b].pImmutableSamplers = nullptr;
+        auto built = pipelines::build_taa(vk, sizeof(taa_push_constants), vertex_shader_code, fragment_shader_code);
+        if (!built) {
+            return std::unexpected(std::move(built.error()));
         }
-        VkDescriptorSetLayoutCreateInfo layout_info = {};
-        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
-        layout_info.pBindings = bindings.data();
-        if (vkCreateDescriptorSetLayout(vk.device, &layout_info, nullptr, &this->taa_set_layout) != VK_SUCCESS) {
-            return fail("taa: descriptor set layout creation failed");
-        }
+        this->taa_set_layout = built->set_layout;
+        this->taa_pipeline_layout = built->pipeline_layout;
+        this->taa_pipeline = std::move(built->resolve);
 
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        push_range.offset = 0;
-        push_range.size = sizeof(taa_push_constants);
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &this->taa_set_layout;
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &this->taa_pipeline_layout) != VK_SUCCESS) {
-            return fail("taa: pipeline layout creation failed");
-        }
-
-        // fullscreen triangle (post.vert), no depth attachment, no depth test, writing the HDR target
-        // which the post chain reads - the same target the scene passes would have written without TAA
-        std::array<VkFormat, 1> const color_formats = {vulkan::hdr_format};
-        auto pipeline_result = vulkan::make_pipeline(
-            vk.device,
-            this->taa_pipeline_layout,
-            std::span<VkFormat const>(color_formats),
-            VK_FORMAT_UNDEFINED,
-            vertex_shader_code,
-            fragment_shader_code,
-            VK_SAMPLE_COUNT_1_BIT,
-            false,
-            0.0f,
-            0.0f,
-            0.0f);
-        if (!pipeline_result) {
-            return fail(std::string(pipeline_result.error()));
-        }
-        this->taa_pipeline = std::move(pipeline_result).value();
-
-        // NEAREST: the history must be sampled where the motion vector says, not averaged with its
-        // neighbours (that is what the resolve's own clamp is for)
+        // linear magnification, nearest minification: the resolve upsamples the scene color but must
+        // not average neighbouring history texels
         VkSamplerCreateInfo sampler_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
-        sampler_info.magFilter = VK_FILTER_LINEAR; // the scene color is upsampled by its own geometry...
+        sampler_info.magFilter = VK_FILTER_LINEAR;
         sampler_info.minFilter = VK_FILTER_NEAREST;
         VkSampler sampler = VK_NULL_HANDLE;
         if (vkCreateSampler(vk.device, &sampler_info, nullptr, &sampler) != VK_SUCCESS) {
-            return fail("taa: sampler creation failed");
+            return std::unexpected(std::string("taa: sampler creation failed"));
         }
         this->taa_sampler = vk_sampler(sampler, vk.device);
         return {};
