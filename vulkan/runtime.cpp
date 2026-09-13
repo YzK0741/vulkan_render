@@ -3360,10 +3360,11 @@ namespace vulkan {
         }
         std::size_t const image_count = vk.gi_images.size();
         if (image_count == 0 || vk.gi_history_image_views.size() != image_count || vk.gi_resolve_image_views.size() != image_count ||
-            vk.velocity_image_views.size() != image_count || vk.gbuffer_depth_image_views.size() != image_count) {
+            vk.velocity_image_views.size() != image_count || vk.gbuffer_depth_image_views.size() != image_count ||
+            vk.gbuffer_image_views[1].size() != image_count) {
             return;
         }
-        // Five fingerprints, because five images feed one set - and the count has to match the LAYOUT,
+        // Six fingerprints, because six images feed one set - and the count has to match the LAYOUT,
         // not only the images that change independently, because it is also what sizes this family's
         // descriptor pool (see vulkan.bindings). This array held four, omitting the resolve image that
         // binding 4 points at, so the pool was built for four descriptors per set while the allocation
@@ -3373,17 +3374,18 @@ namespace vulkan {
         // message is right that a stricter driver answers VK_ERROR_OUT_OF_POOL_MEMORY, which this
         // function's own failure path would turn into "this session has no GI" rather than a frame that
         // is merely missing a descriptor.
-        std::array<VkImageView, 5> const signature = {vk.gi_image_views[0], vk.gi_history_image_views[0], vk.velocity_image_views[0],
-                                                      vk.gbuffer_depth_image_views[0], vk.gi_resolve_image_views[0]};
+        std::array<VkImageView, 6> const signature = {vk.gi_image_views[0], vk.gi_history_image_views[0], vk.velocity_image_views[0],
+                                                      vk.gbuffer_depth_image_views[0], vk.gi_resolve_image_views[0], vk.gbuffer_image_views[1][0]};
         auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            std::array<VkDescriptorImageInfo, 5> image_infos = {};
-            std::array<VkImageView, 5> const views = {
+            std::array<VkDescriptorImageInfo, 6> image_infos = {};
+            std::array<VkImageView, 6> const views = {
                 vk_ref.gi_image_views[image_index],
                 vk_ref.gi_history_image_views[image_index],
                 vk_ref.velocity_image_views[image_index],
                 vk_ref.gbuffer_depth_image_views[image_index],
-                vk_ref.gi_resolve_image_views[image_index]};
-            std::array<VkWriteDescriptorSet, 5> writes = {};
+                vk_ref.gi_resolve_image_views[image_index],
+                vk_ref.gbuffer_image_views[1][image_index]};
+            std::array<VkWriteDescriptorSet, 6> writes = {};
             for (uint32_t b = 0; b < views.size(); ++b) {
                 // 4 is the STORAGE image the resolve writes: no sampler, and GENERAL rather than
                 // SHADER_READ (a compute stage writes it, it does not sample it).

@@ -245,10 +245,16 @@ reflection, whose image slides at its own rate. The instrument for that now exis
 reprojection path in its trivial case only) and the baseline is a difference of differences: the reflection
 loses **0.4029 of mean|.|** - about 40% of its own magnitude - to a 20-degree camera orbit, against 0.5198 for
 the whole rest of the frame. Read that number with its caveat: a moving accumulation differs from a converged
-static one even with perfect reprojection, so the acceptance for fixing it is the number COLLAPSING, and the
-mechanism is studied in `docs/reference/lumen_reflection_denoiser.md` (reproject from the reflection HIT's
-depth rather than the surface's, and clamp a smooth pixel's accumulation to ~2 frames - this renderer's shared
-resolve does neither and has no roughness input at all). Its REACH is no longer on the list: it has its own
+static one even with perfect reprojection. HALF OF IT IS NOW CLOSED, and measured: the CLAMP half of that
+mechanism is in `shaders/ssgi_temporal.comp` (a smooth pixel may keep ~2 frames, loosening with roughness,
+keyed on the roughness the G-buffer already carries), and it took the number from **0.4029 to 0.3492** and its
+worst 4x4 tile from 1.942 to 1.488 - with the residual now confined to the sweep's SMOOTH columns and the
+rough ones BIT-IDENTICAL, and with the whole procedure run on the build without it as the control, which
+reproduced 0.4029 exactly. The other half is open: the reflection still has no history of its own, so it rides
+the surface-motion reprojection (shortened rather than corrected) and the clamp also shortens the DIFFUSE
+signal on those pixels. The instrument is `scripts/measure/motion_dd.py` now, and its pose rules are in the
+script's own docstring, because an arm posed by hand yields a plausible number rather than an obviously wrong
+one. Its REACH is no longer on the list: it has its own
 knob now (`ssgi_specular_radius`, default 0.5
 of the scene radius), because the shared `ssgi_radius` was pinned low by the marched path's step size and the
 lobe was realized only 39% of the signal available - half of the remainder comes back at 0.5 for +0.12 ms

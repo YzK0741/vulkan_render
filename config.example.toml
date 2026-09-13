@@ -326,6 +326,20 @@ ssgi_hit_shading = true
 # in where rays START is a frame-level change is itself worth knowing. The MARCHED path keeps the fraction of
 # the ray length deliberately, where it is the step size's own scale rather than a scene's. (See `rt_shadows`'
 # two mechanisms below for the limits that are still there, and docs/gi_hit_shading.md's L2.3 origin section.)
+# ITS HISTORY IS CAPPED BY ROUGHNESS, and that is the reflection's own accumulation policy rather than a
+# denoiser setting. This signal is accumulated by the DIFFUSE temporal resolve, which reprojects by the
+# SURFACE's motion - right for a bounce, structurally wrong for a reflection, whose image slides at its own
+# rate - so a smooth pixel may keep only about two frames of it, loosening with roughness in Lumen's shape
+# (`lerp(2, Max, saturate(roughness / 0.05))`, LumenReflectionDenoiserTemporal.usf:413). The cap lives in
+# `shaders/ssgi_temporal.comp`, reads the roughness the G-buffer already carries, and is a no-op above the
+# knee by a BRANCH rather than by arithmetic, so a rough surface's frame stays bit-identical. Measured on
+# the material sweep's 20-degree camera orbit against the same procedure run on the build without it: the
+# reflection's own motion loss (a difference of differences, `scripts/measure/motion_dd.py`) went
+# 0.4029 -> 0.3492 and its worst 4x4 tile 1.942 -> 1.488, with the change confined to the SMOOTH columns
+# of the sweep - the rough ones came out bit-identical, which is the cap being selective rather than the
+# frame moving as a whole. What it does NOT have yet is the reference's other half: a history of its own,
+# reprojected from the reflection's HIT depth, which would stop it capping the diffuse signal on the same
+# pixels. See docs/gi_hit_shading.md's L2.3 motion section.
 # REQUIREMENTS: the traced GI path, `ssgi_hit_shading` and the acceleration structures' instance table (a
 # hit cannot be shaded without it). Where any is missing the pass is not even RECORDED, which is what makes
 # `ssgi_specular = false` byte-identical by construction rather than by arithmetic (verified: the capture

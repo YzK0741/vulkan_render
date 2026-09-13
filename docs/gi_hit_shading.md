@@ -1262,6 +1262,84 @@ temporal resolve, which reprojects by the surface's motion and has no roughness 
 with the two further mechanisms (a second-moment clamp and the specular dominant direction) and what each
 would take here, is `docs/reference/lumen_reflection_denoiser.md`.
 
+### L2.3, the reflection's own accumulation policy: the motion loss, measured with a control this time
+
+THE BASELINE THIS STEP WAS FOR is the number the motion section above ends with, and it ended by saying what it
+could not say: the reflection loses about 40% of its own magnitude to a 20-degree camera orbit (mean|DD|
+0.4029, worst 4x4 tile 1.942), part of which is inherent to comparing a moving accumulation against a converged
+still one. `docs/reference/lumen_reflection_denoiser.md` names the two mechanisms UE uses; mechanism 2 is the
+one this step could reach - a smooth pixel may keep only about two frames of history
+(`MaxFramesAccumulated = lerp(2, Max, saturate(Roughness / 0.05))`, LumenReflectionDenoiserTemporal.usf:413),
+because a sharp reflection cannot be reconstructed from a history that has moved.
+
+WHAT WAS BUILT, and it is mechanism 2 ALONE. `shaders/ssgi_temporal.comp` now samples the G-buffer's normal
+target for its roughness channel (binding 5 - one new descriptor, since the pass had only the trace, the
+history, the motion vectors, the depth and its own storage image) and caps the blend weight it already
+computes. No new knob was needed, because the existing still-pixel weight IS a frame count (`w = 1 - 1/N`):
+convert the weight to a count, interpolate the count by roughness, convert back. Because the reflection has no
+history image of its own, the cap also applies to the DIFFUSE signal on the same pixels - defensible rather
+than tidy, because the pixels it binds on are the SMOOTH ones and a smooth pixel is almost always a metal,
+whose diffuse lobe is zero (`1 - metallic`).
+
+THE BRANCH IS LOAD-BEARING, and the gate is what said so. The first version applied the cap unconditionally:
+the count conversion returns `pc.blend_static` to within an ulp, rgba16f does not always absorb an ulp, and
+Sponza moved ONE pixel of 1036800 by one 8-bit step. Guarding on `roughness < ROUGHNESS_KNEE` makes the cap
+EXACTLY the identity above the knee. It did not make Sponza byte-identical, and that is the honest result
+rather than a failure of the guard: the scene does contain pixels below the knee, and on those the cap is
+supposed to bind.
+
+MEASURED, with the control taken rather than assumed. The instrument is a difference of differences and it now
+exists in the repository as `scripts/measure/motion_dd.py`: four arms - swept and converged-STATIC at the
+sweep's END pose, each with the lobe on and off - so the 20-degree pose change cancels and what survives is
+the reflection's own loss. The whole procedure was run TWICE, once on the build without the cap and once with
+it, and the control reproduces the recorded baseline EXACTLY (0.4029 against 0.4029), which is what makes the
+comparison a measurement rather than a comparison against another session's notes:
+
+    arm                                  old build (control)   with the cap
+    mean|sweep - static|  lobe ON               0.9547             0.8669
+    mean|sweep - static|  lobe OFF              0.6131             0.5742
+    mean|DD|  (the reflection's own)            0.4029             0.3492     -13.3%
+    worst 4x4 tile                              1.942              1.488      -23.4%
+
+and the tile tables say WHY it is causal rather than a global shift: the two SMOOTH columns of the material
+sweep improve by 23-26% (tile [1][1] 1.942 -> 1.488, tile [2][1] 0.729 -> 0.537) while the two ROUGH columns
+come out BIT-IDENTICAL (-0.656 and -0.376 in both builds, to every digit printed). The cap binds where
+roughness says it should and is inert everywhere else - the shape of a per-material policy, not the shape of a
+frame that moved. Note that the old arm means here (0.9547 / 0.6131) do NOT reproduce the 0.8634 / 0.5198
+quoted in the motion section above; the double difference does, exactly, so those two arm means were read off
+a different pair of captures and the number this step uses - and the number the acceptance is stated in - is
+the one that reproduces.
+
+THE POSE PROCEDURE IS PART OF THE INSTRUMENT, because getting it wrong yields a plausible number rather than
+an obviously wrong one, and this step is where that was learned rather than inherited. The swept arm's captured
+frame is rendered at `yaw = base + sweep_deg_per_frame * frames`, so the static arm must be captured at THAT
+pose, and the base pose has to be READ from the run's own log (`initial camera: fit=exterior yaw 0.0 deg,
+pitch 0.0 deg, distance 19.24 (scene radius 6.99 ...)`). The two commands are therefore recorded in
+`motion_dd.py`'s docstring: `-Camera ""` with `-Sweep 0.5 -Frames 40` for the swept arm and `-Camera
+"20,0,19.24"` for the static one. Two traps cost time on the way, both this repository's own: `capture.ps1`'s
+`-Camera` DEFAULT is Sponza's interior pose, so an arm that omits it renders the spheres from Sponza's framing
+without complaining; and `-Base` resolves against `-WorkDir`, so a scenario config that lives outside the work
+directory has to be copied into it.
+
+THE GATE: 12 scenarios x 2, 0 changed, 0 flaky, validation clean - after the four references whose frames the
+cap moves were re-seeded DELIBERATELY and one at a time (`-Only <name> -Update`): `default_gi` (152 pixels by
+one step - the helmet's smooth metal), `sponza_gi` (ONE pixel by one step), `metal_rough_glossy` (11505 pixels,
+1.11%, mean green -0.0186, worst tile -0.204) and `glossy_motion` (15530 pixels, 1.50%, mean green -0.0827,
+worst tile -0.777). Everything else, including every GI-off scenario and `sponza_march`, is untouched.
+
+A NOTE ON THE INSTRUMENT THAT COULD HAVE HIDDEN THE SPONZA ARM: `scripts/measure/diff.py` counts "differing",
+"|d|>1", "|d|>4" and `max |d|` on the GREEN channel alone (its own line 38 says so), so a pixel differing only
+in red or blue is invisible to those four numbers while the per-channel means still move. It reported the
+`sponza_gi` change above as "0 pixels differing", and the decoded arrays differ in one BLUE texel. The means
+can be trusted; the counts and the max cannot be read as "no pixel changed", and the counts this document
+already quotes inherit that. Left unfixed on purpose - changing the instrument's semantics would silently
+invalidate them.
+
+STILL OPEN, and it is mechanism 1: the reflection has no history of its own, so it rides the diffuse resolve's
+surface-motion reprojection, which this cap can only SHORTEN rather than correct, and it shortens the diffuse
+signal on smooth pixels as well. The reference's order is mechanisms 1+2 together, then 3 (a clamp from the
+history's own variance), and 4 (a specular dominant direction) only if a measurement asks for it.
+
 ### L2.3, the glossy lobe's reach: a shared knob that was pinned by the other path
 
 The lobe's rays used the DIFFUSE bounce's `ssgi_radius`, and the two are different questions. A diffuse

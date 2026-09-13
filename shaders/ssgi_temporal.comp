@@ -44,6 +44,11 @@ layout(set = 0, binding = 1) uniform sampler2D gi_history; // last frame's TEMPO
 layout(set = 0, binding = 2) uniform sampler2D velocity;   // full-resolution motion vectors (UV space)
 layout(set = 0, binding = 3) uniform sampler2D depth;      // full-resolution G-buffer depth
 layout(set = 0, binding = 4, rgba16f) uniform image2D gi_resolved;
+// The G-buffer's normal target, sampled for ONE channel: .a is the material's roughness, which the
+// reflection's accumulation cap below needs (it is what says which pixels carry a sharp reflection). The
+// image is full resolution, like the motion vectors and the depth above, and it is read at this pass's
+// own uv for the same reason: the cap is a per-surface property, not a per-texel one.
+layout(set = 0, binding = 5) uniform sampler2D gbuffer_normal; // RGBA16F: world normal.xyz + roughness
 
 layout(push_constant) uniform GiTemporalPush {
     float history_valid; // 0 = there is no history for this image yet (first frame, or a resize)
@@ -123,6 +128,42 @@ void main() {
     // the current frame more, because a long history for a surface that just appeared is mostly stale
     // data. Speed is measured in GI texels so the threshold means the same at any resolution.
     const float speed = clamp(length(motion) * float(gi_extent.x) / 8.0, 0.0, 1.0);
-    const float weight = mix(pc.blend_static, pc.blend_min, speed);
+    float weight = mix(pc.blend_static, pc.blend_min, speed);
+
+    // THE REFLECTION'S OWN ACCUMULATION POLICY, and it is a CAP on how much history a pixel may keep.
+    // This resolve reprojects by the SURFACE's motion, which is right for a diffuse bounce and structurally
+    // wrong for a reflection: the reflected image slides at its own rate, so a long history here is a
+    // history of the wrong place. UE answers that with a policy of its own for the glossy signal
+    // (`MaxFramesAccumulated = lerp(2, Max, saturate(Roughness / 0.05))`,
+    // LumenReflectionDenoiserTemporal.usf:413; see docs/reference/lumen_reflection_denoiser.md's
+    // mechanism 2): a mirror gets about two frames, and the clamp stops binding as roughness rises.
+    //
+    // WHAT THIS PASS CAN AND CANNOT DO. The reflection has no history image of its own here - it is
+    // accumulated into the same one the diffuse bounce is - so this is mechanism 2 WITHOUT mechanism 1, and
+    // it caps the diffuse signal on the same pixels. That is defensible rather than a compromise in
+    // practice: the pixels the cap binds on are the SMOOTH ones, and a smooth pixel is almost always a
+    // metal, whose diffuse lobe is zero (`1 - metallic`). The alternative shape - the reflection
+    // reprojected from its own HIT depth into its own history - is the reference's mechanism 1 and is a
+    // separate step.
+    //
+    // The existing still-pixel weight IS the frame count (w = 1 - 1/N for N frames of history at 1/N each),
+    // so the cap is expressed without a new knob: convert the weight to a count, interpolate the count by
+    // roughness, convert back. At the knee and above the conversion is the identity on the current
+    // configuration (1/(1-w) then 1-1/N returns w exactly for the values this pass is given), which is what
+    // keeps a rough surface's reference frame byte-identical.
+    const float SMOOTH_FRAMES = 2.0;   // UE's floor: a mirror cannot use more than a couple of frames
+    const float ROUGHNESS_KNEE = 0.05; // UE's threshold, above which the cap stops binding
+    const float roughness = texture(gbuffer_normal, uv).a;
+    if (roughness < ROUGHNESS_KNEE) {
+        // The branch is not an optimisation, it is what makes the cap EXACTLY the identity above the knee:
+        // the count conversion below returns `pc.blend_static` only to within an ulp, and rgba16f does not
+        // always absorb that ulp, so the unguarded form moved ONE pixel of 1036800 by one 8-bit step on
+        // Sponza (whose roughness channel averages 217/255 - measured with scripts/measure/diff.py, which
+        // reports that as "0 pixels differing" and is wrong: the decoded arrays differ in one blue texel).
+        const float frames_uncapped = 1.0 / max(1.0 - pc.blend_static, 1e-4);
+        const float max_frames = mix(SMOOTH_FRAMES, frames_uncapped, roughness / ROUGHNESS_KNEE);
+        weight = min(weight, 1.0 - 1.0 / max_frames);
+    }
+
     imageStore(gi_resolved, pixel, vec4(mix(current, history, weight), 1.0));
 }
