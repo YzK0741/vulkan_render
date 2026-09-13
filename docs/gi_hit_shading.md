@@ -699,7 +699,8 @@ WHAT CHANGED, and what it was verified against:
   constant and no interface changed, so no module version moves with it;
 * the GI-off path is byte-identical before and after (same SHA256), and so is a metallic-free GI-on
   capture (the Cube) - so the change is exactly that term and nothing else;
-* `scripts/windows/check_render.ps1`: 7 scenarios, each run twice, 0 changed; `ctest` 6/6; Release,
+* `scripts/windows/check_render.ps1`: 8 scenarios, each run twice, 0 changed (the new `sponza_gi` scenario
+  is one of them - see the note at the end of this section); `ctest` 6/6; Release,
   Debug and ASan+UBSan builds clean; `doxygen Doxyfile` exit 0 with an empty warning stream;
 * the traced frame itself moves by -1.1935 of mean brightness on the Sponza GI capture (34% of pixels,
   one-signed), which is the spurious metallic diffuse leaving it.
@@ -781,3 +782,11 @@ WHERE IT LIVES: `shaders/probe_sh.glsl` (the basis, the constant, the reconstruc
 descriptors in `vulkan/runtime.cpp`. The probe pass's push block is 40 bytes and carries no camera data at
 all; the pass's own set is nine bindings (four read, four written, one geometry) and the G-buffer set gained
 bindings 10..12 for the three first-order coefficients.
+
+AND THE GATE NOW COVERS IT, which it did not before this step: the seven capture scenarios all ran with
+`ssgi = false`, so the screen-space chain, the denoisers, the probe cache and every ray-traced path had NO
+regression coverage at all - a break in any of them would have passed the gate. `sponza_gi` was added: same
+scene and camera as `sponza`, with the traced chain, the denoisers and the probe cache switched on. Its
+reference is a normal machine-local baseline (`-Update` once to seed it, as for every other scenario), and
+the change that added it is the one that needed it: eight new 3D images and two re-shaped descriptor sets
+would otherwise have had nothing watching them.

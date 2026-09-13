@@ -139,9 +139,9 @@ and the gates are green. `docs/gi_hit_shading.md`'s L2.1 section has the tables,
 limits - the directional terms are four rays per frame and converge over ~100 frames, the reconstruction
 clamps at zero, and a cell still holds one surface offset rather than a per-direction depth map.
 
-NOT DONE, and worth knowing before building on it: nothing in the gate exercises this path. The seven
-`check_render` scenarios all run with GI off, so a probe-cache regression would be invisible to them; the
-measurements above are the coverage this subsystem has (see section 5).
+NOT DONE, and worth knowing before building on it: the gate now runs ONE scenario over this path
+(`sponza_gi`), which catches a break but not a subtle regression - the L2.1 measurements themselves are the
+evidence for a GI change, and `docs/gi_hit_shading.md`'s tables are the instrument they are read with.
 
 ## 4. Then L2.2 and L2.3
 
@@ -168,12 +168,12 @@ Gates before any commit:
 
 * Release, Debug and ASan+UBSan builds clean (`-Werror` is on everywhere);
 * `ctest` in the release build: 6/6;
-* the capture harness `scripts/windows/check_render.ps1`: 7 scenarios, each run twice, 0 changed - or the
-  change recorded deliberately with its reason and the baseline re-recorded. ITS BLIND SPOT IS THE GI PATH:
-  every scenario runs with `ssgi = false`, so nothing there exercises the screen-space chain, the probe cache,
-  the accumulator or anything ray-traced - a regression in those would pass this gate. Changes to them need
-  their own measurement (the L2.0 and L2.1 sections are the shape of one), and widening the scenario list is
-  the obvious next improvement to the gate;
+* the capture harness `scripts/windows/check_render.ps1`: 8 scenarios, each run twice, 0 changed - or the
+  change recorded deliberately with its reason and the baseline re-recorded. Until the L2.1 step every
+  scenario ran with `ssgi = false`, so the whole GI path (the screen-space chain, its denoisers, the probe
+  cache, everything ray-traced) had no coverage and a break in it would have passed this gate; `sponza_gi`
+  exists for that, and a new subsystem should get its own scenario rather than a note. A new scenario's
+  reference is seeded once per machine with `-Update`;
 * `doxygen Doxyfile`: exit 0 and an EMPTY warning stream. Capture the real exit code; piping doxygen into
   anything makes `$LASTEXITCODE` the pipeline's, and this was mistaken for a pass once;
 * every measurement run validation clean (the harness greps for `VUID-`, `Validation Error`, `[ERROR]`,
@@ -187,7 +187,7 @@ Habits that caught real errors here:
   slices in this session ended "the measurement disproved the hypothesis", and those are the valuable ones;
 * never commit what has not been verified: REVERT it and record why. Two rounds of this session ended in
   reverts, and that was the right call both times;
-* when a change is supposed to be invisible, say so and check it (all seven scenarios, 0 changed).
+* when a change is supposed to be invisible, say so and check it (all eight scenarios, 0 changed).
 
 Edit mechanics this repository punishes:
 

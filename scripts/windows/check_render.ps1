@@ -86,6 +86,19 @@ $scenarios = @(
     @{ name = "sponza";            desc = "Sponza interior, the GI reference scene";    extra = @{ taa = "false" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\Sponza\glTF\Sponza.gltf"
        camera = "90,0,6.41,0,-18.548,0" }
+    # The GI CHAIN, which none of the scenarios above exercise - they all run with ssgi off. This one turns
+    # on the screen-space trace, its temporal and spatial denoisers, the composite's joint-bilateral
+    # upsample, and the world-space probe cache that answers the hits the screen cannot (ray-traced cells,
+    # SH-2 storage, the six-neighbour gated blend). It is here because that whole subsystem had NO
+    # regression coverage: the directional-probe change touched eight 3D images, four bindings in the
+    # G-buffer set and a nine-binding set of its own, and nothing in this file would have noticed a break in
+    # any of it. Same scene and camera as `sponza`, so the two are comparable; taa off for the same reason
+    # the other GI comparison keeps it off.
+    @{ name = "sponza_gi";         desc = "Sponza interior + traced GI chain + probe cache";
+       extra = @{ taa = "false"; ssgi = "true"; ssgi_intensity = "1.0"; ssgi_ray_tracing = "true"; ssgi_probes = "true";
+                  ssgi_probe_rate = "0.08"; ssgi_probe_rounds = "2"; ssgi_probe_gain = "1.0" }
+       model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\Sponza\glTF\Sponza.gltf"
+       camera = "90,0,6.41,0,-18.548,0" }
 )
 
 if ($List) {
