@@ -398,6 +398,10 @@ namespace vulkan {
         // The furnace verification mode ([render] furnace, not wired to the config yet): the sun is turned
         // off and the environment becomes a constant level, so the correct frame is computable by hand.
         bool furnace = false;
+        // Whether this target generation's furnace cube has had its level written yet. It is cleared ONCE
+        // per generation (see begin_recording): the level never changes, so re-clearing it every frame would
+        // be a barrier pair bought for nothing, and the flag is reset with the images it describes.
+        bool furnace_cube_ready = false;
         struct ssgi_push_constants {
             glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world (the block deferred.frag uses)
             glm::vec4 params = glm::vec4(0.0f);        // x radius, y intensity, z rays, w steps

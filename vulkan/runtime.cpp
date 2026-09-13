@@ -212,6 +212,8 @@ namespace vulkan {
         // gi_probe_valid) until record_gi_probe_pass has run once.
         this->gi_probe_valid = false;
         this->gi_probe_grid_seen = false;
+        // ... and the furnace cube is a new image too, so its level has to be written again.
+        this->furnace_cube_ready = false;
         // NOTE: the shadow resources (map layers + light UBO buffers) are created LAZILY, by
         // ensure_shadow_resources() from ensure_scene_set(). The shadow map is a layered 2D array
         // whose layer count is [render] shadow_cascades, and the app config that carries it is applied
@@ -1206,6 +1208,8 @@ namespace vulkan {
         // pass has run once in it.
         this->gi_probe_valid = false;
         this->gi_probe_grid_seen = false;
+        // ... and the furnace cube is a new image too, so its level has to be written again.
+        this->furnace_cube_ready = false;
         // The motion-vector images died with the generation as well, and a brand new one is in
         // UNDEFINED until this frame's G-buffer instance renders into it: clear the layout flag so the
         // first frame of the new generation takes the attachment -> sampled transition (see
@@ -1515,6 +1519,32 @@ namespace vulkan {
         // command buffer exists.
         vk.begin_gpu_timing(*command_buffer, static_cast<uint32_t>(vk.current_frame));
         this->gpu_mark(*command_buffer, gpu_mark_id::frame_begin, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+
+        // The furnace verification mode's constant environment, written here and ONCE per target generation:
+        // this is the frame's first command buffer, and the environment is sampled by the SKYBOX - which runs
+        // long before the lighting stage and the GI chain - so any later point would leave the background of
+        // every frame reading the previous contents. The level is the same 1.0 the light UBO's furnace lane
+        // carries, so the analytic answer and the environment agree by construction; the IBL bindings point
+        // at this cube only while the mode is on.
+        if (this->furnace && !this->furnace_cube_ready && !vk.furnace_cube_images.empty() && vk.furnace_cube_images[0] != VK_NULL_HANDLE) {
+            VkImageMemoryBarrier2 to_transfer = vulkan::undefined_to_transfer_dst_transition;
+            to_transfer.image = vk.furnace_cube_images[0];
+            to_transfer.subresourceRange.layerCount = 6; // all six faces, not the one the constant defaults to
+            VkDependencyInfo const to_transfer_dependency = make_image_dependency_info(1, &to_transfer);
+            vkCmdPipelineBarrier2(*command_buffer, &to_transfer_dependency);
+
+            VkClearColorValue const level = {{1.0f, 1.0f, 1.0f, 1.0f}};
+            VkImageSubresourceRange const faces = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+            vkCmdClearColorImage(*command_buffer, vk.furnace_cube_images[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &level, 1, &faces);
+
+            VkImageMemoryBarrier2 to_sampling = vulkan::transfer_dst_to_sampling_transition;
+            to_sampling.image = vk.furnace_cube_images[0];
+            to_sampling.subresourceRange.layerCount = 6;
+            VkDependencyInfo const to_sampling_dependency = make_image_dependency_info(1, &to_sampling);
+            vkCmdPipelineBarrier2(*command_buffer, &to_sampling_dependency);
+
+            this->furnace_cube_ready = true;
+        }
         // Debug overlay: begin a fresh ImGui frame once per rendered frame (after the acquire,
         // before any UI content is built; the actual draw is recorded at the end of
         // record_main_drawcalls() while the main rendering instance is still open).
