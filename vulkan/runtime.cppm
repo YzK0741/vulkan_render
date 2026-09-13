@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.32.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.33.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -243,6 +243,10 @@ namespace vulkan {
             shadow_end,      // after the shadow pass + its sampling barrier
             scene_end,       // after the geometry instance: forward main (opaque + transparent), or
                              // the background + G-buffer pass in the deferred path
+            rt_shadow_end,   // after the ray-traced sun shadow pass (~0 when it does not run). Its own
+                             // mark because it sits BETWEEN the G-buffer pass and the lighting stage:
+                             // without it the traversals were reported as lighting time, which made the
+                             // lighting interval look four times more expensive with rays on
             lighting_end,    // after the deferred path's shading work: the lighting stage and, in the
                              // same interval, the transparent pass that composites over it (~0 in the
                              // forward path, where both of those happen inside the scene instance)
@@ -272,6 +276,7 @@ namespace vulkan {
             {"rt", false},
             {"shadow", false},
             {"scene", false},
+            {"rt shadow", false},
             {"lighting", false},
             {"taa", false},
             {"debug", true},

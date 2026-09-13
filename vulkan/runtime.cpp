@@ -3526,8 +3526,19 @@ namespace vulkan {
                 VkDependencyInfo const sampling_dependency = make_image_dependency_info(1, &to_sampling);
                 vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
             }
+            // GPU timing: the ray-traced shadow pass ends here (before the lighting stage reads its
+            // output). It gets its own interval because it sits between the G-buffer pass and the
+            // lighting stage - without it the traversals were reported as lighting time, which made the
+            // lighting interval look four times more expensive with rays on (measured 0.32 -> 1.18 ms
+            // while the rays themselves were ~0.85 of that).
+            this->gpu_mark(command_buffer, gpu_mark_id::rt_shadow_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
             this->record_lighting_pass(command_buffer);
             this->record_transparent_pass(command_buffer);
+        } else {
+            // The pass does not run (the debug view replaces the lighting stage, and the forward path has
+            // no G-buffer to start rays from), but every mark is written in order on every frame - the
+            // report's labels are positional. Written next to scene_end, so the interval is 0 ms.
+            this->gpu_mark(command_buffer, gpu_mark_id::rt_shadow_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         }
         this->gpu_mark(command_buffer, gpu_mark_id::lighting_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
