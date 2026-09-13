@@ -3164,7 +3164,10 @@ namespace vulkan {
         ssgi_push_constants const push = {
             .inv_view_proj = this->current_inv_view_proj,
             .params = glm::vec4(this->ssgi_radius * this->scene_radius, this->ssgi_intensity, static_cast<float>(this->ssgi_rays), static_cast<float>(this->ssgi_steps)),
-            .proj_terms = glm::vec4(this->current_ubo.proj[2][2], this->current_ubo.proj[3][2], static_cast<float>(gi_width), static_cast<float>(gi_height)),
+            // The GI extent is NOT pushed: the shader asks the image it writes for its own size
+            // (imageSize), which is the same number and one less lane to keep in sync. z/w are free for
+            // the hit-shading mode this block has to make room for.
+            .proj_terms = glm::vec4(this->current_ubo.proj[2][2], this->current_ubo.proj[3][2], 0.0f, 0.0f),
             .frame_info = glm::vec4(static_cast<float>(this->ssgi_frame),
                                     // ... and y = 1.0 only when the rays are actually traced: the device has ray queries,
                                     // the tracer ran and the structures exist. Resolved HERE rather than in the shader so

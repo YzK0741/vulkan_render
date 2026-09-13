@@ -390,7 +390,7 @@ namespace vulkan {
         struct ssgi_push_constants {
             glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world (the block deferred.frag uses)
             glm::vec4 params = glm::vec4(0.0f);        // x radius, y intensity, z rays, w steps
-            glm::vec4 proj_terms = glm::vec4(0.0f);    // x proj[2][2], y [3][2], z/w GI extent
+            glm::vec4 proj_terms = glm::vec4(0.0f);    // x proj[2][2], y [3][2]; z/w free (see the shader)
             glm::vec4 frame_info = glm::vec4(0.0f);    // x = frame counter (see ssgi_frame), y = traced, z = bounce gain, w = probe gain
             // xyz = the world position of the probe grid's cell (0,0,0) corner, w = one cell's size in
             // world units. The grid's EXTENT comes from textureSize() in the shader rather than a lane

@@ -94,7 +94,13 @@ layout(push_constant) uniform SsgiPush {
     mat4 inv_view_proj; // clip -> world (the same block deferred.frag uses)
     // x = ray length in view units, y = intensity, z = rays per pixel, w = steps per ray
     vec4 params;
-    // x = projection[2][2], y = [3][2] (the view-depth linearization pair), z/w = the GI extent
+    // x = projection[2][2], y = [3][2] (the view-depth linearization pair).
+    // z/w are FREE LANES, deliberately: this block is exactly 128 bytes - the smallest push-constant
+    // range Vulkan guarantees - so a lane has to be freed before one can be spent. The GI extent used to
+    // live in z/w and does not need to: the storage image this pass writes knows its own size
+    // (imageSize(gi_output) below), which is a fact about the dispatch rather than about the frame.
+    // z is where the hit-shading mode will go (see rt_hit_radiance: today a hit's radiance is the
+    // screen's, and the step that makes it the hit surface's own needs a lane to be A/B-able).
     vec4 proj_terms;
     // x = a per-frame counter, so the ray sequence differs every frame. A temporal denoiser needs
     // that: a fixed sequence would keep making the same mistake in the same place.
@@ -327,7 +333,7 @@ vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, out bool out_hit
 }
 
 void main() {
-    const ivec2 gi_extent = ivec2(pc.proj_terms.zw);
+    const ivec2 gi_extent = imageSize(gi_output);
     const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     if (pixel.x >= gi_extent.x || pixel.y >= gi_extent.y) {
         return; // the dispatch is rounded up to the workgroup size
