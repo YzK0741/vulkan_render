@@ -68,6 +68,11 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
+/// @brief the ray query's own tmin: how far along a ray an intersection is ignored, which is the engine's
+///        fixed self-intersection guard. A ray SHORTER than this has nothing to search (see rt_hit_radiance),
+///        so it is also the threshold that makes a "nothing reachable" configuration expressible.
+const float RAY_TMIN = 0.01;
+
 layout(set = 0, binding = 0) uniform CameraUBO {
     mat4 view;
     mat4 proj;
@@ -391,8 +396,19 @@ uint64_t instance_table_address() {
  */
 vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, float origin_bias, out bool out_hit) {
     out_hit = false;
+    // A RAY LENGTH AT OR BELOW THE QUERY'S OWN tmin HAS NO INTERVAL TO SEARCH, so the query is not issued:
+    // `rayQueryInitializeEXT` with tmax <= tmin is forbidden by the specification, and "nothing is
+    // reachable" is what it means - the same answer as a miss, which is the environment probe. This WAS
+    // being issued with an empty interval and returned no hit because that is what an invalid query does,
+    // silently: every identity measurement of the traced DIFFUSE chain (`ssgi_radius` small enough that the
+    // length lands below 0.01) was taken with it, which is why the guard has to be verified to leave those
+    // frames where they were rather than to "fix" them into something else. shaders/ssgi_spec.comp has the
+    // same guard, from the same finding.
+    if (max_distance <= RAY_TMIN) {
+        return texture(irradiance_sampler, dir).rgb;
+    }
     rayQueryEXT query;
-    rayQueryInitializeEXT(query, tlas, gl_RayFlagsOpaqueEXT, 0xFF, origin, 0.01, dir, max_distance);
+    rayQueryInitializeEXT(query, tlas, gl_RayFlagsOpaqueEXT, 0xFF, origin, RAY_TMIN, dir, max_distance);
     while (rayQueryProceedEXT(query)) {
     }
     if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {

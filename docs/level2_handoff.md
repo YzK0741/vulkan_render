@@ -220,14 +220,12 @@ isolated (+45% effect: -1.4756 -> -2.1411), and past it the curve is flat in cos
 (3) the DIFFUSE subtraction still carries the non-mean-preserving-average artifact (+0.33 convex / +0.52
 Sponza) and cannot use the mechanism that fixed the specular one, because its image has to stay a radiance for
 the live bounce - fixing it means filtering the removed term with the same weights as the added one (25 gathers
-a pixel) and re-baselining every capture. Note what is NOT on this list any more: SSAO no longer leaks an
-`ambient * (ssao - 1)` term into traced frames (measured -1.90 of mean green before the fix; an SSAO-on and an
-SSAO-off traced frame are now bit-identical), and `shaders/ssgi_spec.comp` no longer issues a ray query with an
-empty interval. THE SAME EMPTY-INTERVAL QUERY IS STILL IN `shaders/ssgi.comp`, and every identity measurement
-of the traced DIFFUSE chain was taken with it - a `ssgi_radius` small enough to make the ray length land below
-the query's fixed tmin of 0.01 is forbidden by the specification and returns no hit because that is what an
-invalid query does. Fixing it properly means the guard the specular pass now has, in a block the marched path
-shares, so it is its own step with its own A/B.
+a pixel) and re-baselining every capture. Two things LEFT this list in the same step: SSAO no longer leaks an
+`ambient * (ssao - 1)` term into traced frames (-1.90 of mean green before the fix; an SSAO-on and an
+SSAO-off traced frame are now bit-identical), and neither lobe issues a ray query with an empty interval any
+more (`RAY_TMIN` is a named constant in both, used by the guard and by `rayQueryInitializeEXT`, so the
+"nothing reachable" identity configuration is deterministic instead of relying on what an invalid query
+happens to return).
 (4) the ray-origin bias is now fixed on every ray this work could reach - the two traced lobes' own origins and
 the shadow ray a shaded hit fires - and the MARCHED path keeps its fraction-of-the-ray-length form on purpose
 (there it is the step size's own scale). Those fixes were among the largest errors the traced path had: the

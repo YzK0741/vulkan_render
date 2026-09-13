@@ -228,8 +228,8 @@ void main() {
     // rather than an accident - every sample answers with the environment, the correction below is exactly
     // zero, and the frame must be identical to the lobe being off (see docs/gi_hit_shading.md's L2.3
     // section). It was an accident until this existed: a ray length below tmin was being ISSUED, and it
-    // returned no hit because that is what an invalid query does - which is also why the same trick worked
-    // in shaders/ssgi.comp, where the guard is still missing (recorded there as an open item).
+    // returned no hit because that is what an invalid query does - the traced ray in shaders/ssgi.comp did
+    // the same thing for the same reason, and has the same guard now (see RAY_TMIN there).
     const bool reachable = pc.params.x > RAY_TMIN;
     uint state = hash_u32(uint(pixel.x) + uint(pixel.y) * 4096u + uint(pc.params.w) * 2654435761u);
     vec3 radiance_sum = vec3(0.0);

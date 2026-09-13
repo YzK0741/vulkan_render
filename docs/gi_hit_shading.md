@@ -1203,11 +1203,16 @@ should be - a reachable frame is byte-identical with and without the guard (`met
 (`CB5EC7B232783B00` for lobe on and lobe off), so the acceptance no longer needs an `ssao = false` caveat.
 The reach clamp's floor is 0.001 scene radii to keep such a configuration expressible at all.
 
-STILL MISSING THE SAME GUARD: `shaders/ssgi.comp` issues its traced rays with the same fixed `tmin` and a
-`max_distance` the user's `ssgi_radius` sets, so a tiny radius there is the same invalid query - and it is the
-one every identity measurement of the traced DIFFUSE chain was taken with (that is why they came out clean).
-It is recorded as the open item it is rather than fixed here, because the marched path shares that block and
-the fix touches both.
+STILL MISSING THE SAME GUARD - NO LONGER: `shaders/ssgi.comp` had it too, in `rt_hit_radiance`, and it is
+fixed in the same step. Every identity measurement of the traced DIFFUSE chain was taken with that empty
+interval (`ssgi_radius = 0.0006` on the helmet is a ray length of 0.00098 world units, below the fixed tmin of
+0.01), i.e. on an invalid query whose "no hit" answer is undefined behaviour that happened to be what the test
+wanted. The guard turns it into the deterministic all-miss path and is verified BYTE-INERT everywhere the
+interval is valid: the capture harness came out 10 scenarios x2 with 0 changed and no reference re-seeded, and
+the documented identity recipe still reads bit-identical (`lobe on == lobe off`, the same SHA256) - which is
+the point, since a "fix" that moved those frames would have invalidated the acceptance they measure. Both
+lobes now name the threshold (`RAY_TMIN`) and use it for the guard and the `rayQueryInitializeEXT` call, so
+the two cannot drift apart.
 
 ### L2.3, the glossy lobe's reach: a shared knob that was pinned by the other path
 
