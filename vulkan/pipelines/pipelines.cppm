@@ -255,7 +255,17 @@ namespace vulkan::pipelines {
         using fail = std::unexpected<std::string>;
         taa_owned out;
 
-        std::array<VkDescriptorSetLayoutBinding, 5> bindings = {};
+        // FOUR bindings, because four is what shaders/taa.frag declares (current color, history,
+        // velocity, depth) and what runtime::ensure_taa_descriptors writes. The count is not cosmetic:
+        // it is also this layout's descriptor count, so a layout declaring one binding more than the
+        // family is SIZED for makes that family's pool too small for its own allocation. The validation
+        // layer named it - "Trying to allocate 15 of VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+        // descriptors from VkDescriptorPool ..., but this pool only has a total of 12 descriptors for
+        // this type" (3 images x 5 bindings against a pool built for 3 x 4, because image_set_family
+        // sizes its pool from the signature's length) - and a driver that enforces the rule would fail
+        // the allocation, which runtime::ensure_taa_descriptors turns into TAA silently switching itself
+        // off rather than a frame that is merely missing a descriptor.
+        std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
             bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;

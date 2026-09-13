@@ -175,9 +175,17 @@ function Invoke-Scenario {
 
     # the run has to have been VALIDATION clean: a difference in validation output is a finding on its
     # own, and a scenario that silently stopped being validation-clean should not be accepted as a
-    # baseline either
+    # baseline either.
+    #
+    # [WARNING] is part of the pattern DELIBERATELY, and it was added after this hole hid a real defect:
+    # the descriptor pool was missing the storage-image and acceleration-structure types its own set
+    # layouts declared, so the layer named them on every single run - and every run was reported clean,
+    # because the pattern only looked for errors and VUIDs. A warning from the layer is the layer saying
+    # the application did something the specification does not allow; a driver that enforces it returns
+    # VK_ERROR_OUT_OF_POOL_MEMORY instead of a frame. If a benign warning ever needs to be tolerated, it
+    # belongs here as an explicit exception with its reason, not as a silent gap.
     if (Test-Path $log) {
-        $bad = Select-String -Path $log -Pattern "VUID-|Validation Error|\[ERROR\]|panic|recorded out of order"
+        $bad = Select-String -Path $log -Pattern "VUID-|Validation Error|\[ERROR\]|\[WARNING\]|panic|recorded out of order"
         if ($bad) { return @{ ok = $false; why = "validation/log problems: $($bad[0].Line.Trim())" } }
     }
     return @{ ok = $true; path = $shot.FullName; hash = (Get-FileHash $shot.FullName -Algorithm SHA256).Hash }

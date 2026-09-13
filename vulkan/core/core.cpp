@@ -1103,6 +1103,27 @@ namespace vulkan {
         pool_sizes.push_back({VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 * scene_texture_capacity});
         // Material table + instance transform storage buffers: two per scene set
         pool_sizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128});
+        // Storage images: the scene set's binding 15 (the storage view of the ray-traced visibility
+        // image binding 14 samples, written by shaders/rt_shadow.comp) and the G-buffer set's bindings 6
+        // and 8 (the raw GI trace a compute pass writes, and the filtered GI the composite reads - see
+        // the write_sets lambda in runtime.cpp). Acceleration structures: the scene set's binding 16, the
+        // top level structure every traced pass queries, declared only on a device with ray queries.
+        //
+        // BOTH types have to be declared HERE even though every one of those bindings is
+        // unconditionally written: a pool hands out only the types it was created with, and the
+        // validation layer names them on EVERY run - first "binding 15 was created with
+        // VK_DESCRIPTOR_TYPE_STORAGE_IMAGE but VkDescriptorPool ... was not created with any
+        // VkDescriptorPoolSize::type with VK_DESCRIPTOR_TYPE_STORAGE_IMAGE", then, once that one was
+        // satisfied, the same for binding 16 and VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR. It never
+        // failed here because the driver tolerates it, but the spec does not, and an implementation that
+        // returned VK_ERROR_OUT_OF_POOL_MEMORY for it would fail the ALLOCATION rather than the frame. It
+        // also went unnoticed because the render-check harness greps the log for VUID-/[ERROR] and not
+        // [WARNING]; that pattern includes [WARNING] now (see scripts/windows/check_render.ps1).
+        //
+        // Over-provisioned like the entries above rather than computed: maxSets bounds the real total,
+        // and running out is a hard failure rather than a frame that renders slightly wrong.
+        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 128});
+        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 128});
 
         VkDescriptorPoolCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;

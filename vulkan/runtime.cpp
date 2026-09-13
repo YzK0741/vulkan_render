@@ -3281,10 +3281,18 @@ namespace vulkan {
             vk.velocity_image_views.size() != image_count || vk.gbuffer_depth_image_views.size() != image_count) {
             return;
         }
-        // Four fingerprints, because four different images feed one set: a new trace target, a new
-        // history, new motion vectors or new depth all invalidate it (see vulkan.bindings).
-        std::array<VkImageView, 4> const signature = {
-            vk.gi_image_views[0], vk.gi_history_image_views[0], vk.velocity_image_views[0], vk.gbuffer_depth_image_views[0]};
+        // Five fingerprints, because five images feed one set - and the count has to match the LAYOUT,
+        // not only the images that change independently, because it is also what sizes this family's
+        // descriptor pool (see vulkan.bindings). This array held four, omitting the resolve image that
+        // binding 4 points at, so the pool was built for four descriptors per set while the allocation
+        // asked for five. The validation layer reported it - "Trying to allocate 15 of
+        // VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER descriptors from VkDescriptorPool ..., but this pool
+        // only has a total of 12 descriptors for this type" (3 images x 5 against 3 x 4) - and the
+        // message is right that a stricter driver answers VK_ERROR_OUT_OF_POOL_MEMORY, which this
+        // function's own failure path would turn into "this session has no GI" rather than a frame that
+        // is merely missing a descriptor.
+        std::array<VkImageView, 5> const signature = {vk.gi_image_views[0], vk.gi_history_image_views[0], vk.velocity_image_views[0],
+                                                      vk.gbuffer_depth_image_views[0], vk.gi_resolve_image_views[0]};
         auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
             std::array<VkDescriptorImageInfo, 5> image_infos = {};
             std::array<VkImageView, 5> const views = {

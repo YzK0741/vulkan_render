@@ -159,7 +159,8 @@ Gates before any commit:
 * `doxygen Doxyfile`: exit 0 and an EMPTY warning stream. Capture the real exit code; piping doxygen into
   anything makes `$LASTEXITCODE` the pipeline's, and this was mistaken for a pass once;
 * every measurement run validation clean (the harness greps for `VUID-`, `Validation Error`, `[ERROR]`,
-  `panic`, `recorded out of order`).
+  `[WARNING]`, `panic`, `recorded out of order` - `[WARNING]` was added after a missing descriptor-pool
+  type turned out to be reported on EVERY run while the gate read clean).
 
 Habits that caught real errors here:
 
