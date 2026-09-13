@@ -64,7 +64,12 @@ $cfg = Join-Path $WorkDir "$Tag.toml"
 # premise is usually a property of the scene - see the notes on convexity in the furnace captures).
 if ($Model) {
     $before = $cfgText
-    $cfgText = ($cfgText -split "`n" | ForEach-Object { if ($_ -match '^\s*model\s*=') { "model = '$($Model.Replace('\','\\'))'" } else { $_ } }) -join "`n"
+    # A TOML BASIC string (double quotes), because that is the form the escape is FOR: the single-quoted
+    # literal this used to write kept the doubled backslashes literally, so the file said
+    # `C:\\Users\\...` and the path only resolved because Win32 collapses a repeated separator. A UNC path
+    # would not have survived that, and the log line quoted a path the user never typed.
+    $escaped = $Model.Replace('\', '\\').Replace('"', '\"')
+    $cfgText = ($cfgText -split "`n" | ForEach-Object { if ($_ -match '^\s*model\s*=') { "model = `"$escaped`"" } else { $_ } }) -join "`n"
     if ($cfgText -eq $before) { Write-Error "no change: -Model matched no line in $Base"; exit 1 }
 }
 

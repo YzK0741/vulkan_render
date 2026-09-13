@@ -202,8 +202,13 @@ function Write-ScenarioConfig {
         "validation_layers" = "true"
     }
     $scenarioModel = if ($Scenario.ContainsKey('model')) { $Scenario.model } else { $Model }
+    # A TOML BASIC string (double quotes) with the backslashes escaped, which is the form make_config.py
+    # writes and the form the escape belongs to. The single-quoted literal this used to write kept the
+    # doubled backslashes as two literal characters, so every scenario's config said `C:\\Users\\...` and
+    # the path only resolved because Win32 collapses a repeated separator (a UNC path would not have).
+    $modelLine = "model = `"$($scenarioModel.Replace('\', '\\').Replace('"', '\"'))`""
     $lines = @(
-        "model = '$($scenarioModel.Replace('\','\\'))'",
+        $modelLine,
         "grid_side = 0",
         "",
         "[paths]",
