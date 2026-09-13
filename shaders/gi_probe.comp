@@ -82,13 +82,10 @@ layout(set = 1, binding = 4, rgba16f) uniform image3D grid_surface;
 // this pass stays optional: a missing pipeline disables the cache and the tracer keeps its screen path.
 layout(set = 0, binding = 16) uniform accelerationStructureEXT tlas;
 // What the shared hit shading expects its INCLUDER to declare, because each pass reaches these through its
-// own stage: the camera (the shared code needs the eye for the view vector) and the irradiance cube (a
-// probe ray that hits nothing is answered by the sky, exactly as the tracer answers one).
-layout(set = 0, binding = 0) uniform CameraUBO {
-    mat4 view;
-    mat4 proj;
-    vec4 camera_pos;
-} camera;
+// own stage: the irradiance cube (a probe ray that hits nothing is answered by the sky, exactly as the
+// tracer answers one). NOT the camera: the probe asks on behalf of its own ray, so the shared code is told
+// the direction towards the asker and this pass never mentions the camera - which is exactly the property
+// the cache is supposed to have.
 layout(set = 0, binding = 3) uniform samplerCube irradiance_sampler;
 
 #include "hit_shading.glsl"
@@ -206,7 +203,7 @@ void inject(ivec3 cell) {
         const float t = rayQueryGetIntersectionTEXT(query, true);
         const vec3 hit_world = rayQueryGetWorldRayOriginEXT(query) + t * rayQueryGetWorldRayDirectionEXT(query);
         vec3 shaded = vec3(0.0);
-        if (!shade_hit(query, hit_world, dir, table, pc.grid_min_cell.w * 2.0, shaded)) {
+        if (!shade_hit(query, hit_world, dir, -dir, table, pc.grid_min_cell.w * 2.0, shaded)) {
             radiance_sum += texture(irradiance_sampler, dir).rgb;
             continue;
         }

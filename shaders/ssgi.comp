@@ -374,7 +374,7 @@ vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, out bool out_hit
             return probe_radiance(hit_world, dir);
         }
         vec3 shaded = vec3(0.0);
-        if (shade_hit(query, hit_world, dir, instance_table_address(), pc.params.x, shaded)) {
+        if (shade_hit(query, hit_world, dir, camera.camera_pos.xyz - hit_world, instance_table_address(), pc.params.x, shaded)) {
             // The shaded surface's own outgoing radiance: direct sun, the split-sum IBL ambient and its
             // emissive. The screen-space multi-bounce feedback is deliberately NOT added on top: the
             // ambient a shaded hit carries already IS its indirect estimate, so adding the feedback (which

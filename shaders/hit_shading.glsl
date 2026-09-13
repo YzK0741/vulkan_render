@@ -9,7 +9,9 @@
  *
  * WHAT THE INCLUDER MUST PROVIDE, and why it is not declared here: the top level structure (set 0 binding
  * 16) and the irradiance cube (binding 3) are declared by each includer, because each one reaches them
- * through its own stage and its own push block. Everything this file's functions reference beyond those is
+ * through its own stage and its own push block. The CAMERA is not needed at all: the direction towards the
+ * viewer is a parameter, so an includer that asks on behalf of a ray rather than a pixel does not declare
+ * it, and the probe pass does not. Everything this file's functions reference beyond those is
  * declared below, and an includer must NOT declare any of it: the same binding declared twice in one
  * translation unit does not compile.
  *
@@ -186,7 +188,7 @@ vec3 hit_surface(hit_instance instance, uint triangle, vec2 bary, bool front_fac
  * traced effect in this engine), skinning and morphing (the structures hold the bind pose), and the
  * punctual-light cluster, which is a screen-space structure a hit outside the frame has no entry in.
  */
-bool shade_hit(rayQueryEXT query, vec3 hit_world, vec3 dir, uint64_t table_address, float bias_scale, out vec3 out_radiance) {
+bool shade_hit(rayQueryEXT query, vec3 hit_world, vec3 dir, vec3 to_viewer, uint64_t table_address, float bias_scale, out vec3 out_radiance) {
     InstanceTable table = InstanceTable(table_address);
     const hit_instance instance = table.records[rayQueryGetIntersectionInstanceCustomIndexEXT(query, true)];
     const hit_material mat = hit_materials.materials[instance.material_index];
@@ -200,7 +202,13 @@ bool shade_hit(rayQueryEXT query, vec3 hit_world, vec3 dir, uint64_t table_addre
     const float ao = (mat.flags & 2u) != 0u ? mix(1.0, texture(scene_textures[mat.tex_indices.w], uv).r, mat.occlusion_strength) : 1.0;
     const vec3 emissive = (mat.flags & 4u) != 0u ? mat.emissive_factor.rgb * texture(scene_textures[mat.emissive_index], uv).rgb : vec3(0.0);
 
-    const vec3 v = normalize(camera.camera_pos.xyz - hit_world);
+    // The direction towards whoever is ASKING for this radiance, passed in rather than read from the
+    // camera. The tracer asks on behalf of a screen pixel, so it passes the direction to the eye; a probe
+    // cell asks on behalf of its own ray, so it passes the direction back along that ray. Reading the
+    // camera here instead made a probe ray's hit reflect towards the CAMERA - which is a view dependence
+    // inside a cache whose whole purpose is to not have one, and it was invisible until the probe pass
+    // stopped being a screen projection.
+    const vec3 v = normalize(to_viewer);
     const vec3 f0 = mix(vec3(0.04), base_color, metallic);
     const vec3 kd = (1.0 - f0) * (1.0 - metallic);
 
