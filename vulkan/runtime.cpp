@@ -2195,6 +2195,17 @@ namespace vulkan {
         core& vk = this->vulkan_core;
         // sampler for the HDR scene target (linear, clamp) - the descriptor sets use it
         this->post_sampler = vk.make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
+        // ... and the nearest one the composite's GI upsample needs (see post_nearest_sampler)
+        {
+            VkSamplerCreateInfo nearest_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
+            nearest_info.magFilter = VK_FILTER_NEAREST;
+            nearest_info.minFilter = VK_FILTER_NEAREST;
+            VkSampler nearest = VK_NULL_HANDLE;
+            if (vkCreateSampler(vk.device, &nearest_info, nullptr, &nearest) != VK_SUCCESS) {
+                return std::unexpected(std::string("post: nearest sampler creation failed"));
+            }
+            this->post_nearest_sampler = vk_sampler(nearest, vk.device);
+        }
 
         // the layout and both composites come from vulkan.pipelines; the push constant block stays here
         // (it must match post.frag, so it lives next to the code that fills it)
@@ -2230,25 +2241,38 @@ namespace vulkan {
         }
         std::size_t const image_count = vk.hdr_image_views.size();
         if (image_count == 0 || vk.bloom_image_views[0].size() != image_count || vk.ldr_image_views.size() != image_count ||
-            vk.gi_spatial_image_views.size() != image_count) {
+            vk.gi_spatial_image_views.size() != image_count || vk.gbuffer_depth_image_views.size() != image_count ||
+            vk.gbuffer_image_views[1].size() != image_count) {
             return;
         }
         // The family owns the rebinding rule, the pool sizing (five sets per image, six descriptors
         // each) and the retirement (see vulkan.bindings); what stays here is what is specific to the
-        // post chain: four fingerprints - HDR, bloom, LDR and GI views - and how one image's five sets
-        // are written.
-        std::array<std::span<VkImageView const>, 4> const fingerprints = {vk.hdr_image_views, vk.bloom_image_views[0], vk.ldr_image_views, vk.gi_spatial_image_views};
+        // post chain: six fingerprints - HDR, bloom, LDR, GI, depth and normal views - and how one
+        // image's five sets are written.
+        std::array<std::span<VkImageView const>, 6> const fingerprints = {
+            vk.hdr_image_views, vk.bloom_image_views[0], vk.ldr_image_views, vk.gi_spatial_image_views, vk.gbuffer_depth_image_views, vk.gbuffer_image_views[1]};
         auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            // every set gets all six bindings; the unused ones point at the same view as binding 0
-            // (binding 5 is the LDR image, which only the FXAA pass reads)
-            auto const write_set = [&vk_ref, this](VkDescriptorSet const set, std::array<VkImageView, 7> const& views) {
-                std::array<VkDescriptorImageInfo, 7> image_infos = {};
+            // every set gets all nine bindings; the unused ones point at the same view as binding 0
+            // (binding 5 is the LDR image, which only the FXAA pass reads, and 7/8 are the G-buffer
+            // depth and normal, which only the composite's GI upsample reads)
+            auto const write_set = [&vk_ref, this](VkDescriptorSet const set, std::array<VkImageView, 9> const& views) {
+                std::array<VkDescriptorImageInfo, 9> image_infos = {};
                 for (uint32_t b = 0; b < image_infos.size(); ++b) {
-                    image_infos[b].sampler = *this->post_sampler;
+                    // The composite's GI upsample taps the depth and the normal AT texel centres, and
+                    // for those two an interpolated value is not a rounding error but a different
+                    // surface - so they get the nearest sampler and the edge test sees the stored
+                    // values. The GI image itself keeps the LINEAR one, for a reason that is about
+                    // measurement rather than quality: its texels are still read at centres (a centre
+                    // fetch of a linear sampler returns that texel), but the upsample's off switch is
+                    // the plain bilinear fetch, and that has to be the same fetch the chain used before
+                    // the upsample existed - with a nearest sampler it would be a much blurrier
+                    // comparison and the A/B would be measuring two differences at once.
+                    bool const nearest = b == 7u || b == 8u;
+                    image_infos[b].sampler = nearest ? *this->post_nearest_sampler : *this->post_sampler;
                     image_infos[b].imageView = views[b];
                     image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 }
-                std::array<VkWriteDescriptorSet, 7> writes = {};
+                std::array<VkWriteDescriptorSet, 9> writes = {};
                 for (uint32_t b = 0; b < writes.size(); ++b) {
                     writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                     writes[b].dstSet = set;
@@ -2266,19 +2290,29 @@ namespace vulkan {
             // accumulation: the composite is the consumer of the denoiser's output, and the earlier
             // images are bound in the G-buffer set or in the denoiser's own set instead.
             VkImageView const gi = vk_ref.gi_spatial_image_views[image_index];
-            std::array<VkImageView, 7> const hdr_set = {hdr, hdr, hdr, hdr, hdr, ldr, gi};
+            VkImageView const depth = vk_ref.gbuffer_depth_image_views[image_index];
+            VkImageView const normal = vk_ref.gbuffer_image_views[1][image_index];
+            std::array<VkImageView, 9> const hdr_set = {hdr, hdr, hdr, hdr, hdr, ldr, gi, depth, normal};
             write_set(sets[0], hdr_set);
 
             for (std::size_t level = 0; level < 3; ++level) {
                 VkImageView const input = vk_ref.bloom_image_views[level][image_index];
-                std::array<VkImageView, 7> const level_set = {input, input, input, input, input, ldr, gi};
+                std::array<VkImageView, 9> const level_set = {input, input, input, input, input, ldr, gi, depth, normal};
                 write_set(sets[1 + level], level_set);
             }
 
-            std::array<VkImageView, 7> const composite_set = {hdr, vk_ref.bloom_image_views[0][image_index], vk_ref.bloom_image_views[1][image_index], vk_ref.bloom_image_views[2][image_index], vk_ref.bloom_image_views[3][image_index], ldr, gi};
+            std::array<VkImageView, 9> const composite_set = {hdr,
+                                                              vk_ref.bloom_image_views[0][image_index],
+                                                              vk_ref.bloom_image_views[1][image_index],
+                                                              vk_ref.bloom_image_views[2][image_index],
+                                                              vk_ref.bloom_image_views[3][image_index],
+                                                              ldr,
+                                                              gi,
+                                                              depth,
+                                                              normal};
             write_set(sets[4], composite_set);
         };
-        if (!this->post_family.ensure_all(vk, this->post_set_layout, static_cast<uint32_t>(image_count), 5u, 7u, fingerprints, write_sets)) {
+        if (!this->post_family.ensure_all(vk, this->post_set_layout, static_cast<uint32_t>(image_count), 5u, 9u, fingerprints, write_sets)) {
             utility::log("runtime: post descriptor sets unavailable - post pass skipped");
         }
     }
@@ -2487,6 +2521,18 @@ namespace vulkan {
             vkCmdExecuteCommands(command_buffer, 1, &transparent_secondary);
         }
         vkCmdEndRendering(command_buffer);
+
+        // Hand the depth back to the layout everything downstream samples it in. This pass took it out
+        // of SHADER_READ_ONLY_OPTIMAL to depth-test against it, and TWO later stages read the same
+        // image: the TAA resolve (its disocclusion guard) and the composite (the GI upsample's edge
+        // test). Nothing else would move it - ensure_gbuffer_depth_sampled() is flag-driven and the
+        // lighting stage already cleared the flag when it sampled the depth - so a frame with blended
+        // geometry would leave the image as an attachment and every read after it would be a layout
+        // error, which is exactly what validation reported the first time the composite sampled it.
+        VkImageMemoryBarrier2 to_sampling = vulkan::shadow_map_sampling_transition; // attachment -> SHADER_READ
+        to_sampling.image = vk.gbuffer_depth_images[image_index];
+        VkDependencyInfo const sampling_dependency = make_image_dependency_info(1, &to_sampling);
+        vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
     }
 
     // ---- temporal anti-aliasing (M3) ----
@@ -3124,6 +3170,10 @@ namespace vulkan {
         this->gi_spatial_sigma = std::clamp(sigma, 0.0f, 8.0f);
     }
 
+    void runtime::set_ssgi_upsample(bool const enabled) noexcept {
+        this->gi_upsample = enabled;
+    }
+
     bool runtime::record_ssgi_spatial_pass(VkCommandBuffer const command_buffer) {
         core& vk = this->vulkan_core;
         std::size_t const index = this->current_image_index;
@@ -3419,6 +3469,13 @@ namespace vulkan {
             // 0 unless THIS frame's GI resolve ran, which makes the composite's added term exactly
             // zero on every frame that has no GI to add (see gi_resolved)
             .gi_intensity = this->gi_resolved ? 1.0f : 0.0f,
+            .gi_depth_scale = this->current_ubo.proj[2][2],
+            .gi_depth_offset = this->current_ubo.proj[3][2],
+            // The SAME edge criterion the spatial filter uses: one silhouette test for the whole chain,
+            // so what survives the filter is not undone by the upsample.
+            .gi_depth_sigma = this->gi_spatial_depth_sigma,
+            .gi_normal_power = this->gi_spatial_normal_power,
+            .gi_upsample = this->gi_upsample ? 1.0f : 0.0f,
             .fxaa_subpixel = this->fxaa_subpixel,
             .fxaa_edge_threshold = this->fxaa_edge_threshold};
         this->record_fullscreen_triangle(command_buffer, composite_pipeline, composite_view, full_extent, this->post_family.set(image_index, 4), composite_push, /*overlay_after=*/!fxaa);
@@ -3466,6 +3523,23 @@ namespace vulkan {
 
         // HDR scene target -> fragment-shader read (the prefilter and the composite both read it)
         this->barrier_image_to_sampling(command_buffer, vk.hdr_images[index]);
+
+        // The composite's GI upsample also samples the G-buffer depth and normal, and the stage that
+        // normally publishes those two is the deferred lighting stage (or the debug view) - both part
+        // of the G-buffer path. A frame that never ran it (the deferred pipeline missing, so
+        // gbuffer_pass_active() is false and nothing wrote the targets) still reaches the composite,
+        // whose descriptor declares SHADER_READ for both bindings either way. UNDEFINED as the old
+        // layout is honest here - there is no content to preserve - and the GI weight is 0 on such a
+        // frame, so the taps' values cannot influence the image.
+        if (!this->gbuffer_pass_active()) {
+            std::array<VkImageMemoryBarrier2, 2> gbuffer_barriers = {};
+            gbuffer_barriers[0] = vulkan::undefined_to_depth_sampling_transition; // DEPTH aspect
+            gbuffer_barriers[0].image = vk.gbuffer_depth_images[index];
+            gbuffer_barriers[1] = vulkan::undefined_to_sampling_transition;
+            gbuffer_barriers[1].image = vk.gbuffer_images[1][index]; // the world normal
+            VkDependencyInfo const gbuffer_dependency = make_image_dependency_info(static_cast<uint32_t>(gbuffer_barriers.size()), gbuffer_barriers.data());
+            vkCmdPipelineBarrier2(command_buffer, &gbuffer_dependency);
+        }
 
         // Screen-space GI runs HERE, and the position is the whole reason it cannot feed back: `hdr`
         // was rewritten earlier in this frame (by the TAA resolve, or by the G-buffer pass's clear

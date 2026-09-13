@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.28.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.29.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -583,6 +583,21 @@ namespace vulkan {
             // The tracer scales the signal itself; this is the on/off switch folded into the push block
             // rather than a shader branch on a feature flag it cannot see.
             float gi_intensity = 0.0f;
+            // composite only: the joint-bilateral UPSAMPLE of the half-resolution GI (see post.frag).
+            // A plain bilinear fetch of a half-resolution image mixes in the neighbouring texels across
+            // a silhouette, which darkens the geometry side and spills light onto the background side;
+            // these four terms are the same edge criterion the spatial filter uses, so a silhouette
+            // that survives one pass is not re-blurred by the next. The two projection terms linearize
+            // depth (a relative tolerance needs a view distance), sigma_depth is that tolerance as a
+            // fraction of it, and normal_power is the exponent on the normal agreement term.
+            float gi_depth_scale = 0.0f;  // projection[2][2]
+            float gi_depth_offset = 0.0f; // projection[3][2]
+            float gi_depth_sigma = 0.02f;
+            float gi_normal_power = 16.0f;
+            // 1 = the bilateral gather, 0 = the plain bilinear fetch. The off switch exists to make the
+            // upsample measurable (the same reason ssgi_spatial_sigma can be 0); it is not a quality
+            // knob, and 0 is not a state to ship.
+            float gi_upsample = 1.0f;
             // FXAA lanes (fxaa.frag): the sub-pixel term strength (0 = pure directional blend) and
             // the relative luma contrast below which a pixel counts as flat.
             float fxaa_subpixel = 0.75f;
@@ -606,6 +621,14 @@ namespace vulkan {
         float fxaa_subpixel = 0.75f;
         float fxaa_edge_threshold = 0.166f;
         vk_sampler post_sampler = {};
+        // A second sampler for the composite's GI upsample: the GI image, the G-buffer depth and the
+        // G-buffer normal are all read AT exact texel centres and must not be interpolated (averaging
+        // two depths invents a surface between them, which is exactly what an edge-aware test must not
+        // see). Everything else in the post chain wants the linear one above.
+        vk_sampler post_nearest_sampler = {};
+        // Whether the composite upsamples the GI bilaterally or with the plain bilinear fetch (see
+        // post_push_constants::gi_upsample). On by default; false exists for measurement.
+        bool gi_upsample = true;
         VkDescriptorSetLayout post_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout post_pipeline_layout = VK_NULL_HANDLE;
         // The post chain's sets: five per swapchain image (prefilter, three downsample inputs and the
@@ -1837,6 +1860,16 @@ namespace vulkan {
          *       up as bleeding across a silhouette rather than as a noisier image
          */
         void set_ssgi_spatial(float sigma) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether the composite upsamples the GI bilaterally (see post.frag)
+         * @param enabled true = joint-bilateral gather, false = the plain bilinear fetch
+         * @note a MEASUREMENT switch, not a quality knob: the bilinear fetch is what the chain used
+         *       before the upsample existed, and keeping it reachable is what makes the upsample's
+         *       effect separable from everything else in the frame
+         */
+        void set_ssgi_upsample(bool enabled) noexcept;
 
         /** @brief whether the tracer runs this frame (see set_ssgi) */
         [[nodiscard]] bool ssgi_active() const noexcept;

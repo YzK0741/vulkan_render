@@ -135,6 +135,11 @@ namespace app_config {
                     settings.render.ssgi_spatial_sigma = static_cast<float>(*value);
                 }
             }
+            if (toml::node const* node = render->get("ssgi_upsample")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.ssgi_upsample = *value;
+                }
+            }
             if (toml::node const* node = render->get("camera_fit")) {
                 if (std::optional<std::string> const value = node->value<std::string>()) {
                     settings.render.camera_fit = *value;

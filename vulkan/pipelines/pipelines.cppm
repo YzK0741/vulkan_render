@@ -1,4 +1,4 @@
-// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
@@ -101,9 +101,11 @@ namespace vulkan::pipelines {
 
         // binding 0 = the pass input (HDR for the prefilter, the previous bloom level for a
         // downsample), bindings 1..4 = the four bloom levels, binding 5 = the gamma-encoded LDR image
-        // (the FXAA pass, which shares this layout), binding 6 = the screen-space GI image, which
-        // only the composite reads - so a prefilter or downsample set points it at the HDR view too.
-        std::array<VkDescriptorSetLayoutBinding, 7> bindings = {};
+        // (the FXAA pass, which shares this layout), binding 6 = the screen-space GI image and 7/8 =
+        // the G-buffer depth and world normal, which only the composite reads - the depth and normal
+        // are there for its joint-bilateral upsample of the half-resolution GI, and a prefilter or
+        // downsample set points all three at views it does not care about.
+        std::array<VkDescriptorSetLayoutBinding, 9> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
             bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;

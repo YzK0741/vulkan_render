@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.16.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.17.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -56,6 +56,7 @@ import utility;
  * ssgi_rays = 2         # rays per pixel per frame (1..16)
  * ssgi_steps = 6        # depth samples per ray (1..64)
  * ssgi_spatial_sigma = 2.0  # GI spatial filter width in GI texels; 0 = off (a pass-through)
+ * ssgi_upsample = true  # joint-bilateral upsample of the half-res GI in the composite; false = bilinear
  * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id,
  *                        # 6 depth, 7 flags, 8 motion (the motion vector, amplified - see the shader)
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
@@ -147,6 +148,10 @@ namespace app_config {
         int ssgi_rays = 2;
         int ssgi_steps = 6;
         float ssgi_spatial_sigma = 2.0f;
+        // Whether the composite upsamples that half-resolution result with a joint-bilateral gather
+        // (true) or a plain bilinear fetch (false). Not a quality knob: bilinear is what the chain did
+        // before the upsample existed, and keeping it reachable is what makes its effect measurable.
+        bool ssgi_upsample = true;
         bool ssao = true;
         float ssao_radius = 0.5f;
         float ssao_intensity = 1.0f;

@@ -45,7 +45,9 @@
  *        |
  *  post.vert + post.frag         mode 0 bright-pass prefilter (HDR -> bloom L0)
  *                                mode 1 downsample x3 (L0 -> L1 -> L2 -> L3)
- *                                mode 2 composite (HDR + bloom -> exposure -> ACES -> display)
+ *                                mode 2 composite (HDR + bloom + the upsampled GI -> exposure -> ACES
+ *                                -> display; the GI arrives half resolution and is upsampled by a
+ *                                joint-bilateral gather, see the SSGI section)
  *        |
  *  post.vert + fxaa.frag         optional FXAA over the display-referred LDR image
  *        |
@@ -194,6 +196,17 @@
  * `[render] ssgi_intensity` is what reconciles the two (they overlap). `ssgi_radius` is a fraction of
  * the scene radius, so one value means the same thing on a 1.6-unit model and on Sponza's 18.5.
  *
+ * The last step is not a pass but a change to the composite's read: the half-resolution result is
+ * upsampled by `post.frag`'s `upsample_gi()`, which gathers the four nearest GI texels and weights each
+ * by whether it AGREES with this pixel (the same relative view-depth and normal test the spatial filter
+ * makes). A plain bilinear fetch mixes those four by position alone, so at a silhouette it averages two
+ * different surfaces - or a surface and the background, whose GI is 0 - which shows up as a dark rim on
+ * the geometry side and a halo on the sky. A pixel with no geometry gets no screen-space GI at all,
+ * which is a rule rather than a weight: the indirect light of a pixel that has no surface is not a
+ * screen-space quantity. `[render] ssgi_upsample = false` restores the bilinear fetch, which is exactly
+ * what the chain did before this existed (verified byte for byte against the previous revision's
+ * captures), so the change can be measured on its own.
+ *
  * Bindings, because these passes are the only ones that bind the G-buffer set as COMPUTE: the tracer
  * uses set 0 (the shared scene set above, for the camera block) plus set 1 = the G-buffer set's albedo
  * (0), normal (1), depth (3), `direct_radiance` (5, the HDR target) and `gi_output` (6, a STORAGE
@@ -202,16 +215,19 @@
  * (8, also STORAGE). The temporal resolve has a set of its own: the raw trace (0), the history (1), the
  * motion-vector target (2), the G-buffer depth (3) and the accumulated image (4, also STORAGE). Every
  * binding of the G-buffer set layout therefore names FRAGMENT and COMPUTE both, and every layout
- * transition that publishes one of those images to a sampler names both stages too.
+ * transition that publishes one of those images to a sampler names both stages too. The composite's GI
+ * upsample reads the filtered image (post set binding 6, the LINEAR sampler - a texel-centre fetch of a
+ * linear sampler is that texel, and the bilinear measurement path has to be a real bilinear fetch) and
+ * the G-buffer depth and normal (bindings 7 and 8, the NEAREST sampler: for those two an interpolated
+ * value is not a rounding error but a different surface).
  *
  * Known limitations, stated rather than discovered later: geometry outside the frame and thin
  * occluders between two march steps contribute nothing; alphaMode MASK surfaces are solid, because a
  * depth buffer has no alpha (which is also what an inline ray query sees without any-hit shaders); a
- * deforming mesh has no motion vector, so its GI trails; the half-resolution result is upsampled by the
- * composite's bilinear fetch, which crosses edges (a joint-bilateral UPSAMPLE is the fix and is a step
- * of its own); and two surfaces that agree on depth and normal but carry very different indirect light
- * (a red wall touching a white one) still mix. There are no GUI controls: `set_ssgi` and
- * `set_ssgi_spatial` are applied once at startup from the config, so changing them needs a restart.
+ * deforming mesh has no motion vector, so its GI trails; and two surfaces that agree on depth and
+ * normal but carry very different indirect light (a red wall touching a white one) still mix in both
+ * the filter and the upsample. There are no GUI controls: `set_ssgi`, `set_ssgi_spatial` and
+ * `set_ssgi_upsample` are applied once at startup from the config, so changing them needs a restart.
  *
  * @section shader_bindings The shared scene descriptor set (set 0)
  *

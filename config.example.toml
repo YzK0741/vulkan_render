@@ -130,19 +130,24 @@ ssao_radius = 0.5
 ssao_intensity = 1.0
 ssao_samples = 8
 
-# ssgi / ssgi_intensity / ssgi_radius / ssgi_rays / ssgi_steps / ssgi_spatial_sigma: screen-space
-# global illumination. `ssgi.comp` traces one bounce of diffuse indirect at HALF resolution - each
-# pixel shoots a few cosine-weighted rays, marches the G-buffer depth and averages the direct radiance
-# it hits - `ssgi_temporal.comp` then accumulates that trace over frames (reprojected with the motion
-# vectors, depth-guarded and neighbourhood-clamped), because two rays per pixel is white noise with the
-# right average, and `ssgi_spatial.comp` finally runs a joint-bilateral filter (5x5, stopped at depth
-# and normal edges) over the accumulation to remove the grain that does not move, which is the part
-# averaging frames cannot touch. The result is ADDED to the environment probe, not a replacement: a ray
-# that leaves the frame hits nothing, so the probe stays the off-screen fallback and `ssgi_intensity`
-# reconciles the two (they overlap light, so more is not better - 0.7 is a starting point, not a
-# physical value). `ssgi_radius` is a FRACTION of the scene radius, so one value means the same thing
-# on a 1.6-unit model and on Sponza's 18.5. `ssgi_rays` x `ssgi_steps` is the per-frame cost; the
-# temporal resolve is what turns a small number of rays into a smooth image, so raising `ssgi_rays`
+# ssgi / ssgi_intensity / ssgi_radius / ssgi_rays / ssgi_steps / ssgi_spatial_sigma / ssgi_upsample:
+# screen-space global illumination. `ssgi.comp` traces one bounce of diffuse indirect at HALF
+# resolution - each pixel shoots a few cosine-weighted rays, marches the G-buffer depth and averages the
+# direct radiance it hits - `ssgi_temporal.comp` then accumulates that trace over frames (reprojected
+# with the motion vectors, depth-guarded and neighbourhood-clamped), because two rays per pixel is white
+# noise with the right average, and `ssgi_spatial.comp` finally runs a joint-bilateral filter (5x5,
+# stopped at depth and normal edges) over the accumulation to remove the grain that does not move, which
+# is the part averaging frames cannot touch. The composite then upsamples that half-resolution result to
+# the screen, and it does so with a joint-bilateral gather when `ssgi_upsample = true`: a plain bilinear
+# fetch mixes in the neighbouring texels by position alone, which at a silhouette means mixing two
+# surfaces (or a surface with the background) and shows up as a dark rim on the geometry side and a halo
+# on the sky. Setting it to false restores that bilinear fetch, which is what makes the upsample
+# measurable - it is not a state to ship. The result is ADDED to the environment probe, not a
+# replacement: a ray that leaves the frame hits nothing, so the probe stays the off-screen fallback and
+# `ssgi_intensity` reconciles the two (they overlap light, so more is not better - 0.7 is a starting
+# point, not a physical value). `ssgi_radius` is a FRACTION of the scene radius, so one value means the
+# same thing on a 1.6-unit model and on Sponza's 18.5. `ssgi_rays` x `ssgi_steps` is the per-frame cost;
+# the temporal resolve is what turns a small number of rays into a smooth image, so raising `ssgi_rays`
 # before the ray budget is spent is usually the wrong lever. `ssgi_spatial_sigma` is the filter's width
 # in GI texels (0 = the filter is a pass-through, i.e. the temporal-only result). `ssgi = false` makes
 # the frame bit for bit the pre-GI frame (the composite's GI weight is 0 and no GI pass is recorded).
@@ -153,6 +158,7 @@ ssgi_radius = 0.12
 ssgi_rays = 2
 ssgi_steps = 6
 ssgi_spatial_sigma = 2.0
+ssgi_upsample = true
 
 # fxaa: anti-alias the final image (one extra fullscreen pass over the tonemapped LDR image).
 # Cheap and hardware-independent, but it is a screen-space blur of edges: it softens fine detail and
