@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.46.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.47.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -395,6 +395,16 @@ namespace vulkan {
         // structures' instance table into the tracer's push block to switch it on (see record_ssgi_pass):
         // a zero address means "sample the screen", so the knob is also the A/B.
         bool ssgi_hit_shading = false;
+        // The glossy lobe ([render] ssgi_specular): a GGX-sampled reflection ray per pixel whose hit is
+        // shaded from its geometry, so a reflection shows the room instead of the sky. It is a REPLACEMENT
+        // for the specular ambient the lighting stage adds - the estimate falls back to exactly that term
+        // when a ray finds nothing - which is what the spatial filter's second subtraction takes back out
+        // (see shaders/ssgi_spec.comp and shaders/ssgi_spatial.comp's ambient_removed_at). Off by default.
+        bool ssgi_specular = false;
+        // ... and how many of those rays per pixel ([render] ssgi_specular_rays). One is the feature's
+        // definition ("a glossy ray per pixel") and is what the cost was measured at; more is what buys a
+        // wide lobe's variance down, which is the denoiser problem this feature brings with it.
+        uint32_t ssgi_specular_rays = 1;
         // The furnace verification mode ([render] furnace, not wired to the config yet): the sun is turned
         // off and the environment becomes a constant level, so the correct frame is computable by hand.
         bool furnace = false;
@@ -412,6 +422,21 @@ namespace vulkan {
             // of its own: this block is exactly 128 bytes, which is the smallest push-constant range
             // Vulkan guarantees, and a fifth vector would overflow it.
             glm::vec4 probe_grid = glm::vec4(0.0f);
+        };
+
+        // The glossy lobe's own block (shaders/ssgi_spec.comp). It is a separate pass, so it is not bound
+        // by the tracer's 128 bytes - which is the second reason it is a pass of its own: the first is
+        // that a pass that is not recorded cannot perturb the frame at all (see ssgi_specular_active).
+        struct ssgi_spec_push_constants {
+            glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world, as the tracer's
+            // x = ray length in world units (the tracer's scene-relative radius), y = glossy rays per
+            // pixel, z = the self-intersection bias scale a shaded hit's shadow ray uses, w = the frame
+            // counter the ray sequence is seeded from.
+            glm::vec4 params = glm::vec4(0.0f);
+            // z/w = the instance table's device address in two 32-bit halves, the shape the tracer carries
+            // it in proj_terms. 0 means "no table", i.e. a hit cannot be shaded, and the pass then does
+            // nothing at all rather than replacing the environment's answer with a worse one.
+            glm::vec4 table = glm::vec4(0.0f);
         };
 
         struct deferred_push_constants {
@@ -479,7 +504,15 @@ namespace vulkan {
         // what the composite samples. Same two set layouts as the tracer, so no set of its own.
         std::optional<vk_pipeline> ssgi_spatial_pipeline = std::nullopt;
         VkPipelineLayout ssgi_spatial_pipeline_layout = VK_NULL_HANDLE;
+        // The glossy lobe (see shaders/ssgi_spec.comp): same two set layouts as the tracer again, because
+        // it binds the tracer's own sets - the scene set and the G-buffer set, whose binding 6 is the raw
+        // trace it reads, adds to and writes back.
+        std::optional<vk_pipeline> ssgi_spec_pipeline = std::nullopt;
+        VkPipelineLayout ssgi_spec_pipeline_layout = VK_NULL_HANDLE;
         struct ssgi_spatial_push_constants {
+            // Clip -> world, for the one thing this pass has to reconstruct: the view direction of the
+            // surface it centres on, which the specular ambient's Fresnel term is a function of.
+            glm::mat4 inv_view_proj = glm::mat4(1.0f);
             float depth_scale = 0.0f;   // proj[2][2]
             float depth_offset = 0.0f;  // proj[3][2]
             float sigma_spatial = 2.0f; // in GI texels; 0 = pass-through
@@ -492,7 +525,10 @@ namespace vulkan {
             // because that is the last pass that still knows which surface the ambient belongs to, which is
             // also what lets the images upstream stay pure RADIANCE (a bounce has to re-emit them).
             float subtract_ambient = 0.0f;
-            float unused1 = 0.0f;
+            // 1.0 = ... and the SPECULAR ambient as well, for the pixels the glossy pass replaced with a
+            // traced reflection (shaders/ssgi_spec.comp). Only ever set when that pass actually ran, which
+            // is what keeps its subtraction and its addition the same decision.
+            float subtract_specular = 0.0f;
             float unused2 = 0.0f;
             glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent
         };
@@ -646,6 +682,11 @@ namespace vulkan {
          *       without blurring across silhouettes
          */
         bool record_ssgi_spatial_pass(VkCommandBuffer command_buffer);
+        /** @brief record the glossy lobe (shaders/ssgi_spec.comp), which adds to the raw trace in place
+         *  @return true when a dispatch was recorded, i.e. when the frame's specular ambient is now the
+         *          traced estimate rather than the lighting stage's - the spatial filter's second
+         *          subtraction is gated on the same predicate (see ssgi_specular_active) */
+        bool record_ssgi_spec_pass(VkCommandBuffer command_buffer);
         void record_taa_pass(VkCommandBuffer command_buffer);
         /** @brief whether the TAA resolve runs this frame (enabled + deferred lighting + pipeline) */
         [[nodiscard]] bool taa_active() const noexcept;
@@ -2198,6 +2239,33 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief trace a glossy reflection ray per pixel, so a reflection shows the scene and not the sky
+         * @param enabled [render] ssgi_specular
+         * @param rays per-pixel glossy ray count ([render] ssgi_specular_rays), clamped to [1, 8]
+         * @note a REPLACEMENT for the specular ambient the lighting stage adds, not an addition: the
+         *       estimate falls back to exactly `ibl_specular * F * ao` (the lighting stage's own term, from
+         *       the same expressions) wherever a ray finds no geometry, and the spatial filter removes that
+         *       term again. So the frame is unchanged wherever the reflection has nothing local to show, and
+         *       what changes is the light the reflection actually carries.
+         * @note it needs the TRACED path, hit shading and a built instance table - a marched hit is the
+         *       depth buffer's own surface and cannot be shaded from its geometry - so it is granted only
+         *       where all three hold, and the pass is not even recorded otherwise (which is what makes the
+         *       knob-off frame byte-identical by construction rather than by arithmetic).
+         */
+        void set_ssgi_specular(bool enabled, uint32_t rays) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether THIS frame records the glossy lobe (shaders/ssgi_spec.comp)
+         * @note the predicate the frame's record order and the spatial filter's second subtraction are BOTH
+         *       composed from, for the same reason ssgi_traced_active() exists: an addition and a
+         *       subtraction that disagree about whether the pass ran leave the frame wrong by the whole
+         *       term, and the two are evaluated in different functions.
+         */
+        [[nodiscard]] bool ssgi_specular_active() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief the furnace verification mode ([render] furnace)
          * @param enabled true = the sun is off; the constant-environment half is not implemented yet
          * @note the intent is an analytic reference: with the sun off and the environment a constant level L,
@@ -2287,6 +2355,16 @@ namespace vulkan {
          *       chain: what the composite samples is this filter's output
          */
         std::expected<void, std::string> make_ssgi_spatial_pipeline(std::span<unsigned char const> compute_shader_code);
+
+        /**
+         * @brief create the glossy lobe's pipeline from shaders/ssgi_spec.comp
+         * @param compute_shader_code raw SPIR-V of the pass
+         * @return success, or an error message on failure
+         * @note optional, and it is not part of ssgi_active(): unlike the three passes of the chain, a
+         *       build without it renders exactly as it did before the feature existed - the tracer's
+         *       estimate stands and the spatial filter's second subtraction is never armed
+         */
+        std::expected<void, std::string> make_ssgi_spec_pipeline(std::span<unsigned char const> compute_shader_code);
 
         /**
          * @brief create the ray-traced sun shadow pipeline from shaders/rt_shadow.comp

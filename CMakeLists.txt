@@ -603,11 +603,16 @@ set(VR_SHADER_INCLUDES
     # trap the comment above describes, from the other side. Found while adding probe_sh.glsl next to it.
     "${VR_SHADER_SRC_DIR}/hit_shading.glsl"
     "${VR_SHADER_SRC_DIR}/probe_sh.glsl"
+    # ibl_specular.glsl is included by four shaders now (shading.glsl, hit_shading.glsl and the two GI
+    # passes that compute the specular ambient's removal), so it belongs here for the same reason the two
+    # above do: editing it alone must not leave stale SPIR-V behind.
+    "${VR_SHADER_SRC_DIR}/ibl_specular.glsl"
 )
 set(VR_SHADER_SOURCES
     pbr.vert pbr.frag unlit.frag gbuffer.frag gbuffer_debug.frag deferred.frag taa.frag
     light_cluster.comp
     ssgi.comp
+    ssgi_spec.comp
     ssgi_temporal.comp
     ssgi_spatial.comp
     gi_probe.comp

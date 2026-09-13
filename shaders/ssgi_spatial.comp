@@ -38,6 +38,13 @@
  * separate step); the filter is edge-aware on depth and normal only, so two surfaces that agree on
  * both but carry very different indirect light (a red wall touching a white one) still mix; and a tap
  * smaller than a texel of the GI grid is not represented at all, since the filter runs on the GI grid.
+ *
+ * IT ALSO OWNS THE LIGHTING STAGE'S AMBIENT REMOVAL, both halves of it (see ambient_removed_at): the
+ * diffuse ambient, which this pass has always taken back out because the traced estimate replaces it,
+ * and - since [render] ssgi_specular - the specular one, which shaders/ssgi_spec.comp replaced with a
+ * traced reflection. Both are subtractions of a value the lighting stage added at FULL resolution from
+ * a term this pass evaluates at GI resolution, which is a real approximation and is documented with
+ * its measured size at the function.
  */
 
 layout(local_size_x = 8, local_size_y = 8) in;
@@ -62,8 +69,19 @@ layout(set = 1, binding = 8, rgba16f) uniform image2D gi_output;  // the filtere
 layout(set = 1, binding = 0) uniform sampler2D gbuffer_albedo;    // RGBA8: albedo.rgb + metallic
 layout(set = 1, binding = 2) uniform sampler2D gbuffer_material;  // RGBA8: .b = the material's baked AO
 layout(set = 0, binding = 3) uniform samplerCube irradiance_sampler;
+// ... and the two halves of the specular ambient, for the same subtraction done one term further: the
+// prefiltered environment along the reflection direction and the BRDF LUT's Fresnel weights. Both come
+// from shaders/ibl_specular.glsl, which is the SAME definition the lighting stage adds and the glossy
+// pass estimates, so the removal is term for term rather than a second approximation of it.
+layout(set = 0, binding = 2) uniform samplerCube env_sampler;
+layout(set = 0, binding = 4) uniform sampler2D brdf_lut_sampler;
+#include "ibl_specular.glsl"
 
 layout(push_constant) uniform SsgiSpatialPush {
+    // Clip -> world, for the one thing this pass has to reconstruct: the view direction of the surface it
+    // is centring on, which the specular ambient's Fresnel term needs. Everything else here works in
+    // screen space (depth, uvs) and never asks where the pixel is.
+    mat4 inv_view_proj;
     float depth_scale;   // projection[2][2]: the view-depth linearization pair, as in the tracer
     float depth_offset;  // projection[3][2]
     float sigma_spatial; // spatial Gaussian sigma, in GI texels. 0 = the pass is a pass-through
@@ -75,8 +93,14 @@ layout(push_constant) uniform SsgiSpatialPush {
     // has to go. It happens HERE because this is the last pass that still knows which surface the ambient
     // belongs to, and because the images upstream stay radiance: that is what lets a bounce re-emit them.
     float subtract_ambient;
-    float unused1;
-    float unused2;    vec4 gi_size; // xy = GI extent in texels, zw = the full-resolution extent
+    // 1.0 = ... and the SPECULAR ambient as well, for the pixels the glossy pass
+    // (shaders/ssgi_spec.comp) replaced with a traced reflection. Same reasoning, one term further: the
+    // lighting stage adds `ibl_specular * F * ao` for every pixel, and that pass added an estimate of the
+    // same quantity to the raw trace, so this is where the first is taken back out. Only ever set
+    // together with subtract_ambient, and only when the glossy pass actually ran.
+    float subtract_specular;
+    float unused2;
+    vec4 gi_size; // xy = GI extent in texels, zw = the full-resolution extent
 } pc;
 
 /**
@@ -90,8 +114,10 @@ float view_depth(float z_ndc) {
 }
 
 /**
- * @brief the probe ambient the lighting stage adds for the surface at @p uv
+ * @brief the light stage's AMBIENT for the surface at @p uv - the diffuse ambient, plus the specular one
+ *        when the glossy pass replaced it
  * @param uv the pixel (at GI resolution) whose surface the ambient belongs to
+ * @param depth the G-buffer depth at @p uv, which the specular term needs to rebuild the world position
  * @return the ambient term to remove from this pass's output, or 0 when nothing is removed
  *
  * The traced GI estimates the WHOLE diffuse indirect - its rays fall back to the probe off screen - while
@@ -100,17 +126,50 @@ float view_depth(float z_ndc) {
  * last pass of the chain that still knows which surface the ambient belongs to - which is also what lets
  * the images upstream stay pure RADIANCE, and that is what a bounce has to re-emit.
  *
- * SSAO is deliberately not part of it: it lives in the lighting stage and is never stored, so a traced
- * frame's occlusion answer is its rays rather than the depth heuristic.
+ * The SPECULAR half is the same argument one term further, and it is the reason this function grew a
+ * second argument: shaders/ssgi_spec.comp adds a traced estimate of `ibl_specular * F * ao` to the raw
+ * trace (the same expression, from the same shaders/ibl_specular.glsl, in the same association order), and
+ * the lighting stage adds that term for every pixel. The traced estimate is not the same VALUE as the
+ * lighting stage's - that is the whole point of the feature - so this is a replacement, not a
+ * cancellation: the difference between the two is what the frame shows, and the frame is unchanged
+ * wherever a glossy ray found no geometry (see that pass's header).
+ *
+ * SSAO is deliberately not part of either term: it lives in the lighting stage and is never stored, so a
+ * traced frame's occlusion answer is its rays rather than the depth heuristic.
  */
-vec3 ambient_removed_at(vec2 uv) {
+vec3 ambient_removed_at(vec2 uv, float depth) {
     if (pc.subtract_ambient < 0.5) {
         return vec3(0.0); // the marched path is an ADDITION to that ambient, so nothing is removed
     }
     const vec4 albedo_metallic = texture(gbuffer_albedo, uv);
-    const vec3 normal = texture(gbuffer_normal, uv).xyz;
+    const vec4 normal_roughness = texture(gbuffer_normal, uv);
     const float ao = texture(gbuffer_material, uv).b;
-    return albedo_metallic.rgb * ao * texture(irradiance_sampler, normal).rgb * (1.0 - albedo_metallic.a);
+    vec3 removed = albedo_metallic.rgb * ao * texture(irradiance_sampler, normal_roughness.xyz).rgb * (1.0 - albedo_metallic.a);
+    if (pc.subtract_specular > 0.5) {
+        // The world position of this pixel, only to get the view vector its Fresnel term is a function of
+        // (the same reconstruction shaders/deferred.frag does, from the same matrix).
+        const vec4 world_h = pc.inv_view_proj * vec4(uv * 2.0 - 1.0, depth, 1.0);
+        // NORMALIZED and CLAMPED, unlike the diffuse lookup above: the G-buffer holds one unit normal per
+        // FULL-resolution pixel, so a bilinear fetch at GI resolution returns a shorter-than-unit vector,
+        // and the glossy pass builds its lobe around the normalized, clamped form of the same fetch. The
+        // two must agree or the identity test - a ray length that reaches nothing, so that this term has to
+        // cancel what that pass added - carries a term the two sides compute differently. MEASURED, and the
+        // honest version of what this fix was worth: the identity residual on Sponza went from 12.51% of
+        // pixels / max 58 to 12.45% / max 58, i.e. this was a correctness fix and NOT the cause of that
+        // residual - which turned out to be glossy rays FINDING geometry (Sponza has surfaces within 0.011
+        // units of each other) plus the filter's own average, see docs/gi_hit_shading.md's L2.3 section.
+        // The diffuse lookup above is deliberately left as it was for the same reason: it is the
+        // pre-existing subtraction, its approximation is documented, and changing it moves every capture.
+        const vec3 normal = normalize(normal_roughness.xyz);
+        const float roughness = clamp(normal_roughness.w, 0.045, 1.0);
+        const vec3 v = normalize(camera.camera_pos.xyz - world_h.xyz / world_h.w);
+        const vec3 f0 = mix(vec3(0.04), albedo_metallic.rgb, albedo_metallic.a);
+        // `ibl * fresnel * ao`, left to right: the lighting stage's own expression and association order,
+        // which is what the glossy pass reproduces so that "no ray found geometry" leaves no residue (see
+        // shaders/ssgi_spec.comp).
+        removed += ibl_specular_radiance(normal, v, roughness) * ibl_specular_fresnel(normal, v, roughness, f0, 1.0) * ao;
+    }
+    return removed;
 }
 
 void main() {
@@ -130,7 +189,7 @@ void main() {
     }
     // The probe ambient the lighting stage adds for THIS surface, removed from whatever this pass writes
     // (see ambient_removed_at).
-    const vec3 ambient_removed = ambient_removed_at(uv);
+    const vec3 ambient_removed = ambient_removed_at(uv, depth_here);
     if (pc.sigma_spatial <= 0.0) {
         imageStore(gi_output, pixel, vec4(center - ambient_removed, 1.0)); // the off switch, for A/B measurement
         return;

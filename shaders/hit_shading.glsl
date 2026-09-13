@@ -51,6 +51,10 @@ layout(set = 0, binding = 7) uniform LightUBO {
 // indirect it reports for that surface would disagree with what the screen shows for it.
 layout(set = 0, binding = 2) uniform samplerCube env_sampler;
 layout(set = 0, binding = 4) uniform sampler2D brdf_lut_sampler;
+// ... and the shared specular half of the split sum (see shaders/ibl_specular.glsl): this file used to
+// carry its own copy of the Fresnel weights inline, and the GI chain's new subtraction is the reason the
+// copy became a shared definition instead of a third one.
+#include "ibl_specular.glsl"
 // The scene's material table and its bindless texture array (set 0 bindings 5 and 1, the same two
 // shaders/surface.glsl reads). Declared here rather than included from there: that file also declares the
 // camera UBO and the IBL cubes this pass already has, and re-declaring a binding is a compile error.
@@ -287,18 +291,13 @@ bool shade_hit(rayQueryEXT query, vec3 hit_world, vec3 dir, vec3 to_viewer, uint
     }
 
     // The split-sum IBL ambient, as the lighting stage computes it (the same two lookups and the same
-    // combination, so a shaded hit and the screen agree about a surface's ambient).
+    // combination, so a shaded hit and the screen agree about a surface's ambient). Both halves are
+    // shaders/ibl_specular.glsl's, which is also what a subtraction elsewhere in the chain computes.
     const vec3 ibl_diffuse = texture(irradiance_sampler, normal).rgb;
-    const vec3 ibl_specular = textureLod(env_sampler, normalize(reflect(-v, normal)), roughness * float(max(textureQueryLevels(env_sampler) - 1, 0))).rgb;
-    const vec2 f_ab = texture(brdf_lut_sampler, vec2(ndotv, roughness)).rg;
-    const vec3 fr = max(vec3(1.0 - roughness), f0) - f0;
-    const vec3 k_s = f0 + fr * pow(1.0 - ndotv, 5.0);
-    const vec3 fssess = k_s * f_ab.x + f_ab.y;
-    const float ems = 1.0 - (f_ab.x + f_ab.y);
-    const vec3 f_avg = f0 + (1.0 - f0) / 21.0;
-    const vec3 fmsems = ems * fssess * f_avg / max(1.0 - f_avg * ems, vec3(1e-4));
+    const vec3 ibl_specular = ibl_specular_radiance(normal, v, roughness);
+    const vec3 f_ibl = ibl_specular_fresnel(normal, v, roughness, f0, 1.0);
     const vec3 ambient = ibl_diffuse * base_color * ao * (1.0 - metallic);
-    const vec3 specular_ibl = ibl_specular * (fssess + fmsems) * ao;
+    const vec3 specular_ibl = ibl_specular * f_ibl * ao;
 
     out_radiance = ambient + direct + specular_ibl + emissive;
     return true;

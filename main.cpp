@@ -205,6 +205,10 @@ int main(int argc, char** argv) {
                             settings.render.ssgi_probe_rate,
                             static_cast<uint32_t>(settings.render.ssgi_probe_rounds),
                             settings.render.ssgi_probe_gain);
+    // The glossy lobe: a traced reflection REPLACING the lighting stage's split-sum specular ambient, so a
+    // metal panel inside a room stops reflecting the sky. It needs the traced GI path and hit shading, and
+    // it does nothing where either is missing (the runtime says so in the log).
+    runtime.set_ssgi_specular(settings.render.ssgi_specular, static_cast<uint32_t>(settings.render.ssgi_specular_rays));
     // Ray-traced sun shadows: a request, not a guarantee - the runtime grants it only on a device with
     // ray queries, and the acceleration structures are built by the first frame that records with it on
     // (the caster set they are built from is only complete once the scene is loaded and culled).

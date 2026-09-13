@@ -175,6 +175,16 @@ namespace app_config {
                     settings.render.ssgi_hit_shading = *value;
                 }
             }
+            if (toml::node const* node = render->get("ssgi_specular")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.ssgi_specular = *value;
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_specular_rays")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.render.ssgi_specular_rays = static_cast<int>(*value);
+                }
+            }
             if (toml::node const* node = render->get("furnace")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.furnace = *value;

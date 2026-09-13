@@ -248,6 +248,50 @@ ssgi_probe_gain = 1.0
 # the acceleration structures and the traced GI path - with the marched path, or on a device without ray
 # queries, it does nothing. Off is the previous behaviour exactly: hits are read from the screen.
 ssgi_hit_shading = false
+# ssgi_specular: trace a GLOSSY REFLECTION ray per pixel and use what it finds as the surface's specular
+# ambient, instead of the lighting stage's split-sum lookup of the prefiltered environment. Until this
+# existed every indirect term in the engine was diffuse, and the specular one knew nothing but the sky: a
+# metal panel inside a room reflected the sky, and so did a polished floor. `shaders/ssgi_spec.comp` samples
+# a half-vector from the GGX lobe the environment chain is prefiltered with, traces along the reflection,
+# and shades what it lands on from that hit's own geometry (so this needs `ssgi_hit_shading`), exactly as
+# the diffuse tracer does for its own hits.
+# IT REPLACES THE LIGHTING STAGE'S TERM, IT DOES NOT ADD TO IT: wherever a ray finds no geometry the
+# estimate IS `ibl_specular * F * ao` - the lighting stage's own expression, from the same
+# shaders/ibl_specular.glsl, in the same association order - and the spatial filter then removes that term
+# for the pixels the pass ran on. A ray that misses therefore changes nothing, and only a ray that HITS
+# changes the frame. Measured, on the DamagedHelmet with the filter bypassed (spatial sigma 0) and a ray
+# length short enough that nothing is reachable: the feature on and off differ on 0.08% of pixels by ONE
+# 8-bit step and on none by more (max |d| 1, |d|>1 zero pixels) - the residue of the half-float round trip
+# through the trace image, since the estimate is added, stored, loaded and subtracted again.
+# MEASURED EFFECT, Sponza interior, 120 frames, the traced-hit-shading config, A/B on this key alone:
+# -1.3860 of mean green (-2.5%), and the 4x4 table is ordered by the SCENE rather than flat - the interior
+# tiles lose 7.4% to 16.8% while the sky-facing ones move 0.1-0.3%, in the same shape the L2.1 probe-cache
+# tables have. Isolated to the specular channel alone (the diffuse estimate zeroed, so nothing else can
+# move): -1.1266, -20% to -33% in the interior tiles against -0.4% where the view is sky. That is what a
+# correct local reflection looks like: the sky's contribution to a dark interior is a large share of that
+# interior's brightness, and the interior's own reflection is darker than the sky.
+# ITS RESIDUAL, stated: the subtraction happens after the joint-bilateral filter has averaged the estimate,
+# so the added value is a filtered one while the removed one is the centre pixel's. On the same helmet, with
+# the filter ON and still nothing reachable, the two arms differ by mean +0.027 with 1.0% of pixels beyond
+# 4/255 and a worst pixel of 109 - the filter's own non-mean-preserving average applied to a term that varies
+# fast across a low-roughness surface, which is the same class of artifact the DIFFUSE subtraction has
+# carried since it was written (see the recorded +0.33 convex / +0.52 Sponza note). Fixing it means filtering
+# the removed term with the same weights as the added one - 25 more gathers per pixel - and doing it for both
+# terms at once, which is the next slice rather than this one.
+# REQUIREMENTS: the traced GI path, `ssgi_hit_shading` and the acceleration structures' instance table (a
+# hit cannot be shaded without it). Where any is missing the pass is not even RECORDED, which is what makes
+# `ssgi_specular = false` byte-identical by construction rather than by arithmetic (verified: the capture
+# harness's 8 scenarios x 2, 0 changed).
+ssgi_specular = false
+# ssgi_specular_rays: how many glossy rays per pixel, 1 to 8. One is the feature's definition and what its
+# cost was measured at. The hit is a POINT sample of a cone whose width is the material's roughness, so this
+# is the knob that buys a wide lobe's variance down - and the measurement says one ray is already enough
+# after the denoiser, which is the useful half of the answer: on Sponza, 1 ray against 4 differs by +0.0028
+# of mean green (0.60% of pixels beyond 1/255, 0.05% beyond 4) while the feature's own effect is -1.39, i.e.
+# four times the cost buys 0.2% of the signal. Cost, same scene, the GPU timings' `gi` interval (which
+# carries the tracer, this pass and both denoisers): 1.27 ms with the feature off, 1.40 ms at one ray and
+# 2.08 ms at four, so roughly +0.13 ms for the first and +0.23 ms for each further ray at 1080x960.
+ssgi_specular_rays = 1
 # furnace: a VERIFICATION mode, not a look. The sun is turned off and the environment becomes a constant
 # level, which makes the correct frame computable by hand: a diffuse surface''s outgoing radiance is exactly
 # albedo * L, and a bounce has nothing to add because the environment already is the light. So the frame must

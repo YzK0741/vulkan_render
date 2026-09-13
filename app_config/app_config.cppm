@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.23.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.24.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -210,6 +210,19 @@ namespace app_config {
         // path (the marched one never leaves the frame) and the acceleration structures, and it costs the
         // vertex/index/texture fetches a shaded hit makes.
         bool ssgi_hit_shading = false;
+        // Trace a glossy reflection ray per pixel and use what it finds as the surface's specular ambient
+        // ([render] ssgi_specular), instead of the lighting stage's split-sum lookup of the prefiltered
+        // environment - which knows nothing but the sky, so a metal panel inside a room reflects the sky.
+        // It is a REPLACEMENT, not an addition: the estimate falls back to exactly the lighting stage's own
+        // term wherever a ray finds no geometry, so the frame only changes where the reflection has
+        // something local to show. Off by default; it needs the traced GI path, hit shading and the
+        // acceleration structures, and it is not recorded at all where those are missing.
+        bool ssgi_specular = false;
+        // ... and how many rays per pixel ([render] ssgi_specular_rays, clamped to [1, 8]). One is the
+        // feature's definition and what its cost was measured at; the hit is a POINT sample of a cone whose
+        // width is the material's roughness, so this is the knob that buys a wide lobe's noise down - the
+        // denoiser problem this feature brings with it.
+        int ssgi_specular_rays = 1;
         // The furnace verification mode ([render] furnace): the sun is turned off and the environment becomes
         // a constant level, so the correct frame is computable by hand - a diffuse surface's outgoing
         // radiance is exactly albedo * L, and a GI chain that adds anything on top of it is double counting.

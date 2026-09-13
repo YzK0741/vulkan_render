@@ -54,6 +54,13 @@
  * result, not this image: the three are separate so that the accumulation reads and writes different
  * images, and so that the spatial pass cannot feed back into the accumulation.
  *
+ * IT IS NO LONGER THE ONLY WRITER OF THAT IMAGE, and the reader should know that before changing what
+ * this pass stores: the GLOSSY lobe (shaders/ssgi_spec.comp, [render] ssgi_specular) runs immediately
+ * after it, adds a traced reflection to the same texels and hands the combined trace to the denoiser.
+ * It does that rather than owning an image of its own so that the temporal resolve's neighbourhood
+ * clamp sees one radiance quantity instead of two (see that pass's header); nothing about this pass's
+ * own estimate changes, and with the glossy lobe off this is byte-for-byte the pass it always was.
+ *
  * Known limitations, stated rather than discovered later: geometry outside the frame contributes
  * nothing; thin occluders are missed between steps; and alphaMode MASK surfaces are solid here,
  * because a depth buffer has no alpha.

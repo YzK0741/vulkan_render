@@ -48,7 +48,9 @@ Level 2's plan (unchanged, in dependency order):
 
 L2.2 is DONE, both halves, and one of them is a negative result: the MASK bake is measured and OFF by default,
 the skinned refit is measured, works, and is also OFF by default (a knob, so its cost and its effect stay
-measurable). L2.3 is what is left.
+measurable). L2.3's first slice is done too - the glossy reflection works and is measured, OFF by default -
+and what remains of it is the subtraction-site/denoiser work that its own measurement pointed at. See the
+L2.3 paragraph in section 4.
 
 NOT doing: a surface cache. The reasoning is measured and recorded: UE needs one because it traces 1024 rays
 per probe over 16384 probes; this renderer traces 131k rays in total and shades each hit in 0.15 ms, so
@@ -179,9 +181,34 @@ targets are NOT covered: they are the step before skinning and the pass does not
 pipeline layout, a missing `COMPUTE` stage flag on binding 9, a false-positive no-op test caused by the wrong
 camera, and a config key appended into the wrong TOML table).
 
-L2.3 specular GI: currently the bounce chain is diffuse-only (the specular in a hit's shading is the direct and
-IBL term). A glossy ray per pixel is the feature, and it brings a denoiser problem with it - treat it as its own
-objective rather than a step.
+L2.3 specular GI: THE FIRST SLICE IS DONE AND MEASURED, and it came out well. `shaders/ssgi_spec.comp` is a
+pass of its own between the tracer and the denoiser: a GGX-sampled reflection ray per pixel, written into the
+TRACER'S image (read, add, store back), with its hit shaded from its own geometry - so it needs
+`ssgi_hit_shading`. `shaders/ssgi_spatial.comp` then removes the lighting stage's specular ambient for those
+pixels, which makes the traced reflection a REPLACEMENT rather than an addition; both sides of that
+subtraction come from a new shared `shaders/ibl_specular.glsl`, which also collapsed the two copies of those
+expressions that already existed. `[render] ssgi_specular` (off by default) and `ssgi_specular_rays` (1-8,
+default 1) are the knobs.
+
+WHAT IT MEASURED. The control is the sharpest instrument in this whole document: where a ray finds nothing the
+estimate IS the lighting stage's term, so with the filter bypassed and a ray length too short to reach
+anything, the feature on and off must agree - and on an isolated model they do to ONE 8-bit step on 0.08% of
+pixels and nothing beyond it (the half-float round trip through the trace image). On Sponza the effect is
+-1.3860 of mean green (-2.5%) in a 4x4 table ordered by the SCENE (interior tiles -7% to -17%, sky-facing
+0.1-0.3%), which is what a correct local reflection looks like; isolating the specular channel alone gives
+-20% to -33% in the interior against -0.4% at the sky. One ray is already converged (1 vs 4 rays differ by
++0.0028 against the feature's -1.3860), and the cost is +0.13 ms at one ray / +0.81 ms at four on the GPU
+timings' `gi` interval. `docs/gi_hit_shading.md`'s L2.3 section has all of it.
+
+WHAT IS LEFT OF L2.3, and it is the denoiser problem the plan warned about, now with a number. The
+subtraction happens after the joint-bilateral filter has averaged the estimate while the removed value is the
+centre pixel's own, so "a ray that misses changes nothing" is exact only with the filter bypassed: with it on
+and still nothing reachable, an isolated model moves by mean +0.027 with 1.0% of pixels beyond 4/255 and a
+worst pixel of 109. The DIFFUSE subtraction has carried the same artifact since it was written (the recorded
++0.33 convex / +0.52 Sponza note). The fix is one change for both terms - filter the REMOVED value with the
+same weights as the added one, 25 more gathers per pixel - and it re-baselines every capture, so it is its own
+step. Also open: the reflection is a point sample of the roughness cone (a low-roughness reflection aliases at
+half resolution), and its ray length is the diffuse bounce's radius rather than a reflection's own reach.
 
 ## 5. Working discipline (non-negotiable; every item was learned the hard way here)
 

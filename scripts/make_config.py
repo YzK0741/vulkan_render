@@ -192,6 +192,8 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssgi_probe_rounds = {cfg['ssgi_probe_rounds']}",
         f"ssgi_probe_gain = {cfg['ssgi_probe_gain']}",
         f"ssgi_hit_shading = {str(cfg['ssgi_hit_shading']).lower()}",
+        f"ssgi_specular = {str(cfg['ssgi_specular']).lower()}",
+        f"ssgi_specular_rays = {cfg['ssgi_specular_rays']}",
         f"furnace = {str(cfg['furnace']).lower()}",
         "",
         "# ---- [gui] debug overlay ----",
@@ -338,6 +340,17 @@ def ask_all(output_dir: str) -> dict:
         False,
         hint="shade the surface a GI ray hit instead of sampling the screen (needs traced GI + ray tracing)",
     )
+    ssgi_specular = ask_bool(
+        "render.ssgi_specular",
+        False,
+        hint="trace a glossy reflection ray per pixel, replacing the environment's specular ambient "
+             "(needs traced GI + hit shading; where a ray finds nothing the frame is unchanged)",
+    )
+    ssgi_specular_rays = ask_int(
+        "render.ssgi_specular_rays",
+        1,
+        hint="glossy rays per pixel (1 - 8; one is the feature's definition and its measured cost)",
+    )
     furnace = ask_bool(
         "render.furnace",
         False,
@@ -432,6 +445,8 @@ def ask_all(output_dir: str) -> dict:
         "ssgi_probe_rounds": ssgi_probe_rounds,
         "ssgi_probe_gain": ssgi_probe_gain,
         "ssgi_hit_shading": ssgi_hit_shading,
+        "ssgi_specular": ssgi_specular,
+        "ssgi_specular_rays": ssgi_specular_rays,
         "furnace": furnace,
         "gui_show": gui_show,
         "panel_width": panel_width,

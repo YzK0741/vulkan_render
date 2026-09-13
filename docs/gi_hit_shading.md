@@ -974,3 +974,89 @@ END of a config file lands in the LAST table, not in `[render]`: the first ASan 
 ran while the run reported a clean exit. Appending is only safe if something pins the table, which is exactly
 what `scripts/windows/run_furnace.ps1`'s in-table override does and what the ad-hoc command did not.
 
+### L2.3, measured: a glossy reflection replaces the environment's specular ambient
+
+Every indirect term in this chain was diffuse, and the specular one belonged to the lighting stage: the
+split-sum lookup of the prefiltered environment along the reflection direction, which is the sky and nothing
+else. So a metal panel inside a room reflected the sky, and so did a polished floor - the failure is not a
+matter of degree, it is that the term has no way to know a room exists.
+
+WHAT IS BUILT. `shaders/ssgi_spec.comp` is a pass of its own, dispatched between the tracer and the denoiser
+and writing into the TRACER'S OWN IMAGE (it reads, adds to and stores the raw trace back, with a
+compute-to-compute barrier between the two dispatches). It samples a half-vector from the GGX distribution the
+environment chain is prefiltered with, traces along the reflection, and shades what it lands on from that
+hit's own geometry - which is why it needs `ssgi_hit_shading`. Its push block carries its own ray count, which
+is half of why it is a separate pass at all: the tracer's block is exactly 128 bytes (the smallest range
+Vulkan guarantees) and has no lane left, and the other half matters more - a pass that is not RECORDED cannot
+perturb the frame, which is a stronger statement than a branch that arithmetically cancels.
+`shaders/ssgi_spatial.comp` then removes the lighting stage's specular term for those pixels, so the traced
+reflection REPLACES it rather than adding to it; the two sides of that subtraction both come from a new shared
+`shaders/ibl_specular.glsl`, which also replaced the two copies of the same expressions that already existed
+in `shading.glsl` and `hit_shading.glsl` (verified byte-exact: 8 scenarios, 0 changed).
+
+THE CONTROL, and it is the sharpest instrument this step has. Where a glossy ray finds no geometry, the
+estimate IS the lighting stage's term - the same expression, from the same file, in the same association order
+- so with the ray length short enough that nothing is reachable, the feature on and off must agree. On the
+DamagedHelmet (an isolated model, so its convex-ish silhouette gives reflections somewhere to go) with the
+joint-bilateral filter BYPASSED (`ssgi_spatial_sigma = 0`) and `ssgi_radius = 0.0006` (0.011 world units):
+
+    pixels differing         856 (0.08%)      |d|>1        0        max |d|  1
+    mean green              -0.0008
+
+One 8-bit step on 0.08% of pixels and nothing beyond it: the arithmetic is exact, and what is left is the
+half-float round trip through the trace image (the estimate is added, stored as RGBA16F, loaded and
+subtracted again, and `(a + b) - b` is not `a` in floating point). The same test on Sponza at the same ray
+length does NOT collapse (mean -0.0126, 1.12% of pixels, max 47) and the difference is the scene, not the
+code: Sponza has surfaces within 0.011 units of each other (coplanar panels, double-sided walls), so its
+reflection rays find geometry the helmet's cannot. Zeroing the diffuse estimate (`ssgi_intensity = 0`, which
+makes the tracer write exactly 0 and leaves only the add/subtract pair) halves that residual to -0.0059 while
+the outliers survive - which is what identified them as hits rather than arithmetic.
+
+THE EFFECT, Sponza interior, the traced-hit-shading config, A/B on `ssgi_specular` alone, 120 frames
+(60 frames gives -1.3763 against -1.3860, so the chain has converged and nothing drifts):
+
+    frame mean green        56.3324 -> 54.9465      -1.3860  (-2.5%)
+
+    4x4 tiles of mean green difference, absolute and as a percentage of that tile's own frame:
+      -1.128  -2.288  -0.605  -0.343        -2.61%  -3.02%  -0.48%  -0.29%
+      -1.208  -2.118  -0.481  +0.113        -4.65%  -7.33%  -0.57%  +0.16%
+      -2.339  -2.329  -1.615  -0.742        -7.43%  -8.92%  -2.81%  -0.63%
+      -2.085  -1.827  -1.782  -1.396       -16.78%  -9.23%  -9.14%  -3.13%
+
+Ordered by the SCENE, in the same shape the L2.1 probe-cache tables have: the interior tiles lose 7% to 17%
+while the sky-facing ones move 0.1-0.3%. That is what a correct local reflection looks like - the sky's
+specular contribution to a dark interior is a large share of that interior's brightness, and the interior's
+own reflection is darker than the sky. Isolating the specular channel (the diffuse estimate zeroed, so
+nothing else can move) says the same thing harder: -1.1266, with the interior tiles at -20% to -33% against
+-0.4% where the view is sky.
+
+CONVERGENCE. The hit is a POINT sample of a cone whose width is the material's roughness, so one ray is the
+feature's definition but not obviously enough. Measured, 1 ray against 4: +0.0028 of mean green, 0.60% of
+pixels beyond 1/255 and 0.05% beyond 4 - against the feature's own -1.3860. Four times the cost buys 0.2% of
+the signal after the temporal and spatial denoisers, so one ray is what the default is.
+
+COST, the GPU timings' `gi` interval (which carries the tracer, this pass and both denoisers) at 1080x960:
+1.27 ms off, 1.40 ms at one ray, 2.08 ms at four - about +0.13 ms for the first ray and +0.23 ms for each
+further one. The whole-frame totals (2.80 / 2.70 / 3.69 ms) are noisier than that delta and should not be
+read as the feature's cost.
+
+THE RESIDUAL, and it is the honest half of this result. The subtraction happens after the joint-bilateral
+filter has AVERAGED the estimate, while the removed value is the centre pixel's own: the added quantity is
+filtered and the subtracted one is not. So the "a ray that misses changes nothing" property holds exactly
+only when the filter is bypassed. On the same helmet, with the filter ON (sigma 2) and still nothing
+reachable, the two arms differ by mean +0.027 with 1.0% of pixels beyond 4/255 and a worst pixel of 109 -
+and zeroing the diffuse estimate leaves that unchanged (+0.0271, max 109), which is what proves it is the
+filter and not a hit. This is the same class of artifact the DIFFUSE subtraction has carried since it was
+written (the recorded non-mean-preserving-average note: +0.33 convex / +0.52 Sponza), and it is not fixed
+here for the same reason the diffuse one was not: the correct fix is to filter the REMOVED term with the same
+weights as the added one - 25 more gathers per pixel - and to do it for both terms at once, which changes
+every existing capture and belongs in a step of its own with its own re-baseline.
+
+WHAT IT DOES NOT DO: morph targets (inherited: the structures hold the bind pose), alphaMode MASK (a MASK
+surface is solid to the ray), and the reflection is a point sample rather than a cone-filtered one, so a
+low-roughness reflection aliases at half resolution in a way a prefiltered cube does not - the shared denoiser
+takes the worst off, not all of it. Neither the ray length nor the exclusion of geometry the screen path would
+reject was tuned: the length is the diffuse bounce's own radius, and a mirror that should reflect the far side
+of a room needs a longer reach than the light that bounced off the floor.
+
+

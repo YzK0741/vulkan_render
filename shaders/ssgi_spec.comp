@@ -1,0 +1,245 @@
+#version 460 // GL_EXT_ray_query is written against GLSL 4.60 (see shaders/rt_shadow.comp)
+#extension GL_EXT_ray_query : require
+// Shading a hit needs the geometry, and the only thing that reaches it without a descriptor is its
+// device address (see shaders/hit_shading.glsl): a buffer reference, plus the 64-bit arithmetic that
+// addresses it.
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+// The bindless texture array (set 0 binding 1) is indexed by the material's own indices, exactly as
+// shaders/surface.glsl indexes it.
+#extension GL_EXT_nonuniform_qualifier : enable
+
+/**
+ * @file shaders/ssgi_spec.comp
+ * @brief The glossy lobe: one GGX-sampled reflection ray per invocation, added into the tracer's output.
+ * @ingroup shaders
+ *
+ * WHY THIS EXISTS. Until this pass every indirect term in the engine was diffuse. The lighting stage
+ * adds a SPECULAR ambient too - `ibl_specular * F * ao`, the split-sum lookup of the prefiltered
+ * environment along the reflection direction - and that lookup knows nothing but the sky: a metal panel
+ * inside a room reflects the sky, and so does a wet floor, and so does the brass on a statue. The tracer
+ * next door traces 2 cosine-weighted rays per pixel and can answer for the room; this pass asks it the
+ * other question, "what does the environment along the REFLECTION direction actually contain", and
+ * answers it with the same machinery: trace, and if the ray lands on geometry, shade that geometry.
+ *
+ * IT IS A REPLACEMENT, NOT AN ADDITION, and the arithmetic of that is the design. What the lighting
+ * stage already added is `ibl_specular * F * ao`, and what this pass writes is
+ * `ao * (1/N) * sum_i L_i * F` where `L_i` is either the radiance a ray found or - when it found
+ * nothing - `ibl_specular` ITSELF, the same prefiltered lookup along the mirror direction. So:
+ *
+ *   * a ray that MISSES contributes exactly the value the lighting stage used, and
+ *   * a ray that HITS contributes the radiance of the surface it landed on,
+ *
+ * which makes the whole pass reducible to the lighting stage's term by construction: on a frame whose
+ * rays all miss, the estimate is `(ibl_specular * F) * ao` - the lighting stage's own expression, in its
+ * own association order - and the spatial filter's subtraction (shaders/ssgi_spatial.comp) then removes
+ * it again. That is an algebraic identity rather than a statistical one, and it is what the acceptance
+ * measures: with the ray length short enough that nothing is reachable, a specular-GI frame and the same
+ * frame with the feature off differ only by the half-float round trip through this image (the estimate is
+ * added to the trace, stored, loaded and subtracted again, and `(a + b) - b` is not `a` in floating
+ * point), which is a residual to measure rather than to assume away - see docs/gi_hit_shading.md's L2.3
+ * section for what it came out as. The fallback deliberately does NOT sample the environment along the
+ * SAMPLED direction: the prefiltered cube is already the GGX cone's average, so averaging several of its
+ * values would filter it twice and widen the lobe. A miss re-reads the cone's own answer; only a hit is a
+ * point sample of the cone.
+ *
+ * WHAT IT SHARES WITH THE TRACER, and why the output is the tracer's own image. This pass does not own
+ * an image: it READS the raw trace and ADDS its lobe to it (imageLoad / imageStore, with a
+ * compute-to-compute barrier between the two dispatches). Three things fall out of that, and each one is
+ * the reason it is done this way rather than with an image of its own:
+ *   1. the denoiser needs no new input. The temporal resolve's neighbourhood clamp is taken from the
+ *      "current frame's raw trace", and if the specular lobe lived in a second image that clamp would
+ *      box in the diffuse-only range and reject the specular from the history - the accumulation would
+ *      then never average the very signal that needs averaging most;
+ *   2. the additive path is the same radiance quantity the chain already carries, so the bounce feedback
+ *      (which re-emits what arrived at a hit) keeps meaning what it means;
+ *   3. nothing about the descriptor sets changes: the set the tracer binds already has this image as a
+ *      read-write storage image at binding 6, and this pass binds the SAME two sets.
+ *
+ * THE FALLBACK IS EXACT ONLY WHEN THE RAY MISSES. `shade_hit` answers with the hit surface's own
+ * outgoing radiance (its sun with a shadow ray, its split-sum ambient and its emissive), which is a
+ * POINT sample of a cone that a prefiltered lookup would have averaged: at high roughness a single
+ * glossy ray is a noisy estimate of a wide lobe, and `[render] ssgi_specular_rays` is the knob that buys
+ * samples. Two further limits belong to the hit path and are inherited from shaders/hit_shading.glsl:
+ * a MASK surface is solid to the ray and a skinned or morphed mesh is shaded in its bind pose, because
+ * the structures hold what the build read. A BACK-FACE hit (a ray that ended inside geometry) is treated
+ * as a miss: there is no surface there to reflect.
+ *
+ * WHAT THE INCLUDER MUST PROVIDE (see shaders/hit_shading.glsl): the top level structure (set 0 binding
+ * 16) and the irradiance cube (binding 3) are declared below, and the camera (binding 0) because the
+ * primary surface's own view vector is needed for its Fresnel term. Everything else - the material table,
+ * the texture array, the light UBO, the prefiltered environment and the BRDF LUT - comes with the include,
+ * as does `shade_hit` itself and the shared split-sum specular of shaders/ibl_specular.glsl.
+ */
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform CameraUBO {
+    mat4 view;
+    mat4 proj;
+    vec4 camera_pos;
+} camera;
+layout(set = 0, binding = 3) uniform samplerCube irradiance_sampler;
+layout(set = 0, binding = 16) uniform accelerationStructureEXT tlas;
+
+// The G-buffer set (see runtime::ensure_gbuffer_descriptors), the same set the tracer binds: the stored
+// surface this pass reflects from, and the raw trace it adds its lobe to. Binding 6 is the tracer's own
+// output image, declared READ-WRITE here rather than writeonly - that is the whole mechanism (see the
+// file header).
+layout(set = 1, binding = 0) uniform sampler2D gbuffer_albedo;   // RGBA8: albedo.rgb + metallic
+layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal;   // RGBA16F: world normal.xyz + roughness
+layout(set = 1, binding = 2) uniform sampler2D gbuffer_material; // RGBA8: .b = the material's baked AO
+layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;    // the pass's own 1x depth
+layout(set = 1, binding = 6, rgba16f) uniform image2D gi_trace;  // the raw trace: read, added to, written back
+
+#include "hit_shading.glsl"
+
+layout(push_constant) uniform SsgiSpecPush {
+    mat4 inv_view_proj; // clip -> world, the same block and the same reconstruction the tracer uses
+    // x = the ray length in world units (the tracer's own scene-relative radius), y = glossy rays per
+    // pixel, z = free, w = a per-frame counter, which the ray sequence needs: a fixed sequence would feed
+    // a temporal filter the same error every frame instead of an average of different ones. The shadow
+    // ray's bias scale is x, exactly as the tracer passes it to the same function.
+    vec4 params;
+    // z/w = the instance table's device address in two 32-bit halves (the shape every pass in this
+    // project pushes an address in), and 0 is the switch: without a table a hit cannot be shaded, so the
+    // pass leaves the frame alone rather than replacing the environment with nothing.
+    vec4 table;
+} pc;
+
+/** @brief a PCG-style integer hash: the ray sequence's only source of randomness
+ *  @note the tracer's own (shaders/ssgi.comp); duplicated because a shader cannot include another
+ *        shader's entry point, and the two must not share a definition through a .glsl because they are
+ *        compiled into different modules with different push blocks */
+uint hash_u32(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+/** @brief the next uniform in [0,1) from @p state (a hash chain, so no table and no texture) */
+float next_uniform(inout uint state) {
+    state = hash_u32(state);
+    return float(state) * (1.0 / 4294967296.0);
+}
+
+/** @brief the 64-bit device address held in two push lanes */
+uint64_t lane_address(vec2 halves) {
+    return (uint64_t(floatBitsToUint(halves.y)) << 32u) | uint64_t(floatBitsToUint(halves.x));
+}
+
+/**
+ * @brief a half-vector drawn from the GGX/Trowbridge-Reitz distribution, for a roughness
+ * @param u two uniforms in [0,1)
+ * @param n the surface normal the lobe is built around (any space; the result is in the same one)
+ * @param roughness the material's perceptual roughness
+ * @return a unit half-vector around @p n
+ *
+ * The NDF the prefiltered environment chain is baked with, sampled by its own inversion: that is what
+ * makes "average the radiance found along these directions" the same integral the CPU prefilter computed
+ * for the lighting stage, rather than a differently-shaped lobe that would disagree with it at every
+ * roughness. The parameterisation is the standard one (PBRT's, as every real-time implementation uses).
+ */
+vec3 importance_sample_ggx(vec2 u, vec3 n, float roughness) {
+    const float a = roughness * roughness;
+    const float a2 = a * a;
+    const float phi = 6.283185307179586 * u.x;
+    const float cos_theta = sqrt((1.0 - u.y) / max(1.0 + (a2 - 1.0) * u.y, 1e-6));
+    const float sin_theta = sqrt(max(1.0 - cos_theta * cos_theta, 0.0));
+    // the same orthonormal basis the tracer builds for its cosine lobe, so a lobe's shape does not depend
+    // on which helper sampled it
+    const vec3 helper = abs(n.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+    const vec3 tangent = normalize(cross(helper, n));
+    const vec3 bitangent = cross(n, tangent);
+    return normalize(tangent * (sin_theta * cos(phi)) + bitangent * (sin_theta * sin(phi)) + n * cos_theta);
+}
+
+void main() {
+    const ivec2 gi_extent = imageSize(gi_trace);
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= gi_extent.x || pixel.y >= gi_extent.y) {
+        return; // the dispatch is rounded up to the workgroup size
+    }
+
+    const int rays = int(pc.params.y);
+    const uint64_t table = lane_address(pc.table.zw);
+    if (rays <= 0 || table == 0u) {
+        // Nothing to do, and NOTHING IS WRITTEN: the tracer's estimate stands untouched, which is what
+        // makes a frame with the feature off byte-identical by construction rather than by arithmetic.
+        return;
+    }
+
+    const vec2 uv = (vec2(pixel) + 0.5) / vec2(gi_extent);
+    const float depth_ndc = texture(gbuffer_depth, uv).r;
+    if (depth_ndc >= 1.0) {
+        return; // background: the tracer wrote 0 here and the lighting stage shaded no surface here
+    }
+
+    // This pixel's surface. The world position comes from the same inverse projection the tracer and the
+    // lighting stage use, so all three agree about where the surface is.
+    const vec4 clip = vec4(uv * 2.0 - 1.0, depth_ndc, 1.0);
+    const vec4 world_h = pc.inv_view_proj * clip;
+    const vec3 world_pos = world_h.xyz / world_h.w;
+    const vec3 normal = normalize(texture(gbuffer_normal, uv).xyz);
+    const float roughness = clamp(texture(gbuffer_normal, uv).w, 0.045, 1.0);
+    const vec4 albedo_metallic = texture(gbuffer_albedo, uv);
+    const float ao = texture(gbuffer_material, uv).b;
+
+    const vec3 v = normalize(camera.camera_pos.xyz - world_pos);
+    const vec3 f0 = mix(vec3(0.04), albedo_metallic.rgb, albedo_metallic.a);
+    // The lighting stage's term, computed from the SAME expressions (shaders/ibl_specular.glsl) in the
+    // same association order - `ibl * fresnel * ao`, left to right - because this value is SUBTRACTED
+    // again by the spatial filter and a different association would leave a rounding difference behind.
+    const vec3 ibl_specular = ibl_specular_radiance(normal, v, roughness);
+    const vec3 fresnel = ibl_specular_fresnel(normal, v, roughness, f0, 1.0);
+    const vec3 environment = (ibl_specular * fresnel) * ao;
+
+    uint state = hash_u32(uint(pixel.x) + uint(pixel.y) * 4096u + uint(pc.params.w) * 2654435761u);
+    vec3 radiance_sum = vec3(0.0);
+    for (int r = 0; r < rays; ++r) {
+        const vec3 h = importance_sample_ggx(vec2(next_uniform(state), next_uniform(state)), normal, roughness);
+        const vec3 dir = reflect(-v, h);
+        if (dot(dir, normal) <= 0.0) {
+            // The sampled half-vector put the reflection below the surface: there is no geometry to reach
+            // in that direction, so this sample is the environment's - exactly like a miss (see the file
+            // header for why a miss does not sample along the sampled direction).
+            radiance_sum += ibl_specular;
+            continue;
+        }
+        const vec3 origin = world_pos + normal * (pc.params.x * 0.02);
+        rayQueryEXT query;
+        rayQueryInitializeEXT(query, tlas, gl_RayFlagsOpaqueEXT, 0xFF, origin, 0.01, dir, pc.params.x);
+        while (rayQueryProceedEXT(query)) {
+        }
+        if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+            radiance_sum += ibl_specular; // nothing within the ray's length: the environment answers
+            continue;
+        }
+        if (!rayQueryGetIntersectionFrontFaceEXT(query, true)) {
+            // A back face: the ray was inside geometry, and a reflection cannot carry light from a
+            // solid's interior. The environment is the conservative answer, not the shaded one.
+            radiance_sum += ibl_specular;
+            continue;
+        }
+        // The radiance LEAVING the surface the ray landed on, shaded from its own geometry - the same
+        // call the tracer makes, with the direction towards whoever is asking (here: back along the ray,
+        // because the asking surface is the reflection's origin).
+        const float hit_t = rayQueryGetIntersectionTEXT(query, true);
+        const vec3 hit_world = origin + hit_t * dir;
+        vec3 shaded = vec3(0.0);
+        if (shade_hit(query, hit_world, dir, -dir, table, pc.params.x, shaded)) {
+            radiance_sum += shaded;
+        } else {
+            radiance_sum += ibl_specular;
+        }
+    }
+
+    // The BRDF weight is applied once, to the average: `ao * mean(L) * F` would be a different
+    // association from the lighting stage's and is not used - this is `mean` scaled by the term the
+    // spatial filter removes, term for term.
+    const vec3 estimate = ((radiance_sum / float(rays)) * fresnel) * ao;
+    imageStore(gi_trace, pixel, imageLoad(gi_trace, pixel) + vec4(estimate, 0.0));
+}
