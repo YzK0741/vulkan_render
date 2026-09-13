@@ -194,6 +194,21 @@ ssgi_bounce = 0.0
 # the frame could see; that is also how the propagation's contribution is measured).
 # ssgi_probe_gain: how much of the cache's answer is added on top of the environment probe, 0 = the cache
 # still runs and is simply never sampled (the A/B that measures what the grid actually adds).
+#
+# WHAT THE CACHE'S CONTRIBUTION IS MADE OF, MEASURED (Sponza interior, traced GI, gain 1, rate 0.08,
+# rounds 2, frames 360, bucketed by the frame's own luminance into thirds): the addition is +0.127 in the
+# darkest third, +0.319 in the middle and +0.076 in the brightest - i.e. 0.81% and 0.75% of what those
+# regions already had, and it is almost purely one-signed (171688 pixels brighter, 76 darker). That is an
+# AMBIENT-SHAPED signature, not a structured one: real off-screen light would concentrate where geometry
+# the camera cannot see is bright, not scale with whatever each region already has. The mechanism is the
+# one this design invites - the chain's estimate already contains the far-field probe (its rays fall back
+# to it off screen), the grid is injected from that estimate, and the tracer then adds the grid ON TOP of
+# the same far-field probe again for an off-screen hit. The propagation delivers ~84% of it, which is what
+# an unoccluded blur does: it spreads uniformly rather than following the light. So treat the current
+# contribution as a small (under 1%) systematic bias toward more ambient, not as recovered off-screen GI.
+# Replacing rather than adding the far-field term, and lighting the cache's cells from real hits instead of
+# from the screen, is what makes it mean something - and the tertile signature above is how that change has
+# to be judged: a correct cache adds light to the regions the off-screen geometry illuminates.
 ssgi_probes = false
 ssgi_probe_rate = 0.08
 ssgi_probe_rounds = 2
