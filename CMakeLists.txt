@@ -605,14 +605,23 @@ set(VR_SHADER_SOURCES
     ssgi.comp
     ssgi_temporal.comp
     ssgi_spatial.comp
+    rt_shadow.comp
     shadow.vert shadow.frag post.vert post.frag fxaa.frag
 )
 set(VR_SHADER_OUTPUTS "")
+# --target-env=vulkan1.3 on EVERY shader, not just the ray-traced one. glslc defaults to vulkan1.0, and
+# under that target GL_EXT_ray_query is not a known extension at all ("undeclared identifier rayQueryEXT",
+# which is what this shader reported before the flag). The engine is Vulkan 1.3-only anyway - dynamic
+# rendering is core 1.3 and every pass records through vkCmdBeginRendering - so declaring the real target
+# is the honest setting rather than a per-file workaround. The 1.3 target changes the SPIR-V header
+# version and nothing else these shaders do: the seven capture scenarios hash identically after the
+# change (checked, because a codegen difference hidden under a flag change is exactly what a byte-exact
+# reference is for).
 foreach(shader IN LISTS VR_SHADER_SOURCES)
     add_custom_command(
         OUTPUT "${VR_SHADER_OUT_DIR}/${shader}.spv"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${VR_SHADER_OUT_DIR}"
-        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -I "${VR_SHADER_SRC_DIR}" "${VR_SHADER_SRC_DIR}/${shader}"
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -I "${VR_SHADER_SRC_DIR}" --target-env=vulkan1.3 "${VR_SHADER_SRC_DIR}/${shader}"
                 -o "${VR_SHADER_OUT_DIR}/${shader}.spv"
         DEPENDS "${VR_SHADER_SRC_DIR}/${shader}" ${VR_SHADER_INCLUDES}
         COMMENT "glslc ${shader} -> ${shader}.spv"

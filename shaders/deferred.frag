@@ -48,7 +48,11 @@ layout(location = 0) out vec4 out_color;
 layout(set = 1, binding = 0) uniform sampler2D gbuffer_albedo;   // RGBA8: albedo.rgb + metallic
 layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal;   // RGBA16F: normal.xyz + roughness
 layout(set = 1, binding = 2) uniform sampler2D gbuffer_material; // RGBA8: id lo/hi + ao + flags
-layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;    // the pass's single-sampled depth
+layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;
+// set 0 (the shared scene set, per frame slot): the ray-traced sun visibility this stage multiplies the
+// sun term by when the light UBO says so. Written by shaders/rt_shadow.comp, which runs between the
+// G-buffer pass and this one.
+layout(set = 0, binding = 14) uniform sampler2D rt_shadow_visibility;    // the pass's single-sampled depth
 
 layout(push_constant) uniform DeferredPush {
     mat4 inv_view_proj; // clip (NDC xyz, w = 1) -> world position
@@ -192,6 +196,10 @@ void main() {
     // because it needs the material's emissive texture and the UVs - neither of which the G-buffer
     // stores (see gbuffer.frag). Adding it again would double it.
     si.emissive = vec3(0.0);
+    // Ray-traced sun visibility, or NEGATIVE to keep the cascaded shadow maps: the flag is the light
+    // UBO's, and it is only ever set when the pass ran and the device has ray queries - so a frame with
+    // rt_shadows off samples nothing that does not exist and shades exactly as it did before.
+    si.shadow_override = (light.rt_shadows > 0.5) ? texture(rt_shadow_visibility, v_uv).r : -1.0;
 
     out_color = vec4(shade_surface(si), 1.0);
 }

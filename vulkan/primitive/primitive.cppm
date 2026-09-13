@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene set; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -154,7 +154,10 @@ namespace vulkan {
         // last 10%): a hard switch would show the resolution/offset step as a visible line.
         float cascade_blend = 0.1f;
         float cascade_count = 1.0f; // active cascades (1 = the single-map path)
-        float _pad0 = 0.0f;         // keeps light_count on its 16-byte boundary (std140)
+        float rt_shadows = 0.0f;    // 1.0 = the sun's shadow comes from the ray-traced visibility image
+                                    // (runtime::set_rt_shadows + the device having ray queries), 0.0 = sample
+                                    // the cascaded shadow maps. Rides the std140 padding that keeps
+                                    // light_count on its 16-byte boundary.
         float _pad1 = 0.0f;
         float _pad2 = 0.0f;
         glm::vec4 light_count = {}; // x = active punctual light count (GLSL: uint), y = exposure, z = toon shading steps (0 = PBR), w = toon band softness

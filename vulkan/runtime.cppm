@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.31.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.32.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -549,6 +549,23 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief publish the stored surface targets' attachment writes and make them samples
+         * @return whether a transition was recorded (false = they were already readable)
+         * @note the SAME "whose write is it" question ensure_gbuffer_depth_sampled() answers, for the
+         *       three stored surface targets: the G-buffer instance writes them as COLOR attachments and
+         *       TWO stages sample them - the ray-traced sun shadow (which runs first when it runs at all)
+         *       and the deferred lighting stage. Whoever gets here first does the transition and the other
+         *       finds the flag clear; without it the second one claims a COLOR_ATTACHMENT old layout the
+         *       image is not in, which is a validation error and, on a driver that believes it, a
+         *       discarded surface.
+         * @note must be called outside a rendering instance (it records a pipeline barrier)
+         */
+        bool ensure_gbuffer_targets_sampled(VkCommandBuffer command_buffer, uint32_t image_index);
+        // Per-swapchain-image flag: set by the G-buffer instance, cleared by the accessor above.
+        std::vector<bool> gbuffer_targets_written = {};
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief publish the G-buffer motion-vector target's attachment write and make it a sample
          * @return whether a transition was recorded (false = the image was already readable)
          * @note the same "whose write is it" question ensure_gbuffer_depth_sampled() answers, for the
@@ -962,10 +979,28 @@ namespace vulkan {
         std::optional<acceleration_structure::top_level_structure> rt_top_levels = {};
         std::vector<std::pair<primitive const*, uint32_t>> rt_caster_levels = {};
         bool rt_top_level_logged = false;
+        // The ray-traced sun shadow pass (see shaders/rt_shadow.comp): one ray per pixel against the top
+        // level structure, writing the visibility image the deferred lighting stage multiplies its sun
+        // term by. It runs between the G-buffer pass (whose depth and normal it starts the rays from) and
+        // the lighting stage (which reads its output), and it binds the same two set layouts the GI tracer
+        // does - so it needs no descriptor family of its own.
+        std::optional<vk_pipeline> rt_shadow_pipeline = std::nullopt;
+        VkPipelineLayout rt_shadow_pipeline_layout = VK_NULL_HANDLE;
+        struct rt_shadow_push_constants {
+            glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world, the block the lighting stage uses
+            // x = ray tmin, y = absolute normal-offset floor, z = relative offset scale (per unit of
+            // distance from the camera), w = unused
+            glm::vec4 params = glm::vec4(0.01f, 0.002f, 0.0015f, 0.0f);
+        };
+        bool rt_shadow_logged = false;
         /** @brief record the one-time acceleration-structure build into the frame's command buffer */
         void record_acceleration_structures(VkCommandBuffer command_buffer);
         /** @brief record this frame's top level structure (the culled instance list) */
         void record_top_level_structure(VkCommandBuffer command_buffer);
+        /** @brief point a scene set's binding 16 at @p tlas (see the null-descriptor rule it avoids) */
+        void write_rt_structure_binding(VkDescriptorSet set, VkAccelerationStructureKHR tlas);
+        /** @brief record the ray-traced sun shadow pass */
+        void record_rt_shadow_pass(VkCommandBuffer command_buffer);
         // scene center handed to enable_shadows. The fit falls back to center +- scene_radius when a
         // shadow caster has no world AABB of its own AND is not an instanced draw whose instance
         // matrices we can read (see instanced_world_aabb).
@@ -1893,6 +1928,16 @@ namespace vulkan {
          *       chain: what the composite samples is this filter's output
          */
         std::expected<void, std::string> make_ssgi_spatial_pipeline(std::span<unsigned char const> compute_shader_code);
+
+        /**
+         * @brief create the ray-traced sun shadow pipeline from shaders/rt_shadow.comp
+         * @param compute_shader_code raw SPIR-V of the pass
+         * @return success, or an error message on failure
+         * @note optional in the same sense every ray-traced path is: it is only created when the DEVICE
+         *       has ray queries, and when it is missing the cascaded shadow maps keep running (the
+         *       lighting stage's override stays off)
+         */
+        std::expected<void, std::string> make_rt_shadow_pipeline(std::span<unsigned char const> compute_shader_code);
 
         /**
          * @brief set the spatial filter's strength

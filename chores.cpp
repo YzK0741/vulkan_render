@@ -285,6 +285,18 @@ namespace chores {
             } else {
                 utility::log("SUCCESS: GI spatial filter created (joint-bilateral, depth + normal edge stops)");
             }
+
+            // Ray-traced sun shadows: one ray per pixel against the scene's acceleration structures.
+            // Created only on a device with ray queries (the builder says so as an error otherwise), and
+            // optional even there: without it the cascaded shadow maps keep running.
+            std::vector<unsigned char> rt_shadow_code;
+            load_shader(shaders_dir, "rt_shadow.comp.spv", rt_shadow_code);
+            auto const rt_shadow_result = runtime.make_rt_shadow_pipeline(rt_shadow_code);
+            if (!rt_shadow_result) {
+                utility::log("ray-traced shadows unavailable: {}", rt_shadow_result.error());
+            } else {
+                utility::log("SUCCESS: ray-traced sun shadow pipeline created (one ray per pixel, terminated on first hit)");
+            }
         }
     }
 

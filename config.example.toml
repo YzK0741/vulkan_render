@@ -166,12 +166,14 @@ ssgi_upsample = true
 # with ray queries (`VK_KHR_acceleration_structure` + `VK_KHR_ray_query`); everywhere else the key is
 # ignored and the cascaded maps run, so it is safe to leave in a shared config.
 #
-# IN PROGRESS: turning this on today builds the scene's acceleration structures and then renders exactly
-# as before. The bottom levels are built once (Sponza: 103 structures, 262k triangles, 17.8 MiB, ~2 ms
-# host); the top level and its instance table are rebuilt every frame from the culled caster list (103
-# instances, ~0.1 ms GPU - the "rt" interval of the pass timings - and ~0.02 ms host). The startup log
-# reports both. The pass that TRACES the shadow against them is the next commit, so the image is
-# unchanged for now by design.
+# Turning this on builds the scene's acceleration structures and traces the sun with them. The bottom
+# levels are built once (Sponza: 103 structures, 262k triangles, 17.8 MiB, ~2 ms host); the top level and
+# its instance table are rebuilt every frame from the culled caster list (103 instances, ~0.1 ms GPU -
+# the "rt" interval of the pass timings - and ~0.03 ms host); and the shadow pass is one ray per pixel,
+# also in "rt". Two limits come with it, both structural: a MASK surface is SOLID to a ray (an inline ray
+# query has no any-hit shader to run the material's discard), and a skinned or morphed mesh casts its
+# BIND POSE (the deformation happens in the vertex shader and never reaches the memory a build reads).
+# The edge is hard, not PCF-soft, until several rays per pixel exist.
 rt_shadows = false
 
 # fxaa: anti-alias the final image (one extra fullscreen pass over the tonemapped LDR image).

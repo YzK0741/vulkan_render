@@ -83,7 +83,9 @@ layout(set = 0, binding = 7) uniform LightUBO {
     float diffuse_model;
     float cascade_blend; // fraction of a cascade's range blended into the next one (0.1 = last 10%)
     float cascade_count; // active cascades (1 = the single-map path)
-    float _pad0;
+    float rt_shadows; // 1.0 = the sun's shadow is the ray-traced visibility image (binding 14),
+                      // 0.0 = the cascaded shadow maps. Rides the std140 padding that keeps
+                      // light_count on its 16-byte boundary; see the CPU's light_ubo.
     float _pad1;
     float _pad2;
     uint light_count;
@@ -528,6 +530,11 @@ struct shade_input {
     float metallic; // 0 = dielectric, 1 = metal
     float roughness; // perceptual roughness
     float ao;       // ambient occlusion: scales the IBL ambient only, never the direct light
+    // < 0 = no override: the shadow comes from calc_shadow() as it always did. >= 0 = use this factor
+    // instead, which is how the deferred path hands in the RAY-TRACED visibility (it is a screen-space
+    // lookup, so it cannot be recomputed from world_pos inside the shared lighting code). The forward
+    // path and every other caller leave it negative, so their behaviour is unchanged by construction.
+    float shadow_override;
 };
 
 /**
@@ -550,7 +557,13 @@ vec3 shade_surface(shade_input s) {
     vec3 direct = vec3(0.0);
     // directional sun: shadow factor attenuates only this light; IBL ambient stays unshadowed
     {
-        float shadow = (light.shadow_enabled > 0.5) ? calc_shadow(s.world_pos, s.normal) : 1.0;
+        // A ray-traced override wins over both: it IS the shadow, already resolved per pixel.
+        float shadow = 1.0;
+        if (s.shadow_override >= 0.0) {
+            shadow = s.shadow_override;
+        } else if (light.shadow_enabled > 0.5) {
+            shadow = calc_shadow(s.world_pos, s.normal);
+        }
         direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light.light_dir.xyz, vec3(7.5) * shadow);
     }
     // punctual lights (point/spot, no shadow casting in this version): inverse-square falloff

@@ -1,0 +1,121 @@
+#version 460 // required: GL_EXT_ray_query is written against GLSL 4.60 (glslang rejects rayQueryEXT at 450)
+#extension GL_EXT_ray_query : require
+
+/**
+ * @file shaders/rt_shadow.comp
+ * @brief Ray-traced sun visibility: one ray per pixel against the scene's top level structure.
+ * @ingroup shaders
+ *
+ * This is the raster shadow map's replacement, and it is deliberately the SIMPLEST possible consumer of
+ * the acceleration structures: a pixel that has geometry reconstructs its world position from the
+ * G-buffer depth, casts one ray towards the sun, and writes 1.0 (lit) or 0.0 (occluded). Nothing is
+ * shaded here and no hit information is used - which is why it needs no any-hit shader, no material
+ * lookup and no instance table: `gl_RayFlagsTerminateOnFirstHitEXT` means the traversal stops at the
+ * first triangle and the only question asked of it is whether there was one.
+ *
+ * What that buys over a cascaded shadow map is not sharpness but CORRECTNESS of the occluder set: a
+ * caster outside every cascade's fitted box, a caster between two cascades, a contact shadow at the base
+ * of an object, and the bias a depth map needs to avoid self-shadowing all stop being approximations.
+ * What it costs is one traversal per pixel (measured in the "rt" interval of the pass timings, together
+ * with the top level rebuild that feeds it) and the two structural limits the acceleration-structure
+ * module documents: alphaMode MASK surfaces are solid to the ray, and a skinned or morphed mesh casts
+ * its bind pose.
+ *
+ * Output is a HARD visibility factor. The raster path's `sampler2DArrayShadow` with LINEAR filtering
+ * gives hardware PCF over a 2x2 footprint, so the two are not meant to match pixel for pixel at a
+ * penumbra - a soft sun needs several rays per pixel (or a cone), which is a step of its own. The
+ * comparison this pass is verified by is therefore about WHERE the shadow is, not how soft its edge is.
+ *
+ * The self-intersection bias is a normal offset scaled by the pixel's distance from the camera, plus a
+ * floor: an absolute epsilon is too small for a distant surface and too large for a near one, and the
+ * shadow map's texel-sized world offset has no meaning here (there is no texel).
+ */
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// set 0 = the shared scene set: the camera block (to rebuild the world position) and the light UBO's
+// direction. The LightUBO block is declared SHORTER than the CPU's struct on purpose - only light_dir is
+// read, and a uniform block may declare a prefix of the buffer as long as the members it does declare sit
+// at the same offsets (std140: the four cascade matrices, then light_dir), which they do.
+layout(set = 0, binding = 0) uniform CameraUBO {
+    mat4 view;
+    mat4 proj;
+    vec4 camera_pos;
+} camera;
+layout(set = 0, binding = 7) uniform LightUBO {
+    mat4 light_view_proj[4]; // MAX_SHADOW_CASCADES: not read here, only here to keep light_dir's offset
+    vec4 light_dir;          // xyz = surface-to-light direction (see shading.glsl)
+} light;
+layout(set = 0, binding = 16) uniform accelerationStructureEXT tlas;
+
+// set 1 = the G-buffer set: the surface the ray starts from. Read at texel centres, like every other
+// compute consumer of the stored surface.
+layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal; // RGBA16F: world normal.xyz
+layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;  // the pass's own 1x depth
+
+// set 0 as well: the visibility image the deferred lighting stage samples. It is written through the
+// scene set because that set is per FRAME SLOT, which is what the image is - see runtime.
+layout(set = 0, binding = 15, r16f) uniform image2D visibility_out;
+
+layout(push_constant) uniform RtShadowPush {
+    mat4 inv_view_proj; // clip -> world, the same block the lighting stage reconstructs from
+    vec4 params;        // x = ray tmin, y = absolute normal-offset floor, z = relative offset scale, w = unused
+} pc;
+
+/**
+ * @brief world position of a depth-buffer sample (the lighting stage's reconstruction)
+ * @param uv the sample position
+ * @param depth the stored depth in [0,1]
+ * @return the world-space position
+ */
+vec3 world_position_from_depth(vec2 uv, float depth) {
+    const vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    const vec4 world = pc.inv_view_proj * clip;
+    return world.xyz / world.w;
+}
+
+void main() {
+    const ivec2 extent = imageSize(visibility_out);
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= extent.x || pixel.y >= extent.y) {
+        return; // the dispatch is rounded up to the workgroup size
+    }
+    const vec2 uv = (vec2(pixel) + 0.5) / vec2(extent);
+
+    const float depth = texture(gbuffer_depth, uv).r;
+    if (depth >= 1.0) {
+        // No geometry: nothing to shade, so nothing to shadow. 1.0 rather than 0.0 because the lighting
+        // stage uses this as a multiplier on a sun term that does not exist here anyway, and "lit" is the
+        // value that leaves a debug read-back readable.
+        imageStore(visibility_out, pixel, vec4(1.0));
+        return;
+    }
+
+    const vec3 normal = normalize(texture(gbuffer_normal, uv).xyz);
+    const vec3 world_pos = world_position_from_depth(uv, depth);
+    const vec3 to_light = normalize(light.light_dir.xyz);
+
+    // The bias: offset along the normal by an amount that grows with the distance from the camera (a
+    // surface 30 units away has coarser depth precision than one at 2), with an absolute floor so a
+    // pixel right at the near plane still clears its own triangle. The ray also starts at tmin, which
+    // handles the case where the offset direction itself is grazing.
+    const float distance = length(world_pos - camera.camera_pos.xyz);
+    const vec3 origin = world_pos + normal * max(pc.params.y, pc.params.z * distance);
+
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query,
+                          tlas,
+                          gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+                          0xFF, // every instance can occlude
+                          origin,
+                          pc.params.x,
+                          to_light,
+                          1e30 // a directional light: the ray is a half-line, not a segment
+    );
+    while (rayQueryProceedEXT(query)) {
+        // TerminateOnFirstHit means at most one pass; the loop is the required form either way.
+    }
+
+    const bool occluded = rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+    imageStore(visibility_out, pixel, vec4(occluded ? 0.0 : 1.0));
+}

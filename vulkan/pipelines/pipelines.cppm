@@ -1,4 +1,4 @@
-// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
@@ -70,6 +70,10 @@ namespace vulkan::pipelines {
     export std::expected<ssgi_owned, std::string> build_ssgi(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
     /// the spatial half of the same denoiser: same two set layouts, same shape, its own push block
     export std::expected<ssgi_owned, std::string> build_ssgi_spatial(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    /// the ray-traced sun shadow: the same two set layouts as the GI tracer (the scene set carries the
+    /// camera, the light UBO and - when the device has ray tracing - the top level structure; the
+    /// G-buffer set carries the surface the ray starts from)
+    export std::expected<ssgi_owned, std::string> build_rt_shadow(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
 
     /// what build_ssgi_temporal() creates: the denoiser's set layout (it owns one - its inputs are
     /// the trace, the history, the motion vectors and the depth, which no other pass groups together)
@@ -324,6 +328,52 @@ namespace vulkan::pipelines {
         return out;
     }
 
+    // The ray-traced sun shadow: a COMPUTE pipeline over the same two set layouts the GI tracer uses,
+    // because its inputs are in the same places (the camera block and the light UBO in the scene set,
+    // the stored surface in the G-buffer set) plus the top level structure, which lives in the scene set
+    // as binding 16 when the device has ray tracing. Nothing new is created here beyond the layout.
+    std::expected<ssgi_owned, std::string> build_rt_shadow(core& vk, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+        using fail = std::unexpected<std::string>;
+        ssgi_owned out;
+
+        VkPushConstantRange push_range = {};
+        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        push_range.offset = 0;
+        push_range.size = push_constant_size;
+
+        std::array<VkDescriptorSetLayout, 2> const set_layouts = {scene_layout, gbuffer_layout};
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = static_cast<uint32_t>(set_layouts.size());
+        pipeline_layout_info.pSetLayouts = set_layouts.data();
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+            return fail("rt shadow: pipeline layout creation failed");
+        }
+
+        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, vk.device);
+        if (!module.has_value()) {
+            return fail("rt shadow: compute shader module creation failed");
+        }
+        VkPipelineShaderStageCreateInfo stage_info = {};
+        stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage_info.module = **module;
+        stage_info.pName = "main";
+
+        VkComputePipelineCreateInfo pipeline_info = {};
+        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.stage = stage_info;
+        pipeline_info.layout = out.pipeline_layout;
+
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        if (vkCreateComputePipelines(vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+            return fail("rt shadow: vkCreateComputePipelines failed");
+        }
+        out.trace = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
+        return out;
+    }
     // The GI spatial filter: the same two set layouts the tracer binds (the shared scene set and the
     // G-buffer set, which carries the normal, the depth, the accumulated image it reads and the
     // filtered image it writes), so only the pipeline layout and the push block are new.

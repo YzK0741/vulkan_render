@@ -704,6 +704,27 @@ namespace vulkan {
             gi_spatial_image_views[i] = create_image_view(gi_spatial_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
         }
 
+        // The ray-traced sun visibility: FULL resolution (one ray per screen pixel) and one per FRAME
+        // SLOT - see the member's comment for why the slot, not the swapchain image, is the right
+        // lifetime. R16F rather than RGBA16F: the pass writes a single visibility factor, and the
+        // deferred lighting stage multiplies the sun term by it. STORAGE for the compute pass that
+        // writes it, SAMPLED for the lighting stage that reads it.
+        rt_shadow_images.assign(vulkan::core::MAX_FRAMES_IN_FLIGHT, VK_NULL_HANDLE);
+        rt_shadow_image_memories.assign(vulkan::core::MAX_FRAMES_IN_FLIGHT, VK_NULL_HANDLE);
+        rt_shadow_image_views.assign(vulkan::core::MAX_FRAMES_IN_FLIGHT, VK_NULL_HANDLE);
+        for (uint32_t slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            create_target_image(
+                swap_chain_extent.width,
+                swap_chain_extent.height,
+                VK_FORMAT_R16_SFLOAT,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                rt_shadow_images[slot],
+                rt_shadow_image_memories[slot]);
+            rt_shadow_image_views[slot] = create_image_view(rt_shadow_images[slot], VK_FORMAT_R16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, device);
+        }
+
         gbuffer_depth_images.resize(swap_chain_image_views.size());
         gbuffer_depth_image_memories.resize(swap_chain_image_views.size());
         gbuffer_depth_image_views.resize(swap_chain_image_views.size());
@@ -844,6 +865,7 @@ namespace vulkan {
             destroy_images(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
             destroy_images(gi_history_images, gi_history_image_memories, gi_history_image_views);
             destroy_images(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
+            destroy_images(rt_shadow_images, rt_shadow_image_memories, rt_shadow_image_views);
             for (auto const& level_views : bloom_image_views) {
                 for (auto const& view : level_views) {
                     vkDestroyImageView(device, view, nullptr);
@@ -957,7 +979,7 @@ namespace vulkan {
 
     void core::init_scene_layouts() noexcept {
         // ---- 1. Fixed flat descriptor set layout (see the convention docs in core.cppm) ----
-        std::array<VkDescriptorSetLayoutBinding, 14> bindings = {};
+        std::array<VkDescriptorSetLayoutBinding, 17> bindings = {};
         bindings[0] = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
         bindings[1] = {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = scene_texture_capacity, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         bindings[2] = {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
@@ -989,15 +1011,36 @@ namespace vulkan {
         // stage reads its own entry to hand the fragment stage a previous world position, which is
         // what gives a moving OBJECT a motion vector. Vertex-only - nothing else reads it.
         bindings[13] = {.binding = 13, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
+        // Ray-traced sun visibility (see shaders/rt_shadow.comp): 14 is the image the deferred lighting
+        // stage samples, 15 the SAME image as the storage view the compute pass writes, and 16 the top
+        // level structure the ray is traced against.
+        //
+        // 14/15 are unconditionally legal (a sampler and a storage image need no extension) and are
+        // always written: the images exist on every device, and a frame with ray-traced shadows off just
+        // leaves them in the layout the descriptors declare (see the off path in record_scene_tail) -
+        // wrapping the layout in "does this device have ray tracing" would put the branch in every
+        // consumer of the scene set to save two bindings.
+        //
+        // 16 is an ACCELERATION STRUCTURE binding, which requires the extension to be ENABLED: it is
+        // declared only when the device has it, because a layout that declares it is invalid otherwise.
+        // Nothing that does not trace rays declares the binding, so a shorter layout is invisible to
+        // them.
+        bindings[14] = {.binding = 14, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+        bindings[15] = {.binding = 15, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+        uint32_t binding_count = 16;
+        if (this->ray_query_available) {
+            bindings[16] = {.binding = 16, .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+            binding_count = 17;
+        }
 
-        std::array<VkDescriptorBindingFlags, 14> binding_flags = {};
+        std::array<VkDescriptorBindingFlags, 17> binding_flags = {};
         // texture array: only written entries are valid, appended before the render loop starts;
         // non-uniform indexing itself is a device feature, not a layout flag
         binding_flags[1] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
 
         VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info = {};
         flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-        flags_info.bindingCount = static_cast<uint32_t>(binding_flags.size());
+        flags_info.bindingCount = binding_count; // must match the layout: a device without ray tracing has no binding 16
         flags_info.pBindingFlags = binding_flags.data();
 
         VkDescriptorSetLayoutCreateInfo layout_info = {};
@@ -1006,7 +1049,7 @@ namespace vulkan {
         // does not require the update-after-bind pool flag. The layout flag only means anything
         // together with the pool flag - a set layout created with UPDATE_AFTER_BIND_POOL has to be
         // allocated from a pool created with UPDATE_AFTER_BIND - and neither is needed here.
-        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
+        layout_info.bindingCount = binding_count;
         layout_info.pBindings = bindings.data();
         layout_info.pNext = &flags_info;
         if (vkCreateDescriptorSetLayout(this->device, &layout_info, nullptr, &this->scene_descriptor_set_layout) != VK_SUCCESS) {
@@ -1417,6 +1460,7 @@ namespace vulkan {
         destroy_target_set(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
         destroy_target_set(gi_history_images, gi_history_image_memories, gi_history_image_views);
         destroy_target_set(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
+        destroy_target_set(rt_shadow_images, rt_shadow_image_memories, rt_shadow_image_views);
 
         // 2d. Destroy the bloom targets (all levels)
         for (auto const& level_views : bloom_image_views) {

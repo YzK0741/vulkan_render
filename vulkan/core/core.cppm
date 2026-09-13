@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.14.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.15.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -316,6 +316,16 @@ namespace vulkan {
         std::vector<VkImage> gi_spatial_images = {};
         std::vector<VkDeviceMemory> gi_spatial_image_memories = {};
         std::vector<VkImageView> gi_spatial_image_views = {};
+
+        // ---- ray-traced sun visibility (see shaders/rt_shadow.comp) ----
+        // FULL resolution, one per FRAME SLOT rather than per swapchain image: it is written and read
+        // within one frame, and BOTH ends are bound in the scene set, which is the per-slot set. A
+        // per-image image would have to be paired in that set with a per-slot top level structure, and
+        // the same image can be recorded on either slot - so the two are different lifetimes and mixing
+        // them would be wrong on exactly the frames where they disagree.
+        std::vector<VkImage> rt_shadow_images = {};
+        std::vector<VkDeviceMemory> rt_shadow_image_memories = {};
+        std::vector<VkImageView> rt_shadow_image_views = {};
 
         // ---- temporal anti-aliasing (see runtime::set_taa) ----
         // The scene color TAA resolves FROM, one per swapchain image: when TAA is on, the geometry
