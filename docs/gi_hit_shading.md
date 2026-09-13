@@ -611,3 +611,103 @@ which already proved it can detect an energy error: it read +0.90 of mean bright
 was half wired, and traced that excess to the spatial filter's `subtract_ambient` reading `irradiance_sampler`
 directly while the lighting stage used the analytic constant. With both reading the same constant cube that
 divergence disappears by construction - the second reason the data-shaped design was the right one.
+
+### L2.0, measured: what the furnace reports, and the one error it found
+
+The mode runs and reports, and what it reports is not the energy error the plan expected. Establishing
+that is the result of this step. Every number is the mean of the 8-bit green channel over one 1080x960
+capture of 180 frames at a static camera; **two runs of ONE config are byte-identical** (verified by
+SHA256), so a difference between two configs is signal - which also means the acceptance's "within the
+noise of two 180-frame captures" is in practice an exactness test, not a tolerance.
+
+THE REPLACEMENT CHAIN IS EXACT, and the test that shows it needs no geometry at all: set
+`ssgi_radius = 0`. No ray can reach anything, every ray returns the constant cube, and the traced
+estimate and the ambient the spatial filter subtracts are then algebraically the same expression - so
+the chain must be the identity and GI-on must equal GI-off.
+
+    Sponza, furnace, radius 0        GI off              134.7686
+                                     GI on, before       136.5186    +1.7500
+                                     GI on, after        135.2395    +0.4709
+                                     GI on, after, sigma 0 134.7419  -0.0267
+    and that last one is 27764 pixels (2.68%) off by exactly ONE 8-bit step, max 1 - the identity up to
+    the float rounding of two algebraically equal expressions evaluated in two different passes.
+
+THE ERROR THE MODE FOUND is most of that +1.75: removing it lowers the radius-0 frame by +1.2791 (with
+the denoiser) and by +1.2494 (with the filter bypassed), which is the size of the term. Sponza's ao is 1
+everywhere (it has no occlusion textures, so the G-buffer's ao lane is 1 by construction) and both sides
+read the same uniform cube, which leaves `albedo * metallic * L` as the only term that can separate the
+two frames at radius 0. The tracer's tail multiplied its diffuse estimate by the receiver's albedo and its
+baked AO, but not by the `(1 - metallic)` that `shading.glsl`'s ambient, the spatial filter's subtraction
+and `shade_hit`'s own ambient all carry. A metal's kd is zero, so the traced estimate was GRANTING every
+metallic surface a diffuse indirect the lighting stage never adds.
+
+That the metallic factor is the whole of the term, and the filter the whole of the rest, is confirmed
+twice:
+
+* the +0.4709 that remains after the fix, with the denoiser in the loop, is the spatial filter's own
+  weighted average - a weighted average is not the identity on a field that varies - and its size was
+  measured independently on the same scene: +0.52 for sigma 2.0 against a pass-through;
+* on a CONVEX scene the mode runs with real rays and no geometry within their reach, and there the fix
+  is the difference between failing and passing:
+
+        SimpleMaterial (one triangle, metallic 0.5, every ray escapes)
+            GI off 138.7898 | GI on before 140.1903 (+1.4005) | GI on after 138.7897 (-0.0001)
+            122 of 1036800 pixels differ, each by one 8-bit step
+        Cube (one convex cube, metallic 0)
+            GI off 151.0392 | GI on 151.3670 (+0.3278) - byte-identical before and after the fix,
+            because its metallic is 0 and the fix IS the metallic term
+            with ssgi_spatial_sigma = 0: -0.0045 (0.003%), so the +0.33 is the denoiser; its largest
+            single-pixel difference is 82, on the cube's silhouette, where a half-resolution result is
+            being reconstructed at full resolution
+
+WHY SPONZA CANNOT PASS, and should not. The analytic statement - a diffuse surface's outgoing radiance
+is exactly `albedo * L` and a bounce has nothing to add - is the classic furnace identity, and it holds
+when the incident radiance really is L from EVERY direction. That is true of a convex object and false
+in an interior: a ray that lands on a wall comes back with the wall's radiance, which in a furnace is
+`albedo_wall * L < L`. So the traced chain reports an occlusion-corrected ambient, which is precisely
+what it exists to report, while the lighting stage's `irradiance_sampler` lookup - an unoccluded
+environment - is the approximation it replaces. The two cannot agree in an interior, and the chain
+being darker there is the same measured behaviour Level 1 recorded as correct: interiors lose 4-7% and
+sky-facing tiles 0.1-0.6%.
+
+The deficit IS the hit population, established three ways:
+
+* it scales with how far the rays reach (same scene, same camera, before the fix): radius 0.185 (0.01 of
+  the scene radius) -2.5645; 2.22 (0.12, the default) -7.6316; 18.5 (1.0) -13.4722;
+* it disappears when the rays cannot reach geometry (radius 0 above): +1.75 before the fix, and after
+  it +0.47, of which the filter is +0.52 and the remainder is 1-LSB rounding;
+* it does not depend on which hit model runs. With hit shading off, a screen-confirmed hit returns
+  `texture(direct_radiance, hit_uv)` - the lighting stage's OWN value for that surface, `albedo * L +
+  spec`, below L - and a miss or an unconfirmed hit returns the probe, which with the constant cube and
+  `ssgi_probes = false` is L exactly. The traced mean incoming radiance is therefore L minus what the
+  geometry the rays reach absorbs, by construction rather than by accident.
+* an unrelated estimator of the same quantity agrees about WHERE: SSAO at the matching world radius
+  (2.22, 16 samples) darkens the same furnace frame by -9.4659 against the chain's -8.8250, and its 4x4
+  tile table has the same shape - darkest in the interior tiles, lightest at the frame's left and right
+  edges. Per pixel the two correlate only +0.27, which is what a 16-sample screen-space heuristic
+  against a traced chain should look like; the spatial table is the part that means something.
+
+WHAT CHANGED, and what it was verified against:
+
+* `shaders/ssgi.comp`: the traced diffuse estimate carries `(1.0 - metallic)`, read from the same
+  G-buffer lane (`gbuffer_albedo.a`) that `deferred.frag` reads as `s.metallic`. No binding, no push
+  constant and no interface changed, so no module version moves with it;
+* the GI-off path is byte-identical before and after (same SHA256), and so is a metallic-free GI-on
+  capture (the Cube) - so the change is exactly that term and nothing else;
+* `scripts/windows/check_render.ps1`: 7 scenarios, each run twice, 0 changed; `ctest` 6/6; Release,
+  Debug and ASan+UBSan builds clean; `doxygen Doxyfile` exit 0 with an empty warning stream;
+* the traced frame itself moves by -1.1935 of mean brightness on the Sponza GI capture (34% of pixels,
+  one-signed), which is the spurious metallic diffuse leaving it.
+
+THE ACCEPTANCE, where it is well posed. The mode is the right instrument and it now passes:
+
+    GI-on and GI-off agree in a furnace whose incident radiance is L in every direction - a scene the
+    traced rays cannot reach absorbing geometry in. Convex, one material, real rays, 180 frames: agree
+    to -0.0001 of mean brightness, 122 pixels of 1036800 off by one 8-bit step. The same scene read
+    +1.4005 before this step's change, which is exactly the error the mode was built to find. In an
+    interior the frame is legitimately darker by the hit population, and that number measures the
+    scene's occlusion rather than the chain's energy.
+
+One honest note on the tolerance, because it is easy to misread: the acceptance as written asks the two
+frames to agree "within the noise of two captures", and the noise is zero. The convex measurement meets
+that bar to a single 8-bit step; the interior one cannot meet it at all, for the reason above.

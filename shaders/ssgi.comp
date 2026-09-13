@@ -481,6 +481,20 @@ void main() {
     // radiance. On a frame with a non-zero bounce gain the sum above already carries the higher-order
     // bounces, for the same reason: what a ray re-emitted was radiance too.
     const float traced_ao = traced ? texture(gbuffer_material, uv).b : 1.0;
-    const vec3 indirect = albedo * (radiance_sum / float(rays)) * pc.params.y * traced_ao;
+    // ... and the diffuse BRDF's own (1 - metallic), which is the factor every other place that means
+    // "diffuse ambient" already carries: `shading.glsl`'s ambient (`ibl_diffuse * s.albedo * s.ao *
+    // (1.0 - s.metallic)`), the spatial filter's subtraction, and the ambient `shade_hit` gives a hit.
+    // Without it the traced estimate GRANTS a metallic surface a diffuse indirect the lighting stage
+    // never added - a metal's kd is zero, so the estimate re-emits an albedo it does not have.
+    // It was found by the furnace verification mode, which is the instrument for exactly this: with the
+    // environment a constant L and the rays unable to reach any geometry (ssgi_radius 0), the chain must
+    // be the identity, and on Sponza it came out +1.75 of mean brightness BRIGHTER than GI-off instead.
+    // That configuration leaves `albedo * metallic * L` as the only term separating the two - Sponza's
+    // ao is 1 everywhere (it has no occlusion textures) and 24 of its 25 materials carry a
+    // metallicRoughness texture - and this factor is what the fix measures: +1.2494 of that +1.75 with
+    // the spatial filter bypassed, +1.2791 of it with the filter in the loop (the filter's own weighted
+    // average accounts for the rest).
+    const float metallic = texture(gbuffer_albedo, uv).a; // the lane deferred.frag reads as s.metallic
+    const vec3 indirect = albedo * (radiance_sum / float(rays)) * pc.params.y * traced_ao * (1.0 - metallic);
     imageStore(gi_output, pixel, vec4(indirect, 1.0));
 }

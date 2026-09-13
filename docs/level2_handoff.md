@@ -7,8 +7,9 @@ repository; where something is unverified it says so.
 ## 0. Read these first, in this order
 
 * `docs/gi_hit_shading.md` - the full record. Level 1 (leak fix, view independence, reset) with the measurement
-  that closed each; Level 2's four-step plan; the whole history of the furnace verification mode up to the
-  5.7% it currently reports; and every trap that cost time.
+  that closed each; Level 2's four-step plan; the whole history of the furnace verification mode, ending in the
+  section that records what it measured, the energy error it found, and why its acceptance is an exactness test
+  only a scene its premise holds in can pass; and every trap that cost time.
 * `docs/reference/lumen_radiance_cache.md` and `docs/reference/lumen_surface_cache.md` - studies of the UE 5.8.2
   source (available at `C:\UnrealEngine-5.8.2-release`). They are mechanism references, not numbers to copy.
 * `config.example.toml` - every `[render]` knob with its reasoning, including the furnace key, which is marked
@@ -48,7 +49,7 @@ NOT doing: a surface cache. The reasoning is measured and recorded: UE needs one
 per probe over 16384 probes; this renderer traces 131k rays in total and shades each hit in 0.15 ms, so
 "shade the hit" IS its cache. Revisit only if the ray count rises by an order of magnitude.
 
-## 2. The immediate task: make the furnace acceptance pass
+## 2. The furnace acceptance: what was asked, what it measured, where it passes
 
 ### What the mode is, and why it is the reference this project could not otherwise have
 
@@ -57,46 +58,59 @@ With the sun off and the environment a uniform level L, a diffuse surface's outg
 GI-off frames must agree, and any difference is an energy error rather than a preference between two of this
 project's own estimators.
 
-### What it reports today, and the attribution already done
+That identity has a premise, and the rest of this section is what it costs: it holds when the incident
+radiance really is L from EVERY direction, which a convex object satisfies and a building's interior does
+not.
 
-Measured in the Sponza interior, 180 frames, validation clean, non-degenerate level:
+### What it reports, and what the gap turned out to be
+
+Measured in the Sponza interior, 180 frames, validation clean, non-degenerate level - and reproduced exactly
+in this step before anything was changed:
 
     GI off, furnace                134.7686
     GI on,  furnace, intensity 1   127.1371        -7.63, i.e. 5.7% darker
     GI on,  furnace, intensity 0    49.4407        -85.33
 
-So the chain's ambient SUBTRACTION removes about 85.3 on its own (intensity 0 scales the traced estimate to
-nothing while the subtraction still runs), and at intensity 1 the traced estimate puts back about 77.7. The
-5.7% is that gap: the traced chain restores roughly 91% of the ambient the lighting stage drops on a traced
-frame. The remaining 9% is what to hunt.
+The first reading of that - "the traced chain restores 91% of the ambient, so the missing 9% is an energy
+error" - is WRONG, and the three hypotheses below were the wrong three. The gap is the geometry the rays
+reach: a ray that lands on a wall comes back with the wall's radiance, and in a furnace that is
+`albedo_wall * L`, below L. The chain is reporting an occlusion-corrected ambient, against a reference that
+has no occlusion in it at all (Sponza carries no occlusion textures, so the lighting stage's ao lane is 1
+everywhere). Two things follow, both measured. The mode's acceptance can only pass on a scene whose traced
+rays cannot reach absorbing geometry - and the chain's first real finding is somewhere else entirely: a
+missing `(1 - metallic)` on the traced diffuse estimate, which the `ssgi_radius = 0` configuration isolated
+to the last digit. `docs/gi_hit_shading.md` has the numbers, the fix's before and after, and the restated
+acceptance.
 
-### Hypotheses, in the order worth testing (each is measurable)
+### The three hypotheses, and what each measured
 
-1. **The AO definition mismatch.** The tracer's tail multiplies its result by the G-buffer's baked AO
-   (`texture(gbuffer_material, uv).b` in `shaders/ssgi.comp`), while the spatial filter's subtraction uses the
-   material's AO (`shaders/ssgi_spatial.comp`, `ambient_removed_at`: `albedo_metallic.rgb * ao *
-   texture(irradiance_sampler, normal).rgb * (1.0 - albedo_metallic.a)`), and the lighting stage's ambient
-   carries `s.ao` as well. In the furnace the lighting stage's ambient is deliberately AO-FREE (see the
-   furnace branch in `shaders/shading.glsl`), so the three definitions cannot all be right at once.
-   CHEAPEST TEST: temporarily drop `* traced_ao` from the tracer's tail and re-run the acceptance. If the gap
-   closes, the AO multiplication is the mechanism - and the correct fix is then to make the ambient the
-   subtraction removes and the ambient the lighting stage drops the SAME quantity, which may mean the tracer
-   should not apply the baked AO when it is replacing an AO-free ambient.
-2. **The specular IBL a hit returns.** In furnace mode a shaded hit returns
-   `vec3(furnace_level) * (fssess + fmsems)` on top of its diffuse ambient, so the traced mean exceeds L. That
-   would make the frame BRIGHTER, not darker, so it cannot be the reported sign - but it is worth knowing it is
-   there, because once (1) is fixed this term may become the dominant error.
-3. **Half resolution and the denoiser.** The traced estimate is a half-resolution, temporally and spatially
-   denoised, joint-bilaterally upsampled image. A systematic shortfall could come from the upsampler or the
-   spatial filter's normalisation. TEST: the two knobs that disable them are documented measurement settings -
-   `ssgi_spatial_sigma = 0` (pass-through) and `ssgi_upsample = false` (plain bilinear) - so the same furnace
-   capture with each isolates their share.
+1. **The AO definition mismatch** - VOID, by inspection rather than by test. Sponza has no occlusion
+   textures, so `texture(gbuffer_material, uv).b` in the tracer and `ao` in the filter's subtraction are the
+   same 1.0 at every pixel and the factor cancels. Dropping `* traced_ao` could not have moved anything on
+   this scene. (The handoff's own text was wrong about `shading.glsl` too: there is no furnace branch in it,
+   and `furnace_level` is declared there and never read - the mode is forced entirely by the descriptor
+   layer and the sun lane.)
+2. **The specular IBL a hit returns** - real, and in the wrong direction: it makes a traced frame BRIGHTER,
+   while the measured sign is darker. It matters only through the hit-shading A/B, where a shaded hit
+   returns `albedo * L + its own specular` and a screen-sampled confirmed hit returns the lighting stage's
+   value for the same surface, which is the same two terms.
+3. **Half resolution and the denoiser** - REAL and measured to be small. On the convex Cube the whole
+   residual is the denoiser (`ssgi_spatial_sigma = 0` takes +0.3278 to -0.0045, and the bilateral upsample
+   moves the remainder), and on Sponza the spatial filter contributes +0.52 of the -7.63.
 
-### Acceptance for this task
+### Acceptance, restated where it is well posed
 
-The furnace acceptance passes: GI-on and GI-off agree within the noise of two 180-frame captures, at a
-non-degenerate level, both runs validation clean. State the reason for whichever change achieves it. The
-default (furnace off) must stay byte-exact - see the gates in section 5.
+The original bar - GI-on and GI-off agree "within the noise of two 180-frame captures", at a non-degenerate
+level - is in practice an EXACTNESS test, because two runs of one config are byte-identical (verified by
+SHA256). It is met on a scene the traced rays cannot reach absorbing geometry in, which is where the mode's
+identity really holds:
+
+    convex scene, real rays, 180 frames:  GI-on against GI-off  -0.0001 of mean brightness,
+                                          122 of 1036800 pixels off by one 8-bit step.
+
+Before this step's change the same scene read +1.4005, so the bar is met by a fix rather than by a widened
+tolerance. In an interior it cannot be met, and the number there measures the scene's occlusion rather than
+the chain's energy. The default (furnace off) stayed byte-exact - see the gates in section 5.
 
 ## 3. Then L2.1: directional probes
 
@@ -182,10 +196,18 @@ Commit and reporting style:
   in `scripts/make_config.py`, `tests/fixtures/config_generated_defaults.toml`, `tests/fixtures/config_full.toml`
   and `tests/test_app_config.cpp`.
 
-## 6. A note on the furnace mode's own honesty
+## 6. The furnace mode's own honesty, now settled
 
-`config.example.toml` currently says the mode is HALF wired and that turning it on gives a dark frame rather
-than a reference. That was true when it was written; the mechanism is now complete (the constant cube is bound
-to the IBL's two cube slots and the sun lane is off), so the warning should be replaced by the measured state:
-the mode runs, and it reports a 5.7% energy error that is not yet fixed. A verification mode whose file
-misdescribes it is worse than one that is absent.
+The stale "HALF wired / dark frame" warning this section asked for had already been replaced by the time
+this note was written (the cube's level was wired in f06c83a): `config.example.toml` describes the mode as
+what it is, and it now carries the measured state as well - where the identity holds, where an interior
+legitimately differs, and the bug the mode found. The 5.7% is no longer called an unfixed energy error,
+because it is not one. A verification mode whose file misdescribes it is worse than one that is absent; so is
+a handoff that describes a finished investigation as pending.
+
+One measured residual is deliberately left alone rather than "fixed": the spatial filter's weighted average
+is not the identity on a field that varies (+0.33 of mean brightness on the convex Cube, +0.52 on Sponza).
+That is a property of the denoiser - a bilateral average whose subtraction belongs to the CENTRE pixel - and
+not an energy error in the ray path, which the `ssgi_spatial_sigma = 0` bypass proves by making the convex
+furnace exact to one 8-bit step. Recording it with its A/B is the honest treatment; redesigning the filter
+to make a test pass would not be.

@@ -230,6 +230,19 @@ ssgi_hit_shading = false
 # not change when the GI chain is switched on - and if it does, the excess is an energy error rather than a
 # matter of taste between two of this project''s own estimators. It exists because every other reference
 # available here shares a bias with the model it would be judging. Off by default, and off is byte-exact.
+# MEASURED, and its premise is narrower than it first looks: the identity holds when the incident
+# radiance is L from EVERY direction, which is true of a convex object and false inside a building - a
+# ray that lands on a wall comes back with the wall's radiance, albedo_wall * L, not L. So on a convex
+# scene the mode is an exact acceptance test (measured: GI-on and GI-off agree to -0.0001 of mean
+# brightness, 122 of 1036800 pixels off by one 8-bit step), while in the Sponza interior the traced
+# frame is legitimately darker by the hit population (measured GI-on 125.9436 against GI-off 134.7686,
+# -6.5%) - that is the occlusion-corrected ambient the traced chain exists to produce, not an energy
+# error. `ssgi_radius = 0` isolates the chain's own arithmetic from the scene: every ray then misses, so
+# the chain must be the identity (measured: 2.68% of pixels off by one 8-bit step, max 1).
+# The mode's first real finding was a bug it caught, now fixed: the traced diffuse estimate was missing
+# the (1 - metallic) the lighting stage's ambient carries, so a metallic surface was granted a diffuse
+# indirect the lighting stage never adds (measured +1.75 of mean brightness at ssgi_radius 0, and
+# +1.4005 on a convex metallic scene, which now reads -0.0001).
 furnace = false
 # MEASURED, against a CONVERGED SHADED ESTIMATOR (16 rays per pixel, the knob's limit, over 600 frames of
 # a static camera, accumulated by the temporal resolve - the same instrument as the tertile tables, now
