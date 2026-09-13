@@ -477,3 +477,40 @@ neutral reference, and producing one means an estimator that shares neither mode
 that (a) traces against the geometry rather than the depth buffer, (b) shades what it hits rather than
 reading the screen, (c) accumulates a large number of bounces rather than one, and (d) is averaged over
 frames with no denoiser in the loop. That is a new pass, not a knob, and it is the last piece of Level 1.
+
+### Step E, resolved: what can be arbitrated here, and what cannot
+
+Working out what a reference would have to be to decide between the two models changes the answer from
+"build a new pass" to a statement about the engine, so it is worth writing down before any code is written.
+
+The two models under test are not as different as they look. The screen-sampled path and the shaded path
+both TRACE THE SAME GEOMETRY - the same top level structure, the same inline ray queries, the same cells of
+the G-buffer set - and they differ in exactly one thing: where a hit's radiance comes from (the frame's
+direct-radiance image, revalidated by a depth test, versus the hit's own material and lights). Their hit
+oracle is not a variable in the comparison; it is shared.
+
+That matters because it decides what a reference could possibly be:
+
+* a reference that reuses `shade_hit` - more rays, no denoiser, accumulated over frames, even with several
+  bounces - SHARES the model it would be judging. It would produce a flattering number and call it
+  independent, which is the one outcome worse than no number at all. The earlier note that proposed exactly
+  that shape was wrong for this reason;
+* the marched reference shares the SCREEN model's central limitation instead (a depth-buffer march cannot
+  see off screen), which is why the previous measurement could not decide and was biased towards the screen
+  model;
+* so a neutral reference would need a SECOND, independent implementation of the same quantity: its own
+  material evaluation, its own shadowing, its own estimator, tracing geometry. That is a second renderer,
+  not a pass, and building one is outside what this step can honestly claim.
+
+WHAT E CAN SAY, and it is not nothing. The engine does contain one independent implementation of the
+quantity a hit's radiance is: the lighting stage, which evaluates materials, shadows and IBL in a fragment
+shader. It can only be consulted at surfaces the camera sees - but there, comparing the shaded model against
+it is a genuine cross-implementation check, and it was measured in round 9: shading only the hits the screen
+confirms gives a frame within 0.22 of mean brightness of the screen path's (0.36%), which is what a
+different shadow method plus the punctual lights this path does not evaluate are worth. That is positive
+evidence for the shading model exactly where independent evidence exists.
+
+The conclusion of E is therefore: the shaded model is independently corroborated where an independent
+implementation can reach it (visible surfaces, 0.36%), and the disagreement between the two models lives
+entirely in the hits the screen cannot evaluate - a region where this engine contains no second opinion and
+where a self-built one would be no opinion at all.
