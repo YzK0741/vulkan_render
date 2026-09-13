@@ -76,6 +76,27 @@ export struct device_capabilities {
     VkPhysicalDeviceVulkan13Features features_1_3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkPhysicalDeviceVulkan14Features features_1_4 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES};
 
+    // ---- Ray tracing (VK_KHR_acceleration_structure + VK_KHR_ray_query). These are EXTENSION
+    //      features, so they cannot live in the core 1.x structs above: they are chained after them,
+    //      and ONLY when the device advertises every extension they need. A struct whose extension is
+    //      not enabled must not appear in the vkCreateDevice chain at all, so "is it linked" IS the
+    //      availability flag - see ray_query_available below, which query() sets.
+    //
+    //      VK_KHR_deferred_host_operations is in the list because the acceleration-structure extension
+    //      requires it (the build commands are specified in terms of it), not because this engine
+    //      builds asynchronously - it builds on the frame thread and waits. ----
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+    VkPhysicalDeviceRayQueryFeaturesKHR ray_query_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+    // The two limits the builder needs are in here, next to the features that gate them:
+    // minAccelerationStructureScratchOffsetAlignment (a scratch buffer's device address must be a
+    // multiple of it) and maxInstanceCount/maxGeometryCount (what fits in one level).
+    VkPhysicalDeviceAccelerationStructurePropertiesKHR acceleration_structure_properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+    /**
+     * @brief whether the device has the acceleration-structure and ray-query extensions AND both
+     *        features, i.e. whether the two structs above are in the query/device chains
+     */
+    bool ray_query_available = false;
+
     // ---- Property chain (query only, for renderer decisions/diagnostics) ----
     VkPhysicalDeviceProperties2 properties_2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     VkPhysicalDeviceDriverProperties driver_properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};

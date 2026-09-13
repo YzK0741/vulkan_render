@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.12.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.13.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -197,6 +197,14 @@ namespace vulkan {
         // Filled in init_device_and_queue() from the capabilities query it already runs - no
         // second vkGetPhysicalDeviceProperties round trip.
         VkPhysicalDeviceProperties device_properties = {};
+        // Ray tracing is optional and comes from the device, not from a build option: when this is
+        // false the extensions were not enabled (see device_capabilities) and every ray-traced path
+        // skips itself. The properties carry the two limits the AS builder needs - the scratch
+        // buffer's required address alignment and the per-level instance/geometry caps - and are a
+        // plain data holder like device_properties above (assigned from the query, never passed to
+        // Vulkan), so they are zero-initialized rather than carrying a fixed sType.
+        bool ray_query_available = false;
+        VkPhysicalDeviceAccelerationStructurePropertiesKHR acceleration_structure_properties = {};
         uint32_t graphics_family_index = 0;
         uint32_t present_family_index = 0;
         VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;

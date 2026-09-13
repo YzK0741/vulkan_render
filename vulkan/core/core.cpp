@@ -254,6 +254,22 @@ namespace vulkan {
             creation_info.extensions.push_back(fifo_latest_ready_extension);
         }
 
+        // Ray tracing is optional and opt-in per feature, not per build: the extensions are enabled
+        // when the device has them, and the two feature structs are already in the pNext chain from
+        // the capabilities query - query() leaves them out when either feature is missing, so
+        // "enabled" and "available" cannot disagree. A device without them runs the raster paths
+        // exactly as before, with ray_query_available false and the RT features refusing to turn on.
+        constexpr std::array<char const*, 3> ray_tracing_extensions = {
+            VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+            VK_KHR_RAY_QUERY_EXTENSION_NAME,
+            VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME, // required by the AS extension itself
+        };
+        if (capabilities.ray_query_available) {
+            for (char const* extension : ray_tracing_extensions) {
+                creation_info.extensions.push_back(extension);
+            }
+        }
+
         if (!check_device_extension_support(physical_device, creation_info.extensions)) {
             utility::panic("Required device extensions not supported");
         }
@@ -268,6 +284,11 @@ namespace vulkan {
         this->present_queue = present_queue;
         this->graphics_family_index = graphics_family_index;
         this->present_family_index = present_family_index;
+
+        // What the device ended up with, for the passes that need it (see the members: the ray-traced
+        // paths are skipped rather than broken on a device without them).
+        this->ray_query_available = capabilities.ray_query_available;
+        this->acceleration_structure_properties = capabilities.acceleration_structure_properties;
 
         utility::log("device and queue init succeeded");
 
