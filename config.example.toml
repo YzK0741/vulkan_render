@@ -57,12 +57,23 @@ vsync = true
 # benchmark wants 0. Capture runs (--capture-frames) also want 0.
 max_fps = 0
 
-#   or a fixed 2/4/8/...; clamped to the device max when unsupported.
-
-# clear_color: per-frame background clear color (RGB, 0..1). The skybox is drawn
-#   over it, so it only shows where the environment pass leaves the background.
+# clear_color: per-frame background clear color (RGB, 0..1). The lighting stage writes the sky into
+#   every pixel no geometry covered, so this only shows where that stage does not run at all.
 clear_color = [0.02, 0.02, 0.03]
 
+# camera_fit: how the orbit camera is aimed at the scene when it loads.
+#   "exterior" (default) fits the whole model from outside - 2.75 scene radii, which is right for a
+#     compact object such as DamagedHelmet.
+#   "interior" stands INSIDE the scene and looks along its longest horizontal axis, because that is
+#     the axis a hall, nave or corridor runs down (for Sponza: 29.8 x 18.3 in the ground plane, so
+#     the look direction ends up +X). The distance is a fraction of the smaller horizontal
+#     half-extent, which keeps the eye inside even a narrow hall.
+#   A building framed from outside is a facade and nothing else. That is fine for a model viewer and
+#   useless for global illumination, where the whole point is to see light bounce around an interior
+#   - so use "interior" for Sponza and any other scene you mean to stand in.
+#   The startup log prints the pose this resolves to ("initial camera: fit=... yaw ... distance ..."),
+#   and --capture-camera pins an exact pose on top of either mode.
+camera_fit = "exterior"
 
 # shadow: record the directional shadow pass each frame (false = no shadows, fully lit)
 shadow = true

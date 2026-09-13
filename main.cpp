@@ -238,7 +238,33 @@ int main(int argc, char** argv) {
     //     set_scene() before any import.
     vulkan::scene_tree::scene scene;
     runtime.set_scene(scene);
-    runtime.camera.distance = scene_radius * 2.75f;
+    // Initial camera framing ([render] camera_fit). "exterior" is the historic fit: 2.75 scene radii
+    // frames a compact object, and for that it stays the default. It is also useless for a building -
+    // the camera ends up well outside its own walls, so the frame is a facade with no interior to
+    // bounce light in, which is why GI work needs the other mode. "interior" stands inside and looks
+    // along the LONGEST HORIZONTAL AXIS, because that is the axis a hall, nave or corridor runs down
+    // (for Sponza: 29.8 x 18.3 in the ground plane, so the look direction is +X). The distance is a
+    // fraction of the SMALLER horizontal half-extent, which is what keeps the eye inside even a
+    // narrow hall while still leaving enough parallax for the view to read as a space.
+    {
+        glm::vec3 const half_extent = (bounds.max - bounds.min) * 0.5f;
+        bool const interior = settings.render.camera_fit == "interior";
+        if (interior) {
+            runtime.camera.yaw = half_extent.x >= half_extent.z ? glm::radians(90.0f) : 0.0f;
+            runtime.camera.pitch = 0.0f;
+            runtime.camera.distance = std::min(half_extent.x, half_extent.z) * 0.7f;
+        } else {
+            runtime.camera.distance = scene_radius * 2.75f;
+        }
+        utility::log("initial camera: fit={} yaw {:.1f} deg, pitch {:.1f} deg, distance {:.2f} (scene radius {:.2f}, ground half-extent {:.2f} x {:.2f})",
+                     settings.render.camera_fit,
+                     glm::degrees(runtime.camera.yaw),
+                     glm::degrees(runtime.camera.pitch),
+                     runtime.camera.distance,
+                     scene_radius,
+                     half_extent.x,
+                     half_extent.z);
+    }
     gltf::scene_node_iterator const node_first = scenes->nodes_begin();
     gltf::scene_node_iterator const node_last;
     gltf::drawable_iterator const scene_first(*scenes, materials);

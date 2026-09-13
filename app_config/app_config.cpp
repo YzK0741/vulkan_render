@@ -105,6 +105,11 @@ namespace app_config {
                     }
                 }
             }
+            if (toml::node const* node = render->get("camera_fit")) {
+                if (std::optional<std::string> const value = node->value<std::string>()) {
+                    settings.render.camera_fit = *value;
+                }
+            }
             if (toml::node const* node = render->get("shadow")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.shadow = *value;
@@ -295,6 +300,10 @@ namespace app_config {
         if (settings.lighting.demo_lights < 0 || settings.lighting.demo_lights > static_cast<int>(max_demo_lights)) {
             utility::log("app_config: invalid demo_lights {} (use 0..{}), clamping", settings.lighting.demo_lights, max_demo_lights);
             settings.lighting.demo_lights = std::clamp(settings.lighting.demo_lights, 0, static_cast<int>(max_demo_lights));
+        }
+        if (settings.render.camera_fit != "exterior" && settings.render.camera_fit != "interior") {
+            utility::log("app_config: invalid camera_fit '{}' (use exterior/interior), falling back to exterior", settings.render.camera_fit);
+            settings.render.camera_fit = "exterior";
         }
         return settings;
     }

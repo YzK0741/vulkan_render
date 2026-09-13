@@ -147,6 +147,7 @@ def write_toml(path: str, cfg: dict) -> None:
         f"vsync = {str(cfg['vsync']).lower()}",
         f"max_fps = {cfg['max_fps']}",
         "clear_color = [{0}, {1}, {2}]".format(*cfg["clear_color"]),
+        f"camera_fit = \"{cfg['camera_fit']}\"",
         f"shadow = {str(cfg['shadow']).lower()}",
         f"validation_layers = {str(cfg['validation_layers']).lower()}",
         "",
@@ -217,6 +218,10 @@ def ask_all(output_dir: str) -> dict:
     vsync = ask_bool("render.vsync", False, hint="false = Mailbox (uncapped), true = FIFO")
     max_fps = ask_int("render.max_fps", 0, 0, hint="0 = uncapped; e.g. 240 to match a 240 Hz panel")
     clear_color = ask_float3("render.clear_color (RGB 0..1)", (0.02, 0.02, 0.03))
+    camera_fit = ask_choice(
+        "render.camera_fit: initial framing", ["exterior", "interior"], "exterior",
+        hint="exterior = fit the whole model from outside; interior = stand inside and look down the longest axis"
+    )
     shadow = ask_bool("render.shadow", True, hint="record the directional shadow pass")
     validation_layers = ask_bool(
         "render.validation_layers", True, hint="Debug defaults on; Release off - override here if needed"
@@ -283,6 +288,7 @@ def ask_all(output_dir: str) -> dict:
         "vsync": vsync,
         "max_fps": max_fps,
         "clear_color": clear_color,
+        "camera_fit": camera_fit,
         "shadow": shadow,
         "validation_layers": validation_layers,
         "shadow_cascades": shadow_cascades,

@@ -74,6 +74,18 @@ $scenarios = @(
     @{ name = "transparent_blend"; desc = "deferred + an alphaMode BLEND material";    extra = @{}
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\AlphaBlendModeTest\glTF\AlphaBlendModeTest.gltf"
        camera = "0,5,12.4,0,-4.511,0" }
+    # The scene the global-illumination work is measured against, and the only asset here whose
+    # interior has coloured surfaces to bleed onto pale ones (the red/green/blue banners beside the
+    # stone columns). The camera is pinned EXPLICITLY rather than left to `camera_fit = "interior"`:
+    # this scenario is the anchor a GI change is compared against, so the view must not move when the
+    # framing rule is tuned - and `camera_fit` is how you get here interactively (the startup log
+    # prints the pose it resolves to). taa = false for the same reason: TAA accumulates over frames
+    # and amplifies a small difference into a different trail, which is the one kind of noise a GI
+    # comparison cannot have (measured the hard way while adding object motion vectors). Sponza is a
+    # heavy load - 69 textures, ~150k triangles - so this is the slow scenario.
+    @{ name = "sponza";            desc = "Sponza interior, the GI reference scene";    extra = @{ taa = "false" }
+       model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\Sponza\glTF\Sponza.gltf"
+       camera = "90,0,6.41,0,-18.548,0" }
 )
 
 if ($List) {

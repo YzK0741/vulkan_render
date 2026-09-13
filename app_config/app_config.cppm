@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.13.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.14.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -43,6 +43,8 @@ import utility;
  * vsync = true     # true = FIFO_LATEST_READY (vsync), false = mailbox (uncapped)
  * max_fps = 0      # 0 = uncapped (what a throughput measurement needs), else a frame rate cap
  * clear_color = [0.02, 0.02, 0.03]  # background clear color, RGB in 0..1
+ * camera_fit = "exterior"  # "exterior" fits the whole model from outside; "interior" stands inside
+ *                          # and looks down the longest horizontal axis (a hall / nave / corridor)
  * shadow = true    # record the directional shadow pass each frame
  * fxaa   = false   # anti-alias the final image (adds one fullscreen pass; needs fxaa.frag.spv)
  * gpu_timings = true  # measure + report per-pass GPU milliseconds (timestamp queries)
@@ -92,7 +94,16 @@ namespace app_config {
         bool vsync = true;                                        // true = FIFO_LATEST_READY (FIFO fallback), false = mailbox (uncapped)
         double max_fps = 0.0;                                     // 0 = uncapped; a positive value caps the render loop
         std::array<float, 3> clear_color = {0.02f, 0.02f, 0.03f}; // background clear color (RGB, 0..1)
-        bool shadow = true;                                       // record the directional shadow pass each frame
+        // Initial camera framing ([render] camera_fit): how main() aims the orbit camera at the
+        // imported scene. "exterior" (default) fits the WHOLE model from outside - the right answer
+        // for a compact object, and what every earlier version did. "interior" stands inside the
+        // scene and looks along its longest horizontal axis, because that is the axis a hall, a nave
+        // or a corridor runs down; a building framed from outside is a facade and nothing else, which
+        // makes it useless as a global-illumination reference (there is no interior to bounce in).
+        // See the log's "initial camera" line for the numbers this resolves to, and use
+        // --capture-camera to pin an exact pose.
+        std::string camera_fit = "exterior";
+        bool shadow = true; // record the directional shadow pass each frame
         // Cascaded shadow maps ([render] shadow_cascades / shadow_cascade_blend): how many cascades the
         // shadow pass fits, renders and samples (1 = one box over the whole visible range, the historic
         // single-map behavior) and the fraction of a cascade's range over which the shader blends into
