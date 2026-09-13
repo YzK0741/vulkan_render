@@ -19,7 +19,7 @@ Each **independently reusable module set** also carries its own `module version`
 in a comment block at the top of its main interface unit — `utility` 0.6.0a, `vstd` 0.1.0a
 (the trimmed `std` replacement), `gltf_loader` 0.1.1, `app_config` 0.24.0, `vulkan.math` 0.1.1,
 `vulkan.constant_init` 0.9.0 (the compile-time Vulkan info-struct builders that
-`vulkan.core` and `vulkan.runtime` embed), `vulkan.core` 0.21.0, `vulkan.runtime` 0.48.0,
+`vulkan.core` and `vulkan.runtime` embed), `vulkan.core` 0.21.0, `vulkan.runtime` 0.49.0,
 `vulkan.profiling` 0.1.0, `vulkan.pipelines` 0.12.0, `vulkan.bindings` 0.5.0, `vulkan.shadow_fit` 0.1.0,
 `vulkan.readback` 0.1.0, `vulkan.acceleration_structure` 0.4.0,
 `vulkan.scene_tree` 0.2.0, `vulkan.primitive` 0.8.0, `vulkan.animation` 0.1.1a and
