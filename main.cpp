@@ -191,6 +191,10 @@ int main(int argc, char** argv) {
     // 0 (the default) keeps the estimator single-bounce, and the runtime clamps the knob to [0, 1]
     // because above one the diffuse loop it closes is not guaranteed to converge.
     runtime.set_ssgi_bounce(settings.render.ssgi_bounce);
+    // Shade the surface a GI ray hits from the geometry it landed on. A request: the runtime publishes the
+    // acceleration structures' instance table to the tracer only when they exist, and a frame without it
+    // samples the screen exactly as before.
+    runtime.set_ssgi_hit_shading(settings.render.ssgi_hit_shading);
     // The world-space probe cache: where the screen-space chain cannot answer - a ray that leaves the
     // frame or hits something hidden - the tracer reads a grid anchored to the scene instead of the
     // far-field environment probe. Optional at every level (no pipeline, no chain, or off: the tracer

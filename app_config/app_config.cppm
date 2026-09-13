@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.20.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.21.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -61,6 +61,7 @@ import utility;
  * ssgi_ray_tracing = false # trace the GI rays instead of marching the depth buffer (same conditions)
  * ssgi_bounce = 0.0     # re-emit this fraction of the previous frame's indirect at a hit (multi-bounce)
  * ssgi_probes = false   # world-space probe cache: answers for hits the screen cannot resolve
+ * ssgi_hit_shading = false # shade the surface a ray hit from its geometry, not from the screen
  * ssgi_probe_rate = 0.08 # how much of a cell one frame's observation replaces
  * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id,
  *                        # 6 depth, 7 flags, 8 motion (the motion vector, amplified - see the shader)
@@ -181,6 +182,11 @@ namespace app_config {
         // of the cache's answer is added on top of the environment probe (0 = the cache runs, and is
         // still not sampled: that is the A/B that measures what it adds).
         bool ssgi_probes = false;
+        // Shade the surface a GI ray hit from the geometry it landed on, instead of sampling the screen's
+        // direct-radiance image there ([render] ssgi_hit_shading). Off by default; it needs the traced GI
+        // path (the marched one never leaves the frame) and the acceleration structures, and it costs the
+        // vertex/index/texture fetches a shaded hit makes.
+        bool ssgi_hit_shading = false;
         float ssgi_probe_rate = 0.08f;
         int ssgi_probe_rounds = 2;
         float ssgi_probe_gain = 1.0f;

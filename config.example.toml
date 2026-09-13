@@ -213,6 +213,17 @@ ssgi_probes = false
 ssgi_probe_rate = 0.08
 ssgi_probe_rounds = 2
 ssgi_probe_gain = 1.0
+# ssgi_hit_shading: shade the surface a GI ray LANDED ON from its own geometry, material and textures,
+# instead of reading the screen's direct-radiance image at the pixel it reprojects to. The screen path has
+# two structural limits that both come from that reprojection: a hit the camera does not show (off screen,
+# or hidden behind a nearer surface) has no pixel to read and falls back to a probe - which approximates
+# the light where the RAY STARTED, not radiance arriving from where it landed - and every sample moves with
+# the camera, so a surface's indirect light changes when the view does. Shading the hit removes both: the
+# answer depends on the hit surface and the lights alone. It costs the vertex, index and texture fetches a
+# shaded hit makes (and a shadow ray per hit for the sun, which replaces the cascade lookup), and it needs
+# the acceleration structures and the traced GI path - with the marched path, or on a device without ray
+# queries, it does nothing. Off is the previous behaviour exactly: hits are read from the screen.
+ssgi_hit_shading = false
 
 # rt_shadows: ray-traced sun shadows. One ray per pixel against the scene's acceleration structures,
 # which is what makes contact shadows, cascade seams and the resolution limit of a shadow map go away -

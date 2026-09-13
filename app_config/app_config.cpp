@@ -170,6 +170,11 @@ namespace app_config {
                     settings.render.ssgi_probe_gain = static_cast<float>(*value);
                 }
             }
+            if (toml::node const* node = render->get("ssgi_hit_shading")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.ssgi_hit_shading = *value;
+                }
+            }
             if (toml::node const* node = render->get("rt_shadows")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.rt_shadows = *value;

@@ -3161,13 +3161,28 @@ namespace vulkan {
         // (what the shadow fit uses) and its cell size falls out of that cube and the fixed extent.
         bool const probe_ready = this->gi_probe_active() && this->gi_probe_valid;
         float const probe_cell_size = (2.0f * this->scene_radius) / static_cast<float>(vulkan::gi_probe_grid_extent);
+        // The instance table's device address, split across the two free lanes (see the shader): it is how
+        // a hit learns which triangle it landed on, and it is also the switch - 0 keeps the screen-sampling
+        // path, which is the A/B and is what a frame whose structures are not built yet gets.
+        uint64_t instance_table = 0;
+        if (this->ssgi_hit_shading && this->rt_top_levels.has_value()) {
+            VkBuffer const table = this->rt_top_levels->instance_table(static_cast<uint32_t>(vk.current_frame));
+            if (table != VK_NULL_HANDLE) {
+                VkBufferDeviceAddressInfo const table_info = {
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};
+                instance_table = vkGetBufferDeviceAddress(vk.device, &table_info);
+            }
+        }
+        float const table_low = std::bit_cast<float>(static_cast<uint32_t>(instance_table & 0xFFFFFFFFu));
+        float const table_high = std::bit_cast<float>(static_cast<uint32_t>(instance_table >> 32u));
         ssgi_push_constants const push = {
             .inv_view_proj = this->current_inv_view_proj,
             .params = glm::vec4(this->ssgi_radius * this->scene_radius, this->ssgi_intensity, static_cast<float>(this->ssgi_rays), static_cast<float>(this->ssgi_steps)),
             // The GI extent is NOT pushed: the shader asks the image it writes for its own size
-            // (imageSize), which is the same number and one less lane to keep in sync. z/w are free for
-            // the hit-shading mode this block has to make room for.
-            .proj_terms = glm::vec4(this->current_ubo.proj[2][2], this->current_ubo.proj[3][2], 0.0f, 0.0f),
+            // (imageSize), which is the same number and one less lane to keep in sync. z/w carry the
+            // instance table's address instead: a push constant is raw bytes, so a float lane holds an
+            // address's half exactly as written and the shader reinterprets it (see the shader).
+            .proj_terms = glm::vec4(this->current_ubo.proj[2][2], this->current_ubo.proj[3][2], table_low, table_high),
             .frame_info = glm::vec4(static_cast<float>(this->ssgi_frame),
                                     // ... and y = 1.0 only when the rays are actually traced: the device has ray queries,
                                     // the tracer ran and the structures exist. Resolved HERE rather than in the shader so
@@ -3399,6 +3414,15 @@ namespace vulkan {
         // converge (the surfaces' albedos approach one), and the failure mode is a frame that gets
         // brighter every frame rather than a visibly wrong one.
         this->ssgi_bounce = std::clamp(gain, 0.0f, 1.0f);
+    }
+
+    void runtime::set_ssgi_hit_shading(bool const enabled) noexcept {
+        this->ssgi_hit_shading = enabled;
+        if (enabled && !this->vulkan_core.ray_query_available) {
+            this->warn_missing_feature("ssgi", "hits are read from the screen, not shaded: this device has no ray queries");
+        } else if (enabled && !this->ssgi_ray_tracing) {
+            this->warn_missing_feature("ssgi", "hit shading has no effect: only the traced GI path lands on a surface to shade");
+        }
     }
 
     void runtime::set_ssgi_spatial(float const sigma) noexcept {

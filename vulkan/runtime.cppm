@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.39.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.40.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -387,6 +387,14 @@ namespace vulkan {
         // taken with. The image that is fed back already carries ssgi_intensity, so the loop's gain is
         // this value times that one, and the runtime refuses a gain above one for exactly that reason.
         float ssgi_bounce = 0.0f;
+        // Shade the surface a GI ray lands on from the geometry it hit, instead of sampling the screen's
+        // direct-radiance image there ([render] ssgi_hit_shading). Off by default: on, a hit's answer
+        // stops depending on what the frame happens to show - which is what lets a hit the camera cannot
+        // see (off screen, or hidden) be answered correctly rather than approximated - at the price of the
+        // material and vertex fetches a shaded hit costs. The runtime publishes the acceleration
+        // structures' instance table into the tracer's push block to switch it on (see record_ssgi_pass):
+        // a zero address means "sample the screen", so the knob is also the A/B.
+        bool ssgi_hit_shading = false;
         struct ssgi_push_constants {
             glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world (the block deferred.frag uses)
             glm::vec4 params = glm::vec4(0.0f);        // x radius, y intensity, z rays, w steps
@@ -2035,6 +2043,21 @@ namespace vulkan {
          *       (a diffuse albedo approaches one), which is why the knob stops there.
          */
         void set_ssgi_bounce(float gain) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief shade the surface a GI ray hits, instead of sampling the screen where it landed
+         * @param enabled [render] ssgi_hit_shading
+         * @note the traced GI path's two structural limits both come from reading the screen at a hit: it
+         *       cannot answer for a hit the frame does not show (those fall back to a probe, an
+         *       approximation of the light where the RAY STARTED rather than radiance arriving from where
+         *       it landed), and every sample moves with the camera. Shading the hit from the geometry and
+         *       the material removes both. It costs the vertex, index and texture fetches a shaded hit
+         *       needs, and it needs the acceleration structures (the instance table is what tells the
+         *       shader which triangle it hit) - so it is granted only where they exist, and it does
+         *       nothing to the marched path, whose hits are the depth buffer's own surface.
+         */
+        void set_ssgi_hit_shading(bool enabled) noexcept;
 
         /**
          * @ingroup vulkan_runtime

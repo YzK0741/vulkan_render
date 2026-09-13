@@ -35,6 +35,7 @@ ssgi_probes = true
 ssgi_probe_rate = 0.15
 ssgi_probe_rounds = 3
 ssgi_probe_gain = 0.5
+ssgi_hit_shading = true
 unlit = true
 fxaa = true
 gpu_timings = false

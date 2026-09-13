@@ -188,6 +188,7 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssgi_probe_rate = {cfg['ssgi_probe_rate']}",
         f"ssgi_probe_rounds = {cfg['ssgi_probe_rounds']}",
         f"ssgi_probe_gain = {cfg['ssgi_probe_gain']}",
+        f"ssgi_hit_shading = {str(cfg['ssgi_hit_shading']).lower()}",
         "",
         "# ---- [gui] debug overlay ----",
         "[gui]",
@@ -327,6 +328,11 @@ def ask_all(output_dir: str) -> dict:
         1.0,
         hint="how much of the cache's answer to add (0 = run it but never sample it)",
     )
+    ssgi_hit_shading = ask_bool(
+        "render.ssgi_hit_shading",
+        False,
+        hint="shade the surface a GI ray hit instead of sampling the screen (needs traced GI + ray tracing)",
+    )
     rt_shadows = ask_bool(
         "render.rt_shadows",
         False,
@@ -393,6 +399,7 @@ def ask_all(output_dir: str) -> dict:
         "ssgi_probe_rate": ssgi_probe_rate,
         "ssgi_probe_rounds": ssgi_probe_rounds,
         "ssgi_probe_gain": ssgi_probe_gain,
+        "ssgi_hit_shading": ssgi_hit_shading,
         "gui_show": gui_show,
         "panel_width": panel_width,
         "panel_height": panel_height,
