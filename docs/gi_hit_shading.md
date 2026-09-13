@@ -578,3 +578,36 @@ on at +0.90 of mean brightness over GI off (0.65%) - and traced the excess to a 
 filter's `subtract_ambient` reads `irradiance_sampler` directly to remove what it believes the lighting
 stage added, so the two must be kept in agreement. With both reading the same constant cube in furnace mode
 that divergence disappears by construction too, which is the second reason this shape is the right one.
+
+### L2.0 slice 3d, where it stands: the clear needs a frame-start insertion point, and that is the blocker
+
+The cube exists (slice 3c). Two pieces remain before the analytic acceptance can run, and the first one is
+the reason this slice stopped here rather than being written:
+
+**④ the clear that gives the cube its level.** `vkCmdClearColorImage` needs a command buffer, and the clear
+has to happen before the FIRST reader of the environment in a frame - the skybox, not the lighting stage -
+because in a furnace the background is part of the environment too. The frame's first recording point is
+where `gpu_mark_id::frame_begin` is written, and that mark is at `vulkan/runtime.cpp:1517` inside a function
+that the obvious greps for `runtime::record*` / `runtime::render*` do NOT name (the nearest definitions those
+patterns find are at L127-139 and then L1734), which means the definition is formatted in a way those
+patterns miss. So the next attempt should READ around L1500 rather than grep for it - and a note is worth
+more than a guess here, because guessing an insertion point is what produced the mangled append two slices
+ago.
+
+A fallback exists if that turns out to be awkward: do the clear in `record_ssgi_pass` (L3100), which is a
+function whose shape is already known and which has a command buffer. It costs a frame-1 artifact - the
+skybox and the lighting stage read the cube before the GI chain clears it, so the first frame of each target
+generation sees undefined texels while every later frame is correct, and a captured frame 180 is unaffected.
+For a diagnostic mode that is acceptable if it is stated; it is not acceptable silently.
+
+**⑤ the binding.** `write_ibl_bindings()` (a `const` method that early-returns when the scene sets are not
+created) is the single place `irradiance_sampler` and `env_sampler` are written, so it is where the flag goes.
+It must NOT be wired before ④: with the cube's contents still undefined, pointing the IBL at it would turn
+the mode from "a dark frame" into "a frame of undefined texels", which is worse than half-wired and would
+make the config file's warning untrue.
+
+**⑥ the acceptance** is then the same measurement the first attempt made (GI on versus GI off in the furnace),
+which already proved it can detect an energy error: it read +0.90 of mean brightness (0.65%) when the mode
+was half wired, and traced that excess to the spatial filter's `subtract_ambient` reading `irradiance_sampler`
+directly while the lighting stage used the analytic constant. With both reading the same constant cube that
+divergence disappears by construction - the second reason the data-shaped design was the right one.
