@@ -75,6 +75,16 @@ clear_color = [0.02, 0.02, 0.03]
 #   and --capture-camera pins an exact pose on top of either mode.
 camera_fit = "exterior"
 
+# animation_time: pin the keyframe animation at this time in SECONDS, or -1 (the default) to play it. Only
+# matters for a model that carries animations, which the demo plays automatically on a loop.
+# WHY IT EXISTS: playback is driven by the WALL CLOCK (frame_clock::delta_seconds), so the pose at a given
+# frame count differs from run to run - measured: two runs of one animated config at 60 frames produced
+# different images (their means agreed to four decimals, the pixels did not). Anything that compares two
+# captures of one pose therefore needs the time fixed, and the skinned-mesh ray-tracing work is the first
+# thing that does. It scrubs and pauses, exactly like the debug overlay's time slider, so the pose is a
+# function of this value alone and a capture becomes reproducible. -1 is a no-op: the frame is what it was.
+animation_time = -1.0
+
 # shadow: record the directional shadow pass each frame (false = no shadows, fully lit)
 shadow = true
 

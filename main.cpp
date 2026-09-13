@@ -379,6 +379,14 @@ int main(int argc, char** argv) {
     // the controller drives the runtime through an injected surface (chores wires the scene,
     // per-slot buffers and task pool), so it never depends on vulkan::runtime itself
     animation.init(*scenes, chores::make_animation_backend(runtime), scene_import_shift);
+    // [render] animation_time >= 0 PINS the pose: playback is wall-clock driven, so two captures of an
+    // animated scene differ unless the time is fixed - and this is also what makes such a scene usable in
+    // a measurement or a regression scenario at all. scrub() is the overlay's time slider, so the pose is a
+    // function of the value alone; a negative value (the default) plays as always.
+    if (settings.render.animation_time >= 0.0f) {
+        animation.set_time(settings.render.animation_time);
+        utility::log("animation: pinned at {:.2f}s by [render] animation_time (playback is wall-clock driven, so captures of an animated scene are only reproducible this way)", settings.render.animation_time);
+    }
     // Live gui widget state (chores::gui_bindings) is declared after the authored-camera
     // seeding below, right before chores::setup_gui() builds the overlay.
 

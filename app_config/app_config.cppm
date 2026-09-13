@@ -64,6 +64,7 @@ import utility;
  * ssgi_probes = false   # world-space probe cache: answers for hits the screen cannot resolve
  * ssgi_hit_shading = false # shade the surface a ray hit from its geometry, not from the screen
  * furnace = false       # verification mode: sun off, environment a constant, so the answer is analytic
+ * animation_time = -1.0 # pin a keyframe animation at N seconds (-1 = play it; playback is wall-clock)
  * ssgi_probe_rate = 0.08 # how much of a cell one frame's observation replaces
  * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id,
  *                        # 6 depth, 7 flags, 8 motion (the motion vector, amplified - see the shader)
@@ -209,6 +210,13 @@ namespace app_config {
         // It is the one reference in this project that no estimator of its own can flatter, because it is not
         // an estimator. Off by default, and off is byte-exact.
         bool furnace = false;
+        // Pin the keyframe animation at a time in seconds ([render] animation_time), or -1 to play it: a
+        // NEGATIVE value is the default and plays as always. Playback is driven by the wall clock
+        // (frame_clock::delta_seconds), so a capture of an animated scene is NOT reproducible - two runs of
+        // one config differ, measured - and anything that has to compare two captures of one pose (the
+        // skinned-mesh ray-tracing work is the first) needs this. It scrubs and pauses, which is what the
+        // debug overlay's time slider does, so the pose is a function of the value alone.
+        float animation_time = -1.0f;
         float ssgi_probe_rate = 0.08f;
         int ssgi_probe_rounds = 2;
         float ssgi_probe_gain = 1.0f;

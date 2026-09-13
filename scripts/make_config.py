@@ -183,6 +183,7 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssgi_upsample = {str(cfg['ssgi_upsample']).lower()}",
         f"rt_shadows = {str(cfg['rt_shadows']).lower()}",
         f"rt_mask_bake = {str(cfg['rt_mask_bake']).lower()}",
+        f"animation_time = {cfg['animation_time']}",
         f"ssgi_ray_tracing = {str(cfg['ssgi_ray_tracing']).lower()}",
         f"ssgi_bounce = {cfg['ssgi_bounce']}",
         f"ssgi_probes = {str(cfg['ssgi_probes']).lower()}",
@@ -346,6 +347,12 @@ def ask_all(output_dir: str) -> dict:
         False,
         hint="ray-traced sun shadows (needs a device with ray queries; ignored elsewhere)",
     )
+    animation_time = ask_float(
+        "render.animation_time",
+        -1.0,
+        hint="pin a keyframe animation at N seconds (-1 = play it; playback is wall-clock driven, so only a "
+             "pinned pose makes a capture of an animated scene reproducible)",
+    )
     rt_mask_bake = ask_bool(
         "render.rt_mask_bake",
         False,
@@ -408,6 +415,7 @@ def ask_all(output_dir: str) -> dict:
         "ssgi_upsample": ssgi_upsample,
         "rt_shadows": rt_shadows,
         "rt_mask_bake": rt_mask_bake,
+        "animation_time": animation_time,
         "ssgi_ray_tracing": ssgi_ray_tracing,
         "ssgi_bounce": ssgi_bounce,
         "ssgi_probes": ssgi_probes,

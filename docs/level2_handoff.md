@@ -155,10 +155,16 @@ represent a per-pixel mask. `[render] rt_mask_bake` defaults to false and exists
 measured; `docs/gi_hit_shading.md`'s L2.2 section has the numbers, the three rules compared, and what a
 better answer needs (subdivision along the mask boundary, or opacity micromaps).
 
-L2.2 skinned meshes: genuinely larger than it looks. UE's zero-copy path depends on having a compute skinning
-cache whose float3 position buffer IS the BLAS vertex buffer; this engine skins in the VERTEX shader
-(`shaders/pbr.vert`), so a compute skinning pass is a prerequisite, then `ALLOW_UPDATE` at build and a per-frame
-`MODE_UPDATE` refit under a triangle budget. Worth noting for morale: UE itself keeps `bRenderStatic` and
+L2.2 skinned meshes: NOT STARTED, and its first step is now unblocked. UE's zero-copy path depends on having a
+compute skinning cache whose float3 position buffer IS the BLAS vertex buffer; this engine skins in the VERTEX
+shader (`shaders/pbr.vert`), so a compute skinning pass is a prerequisite, then `ALLOW_UPDATE` at build and a
+per-frame `MODE_UPDATE` refit under a triangle budget. TWO THINGS ARE ALREADY IN PLACE for it, both from the
+steps before: `[render] animation_time` pins the pose, without which no A/B on an animated mesh is reproducible
+(see section 5), and `shaders/mask_bake.comp` is the working example of everything the skinning pass needs -
+a compute pass that reads a primitive's vertices through a buffer reference, writes an EXPANDED vertex record
+(position, normal, UV) that the structures and the hit shading read, and the flat-vertex index path in
+`shaders/hit_shading.glsl` that goes with it. A skinning pass differs in one way: it must run EVERY frame and
+the structure must be REFIT, not rebuilt. Worth noting for morale: UE itself keeps `bRenderStatic` and
 instanced-skinned meshes permanently in BIND POSE in its ray tracing scene, so the current limitation is a
 documented mode in the reference.
 
@@ -192,6 +198,13 @@ Habits that caught real errors here:
 * never commit what has not been verified: REVERT it and record why. Two rounds of this session ended in
   reverts, and that was the right call both times;
 * when a change is supposed to be invisible, say so and check it (all eight scenarios, 0 changed).
+* A CAPTURE OF AN ANIMATED SCENE IS NOT REPRODUCIBLE BY DEFAULT: playback is driven by the wall clock
+  (`frame_clock::delta_seconds`), so two runs of one animated config differ (measured: identical means to
+  four decimals, different pixels). `[render] animation_time = <seconds>` pins the pose - it sets the time
+  and pauses, the same thing the overlay's time slider does - and with it two runs are BYTE-IDENTICAL
+  (verified). Any measurement of skinned or morphed geometry needs it, which is what the L2.2 skinned-mesh
+  work runs into first. The knob is documented in `config.example.toml` and mirrored through the config
+  chain like every other key.
 
 Edit mechanics this repository punishes:
 

@@ -30,6 +30,7 @@ ssgi_spatial_sigma = 3.5
 ssgi_upsample = false
 rt_shadows = true
 rt_mask_bake = false
+animation_time = 0.75
 ssgi_ray_tracing = true
 ssgi_bounce = 0.6
 ssgi_probes = true
