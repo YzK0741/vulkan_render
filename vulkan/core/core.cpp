@@ -718,7 +718,7 @@ namespace vulkan {
                 gi_probe_grid_extent,
                 hdr_format,
                 VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                 gi_probe_images[i],
                 gi_probe_image_memories[i]);
@@ -736,7 +736,7 @@ namespace vulkan {
             gi_probe_grid_extent,
             hdr_format,
             VK_IMAGE_TILING_OPTIMAL,
-            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             gi_probe_surface_images[0],
             gi_probe_surface_image_memories[0]);

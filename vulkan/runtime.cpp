@@ -3542,10 +3542,30 @@ namespace vulkan {
 
         // The cache comes back from the sampler the tracer left it in, and goes to GENERAL for the whole
         // update: both grids stay there, which is what makes the propagation's barriers same-layout ones.
+        // Step C: if the global lighting has changed materially since the grid was filled, the grid is
+        // worthless - it holds light for a sun that is not there any more - so it is CLEARED rather than
+        // faded out over 1/rate frames. A change of more than about 25 degrees in the sun''s direction is
+        // the trigger: a dot product against the direction the cache was filled under.
+        constexpr float light_reset_cosine = 0.9f;
+        glm::vec3 const current_light_dir = glm::normalize(glm::vec3(this->light_state.light_dir));
+        bool const light_changed = this->gi_probe_light_dir_valid && glm::dot(this->gi_probe_light_dir, current_light_dir) < light_reset_cosine;
+        this->gi_probe_light_dir = current_light_dir;
+        this->gi_probe_light_dir_valid = true;
+
         VkImageMemoryBarrier2 to_general = vulkan::sampling_to_general_transition;
         to_general.image = vk.gi_probe_images[0];
         VkDependencyInfo const general_dependency = make_image_dependency_info(1, &to_general);
         vkCmdPipelineBarrier2(command_buffer, &general_dependency);
+
+        if (light_changed) {
+            // Both images are in GENERAL here (the cache by the barrier above, the geometry by its
+            // first-use transition), which is what a clear needs; TRANSFER_DST is in their usage for this.
+            VkClearColorValue const nothing = {};
+            VkImageSubresourceRange const whole = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdClearColorImage(command_buffer, vk.gi_probe_images[0], VK_IMAGE_LAYOUT_GENERAL, &nothing, 1, &whole);
+            vkCmdClearColorImage(command_buffer, vk.gi_probe_surface_images[0], VK_IMAGE_LAYOUT_GENERAL, &nothing, 1, &whole);
+            utility::log("probe cache: cleared - the global lighting changed materially");
+        }
 
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->gi_probe_pipeline->get_pipeline());
 

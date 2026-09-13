@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.42.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.43.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -530,6 +530,13 @@ namespace vulkan {
         // Whether this target generation's grid images have been transitioned out of UNDEFINED yet
         // (they are created with the swapchain and destroyed with it - see core::create_render_targets).
         bool gi_probe_grid_seen = false;
+        // The global lighting the cache currently holds light for. A material change in it invalidates the
+        // whole grid: the cache is a slow EMA, so after the sun moves it holds light for a sun that is no
+        // longer there and would take ~1/rate frames to fade instead of starting over. The reference
+        // implementation resets on a 4x / 0.25x change in the light or skylight colour; the parameter this
+        // renderer can actually change at runtime is the sun's DIRECTION, so that is what is compared.
+        glm::vec3 gi_probe_light_dir = glm::vec3(0.0f);
+        bool gi_probe_light_dir_valid = false;
         struct gi_probe_push_constants {
             glm::mat4 view_proj = glm::mat4(1.0f);     // world -> clip, for the injection's projection
             glm::vec4 grid_min_cell = glm::vec4(0.0f); // xyz = cell (0,0,0)'s corner, w = cell size
