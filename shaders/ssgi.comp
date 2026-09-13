@@ -459,11 +459,25 @@ bool shade_hit(rayQueryEXT query, vec3 hit_world, vec3 dir, out vec3 out_radianc
     // The sun, with a shadow ray instead of a shadow map: this pass already has the acceleration
     // structures, and a ray answers the visibility question for the exact point rather than for a texel
     // of a cascade. The radiance is the same literal the lighting stage uses, so the two agree.
+    //
+    // The self-intersection bias follows the engine's own convention for pushing a ray off a surface: an
+    // offset ALONG THE NORMAL that is a fraction of the scene-relative ray length (pc.params.x), which is
+    // what makes one number mean the same thing on a 1.6-unit model and on Sponza - the cascaded shadow
+    // maps offset by twice a shadow texel's world size, which is the same idea expressed in texels.
+    //
+    // It is NOT what decides this term's weight, and the measurement says so: quadrupling the offset (a
+    // fixed 0.01 to 0.045 on Sponza) moved the frame by 0.045 of a mean brightness out of the 3.23 the
+    // shadow ray removes in total. So what the ray occludes is real geometry rather than the hit's own
+    // triangle - but it occludes MORE than the cascaded maps do (the ray removes 3.23, the maps remove
+    // 2.11: a shadow-free variant is 63.51, the ray 60.28, the screen 61.40), and that gap is not yet
+    // explained. The candidates left are the ones a cascade cannot see - occluders above the camera, and
+    // the cascade's own resolution and depth range - but until it is isolated this term is the shaded
+    // path's open question, not a difference to call a correction.
     float sun_visibility = 1.0;
     {
         rayQueryEXT shadow_query;
         rayQueryInitializeEXT(shadow_query, tlas, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
-                             hit_world + normal * 0.01, 0.001, light.light_dir.xyz, 1e30);
+                             hit_world + normal * max(0.01, pc.params.x * 0.02), 0.01, light.light_dir.xyz, 1e30);
         while (rayQueryProceedEXT(shadow_query)) {
         }
         if (rayQueryGetIntersectionTypeEXT(shadow_query, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
