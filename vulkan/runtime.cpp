@@ -803,6 +803,15 @@ namespace vulkan {
                 views[i] = *this->ibl_views[i]; // the wrappers unwrap to the raw VkImageView here
             }
         }
+        // The furnace verification mode: slots 0 and 1 - the prefiltered environment and the irradiance cube
+        // - point at the CONSTANT cube instead of the real environment, while slot 2 keeps its own BRDF LUT.
+        // The two are not interchangeable: the cube slots are samplerCube, and the 2D white placeholder this
+        // function falls back to for an unloaded IBL cannot be bound there at all - doing so is a viewType/Dim
+        // validation error, which is how this was found rather than assumed.
+        if (this->furnace && !this->vulkan_core.furnace_cube_views.empty() && this->vulkan_core.furnace_cube_views[0] != VK_NULL_HANDLE) {
+            views[0] = this->vulkan_core.furnace_cube_views[0];
+            views[1] = this->vulkan_core.furnace_cube_views[0];
+        }
         std::span<VkImageView const> const view_span = have_ibl_views ? std::span<VkImageView const>(views) : std::span<VkImageView const>{};
         this->scene_sets.write_ibl(this->vulkan_core, this->ibl_ready, view_span, *this->env_sampler, *this->owned_texture_views[0], *this->texture_sampler);
     }
