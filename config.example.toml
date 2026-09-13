@@ -224,6 +224,19 @@ ssgi_probe_gain = 1.0
 # the acceleration structures and the traced GI path - with the marched path, or on a device without ray
 # queries, it does nothing. Off is the previous behaviour exactly: hits are read from the screen.
 ssgi_hit_shading = false
+# MEASURED, against a CONVERGED SHADED ESTIMATOR (16 rays per pixel, the knob's limit, over 600 frames of
+# a static camera, accumulated by the temporal resolve - the same instrument as the tertile tables, now
+# per pixel instead of per region): a 2-ray frame of the shaded path differs from it by MAE 0.42 / RMSE 0.76
+# (green channel, 8-bit), while a 2-ray frame of the SCREEN path differs from it by MAE 1.55 / RMSE 3.04 -
+# four times the RMSE, and its worst pixel is off by 46 against the shaded path's 14.
+# READ THAT CAREFULLY, because it is not the ground-truth comparison it looks like: the reference is the
+# shaded estimator itself, so "the shaded path is closer to the shaded estimator" is close to a tautology.
+# What the numbers do establish is a split. The shaded path's 0.42 is its own NOISE (how far a 2-ray frame
+# is from its own converged limit - small, so the shading is stable and the denoiser handles it), and the
+# screen path's 1.55 is a MODEL difference (sampling the screen's direct radiance and falling back to a
+# probe is answering a different question, not a noisier version of the same one). Which of the two models
+# is closer to the TRUTH still needs a reference that is neither of them - a brute-force or path-traced
+# answer - and that is the open half of this step rather than something these numbers settle.
 
 # rt_shadows: ray-traced sun shadows. One ray per pixel against the scene's acceleration structures,
 # which is what makes contact shadows, cascade seams and the resolution limit of a shadow map go away -
