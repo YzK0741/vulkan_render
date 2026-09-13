@@ -15,7 +15,7 @@ code comments, and the code comments are the only part a reader of the source wo
 | 3. Reference frame and per-pixel error metric | instrument done and used; the independent reference it wanted turned out to be the FURNACE mode ("L2.0"), whose identity holds exactly on a scene whose traced rays cannot reach absorbing geometry |
 | Level 2 as planned (L2.0 - L2.3) | done and measured: "L2.1" to "L2.3" below carry the directional probes, the MASK bake, the skinned refit and the glossy lobe, and "L2.4" shipped the traced chain as the DEFAULT |
 | The reflection's motion handling (the reference's mechanisms 1+2) | done and measured: `mean\|DD\|` 0.4029 -> 0.3068, worst 4x4 tile 1.942 -> 0.848 |
-| A second bounce through the probe cache | built, measured, and OFF: it moves 0.05% of a frame, because the cache is itself a ONE-bounce estimator |
+| A hit's ambient from the probe cache (`ssgi_bounce` on the shaded path) | built and measured: the correction is ordered by the scene (interiors -0.78% to -1.85%, sky-facing -0.05% to -0.32%, 23.94% of pixels), and it stays OFF at `ssgi_bounce = 0.0` because whether a -0.47% interior darkening should ship is a judgement |
 | Still open | the reference's reflection mechanisms 3 and 4 (no measurement has asked for them), the reflection's half-resolution noise floor, and the `deferred` gate flake recorded in `docs/level2_handoff.md` |
 
 ## What is built
@@ -1462,25 +1462,42 @@ the ambient rather than adding a second copy of it.
 
 MEASURED, Sponza interior, 180 frames, traced GI with hit shading and the cache on, A/B on `ssgi_bounce` alone:
 
-    mean green     bounce 0.0: 116.7502      bounce 0.6: 116.7606      +0.0104  (+0.009%)
-    pixels differing 491 of 1036800 (0.05%), all in ONE 4x4 tile, worst pixel 179 of 255
+    frame mean green   bounce 0.0: 61.5920      bounce 0.6: 61.3006      -0.2915  (-0.47%)
+    pixels differing 248261 of 1036800 (23.94%), 3.88% by more than 1, only 0.02% by more than 4, worst 7
 
-THE MECHANISM WORKS AND THE PREDICTION WAS WRONG. The sign is right (a second bounce adds light) and the effect
-is concentrated rather than flat, but 0.05% of a frame is not the "interiors fill in" result this step was
-planned for, and the reason is worth stating rather than smoothing over: **the cache is a ONE-BOUNCE
-estimator.** Its cells are filled by rays that are themselves shaded from the surface they landed on - direct
-sun plus the SKY ambient - and the probe pass deliberately refuses to let a cell read the cache (see above). So
-for most cells the cache's answer is very close to the sky irradiance the hit already had, and replacing one
-with the other is nearly a no-op. What the 491 pixels are is the case where the two genuinely differ: a cell
-whose rays landed on SUNLIT geometry, which the sky cube knows nothing about. That is the real content of a
-second bounce here, and on this scene and pose it is small.
+    the 4x4 table, as a percentage of each tile's own frame without the term:
+       -0.32%   -0.08%   -0.05%   -0.08%     <- the sky-facing row
+       -1.30%   -1.00%   -0.23%   -0.39%
+       -0.85%   -1.56%   -0.70%   -0.21%
+       -0.78%   -1.79%   -1.85%   -0.27%     <- the floor and the enclosed interior
 
-SO IT SHIPS OFF, and `ssgi_bounce` keeps its default of 0.0 - the value at which the code is inert (the capture
-gate is 12 scenarios x 2, 0 changed, and `default_gi` plus the two glossy scenarios are the frames that
-exercise the new parameters). The reason it is off is now a measurement rather than a plan. Turning it into a
-visible improvement needs the cache to hold MORE than one bounce, which means letting a cell's rays be answered
-by the cache itself - the feedback loop the probe pass refuses today - and that is a different design with its
-own measurement.
+THE CORRECTION IS ORDERED BY THE SCENE, which is the whole point of the instrument: the row that sees sky
+loses 0.05-0.32% while the enclosed interior loses 0.78-1.85%, every tile moves the same way, and the ordering
+is monotone in how enclosed the tile is. That is the shape of a correct indirect term rather than a global
+exposure shift, and the DIRECTION is the physical one: the sky cube tells an interior surface it is standing
+outdoors, and the cache - which knows where the surface is - corrects it DOWNWARD. So this is the opposite of
+the "interiors fill in" this step was planned for, and it is the right correction: the term's content is that
+the ambient a hit receives was systematically too bright wherever the sky is not what surrounds it.
+
+IT IS ONE BOUNCE, so do not read that table as a multi-bounce result. The cache's cells are filled by rays that
+are themselves shaded from the surface they landed on - direct sun plus the SKY ambient - and a cell is
+deliberately not allowed to read the cache (the probe pass passes a gain of 0 for exactly that reason). So the
+cache's answer is a better-informed AMBIENT, not a second bounce of light. What makes the correction as large
+as it is, is not bounce energy: it is that the sky cube's answer for an interior surface was wrong by more than
+the bounce would have been.
+
+WHETHER IT SHIPS ON is a judgement the numbers now support rather than decide, so it stays at the default
+`ssgi_bounce = 0.0` for now: the correction is real, correctly signed and correctly ordered, but it is also a
+-0.47% darkening of an interior frame, and "the ambient is now less wrong" is a claim this document should make
+with a frame beside it rather than an argument. Flipping it is one config value and one deliberate re-seed.
+
+A CORRECTION TO THIS SECTION'S FIRST VERSION, recorded rather than quietly fixed: the numbers above replace
+116.7502 -> 116.7606 and "491 pixels, 0.05%", which came from an A/B whose OVERRIDE SYNTAX WAS WRONG -
+`capture.ps1 -Overrides` separates pairs with a SEMICOLON, and a comma made `ssgi_hit_shading` and
+`ssgi_bounce` one malformed value, so both arms rendered the compiled defaults and the difference between them
+was an artifact. The tell was the frame mean: 116.75 against a Sponza interior's 61.59. The rule this cost is
+already in this document's habits - check that the arm's CONFIG says what you think before reading its number -
+and it was applied to the config FILE but not to the override STRING that writes it.
 
 ### L2.3, the glossy lobe's reach: a shared knob that was pinned by the other path
 
