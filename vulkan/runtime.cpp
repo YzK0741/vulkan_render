@@ -3560,6 +3560,18 @@ namespace vulkan {
         push.view_proj = this->current_ubo.proj * this->current_ubo.view;
         push.grid_min_cell = glm::vec4(this->shadow_scene_center - glm::vec3(this->scene_radius), cell_size);
         push.camera_pos = glm::vec4(this->current_ubo.camera_pos.x, this->current_ubo.camera_pos.y, this->current_ubo.camera_pos.z, 0.0f);
+        // The same instance table the tracer publishes, so that the cells can trace and shade their own
+        // hits in the next slice. A frame without built structures pushes zero.
+        uint64_t probe_table = 0;
+        if (this->rt_top_levels.has_value()) {
+            VkBuffer const table = this->rt_top_levels->instance_table(static_cast<uint32_t>(vk.current_frame));
+            if (table != VK_NULL_HANDLE) {
+                VkBufferDeviceAddressInfo const table_info = {
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};
+                probe_table = vkGetBufferDeviceAddress(vk.device, &table_info);
+            }
+        }
+        push.instance_table = glm::uvec2(static_cast<uint32_t>(probe_table & 0xFFFFFFFFu), static_cast<uint32_t>(probe_table >> 32u));
         push.params = glm::vec4(this->gi_probe_rate, this->current_ubo.proj[2][2], this->current_ubo.proj[3][2], 0.0f);
 
         constexpr uint32_t group_size = 4; // shaders/gi_probe.comp's local_size_x/y/z

@@ -1,4 +1,5 @@
-#version 450
+#version 460 // GL_EXT_ray_query is written against GLSL 4.60 (see shaders/rt_shadow.comp)
+#extension GL_EXT_ray_query : require
 
 /**
  * @file shaders/gi_probe.comp
@@ -68,6 +69,12 @@ layout(set = 1, binding = 3, rgba16f) uniform image3D grid_dst; // the cells bei
 // radiance. Read and written in GENERAL, like the grids.
 layout(set = 1, binding = 4, rgba16f) uniform image3D grid_surface;
 
+// The scene set's top level structure: the geometry the probe cells will trace against, so that a cell can
+// be filled from what its own rays find rather than from the pixel it happens to project to. Declared
+// before it is used for the same reason the scene set was bound a slice earlier - the ray loop is next -
+// and a pass whose layout does not name this binding cannot be created at all, which is one more reason
+// this pass stays optional: a missing pipeline disables the cache and the tracer keeps its screen path.
+layout(set = 0, binding = 16) uniform accelerationStructureEXT tlas;
 layout(push_constant) uniform GiProbePush {
     mat4 view_proj;     // world -> clip, for the injection's projection of a cell centre
     // xyz = the world position of cell (0,0,0)'s corner, w = one cell's size in world units. The grid
@@ -82,6 +89,10 @@ layout(push_constant) uniform GiProbePush {
     // projection[3][2] (the view-depth linearization pair every depth test in this project uses),
     // w = the mode: 0 = inject, 1 = propagate
     vec4 params;
+    // The acceleration structures' instance table, as the low and high halves of one device address - the
+    // same shape the tracer's push carries, reinterpreted in the shader. Zero means there is no table, so a
+    // cell has nothing to resolve a hit against. Not read yet: the loop that reads it is the rest of step B.
+    uvec2 instance_table;
 } pc;
 
 /**
