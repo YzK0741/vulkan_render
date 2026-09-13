@@ -546,3 +546,35 @@ The instrument lesson is worth carrying beyond this work: the tertile table buil
 instrument for "is a small correction added on top of the chain shaped like the light or like the
 ambient" and the wrong one for "is a replacement correct", where a spatial table is what shows the
 structure. Two slices were recorded as failures against an instrument that could not have shown a success.
+
+### L2.0 slice 2, designed: force the environment by DATA, not by code
+
+The isolation in slice 1 settled how the furnace must be built: the lanes and the sun multiply are
+byte-exact, and restructuring `shading.glsl`'s ambient/specular expressions is not, so the environment can
+never be forced by branching in the lighting stage. The remaining question was where to force it instead,
+and the answer discards the search for the IBL's fill path altogether:
+
+**bind a constant environment instead of changing how one is produced.** `irradiance_sampler` (set 0
+binding 3) and `env_sampler` (binding 2) are descriptors the runtime already writes, once per frame slot,
+through `write_ibl_bindings()`. In the furnace mode they point at a constant cube of radiance L instead of
+the real environment. That is a DATA change in the descriptor layer:
+
+  * no shader in the frame path changes at all, so the default path stays byte-exact BY CONSTRUCTION - not
+    by inspection, and not by hoping a multiply by 1.0 does not reschedule anything;
+  * it does not matter how the environment is produced (a precompute pass, a sky render, an uploaded
+    asset) because the furnace never consults the produced one;
+  * the specular BRDF LUT is deliberately left alone. It is a DIRECT term - the same in the GI-on and GI-off
+    frames - so it cannot affect the acceptance, which is the analytic statement that a furnace has nothing
+    for a bounce to add. Leaving it bound also keeps the test honest about what it is testing.
+
+What the cube has to be: one texel per face with all six faces at L, no mip chain (`textureQueryLevels`
+then returns 1 and the prefiltered lookups collapse to LOD 0, which is what a uniform environment means
+anyway). It is created with the other targets, cleared once, and referenced only while the mode is on.
+
+THE ACCEPTANCE, unchanged from the plan: with the sun off (the lane from slice 1) and the environment
+uniform, a diffuse surface's outgoing radiance is exactly albedo * L and a bounce has nothing to add, so
+the GI-on and GI-off frames must agree. The first attempt at this, before the lane isolation, measured GI
+on at +0.90 of mean brightness over GI off (0.65%) - and traced the excess to a real invariant: the spatial
+filter's `subtract_ambient` reads `irradiance_sampler` directly to remove what it believes the lighting
+stage added, so the two must be kept in agreement. With both reading the same constant cube in furnace mode
+that divergence disappears by construction too, which is the second reason this shape is the right one.
