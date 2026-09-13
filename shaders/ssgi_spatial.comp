@@ -60,6 +60,11 @@ layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal;    // RGBA16F: wo
 layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;     // the pass's own 1x depth
 layout(set = 1, binding = 7) uniform sampler2D gi_input;          // the temporal resolve's output
 layout(set = 1, binding = 8, rgba16f) uniform image2D gi_output;  // the filtered image the composite reads
+// ... and the REFLECTION's own accumulation (binding 15), which the temporal resolve now produces in a
+// dispatch of its own, reprojected from the point the reflection found (see that shader's `mode`). The two
+// are summed HERE rather than inside either resolve, because they are accumulated differently and only this
+// pass's work - one joint-bilateral filter over the whole indirect signal - is the same for both.
+layout(set = 1, binding = 15) uniform sampler2D gi_spec_input;
 // The surface this pass subtracts the probe's ambient for (see subtract_ambient below): the albedo and
 // metallic, the material's baked AO, and the probe itself - all of them at the pixel the filter is
 // centred on. They are in layouts this pass already binds, so declaring them costs no descriptor work.
@@ -87,7 +92,9 @@ layout(push_constant) uniform SsgiSpatialPush {
     // has to go. It happens HERE because this is the last pass that still knows which surface the ambient
     // belongs to, and because the images upstream stay radiance: that is what lets a bounce re-emit them.
     float subtract_ambient;
-    float unused1;
+    // 1.0 while the glossy lobe produced this frame's reflection, 0.0 otherwise: the lane that sums its
+    // accumulation in (binding 15) or scales it out entirely (see the binding's comment).
+    float spec_weight;
     float unused2;
     vec4 gi_size; // xy = GI extent in texels, zw = the full-resolution extent
 } pc;
@@ -145,7 +152,14 @@ void main() {
     const vec2 uv = (vec2(pixel) + 0.5) * inv_extent;
 
     const float depth_here = texture(gbuffer_depth, uv).r;
-    const vec3 center = texture(gi_input, uv).rgb;
+    vec3 center = texture(gi_input, uv).rgb;
+    // The reflection's own accumulation is summed in only when this frame HAD one. A uniform branch rather
+    // than a multiplication by the weight: the lobe-off case would be `0.0 * <undefined contents>`, and an
+    // undefined float that happens to be a NaN stays a NaN through a multiply - so the frame would depend on
+    // what a never-written image held. The branch is uniform (it is a push constant), so it costs nothing.
+    if (pc.spec_weight > 0.0) {
+        center += texture(gi_spec_input, uv).rgb;
+    }
     if (depth_here >= 1.0) {
         imageStore(gi_output, pixel, vec4(0.0)); // background: nothing wrote GI here either
         return;
@@ -181,7 +195,11 @@ void main() {
             const float normal_weight = pow(max(dot(normal_here, tap_normal), 0.0), pc.normal_power);
             const float spatial_weight = exp(-dot(offset, offset) * inv_sigma2);
             const float weight = spatial_weight * depth_weight * normal_weight;
-            sum += texture(gi_input, tap_uv).rgb * weight;
+            vec3 tap = texture(gi_input, tap_uv).rgb;
+            if (pc.spec_weight > 0.0) {
+                tap += texture(gi_spec_input, tap_uv).rgb; // see the centre tap: a branch, not a multiply
+            }
+            sum += tap * weight;
             weight_sum += weight;
         }
     }

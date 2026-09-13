@@ -1,4 +1,4 @@
-// module version: 0.14.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.15.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
@@ -218,10 +218,14 @@ namespace vulkan::pipelines {
         // images - the lobe writes them, no descriptor of this set ever samples them - and they exist
         // because a reflection cannot be accumulated with the diffuse signal's reprojection (see the L2.3
         // motion section of docs/gi_hit_shading.md).
-        std::array<VkDescriptorSetLayoutBinding, 15> bindings = {};
+        //
+        // 15 is the reflection's own ACCUMULATION (shaders/ssgi_temporal.comp's mode 1), which the spatial
+        // filter samples and sums the diffuse one into. A sampler, unlike its two inputs - the resolve
+        // writes it, this set only reads it.
+        std::array<VkDescriptorSetLayoutBinding, 16> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
-            bindings[b].descriptorType = (b == 6u || b == 8u || b >= 13u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[b].descriptorType = (b == 6u || b == 8u || b == 13u || b == 14u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             bindings[b].descriptorCount = 1;
             // EVERY binding lists COMPUTE as well as FRAGMENT. The layout is shared by four consumers
             // and only the shaders know which binding each of them uses: the lighting stage and the
@@ -613,10 +617,11 @@ namespace vulkan::pipelines {
         // 0..3 are sampler bindings (trace, history, motion vectors, depth); 4 is the STORAGE image
         // the resolve writes, which is why one binding differs from the rest; 5 is the G-buffer's normal
         // target, sampled for its roughness channel alone (the reflection's accumulation cap, see the
-        // shader). The count sizes this family's descriptor pool as well as the layout (see
-        // vulkan.bindings), so it and the writing side in runtime::ensure_ssgi_denoise_descriptors have to
-        // move together - they were out of step once and the validation layer is what caught it.
-        std::array<VkDescriptorSetLayoutBinding, 6> bindings = {};
+        // shader); 6 is the reflection's reprojection, read only by the mode that resolves the reflection.
+        // The count sizes this family's descriptor pool as well as the layout (see vulkan.bindings), so it
+        // and the writing side in runtime::ensure_ssgi_denoise_descriptors have to move together - they were
+        // out of step once and the validation layer is what caught it.
+        std::array<VkDescriptorSetLayoutBinding, 7> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
             bindings[b].descriptorType = b == 4u ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;

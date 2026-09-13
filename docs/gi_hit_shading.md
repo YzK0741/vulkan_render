@@ -1380,6 +1380,69 @@ the table above), which is the DIFFUSE signal being shortened on smooth pixels, 
 reflection alone those arms should return to their uncapped values. `ssgi_spatial.comp` then samples both
 accumulations and sums them, and the composite does not change at all.
 
+### L2.3, mechanisms 1 and 2 together: the reflection gets its own accumulation, and the number halves
+
+THE STEP THE PREVIOUS SECTION PREPARED. The lobe had been publishing its reprojection into images nothing read,
+so this step is the consumer, and it is mechanisms 1 and 2 TOGETHER - the reference implementation's own order -
+rather than the cap alone. `shaders/ssgi_temporal.comp` gained a `mode` (a push lane that was already there as
+`unused0`): mode 0 is the diffuse bounce exactly as it was, and mode 1 is the reflection, which differs in four
+ways. Its `previous_uv` is the lobe's `reproject.xy` rather than `uv - velocity`; its disocclusion test compares
+the depth of the point the reflection FOUND (carried in the history image's ALPHA from the frame before) against
+this frame's, instead of comparing surface depths; its blend speed is the REFLECTION's own screen motion rather
+than the surface's; and the roughness cap - which the previous step had put on the shared resolve - now binds
+only here. The spatial filter samples both accumulations and sums them (binding 15), and the composite, the
+spatial filter's own ambient subtraction and every other pass are untouched. The resolve runs twice with one
+pipeline and two descriptor families, and the two accumulations share one history-validity flag, which is read
+once and written once per frame - a flag read after the first dispatch would tell the reflection its history
+existed on the very frame that created it.
+
+MEASURED, with the same four arms and the same procedure as the previous step, one build at a time:
+
+    build                                        lobe ON   lobe OFF   mean|DD|   worst tile
+    no cap (the control)                          0.9547     0.6131     0.4029      1.942
+    cap on the SHARED resolve (previous commit)    0.8669     0.5742     0.3492      1.488
+    its own history + hit-depth reprojection       0.8406     0.6131     0.3068      0.848
+
+i.e. **-23.9% on the reflection's own motion loss and -56% on its worst 4x4 tile** against the uncapped
+baseline, and the LOBE-OFF ARM IS BACK TO ITS UNCAPPED VALUE (0.6131, to four decimals) - which is the second
+half of what the previous step was for: the cap used to shorten the DIFFUSE signal on smooth pixels too, and now
+it does not. The tile tables keep saying the same thing as before: the two SMOOTH columns of the material sweep
+carry the change and the rough ones stay where they were.
+
+THE SHARPEST VERIFICATION IS A HASH, and it was not planned. The two gate scenarios that run the traced chain
+with the lobe OFF came out at their PRE-CAP reference hashes, byte-identically - `default_gi` at
+674099658ABA436E and `sponza_gi` at 58EC848DFABE654A, both of which are the values that were current before the
+cap existed (they were recorded in this session when the cap first moved them). Removing a policy from the
+diffuse path therefore restored those two frames EXACTLY, which proves both halves at once: the cap no longer
+touches the diffuse signal, and nothing else in this split perturbed a lobe-off frame. The two glossy references
+were re-seeded deliberately, one at a time (`-Only <name> -Update`), and the gate is 12 scenarios x 2 with 0
+changed and 0 flaky.
+
+THREE TRAPS, and the first one is the one worth remembering:
+
+* **A SINGLE FIRST-USE FLAG FOR A PER-IMAGE RESOURCE, for the third time in this project.** The lobe's images
+  are per swapchain image, and the previous commit guarded their `UNDEFINED -> GENERAL` transition with ONE bool.
+  Slot 0's frame set it, so slots 1 and 2 never got a transition at all - invisible, because nothing read those
+  images yet. The moment the resolve sampled them, validation reported the failure for every slot except the
+  first: "expects VkImage ... to be in layout SHADER_READ_ONLY_OPTIMAL--instead, current layout is
+  VK_IMAGE_LAYOUT_UNDEFINED", twice per command buffer, on images three handles apart. It is now
+  `std::vector<bool> gi_spec_seen`, assigned on every target generation and indexed like the history flag.
+* **A DESCRIPTOR BOUND TO AN IMAGE WHOSE LAYOUT ONLY ONE PATH MAINTAINS.** The temporal set has to name SOME view
+  at the reprojection binding even for the diffuse dispatch, because the shader samples it inside a branch and
+  the access is in the SPIR-V either way - so validation checks the descriptor whether or not the branch is
+  taken. Binding the lobe's own image there made the diffuse resolve require a layout that only the lobe
+  establishes, which failed on exactly the frames the lobe was OFF. The diffuse set now points that binding at
+  the depth target, which is always readable on a frame that resolves anything, and mode 0 ignores the value.
+* **`0.0 * undefined` IS NOT ZERO.** Summing the reflection in as `spec_weight * texture(...)` looked safe - the
+  weight is 0 when the lobe did not run - but an undefined float that happens to be a NaN survives the multiply,
+  so a lobe-off frame would have depended on what a never-written image held. The sum is a uniform branch on the
+  push lane instead. (Also caught by the compiler, one line earlier: `vec4(0.0, out_depth)` is two components,
+  not four.)
+
+STILL OPEN: the reference's mechanisms 3 (a clamp from the history's own variance) and 4 (a specular dominant
+direction), neither of which a measurement has asked for yet; and the reflection's history is still accumulated
+at the GI chain's half resolution, which is where its noise floor now sits.
+
 ### L2.3, the glossy lobe's reach: a shared knob that was pinned by the other path
 
 The lobe's rays used the DIFFUSE bounce's `ssgi_radius`, and the two are different questions. A diffuse

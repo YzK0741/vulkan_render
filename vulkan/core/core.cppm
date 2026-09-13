@@ -348,6 +348,17 @@ namespace vulkan {
         std::vector<VkImage> gi_spec_reproject_images = {};
         std::vector<VkDeviceMemory> gi_spec_reproject_image_memories = {};
         std::vector<VkImageView> gi_spec_reproject_image_views = {};
+        // ... and the two the reflection's OWN accumulation needs. A separate pair from the trace outputs
+        // above, for exactly the reason the diffuse signal has one: the resolve writes the accumulation
+        // (STORAGE, read back by the spatial filter that sums the two signals together, and TRANSFER_SRC for
+        // the history copy), and a per-frame copy of it is next frame's history (TRANSFER_DST + SAMPLED and
+        // nothing else - the same two usages as the diffuse history).
+        std::vector<VkImage> gi_spec_resolve_images = {};
+        std::vector<VkDeviceMemory> gi_spec_resolve_image_memories = {};
+        std::vector<VkImageView> gi_spec_resolve_image_views = {};
+        std::vector<VkImage> gi_spec_history_images = {};
+        std::vector<VkDeviceMemory> gi_spec_history_image_memories = {};
+        std::vector<VkImageView> gi_spec_history_image_views = {};
 
         // ---- the world-space radiance probe cache (see shaders/gi_probe.comp) ----
         // EIGHT 3D images of gi_probe_grid_extent^3 RGBA16F cells: four SH-2 coefficients per channel times

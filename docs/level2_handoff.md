@@ -254,13 +254,20 @@ reproduced 0.4029 exactly. The other half is open: the reflection still has no h
 the surface-motion reprojection (shortened rather than corrected) and the clamp also shortens the DIFFUSE
 signal on those pixels. The instrument is `scripts/measure/motion_dd.py` now, and its pose rules are in the
 script's own docstring, because an arm posed by hand yields a plausible number rather than an obviously wrong
-one. THE FIRST HALF OF MECHANISM 1 IS NOW PUBLISHED BY THE LOBE and nothing consumes it: `shaders/ssgi_spec.comp`
-writes its correction a second time into `gi_spec_images`, and the landing point's previous screen position plus
-its view depth into `gi_spec_reproject_images` (G-buffer set bindings 13 and 14, `camera.prev_view_proj`, full
-camera block). That step is inert by construction and was gated at 0 changed, so the remaining work is the
-CONSUMER - a second temporal dispatch with its own history and its own depth guard, and the roughness cap moving
-onto it so the diffuse signal stops being shortened. The exact shape is written down in `docs/gi_hit_shading.md`'s
-L2.3 section. Its REACH is no longer on the list: it has its own
+one. MECHANISM 1 IS IN, so the reflection's motion handling is the reference's mechanisms 1+2 together: the lobe
+publishes its reprojection (`gi_spec_images` and `gi_spec_reproject_images`, G-buffer bindings 13/14, from
+`camera.prev_view_proj`), and the temporal resolve runs a SECOND time in `mode 1` with a history of its own -
+`previous_uv` from that reprojection, the disocclusion test comparing the depth of the point the reflection FOUND
+(carried in the history image's alpha), the reflection's own screen speed as the blend signal, and the roughness
+cap binding there ALONE. Measured with `scripts/measure/motion_dd.py`, three builds side by side: the
+reflection's own motion loss 0.4029 (no cap) -> 0.3492 (cap on the shared resolve) -> **0.3068** (its own
+history), worst 4x4 tile 1.942 -> 1.488 -> 0.848, and the lobe-off arms back to their uncapped 0.6131. The
+verification worth quoting is a hash rather than a mean: the two traced lobe-OFF gate scenarios came out at their
+PRE-CAP reference hashes byte-identically, which proves the cap left the diffuse path and that nothing else in the
+split perturbed them. `docs/gi_hit_shading.md`'s L2.3 section has the tables, the three traps it cost (a single
+first-use flag for a per-image resource - third occurrence; a descriptor bound to an image whose layout only one
+path maintains; and `0.0 * undefined` not being zero), and what is still open: mechanisms 3 and 4, which no
+measurement has asked for yet. Its REACH is no longer on the list: it has its own
 knob now (`ssgi_specular_radius`, default 0.5
 of the scene radius), because the shared `ssgi_radius` was pinned low by the marched path's step size and the
 lobe was realized only 39% of the signal available - half of the remainder comes back at 0.5 for +0.12 ms

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.54.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.55.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -507,6 +507,15 @@ namespace vulkan {
         VkDescriptorSetLayout ssgi_temporal_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout ssgi_temporal_pipeline_layout = VK_NULL_HANDLE;
         bindings::image_set_family ssgi_temporal_family;
+        // ... and the reflection's own resolve, which is the same pipeline with a set of its own: the same
+        // layout, the lobe's images instead of the diffuse ones (see the two write lambdas in
+        // ensure_ssgi_denoise_descriptors). A second family rather than two sets in one, because the
+        // fingerprint that decides when to rewrite them is a different list of images.
+        bindings::image_set_family ssgi_spec_temporal_family;
+        // Whether THIS frame's reflection was resolved, i.e. whether the spatial filter may sum the
+        // reflection's accumulation in. It is false whenever the lobe did not run, and the filter scales the
+        // accumulation out rather than reading a stale one.
+        bool gi_spec_resolved = false;
         // Per swapchain image: whether that image has a GI history yet. First frame after startup or
         // after a resize there is none, and the resolve then uses the current trace alone.
         std::vector<bool> gi_history_valid = {};
@@ -547,7 +556,11 @@ namespace vulkan {
             // specular term off at the texel it adds its own, before this filter sees either, which is
             // exact where a subtraction here could only approximate (see that shader's header and
             // docs/gi_hit_shading.md's L2.3 section, where both were measured against each other).
-            float unused1 = 0.0f;
+            // 1.0 while this frame's glossy lobe produced a reflection, 0.0 otherwise. The reflection's own
+            // accumulation is summed in by the filter (binding 15) and this lane is what scales it out on a
+            // frame that has none - scaling rather than clearing, so a stale accumulation cannot leak
+            // through, and so no extra image usage or barrier is needed to keep it clean.
+            float spec_weight = 1.0f;
             float unused2 = 0.0f;
             glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent
         };
@@ -600,10 +613,13 @@ namespace vulkan {
         // Whether this target generation's grid images have been transitioned out of UNDEFINED yet
         // (they are created with the swapchain and destroyed with it - see core::create_render_targets).
         bool gi_probe_grid_seen = false;
-        // The glossy lobe's own two output images (core.cppm's gi_spec_*), which need the same per-target
-        // first-use layout transition the GI trace does. One flag rather than a per-image vector: the pair
-        // is always written together, by the same pass, in the same frame.
-        bool gi_spec_seen = false;
+        // The glossy lobe's own two output images (core.cppm's gi_spec_*), which need the same first-use
+        // layout transition the GI trace does. PER SWAPCHAIN IMAGE, not one flag for all of them: a single
+        // bool is set by the first slot's frame and then tells the other slots their images are already in
+        // GENERAL, so they never get a first-use transition at all - which is invisible until something
+        // READS one of them, and then it is a validation error on whichever slot ran second. (This project's
+        // per-image-lifetime trap, third occurrence.)
+        std::vector<bool> gi_spec_seen = {};
         // The global lighting the cache currently holds light for. A material change in it invalidates the
         // whole grid: the cache is a slow EMA, so after the sun moves it holds light for a sun that is no
         // longer there and would take ~1/rate frames to fade instead of starting over. The reference
@@ -645,7 +661,10 @@ namespace vulkan {
             float blend_min = 0.6f;
             float depth_scale = 0.0f;  // proj[2][2]
             float depth_offset = 0.0f; // proj[3][2]
-            float unused0 = 0.0f;
+            // 1.0 = this dispatch resolves the REFLECTION (a history of its own, reprojected from the point
+            // the reflection found), 0.0 = the diffuse bounce (the surface's motion, as it has always been).
+            // See shaders/ssgi_temporal.comp's `glossy`.
+            float mode = 0.0f;
             float unused1 = 0.0f;
             float unused2 = 0.0f;
             glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent
@@ -686,6 +705,19 @@ namespace vulkan {
          *       for the reprojection / depth-guard / clamp trio it needs to accumulate rather than smear
          */
         bool record_ssgi_denoise_pass(VkCommandBuffer command_buffer);
+        /**
+         * @brief run one signal's temporal accumulation: barriers, one dispatch, the history copy, hand-back
+         * @param command_buffer the frame's command buffer
+         * @param set the descriptor set for this signal (its trace, history, resolve and inputs)
+         * @param resolve_image the image the resolve writes and the history is copied from
+         * @param history_image the image this frame's copy lands in
+         * @param history_valid whether that history holds a previous frame at all
+         * @param mode 0 = the diffuse bounce (surface-motion reprojection), 1 = the reflection (the hit's)
+         * @return false when a descriptor or an image was missing, which skips the frame's GI
+         * @note called twice per frame - once per signal - and it does NOT touch gi_history_valid, because
+         *       the two accumulations share that flag and it may only be set after BOTH have resolved
+         */
+        bool record_ssgi_resolve_pass(VkCommandBuffer command_buffer, VkDescriptorSet set, VkImage resolve_image, VkImage history_image, bool history_valid, float mode);
         /** @brief allocate or rewrite the denoiser's per-image descriptor sets (see vulkan.bindings) */
         void ensure_ssgi_denoise_descriptors();
         /**
