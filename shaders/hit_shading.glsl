@@ -238,9 +238,24 @@ bool shade_hit(rayQueryEXT query, vec3 hit_world, vec3 dir, vec3 to_viewer, uint
     // of a cascade. The radiance is the same literal the lighting stage uses, so the two agree.
     //
     // The self-intersection bias follows the engine's own convention for pushing a ray off a surface: an
-    // offset ALONG THE NORMAL that is a fraction of the scene-relative ray length (pc.params.x), which is
-    // what makes one number mean the same thing on a 1.6-unit model and on Sponza - the cascaded shadow
-    // maps offset by twice a shadow texel's world size, which is the same idea expressed in texels.
+    // offset ALONG THE NORMAL that is a fraction of a length the CALLER supplies (`bias_scale`), floored at
+    // 0.01. What that length is differs per caller and has to, because the thing being avoided differs:
+    // the probe pass (shaders/gi_probe.comp) passes two of its own cell diagonals, since a probe's ray
+    // starts in a cell whose size is the only scale it knows; the two traced lobes pass the WORLD-SPACE
+    // bias they already computed for their own ray origin (see shaders/ssgi.comp's push comment), which is
+    // a fraction of the scene radius rather than a fraction of the ray length.
+    //
+    // IT USED TO BE THE RAY LENGTH for both traced lobes, and that is a defect of the same class the ray
+    // origin bias had: it made the shadow ray's start scale with a knob that means REACH, so at this
+    // project's default settings the shadow ray began 0.21 world units above the surface it was testing
+    // inside Sponza (0.44 at the glossy pass's own default). Measured when both callers were changed: on
+    // the material sweep, where hit shading is on, +0.0348 of mean green with 2.01% of pixels differing and
+    // a worst pixel of 15 - and NOTHING at all in `sponza_gi`, because that scenario shades no hits (the
+    // parameter is only read on the shaded path). The SIGN is not what the obvious story predicts: a larger
+    // offset should let a shadow ray clear a nearby occluder and brighten the frame, and the SMALLER one
+    // brightened it instead. Recorded as measured rather than explained, the way the offset's own earlier
+    // measurement was (see the paragraph below). The probe pass's expression is untouched, so the
+    // world-space cache's cells are bit-identical across this change.
     //
     // It is NOT what decides this term's weight, and the measurement says so: quadrupling the offset (a
     // fixed 0.01 to 0.045 on Sponza) moved the frame by 0.045 of a mean brightness out of the 3.23 the

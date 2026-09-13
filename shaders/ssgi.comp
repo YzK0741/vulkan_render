@@ -112,7 +112,16 @@ layout(set = 1, binding = 12) uniform sampler3D gi_probe_sh3;
 
 layout(push_constant) uniform SsgiPush {
     mat4 inv_view_proj; // clip -> world (the same block deferred.frag uses)
-    // x = ray length in view units, y = intensity, z = rays per pixel, w = steps per ray
+    // x = ray length in world units, y = intensity, z = rays per pixel,
+    // w = steps per ray on a MARCHED frame, the ray-origin bias on a TRACED one. One lane for two
+    // meanings, and it is not a shortcut: this block is exactly 128 bytes - the smallest range Vulkan
+    // guarantees - so a lane has to be freed before one can be spent, and these two never coexist (a
+    // frame either marches all its rays or traces all of them, and the shader branches on exactly that
+    // flag before either reading). What it buys is that the traced path's origin bias can be a
+    // WORLD-SPACE distance rather than a fraction of the ray length: `radius * 0.02` makes the offset
+    // scale with a knob that means REACH, which at Sponza's default settings lifts every traced ray's
+    // origin 0.21 world units off the surface. The marched path keeps the fraction, where it is the step
+    // size's own scale rather than a scene's.
     vec4 params;
     // x = projection[2][2], y = [3][2] (the view-depth linearization pair).
     // z/w are FREE LANES, deliberately: this block is exactly 128 bytes - the smallest push-constant
@@ -376,8 +385,11 @@ uint64_t instance_table_address() {
  * The world-space cache IS added on two of those three returns, and the difference is the whole reason
  * it exists: a hit that is off screen or hidden still has a world POSITION, and the cache is defined
  * there (see probe_radiance). It is the one fallback that knows where the ray landed.
+ *  @param origin_bias the world-space distance a SHADED hit's own shadow ray starts off its surface by
+ *         (see the push block's comment on params.w: it is the same value this frame's traced rays use
+ *         for their own origin, and it is a length rather than a fraction of one)
  */
-vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, out bool out_hit) {
+vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, float origin_bias, out bool out_hit) {
     out_hit = false;
     rayQueryEXT query;
     rayQueryInitializeEXT(query, tlas, gl_RayFlagsOpaqueEXT, 0xFF, origin, 0.01, dir, max_distance);
@@ -420,7 +432,7 @@ vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, out bool out_hit
             return probe_radiance(hit_world, dir);
         }
         vec3 shaded = vec3(0.0);
-        if (shade_hit(query, hit_world, dir, camera.camera_pos.xyz - hit_world, instance_table_address(), pc.params.x, shaded)) {
+        if (shade_hit(query, hit_world, dir, camera.camera_pos.xyz - hit_world, instance_table_address(), origin_bias, shaded)) {
             // The shaded surface's own outgoing radiance: direct sun, the split-sum IBL ambient and its
             // emissive. The screen-space multi-bounce feedback is deliberately NOT added on top: the
             // ambient a shaded hit carries already IS its indirect estimate, so adding the feedback (which
@@ -460,9 +472,16 @@ void main() {
         return;
     }
 
+    const bool traced = pc.frame_info.y > 0.5;
     const int rays = int(pc.params.z);
-    const int steps = int(pc.params.w);
-    if (rays <= 0 || steps <= 0) {
+    // params.w carries TWO things, and which one it is is decided by the path - a marched frame cannot
+    // trace and a traced frame cannot march, so the two readings never coexist (see the push block's
+    // comment for why one lane has to do this: the block is exactly 128 bytes, the smallest range Vulkan
+    // guarantees, and the traced path's ray-origin bias needs a lane of its own because it is NOT a
+    // fraction of the ray length).
+    const int steps = int(pc.params.w);        // MARCHED: depth samples per ray
+    const float traced_bias = pc.params.w;     // TRACED: the world-space origin bias
+    if (rays <= 0 || (!traced && steps <= 0)) {
         imageStore(gi_output, pixel, vec4(0.0));
         return;
     }
@@ -480,7 +499,6 @@ void main() {
     // inverse-projection the view-space position does.
     const vec3 world_pos = world_h.xyz / world_h.w;
     const vec3 normal_world = normalize(texture(gbuffer_normal, uv).xyz);
-    const bool traced = pc.frame_info.y > 0.5;
 
     // A per-pixel, per-frame seed: the ray sequence has to change between frames or a temporal
     // filter would be fed the same error every frame instead of an average of different errors.
@@ -490,8 +508,12 @@ void main() {
     vec3 radiance_sum = vec3(0.0);
     for (int r = 0; r < rays; ++r) {
         const vec3 dir = cosine_direction(normal_view, next_uniform(state), next_uniform(state));
-        // Start off the surface by a fraction of the ray length. Starting exactly on it makes the
-        // first step compare against the surface's own depth, which self-hits on any slope.
+        // Start off the surface, because starting exactly on it makes the first step compare against the
+        // surface's own depth and self-hit on any slope. The MARCHED path's offset is a fraction of the
+        // ray length, which for a march is the step size's own scale; the TRACED path's is a world-space
+        // distance pushed by the host, because a fraction of the ray length makes the offset scale with a
+        // knob that means REACH - at this project's defaults that put the origin 0.21 world units above
+        // the surface inside Sponza, larger than most of its detail (see the push block's comment).
         const vec3 origin = view_pos + normal_view * (radius * 0.02);
         if (traced) {
             // A separate direction/origin in world space: the cosine lobe has to be built around the
@@ -499,9 +521,9 @@ void main() {
             // the noise - identical to the marched path's for the same pixel and frame.
             const vec2 u = vec2(next_uniform(state), next_uniform(state));
             const vec3 dir_world = cosine_direction(normal_world, u.x, u.y);
-            const vec3 origin_world = world_pos + normal_world * (radius * 0.02);
+            const vec3 origin_world = world_pos + normal_world * traced_bias;
             bool hit = false;
-            radiance_sum += rt_hit_radiance(origin_world, dir_world, radius, hit);
+            radiance_sum += rt_hit_radiance(origin_world, dir_world, radius, traced_bias, hit);
         } else {
             vec2 hit_uv;
             if (march(origin, dir, radius, steps, hit_uv)) {

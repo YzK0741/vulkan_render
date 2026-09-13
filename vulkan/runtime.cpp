@@ -3268,9 +3268,21 @@ namespace vulkan {
         }
         float const table_low = std::bit_cast<float>(static_cast<uint32_t>(instance_table & 0xFFFFFFFFu));
         float const table_high = std::bit_cast<float>(static_cast<uint32_t>(instance_table >> 32u));
+        // Which of the two oracles this frame uses, evaluated ONCE and pushed in one lane
+        // (frame_info.y): it also decides what params.w means, and two readings of the same predicate in
+        // the same push would be two places to drift apart.
+        bool const traced = this->ssgi_ray_tracing && this->vulkan_core.ray_query_available && this->rt_top_levels.has_value();
         ssgi_push_constants const push = {
             .inv_view_proj = this->current_inv_view_proj,
-            .params = glm::vec4(this->ssgi_radius * this->scene_radius, this->ssgi_intensity, static_cast<float>(this->ssgi_rays), static_cast<float>(this->ssgi_steps)),
+            // w is steps on a marched frame and the ray-origin bias on a traced one (see the shader's
+            // push comment). The bias is a WORLD distance - a fraction of the scene radius, the same
+            // meaning on a 1.6-unit model and on Sponza's 87.8 - rather than a fraction of the ray length,
+            // which would make it scale with the reach knob: at the default settings that put every
+            // traced ray's origin 0.21 world units above the surface inside Sponza.
+            .params = glm::vec4(this->ssgi_radius * this->scene_radius,
+                                this->ssgi_intensity,
+                                static_cast<float>(this->ssgi_rays),
+                                traced ? this->scene_radius * 0.0002f : static_cast<float>(this->ssgi_steps)),
             // The GI extent is NOT pushed: the shader asks the image it writes for its own size
             // (imageSize), which is the same number and one less lane to keep in sync. z/w carry the
             // instance table's address instead: a push constant is raw bytes, so a float lane holds an
@@ -3280,7 +3292,7 @@ namespace vulkan {
                                     // ... and y = 1.0 only when the rays are actually traced: the device has ray queries,
                                     // the tracer ran and the structures exist. Resolved HERE rather than in the shader so
                                     // the shader never has to know why it is marching instead.
-                                    (this->ssgi_ray_tracing && this->vulkan_core.ray_query_available && this->rt_top_levels.has_value()) ? 1.0f : 0.0f,
+                                    traced ? 1.0f : 0.0f,
                                     // ... and z = the multi-bounce gain. Pushed on BOTH paths (a marched hit is
                                     // confirmed against the depth buffer too, so it has an indirect to re-emit), and
                                     // pushed every frame so that turning the knob off is a byte-exact no-op. Zero on

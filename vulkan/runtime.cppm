@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.48.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.49.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -414,9 +414,15 @@ namespace vulkan {
         bool furnace_cube_ready = false;
         struct ssgi_push_constants {
             glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world (the block deferred.frag uses)
-            glm::vec4 params = glm::vec4(0.0f);        // x radius, y intensity, z rays, w steps
-            glm::vec4 proj_terms = glm::vec4(0.0f);    // x proj[2][2], y [3][2]; z/w free (see the shader)
-            glm::vec4 frame_info = glm::vec4(0.0f);    // x = frame counter (see ssgi_frame), y = traced, z = bounce gain, w = probe gain
+            // x = ray length in world units, y = intensity, z = rays per pixel,
+            // w = steps per ray on a MARCHED frame and the ray-origin bias on a TRACED one. The lane does
+            // double duty because the block is exactly 128 bytes (the smallest range Vulkan guarantees)
+            // and the two readings cannot coexist - a frame either marches all its rays or traces all of
+            // them - which is also what lets the traced path's bias be a world distance rather than a
+            // fraction of the ray length (see shaders/ssgi.comp's push comment).
+            glm::vec4 params = glm::vec4(0.0f);
+            glm::vec4 proj_terms = glm::vec4(0.0f); // x proj[2][2], y [3][2]; z/w the instance table's halves (see the shader)
+            glm::vec4 frame_info = glm::vec4(0.0f); // x = frame counter (see ssgi_frame), y = traced, z = bounce gain, w = probe gain
             // xyz = the world position of the probe grid's cell (0,0,0) corner, w = one cell's size in
             // world units. The grid's EXTENT comes from textureSize() in the shader rather than a lane
             // of its own: this block is exactly 128 bytes, which is the smallest push-constant range

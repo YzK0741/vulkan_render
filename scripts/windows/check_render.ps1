@@ -99,6 +99,21 @@ $scenarios = @(
                   ssgi_probe_rate = "0.08"; ssgi_probe_rounds = "2"; ssgi_probe_gain = "1.0" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\Sponza\glTF\Sponza.gltf"
        camera = "90,0,6.41,0,-18.548,0" }
+    # The MARCHED GI path, which `sponza_gi` above does NOT cover: it sets ssgi_ray_tracing = true, and
+    # every other scenario has GI off, so until this scenario existed the depth-march oracle and the
+    # marched chain's own semantics were exercised by nothing. Those semantics DIFFER from the traced
+    # path's in a way a regression would silently change: a marched ray dies at the screen edge, so the
+    # environment probe stays the off-screen half and the result is ADDED to it (measured against a
+    # GI-off frame of the same scene and camera: +2.30 of mean green), while the traced path falls back
+    # to the probe inside the ray and REPLACES the lighting stage's ambient instead (measured the same
+    # way: -5.74, legitimately darker because its hits are occluded). It is also the path a device
+    # without ray queries gets, and the intensity that reconciles the probe overlap is that path's own
+    # (0.7, its shipped default) rather than the traced path's 1.0.
+    @{ name = "sponza_march";      desc = "Sponza interior + MARCHED GI (no ray queries needed)";
+       extra = @{ taa = "false"; ssgi = "true"; ssgi_ray_tracing = "false"; ssgi_rays = "2"; ssgi_steps = "6";
+                  ssgi_intensity = "0.7"; ssgi_probes = "false"; ssgi_spatial_sigma = "2.0"; ssgi_upsample = "true" }
+       model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\Sponza\glTF\Sponza.gltf"
+       camera = "90,0,6.41,0,-18.548,0" }
     # The GLOSSY lobe (`[render] ssgi_specular`), which no other scenario can exercise: Sponza is roughened
     # stone everywhere (its roughness channel reads 217/255 on average), so replacing the environment's
     # specular with a traced reflection moves its interior by ~2% and shows nothing recognisable. The
@@ -108,7 +123,7 @@ $scenarios = @(
     # +0.08 on rough dielectric (see docs/gi_hit_shading.md's L2.3 section). Hit shading is on because the
     # pass cannot shade a hit without it, and the probe cache is off so the scenario isolates the lobe.
     # `camera = ""` is deliberate: this scenario lets the scene frame itself (see Invoke-Scenario).
-    @{ name = "metal_rough_glossy"; desc = "the material sweep + traced GI + the glossY lobe";
+    @{ name = "metal_rough_glossy"; desc = "the material sweep + traced GI + the glossy lobe";
        extra = @{ taa = "false"; ssgi = "true"; ssgi_intensity = "1.0"; ssgi_ray_tracing = "true";
                   ssgi_hit_shading = "true"; ssgi_specular = "true"; ssgi_specular_rays = "1";
                   ssgi_radius = "0.5"; ssgi_probes = "false"; camera_fit = "'exterior'" }

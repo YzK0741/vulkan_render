@@ -250,7 +250,7 @@ void main() {
         const float hit_t = rayQueryGetIntersectionTEXT(query, true);
         const vec3 hit_world = origin + hit_t * dir;
         vec3 shaded = vec3(0.0);
-        if (shade_hit(query, hit_world, dir, -dir, table, pc.params.x, shaded)) {
+        if (shade_hit(query, hit_world, dir, -dir, table, pc.params.z, shaded)) {
             radiance_sum += shaded;
         } else {
             radiance_sum += ibl_specular;

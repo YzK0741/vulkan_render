@@ -284,22 +284,20 @@ ssgi_hit_shading = false
 # answered by the hit's own shading before the feedback is reached - measured, `ssgi_bounce` 0 against 0.5 is a
 # byte-exact no-op on the material sweep. The diffuse term cannot use this mechanism (its bounce is live
 # whenever hit shading is off), which is why it keeps its approximate subtraction in the spatial filter.
-# WATCH THE RAY ORIGIN'S BIAS, which this pass now owns explicitly: the origin is pushed along the normal by
-# a WORLD distance (`scene_radius * 0.0002`), NOT by a fraction of the ray length. It used to be
-# `ray_length * 0.02`, which made the bias scale with the reach knob - and `ssgi_radius` is a fraction of the
-# scene radius, so at the old default on Sponza the origin floated 0.44 world units above the surface, larger
-# than most of the detail it should have been reflecting. Measured, everything else identical: the bias moves
-# 23% of Sponza's pixels at that setting and the effect grows 6% (-1.3264 -> -1.4082) when it is removed, and
-# on the material sweep the difference is monotone in the bias (2.5% / 5.6% / 6.6% of pixels at 0.017 / 0.070 /
-# 0.140 world units). The physically right origin is the surface point itself; `tmin` (a fixed 0.01 in both
-# lobes) is what guards against a ray re-hitting its own triangle.
-# THE DIFFUSE TRACER STILL HAS THE OLD EXPRESSION and it is the largest known error left in the traced path:
-# its push block is exactly 128 bytes with no lane free, so the fix is a lane that means different things on
-# different paths, which wants its own measurement (the marched path has no gate coverage at all today).
+# THE RAY ORIGIN AND THE SHADOW RAY'S BIAS ARE BOTH EXPLICIT WORLD LENGTHS NOW, in every traced lobe this
+# file's keys can reach, and the reason is a measurement rather than tidiness: both used to be a fraction of
+# the RAY LENGTH, which made them scale with a knob that means REACH. `ssgi_radius` is a fraction of the scene
+# radius, so at the old default on Sponza a traced ray began 0.21 world units above the surface and the sun ray
+# a shaded hit fires began the same - larger than most of the detail they were testing against. Removing it
+# moved 35.57% of the traced reference scenario's pixels and made the traced GI 0.27 of mean green DARKER,
+# i.e. it had been over-bright by falling back to the environment probe whenever a ray started past the
+# geometry beside it. The MARCHED path keeps the fraction of the ray length deliberately, where it is the step
+# size's own scale rather than a scene's. (See `rt_shadows`' two mechanisms below for the limits that are
+# still there, and docs/gi_hit_shading.md's L2.3 origin section for the tables.)
 # REQUIREMENTS: the traced GI path, `ssgi_hit_shading` and the acceleration structures' instance table (a
 # hit cannot be shaded without it). Where any is missing the pass is not even RECORDED, which is what makes
 # `ssgi_specular = false` byte-identical by construction rather than by arithmetic (verified: the capture
-# harness's 9 scenarios x 2, 0 changed, `metal_rough_glossy` among them since L2.3).
+# harness's 10 scenarios x 2, 0 changed, `metal_rough_glossy` among them since L2.3).
 ssgi_specular = false
 # ssgi_specular_rays: how many glossy rays per pixel, 1 to 8. One is the feature's definition and what its
 # cost was measured at. The hit is a POINT sample of a cone whose width is the material's roughness, so this

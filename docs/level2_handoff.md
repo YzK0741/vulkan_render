@@ -208,25 +208,22 @@ survives the shared joint-bilateral filter; the earlier "no reflection visible" 
 because `ssgi_radius` is a fraction of the scene radius and the 0.12 that reaches 4.6 units inside Sponza
 reaches 0.84 on a compact scene (measured curve: +0.47 / +0.71 / +0.89 / +1.06 at radius 0.12 / 0.25 / 0.50 /
 1.00). What is actually open:
-(1) THE DIFFUSE TRACER'S RAY ORIGIN carries the same defect the glossy lobe's was just cured of, and it is now
-the largest known error in the traced path: `world_pos + normal * (radius * 0.02)` puts the origin 0.44 world
-units off the surface at Sponza's default settings, which is larger than most of its architectural detail.
-Measured on the glossy lobe, where it could be isolated (a free push lane): the bias moves 23% of Sponza's
-pixels and its removal makes the reflection 6% stronger, and the effect is monotone in the bias (2.5% / 5.6% /
-6.6% of pixels on the material sweep at 0.017 / 0.070 / 0.140). The fix needs a lane the tracer does not have
-(its block is exactly 128 bytes), so it is `params.w` - steps when the frame MARCHES, the world bias when it
-TRACES. That changes what a lane means on a path, and the MARCHED path has NO gate coverage today, so it wants
-a marched-path scenario and its own A/B first. See `docs/gi_hit_shading.md`'s L2.3 origin section.
-(2) THE FEATURE IS NEARLY INVISIBLE ON THE SCENE EVERY OTHER GI MEASUREMENT USES (Sponza is roughened stone,
+(1) THE FEATURE IS NEARLY INVISIBLE ON THE SCENE EVERY OTHER GI MEASUREMENT USES (Sponza is roughened stone,
 its roughness channel averages 217/255), which is why the gate grew a `metal_rough_glossy` scenario and why the
 L2.3 evidence that matters is a MATERIAL-ordered table - smooth metal +10.33, rough metal +7.61, smooth
 dielectric +1.23, rough dielectric +0.13 - rather than a tile table.
-(3) the reflection is a point sample of the roughness cone, so a low-roughness reflection aliases at half
+(2) the reflection is a point sample of the roughness cone, so a low-roughness reflection aliases at half
 resolution.
-(4) the DIFFUSE subtraction still carries the non-mean-preserving-average artifact (+0.33 convex / +0.52
+(3) the DIFFUSE subtraction still carries the non-mean-preserving-average artifact (+0.33 convex / +0.52
 Sponza) and cannot use the mechanism that fixed the specular one, because its image has to stay a radiance for
 the live bounce - fixing it means filtering the removed term with the same weights as the added one (25 gathers
 a pixel) and re-baselining every capture.
+(4) the ray-origin bias is now fixed on every ray this work could reach - the two traced lobes' own origins and
+the shadow ray a shaded hit fires - and the MARCHED path keeps its fraction-of-the-ray-length form on purpose
+(there it is the step size's own scale). Those fixes were among the largest errors the traced path had: the
+diffuse origin alone moved 35.57% of `sponza_gi`'s pixels and its removal made the traced GI 0.27 of mean green
+DARKER, i.e. it had been over-bright because its rays started 0.21 world units above the surface and missed the
+geometry beside them.
 
 ## 5. Working discipline (non-negotiable; every item was learned the hard way here)
 
@@ -234,14 +231,16 @@ Gates before any commit:
 
 * Release, Debug and ASan+UBSan builds clean (`-Werror` is on everywhere);
 * `ctest` in the release build: 6/6;
-* the capture harness `scripts/windows/check_render.ps1`: 9 scenarios, each run twice, 0 changed - or the
+* the capture harness `scripts/windows/check_render.ps1`: 10 scenarios, each run twice, 0 changed - or the
   change recorded deliberately with its reason and the baseline re-recorded. Until the L2.1 step every
   scenario ran with `ssgi = false`, so the whole GI path (the screen-space chain, its denoisers, the probe
   cache, everything ray-traced) had no coverage and a break in it would have passed this gate; `sponza_gi`
   exists for that, and a new subsystem should get its own scenario rather than a note (`metal_rough_glossy`
   is the L2.3 one, and it exists because `sponza_gi` does not even enable hit shading, so the glossy lobe
   would otherwise be exercised only in its OFF state - which is byte-identical by construction and therefore
-  covered by nothing). A new scenario's reference is seeded once per machine with `-Update`;
+  covered by nothing; `sponza_march` is the one after it, for the same reason one level down: `sponza_gi`
+  sets `ssgi_ray_tracing = true`, so the MARCHED chain and its "addition, not replacement" semantics were
+  exercised by nothing at all). A new scenario's reference is seeded once per machine with `-Update`;
 * `doxygen Doxyfile`: exit 0 and an EMPTY warning stream. Capture the real exit code; piping doxygen into
   anything makes `$LASTEXITCODE` the pipeline's, and this was mistaken for a pass once;
 * every measurement run validation clean (the harness greps for `VUID-`, `Validation Error`, `[ERROR]`,
@@ -262,7 +261,10 @@ Habits that caught real errors here:
   slices in this session ended "the measurement disproved the hypothesis", and those are the valuable ones;
 * never commit what has not been verified: REVERT it and record why. Two rounds of this session ended in
   reverts, and that was the right call both times;
-* when a change is supposed to be invisible, say so and check it (all nine scenarios, 0 changed).
+* when a change is supposed to be invisible, say so and check it (all ten scenarios, 0 changed) - and when a
+  change is supposed to be invisible on ONE PATH of the renderer, say which scenario proves it
+  (`sponza_march` came out byte-identical through two changes that moved every traced reference, which is a
+  stronger statement than the whole gate passing).
 * A CAPTURE OF AN ANIMATED SCENE IS NOT REPRODUCIBLE BY DEFAULT: playback is driven by the wall clock
   (`frame_clock::delta_seconds`), so two runs of one animated config differ (measured: identical means to
   four decimals, different pixels). `[render] animation_time = <seconds>` pins the pose - it sets the time

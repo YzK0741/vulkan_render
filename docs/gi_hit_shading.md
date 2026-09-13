@@ -1183,12 +1183,31 @@ above that guard, and 0.0014 on the material sweep, i.e. below it - where tmin a
 captures show no self-intersection artifact either way. The old expression's only real effect was the parallax
 it introduced.
 
-THE SAME EXPRESSION IS STILL IN THE DIFFUSE TRACER, deliberately, and it is the next step rather than part of
-this one: `shaders/ssgi.comp` uses `radius * 0.02` for BOTH of its paths, and its push block is exactly 128
-bytes with no lane to spare. The fix is to push the explicit bias in `params.w` (steps per ray) when the frame
-TRACES and keep the step-relative form when it MARCHES - defensible because a march's bias belongs to its step
-size while a ray's belongs to the world - but that changes what a lane means on a path, and the MARCHED path
-has no gate coverage at all today (every scenario either has GI off or traces). So it wants its own scenario
-and its own measurement, not a ride along with this one.
+THE SAME DEFECT EXISTED A THIRD TIME, IN THE SHADOW RAY A SHADED HIT FIRES, and it is fixed in the same
+step. `shade_hit` starts its sun ray at `hit_world + normal * max(0.01, bias_scale * 0.02)`, and both traced
+lobes passed the RAY LENGTH as `bias_scale` - so at Sponza's defaults a hit's shadow ray began 0.21 world
+units above the surface (0.44 at the glossy pass's default). The callers now pass the world-space bias they
+already computed for their own ray origin, which is what the parameter was always documented to be for. It is
+only read on the SHADED path, so the measured consequence is confined to frames with hit shading on: on the
+material sweep, +0.0348 of mean green, 2.01% of pixels differing, worst pixel 15 - and `sponza_gi`, which
+shades no hits, is bit-identical across the change, which is what confirmed the reasoning rather than the
+gate merely passing. The SIGN is not what the obvious story predicts (a larger offset should let a shadow ray
+clear a nearby occluder and brighten the frame; the smaller one brightened it), and it is recorded as
+measured rather than explained, like the offset question below it was. The probe pass's expression is
+untouched, so the world-space cache's cells are unchanged.
+
+WHERE THE DIFFUSE PATH STANDS, since it was the open item this step was for. `shaders/ssgi.comp` now takes
+its traced rays' origin bias from an explicit world length pushed in `params.w` - a lane that means depth
+samples per ray on a marched frame, which is a second meaning but not an ambiguous one (a frame either
+marches all its rays or traces all of them, and the shader branches on exactly that flag before either
+reading). The marched path keeps the fraction of the ray length, where it is the step size's own scale rather
+than a scene's. The change is the biggest one this step produced, because the diffuse lobe is the dominant GI
+term: on `sponza_gi` (traced, hit shading off, the default radius that made the bias 0.21 units) it moves
+35.57% of the pixels, mean -0.2696 of green, 9.56% of them by more than 1/255 - and the sign says what the
+floating origin was doing, since a ray that starts too far out misses the geometry beside it and falls back to
+the brighter environment probe, i.e. the traced GI was over-bright. On the material sweep (radius 0.5) the
+same change is -0.0215 with 4.58% of pixels. Both references that changed were re-seeded with that reason, and
+the control that says the lane's split is real is that `sponza_march` - the new marched-path scenario - came
+out BYTE-IDENTICAL through both the origin change and the shadow-ray one.
 
 
