@@ -299,25 +299,21 @@ void main() {
         }
     }
 
-    // The traced path's rays fall back to the probe off screen, so what they estimate is the WHOLE
-    // diffuse indirect - and the lighting stage already adds the probe's ambient for every pixel. What
-    // this image must therefore carry is the DIFFERENCE between the two, or the off-screen part is
-    // counted twice: once as that ambient, again inside every missed ray's sample.
+    // UNSIGNED radiance, always: what the rays found, times this surface's albedo (and, on the traced
+    // path, its baked AO). Every consumer downstream means "radiance arriving here" - the temporal
+    // accumulation, the spatial filter, and a bounce that re-emits what arrived - so the image has to
+    // stay a radiance and not a correction term.
     //
-    // A signed difference keeps the composite exactly as it was (`color += gi * intensity`) and keeps the
-    // lighting stage's arithmetic UNTOUCHED - which matters more than it sounds: perturbing that
-    // expression re-schedules it by about an ULP, and TAA amplifies that over 40 frames into a different
-    // image, which is what the capture harness caught when the handover was written as a flag there.
-    // Subtracting here means no other shader changes at all.
-    //
-    // The ambient being removed is `ibl_diffuse(normal) * albedo * ao * (1 - metallic)`. The albedo is
-    // already a factor of this image, so the subtraction happens inside the mean; the material's baked AO
-    // is applied here as it was to that ambient; and SSAO is NOT (it lives in the lighting stage and is
-    // never stored), so on a traced frame the occlusion answer comes from the rays rather than from the
-    // depth heuristic. The marched path keeps its old value bit for bit, which is why the MARCHED path
-    // (and GI off) is unchanged by this commit.
+    // The traced path's rays fall back to the probe off screen, which means they estimate the whole
+    // diffuse indirect INCLUDING the ambient the lighting stage adds for every pixel, so something has
+    // to remove that part or it is counted twice. That subtraction used to happen HERE, as a signed
+    // difference - and it made this image a non-radiance quantity, which is exactly what made the first
+    // attempt at a multi-bounce feedback cancel itself out (a bounce that re-emits `indirect - ambient`
+    // feeds the loop a value that goes to zero as the loop converges). It now happens in the spatial
+    // filter instead (see ssgi_spatial.comp): that pass still has the surface the ambient belongs to, and
+    // it is the last one before the composite, so nothing downstream of this line sees anything but
+    // radiance.
     const float traced_ao = traced ? texture(gbuffer_material, uv).b : 1.0;
-    const vec3 traced_ambient = traced ? texture(irradiance_sampler, normal_world).rgb * (1.0 - texture(gbuffer_albedo, uv).a) : vec3(0.0);
-    const vec3 indirect = albedo * ((radiance_sum / float(rays)) - traced_ambient) * pc.params.y * traced_ao;
+    const vec3 indirect = albedo * (radiance_sum / float(rays)) * pc.params.y * traced_ao;
     imageStore(gi_output, pixel, vec4(indirect, 1.0));
 }

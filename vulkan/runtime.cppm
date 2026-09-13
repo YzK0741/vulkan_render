@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.36.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.37.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -449,7 +449,13 @@ namespace vulkan {
             float sigma_spatial = 2.0f; // in GI texels; 0 = pass-through
             float sigma_depth = 0.02f;  // relative view-depth tolerance
             float normal_power = 16.0f; // exponent on the normal agreement term
-            float unused0 = 0.0f;
+            // 1.0 = remove the probe's ambient from the filtered result before writing it (see the
+            // subtraction in shaders/ssgi_spatial.comp). The traced GI estimates the whole diffuse indirect
+            // - its rays fall back to the probe off screen - while the lighting stage adds that same
+            // ambient for every pixel, so exactly one of the two has to go. It happens in the filter
+            // because that is the last pass that still knows which surface the ambient belongs to, which is
+            // also what lets the images upstream stay pure RADIANCE (a bounce has to re-emit them).
+            float subtract_ambient = 0.0f;
             float unused1 = 0.0f;
             float unused2 = 0.0f;
             glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent

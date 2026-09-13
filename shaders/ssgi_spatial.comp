@@ -56,6 +56,12 @@ layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal;    // RGBA16F: wo
 layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;     // the pass's own 1x depth
 layout(set = 1, binding = 7) uniform sampler2D gi_input;          // the temporal resolve's output
 layout(set = 1, binding = 8, rgba16f) uniform image2D gi_output;  // the filtered image the composite reads
+// The surface this pass subtracts the probe's ambient for (see subtract_ambient below): the albedo and
+// metallic, the material's baked AO, and the probe itself - all of them at the pixel the filter is
+// centred on. They are in layouts this pass already binds, so declaring them costs no descriptor work.
+layout(set = 1, binding = 0) uniform sampler2D gbuffer_albedo;    // RGBA8: albedo.rgb + metallic
+layout(set = 1, binding = 2) uniform sampler2D gbuffer_material;  // RGBA8: .b = the material's baked AO
+layout(set = 0, binding = 3) uniform samplerCube irradiance_sampler;
 
 layout(push_constant) uniform SsgiSpatialPush {
     float depth_scale;   // projection[2][2]: the view-depth linearization pair, as in the tracer
@@ -63,10 +69,14 @@ layout(push_constant) uniform SsgiSpatialPush {
     float sigma_spatial; // spatial Gaussian sigma, in GI texels. 0 = the pass is a pass-through
     float sigma_depth;   // relative view-depth tolerance for the edge stop
     float normal_power;  // exponent on the normal agreement term
-    float unused0;
+    // 1.0 = remove the probe's ambient from the result before writing it (see the subtraction at the end
+    // of main). The traced GI estimates the whole diffuse indirect - its rays fall back to the probe off
+    // screen - while the lighting stage adds that same ambient for every pixel, so exactly one of the two
+    // has to go. It happens HERE because this is the last pass that still knows which surface the ambient
+    // belongs to, and because the images upstream stay radiance: that is what lets a bounce re-emit them.
+    float subtract_ambient;
     float unused1;
-    float unused2;
-    vec4 gi_size; // xy = GI extent in texels, zw = the full-resolution extent
+    float unused2;    vec4 gi_size; // xy = GI extent in texels, zw = the full-resolution extent
 } pc;
 
 /**
@@ -77,6 +87,30 @@ layout(push_constant) uniform SsgiSpatialPush {
  */
 float view_depth(float z_ndc) {
     return pc.depth_offset / (z_ndc + pc.depth_scale);
+}
+
+/**
+ * @brief the probe ambient the lighting stage adds for the surface at @p uv
+ * @param uv the pixel (at GI resolution) whose surface the ambient belongs to
+ * @return the ambient term to remove from this pass's output, or 0 when nothing is removed
+ *
+ * The traced GI estimates the WHOLE diffuse indirect - its rays fall back to the probe off screen - while
+ * the lighting stage adds `ibl_diffuse(normal) * albedo * ao * (1 - metallic)` for every pixel, so exactly
+ * one of the two has to go or the off-screen part is counted twice. It is removed HERE because this is the
+ * last pass of the chain that still knows which surface the ambient belongs to - which is also what lets
+ * the images upstream stay pure RADIANCE, and that is what a bounce has to re-emit.
+ *
+ * SSAO is deliberately not part of it: it lives in the lighting stage and is never stored, so a traced
+ * frame's occlusion answer is its rays rather than the depth heuristic.
+ */
+vec3 ambient_removed_at(vec2 uv) {
+    if (pc.subtract_ambient < 0.5) {
+        return vec3(0.0); // the marched path is an ADDITION to that ambient, so nothing is removed
+    }
+    const vec4 albedo_metallic = texture(gbuffer_albedo, uv);
+    const vec3 normal = texture(gbuffer_normal, uv).xyz;
+    const float ao = texture(gbuffer_material, uv).b;
+    return albedo_metallic.rgb * ao * texture(irradiance_sampler, normal).rgb * (1.0 - albedo_metallic.a);
 }
 
 void main() {
@@ -94,8 +128,11 @@ void main() {
         imageStore(gi_output, pixel, vec4(0.0)); // background: nothing wrote GI here either
         return;
     }
+    // The probe ambient the lighting stage adds for THIS surface, removed from whatever this pass writes
+    // (see ambient_removed_at).
+    const vec3 ambient_removed = ambient_removed_at(uv);
     if (pc.sigma_spatial <= 0.0) {
-        imageStore(gi_output, pixel, vec4(center, 1.0)); // the off switch, for A/B measurement
+        imageStore(gi_output, pixel, vec4(center - ambient_removed, 1.0)); // the off switch, for A/B measurement
         return;
     }
 
@@ -130,5 +167,5 @@ void main() {
     // The centre tap (offset 0,0) is always taken - its three weights are all exactly 1 - so
     // weight_sum >= 1 and the division cannot blow up. That is also why a fully edge-rejected
     // neighbourhood degrades to "no filtering" instead of to black.
-    imageStore(gi_output, pixel, vec4(sum / weight_sum, 1.0));
+    imageStore(gi_output, pixel, vec4((sum / weight_sum) - ambient_removed, 1.0));
 }

@@ -3420,7 +3420,10 @@ namespace vulkan {
             .sigma_spatial = this->gi_spatial_sigma,
             .sigma_depth = this->gi_spatial_depth_sigma,
             .normal_power = this->gi_spatial_normal_power,
-            .unused0 = 0.0f,
+            // The subtraction belongs to the TRACED path only: the marched one is an ADDITION to the probe
+            // ambient, so it must not remove anything. Same predicate the tracer's push uses, evaluated in
+            // the same frame, so the two cannot disagree about which path ran.
+            .subtract_ambient = this->ssgi_traced_active() ? 1.0f : 0.0f,
             .unused1 = 0.0f,
             .unused2 = 0.0f,
             .gi_size = glm::vec4(static_cast<float>(gi_width), static_cast<float>(gi_height),
