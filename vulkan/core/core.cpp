@@ -1171,8 +1171,12 @@ namespace vulkan {
         // footprint - the hardware does the comparison (shading.glsl averages a 3x3 grid of taps)
         bindings[8] = {.binding = 8, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         // per-joint skin matrices (mat4 per joint; indices 0-3 are the identity block for
-        // unskinned draws; read in pbr.vert / shadow.vert, filled per frame by set_skin_matrices)
-        bindings[9] = {.binding = 9, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
+        // unskinned draws; read in pbr.vert / shadow.vert, filled per frame by set_skin_matrices).
+        // COMPUTE as well as VERTEX: the compute skinning pass (shaders/compute_skin.comp) reads the same
+        // table to deform the vertices the acceleration structure is refitted against - it declares this
+        // binding itself rather than including surface.glsl, but the binding and the layout are one and
+        // the same, because a shader can only use a binding from a stage its layout names.
+        bindings[9] = {.binding = 9, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
         // morph data (floats): per-morphable-primitive delta + weight blocks; written by the
         // caller through the runtime's morph scratch memory (set once + per frame for weights)
         bindings[10] = {.binding = 10, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};

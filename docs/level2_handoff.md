@@ -46,6 +46,10 @@ Level 2's plan (unchanged, in dependency order):
     L2.2  dynamic geometry: bake alphaMode MASK into the BLAS; compute skinning + BLAS refit for skinned meshes
     L2.3  specular / glossy GI (its own objective; it brings a denoiser problem with it)
 
+L2.2 is DONE, both halves, and one of them is a negative result: the MASK bake is measured and OFF by default,
+the skinned refit is measured, works, and is also OFF by default (a knob, so its cost and its effect stay
+measurable). L2.3 is what is left.
+
 NOT doing: a surface cache. The reasoning is measured and recorded: UE needs one because it traces 1024 rays
 per probe over 16384 probes; this renderer traces 131k rays in total and shades each hit in 0.15 ms, so
 "shade the hit" IS its cache. Revisit only if the ray count rises by an order of magnitude.
@@ -155,24 +159,25 @@ represent a per-pixel mask. `[render] rt_mask_bake` defaults to false and exists
 measured; `docs/gi_hit_shading.md`'s L2.2 section has the numbers, the three rules compared, and what a
 better answer needs (subdivision along the mask boundary, or opacity micromaps).
 
-L2.2 skinned meshes: NOT STARTED, and its first step is now unblocked. UE's zero-copy path depends on having a
-compute skinning cache whose float3 position buffer IS the BLAS vertex buffer; this engine skins in the VERTEX
-shader (`shaders/pbr.vert`), so a compute skinning pass is a prerequisite, then `ALLOW_UPDATE` at build and a
-per-frame `MODE_UPDATE` refit under a triangle budget. TWO THINGS ARE ALREADY IN PLACE for it, both from the
-steps before: `[render] animation_time` pins the pose, without which no A/B on an animated mesh is reproducible
-(see section 5), and `shaders/mask_bake.comp` is the working example of everything the skinning pass needs -
-a compute pass that reads a primitive's vertices through a buffer reference, writes an EXPANDED vertex record
-(position, normal, UV) that the structures and the hit shading read, and the flat-vertex index path in
-`shaders/hit_shading.glsl` that goes with it. A skinning pass differs in one way: it must run EVERY frame and
-the structure must be REFIT, not rebuilt. Worth noting for morale: UE itself keeps `bRenderStatic` and
-instanced-skinned meshes permanently in BIND POSE in its ray tracing scene, so the current limitation is a
-documented mode in the reference.
-
-THE BASELINE IS MEASURED, so the fix's acceptance is already written down: with the pose pinned at two times,
-the difference of differences between raster and traced shadows leaves 0.7296 of mean absolute green (and
-+3.8 per tile where the shadow is) that only the raster path has - i.e. the traced shadow's pose dependence is
-zero, and 1953 pixels show the raster shadow moving while the traced one does not. That table collapsing to the
-usual traced-versus-cascade difference IS the acceptance; `docs/gi_hit_shading.md`'s L2.2b section has it.
+L2.2 skinned meshes: DONE AND MEASURED, and it works. `shaders/compute_skin.comp` is the compute skinning
+pass this section called a prerequisite - one invocation per vertex, the same deformation `shaders/pbr.vert`
+does, writing a 32-byte object-space record that keeps the primitive's vertex order. `ALLOW_UPDATE` at build
+plus a per-frame `MODE_UPDATE` refit (`acceleration_structure::record_update`) is the second half, and the
+refit is legal for exactly the reason the plan predicted: a skinned mesh's positions change every frame while
+its triangle count, vertex order and index buffer do not. The acceptance written down before the fix was that
+the baseline table collapse, and it does: the traced shadow's pose dependence goes from 0.7296 of mean
+absolute green (worst tile +3.780, 1953 pixels where the raster shadow moved and the traced one did not) to
+0.0039 (worst tile -0.008, 103 pixels), i.e. to the ordinary traced-versus-cascade difference, and the traced
+path's own pose dependence now equals the raster path's to four decimals (+0.4845 against +0.4845). A third
+pose pair reproduces it independently. Cost, measured on the engine's own GPU pass timings: +0.04 ms on Fox -
+ONE skinned caster of 576 triangles and 24 joints - so the number is a floor, not a budget; a scene with many
+or heavy skinned casters is unmeasured. `[render] rt_skin_bake` defaults to false (the pass runs every frame,
+so the flag is read every frame and can be flipped at any time), and the knob-off frame is byte-identical to
+the baseline capture, which is the control that proves the addition is inert when it is not asked for. Morph
+targets are NOT covered: they are the step before skinning and the pass does not read their deltas.
+`docs/gi_hit_shading.md`'s L2.2b section has the tables, the cost, and the four traps this cost (a leaked
+pipeline layout, a missing `COMPUTE` stage flag on binding 9, a false-positive no-op test caused by the wrong
+camera, and a config key appended into the wrong TOML table).
 
 L2.3 specular GI: currently the bounce chain is diffuse-only (the specular in a hit's shading is the direct and
 IBL term). A glossy ray per pixel is the feature, and it brings a denoiser problem with it - treat it as its own
@@ -211,6 +216,13 @@ Habits that caught real errors here:
   (verified). Any measurement of skinned or morphed geometry needs it, which is what the L2.2 skinned-mesh
   work runs into first. The knob is documented in `config.example.toml` and mirrored through the config
   chain like every other key.
+* ONE UNEXPLAINED FLAKE IS OPEN, and it is recorded rather than explained away: on the first full gate run
+  after the L2.2b build, `deferred`'s two runs disagreed (`EAA61CED585471B7..` vs `2DD1D13857322C0F..`, the
+  second being the reference), while the next full gate run was clean and five consecutive direct runs of that
+  exact config hashed `2DD1D13857322C0F` every time. That scenario runs with ray-traced shadows and GI OFF, so
+  nothing the L2.2b change adds is on its path; the harness's own verdict stands ("this scenario cannot be a
+  regression check until it is deterministic"), and the next session to see it should capture the differing
+  image rather than re-run until it passes.
 
 Edit mechanics this repository punishes:
 

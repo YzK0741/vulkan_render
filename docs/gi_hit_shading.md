@@ -889,3 +889,88 @@ expanded vertex record a structure can be built from - `shaders/mask_bake.comp` 
 exact shape, down to the flat-vertex index path in `shaders/hit_shading.glsl` - then `ALLOW_UPDATE` at build
 and a per-frame `MODE_UPDATE` refit, because a skinned mesh's positions change every frame while its triangle
 count does not.
+
+### L2.2b, measured: the refit collapses the table to the noise floor, and what it costs
+
+Built as the plan said. `shaders/compute_skin.comp` is one invocation per vertex and repeats
+`shaders/pbr.vert`'s deformation term for term (four joints blended by the weights and divided by their sum,
+positions as `mat4 * vec4(p, 1)`, normals through the matrices' `mat3`, the identity block at joint base 0
+leaving an unskinned vertex alone), writing a 32-byte OBJECT-space record (position, normal, UV) that keeps the
+primitive's own vertex order - which is what makes a refit legal: same addresses, same counts, same index
+buffer, only the bytes change. `acceleration_structure::add` grew a `refittable` flag that adds `ALLOW_UPDATE`
+to both the size query and the build, and `record_update` is a `MODE_UPDATE` build with source == destination
+and the scratch memory it retains. The per-frame pass runs at the top of `record_top_level_structure`, the
+refit right after it, and the instance record's vertex address is switched to the skinned buffer for that
+frame, so traversal and hit shading read the same copy. Knob: `[render] rt_skin_bake`, default **false**.
+
+The control came first, and it is the same one L2.2a used: with the knob off the frame must be byte-identical
+to the capture the baseline was measured on, which proves the whole addition is inert when it is not asked
+for. It is - `skin_rttrue_t05.png`'s SHA is `8D800A22341DCA32034571C2F909C766085806C1F33126127D69D7D6FA354C4D`
+and the rebuilt `rt_skin_bake`-off frame hashes the same, with the t=0.9 pair agreeing too
+(`5A2C57779547EF4B9D40D07ABA2652D543136AB3745ED7647BF669E9DD7A294D`). The knob is then a no-op by a second
+route as well: on a scene with NO skinned caster the pass records nothing (no refit, nothing to refit) and
+Sponza's traced-GI scenario hashes identically with the knob on and off, twice each:
+`754DD38898F3E8C6EADBF9911CD5992AE07CBF34754CC7654935D61C1BF574C`.
+
+The acceptance was the baseline table collapsing. Same instrument, same four captures, only the fix changed:
+
+    pose pair t=0.5 -> t=0.9            REFIT OFF (the baseline)   REFIT ON
+    raster shadows, pose0 - pose1        mean +0.4845 / 2.5983      (unchanged)
+    traced shadows, pose0 - pose1        mean -0.0535 / 2.4757      mean +0.4845 / 2.5990
+    d = only the raster has it           mean +0.5380 / 0.7296      mean -0.0001 / 0.0039
+    worst 4x4 tile of d                  +3.780                     -0.008
+    raster moved, traced did not         1953 px                    103 px
+
+    d in a 4x4 table, refit ON:      +0.000  +0.000  +0.000  +0.000
+                                     +0.000  +0.001  -0.008  +0.000
+                                     +0.000  +0.005  +0.000  +0.000
+                                     +0.000  +0.000  +0.000  +0.000
+
+The four captures behind it, so the numbers can be re-derived rather than trusted: off t=0.5
+`8D800A22341DCA32034571C2F909C766085806C1F33126127D69D7D6FA354C4D`, off t=0.9
+`5A2C57779547EF4B9D40D07ABA2652D543136AB3745ED7647BF669E9DD7A294D`, on t=0.5
+`3F04AE499C4EF16EFBDD28F0112C26B11E8C7DB1917508C241B1C99B921F94ED` (mean G 118.7188 against the off
+arm's 117.7957), on t=0.9 `D48DCB71DA45DF16CDD0ED7B4127F2B60434957AE120FDE119C44553B14DA3DC`,
+all four through `scripts/windows/run_furnace.ps1`-style runs of the release build with
+`[render] animation_time` pinned and `--capture-frames 60`, raster shadows off/on as the arm dictates.
+
+The traced shadow's pose dependence is now the raster one's to four decimal places (+0.4845 against +0.4845 of
+mean brightness), the pixel count that has the raster shadow moving with nothing in the traced path falls by
+95%, and what is left is 0.0039 of mean|.| - the ordinary traced-versus-cascade difference (a hard ray against
+hardware PCF, thin bands on shadow edges), not a pose error. A THIRD pose pair, t=0.5 -> t=1.5, which moves the
+model further (raster mean|.| 3.1355), says the same thing and is the reason the result is not a two-point
+coincidence: d mean +0.0074 / mean|.| 0.0180 with the refit on, against -0.6935 / 0.8547 with it off, tiles up
+to -5.573 becoming +0.077, 1673 struck pixels becoming 93.
+
+WHAT IT COSTS, measured rather than asserted. The engine's own GPU pass timings, averaged over 60 frames and
+read twice per arm (Fox: ONE skinned caster, 576 triangles, 24 joints):
+
+    rt interval (the structures' interval, which is where the pass and the refit are recorded)
+        refit off   0.03 ms / 0.03 ms       refit on   0.07 ms / 0.07 ms
+    whole frame     0.41 ms / 0.41 ms                  0.46 ms / 0.46 ms
+
+so roughly +0.04 ms of GPU on this asset, and the CPU-side phases (`scene`, `submit`) move by less than this
+harness resolves. That is small because the caster is small: the pass is one invocation per vertex and the
+refit touches one bottom-level structure, so the cost scales with the skinned vertex count and with how many
+skinned structures exist - NEITHER OF WHICH IS MEASURED HERE, on an asset with a single 576-triangle skinned
+mesh. A scene with many or heavy skinned casters is unmeasured.
+
+WHAT IT DOES NOT DO: morph targets. They are the step before skinning in `shaders/pbr.vert` and this pass reads
+only position, normal, UV, joints and weights, so a morphable mesh still traces its un-morphed shape - the same
+limitation one property over. Folding them in needs the deltas and their active weights, which live at the
+scene set's binding 10.
+
+TRAPS, all paid for once. (1) `compute_skin_pipeline_layout` leaked and validation reported it exactly the way
+L2.2a's `mask_bake_pipeline_layout` leak was reported - `[ERROR] vkDestroyDevice(): ... has 1 leaked objects` -
+and it cost one capture, because the off arm's frame was already accepted as byte-identical before the leak was
+seen; the fix is three lines in the teardown and the off arm was re-taken. (2) Binding 9 of the SCENE layout
+(`SkinMatrices`) declared `VERTEX_BIT` only, and `shaders/compute_skin.comp` reads it from a compute stage: the
+layout has to name `VERTEX_BIT | COMPUTE_BIT` or the binding is not usable there. (3) The first "the knob is
+not a no-op" reading was a FALSE POSITIVE and the harness was at fault, not the code: the gate's Sponza
+scenarios override the shared camera (`90,0,6.41,0,-18.548,0`), and the manual re-run passed the DamagedHelmet
+camera, so two configs differing only in `rt_skin_bake` differed in the view as well. (4) A key appended to the
+END of a config file lands in the LAST table, not in `[render]`: the first ASan smoke run had
+`rt_skin_bake = true` sitting under `[lighting]`, where it was silently ignored, and the pass therefore never
+ran while the run reported a clean exit. Appending is only safe if something pins the table, which is exactly
+what `scripts/windows/run_furnace.ps1`'s in-table override does and what the ad-hoc command did not.
+

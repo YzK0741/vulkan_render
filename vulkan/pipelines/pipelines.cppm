@@ -1,4 +1,4 @@
-// module version: 0.10.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.11.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
@@ -78,6 +78,9 @@ namespace vulkan::pipelines {
     /// array), which collapses the triangles a material's alphaMode MASK cuts out and writes the expanded
     /// vertices a bottom level structure is then built from - see shaders/mask_bake.comp
     export std::expected<ssgi_owned, std::string> build_mask_bake(core& vk, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    /// the compute skinning pass: the same shape again, over the scene set's per-joint matrices - see
+    /// shaders/compute_skin.comp
+    export std::expected<ssgi_owned, std::string> build_compute_skin(core& vk, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
 
     /// what build_ssgi_temporal() creates: the denoiser's set layout (it owns one - its inputs are
     /// the trace, the history, the motion vectors and the depth, which no other pass groups together)
@@ -402,6 +405,51 @@ namespace vulkan::pipelines {
         VkPipeline pipeline = VK_NULL_HANDLE;
         if (vkCreateComputePipelines(vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("mask bake: vkCreateComputePipelines failed");
+        }
+        out.trace = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
+        return out;
+    }
+
+    // The compute skinning pass (see shaders/compute_skin.comp): the same shape as the mask bake above and
+    // for the same reason - it reads only the shared scene set (here the per-joint matrices at binding 9)
+    // and owns no set layout of its own.
+    std::expected<ssgi_owned, std::string> build_compute_skin(core& vk, VkDescriptorSetLayout const scene_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+        using fail = std::unexpected<std::string>;
+        ssgi_owned out;
+
+        VkPushConstantRange push_range = {};
+        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        push_range.offset = 0;
+        push_range.size = push_constant_size;
+
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &scene_layout;
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+            return fail("compute skin: pipeline layout creation failed");
+        }
+
+        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, vk.device);
+        if (!module.has_value()) {
+            return fail("compute skin: compute shader module creation failed");
+        }
+        VkPipelineShaderStageCreateInfo stage_info = {};
+        stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage_info.module = **module;
+        stage_info.pName = "main";
+
+        VkComputePipelineCreateInfo pipeline_info = {};
+        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.stage = stage_info;
+        pipeline_info.layout = out.pipeline_layout;
+
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        if (vkCreateComputePipelines(vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+            return fail("compute skin: vkCreateComputePipelines failed");
         }
         out.trace = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
         return out;

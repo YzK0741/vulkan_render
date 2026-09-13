@@ -613,6 +613,7 @@ set(VR_SHADER_SOURCES
     gi_probe.comp
     rt_shadow.comp
     mask_bake.comp
+    compute_skin.comp
     shadow.vert shadow.frag post.vert post.frag fxaa.frag
 )
 set(VR_SHADER_OUTPUTS "")

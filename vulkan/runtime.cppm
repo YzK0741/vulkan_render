@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.45.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.46.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -1129,6 +1129,14 @@ namespace vulkan {
             uint32_t blas_index = 0;
             uint32_t mask_stride = 0;                // 0 = the original, indexed geometry is what was built
             VkDeviceAddress mask_vertex_address = 0; // the expanded copy's base address, for the table
+            // ... and when the caster is SKINNED, what the per-frame pass needs to re-skin it into the
+            // buffer its structure was built from. skin_destination_address == 0 means "not skinned".
+            VkDeviceAddress skin_source_address = 0;
+            VkDeviceAddress skin_destination_address = 0;
+            uint32_t skin_source_stride = 0;
+            uint32_t skin_destination_stride = 0; // 32 (position, normal, uv)
+            uint32_t skin_vertex_count = 0;
+            uint32_t skin_base = 0;
         };
         std::vector<rt_caster_level> rt_caster_levels = {};
         // The expanded buffers themselves, owned here for as long as the structures are: a build reads one,
@@ -1147,10 +1155,41 @@ namespace vulkan {
         // per run, every command after the update reported against a command buffer "now in an invalid
         // state". Only the two bindings the bake reads are written; the rest of the layout stays unwritten,
         // which is legal because this pass's shader does not statically use them.
-        vk_descriptor_set mask_bake_set = {}; // Whether that bake runs at all ([render] rt_mask_bake). On by default, because a MASK surface that
-        // is solid to a ray is a defect rather than a look - but a knob, because the bake is a per-TRIANGLE
-        // approximation of a per-pixel mask and that difference is what its measurement reads.
-        bool rt_mask_bake = true;
+        vk_descriptor_set mask_bake_set = {};
+        // Whether that bake runs at all ([render] rt_mask_bake). Off by default: the per-triangle rule
+        // measured WORSE than the raster path (see the member comment above and docs/gi_hit_shading.md).
+        bool rt_mask_bake = false;
+
+        // ---- skinned meshes (see shaders/compute_skin.comp) ----
+        // This engine skins in the VERTEX shader, so the deformed positions never reach memory a build can
+        // read, and a skinned mesh's traced shadow is its BIND POSE (measured: the traced shadow's pose
+        // dependence is zero where the raster one's is up to 3.8 per tile - docs/gi_hit_shading.md's L2.2b
+        // section). The pass below writes the same vertices the vertex shader computes into the buffer the
+        // structure is built from, once per frame, and the structure is REFITTED rather than rebuilt
+        // because only the bytes change.
+        std::optional<vk_pipeline> compute_skin_pipeline = std::nullopt;
+        VkPipelineLayout compute_skin_pipeline_layout = VK_NULL_HANDLE;
+        // ONE set per frame slot: binding 9 is the SLOT's own per-joint matrix buffer, and the animation
+        // writes the slot it paced. Each is written once and never updated, for the reason the mask bake's
+        // set documents - a set updated while a recording command buffer holds it invalidates that buffer,
+        // and this pass runs before the frame writes the scene set's binding 16.
+        std::array<vk_descriptor_set, vulkan::core::MAX_FRAMES_IN_FLIGHT> compute_skin_sets = {};
+        // The skinned vertex buffers (one per skinned caster, owned here for as long as the structures are)
+        // and the geometry indices that have to be refitted every frame.
+        std::vector<vk_buffer> rt_skin_buffers = {};
+        std::vector<uint32_t> rt_skin_levels = {};
+        // Whether the skinning pass runs ([render] rt_skin_bake): a knob because it is the A/B that measures
+        // whether a traced shadow now follows the pose, and because a device without ray queries has no
+        // structures for it to feed.
+        bool rt_skin_bake = false;
+        struct compute_skin_push_constants {
+            glm::uvec2 source_vertices = glm::uvec2(0u); // the primitive's bind-pose vertices, low and high
+            glm::uvec2 destination = glm::uvec2(0u);     // the skinned buffer this pass fills
+            uint32_t source_stride = 0;                  // 64: the engine's interleaved vertex
+            uint32_t destination_stride = 0;             // 32: position, normal, uv
+            uint32_t vertex_count = 0;
+            uint32_t skin_base = 0; // this primitive's joint block in skins.matrices
+        };
         bool rt_top_level_logged = false;
         // The ray-traced sun shadow pass (see shaders/rt_shadow.comp): one ray per pixel against the top
         // level structure, writing the visibility image the deferred lighting stage multiplies its sun
@@ -1937,6 +1976,19 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief whether skinned casters are re-skinned and their structures refitted every frame
+         *        ([render] rt_skin_bake)
+         * @param enabled false = the structures keep whatever pose they were last built or refitted in
+         * @note the structures are built from the model-space bind pose (see acceleration_structure::add), so
+         *       without this pass a traced shadow of an animated mesh is cast by the mesh where it is NOT -
+         *       which is exactly what the L2.2b baseline table in docs/gi_hit_shading.md measures. Off by
+         *       default, and unlike set_rt_mask_bake it is read every frame: the pass runs per frame, so the
+         *       flag can be flipped at any time and the next frame's traced shadows follow.
+         */
+        void set_rt_skin_bake(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief whether ANY ray-traced feature is asking for the acceleration structures
          * @note the structures serve both ray-traced features, so they are built when either wants them -
          *       and they must be, because both pipelines declare the top level structure as a descriptor:
@@ -2255,6 +2307,24 @@ namespace vulkan {
          *       masked caster's structure is then built from.
          */
         std::expected<void, std::string> make_mask_bake_pipeline(std::span<unsigned char const> compute_shader_code);
+        /**
+         * @brief create the compute skinning pipeline and its per-slot descriptor sets
+         * @param compute_shader_code the compiled SPIR-V
+         * @return an error string when the device has no ray queries or something could not be created
+         * @note optional like the rest of the traced features: without it a skinned mesh's structure holds
+         *       its bind pose, which is what every traced effect here did before this pass existed.
+         */
+        std::expected<void, std::string> make_compute_skin_pipeline(std::span<unsigned char const> compute_shader_code);
+        /**
+         * @brief re-skin every skinned caster and REFIT its structure, for this frame
+         * @param command_buffer where to record (the frame's structure phase, before the top level build)
+         * @return whether anything was recorded
+         * @note the pass writes the vertices the VERTEX shader would compute, into the buffer the structure
+         *       was built from, and the refit then makes traversal see them. It has to run AFTER the
+         *       animation uploaded this slot's per-joint matrices and BEFORE the frame writes the scene
+         *       set's binding 16 - the ordering the mask bake's own-set comment explains.
+         */
+        bool record_compute_skin_pass(VkCommandBuffer command_buffer);
 
         /**
          * @brief set the spatial filter's strength

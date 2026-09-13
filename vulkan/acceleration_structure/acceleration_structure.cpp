@@ -79,7 +79,7 @@ namespace vulkan::acceleration_structure {
         }
     }
 
-    std::expected<uint32_t, std::string> bottom_level_structures::add(geometry_source const& source) {
+    std::expected<uint32_t, std::string> bottom_level_structures::add(geometry_source const& source, bool const refittable) {
         core& vk = *this->vk;
         // Every geometry gets an entry, even one with nothing to build: the caller's index into this
         // list is the caller's index into its own geometry array, and skipping one silently would
@@ -119,7 +119,11 @@ namespace vulkan::acceleration_structure {
         VkAccelerationStructureBuildGeometryInfoKHR size_info = {};
         size_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
         size_info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-        size_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+        // ALLOW_UPDATE changes the scratch the device asks for (an update needs no build scratch, a build
+        // does), so the size query has to carry the same flags the build will - a mismatch is a scratch
+        // buffer that is too small on the REFIT, which is a validation error rather than a wrong image.
+        size_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                          (refittable ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR : 0u);
         size_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
         size_info.geometryCount = static_cast<uint32_t>(item.geometries.size());
         size_info.pGeometries = item.geometries.data();
@@ -154,6 +158,7 @@ namespace vulkan::acceleration_structure {
         // and only the offsets are decided then - the buffer itself is allocated once, in record_build.
         item.scratch_size = sizes.buildScratchSize;
         item.range.primitiveCount = triangle_count;
+        item.refittable = refittable;
 
         this->stats.geometry_count += 1;
         this->stats.structure_bytes += sizes.accelerationStructureSize;
@@ -206,7 +211,8 @@ namespace vulkan::acceleration_structure {
             VkAccelerationStructureBuildGeometryInfoKHR info = {};
             info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
             info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-            info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+            info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                         (item.refittable ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR : 0u);
             info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
             info.dstAccelerationStructure = item.handle;
             info.geometryCount = static_cast<uint32_t>(item.geometries.size());
@@ -229,8 +235,46 @@ namespace vulkan::acceleration_structure {
         return {};
     }
 
-    // ---- top level structure ----
+    std::expected<void, std::string> bottom_level_structures::record_update(VkCommandBuffer const command_buffer, std::span<uint32_t const> const indices) {
+        if (this->scratch_address == 0) {
+            return std::unexpected(std::string("acceleration structure: no build has been recorded, so there is no scratch to refit against"));
+        }
+        // The SAME geometries the build used, with the same addresses and counts: an update is legal
+        // exactly when only the bytes behind them changed. That is what makes it cheap - no size query, no
+        // allocation, no new structure - and it is also the whole reason a compute skinning pass can feed
+        // one (see shaders/compute_skin.comp).
+        this->update_infos.clear();
+        this->update_range_ptrs.clear();
+        this->update_infos.reserve(indices.size());
+        this->update_range_ptrs.reserve(indices.size());
+        for (uint32_t const index : indices) {
+            if (index >= this->entries.size()) {
+                continue;
+            }
+            entry const& item = this->entries[index];
+            if (item.handle == VK_NULL_HANDLE || !item.refittable) {
+                continue; // not built, or built without ALLOW_UPDATE: an update against it is illegal
+            }
+            VkAccelerationStructureBuildGeometryInfoKHR info = {};
+            info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+            info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+            info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR | VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+            info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+            info.srcAccelerationStructure = item.handle;
+            info.dstAccelerationStructure = item.handle;
+            info.geometryCount = static_cast<uint32_t>(item.geometries.size());
+            info.pGeometries = item.geometries.data();
+            info.scratchData.deviceAddress = this->scratch_address + item.scratch_offset;
+            this->update_infos.push_back(info);
+            this->update_range_ptrs.push_back(&item.range);
+        }
+        if (!this->update_infos.empty()) {
+            this->functions->cmd_build(command_buffer, static_cast<uint32_t>(this->update_infos.size()), this->update_infos.data(), this->update_range_ptrs.data());
+        }
+        return {};
+    }
 
+    // ---- top level structure ----
     namespace {
         /// the world matrix the raster passes draw with, as the 3x4 ROW-major transform the instance
         /// wants. glm is column-major (m[column][row]) and VkTransformMatrixKHR is row-major

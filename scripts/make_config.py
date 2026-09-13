@@ -183,6 +183,7 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssgi_upsample = {str(cfg['ssgi_upsample']).lower()}",
         f"rt_shadows = {str(cfg['rt_shadows']).lower()}",
         f"rt_mask_bake = {str(cfg['rt_mask_bake']).lower()}",
+        f"rt_skin_bake = {str(cfg['rt_skin_bake']).lower()}",
         f"animation_time = {cfg['animation_time']}",
         f"ssgi_ray_tracing = {str(cfg['ssgi_ray_tracing']).lower()}",
         f"ssgi_bounce = {cfg['ssgi_bounce']}",
@@ -360,6 +361,13 @@ def ask_all(output_dir: str) -> dict:
              "measured worse than the raster path, so it is off by default)",
     )
 
+    rt_skin_bake = ask_bool(
+        "render.rt_skin_bake",
+        False,
+        hint="re-skin animated casters and refit their acceleration structures every frame, so a traced "
+             "shadow follows the animation instead of the bind pose (off by default: it is the A/B knob)",
+    )
+
     print("\n-- gui (debug overlay) --")
     gui_show = ask_bool("gui.show", True, hint="Dear ImGui debug overlay on by default")
     panel_width = ask_int("gui.panel_width", 380, 0, hint="0 = ImGui auto-size")
@@ -415,6 +423,7 @@ def ask_all(output_dir: str) -> dict:
         "ssgi_upsample": ssgi_upsample,
         "rt_shadows": rt_shadows,
         "rt_mask_bake": rt_mask_bake,
+        "rt_skin_bake": rt_skin_bake,
         "animation_time": animation_time,
         "ssgi_ray_tracing": ssgi_ray_tracing,
         "ssgi_bounce": ssgi_bounce,

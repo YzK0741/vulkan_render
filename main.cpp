@@ -212,6 +212,10 @@ int main(int argc, char** argv) {
     // ... and the alphaMode MASK bake, which is what keeps a masked surface from being SOLID to those rays:
     // a compute pass collapses the triangles the material's alpha cuts out, before the structures are built.
     runtime.set_rt_mask_bake(settings.render.rt_mask_bake);
+    // ... and the per-frame skinning pass, which is what keeps an ANIMATED caster's traced shadow where the
+    // caster actually is: the structures are built from the bind pose, so without it the ray sees the mesh
+    // at rest (the baseline table in docs/gi_hit_shading.md's L2.2b section is that error, measured).
+    runtime.set_rt_skin_bake(settings.render.rt_skin_bake);
     if (settings.render.ssgi) {
         utility::log("ssgi: screen-space GI on (intensity {:.2f}, radius {:.2f} scene radii, {} rays x {} steps at half res)",
                      settings.render.ssgi_intensity, settings.render.ssgi_radius, settings.render.ssgi_rays, settings.render.ssgi_steps);

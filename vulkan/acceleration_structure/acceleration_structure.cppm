@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.acceleration_structure
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Ray-tracing acceleration structures: the bottom level structures of the
 // scene's shadow casters, built from the geometry buffers the raster passes
@@ -157,6 +157,7 @@ namespace vulkan::acceleration_structure {
             vk_buffer storage = {};          // the memory the structure lives in (RAII)
             VkDeviceSize scratch_offset = 0; // into the shared scratch buffer, already aligned
             VkDeviceSize scratch_size = 0;
+            bool refittable = false;                                         // built with ALLOW_UPDATE, so record_update may refit it
             VkAccelerationStructureBuildRangeInfoKHR range = {};             // primitiveCount etc, for the build
             std::vector<VkAccelerationStructureGeometryKHR> geometries = {}; // one per entry, kept alive
         };
@@ -176,6 +177,10 @@ namespace vulkan::acceleration_structure {
         /// `entries`, so they cannot outlive a resize of it)
         std::vector<VkAccelerationStructureBuildGeometryInfoKHR> build_infos = {};
         std::vector<VkAccelerationStructureBuildRangeInfoKHR const*> range_ptrs = {};
+        /// the same two, assembled per record_update: separate from the build's so a refit cannot disturb
+        /// what the build recorded (it keeps its infos for exactly this reason - an update reuses them)
+        std::vector<VkAccelerationStructureBuildGeometryInfoKHR> update_infos = {};
+        std::vector<VkAccelerationStructureBuildRangeInfoKHR const*> update_range_ptrs = {};
 
     public:
         explicit bottom_level_structures(core& device);
@@ -189,12 +194,16 @@ namespace vulkan::acceleration_structure {
          * @ingroup vulkan_acceleration_structure
          * @brief create the structure and its storage for one geometry
          * @param source the geometry's addresses and triangle count
+         * @param refittable build with ALLOW_UPDATE so record_update() may refit it every frame - for
+         *        geometry whose BYTES change while its addresses and counts do not (a skinned mesh's
+         *        vertices, written by shaders/compute_skin.comp). It costs traversal efficiency, which is
+         *        why it is per geometry rather than a flag on the whole structure set.
          * @return the index this geometry got, or an error message on failure
          * @note this is HOST work (a size query plus an allocation); the GPU build happens in
          *       record_build(). A source with no triangles is skipped and returns the index it WOULD
          *       have had, so the caller's indices stay aligned with its own array.
          */
-        std::expected<uint32_t, std::string> add(geometry_source const& source);
+        std::expected<uint32_t, std::string> add(geometry_source const& source, bool refittable = false);
 
         /**
          * @ingroup vulkan_acceleration_structure
@@ -205,6 +214,21 @@ namespace vulkan::acceleration_structure {
          *       left (the buffer is sized by the first call's requirements)
          */
         std::expected<void, std::string> record_build(VkCommandBuffer command_buffer);
+
+        /**
+         * @ingroup vulkan_acceleration_structure
+         * @brief REFIT the listed structures in place, because the bytes behind their geometry changed
+         * @param command_buffer where to record
+         * @param indices the geometry indices to refit (only the ones added with refittable = true)
+         * @return success, or an error message
+         * @note a refit is legal exactly when the geometry's ADDRESSES AND COUNTS are unchanged and only
+         *       the memory they point at has been rewritten - which is the zero-copy shape a compute
+         *       skinning pass produces (see shaders/compute_skin.comp). It reuses the scratch the build
+         *       allocated, so it is cheap: no size query, no allocation, no rebuild of the structure.
+         * @note the caller must have made the writes visible to the acceleration structure build stage
+         *       first (a command-level barrier), or the refit reads whatever was there before
+         */
+        std::expected<void, std::string> record_update(VkCommandBuffer command_buffer, std::span<uint32_t const> indices);
 
         /** @brief how many structures were added */
         [[nodiscard]] uint32_t size() const noexcept {

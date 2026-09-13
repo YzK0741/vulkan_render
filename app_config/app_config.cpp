@@ -190,6 +190,11 @@ namespace app_config {
                     settings.render.rt_mask_bake = *value;
                 }
             }
+            if (toml::node const* node = render->get("rt_skin_bake")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.rt_skin_bake = *value;
+                }
+            }
             if (toml::node const* node = render->get("animation_time")) {
                 if (std::optional<double> const value = node->value<double>()) {
                     settings.render.animation_time = static_cast<float>(*value);

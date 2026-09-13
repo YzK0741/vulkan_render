@@ -302,10 +302,10 @@ furnace = false
 # into one band (raising the map to 8192 only sharpens the band; the ray resolves each merlon, verified by
 # comparing the three side by side).
 #
-# Two limits come with it, one of which the next key removes: a MASK surface is SOLID to a ray (an inline
-# ray query has no any-hit shader to run the material's discard) unless `rt_mask_bake` is on, and a skinned
-# or morphed mesh casts its BIND POSE (the deformation happens in the vertex shader and never reaches the
-# memory a build reads).
+# Two limits come with it, one of which each of the next two keys addresses: a MASK surface is SOLID to a
+# ray (an inline ray query has no any-hit shader to run the material's discard) unless `rt_mask_bake` is on,
+# and a skinned or morphed mesh casts its BIND POSE (the deformation happens in the vertex shader and never
+# reaches the memory a build reads) unless `rt_skin_bake` is on.
 # NOTE on ssgi_intensity with ssgi_ray_tracing = true: the traced pass is no longer an ADDITION to the
 # probe - its rays fall back to the probe off screen, and the lighting stage stops adding its own
 # diffuse ambient so the two are not counted twice. The intensity therefore multiplies the WHOLE
@@ -331,6 +331,27 @@ rt_shadows = false
 # different mechanism (subdividing along the mask boundary, or the opacity-micromap extension).
 # A no-op without `rt_shadows` and without a traced GI frame: no structures, no bake, byte-identical.
 rt_mask_bake = false
+# rt_skin_bake: re-skin the animated casters and REFIT their acceleration structures every frame, so a
+# ray-traced shadow is cast by the mesh where it actually is and not by its bind pose. What it costs: one
+# compute invocation per vertex of every skinned caster (`shaders/compute_skin.comp`, the same skinning
+# maths `shaders/pbr.vert` does, writing OBJECT-space positions and normals into a buffer of the geometry's
+# own), then VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR over the structures of those casters - a refit,
+# not a rebuild, which is why the topology is fixed for a skinned mesh and only the vertex data moves. The
+# structures are built with ALLOW_UPDATE for exactly this (see acceleration_structure::add's refittable
+# argument), and the instance record's vertex address is switched to the skinned buffer for the frame, so the
+# hit shading and the traversal agree about which copy they are looking at.
+# OFF BY DEFAULT, and both reasons are measurements rather than caution. First, it is an A/B instrument: the
+# error it removes was measured BEFORE it existed, by pinning the pose and comparing a traced shadow against
+# the raster one - on the animated sample asset the traced shadow sat 0.538 of mean brightness away from the
+# raster one, in tiles up to 3.78, on exactly the pixels the animation moved. With the pass on, that error is
+# 0.0001 of mean brightness (mean|.| 0.0039, worst tile -0.008): the traced shadow's pose dependence becomes
+# the raster one's to four decimals, i.e. what is left is the ordinary traced-versus-cascade difference.
+# Second, a refit is not free (the pass plus an update of every skinned structure per frame): 0.03 -> 0.07 ms
+# of GPU on the sample asset, which has ONE skinned caster of 576 triangles and 24 joints - so that is a floor,
+# not a budget, and a scene with many or heavy skinned casters is unmeasured. Morph targets are NOT covered:
+# they are the step before skinning, and this pass does not read their deltas.
+# See docs/gi_hit_shading.md's L2.2b section for the tables, the cost, and the traps.
+rt_skin_bake = false
 
 # fxaa: anti-alias the final image (one extra fullscreen pass over the tonemapped LDR image).
 # Cheap and hardware-independent, but it is a screen-space blur of edges: it softens fine detail and

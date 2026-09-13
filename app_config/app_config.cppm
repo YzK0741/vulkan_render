@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.22.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.23.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -175,6 +175,12 @@ namespace app_config {
         // section has the numbers and the verified plumbing). It stays as an instrument: a knob is the only
         // way to measure the next attempt at the same mechanism.
         bool rt_mask_bake = false;
+        // Re-skin animated casters and refit their acceleration structures every frame ([render]
+        // rt_skin_bake). The structures are built from the bind pose, so without this a ray-traced shadow of
+        // an animated mesh is cast by the mesh where it is not. OFF BY DEFAULT: it is the A/B whose effect
+        // the L2.2b measurement is about, and leaving it off keeps the traced shadow path byte-identical to
+        // the frames every earlier measurement was taken with.
+        bool rt_skin_bake = false;
         // Trace the screen-space GI rays against the acceleration structures instead of marching the depth
         // buffer ([render] ssgi_ray_tracing). Same estimator, better hit oracle; ignored unless the device
         // has ray queries and ssgi itself is on.

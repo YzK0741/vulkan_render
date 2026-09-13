@@ -288,6 +288,14 @@ namespace vulkan {
             vkDestroyPipelineLayout(this->vulkan_core.device, this->mask_bake_pipeline_layout, nullptr);
             this->mask_bake_pipeline_layout = VK_NULL_HANDLE;
         }
+        if (this->compute_skin_pipeline_layout != VK_NULL_HANDLE) {
+            // The same shape as the mask bake's: it is created from the scene set layout and owns none of
+            // its own, so only the VkPipelineLayout is ours to destroy. Found the same way, too - as a
+            // "[ERROR] vkDestroyDevice(): ... has 1 leaked objects" on the FIRST capture of the L2.2b A/B,
+            // which is why the off arm of that measurement was taken again afterwards.
+            vkDestroyPipelineLayout(this->vulkan_core.device, this->compute_skin_pipeline_layout, nullptr);
+            this->compute_skin_pipeline_layout = VK_NULL_HANDLE;
+        }
         if (this->ssgi_spatial_pipeline_layout != VK_NULL_HANDLE) {
             // it owns no set layout (it binds the shared scene and G-buffer sets), so only the layout
             vkDestroyPipelineLayout(this->vulkan_core.device, this->ssgi_spatial_pipeline_layout, nullptr);
@@ -3791,6 +3799,109 @@ namespace vulkan {
         return {};
     }
 
+    std::expected<void, std::string> runtime::make_compute_skin_pipeline(std::span<unsigned char const> const compute_shader_code) {
+        if (!this->vulkan_core.ray_query_available) {
+            return std::unexpected(std::string("compute skin: this device has no ray queries (VK_KHR_acceleration_structure + VK_KHR_ray_query)"));
+        }
+        // The scene set alone, because the pass reads exactly one thing from it: the per-joint matrices at
+        // binding 9. The vertices come through push-constant device addresses, like every other traced pass.
+        auto built = pipelines::build_compute_skin(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, sizeof(compute_skin_push_constants), compute_shader_code);
+        if (!built) {
+            return std::unexpected(std::move(built.error()));
+        }
+        this->compute_skin_pipeline_layout = built->pipeline_layout;
+        this->compute_skin_pipeline = std::move(built->trace);
+
+        // One set per frame slot, from the SCENE layout, with only binding 9 written: the slot's OWN
+        // per-joint matrices. The animation rewrites that BUFFER every frame, not the descriptor, so the
+        // sets are written once here and stay valid - which matters twice over, because a set updated while
+        // a recording command buffer holds it invalidates that buffer (the trap the mask bake's own set
+        // documents) and one set would point at the wrong slot's matrices for half the frames.
+        if (this->skin_buffers.size() != this->compute_skin_sets.size()) {
+            return std::unexpected(std::string("compute skin: the per-slot skin matrix buffers are not created"));
+        }
+        for (std::size_t slot = 0; slot < this->compute_skin_sets.size(); ++slot) {
+            auto const* const detail = this->vulkan_core.vma.get_buffer_detail(this->skin_buffers[slot].handle());
+            if (detail == nullptr) {
+                return std::unexpected(std::string("compute skin: a skin matrix buffer has no VMA detail"));
+            }
+            this->compute_skin_sets[slot] = this->vulkan_core.make_descriptor_set(this->vulkan_core.scene_descriptor_set_layout);
+            if (this->compute_skin_sets[slot].get() == VK_NULL_HANDLE) {
+                return std::unexpected(std::string("compute skin: descriptor set allocation failed"));
+            }
+            VkDescriptorBufferInfo const skins_info = {.buffer = detail->buffer, .offset = 0, .range = VK_WHOLE_SIZE};
+            VkWriteDescriptorSet write = {};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = this->compute_skin_sets[slot].get();
+            write.dstBinding = 9; // SkinMatrices, the same binding shaders/pbr.vert reads
+            write.dstArrayElement = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write.pBufferInfo = &skins_info;
+            vkUpdateDescriptorSets(this->vulkan_core.device, 1, &write, 0, nullptr);
+        }
+        return {};
+    }
+
+    bool runtime::record_compute_skin_pass(VkCommandBuffer const command_buffer) {
+        if (!this->rt_skin_bake || !this->compute_skin_pipeline.has_value() || this->rt_skin_levels.empty()) {
+            return false;
+        }
+        uint32_t const slot = static_cast<uint32_t>(this->vulkan_core.current_frame);
+        if (slot >= this->compute_skin_sets.size() || this->compute_skin_sets[slot].get() == VK_NULL_HANDLE) {
+            return false;
+        }
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->compute_skin_pipeline->get_pipeline());
+        VkDescriptorSet const set = this->compute_skin_sets[slot].get();
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->compute_skin_pipeline_layout, 0, 1, &set, 0, nullptr);
+
+        auto const halves = [](VkDeviceAddress const address) {
+            return glm::uvec2(static_cast<uint32_t>(address & 0xFFFFFFFFu), static_cast<uint32_t>(address >> 32u));
+        };
+        constexpr uint32_t group_size = 64; // shaders/compute_skin.comp's local_size_x
+        bool recorded = false;
+        for (auto const& built : this->rt_caster_levels) {
+            if (built.skin_destination_address == 0) {
+                continue; // not a skinned caster: its geometry is what the build read, unchanged
+            }
+            compute_skin_push_constants push = {};
+            push.source_vertices = halves(built.skin_source_address);
+            push.destination = halves(built.skin_destination_address);
+            push.source_stride = built.skin_source_stride;
+            push.destination_stride = built.skin_destination_stride;
+            push.vertex_count = built.skin_vertex_count;
+            push.skin_base = built.skin_base;
+            vkCmdPushConstants(command_buffer, this->compute_skin_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+            vkCmdDispatch(command_buffer, (push.vertex_count + group_size - 1u) / group_size, 1, 1);
+            recorded = true;
+        }
+        if (!recorded) {
+            return false;
+        }
+
+        // What follows reads what this dispatch wrote: the BUILD on the frame the structures are created, and
+        // the REFIT on every frame after. A compute write is not visible to the acceleration structure build
+        // stage without this barrier, and the symptom would be a structure built or refitted against the
+        // previous frame's vertices - a shadow one frame behind, which reads as animation lag.
+        VkMemoryBarrier2 skin_order = {};
+        skin_order.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        skin_order.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        skin_order.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+        skin_order.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        skin_order.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+        VkDependencyInfo const skin_dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                                  .pNext = nullptr,
+                                                  .dependencyFlags = 0,
+                                                  .memoryBarrierCount = 1,
+                                                  .pMemoryBarriers = &skin_order,
+                                                  .bufferMemoryBarrierCount = 0,
+                                                  .pBufferMemoryBarriers = nullptr,
+                                                  .imageMemoryBarrierCount = 0,
+                                                  .pImageMemoryBarriers = nullptr};
+        vkCmdPipelineBarrier2(command_buffer, &skin_dependency);
+        return true;
+    }
+
     std::expected<void, std::string> runtime::make_rt_shadow_pipeline(std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         if (!this->vulkan_core.ray_query_available) {
@@ -4999,6 +5110,13 @@ namespace vulkan {
         this->rt_mask_bake = enabled;
     }
 
+    void runtime::set_rt_skin_bake(bool const enabled) noexcept {
+        // Unlike the mask bake this is read EVERY frame (the pass runs per frame), so it can be toggled at
+        // any time: turning it off leaves the structures holding the last pose the pass wrote, which is the
+        // A/B's whole point - the traced shadow either follows the animation or it does not.
+        this->rt_skin_bake = enabled;
+    }
+
     bool runtime::rt_structures_wanted() const noexcept {
         // `ssgi_on` rather than `ssgi_on && ssgi_ray_tracing`: the GI tracer is ONE shader that declares
         // the top level structure as a binding whether or not its traced branch runs, and a shader that
@@ -5040,6 +5158,9 @@ namespace vulkan {
         uint32_t mask_baked = 0;
         uint32_t skipped_mask_buffers = 0;
         bool mask_bakes_recorded = false;
+        // ... and the same two counters for the skinned casters (see the SKINNED branch below).
+        uint32_t skinned_baked = 0;
+        uint32_t skipped_skin_buffers = 0;
         for (primitive const* caster : this->shadow_casters) {
             if (caster == nullptr) {
                 continue;
@@ -5129,6 +5250,42 @@ namespace vulkan {
                 }
             }
 
+            // SKINNED: the pass (below, once every caster is known) writes this caster's deformed vertices
+            // into a buffer of its own, the structure is built from that buffer, and every frame after it is
+            // REFITTED - which is legal because the vertex order, the index buffer and the triangle count are
+            // all the primitive's own: only the bytes change. `skin_base != 0` is the test for "skinned",
+            // because index 0 is the identity block every unskinned draw uses (see set_skin_matrices). The
+            // stride test is the shader's precondition, not a heuristic: shaders/compute_skin.comp reads the
+            // joints at byte 32 and the weights at byte 48 of the engine's 64-byte interleaved vertex, so a
+            // caster whose vertices are packed differently is REFUSED (it keeps its bind pose and is counted
+            // in the log) rather than skinned with the wrong words.
+            constexpr uint32_t skin_source_stride_expected = 64u;
+            VkDeviceAddress skin_address = 0;
+            uint32_t skin_stride = 0;
+            uint32_t skin_source_stride = 0;
+            uint32_t skin_vertex_count = 0;
+            uint32_t skin_base = 0;
+            if (mask_address == 0 && this->rt_skin_bake && this->compute_skin_pipeline.has_value() && caster->push.skin_base != 0 && caster->vertex_count != 0 &&
+                caster->vertex_stride == skin_source_stride_expected) {
+                constexpr uint32_t skin_vertex_stride = 32u; // position, normal, uv - what hit shading reads
+                uint64_t const skinned_bytes = static_cast<uint64_t>(caster->vertex_count) * skin_vertex_stride;
+                vk_buffer skinned_vertices = vk.vma.create_buffer(nullptr, skinned_bytes, buffer_type::storage_gpu_only, acceleration_structure::build_input_usage);
+                auto const* const skinned_detail = skinned_vertices.valid() ? vk.vma.get_buffer_detail(skinned_vertices.handle()) : nullptr;
+                if (skinned_detail != nullptr) {
+                    VkBufferDeviceAddressInfo const skinned_info = {
+                        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = skinned_detail->buffer};
+                    skin_address = vkGetBufferDeviceAddress(vk.device, &skinned_info);
+                    skin_stride = skin_vertex_stride;
+                    skin_source_stride = caster->vertex_stride;
+                    skin_vertex_count = caster->vertex_count;
+                    skin_base = caster->push.skin_base;
+                    this->rt_skin_buffers.push_back(std::move(skinned_vertices));
+                    ++skinned_baked;
+                } else {
+                    ++skipped_skin_buffers;
+                }
+            }
+
             acceleration_structure::geometry_source const source =
                 mask_address != 0
                     ? acceleration_structure::geometry_source{.vertex_address = mask_address,
@@ -5137,13 +5294,22 @@ namespace vulkan {
                                                               .index_address = 0,
                                                               .index_type = caster->index_type,
                                                               .index_count = caster->index_count}
+                : skin_address != 0
+                    ? acceleration_structure::geometry_source{.vertex_address = skin_address,
+                                                              .vertex_stride = skin_stride,
+                                                              .vertex_count = caster->vertex_count,
+                                                              .index_address = source_index_address,
+                                                              .index_type = caster->index_type,
+                                                              .index_count = caster->index_count}
                     : acceleration_structure::geometry_source{.vertex_address = source_vertex_address,
                                                               .vertex_stride = caster->vertex_stride,
                                                               .vertex_count = caster->vertex_count,
                                                               .index_address = source_index_address,
                                                               .index_type = caster->index_type,
                                                               .index_count = caster->index_count};
-            auto const added = structures.add(source);
+            // A skinned structure is built ALLOW_UPDATE so the per-frame refit is legal; everything else is
+            // built once and never touched again.
+            auto const added = structures.add(source, skin_address != 0);
             if (!added) {
                 utility::log("ray-traced shadows disabled: {}", added.error());
                 this->rt_bottom_levels.reset();
@@ -5151,14 +5317,38 @@ namespace vulkan {
                 // The expansion buffers and the caster mapping go with the structures they belong to: a
                 // stale mapping would have the instance list read geometry no structure was built from.
                 this->rt_mask_buffers.clear();
+                this->rt_skin_buffers.clear();
+                this->rt_skin_levels.clear();
                 this->rt_caster_levels.clear();
                 return;
             }
             // Remember which caster got which index: the per-frame instance list walks THIS, so a
             // caster that was skipped above is skipped there too and the two walks cannot disagree. The
-            // mask addresses ride along, because that list is what a hit's shading reads the geometry
-            // through - a masked caster must be read from the EXPANDED copy the mask was baked into.
-            this->rt_caster_levels.emplace_back(rt_caster_level{.caster = caster, .blas_index = added.value(), .mask_stride = mask_stride, .mask_vertex_address = mask_address});
+            // mask and skin addresses ride along, because that list is what a hit's shading reads the
+            // geometry through - a baked or skinned caster must be read from the copy it was built from.
+            this->rt_caster_levels.emplace_back(rt_caster_level{.caster = caster,
+                                                                .blas_index = added.value(),
+                                                                .mask_stride = mask_stride,
+                                                                .mask_vertex_address = mask_address,
+                                                                .skin_source_address = source_vertex_address,
+                                                                .skin_destination_address = skin_address,
+                                                                .skin_source_stride = skin_source_stride,
+                                                                .skin_destination_stride = skin_stride,
+                                                                .skin_vertex_count = skin_vertex_count,
+                                                                .skin_base = skin_base});
+        }
+
+        // The skinned casters' first skinning pass, recorded here because the BUILD below has to read skinned
+        // vertices - and every frame after this one re-skins and REFITS in record_top_level_structure. The
+        // refit is not recorded here: this is the frame the structures are created, and a refit against a
+        // structure that does not exist yet is illegal.
+        if (skinned_baked != 0) {
+            for (auto const& built : this->rt_caster_levels) {
+                if (built.skin_destination_address != 0) {
+                    this->rt_skin_levels.push_back(built.blas_index);
+                }
+            }
+            this->record_compute_skin_pass(command_buffer);
         }
 
         // Every bake wrote a buffer the build below reads: one barrier covers them all, because every
@@ -5211,6 +5401,11 @@ namespace vulkan {
             // triangle; a vase of flowers loses 40% of them - see docs/gi_hit_shading.md).
             utility::log("ray-traced shadows: {} MASK casters baked into their structures ({} could not be - those stay solid to a ray)", mask_baked, skipped_mask_buffers);
         }
+        if (skinned_baked != 0 || skipped_skin_buffers != 0) {
+            // The skinned casters are re-skinned and REFITTED every frame (see record_top_level_structure),
+            // so this count is also the number of structures a frame's refit touches.
+            utility::log("ray-traced shadows: {} skinned casters re-skinned and REFITTED from their deformed vertices every frame ({} could not be - those keep their bind pose)", skinned_baked, skipped_skin_buffers);
+        }
     }
 
     void runtime::record_top_level_structure(VkCommandBuffer const command_buffer) {
@@ -5221,6 +5416,19 @@ namespace vulkan {
         uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
         auto& levels = *this->rt_bottom_levels;
         auto& top = *this->rt_top_levels;
+
+        // The skinned casters are deformed and their structures REFITTED here, before the instance list is
+        // walked (the addresses do not change, so the order does not matter to correctness - but the refit
+        // has to be recorded before this frame writes the scene set's binding 16, the ordering the mask
+        // bake's own-set comment explains). The pass itself returns false when there is nothing skinned.
+        if (this->record_compute_skin_pass(command_buffer)) {
+            if (auto const updated = this->rt_bottom_levels->record_update(command_buffer, this->rt_skin_levels); !updated) {
+                // Once, and off: a failure here would otherwise log every frame, and a refit is not
+                // something to keep attempting against structures the device refused.
+                utility::log("runtime: skinned shadow refit disabled: {}", updated.error());
+                this->rt_skin_bake = false;
+            }
+        }
 
         if (auto const begun = top.begin(frame_slot); !begun) {
             utility::log("runtime: {}", begun.error());
@@ -5237,12 +5445,12 @@ namespace vulkan {
             // the buffers' base addresses (the build applies no offset), which is also what makes them
             // legal as a buffer reference: a buffer's address is aligned, an offset into one need not be.
             //
-            // For a caster whose alphaMode MASK was baked, the address is the EXPANDED copy instead and the
-            // index address is ZERO - three unique vertices per triangle with no index buffer, which is what
-            // shaders/hit_shading.glsl reads as a flat vertex list.
-            VkDeviceAddress vertex_address = built.mask_vertex_address;
+            // A baked or skinned caster is read from the copy its structure was built from: the mask bake's
+            // expanded, non-indexed one (zero index address = a flat vertex list), or the skinned one, which
+            // keeps the primitive's own index buffer because its vertex ORDER is unchanged.
+            VkDeviceAddress vertex_address = built.mask_vertex_address != 0 ? built.mask_vertex_address : built.skin_destination_address;
             VkDeviceAddress index_address = 0;
-            uint32_t vertex_stride = built.mask_stride;
+            uint32_t vertex_stride = built.mask_vertex_address != 0 ? built.mask_stride : built.skin_destination_stride;
             if (vertex_address == 0) {
                 VkBufferDeviceAddressInfo const vertex_address_info = {
                     .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = caster->vertex_detail->buffer};
@@ -5251,6 +5459,10 @@ namespace vulkan {
                 vertex_address = vkGetBufferDeviceAddress(vk.device, &vertex_address_info);
                 index_address = vkGetBufferDeviceAddress(vk.device, &index_address_info);
                 vertex_stride = caster->vertex_stride;
+            } else if (built.skin_destination_address != 0) {
+                VkBufferDeviceAddressInfo const index_address_info = {
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = caster->index_detail->buffer};
+                index_address = vkGetBufferDeviceAddress(vk.device, &index_address_info);
             }
             acceleration_structure::instance_source const instance = {
                 .transform = caster->push.model,
