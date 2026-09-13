@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.43.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.44.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -395,6 +395,9 @@ namespace vulkan {
         // structures' instance table into the tracer's push block to switch it on (see record_ssgi_pass):
         // a zero address means "sample the screen", so the knob is also the A/B.
         bool ssgi_hit_shading = false;
+        // The furnace verification mode ([render] furnace, not wired to the config yet): the sun is turned
+        // off and the environment becomes a constant level, so the correct frame is computable by hand.
+        bool furnace = false;
         struct ssgi_push_constants {
             glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world (the block deferred.frag uses)
             glm::vec4 params = glm::vec4(0.0f);        // x radius, y intensity, z rays, w steps

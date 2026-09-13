@@ -86,8 +86,8 @@ layout(set = 0, binding = 7) uniform LightUBO {
     float rt_shadows; // 1.0 = the sun's shadow is the ray-traced visibility image (binding 14),
                       // 0.0 = the cascaded shadow maps. Rides the std140 padding that keeps
                       // light_count on its 16-byte boundary; see the CPU's light_ubo.
-    float _pad1;
-    float _pad2;
+    float sun_intensity;
+    float furnace_level;
     uint light_count;
     float exposure; // y lane of the CPU's light_count vec4: linear exposure scale (pre-tonemap)
     float toon_steps;   // cel-shading quantization steps (LightUBO.light_count.z; 0 = PBR)
@@ -564,7 +564,7 @@ vec3 shade_surface(shade_input s) {
         } else if (light.shadow_enabled > 0.5) {
             shadow = calc_shadow(s.world_pos, s.normal);
         }
-        direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light.light_dir.xyz, vec3(7.5) * shadow);
+        direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light.light_dir.xyz, vec3(7.5 * light.sun_intensity) * shadow);
     }
     // punctual lights (point/spot, no shadow casting in this version): inverse-square falloff
     // (well-behaved at zero distance) with an optional smooth range cutoff; spots add a soft

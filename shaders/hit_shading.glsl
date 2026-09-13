@@ -35,6 +35,16 @@
 layout(set = 0, binding = 7) uniform LightUBO {
     mat4 light_view_proj[4];
     vec4 light_dir;
+    vec4 cascade_splits;
+    vec4 cascade_texel_world;
+    float shadow_enabled;
+    float brdf_model;
+    float diffuse_model;
+    float cascade_blend;
+    float cascade_count;
+    float rt_shadows;
+    float sun_intensity;
+    float furnace_level;
 } light;
 // The IBL's other two halves (the irradiance cube above is the third): the prefiltered environment and
 // the BRDF integration LUT. A shaded hit has to reproduce the lighting stage's split-sum ambient, or the
@@ -266,7 +276,7 @@ bool shade_hit(rayQueryEXT query, vec3 hit_world, vec3 dir, vec3 to_viewer, uint
         const float a = sqrt(a2);
         const float vis = 0.5 / max(ndotl * (ndotv * (1.0 - a) + a) + ndotv * (ndotl * (1.0 - a) + a), 1e-6);
         const vec3 specular = ndf * vis * fresnel_schlick(max(dot(h, v), 0.0), f0);
-        direct = (kd * base_color / 3.141592653589793 + specular) * (vec3(7.5) * ndotl);
+        direct = (kd * base_color / 3.141592653589793 + specular) * (vec3(7.5 * light.sun_intensity) * ndotl);
     }
 
     // The split-sum IBL ambient, as the lighting stage computes it (the same two lookups and the same

@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene set; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -158,8 +158,8 @@ namespace vulkan {
                                     // (runtime::set_rt_shadows + the device having ray queries), 0.0 = sample
                                     // the cascaded shadow maps. Rides the std140 padding that keeps
                                     // light_count on its 16-byte boundary.
-        float _pad1 = 0.0f;
-        float _pad2 = 0.0f;
+        float sun_intensity = 1.0f; // 1.0 normally; 0.0 in the furnace mode, which turns the sun off
+        float furnace_level = 0.0f; // 0.0 normally; the constant environment level in the furnace mode
         glm::vec4 light_count = {}; // x = active punctual light count (GLSL: uint), y = exposure, z = toon shading steps (0 = PBR), w = toon band softness
         std::array<point_light, max_punctual_lights> punctual_lights = {};
         // Clustered light culling (M5), APPENDED after the light array so the array's offset (352)
