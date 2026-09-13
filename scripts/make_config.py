@@ -179,6 +179,7 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssgi_radius = {cfg['ssgi_radius']}",
         f"ssgi_rays = {cfg['ssgi_rays']}",
         f"ssgi_steps = {cfg['ssgi_steps']}",
+        f"ssgi_spatial_sigma = {cfg['ssgi_spatial_sigma']}",
         "",
         "# ---- [gui] debug overlay ----",
         "[gui]",
@@ -276,6 +277,13 @@ def ask_all(output_dir: str) -> dict:
     ssgi_radius = ask_float("render.ssgi_radius", 0.12, 0.0, 2.0, hint="ray length, as a FRACTION of the scene radius")
     ssgi_rays = ask_int("render.ssgi_rays", 2, 0, 16, hint="rays per pixel per frame (the resolve accumulates them)")
     ssgi_steps = ask_int("render.ssgi_steps", 6, 0, 64, hint="depth samples per ray")
+    ssgi_spatial_sigma = ask_float(
+        "render.ssgi_spatial_sigma",
+        2.0,
+        0.0,
+        8.0,
+        hint="GI spatial filter width in GI texels; 0 = off (temporal accumulation only)",
+    )
 
     print("\n-- gui (debug overlay) --")
     gui_show = ask_bool("gui.show", True, hint="Dear ImGui debug overlay on by default")
@@ -328,6 +336,7 @@ def ask_all(output_dir: str) -> dict:
         "ssgi_radius": ssgi_radius,
         "ssgi_rays": ssgi_rays,
         "ssgi_steps": ssgi_steps,
+        "ssgi_spatial_sigma": ssgi_spatial_sigma,
         "gui_show": gui_show,
         "panel_width": panel_width,
         "panel_height": panel_height,

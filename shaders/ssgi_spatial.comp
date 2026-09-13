@@ -1,0 +1,134 @@
+#version 450
+
+/**
+ * @file shaders/ssgi_spatial.comp
+ * @brief The spatial half of the GI denoiser: a joint-bilateral filter over the accumulated trace.
+ * @ingroup shaders
+ *
+ * The temporal resolve (shaders/ssgi_temporal.comp) fixes the noise that MOVES - it averages many
+ * frames of differently-seeded rays - but it deliberately clamps the history against the RAW trace,
+ * whose neighbourhood is a wide box, so it cannot remove the noise that sits still. What is left is
+ * spatially high-frequency but temporally stable: grain that flickers little and never goes away, which
+ * is exactly the residue a spatial filter is for, and why the tightening that would have capped the
+ * temporal accumulation belongs HERE instead.
+ *
+ * It is a joint-bilateral filter: 25 taps in a 5x5 window at a stride of one GI texel, weighted by
+ * three terms that have to agree before a tap counts -
+ *   1. a SPATIAL Gaussian (the ordinary blur kernel),
+ *   2. a view-depth difference against the centre, scaled by the centre's own view distance, so a tap
+ *      on a surface further away or nearer does not bleed across the silhouette (the same relative
+ *      comparison the temporal depth guard makes, and relative for the same reason: 0.02 of the view
+ *      distance means far less at 5 units than at 50),
+ *   3. a normal agreement term, raised to a power, so a tap on a surface facing a different way is
+ *      rejected even when it happens to sit at a similar depth (a floor meeting a wall at a grazing
+ *      angle is the case the depth test alone gets wrong).
+ *
+ * Deliberately ONE pass. The à-trous variant widens the stride per iteration and is what a production
+ * denoiser uses to reach a large radius for the price of a few 3x3 passes; here the temporal resolve
+ * has already done the heavy lifting, so a single 5x5 pass over a half-resolution image is a few
+ * hundred thousand samples and the ping-pong target, the extra barriers and the extra iteration knobs
+ * would buy a wider blur than this signal needs. If the residual grain ever calls for it, widening
+ * the stride per iteration is the change to make.
+ *
+ * The centre tap always has weight 1 by construction, so the normalizing weight sum can never reach
+ * zero and no guard is needed around the division.
+ *
+ * Residual limitations, the same shape as the other half: a half-resolution result is upsampled by
+ * the composite's bilinear fetch, which crosses edges (a joint-bilateral UPSAMPLE is the fix and is a
+ * separate step); the filter is edge-aware on depth and normal only, so two surfaces that agree on
+ * both but carry very different indirect light (a red wall touching a white one) still mix; and a tap
+ * smaller than a texel of the GI grid is not represented at all, since the filter runs on the GI grid.
+ */
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// set 0 = the shared scene set, exactly like the tracer: only for the camera block.
+layout(set = 0, binding = 0) uniform CameraUBO {
+    mat4 view;
+    mat4 proj;
+    vec4 camera_pos;
+} camera;
+
+// set 1 = the G-buffer set (see runtime::ensure_gbuffer_descriptors). The filter reads the two edge
+// signals the tracer also reads, the accumulated image the temporal resolve wrote (7) and it writes
+// the image the composite samples (8).
+layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal;    // RGBA16F: world normal.xyz
+layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;     // the pass's own 1x depth
+layout(set = 1, binding = 7) uniform sampler2D gi_input;          // the temporal resolve's output
+layout(set = 1, binding = 8, rgba16f) uniform image2D gi_output;  // the filtered image the composite reads
+
+layout(push_constant) uniform SsgiSpatialPush {
+    float depth_scale;   // projection[2][2]: the view-depth linearization pair, as in the tracer
+    float depth_offset;  // projection[3][2]
+    float sigma_spatial; // spatial Gaussian sigma, in GI texels. 0 = the pass is a pass-through
+    float sigma_depth;   // relative view-depth tolerance for the edge stop
+    float normal_power;  // exponent on the normal agreement term
+    float unused0;
+    float unused1;
+    float unused2;
+    vec4 gi_size; // xy = GI extent in texels, zw = the full-resolution extent
+} pc;
+
+/**
+ * @brief view-space distance of a depth-buffer value
+ * @param z_ndc the stored depth in [0,1]
+ * @return a positive view-space distance
+ * @note the same inversion the tracer and the temporal resolve use
+ */
+float view_depth(float z_ndc) {
+    return pc.depth_offset / (z_ndc + pc.depth_scale);
+}
+
+void main() {
+    const ivec2 gi_extent = ivec2(pc.gi_size.xy);
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= gi_extent.x || pixel.y >= gi_extent.y) {
+        return; // the dispatch is rounded up to the workgroup size
+    }
+    const vec2 inv_extent = 1.0 / vec2(gi_extent);
+    const vec2 uv = (vec2(pixel) + 0.5) * inv_extent;
+
+    const float depth_here = texture(gbuffer_depth, uv).r;
+    const vec3 center = texture(gi_input, uv).rgb;
+    if (depth_here >= 1.0) {
+        imageStore(gi_output, pixel, vec4(0.0)); // background: nothing wrote GI here either
+        return;
+    }
+    if (pc.sigma_spatial <= 0.0) {
+        imageStore(gi_output, pixel, vec4(center, 1.0)); // the off switch, for A/B measurement
+        return;
+    }
+
+    const vec3 normal_here = texture(gbuffer_normal, uv).xyz;
+    const float view_here = view_depth(depth_here);
+    // The depth tolerance is relative to the pixel's own view distance, and it is a TOLERANCE rather
+    // than a hard test: the weight falls off smoothly, so a plane seen at a slant (where neighbouring
+    // GI texels legitimately differ in depth) is not cut in half at a threshold.
+    const float depth_tolerance = max(pc.sigma_depth * view_here, 1e-5);
+    const float inv_sigma2 = 1.0 / (2.0 * pc.sigma_spatial * pc.sigma_spatial);
+
+    vec3 sum = vec3(0.0);
+    float weight_sum = 0.0;
+    for (int y = -2; y <= 2; ++y) {
+        for (int x = -2; x <= 2; ++x) {
+            const vec2 offset = vec2(float(x), float(y));
+            const vec2 tap_uv = uv + offset * inv_extent;
+            const float tap_depth = texture(gbuffer_depth, tap_uv).r;
+            if (tap_depth >= 1.0) {
+                continue; // a background tap holds no GI and has no view depth to compare
+            }
+            const float depth_weight = exp(-abs(view_depth(tap_depth) - view_here) / depth_tolerance);
+            const vec3 tap_normal = texture(gbuffer_normal, tap_uv).xyz;
+            const float normal_weight = pow(max(dot(normal_here, tap_normal), 0.0), pc.normal_power);
+            const float spatial_weight = exp(-dot(offset, offset) * inv_sigma2);
+            const float weight = spatial_weight * depth_weight * normal_weight;
+            sum += texture(gi_input, tap_uv).rgb * weight;
+            weight_sum += weight;
+        }
+    }
+
+    // The centre tap (offset 0,0) is always taken - its three weights are all exactly 1 - so
+    // weight_sum >= 1 and the division cannot blow up. That is also why a fully edge-rejected
+    // neighbourhood degrades to "no filtering" instead of to black.
+    imageStore(gi_output, pixel, vec4(sum / weight_sum, 1.0));
+}

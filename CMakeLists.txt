@@ -602,6 +602,7 @@ set(VR_SHADER_SOURCES
     light_cluster.comp
     ssgi.comp
     ssgi_temporal.comp
+    ssgi_spatial.comp
     shadow.vert shadow.frag post.vert post.frag fxaa.frag
 )
 set(VR_SHADER_OUTPUTS "")

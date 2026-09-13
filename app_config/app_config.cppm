@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.15.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.16.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -55,6 +55,7 @@ import utility;
  * ssgi_radius = 0.12    # ray length as a fraction of the scene radius
  * ssgi_rays = 2         # rays per pixel per frame (1..16)
  * ssgi_steps = 6        # depth samples per ray (1..64)
+ * ssgi_spatial_sigma = 2.0  # GI spatial filter width in GI texels; 0 = off (a pass-through)
  * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id,
  *                        # 6 depth, 7 flags, 8 motion (the motion vector, amplified - see the shader)
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
@@ -137,11 +138,15 @@ namespace app_config {
         // which is why it has an intensity: the probe already claims some of this light, and the two
         // together over-brighten unless the screen-space part is dialled back. `ssgi_radius` is a
         // fraction of the scene radius, `ssgi_rays` x `ssgi_steps` is the cost per half-res pixel.
+        // `ssgi_spatial_sigma` is the last pass's filter width: the temporal resolve averages frames,
+        // this removes the spatially-fixed grain it cannot, and 0 turns it off (a pass-through), which
+        // is what its effect is measured against.
         bool ssgi = false;
         float ssgi_intensity = 0.7f;
         float ssgi_radius = 0.12f;
         int ssgi_rays = 2;
         int ssgi_steps = 6;
+        float ssgi_spatial_sigma = 2.0f;
         bool ssao = true;
         float ssao_radius = 0.5f;
         float ssao_intensity = 1.0f;

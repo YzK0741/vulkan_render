@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.11.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.12.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -294,7 +294,7 @@ namespace vulkan {
         std::vector<VkImage> gi_images = {};
         std::vector<VkDeviceMemory> gi_image_memories = {};
         std::vector<VkImageView> gi_image_views = {};
-        // The denoiser's two, also half resolution: the RESOLVED result (what the composite reads,
+        // The denoiser's two, also half resolution: the RESOLVED result (the temporal accumulation,
         // and what becomes the next frame's history) and the history itself, which is written only
         // by a copy - hence TRANSFER_DST plus SAMPLED, and nothing else.
         std::vector<VkImage> gi_resolve_images = {};
@@ -303,6 +303,11 @@ namespace vulkan {
         std::vector<VkImage> gi_history_images = {};
         std::vector<VkDeviceMemory> gi_history_image_memories = {};
         std::vector<VkImageView> gi_history_image_views = {};
+        // ... and the spatial filter's output, which is the image the composite actually samples:
+        // STORAGE because that filter writes it as a storage image, SAMPLED for the composite.
+        std::vector<VkImage> gi_spatial_images = {};
+        std::vector<VkDeviceMemory> gi_spatial_image_memories = {};
+        std::vector<VkImageView> gi_spatial_image_views = {};
 
         // ---- temporal anti-aliasing (see runtime::set_taa) ----
         // The scene color TAA resolves FROM, one per swapchain image: when TAA is on, the geometry

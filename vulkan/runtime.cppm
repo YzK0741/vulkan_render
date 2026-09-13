@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.27.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.28.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -414,10 +414,32 @@ namespace vulkan {
         // whatever the AA sliders are set to.
         float gi_blend_static = 0.9f;
         float gi_blend_min = 0.6f;
-        // Whether THIS frame's GI resolve actually ran and wrote the image the composite samples.
-        // Cleared once per frame before the GI passes and set by the resolve itself, so that the
-        // composite can push a weight of exactly 0 whenever there is no GI to add - GI off, but also
-        // GI on with a missing descriptor set, which is a frame with a tracer and no resolved image.
+        // The spatial filter's knobs (see shaders/ssgi_spatial.comp). sigma_spatial is in GI texels and
+        // 0 makes the pass a pass-through, which is how its effect is measured; sigma_depth is a
+        // FRACTION of the view distance, so one value means the same thing near and far.
+        float gi_spatial_sigma = 2.0f;
+        float gi_spatial_depth_sigma = 0.02f;
+        float gi_spatial_normal_power = 16.0f;
+        // The GI spatial filter: a joint-bilateral pass over the temporal resolve's output, which is
+        // what the composite samples. Same two set layouts as the tracer, so no set of its own.
+        std::optional<vk_pipeline> ssgi_spatial_pipeline = std::nullopt;
+        VkPipelineLayout ssgi_spatial_pipeline_layout = VK_NULL_HANDLE;
+        struct ssgi_spatial_push_constants {
+            float depth_scale = 0.0f;   // proj[2][2]
+            float depth_offset = 0.0f;  // proj[3][2]
+            float sigma_spatial = 2.0f; // in GI texels; 0 = pass-through
+            float sigma_depth = 0.02f;  // relative view-depth tolerance
+            float normal_power = 16.0f; // exponent on the normal agreement term
+            float unused0 = 0.0f;
+            float unused1 = 0.0f;
+            float unused2 = 0.0f;
+            glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent
+        };
+        // Whether THIS frame's GI chain ran far enough to produce the image the composite samples:
+        // cleared once per frame before the GI passes and set by the SPATIAL FILTER, which is the last
+        // of them. The composite can then push a weight of exactly 0 whenever there is no GI to add -
+        // GI off, but also GI on with a missing descriptor set or a filter that declined to run, which
+        // are frames whose sampled image holds something else (or nothing at all).
         bool gi_resolved = false;
         struct ssgi_temporal_push_constants {
             float history_valid = 0.0f;
@@ -460,14 +482,24 @@ namespace vulkan {
         /**
          * @ingroup vulkan_runtime
          * @brief record the GI temporal resolve and the history copy into @p command_buffer
-         * @return whether the resolve ran, i.e. whether the composite may use this frame's GI
+         * @return whether the resolve ran, i.e. whether the spatial filter has anything to filter
          * @note runs right after record_ssgi_pass(), at the GI resolution, and turns the frame's raw
-         *       trace into the accumulated image the composite reads - see shaders/ssgi_temporal.comp
+         *       trace into the accumulated image the spatial filter reads - see shaders/ssgi_temporal.comp
          *       for the reprojection / depth-guard / clamp trio it needs to accumulate rather than smear
          */
         bool record_ssgi_denoise_pass(VkCommandBuffer command_buffer);
         /** @brief allocate or rewrite the denoiser's per-image descriptor sets (see vulkan.bindings) */
         void ensure_ssgi_denoise_descriptors();
+        /**
+         * @ingroup vulkan_runtime
+         * @brief record the GI spatial filter into @p command_buffer
+         * @return whether the filter ran, i.e. whether the composite may use this frame's GI
+         * @note runs right after record_ssgi_denoise_pass(), at the GI resolution. It reads the
+         *       temporal resolve's output and writes the image the composite samples - see
+         *       shaders/ssgi_spatial.comp for the depth/normal edge stops it needs to blur the grain
+         *       without blurring across silhouettes
+         */
+        bool record_ssgi_spatial_pass(VkCommandBuffer command_buffer);
         void record_taa_pass(VkCommandBuffer command_buffer);
         /** @brief whether the TAA resolve runs this frame (enabled + deferred lighting + pipeline) */
         [[nodiscard]] bool taa_active() const noexcept;
@@ -1781,10 +1813,30 @@ namespace vulkan {
          * @brief create the GI denoiser's temporal resolve pipeline from shaders/ssgi_temporal.comp
          * @param compute_shader_code raw SPIR-V of the resolve
          * @return success, or an error message on failure
-         * @note optional: without it the composite reads the RAW trace (noisy), which is what the
-         *       frame looked like before the denoiser existed rather than a broken frame
+         * @note required, not optional: the composite samples the image the resolve's successor
+         *       writes, so a build without this pass has no GI to show at all (ssgi_active() stays
+         *       false and the composite's weight is 0)
          */
         std::expected<void, std::string> make_ssgi_temporal_pipeline(std::span<unsigned char const> compute_shader_code);
+
+        /**
+         * @brief create the GI spatial filter pipeline from shaders/ssgi_spatial.comp
+         * @param compute_shader_code raw SPIR-V of the filter
+         * @return success, or an error message on failure
+         * @note required for the same reason as the temporal resolve, and the last pass of the GI
+         *       chain: what the composite samples is this filter's output
+         */
+        std::expected<void, std::string> make_ssgi_spatial_pipeline(std::span<unsigned char const> compute_shader_code);
+
+        /**
+         * @brief set the spatial filter's strength
+         * @param sigma spatial Gaussian sigma in GI texels; 0 makes the filter a pass-through, which
+         *        is what its effect is measured against (same idea as the temporal blend weights)
+         * @note the depth and normal edge-stop strengths are runtime members rather than config keys:
+         *       they decide WHERE the filter stops, not how strong it is, and getting them wrong shows
+         *       up as bleeding across a silhouette rather than as a noisier image
+         */
+        void set_ssgi_spatial(float sigma) noexcept;
 
         /** @brief whether the tracer runs this frame (see set_ssgi) */
         [[nodiscard]] bool ssgi_active() const noexcept;

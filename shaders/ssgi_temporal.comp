@@ -30,7 +30,8 @@
  * rejects little - which is what lets the accumulation do its work. Clamping against a filtered
  * version of the current frame would tighten the box and cap how much history can be averaged; that
  * is the classic way a temporal filter ends up not denoising. A spatial filter running AFTER this one
- * is the safe place to do the tightening.
+ * is the safe place to do the tightening - shaders/ssgi_spatial.comp is exactly that, and its output is
+ * what the composite samples.
  *
  * Residual limitations: a deforming mesh (skinned or morphed) has no motion vector - see gbuffer.frag
  * - so its GI still trails; and a pixel that was off screen or occluded last frame starts over.
@@ -39,7 +40,7 @@
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0) uniform sampler2D gi_trace;   // this frame's raw trace, GI resolution
-layout(set = 0, binding = 1) uniform sampler2D gi_history; // last frame's RESOLVED GI, same resolution
+layout(set = 0, binding = 1) uniform sampler2D gi_history; // last frame's TEMPORAL result, same resolution
 layout(set = 0, binding = 2) uniform sampler2D velocity;   // full-resolution motion vectors (UV space)
 layout(set = 0, binding = 3) uniform sampler2D depth;      // full-resolution G-buffer depth
 layout(set = 0, binding = 4, rgba16f) uniform image2D gi_resolved;

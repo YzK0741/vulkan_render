@@ -265,8 +265,8 @@ namespace chores {
                 utility::log("SUCCESS: ssgi compute pipeline created (screen-space global illumination)");
             }
             // The denoiser's temporal resolve, next to the tracer it denoises. Required, not optional:
-            // the composite samples the RESOLVED image, so GI without this pass has nothing to show
-            // and runtime::ssgi_active() stays false.
+            // the composite samples the FILTERED image, so GI with any pass of the chain missing has
+            // nothing to show and runtime::ssgi_active() stays false.
             std::vector<unsigned char> temporal_code;
             load_shader(shaders_dir, "ssgi_temporal.comp.spv", temporal_code);
             auto const temporal_result = runtime.make_ssgi_temporal_pipeline(temporal_code);
@@ -274,6 +274,16 @@ namespace chores {
                 utility::log("GI temporal denoiser disabled (screen-space GI will stay off): {}", temporal_result.error());
             } else {
                 utility::log("SUCCESS: GI temporal denoiser created (history accumulation)");
+            }
+            // ... and the spatial half: the joint-bilateral filter that removes the grain the temporal
+            // clamp leaves behind, which is the last GI pass (its output is what the composite reads).
+            std::vector<unsigned char> spatial_code;
+            load_shader(shaders_dir, "ssgi_spatial.comp.spv", spatial_code);
+            auto const spatial_result = runtime.make_ssgi_spatial_pipeline(spatial_code);
+            if (!spatial_result) {
+                utility::log("GI spatial filter disabled (screen-space GI will stay off): {}", spatial_result.error());
+            } else {
+                utility::log("SUCCESS: GI spatial filter created (joint-bilateral, depth + normal edge stops)");
             }
         }
     }

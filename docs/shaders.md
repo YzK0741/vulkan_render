@@ -41,6 +41,7 @@
  *        |
  *  ssgi.comp                     compute: one bounce of screen-space diffuse indirect, half res
  *  ssgi_temporal.comp            compute: the temporal resolve that accumulates the trace
+ *  ssgi_spatial.comp             compute: the joint-bilateral filter over that accumulation
  *        |
  *  post.vert + post.frag         mode 0 bright-pass prefilter (HDR -> bloom L0)
  *                                mode 1 downsample x3 (L0 -> L1 -> L2 -> L3)
@@ -166,31 +167,51 @@
  * neighbourhood of the RAW trace and blends it in. The clamp box is deliberately wide - it is taken
  * from the noisy current frame, so it rejects little, which is exactly what lets the accumulation
  * average ten frames of differently-seeded rays per pixel. A tighter box against a filtered current
- * frame is the classic way a temporal filter ends up not denoising; tightening belongs in a spatial
- * filter after this one. The weights are the GI pass's own (`gi_blend_static` / `gi_blend_min`)
- * rather than TAA's, because the signal is far noisier than shading aliasing, and a copy of the
- * resolved image becomes the next frame's history - the same copy-not-ping-pong arrangement the TAA
- * resolve uses, which is what keeps every descriptor set in the frame stable.
+ * frame is the classic way a temporal filter ends up not denoising; tightening belongs in the spatial
+ * filter, which is the next pass. The weights are the GI pass's own (`gi_blend_static` /
+ * `gi_blend_min`) rather than TAA's, because the signal is far noisier than shading aliasing, and a
+ * copy of the TEMPORAL result becomes the next frame's history - the same copy-not-ping-pong
+ * arrangement the TAA resolve uses, which is what keeps every descriptor set in the frame stable.
+ * The history deliberately holds the accumulation and not the spatially filtered image: the filter is
+ * then a fresh function of this frame's accumulation every frame, so filtering cannot compound.
+ *
+ * `ssgi_spatial.comp` is the third and last pass: a joint-bilateral filter over the accumulated image,
+ * 25 taps in a 5x5 window, where a tap only counts if it agrees on view depth (relative to the
+ * centre's own distance, the same comparison the temporal guard makes) AND on surface normal (raised
+ * to a power), in addition to the ordinary spatial Gaussian. That is what removes the grain the
+ * temporal resolve cannot - the part that does not move, so averaging frames never touches it - and it
+ * is why the tightening the temporal clamp refuses to do belongs here rather than there. It is ONE
+ * pass on purpose: the a-trous variant widens the stride per iteration to reach a large radius cheaply,
+ * but the temporal resolve has already done the heavy lifting, so a single pass over a half-resolution
+ * image buys what this signal needs without a ping-pong target or extra barriers. Its output is what
+ * the composite samples, and `[render] ssgi_spatial_sigma` sets the spatial width (0 = the pass is a
+ * pass-through, which is how its effect is measured); the depth/normal edge-stopping strengths are
+ * runtime members rather than config keys, because getting them wrong shows up as bleeding across a
+ * silhouette rather than as a noisier image.
  *
  * The result is an ADDITION to the environment probe, not a replacement: a ray that leaves the frame
  * hits nothing and contributes nothing, so the probe is the off-screen fallback and
  * `[render] ssgi_intensity` is what reconciles the two (they overlap). `ssgi_radius` is a fraction of
  * the scene radius, so one value means the same thing on a 1.6-unit model and on Sponza's 18.5.
  *
- * Bindings, because these two passes are the only ones that bind the G-buffer set as COMPUTE: the
- * tracer uses set 0 (the shared scene set above, for the camera block) plus set 1 = the G-buffer set's
- * albedo (0), normal (1), depth (3), `direct_radiance` (5, the HDR target) and `gi_output` (6, a
- * STORAGE image - it writes the raw trace rather than sampling it). The resolve has a set of its own:
- * the raw trace (0), the history (1), the motion-vector target (2), the G-buffer depth (3) and the
- * resolved image (4, also STORAGE). Every binding of the G-buffer set layout therefore names
- * FRAGMENT and COMPUTE both, and every layout transition that publishes one of those images to a
- * sampler names both stages too.
+ * Bindings, because these passes are the only ones that bind the G-buffer set as COMPUTE: the tracer
+ * uses set 0 (the shared scene set above, for the camera block) plus set 1 = the G-buffer set's albedo
+ * (0), normal (1), depth (3), `direct_radiance` (5, the HDR target) and `gi_output` (6, a STORAGE
+ * image - it writes the raw trace rather than sampling it). The spatial filter binds the same two sets,
+ * reading the normal (1), the depth (3) and the accumulated image (7) and writing the filtered image
+ * (8, also STORAGE). The temporal resolve has a set of its own: the raw trace (0), the history (1), the
+ * motion-vector target (2), the G-buffer depth (3) and the accumulated image (4, also STORAGE). Every
+ * binding of the G-buffer set layout therefore names FRAGMENT and COMPUTE both, and every layout
+ * transition that publishes one of those images to a sampler names both stages too.
  *
  * Known limitations, stated rather than discovered later: geometry outside the frame and thin
  * occluders between two march steps contribute nothing; alphaMode MASK surfaces are solid, because a
- * depth buffer has no alpha (which is also what an inline ray query sees without any-hit shaders);
- * and a deforming mesh has no motion vector, so its GI trails. There are no GUI controls: `set_ssgi`
- * is applied once at startup from the config, so changing it needs a restart.
+ * depth buffer has no alpha (which is also what an inline ray query sees without any-hit shaders); a
+ * deforming mesh has no motion vector, so its GI trails; the half-resolution result is upsampled by the
+ * composite's bilinear fetch, which crosses edges (a joint-bilateral UPSAMPLE is the fix and is a step
+ * of its own); and two surfaces that agree on depth and normal but carry very different indirect light
+ * (a red wall touching a white one) still mix. There are no GUI controls: `set_ssgi` and
+ * `set_ssgi_spatial` are applied once at startup from the config, so changing them needs a restart.
  *
  * @section shader_bindings The shared scene descriptor set (set 0)
  *

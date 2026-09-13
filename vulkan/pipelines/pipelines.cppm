@@ -1,4 +1,4 @@
-// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
@@ -68,6 +68,8 @@ namespace vulkan::pipelines {
     export std::expected<gbuffer_owned, std::string> build_gbuffer_debug(core& vk, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     export std::expected<taa_owned, std::string> build_taa(core& vk, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     export std::expected<ssgi_owned, std::string> build_ssgi(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    /// the spatial half of the same denoiser: same two set layouts, same shape, its own push block
+    export std::expected<ssgi_owned, std::string> build_ssgi_spatial(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
 
     /// what build_ssgi_temporal() creates: the denoiser's set layout (it owns one - its inputs are
     /// the trace, the history, the motion vectors and the depth, which no other pass groups together)
@@ -171,20 +173,23 @@ namespace vulkan::pipelines {
         // and its shader declares only the first four, which is legal - a binding a shader does
         // not statically use does not need a descriptor written.
         //
-        // 5 and 6 belong to the screen-space GI tracer: the direct-radiance image it samples at a
-        // hit, and the half-resolution image it writes. 6 is a STORAGE image rather than a sampler
-        // because a compute pass writes a storage image, and because the tracer runs at half the
-        // composite's resolution - the two ends of it are different kinds of thing.
-        std::array<VkDescriptorSetLayoutBinding, 7> bindings = {};
+        // 5..8 belong to the screen-space GI passes: the direct-radiance image the tracer samples at a
+        // hit (5), the half-resolution raw trace it writes (6), the accumulated image the spatial
+        // filter reads (7) and the filtered image that filter writes and the composite samples (8). 6
+        // and 8 are STORAGE images rather than samplers because a compute pass writes a storage image,
+        // and because those passes run at half the composite's resolution - the two ends of each are
+        // different kinds of thing.
+        std::array<VkDescriptorSetLayoutBinding, 9> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
-            bindings[b].descriptorType = b == 6u ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[b].descriptorType = (b == 6u || b == 8u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             bindings[b].descriptorCount = 1;
-            // EVERY binding lists COMPUTE as well as FRAGMENT. The layout is shared by three consumers
+            // EVERY binding lists COMPUTE as well as FRAGMENT. The layout is shared by four consumers
             // and only the shaders know which binding each of them uses: the lighting stage and the
-            // debug view are fragment stages, while the GI tracer is a COMPUTE stage that reads the
-            // stored surface (albedo, normal and depth) directly. A binding a shader does not
-            // statically use needs no descriptor, but one it DOES use has to name the stage here.
+            // debug view are fragment stages, while the GI tracer and the GI spatial filter are COMPUTE
+            // stages that read the stored surface (albedo, normal and depth) and the GI images
+            // directly. A binding a shader does not statically use needs no descriptor, but one it
+            // DOES use has to name the stage here.
             bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
             bindings[b].pImmutableSamplers = nullptr;
         }
@@ -312,6 +317,52 @@ namespace vulkan::pipelines {
         VkPipeline pipeline = VK_NULL_HANDLE;
         if (vkCreateComputePipelines(vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("ssgi: vkCreateComputePipelines failed");
+        }
+        out.trace = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
+        return out;
+    }
+
+    // The GI spatial filter: the same two set layouts the tracer binds (the shared scene set and the
+    // G-buffer set, which carries the normal, the depth, the accumulated image it reads and the
+    // filtered image it writes), so only the pipeline layout and the push block are new.
+    std::expected<ssgi_owned, std::string> build_ssgi_spatial(core& vk, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+        using fail = std::unexpected<std::string>;
+        ssgi_owned out;
+
+        VkPushConstantRange push_range = {};
+        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        push_range.offset = 0;
+        push_range.size = push_constant_size;
+
+        std::array<VkDescriptorSetLayout, 2> const set_layouts = {scene_layout, gbuffer_layout};
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = static_cast<uint32_t>(set_layouts.size());
+        pipeline_layout_info.pSetLayouts = set_layouts.data();
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+            return fail("ssgi spatial: pipeline layout creation failed");
+        }
+
+        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, vk.device);
+        if (!module.has_value()) {
+            return fail("ssgi spatial: compute shader module creation failed");
+        }
+        VkPipelineShaderStageCreateInfo stage_info = {};
+        stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage_info.module = **module;
+        stage_info.pName = "main";
+
+        VkComputePipelineCreateInfo pipeline_info = {};
+        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.stage = stage_info;
+        pipeline_info.layout = out.pipeline_layout;
+
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        if (vkCreateComputePipelines(vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+            return fail("ssgi spatial: vkCreateComputePipelines failed");
         }
         out.trace = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
         return out;

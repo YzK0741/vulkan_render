@@ -182,6 +182,7 @@ int main(int argc, char** argv) {
                      settings.render.ssgi_radius,
                      static_cast<uint32_t>(settings.render.ssgi_rays),
                      static_cast<uint32_t>(settings.render.ssgi_steps));
+    runtime.set_ssgi_spatial(settings.render.ssgi_spatial_sigma);
     if (settings.render.ssgi) {
         utility::log("ssgi: screen-space GI on (intensity {:.2f}, radius {:.2f} scene radii, {} rays x {} steps at half res)",
                      settings.render.ssgi_intensity, settings.render.ssgi_radius, settings.render.ssgi_rays, settings.render.ssgi_steps);

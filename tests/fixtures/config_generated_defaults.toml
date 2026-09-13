@@ -58,6 +58,7 @@ ssgi_intensity = 0.7
 ssgi_radius = 0.12
 ssgi_rays = 2
 ssgi_steps = 6
+ssgi_spatial_sigma = 2.0
 
 # ---- [gui] debug overlay ----
 [gui]

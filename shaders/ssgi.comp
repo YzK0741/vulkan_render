@@ -25,9 +25,11 @@
  * one-bounce diffuse estimator - the pi factors cancel by construction. It is written at HALF
  * resolution, because the signal is low-frequency and this is the pass whose cost scales with sample
  * count, and it is a RAW one: 2 rays per pixel is a field of white noise with the right average, and
- * what turns that into an image is the temporal resolve in shaders/ssgi_temporal.comp, which reads
- * this pass's output as its `gi_trace` binding. The composite samples that resolve's result, not this
- * image - the two are separate so that the accumulation reads and writes different images.
+ * what turns that into an image is the denoise chain - the temporal resolve in
+ * shaders/ssgi_temporal.comp, which reads this pass's output as its `gi_trace` binding, and the
+ * joint-bilateral filter in shaders/ssgi_spatial.comp after it. The composite samples the filter's
+ * result, not this image: the three are separate so that the accumulation reads and writes different
+ * images, and so that the spatial pass cannot feed back into the accumulation.
  *
  * Known limitations, stated rather than discovered later: geometry outside the frame contributes
  * nothing; thin occluders are missed between steps; and alphaMode MASK surfaces are solid here,

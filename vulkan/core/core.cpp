@@ -662,6 +662,27 @@ namespace vulkan {
             gi_history_image_views[i] = create_image_view(gi_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
         }
 
+        // The spatial filter's output: written as a storage image like the trace target, and sampled
+        // by the composite. No TRANSFER_SRC - nothing copies out of it. The history is copied from the
+        // temporal resolve instead, which keeps the spatial filter out of the accumulation path: its
+        // result is a fresh function of this frame's accumulated image, never of last frame's filtered
+        // one, so filtering cannot compound over frames.
+        gi_spatial_images.resize(swap_chain_image_views.size());
+        gi_spatial_image_memories.resize(swap_chain_image_views.size());
+        gi_spatial_image_views.resize(swap_chain_image_views.size());
+        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_spatial_images[i],
+                gi_spatial_image_memories[i]);
+            gi_spatial_image_views[i] = create_image_view(gi_spatial_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+        }
+
         gbuffer_depth_images.resize(swap_chain_image_views.size());
         gbuffer_depth_image_memories.resize(swap_chain_image_views.size());
         gbuffer_depth_image_views.resize(swap_chain_image_views.size());
@@ -801,6 +822,7 @@ namespace vulkan {
             destroy_images(gi_images, gi_image_memories, gi_image_views);
             destroy_images(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
             destroy_images(gi_history_images, gi_history_image_memories, gi_history_image_views);
+            destroy_images(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
             for (auto const& level_views : bloom_image_views) {
                 for (auto const& view : level_views) {
                     vkDestroyImageView(device, view, nullptr);
@@ -1373,6 +1395,7 @@ namespace vulkan {
         destroy_target_set(gi_images, gi_image_memories, gi_image_views);
         destroy_target_set(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
         destroy_target_set(gi_history_images, gi_history_image_memories, gi_history_image_views);
+        destroy_target_set(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
 
         // 2d. Destroy the bloom targets (all levels)
         for (auto const& level_views : bloom_image_views) {

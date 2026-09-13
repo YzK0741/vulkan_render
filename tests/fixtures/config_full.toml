@@ -26,6 +26,7 @@ ssgi_intensity = 1.25
 ssgi_radius = 0.25
 ssgi_rays = 4
 ssgi_steps = 10
+ssgi_spatial_sigma = 3.5
 unlit = true
 fxaa = true
 gpu_timings = false

@@ -27,6 +27,7 @@ namespace {
         CHECK(settings.render.ssgi_radius > 0.24f && settings.render.ssgi_radius < 0.26f);
         CHECK(settings.render.ssgi_rays == 4);
         CHECK(settings.render.ssgi_steps == 10);
+        CHECK(settings.render.ssgi_spatial_sigma > 3.49f && settings.render.ssgi_spatial_sigma < 3.51f);
         CHECK(settings.render.unlit); // fixture: the flat render mode
         CHECK(settings.render.fxaa);
         CHECK(!settings.render.gpu_timings);
@@ -59,6 +60,8 @@ namespace {
         CHECK(!settings.render.ssgi); // default: off - GI is opt-in, and costs two dispatches a frame
         CHECK(settings.render.ssgi_rays == 2);
         CHECK(settings.render.ssgi_steps == 6);
+        CHECK(settings.render.ssgi_spatial_sigma > 1.99f && settings.render.ssgi_spatial_sigma < 2.01f);
+        CHECK(settings.render.ssgi_spatial_sigma > 1.99f && settings.render.ssgi_spatial_sigma < 2.01f);
         CHECK(settings.render.shadow_map_size == 2048); // default: 2048^2 per cascade layer
         CHECK(settings.gui.show);
     }
@@ -134,10 +137,11 @@ namespace {
         CHECK(settings.render.ssao_radius > 0.49f && settings.render.ssao_radius < 0.51f);
         CHECK(settings.render.ssao_intensity > 0.99f && settings.render.ssao_intensity < 1.01f);
         CHECK(settings.render.ssao_samples == 8);
-        // [render] screen-space GI: the generator writes these five, so the fixture has to carry them
+        // [render] screen-space GI: the generator writes these six, so the fixture has to carry them
         CHECK(!settings.render.ssgi);
         CHECK(settings.render.ssgi_intensity > 0.69f && settings.render.ssgi_intensity < 0.71f);
         CHECK(settings.render.ssgi_rays == 2);
+        CHECK(settings.render.ssgi_spatial_sigma > 1.99f && settings.render.ssgi_spatial_sigma < 2.01f);
         // [render] validation
         CHECK(settings.render.validation_layers);
         // [gui]
