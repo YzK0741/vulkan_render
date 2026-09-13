@@ -414,3 +414,34 @@ count and see what it costs, rather than build the budget machinery first:
 Consequence for the extraction step that comes first: nothing about it should be designed around
 amortisation. The shared entry point takes (query, hit position, direction, instance table address) and
 returns radiance; whether it is called for every cell or for a slice of them is the caller's business.
+
+### The structure the tercile instrument was hiding (step B's acceptance, measured)
+
+The previous two slices concluded "the signature did not flip to structured" from the tertile table. That
+conclusion was an artifact of the INSTRUMENT, and a 4x4 tile table of the same two captures shows it. Cache
+effect per tile, as a percentage of that tile's own brightness, normal interior view, 180 frames:
+
+    row 0 :  -1.88%  -1.17%  -0.16%  -0.14%      base brightness: 53.1  46.8 121.1 132.9
+    row 1 :  -4.73%  -1.15%  -0.27%  -0.58%                        30.8  39.3  84.2 100.2
+    row 2 :  -6.78%  -4.86%  -3.95%  -1.07%                        43.4  37.2  39.1 107.2
+    row 3 :  -4.88%  -3.81%  -4.09%  -1.21%                        23.5  20.7  41.7  55.8
+
+The effect spans -0.14% to -6.78%, a factor of about 48, and it is ORDERED BY THE SCENE rather than by the
+frame's brightness: the interior tiles (base 20-53) lose four to seven percent, while the bright tiles (base
+84-133, the open, sky-facing parts) lose a tenth to six tenths of a percent. That is what a correct answer
+looks like - the cache replaces the sky estimate where the surface faces interior geometry, and leaves it
+alone where the surface really does see the sky.
+
+Why the tercile instrument could not see it: a brightness third mixes tiles. The bright third contains both
+sky pixels (which the cache should not touch) and bright interior pixels (which it should), so averaging
+over the third blends a large effect with a negligible one and reports a middling fraction for every third.
+The instrument was fit for the ORIGINAL question - is a small correction added on top of the chain
+ambient-shaped or light-following - and it is the wrong lens for a REPLACEMENT, which is why the same
+captures read as "still ambient-shaped" through it and as clearly structured through a spatial table.
+
+Two consequences worth carrying forward:
+* step B's acceptance is MET, with the instrument corrected: the cache's effect is spatially structured and
+  follows the scene;
+* the tertile tables earlier in this file must be read as statements about *brightness thirds*, not about
+  the cache's quality, wherever they were used to judge a replacement rather than an addition. The numbers
+  themselves are right; the interpretation attached to them was not.
