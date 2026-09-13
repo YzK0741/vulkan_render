@@ -221,3 +221,56 @@ frames per full refresh), chosen by a 16-bucket staleness histogram; a probe's r
 diagonal so a probe cannot hit its own cell; the filter is a single-pass 6-neighbour axis gather, not a
 blur; an angular weight of 0.2 rad on where the neighbour's ray landed; a minimum trace distance of two
 cell diagonals before the cache may be consulted at all.
+
+## Step 1 revisited: UE's default is NOT to evaluate a material at a hit, and why this renderer still does
+
+The third study (all three are under `docs/reference/`) contains a finding that presses directly on what
+Step 1 built. Lumen's inline ray-tracing path - the one whose structure matches this renderer, no SBT, one
+compute shader with inline ray queries - evaluates NO material at a hit by default. Its payload carries a
+distance, an instance index, a material id, a few flag bits and one geometric normal
+(`FLumenMinimalPayload`), and the radiance comes from a surface-cache lookup. UE's own switch text for the
+alternative is the reasoning: reading the surface cache "gives the best GI and reflection performance",
+while calculating lighting at the hit point "greatly increases GPU cost, as full material and lighting will
+be evaluated at every hit point". Their material hit shader exists, is bound per material with the whole
+generated material graph compiled into it, and is used only in the opt-in hit-lighting modes - and even
+there a second trace against a material SBT is fired rather than paying for it in the main ray.
+
+THIS RENDERER'S CHOICE IS STILL THE RIGHT ONE AT ITS SCALE, for a reason that has to be stated so it is not
+mistaken for a claim about the technique: UE avoids material evaluation because it traces an enormous
+number of rays (1024 per radiance-cache probe, 64 per screen probe) AND has a surface cache to read
+instead. This renderer traces 2 rays per half-resolution pixel and has no surface cache, so shading the hit
+IS its replacement for the cache - and it measured inside the noise floor. The finding is therefore a
+statement about WHEN this design stops scaling, not about whether it was right: if the ray count rises (a
+reference-frame mode, more probes, a path-traced comparison), the scalable shape is UE's, namely keep the
+inline hit minimal, record (ray, materialId, distance), bin the rays by material, and only then read
+material records and textures coherently. The register pressure that UE names as the wall
+("too expensive (as in uses too many registers)") is the reason, and it is a wall this renderer will hit at
+the same place.
+
+TWO VALIDATIONS OF WHAT WAS BUILT, both from UE's own constraints:
+* A ray-tracing closest-hit shader is FORBIDDEN from reading the scene/G-buffer textures; only uniform
+  buffers and loose data may be bound. So material data reached through a structured buffer plus a
+  descriptor array of textures is the sanctioned shape, not a workaround.
+* UE stores a material ID and flag bits per hit and reaches vertex/index data through per-record
+  constants, where this renderer stores the buffer DEVICE ADDRESSES in its instance table. Equivalent, but
+  heavier per instance - and UE's indirection is what lets one geometry serve many instances. Worth
+  revisiting if instancing of the same mesh ever matters here.
+
+## The two documented limitations now have concrete answers
+
+* ALPHA MASK, and the answer is NOT an any-hit shader: UE resolves the mask in a compute pass and bakes
+  the result into the acceleration structure. Masked-out triangles are collapsed to degenerate ones
+  (all three vertices written to the same position) in the position buffer the BLAS is built from, which
+  requires masked geometry to be expanded to three unique vertices per triangle and made non-indexed, so
+  hiding one triangle cannot corrupt a shared vertex. UE's own documentation of the tradeoff is blunt: if
+  no any-hit shader is available, masked geometry is SILENTLY SOLID - which is exactly this renderer's
+  symptom, and it is a limitation with a known fix rather than a dead end.
+* SKINNED AND MORPHED MESHES: the fix is zero-copy, and UE calls it the fast path. The GPU skinning pass
+  already produces positions; if it writes them as float3 into the very buffer the BLAS reads (morph deltas
+  fold into the same pass for free), then the acceleration structure only needs a refit
+  (`ALLOW_UPDATE` at build, `MODE_UPDATE` per frame) with a per-frame triangle budget and round-robin
+  skipping, so a heavy scene degrades to a frame or two of lag instead of stalling. Worth recording that
+  UE itself keeps `bRenderStatic` and instanced-skinned meshes permanently in BIND POSE in its ray tracing
+  scene (a separate `StaticRayTracingGeometry` built from the bind-pose buffer and never refit) - this
+  renderer's stated limitation is a documented mode in the reference implementation, not a shortcut only
+  it takes.
