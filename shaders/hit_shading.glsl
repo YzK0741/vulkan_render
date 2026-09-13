@@ -55,6 +55,11 @@ layout(set = 0, binding = 4) uniform sampler2D brdf_lut_sampler;
 // carry its own copy of the Fresnel weights inline, and the GI chain's new subtraction is the reason the
 // copy became a shared definition instead of a third one.
 #include "ibl_specular.glsl"
+// The world-space cache's basis and its reconstruction - the ONE copy of the SH-2 basis (see that file's
+// header: two copies would be two chances to disagree). Included here because a hit can now take its DIFFUSE
+// AMBIENT from the cache instead of from the sky cube, which is what gives the shaded path a second bounce:
+// the ambient a hit surface receives is answered by a world-space structure that knows where the hit IS.
+#include "probe_sh.glsl"
 // The scene's material table and its bindless texture array (set 0 bindings 5 and 1, the same two
 // shaders/surface.glsl reads). Declared here rather than included from there: that file also declares the
 // camera UBO and the IBL cubes this pass already has, and re-declaring a binding is a compile error.
@@ -193,6 +198,16 @@ vec3 hit_surface(hit_instance instance, uint triangle, vec2 bary, bool front_fac
  * @param query the finished ray query (its committed intersection is a real hit)
  * @param hit_world the hit's world position (the ray's origin plus t times its direction)
  * @param dir the world-space ray direction
+ * @param cache_sh0 / @p cache_sh1 / @p cache_sh2 / @p cache_sh3 the world-space cache's four SH-2
+ *        coefficient images, AS THE CALLER BINDS THEM - parameters rather than bindings, because the tracer
+ *        reads them through the G-buffer set and the probe pass through its own ping-pong (see
+ *        shaders/probe_sh.glsl's probe_sh_sample)
+ * @param cache_grid the cache's mapping as (grid minimum corner.xyz, cell size.w), the same value the
+ *        tracer already pushes for its own lookups
+ * @param cache_gain how much of the cache's answer this hit's diffuse ambient may take. 0.0 uses the sky
+ *        cube alone, which is what makes the callers that pass it bit-identical to before this parameter
+ *        existed; the tracer passes [render] ssgi_bounce here, the knob that until now had no meaning on
+ *        this path at all (see the ambient block below and shaders/ssgi.comp's push comment)
  * @param out_radiance the surface's outgoing radiance toward the ray's origin
  * @return false when the hit cannot be shaded (the table has no entry for it), so the caller falls back
  *
@@ -209,7 +224,9 @@ vec3 hit_surface(hit_instance instance, uint triangle, vec2 bary, bool front_fac
  * traced effect in this engine), skinning and morphing (the structures hold the bind pose), and the
  * punctual-light cluster, which is a screen-space structure a hit outside the frame has no entry in.
  */
-bool shade_hit(rayQueryEXT query, vec3 hit_world, vec3 dir, vec3 to_viewer, uint64_t table_address, float bias_scale, out vec3 out_radiance) {
+bool shade_hit(rayQueryEXT query, vec3 hit_world, vec3 dir, vec3 to_viewer, uint64_t table_address, float bias_scale,
+               sampler3D cache_sh0, sampler3D cache_sh1, sampler3D cache_sh2, sampler3D cache_sh3, vec4 cache_grid, float cache_gain,
+               out vec3 out_radiance) {
     InstanceTable table = InstanceTable(table_address);
     const hit_instance instance = table.records[rayQueryGetIntersectionInstanceCustomIndexEXT(query, true)];
     const hit_material mat = hit_materials.materials[instance.material_index];
@@ -308,7 +325,29 @@ bool shade_hit(rayQueryEXT query, vec3 hit_world, vec3 dir, vec3 to_viewer, uint
     // The split-sum IBL ambient, as the lighting stage computes it (the same two lookups and the same
     // combination, so a shaded hit and the screen agree about a surface's ambient). Both halves are
     // shaders/ibl_specular.glsl's, which is also what a subtraction elsewhere in the chain computes.
-    const vec3 ibl_diffuse = texture(irradiance_sampler, normal).rgb;
+    vec3 ibl_diffuse = texture(irradiance_sampler, normal).rgb;
+    // ... AND THE SECOND BOUNCE, when the caller asks for one. The sky cube above knows the light arriving
+    // from a DIRECTION and nothing about where the surface is, so every interior wall in the scene is lit as
+    // though it stood outdoors - that is the whole reason the world-space cache exists. The cache's answer
+    // is mixed in by the cell's own TRUST, exactly as the tracer's probe_radiance does, so a cell with no
+    // evidence degrades to the sky and this term can never make a hit darker than the ambient it replaces:
+    // it is a REPLACEMENT of the diffuse ambient, not an addition to it (adding it would count the sky
+    // twice, which is the defect the traced chain's subtraction exists to avoid on the screen side).
+    //
+    // WHERE THE GAIN COMES FROM: [render] ssgi_bounce, which the tracer already carries in its push and
+    // which the shaded path did not read at all - the screen-sampled path is the only one that fed the
+    // previous frame's accumulation back, so on the default path the knob was dead. It is alive here with
+    // the meaning its own documentation always claimed: how much of the previous frame's accumulated
+    // indirect a hit re-emits, where "accumulated indirect" is the world-space cache's SH-2 radiance rather
+    // than a screen image (which a hit the camera cannot see has no entry in).
+    if (cache_gain > 0.0) {
+        // The same mapping the tracer does for its own lookups (see shaders/ssgi.comp's probe_radiance):
+        // world -> cell -> normalized texture coordinate, all four coefficient images sharing the extent.
+        const vec3 cell = (hit_world - cache_grid.xyz) / max(cache_grid.w, 1e-6);
+        const vec3 uvw = (cell + 0.5) / vec3(textureSize(cache_sh0, 0));
+        const vec4 cached = probe_sh_sample(cache_sh0, cache_sh1, cache_sh2, cache_sh3, uvw, normal);
+        ibl_diffuse = mix(ibl_diffuse, cached.rgb, clamp(cache_gain * cached.a, 0.0, 1.0));
+    }
     const vec3 ibl_specular = ibl_specular_radiance(normal, v, roughness);
     const vec3 f_ibl = ibl_specular_fresnel(normal, v, roughness, f0, 1.0);
     const vec3 ambient = ibl_diffuse * base_color * ao * (1.0 - metallic);

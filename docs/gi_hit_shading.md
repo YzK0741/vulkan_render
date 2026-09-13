@@ -1443,6 +1443,42 @@ STILL OPEN: the reference's mechanisms 3 (a clamp from the history's own varianc
 direction), neither of which a measurement has asked for yet; and the reflection's history is still accumulated
 at the GI chain's half resolution, which is where its noise floor now sits.
 
+### The second bounce, measured: the cache can answer a hit's ambient, and it changes 0.05% of the frame
+
+WHAT WAS BUILT. `shade_hit` can now take a hit's DIFFUSE AMBIENT from the world-space probe cache instead of
+from the sky cube, which is the second bounce on the default path - the one `shaders/ssgi.comp` says it does not
+have ("the multi-bounce term is added on the SCREEN-VALIDATED path only"), and the removal that file's own
+comment names ("a surface cache or a radiance probe grid"). The knob was already there and was DEAD on this
+path: `[render] ssgi_bounce` rides the tracer's push, and the shaded path never read it. Three call sites, no
+new binding and no push growth: the tracer passes the cache's four coefficient images, its grid mapping and
+`ssgi_bounce`; the probe pass passes the read half of its own ping-pong with a gain of 0.0, because a cell's
+hits are shaded from the SKY - a cache that read itself would be a feedback loop with nothing to bound it; and
+the glossy lobe passes 0.0 as well, so this step cannot move a lobe frame. The cache's answer is mixed in by the
+cell's TRUST (through `probe_sh_sample`), so a cell with no evidence degrades to the sky and the term REPLACES
+the ambient rather than adding a second copy of it.
+
+MEASURED, Sponza interior, 180 frames, traced GI with hit shading and the cache on, A/B on `ssgi_bounce` alone:
+
+    mean green     bounce 0.0: 116.7502      bounce 0.6: 116.7606      +0.0104  (+0.009%)
+    pixels differing 491 of 1036800 (0.05%), all in ONE 4x4 tile, worst pixel 179 of 255
+
+THE MECHANISM WORKS AND THE PREDICTION WAS WRONG. The sign is right (a second bounce adds light) and the effect
+is concentrated rather than flat, but 0.05% of a frame is not the "interiors fill in" result this step was
+planned for, and the reason is worth stating rather than smoothing over: **the cache is a ONE-BOUNCE
+estimator.** Its cells are filled by rays that are themselves shaded from the surface they landed on - direct
+sun plus the SKY ambient - and the probe pass deliberately refuses to let a cell read the cache (see above). So
+for most cells the cache's answer is very close to the sky irradiance the hit already had, and replacing one
+with the other is nearly a no-op. What the 491 pixels are is the case where the two genuinely differ: a cell
+whose rays landed on SUNLIT geometry, which the sky cube knows nothing about. That is the real content of a
+second bounce here, and on this scene and pose it is small.
+
+SO IT SHIPS OFF, and `ssgi_bounce` keeps its default of 0.0 - the value at which the code is inert (the capture
+gate is 12 scenarios x 2, 0 changed, and `default_gi` plus the two glossy scenarios are the frames that
+exercise the new parameters). The reason it is off is now a measurement rather than a plan. Turning it into a
+visible improvement needs the cache to hold MORE than one bounce, which means letting a cell's rays be answered
+by the cache itself - the feedback loop the probe pass refuses today - and that is a different design with its
+own measurement.
+
 ### L2.3, the glossy lobe's reach: a shared knob that was pinned by the other path
 
 The lobe's rays used the DIFFUSE bounce's `ssgi_radius`, and the two are different questions. A diffuse

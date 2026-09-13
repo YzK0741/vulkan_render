@@ -125,6 +125,13 @@ layout(set = 1, binding = 6, rgba16f) uniform image2D gi_trace;  // the raw trac
 // because the surface is usually static while the image slides across it.
 layout(set = 1, binding = 13, rgba16f) uniform image2D gi_spec_trace;
 layout(set = 1, binding = 14, rgba16f) uniform image2D gi_spec_reproject;
+// The world-space cache's four SH-2 coefficient images, declared because hit_shading.glsl's shade_hit takes
+// them as PARAMETERS (see probe_sh.glsl): this pass binds the same G-buffer set the tracer does, so these
+// four descriptors already exist and declaring them here costs no descriptor work.
+layout(set = 1, binding = 9) uniform sampler3D gi_probe_sh0;
+layout(set = 1, binding = 10) uniform sampler3D gi_probe_sh1;
+layout(set = 1, binding = 11) uniform sampler3D gi_probe_sh2;
+layout(set = 1, binding = 12) uniform sampler3D gi_probe_sh3;
 
 #include "hit_shading.glsl"
 
@@ -293,7 +300,12 @@ void main() {
         const float hit_t = rayQueryGetIntersectionTEXT(query, true);
         const vec3 hit_world = origin + hit_t * dir;
         vec3 shaded = vec3(0.0);
-        if (shade_hit(query, hit_world, dir, -dir, table, pc.params.z, shaded)) {
+        // The reflection's own hits keep the SKY ambient (gain 0.0, and a zero grid): the second bounce is
+        // the DIFFUSE bounce's business first, and keeping the lobe out of that step is what lets it be
+        // measured without moving a single lobe frame. Extending it here later is one push lane - this pass's
+        // push is 96 bytes, so it has room where the tracer's is already at the 128-byte minimum.
+        if (shade_hit(query, hit_world, dir, -dir, table, pc.params.z,
+                      gi_probe_sh0, gi_probe_sh1, gi_probe_sh2, gi_probe_sh3, vec4(0.0), 0.0, shaded)) {
             radiance_sum += shaded;
             if (reproject_depth < 0.0) {
                 reproject_world = hit_world;
