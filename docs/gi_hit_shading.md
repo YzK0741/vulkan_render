@@ -1446,7 +1446,38 @@ STILL OPEN: the reference's mechanisms 3 (a clamp from the history's own varianc
 direction), neither of which a measurement has asked for yet; and the reflection's history is still accumulated
 at the GI chain's half resolution, which is where its noise floor now sits.
 
-### The second bounce, measured: the cache can answer a hit's ambient, and it changes 0.05% of the frame
+### The lobe's default-on case, measured: the effect is real and ordered, and one ray is a bias not flicker
+
+WHAT WAS MISSING for the decision to ship the glossy lobe ENABLED was never its effect - L2.3's material table
+has that, ordered the way the BRDF predicts - but (a) what it does to the frame in the configuration a user
+actually gets, and (b) how far the shipped ONE ray is from its own convergence. Both, on the material sweep, 40
+frames, `taa = true` (the stock path), lobe ON against OFF and 1 ray against 8:
+
+    arm                          mean green   pixels differing   |d|>4    worst pixel
+    lobe OFF                          126.5791            -          -          -
+    lobe ON, 1 ray (shipped)          128.0837        8.67%       5.08%        211
+    lobe ON, 8 rays                   128.2186        7.37%       2.80%        105     (measured against the 1-ray frame)
+
+so the effect is +1.50 of mean green over 8.67% of the frame, and the shipped ray's per-pixel estimate differs
+from an eight-ray convergence on 7.37% of pixels, 2.80% of them beyond 4/255.
+
+TAA DOES NOT CHANGE EITHER NUMBER, and that is worth stating because it is the opposite of what the word "noise"
+invites you to assume: with `taa = false` the same pair reads 7.26% / 2.82%, and the effect 8.68% / 5.13%. The
+reason is that this difference is not frame-to-frame noise - it is the same on every frame - so a temporal
+average cannot touch it. It is a BIAS: one ray samples one direction of the roughness cone and eight sample
+eight, and the two estimates differ by a fixed amount per pixel. That also means it reads as a slightly
+different reflection rather than as grain, and that `ssgi_specular_rays` is a fidelity knob as well as a cost
+knob. (The record's earlier "1 vs 4 rays differ by +0.0028 against the feature's -1.33" is the frame MEAN; this
+is the per-pixel tail of the same comparison.)
+
+WHAT A FLIP WOULD TAKE, now that the evidence exists and the decision is a judgement rather than a measurement:
+the compiled default, `config.example.toml`, the generator and the fixtures, a pin of `ssgi_specular = false` in
+every scenario whose reference is about another path, and a deliberate re-seed of the scenarios that do enable
+it - the same list L2.4 worked through when the traced chain became the default. The knob that decides the
+per-pixel fidelity is `ssgi_specular_rays`, whose default of 1 is what the recorded +0.13 ms was measured at;
+eight rays costs a multiple of that (+0.81 ms at four).
+
+### The second bounce, measured: the cache answers a hit's ambient, and the correction is ordered by the scene
 
 WHAT WAS BUILT. `shade_hit` can now take a hit's DIFFUSE AMBIENT from the world-space probe cache instead of
 from the sky cube, which is the second bounce on the default path - the one `shaders/ssgi.comp` says it does not
