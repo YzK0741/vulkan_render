@@ -274,3 +274,66 @@ TWO VALIDATIONS OF WHAT WAS BUILT, both from UE's own constraints:
   scene (a separate `StaticRayTracingGeometry` built from the bind-pose buffer and never refit) - this
   renderer's stated limitation is a documented mode in the reference implementation, not a shortcut only
   it takes.
+
+## The complete roadmap, in dependency order
+
+DONE (each with its evidence in this file or `docs/reference/`):
+0. Measure the probe cache's contribution. Negative result: it adds a nearly identical FRACTION of every
+   region's brightness - ambient-shaped, not structured - and the mechanism is a normalised unoccluded
+   blur (unity DC gain). Recorded in config.example.toml beside the knob.
+1. Shade a hit from its geometry: instance table with buffer device addresses, vertex/index fetch through
+   a buffer reference, analytic tangent frame, material records and textures, sun with a shadow ray,
+   split-sum IBL, emissive. Measured: +0.22 mean on hits the camera can see (0.36%, validating the whole
+   fetch and evaluation chain); the -1.29 on hidden hits attributed to the screen path granting them probe
+   ambient; three candidate explanations disproven by measurement; back-face hits rejected for correctness.
+2. The per-pixel error instrument (MAE/RMSE against a converged 16-ray, 600-frame reference), used once.
+3. The reference studies under docs/reference/, and the mechanisms taken from them.
+
+REMAINING, in the order the dependencies require:
+
+A. Make the cache structured instead of ambient-shaped (the leak fix; the smallest change with the
+   largest measured defect behind it).
+   A1. A per-cell DEPTH: a second 3D image holding, per cell, the distance the injection found there (the
+       injection already computes the cell's screen position and the depth at it) plus a front-face flag.
+   A2. Replace the propagation with a 6-neighbour axis gather whose weight is an angular term times a
+       BIDIRECTIONAL visibility test between the two cells; a failed test DROPS the contribution (lowering
+       the total weight) instead of redistributing it; the centre keeps weight 1.
+   A3. Accept when the tertile signature flips from "the same percentage in every third" to "light where
+       the off-screen geometry illuminates" - the instrument from step 0 - and when the convergence
+       increments still shrink (the same test every energy-carrying change here has had to pass).
+
+B. Make the cache view-independent (its contents stop depending on what the camera showed).
+   B1. Share the shading code with the probe pass: extract the hit-shading block and its shared bindings
+       into an include unit both passes can read (today ssgi.comp, surface.glsl and shading.glsl declare
+       overlapping bindings, which is the actual blocker).
+   B2. Give the probe pass the scene set, the TLAS binding and the instance table address in its push
+       block.
+   B3. Trace from the cells: cosine-weighted rays from a cell's centre starting one cell diagonal away,
+       hit -> the shared shading, miss -> sky; amortised across frames by staleness priority so only a
+       slice of the grid is retraced per frame.
+   B4. Accept when the grid no longer answers with the frame it was injected from: the same cell read from
+       a camera angle that never saw it gives the same value, and the tertile signature stays structured.
+   B5. Measure the cost and set the slice budget from it.
+
+C. Loop hygiene for the cache's feedback path: reset the grid when global lighting changes materially
+   (UE's trigger is a 4x / 0.25x ratio on the light or skylight colour), which is the one convergence
+   mechanism this renderer lacks; the increment test remains the acceptance.
+
+D. The two documented limitations, both now with known mechanisms:
+   D1. alphaMode MASK: resolve the mask in a compute pass and bake it into the acceleration structure -
+       collapse masked-out triangles to degenerate ones in the position buffer the BLAS reads, expanding
+       masked geometry to three unique vertices per triangle and dropping the index buffer.
+   D2. Skinned and morphed meshes: make the GPU skinning pass write float3 positions into the buffer the
+       BLAS reads (morph deltas fold into the same pass), build with ALLOW_UPDATE and refit per frame with
+       MODE_UPDATE under a per-frame triangle budget with round-robin skipping.
+
+E. The other half of step 3: a reference that is neither of the two variants (a brute-force or
+   path-traced answer, offline and accumulated), so the per-pixel metric measures accuracy rather than
+   self-consistency. That is what would settle whether the shaded or the screen model is closer to the
+   truth, and it is what turns every remaining knob (probe rate, propagation rounds, bounce gain, spatial
+   sigma, probe gain) into something judged against an answer.
+
+F. Only if the ray count rises (a reference mode, more probes): the scalable shape for hit shading is
+   UE's - keep the inline hit payload minimal, record (ray, material id, distance), bin the rays by
+   material, and read material records and textures only then. Register pressure is the wall that forces
+   it, and it is where this renderer would hit the same wall.
