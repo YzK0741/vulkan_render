@@ -60,14 +60,22 @@ layout(set = 0, binding = 0) uniform sampler2D gi_screen;     // this frame's re
 layout(set = 0, binding = 1) uniform sampler2D gbuffer_depth; // full-resolution G-buffer depth
 layout(set = 0, binding = 2) uniform sampler3D grid_src;      // the cells being read (propagation)
 layout(set = 0, binding = 3, rgba16f) uniform image3D grid_dst; // the cells being written (both modes)
+// ... and the geometry the filter needs in order to know which neighbours it may borrow light from: per
+// cell, the vector from its centre to the surface the injection found at its screen position, with a
+// validity flag in w. ONE image, not a pair: the injection owns this, and the ping-pong applies to
+// radiance. Read and written in GENERAL, like the grids.
+layout(set = 0, binding = 4, rgba16f) uniform image3D grid_surface;
 
 layout(push_constant) uniform GiProbePush {
     mat4 view_proj;     // world -> clip, for the injection's projection of a cell centre
     // xyz = the world position of cell (0,0,0)'s corner, w = one cell's size in world units. The grid
     // covers the scene's bounds, so the cell size falls out of the bounds and the resolution.
     vec4 grid_min_cell;
-    // xyz = the grid's extent in cells, w = unused
-    vec4 grid_extent;
+    // xyz = the camera's world position, w = unused. It is here for the one thing the injection needs
+    // beyond the projection: the world-space direction of the ray through a cell, so that the surface it
+    // finds can be recorded as an OFFSET from the cell rather than as a depth. The grid's extent no
+    // longer needs a lane of its own - the image knows its size (imageSize in main()).
+    vec4 camera_pos;
     // x = the injection's rate (the grid's own blend over frames), y = projection[2][2], z =
     // projection[3][2] (the view-depth linearization pair every depth test in this project uses),
     // w = the mode: 0 = inject, 1 = propagate
@@ -128,49 +136,101 @@ void inject(ivec3 cell) {
     // climbs to 1 over roughly 1/rate frames of being seen.
     const vec3 radiance = texture(gi_screen, uv).rgb;
     imageStore(grid_dst, cell, vec4(mix(stored.rgb, radiance, rate), min(1.0, stored.a + rate)));
+
+    // The geometry, recorded as an OFFSET from the cell rather than as a depth: the surface lies on the ray
+    // from the camera through this cell (the cell projects to the pixel the depth was read from), so the
+    // offset is that direction times the difference of the two view depths. The difference is measured
+    // along the VIEW AXIS while the direction follows the ray, so its length carries a cosine error that
+    // grows towards the frame's edges. That is acceptable for an occlusion test with a threshold, and it
+    // is stated here rather than hidden: a per-direction depth map - what the reference implementation
+    // stores per probe - is what would remove it, and this renderer's injection has no direction to store.
+    const vec3 surface_direction = normalize(world - pc.camera_pos.xyz);
+    imageStore(grid_surface, cell, vec4(surface_direction * (buffer_view - probe_view), 1.0));
 }
 
 /**
- * @brief spread the neighbouring cells' radiance into this one, weighted by their trust
+ * @brief whether the segment @p from -> @p to stays in front of the surface recorded at @p from
+ * @param surface_at_from the offset from @p from to the surface its injection found (w = validity)
+ * @param radius how close to the segment a surface has to be to be in the way
+ * @return false when that surface blocks the segment
+ * @note a surface blocks only when it lies BETWEEN the two points and close to the segment: a surface the
+ *       segment never comes near is not an occluder, however far along it happens to sit.
+ */
+bool segment_clear(vec3 from, vec3 to, vec4 surface_at_from, float radius) {
+    if (surface_at_from.w < 0.5) {
+        return true; // nothing recorded here, so there is nothing to be occluded by
+    }
+    const vec3 segment = to - from;
+    const float segment_length = length(segment);
+    if (segment_length < 1e-6) {
+        return true;
+    }
+    const vec3 direction = segment / segment_length;
+    const float along = dot(surface_at_from.xyz, direction);
+    if (along <= 0.0 || along >= segment_length) {
+        return true; // the surface is not between the two cells
+    }
+    return length(surface_at_from.xyz - direction * along) > radius;
+}
+
+/**
+ * @brief blend this cell with the neighbours it can SEE, and only with those
  * @param cell the cell to write
  *
- * A separable 1-2-1 kernel in three dimensions (so a face neighbour counts 2, an edge 4, a corner 8
- * before the trust term), read from one grid image and written to the other: no dispatch ever reads
- * what it writes, which is what makes an unoccluded blur safe to run.
+ * Six axis neighbours rather than a 3x3x3 kernel, and each neighbour's weight is GATED by a visibility
+ * test instead of scaled by a trust:
+ *
+ *  - the test is BIDIRECTIONAL: it asks whether the surface recorded at this cell lies between the two
+ *    centres, and whether the surface recorded at the NEIGHBOUR does too. One direction alone misses a
+ *    thin wall, and with a single surface offset per cell that is all this representation can offer;
+ *  - a pair that fails DROPS OUT of both the sum and the weight, so the result is not a renormalised
+ *    average. That is the entire point: a normalised unoccluded blur has unity DC gain, so it adds the
+ *    same FRACTION of whatever every region already holds - which is exactly what this cache was measured
+ *    doing (0.81% of the frame's darkest third, 0.75% of the middle, and only 0.06% of the brightest).
+ *    Letting a rejected neighbour lower the total weight is what lets the outcome depend on the light;
+ *  - the centre always contributes at weight 1, so a cell whose neighbours are all occluded keeps its own
+ *    value instead of decaying towards the average of nothing;
+ *  - the trust is no longer decayed per step. It describes whether a cell was ever filled, which the
+ *    injection raises while it sees the cell, and visibility - not a decay - is what decides whether a
+ *    neighbour may lend its light. The consequence is stated rather than hidden: cells the frame never
+ *    saw now stay empty instead of being filled by an unoccluded spread, which is the leak this replaces;
+ *    filling them honestly is what tracing from the cells will do.
  */
+
 void propagate(ivec3 cell, ivec3 extent) {
-    vec3 sum = vec3(0.0);
-    float weight_sum = 0.0;
-    float best_neighbour = 0.0;
-    for (int z = -1; z <= 1; ++z) {
-        for (int y = -1; y <= 1; ++y) {
-            for (int x = -1; x <= 1; ++x) {
-                const ivec3 at = cell + ivec3(x, y, z);
-                if (!inside(at, extent)) {
-                    continue;
-                }
-                const vec4 tap = texelFetch(grid_src, at, 0);
-                // The kernel weight times the tap's trust: an untrusted cell (trust 0 - never injected
-                // and never reached) takes no part, which is what keeps empty space from averaging the
-                // filled cells towards black.
-                const float weight = float(2 - abs(x)) * float(2 - abs(y)) * float(2 - abs(z)) * tap.a;
-                sum += tap.rgb * weight;
-                weight_sum += weight;
-                best_neighbour = max(best_neighbour, tap.a);
-            }
-        }
-    }
     const vec4 center = texelFetch(grid_src, cell, 0);
-    const vec3 rgb = weight_sum > 0.0 ? sum / weight_sum : center.rgb;
-    // A cell that only heard about the light from somewhere else is worth half as much as one the frame
-    // deposited into directly, and that halves again at every step: the spread fades with distance
-    // instead of leaking a wall's light indefinitely.
-    const float trust = max(center.a, best_neighbour * 0.5);
-    imageStore(grid_dst, cell, vec4(rgb, trust));
+    const vec4 center_surface = imageLoad(grid_surface, cell);
+    const vec3 center_position = pc.grid_min_cell.xyz + (vec3(cell) + 0.5) * pc.grid_min_cell.w;
+    const float radius = 0.5 * pc.grid_min_cell.w;
+
+    vec3 sum = center.rgb; // the centre, at weight 1, always
+    float weight_sum = 1.0;
+
+    const ivec3 offsets[6] = ivec3[6](
+        ivec3(1, 0, 0), ivec3(-1, 0, 0), ivec3(0, 1, 0), ivec3(0, -1, 0), ivec3(0, 0, 1), ivec3(0, 0, -1));
+    for (int i = 0; i < 6; ++i) {
+        const ivec3 at = cell + offsets[i];
+        if (!inside(at, extent)) {
+            continue;
+        }
+        const vec4 tap = texelFetch(grid_src, at, 0);
+        if (tap.a <= 0.0) {
+            continue; // never filled: there is nothing to lend
+        }
+        const vec3 neighbour_position = pc.grid_min_cell.xyz + (vec3(at) + 0.5) * pc.grid_min_cell.w;
+        const vec4 neighbour_surface = imageLoad(grid_surface, at);
+        if (!segment_clear(center_position, neighbour_position, center_surface, radius) ||
+            !segment_clear(neighbour_position, center_position, neighbour_surface, radius)) {
+            continue; // occluded in at least one direction: this neighbour's light does not reach us
+        }
+        sum += tap.rgb;
+        weight_sum += 1.0;
+    }
+    imageStore(grid_dst, cell, vec4(sum / weight_sum, center.a));
 }
 
 void main() {
-    const ivec3 extent = ivec3(pc.grid_extent.xyz);
+    const ivec3 extent = imageSize(grid_dst);
     const ivec3 cell = ivec3(gl_GlobalInvocationID.xyz);
     if (!inside(cell, extent)) {
         return; // the dispatch is rounded up to the workgroup size

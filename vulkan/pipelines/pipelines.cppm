@@ -1,4 +1,4 @@
-// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
@@ -255,7 +255,7 @@ namespace vulkan::pipelines {
         using fail = std::unexpected<std::string>;
         taa_owned out;
 
-        std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
+        std::array<VkDescriptorSetLayoutBinding, 5> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
             bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -503,15 +503,16 @@ namespace vulkan::pipelines {
     // The world-space probe cache: injection and propagation share one pipeline (the mode is a push
     // constant), so there is one shader and one layout. 0..2 are the samplers it reads - this frame's
     // resolved GI, the depth, and the grid image it is reading - and 3 is the STORAGE 3D image it
-    // writes, which is why one binding differs from the rest.
+    // writes, plus the per-cell surface offsets the filter tests visibility with, which is why two bindings
+    // differ from the rest.
     std::expected<gi_probe_owned, std::string> build_gi_probe(core& vk, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         gi_probe_owned out;
 
-        std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
+        std::array<VkDescriptorSetLayoutBinding, 5> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
-            bindings[b].descriptorType = b == 3u ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[b].descriptorType = (b == 3u || b == 4u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             bindings[b].descriptorCount = 1;
             bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
             bindings[b].pImmutableSamplers = nullptr;

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.40.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.41.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -533,7 +533,7 @@ namespace vulkan {
         struct gi_probe_push_constants {
             glm::mat4 view_proj = glm::mat4(1.0f);     // world -> clip, for the injection's projection
             glm::vec4 grid_min_cell = glm::vec4(0.0f); // xyz = cell (0,0,0)'s corner, w = cell size
-            glm::vec4 grid_extent = glm::vec4(0.0f);   // xyz = the extent in cells, w = unused
+            glm::vec4 camera_pos = glm::vec4(0.0f);    // xyz = the eye, for the injection's offset vectors
             // x = the injection rate, y = proj[2][2], z = proj[3][2], w = the mode (0 = inject,
             // 1 = propagate)
             glm::vec4 params = glm::vec4(0.0f);

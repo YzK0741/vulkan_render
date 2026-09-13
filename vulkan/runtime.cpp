@@ -3128,7 +3128,7 @@ namespace vulkan {
         // SHADER_READ (which is what the tracer wants) and the scratch in GENERAL (which is all it ever
         // is).
         bool const probe_first_use = !this->gi_probe_grid_seen && vk.gi_probe_images.size() == 2;
-        std::array<VkImageMemoryBarrier2, 4> start_barriers = {
+        std::array<VkImageMemoryBarrier2, 5> start_barriers = {
             vulkan::undefined_to_general_transition, vulkan::undefined_to_sampling_transition, vulkan::undefined_to_sampling_transition, vulkan::undefined_to_general_transition};
         start_barriers[0].image = vk.gi_images[index];
         uint32_t start_count = 1;
@@ -3140,6 +3140,9 @@ namespace vulkan {
             start_barriers[start_count].image = vk.gi_probe_images[0]; // the cache: sampled by this dispatch
             ++start_count;
             start_barriers[start_count].image = vk.gi_probe_images[1]; // the scratch: only ever written
+            ++start_count;
+            start_barriers[start_count] = vulkan::undefined_to_general_transition; // the per-cell geometry: written by the injection
+            start_barriers[start_count].image = vk.gi_probe_surface_images[0];
             ++start_count;
             this->gi_probe_grid_seen = true;
         }
@@ -3481,8 +3484,9 @@ namespace vulkan {
         // does not index these lists per image.
         std::array<VkImageView, 1> const cache_view = {vk.gi_probe_image_views[0]};
         std::array<VkImageView, 1> const scratch_view = {vk.gi_probe_image_views[1]};
-        std::array<std::span<VkImageView const>, 4> const fingerprints = {
-            vk.gi_resolve_image_views, vk.gbuffer_depth_image_views, cache_view, scratch_view};
+        std::array<VkImageView, 1> const surface_view = {vk.gi_probe_surface_image_views[0]};
+        std::array<std::span<VkImageView const>, 5> const fingerprints = {
+            vk.gi_resolve_image_views, vk.gbuffer_depth_image_views, cache_view, scratch_view, surface_view};
         // TWO sets per swapchain image, and they are the entire ping-pong: set 0 writes the cache and
         // reads the scratch, set 1 the other way round. Choosing a set per dispatch is why the propagation
         // needs no descriptor rewrite between its dispatches (see record_gi_probe_pass).
@@ -3490,17 +3494,17 @@ namespace vulkan {
             for (uint32_t which = 0; which < sets.size(); ++which) {
                 VkImageView const destination = vk_ref.gi_probe_image_views[which];
                 VkImageView const source = vk_ref.gi_probe_image_views[1u - which];
-                std::array<VkDescriptorImageInfo, 4> image_infos = {};
-                std::array<VkImageView, 4> const views = {
-                    vk_ref.gi_resolve_image_views[image_index], vk_ref.gbuffer_depth_image_views[image_index], source, destination};
-                std::array<VkWriteDescriptorSet, 4> writes = {};
+                std::array<VkDescriptorImageInfo, 5> image_infos = {};
+                std::array<VkImageView, 5> const views = {
+                    vk_ref.gi_resolve_image_views[image_index], vk_ref.gbuffer_depth_image_views[image_index], source, destination, vk_ref.gi_probe_surface_image_views[0]};
+                std::array<VkWriteDescriptorSet, 5> writes = {};
                 for (uint32_t b = 0; b < views.size(); ++b) {
                     // Binding 3 is the STORAGE 3D image the pass writes. The two grid bindings are
                     // declared GENERAL and not SHADER_READ: both grids stay in GENERAL for the whole
                     // update (that is what the same-layout barrier between dispatches is for), and a
                     // descriptor that claims SHADER_READ for an image the pass writes would be a lie
                     // validation rejects at the first dispatch.
-                    bool const storage = b == 3u;
+                    bool const storage = b == 3u || b == 4u;
                     bool const grid_source = b == 2u;
                     image_infos[b].sampler = storage ? VK_NULL_HANDLE : (b == 0u ? *this->gbuffer_sampler : *this->gi_probe_sampler);
                     image_infos[b].imageView = views[b];
@@ -3515,7 +3519,7 @@ namespace vulkan {
                 vkUpdateDescriptorSets(vk_ref.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
             }
         };
-        if (!this->gi_probe_family.ensure_all(vk, this->gi_probe_set_layout, static_cast<uint32_t>(image_count), 2u, 4u, fingerprints, write_sets)) {
+        if (!this->gi_probe_family.ensure_all(vk, this->gi_probe_set_layout, static_cast<uint32_t>(image_count), 2u, 5u, fingerprints, write_sets)) {
             utility::log("runtime: probe cache descriptor sets unavailable - the tracer keeps its environment fallback");
         }
     }
@@ -3555,10 +3559,7 @@ namespace vulkan {
         // cell's distance" - a different matrix would offset every cell by half a pixel of jitter.
         push.view_proj = this->current_ubo.proj * this->current_ubo.view;
         push.grid_min_cell = glm::vec4(this->shadow_scene_center - glm::vec3(this->scene_radius), cell_size);
-        push.grid_extent = glm::vec4(static_cast<float>(vulkan::gi_probe_grid_extent),
-                                     static_cast<float>(vulkan::gi_probe_grid_extent),
-                                     static_cast<float>(vulkan::gi_probe_grid_extent),
-                                     0.0f);
+        push.camera_pos = glm::vec4(this->current_ubo.camera_pos.x, this->current_ubo.camera_pos.y, this->current_ubo.camera_pos.z, 0.0f);
         push.params = glm::vec4(this->gi_probe_rate, this->current_ubo.proj[2][2], this->current_ubo.proj[3][2], 0.0f);
 
         constexpr uint32_t group_size = 4; // shaders/gi_probe.comp's local_size_x/y/z
