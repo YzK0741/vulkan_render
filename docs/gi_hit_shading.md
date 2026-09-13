@@ -618,7 +618,12 @@ The mode runs and reports, and what it reports is not the energy error the plan 
 that is the result of this step. Every number is the mean of the 8-bit green channel over one 1080x960
 capture of 180 frames at a static camera; **two runs of ONE config are byte-identical** (verified by
 SHA256), so a difference between two configs is signal - which also means the acceptance's "within the
-noise of two 180-frame captures" is in practice an exactness test, not a tolerance.
+noise of two 180-frame captures" is in practice an exactness test, not a tolerance. The Sponza captures
+use the pinned GI camera of the `sponza` scenario in `scripts/windows/check_render.ps1` (yaw 90, pitch 0,
+distance 6.41, target (0, -18.55, 0), `taa = false`, `[gui] show = false`, `vsync = false`,
+`max_fps = 240`); the convex ones use the model's own `camera_fit`, which is deterministic and is printed
+in the startup log. Nothing else about the runs differs from the configs quoted here and in
+`config.example.toml`.
 
 THE REPLACEMENT CHAIN IS EXACT, and the test that shows it needs no geometry at all: set
 `ssgi_radius = 0`. No ray can reach anything, every ray returns the constant cube, and the traced
