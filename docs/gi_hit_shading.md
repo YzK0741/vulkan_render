@@ -337,3 +337,59 @@ F. Only if the ray count rises (a reference mode, more probes): the scalable sha
    UE's - keep the inline hit payload minimal, record (ray, material id, distance), bin the rays by
    material, and read material records and textures only then. Register pressure is the wall that forces
    it, and it is where this renderer would hit the same wall.
+
+## Level 1 progress, and exactly what step B has left
+
+COMPLETED SINCE THE ROADMAP ABOVE (all pushed):
+* A1 - the per-cell surface offset: a third 3D image beside the ping-pong pair, holding the vector from a
+  cell's centre to the surface the injection found at its screen position, with a validity flag.
+* A2 - the filter: six axis neighbours, each gated by a BIDIRECTIONAL segment-versus-surface test; a pair
+  that fails drops out of numerator AND denominator (no renormalisation, which is what gave the old filter
+  unity DC gain); centre weight fixed at 1; the per-step trust decay removed.
+  MEASURED: the contribution fell from 0.81% / 0.75% / 0.06% of the frame's darker-to-brighter thirds
+  (171688 pixels brighter) to 0.13% / 0.11% / 0.02% (29413 pixels) - the unoccluded spread is gone. The
+  SIGNATURE did not flip, and that was a mis-specification in the plan rather than a defect: a filter
+  removes light that should not be there, it cannot make the SOURCE structured while the source is still a
+  screen projection. The structured test belongs to B.
+* B1 - the probe pass binds the shared scene set (two-set pipeline layout; its own bindings moved to
+  set 1). This was also the blocker the earlier note recorded for sharing the shading code.
+* B2 - the pass can reach the geometry: the scene set's top level structure is declared (the shader moves
+  to `#version 460` with `GL_EXT_ray_query`, because the extension is written against GLSL 4.60) and the
+  instance table's device address rides the push block as two 32-bit halves, exactly as the tracer's does.
+  The push is now 120 bytes, inside the 128 it is sized for.
+
+WHAT B STILL NEEDS, in the order that keeps each step verifiable:
+
+1. EXTRACT the hit shading into `shaders/hit_shading.glsl`: the material struct, the buffer-reference
+   types, `hit_surface`, `shade_hit`, `fresnel_schlick`, and the bindings those functions reference at
+   set 0 (kinstance table address is NOT among them - see below).
+   Two traps this shapes around:
+   * `shade_hit` currently reads the instance table's address from the TRACER's push block
+     (`instance_table_address()`, bit-reinterpreting `pc.proj_terms.z/w`), and the probe pass carries that
+     address in its own lane (`pc.instance_table`). The address must therefore become a PARAMETER of the
+     shared entry point rather than a function of a push block only one of the two passes has.
+   * the bindings the shared functions need (camera UBO, LightUBO prefix, irradiance cube, prefiltered
+     environment, BRDF LUT, material records, texture array) are currently declared inside
+     `shaders/ssgi.comp`. Including the new file in both passes means DELETING them from ssgi.comp, or the
+     same binding is declared twice and the shader will not compile. `shaders/surface.glsl` and
+     `shaders/shading.glsl` cannot be included instead: they declare the same camera UBO, and
+     `shading.glsl` also declares the shadow map and the cluster buffers, which the probe pass has no use
+     for and which would drag the FRAGMENT-only `sampler2DArrayShadow` into a compute pipeline.
+   The verification for this step is strong and cheap: the traced-GI reference capture must stay
+   byte-identical (SHA256 D3506A006670007E), because nothing about a refactor should change a pixel.
+2. THE RAY LOOP in the probe pass: cosine-weighted directions from a cell's centre, the origin pushed out
+   by one cell diagonal (`cell * sqrt(3)`) so a probe cannot hit its own cell, a hit shaded through the
+   shared entry point, a miss left with the sky. Then the amortisation: a per-cell "last traced frame"
+   is what a staleness priority needs, and only a slice of the grid should be retraced per frame - the
+   reference implementation's numbers are ~100 of 16384 probes per frame with a 16-bucket histogram, and
+   the equivalent here would be a slice of the 32768 cells chosen by age.
+3. ACCEPTANCE, and this is the part A could not satisfy: the tertile signature must become STRUCTURED
+   (light where the off-screen geometry illuminates, not a fixed percentage of every third), and a cell
+   read from a camera angle that never saw it must give the same value. The first has an instrument
+   already; the second needs a capture from two camera positions with the grid warmed up from the first,
+   which is a new measurement script rather than a new pass.
+
+STILL OPEN BEYOND B: C (reset the grid when global lighting changes materially - the one convergence
+mechanism the reference has that this renderer lacks) and E (a reference that is neither of the two
+variants, which is what would make the per-pixel error metric measure accuracy rather than
+self-consistency).
