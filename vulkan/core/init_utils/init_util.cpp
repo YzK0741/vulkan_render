@@ -674,3 +674,15 @@ VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags
 
     return image_view;
 }
+VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device, VkImageViewType view_type, uint32_t layer_count) noexcept {
+    // identity swizzle, one mip, and the caller''s layer count: the sixth parameter is the whole reason this
+    // overload exists (a cube view covers six layers, and the other two overloads fix it at one)
+    VkImageViewCreateInfo const view_info = vulkan::make_image_view_info(image, format, view_type, aspect_flags, 1, layer_count);
+
+    VkImageView image_view;
+    if (vkCreateImageView(device, &view_info, nullptr, &image_view) != VK_SUCCESS) {
+        utility::panic("failed to create image view!");
+    }
+
+    return image_view;
+}

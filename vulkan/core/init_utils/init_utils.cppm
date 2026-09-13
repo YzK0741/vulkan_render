@@ -288,3 +288,20 @@ export VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspe
  *       2D overload - neither the grid nor any target here is mipped or layered.
  */
 export VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device, VkImageViewType view_type) noexcept;
+
+/**
+ * @ingroup vulkan_init_utils
+ * @brief create an image view of a chosen dimensionality AND layer count
+ * @param image the source image
+ * @param format the image format
+ * @param aspect_flags the image aspect mask
+ * @param device the logical device
+ * @param view_type the view''s dimensionality (VK_IMAGE_VIEW_TYPE_CUBE for the constant environment below)
+ * @param layer_count how many array layers the view covers (six for a cube, one for everything else)
+ * @return the created image view
+ * @note a layer count is what the other two overloads cannot express: they fix it at one, which is right for
+ *       every target this engine drew before the verification mode needed a cube. A CUBE view of a
+ *       six-layer image is the only user, and it needs all six layers in one view or the sampler sees one
+ *       face.
+ */
+export VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device, VkImageViewType view_type, uint32_t layer_count) noexcept;
