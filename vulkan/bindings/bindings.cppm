@@ -1,4 +1,4 @@
-// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/bindings/bindings.cppm
@@ -295,11 +295,27 @@ namespace vulkan::bindings {
             VkDescriptorPoolSize pool_size = {};
             pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             pool_size.descriptorCount = static_cast<uint32_t>(static_cast<std::size_t>(image_count) * per_image * descriptors_per_set);
+            // TWO sizes, because these families are not all sampler-only: the G-buffer set declares two
+            // STORAGE images (the raw GI trace and the filtered GI) and the GI denoiser's set one, so a
+            // pool that lists only COMBINED_IMAGE_SAMPLER is missing a type its own layouts declare.
+            // Validation reports exactly that ("binding 6 was created with
+            // VK_DESCRIPTOR_TYPE_STORAGE_IMAGE but VkDescriptorPool ... was not created with any
+            // VkDescriptorPoolSize::type with VK_DESCRIPTOR_TYPE_STORAGE_IMAGE"), and - as the message
+            // itself warns - a driver is allowed to return VK_ERROR_OUT_OF_POOL_MEMORY for it instead of
+            // tolerating it, which would fail the allocation and take the pass with it.
+            //
+            // The count is over-provisioned on purpose: a pool size is a capacity, not an allocation, so
+            // giving both types the full budget costs nothing and keeps this independent of which family
+            // happens to declare which mix.
+            std::array<VkDescriptorPoolSize, 2> pool_sizes = {};
+            pool_sizes[0] = pool_size;
+            pool_sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            pool_sizes[1].descriptorCount = pool_size.descriptorCount;
             VkDescriptorPoolCreateInfo pool_info = {};
             pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
             pool_info.maxSets = static_cast<uint32_t>(static_cast<std::size_t>(image_count) * per_image);
-            pool_info.poolSizeCount = 1;
-            pool_info.pPoolSizes = &pool_size;
+            pool_info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
+            pool_info.pPoolSizes = pool_sizes.data();
             if (vkCreateDescriptorPool(this->device, &pool_info, nullptr, &this->pool) != VK_SUCCESS) {
                 this->pool = VK_NULL_HANDLE;
                 this->pool_capacity = 0;
