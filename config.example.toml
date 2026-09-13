@@ -345,7 +345,12 @@ ssgi_hit_shading = true
 # `ssgi_specular = false` byte-identical by construction rather than by arithmetic (verified: the capture
 # harness's 11 scenarios x 2, 0 changed, `metal_rough_glossy` among them since L2.3; 12 scenarios since
 # `default_gi` was added for the default flip).
-ssgi_specular = false
+# ON BY DEFAULT since the reflection got an accumulation of its own: L2.3's motion work closed the denoiser
+# item that had kept the lobe off, and its default-on case was then measured on the stock path (the effect is
+# +1.50 of mean green over 8.67% of the material sweep, and the shipped single ray's per-pixel estimate
+# differs from an eight-ray convergence on 7.37% of pixels - a BIAS, not flicker, since TAA does not move
+# either number). The scenarios that need the frame from before the lobe existed pin it false.
+ssgi_specular = true
 # ssgi_specular_radius: how far a glossy ray reaches, as a fraction of the scene radius. ITS OWN REACH, not
 # the shared `ssgi_radius`, and the reason is that the two are different questions: a diffuse bounce's reach
 # is "how far indirect light travels before it is absorbed", while a mirror shows the whole room, and

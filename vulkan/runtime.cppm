@@ -399,8 +399,10 @@ namespace vulkan {
         // shaded from its geometry, so a reflection shows the room instead of the sky. It is a REPLACEMENT
         // for the specular ambient the lighting stage adds - the estimate falls back to exactly that term
         // when a ray finds nothing - which is what the spatial filter's second subtraction takes back out
-        // (see shaders/ssgi_spec.comp and shaders/ssgi_spatial.comp's ambient_removed_at). Off by default.
-        bool ssgi_specular = false;
+        // (see shaders/ssgi_spec.comp and shaders/ssgi_spatial.comp's ambient_removed_at). ON by default:
+        // the objection that kept it off was its denoiser item, and the reflection now has an accumulation
+        // of its own, reprojected from the point it found (see the L2.3 motion sections).
+        bool ssgi_specular = true;
         // ... and how far those rays reach ([render] ssgi_specular_radius), as a fraction of the scene
         // radius. Its own reach rather than the shared `ssgi_radius`, which the MARCHED path pins low: that
         // path's resolution is radius / ssgi_steps, so a reflection's reach would make its steps too coarse

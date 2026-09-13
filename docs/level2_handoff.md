@@ -61,9 +61,14 @@ means "use the traced estimate"; at 0.7 the ambient the spatial filter subtracts
 the estimate replacing it, i.e. a systematic darkening of every frame). The MARCHED chain keeps 0.7 as its
 own reconciling value, and `ssgi_radius` stays at 0.12 because it is the marched fallback's step size
 (radius / `ssgi_steps`) that pins it - a reach that suits the traced path would make the fallback step over
-the detail between two samples. `ssgi_probes` and `ssgi_specular` remain OFF deliberately: the cache is a
-coarse SH-2 approximation whose contribution is measured but whose default-on case is not, and the glossy
-lobe is a feature still being measured (both stay reachable and both are covered by a scenario).
+the detail between two samples. `ssgi_specular` is ON as of this note: its blocker (the denoiser item) was
+closed when the reflection got an accumulation of its own, and its default-on case was then measured on the
+stock path - +1.50 of mean green over 8.67% of the material sweep, with the shipped single ray's per-pixel
+estimate differing from an eight-ray convergence on 7.37% of pixels (a bias, not flicker: TAA does not move it).
+`ssgi_probes` remains OFF deliberately: the cache is a coarse SH-2 approximation whose contribution is measured
+in BOTH of its roles now (L2.1's fallback tables, and the hit-ambient correction, whose -0.47% interior
+darkening is ordered by the scene but is a judgement rather than a win). `ssgi_bounce` also stays at 0.0, for
+the same measured reason.
 THE COST IS MEASURED, not estimated: on Sponza at 1080x960 the shipped default takes the frame from 1.00 ms
 to 1.81 ms of GPU time (+0.81 ms, +81%), of which the chain's own interval is 0.86 ms and the lighting stage
 gives 0.16 ms back (with `gi_replaces_ambient` set it no longer adds an ambient the spatial filter is about
@@ -213,8 +218,8 @@ TRACER'S image (read, add, store back), with its hit shaded from its own geometr
 `ssgi_hit_shading`. `shaders/ssgi_spatial.comp` then removes the lighting stage's specular ambient for those
 pixels, which makes the traced reflection a REPLACEMENT rather than an addition; both sides of that
 subtraction come from a new shared `shaders/ibl_specular.glsl`, which also collapsed the two copies of those
-expressions that already existed. `[render] ssgi_specular` (off by default) and `ssgi_specular_rays` (1-8,
-default 1) are the knobs.
+expressions that already existed. `[render] ssgi_specular` (ON since the default flip; it was off while its
+denoiser item was open) and `ssgi_specular_rays` (1-8, default 1) are the knobs.
 WHAT IT MEASURED. The control is the sharpest instrument in this whole document: where a ray finds nothing the
 correction the pass writes is exactly zero, so with a ray length too short to reach anything the lobe-on frame
 and the lobe-off frame are the SAME SHA256 - 0 pixels differing, with the denoiser in the loop and with it

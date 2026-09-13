@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.26.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.27.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -240,9 +240,12 @@ namespace app_config {
         // environment - which knows nothing but the sky, so a metal panel inside a room reflects the sky.
         // It is a REPLACEMENT, not an addition: the estimate falls back to exactly the lighting stage's own
         // term wherever a ray finds no geometry, so the frame only changes where the reflection has
-        // something local to show. Off by default; it needs the traced GI path, hit shading and the
-        // acceleration structures, and it is not recorded at all where those are missing.
-        bool ssgi_specular = false;
+        // something local to show - which is what makes it safe to ship ON, and it IS on by default since
+        // the reflection got an accumulation of its own (L2.3's motion work closed the last objection to
+        // it). It needs the traced GI path, hit shading and the acceleration structures, and it is not
+        // recorded at all where those are missing - so a config that turns GI off is bit-identical to the
+        // frame before the lobe existed.
+        bool ssgi_specular = true;
         // ... and how far its rays reach ([render] ssgi_specular_radius, a fraction of the scene radius).
         // A REACH OF ITS OWN, because the shared `ssgi_radius` is pinned by the MARCHED path: that path's
         // resolution is radius / ssgi_steps, so a radius large enough for a reflection (0.5, i.e. 9 world

@@ -1,4 +1,4 @@
-# Lumen's reflection denoiser: the mechanisms this renderer's glossy lobe does not have
+# Lumen's reflection denoiser: the mechanisms this renderer's glossy lobe borrowed, and the two it did not
 
 A study of the UE 5.8.2 source (available at `C:\UnrealEngine-5.8.2-release`), read for the one question
 this project's L2.3 work left open: **the glossy lobe's reflection is accumulated by the DIFFUSE chain's
@@ -6,6 +6,14 @@ temporal resolve**, which reprojects its history with the G-buffer's motion vect
 SURFACE. That is exact for a diffuse bounce, whose value depends on the surface point and travels with it.
 It is wrong for a reflection, whose value depends on where the reflection POINTED: in a mirror the reflected
 image slides across the surface at its own rate, which is not the surface's.
+
+WHAT CHANGED SINCE, so that this file is not read as a to-do list it no longer is: mechanisms 1 and 2 below are
+IMPLEMENTED. The lobe publishes the point its ray found (`shaders/ssgi_spec.comp`), and the temporal resolve
+runs a second time in a mode of its own - reprojecting from that point's previous screen position, disoccluding
+on that point's depth, and capping a smooth pixel's accumulation there alone (`shaders/ssgi_temporal.comp`).
+Measured, the reflection's own motion loss went 0.4029 -> 0.3068 and its worst 4x4 tile 1.942 -> 0.848
+(`scripts/measure/motion_dd.py`), and the lobe ships ON. Mechanisms 3 and 4 are still not implemented, and no
+measurement has asked for them.
 
 Everything below is a mechanism, with the file and line it lives at, and a note on what it would take here.
 The numbers in this project that these mechanisms would move are in `docs/gi_hit_shading.md`'s L2.3 sections.

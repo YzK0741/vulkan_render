@@ -158,7 +158,7 @@ $scenarios = @(
     # this model). The probe cache is off by default, i.e. the scenario isolates the lobe.
     # `camera = ""` is deliberate: this scenario lets the scene frame itself (see Invoke-Scenario).
     @{ name = "metal_rough_glossy"; desc = "the material sweep + traced GI + the glossy lobe";
-       extra = @{ taa = "false"; ssgi_specular = "true"; ssgi_radius = "0.5"; camera_fit = "'exterior'" }
+       extra = @{ taa = "false"; ssgi_radius = "0.5"; camera_fit = "'exterior'" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\MetalRoughSpheres\glTF\MetalRoughSpheres.gltf"
        camera = "" }
     # THE ONLY SCENARIO WHOSE CAMERA MOVES, and it is here because everything else was still: with a fixed
@@ -169,7 +169,7 @@ $scenarios = @(
     # enough that the motion-vector path is in its normal range rather than its clamp. Same scene as
     # `metal_rough_glossy` on purpose, so the moving and still frames of one scene can be compared.
     @{ name = "glossy_motion"; desc = "the material sweep + traced GI + glossy lobe, CAMERA MOVING";
-       extra = @{ taa = "false"; ssgi_specular = "true"; ssgi_radius = "0.5"; camera_fit = "'exterior'" }
+       extra = @{ taa = "false"; ssgi_radius = "0.5"; camera_fit = "'exterior'" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\MetalRoughSpheres\glTF\MetalRoughSpheres.gltf"
        camera = ""
        sweep = "0.5" }

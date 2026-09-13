@@ -102,7 +102,7 @@ namespace {
         CHECK(settings.render.ssao);
         CHECK(settings.render.ssao_samples == 8);
         CHECK(!settings.render.taa);
-        CHECK(!settings.render.ssgi_specular);          // the example documents the glossy lobe and ships it off
+        CHECK(settings.render.ssgi_specular);           // the example ships the glossy lobe ON (L2.3 closed its blocker)
         CHECK(settings.render.ssgi_specular_rays == 1); // ... at the one ray the feature is defined by
         CHECK(settings.render.ssgi_specular_radius > 0.49f && settings.render.ssgi_specular_radius < 0.51f);
         CHECK(settings.lighting.demo_lights == 0);
@@ -184,7 +184,7 @@ namespace {
         CHECK(settings.render.ssgi_probe_rounds == 2);
         CHECK(settings.render.ssgi_probe_gain > 0.99f && settings.render.ssgi_probe_gain < 1.01f);
         CHECK(settings.render.ssgi_hit_shading);                                                             // default: hits are shaded from their own geometry (the shipped configuration)
-        CHECK(!settings.render.ssgi_specular);                                                               // default: reflections stay the environment's
+        CHECK(settings.render.ssgi_specular);                                                                // default: a glossy ray replaces the environment's specular
         CHECK(settings.render.ssgi_specular_rays == 1);                                                      // default: one glossy ray per pixel
         CHECK(settings.render.ssgi_specular_radius > 0.49f && settings.render.ssgi_specular_radius < 0.51f); // default: the reach's measured knee
         CHECK(!settings.render.furnace);                                                                     // default: a normal frame, not the verification mode

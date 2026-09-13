@@ -16,6 +16,7 @@ code comments, and the code comments are the only part a reader of the source wo
 | Level 2 as planned (L2.0 - L2.3) | done and measured: "L2.1" to "L2.3" below carry the directional probes, the MASK bake, the skinned refit and the glossy lobe, and "L2.4" shipped the traced chain as the DEFAULT |
 | The reflection's motion handling (the reference's mechanisms 1+2) | done and measured: `mean\|DD\|` 0.4029 -> 0.3068, worst 4x4 tile 1.942 -> 0.848 |
 | A hit's ambient from the probe cache (`ssgi_bounce` on the shaded path) | built and measured: the correction is ordered by the scene (interiors -0.78% to -1.85%, sky-facing -0.05% to -0.32%, 23.94% of pixels), and it stays OFF at `ssgi_bounce = 0.0` because whether a -0.47% interior darkening should ship is a judgement |
+| The glossy lobe's default | ON since L2.3's motion work closed its blocker; the default-on case was measured on the stock path (effect +1.50 over 8.67% of the frame; the single ray's bias against 8 rays is 7.37% of pixels) |
 | Still open | the reference's reflection mechanisms 3 and 4 (no measurement has asked for them), the reflection's half-resolution noise floor, and the `deferred` gate flake recorded in `docs/level2_handoff.md` |
 
 ## What is built
@@ -1470,12 +1471,14 @@ different reflection rather than as grain, and that `ssgi_specular_rays` is a fi
 knob. (The record's earlier "1 vs 4 rays differ by +0.0028 against the feature's -1.33" is the frame MEAN; this
 is the per-pixel tail of the same comparison.)
 
-WHAT A FLIP WOULD TAKE, now that the evidence exists and the decision is a judgement rather than a measurement:
-the compiled default, `config.example.toml`, the generator and the fixtures, a pin of `ssgi_specular = false` in
-every scenario whose reference is about another path, and a deliberate re-seed of the scenarios that do enable
-it - the same list L2.4 worked through when the traced chain became the default. The knob that decides the
-per-pixel fidelity is `ssgi_specular_rays`, whose default of 1 is what the recorded +0.13 ms was measured at;
-eight rays costs a multiple of that (+0.81 ms at four).
+WHAT THE FLIP TOOK, and it was the list L2.4 worked through for the traced chain: the compiled default
+(`app_config` 0.27.0 and `vulkan.runtime`'s own member), `config.example.toml`, the generator's default, the
+generated-defaults fixture, the two `CHECK`s in `tests/test_app_config.cpp`, one row of the record, and the
+scenario set - where the two glossy scenarios had spelled out `ssgi_specular = "true"`, which is a key equal to
+a default and is exactly the kind of line that hides the day the default moves, so both were deleted. No other
+scenario needed a pin: `sponza_gi` cannot run the lobe at all (it pins hit shading false, which the lobe
+requires), the two glossy ones already had it on, and `default_gi` exists precisely to render the compiled
+defaults - so it is the one reference that legitimately moved with the flip, and it was re-seeded deliberately.
 
 ### The second bounce, measured: the cache answers a hit's ambient, and the correction is ordered by the scene
 
@@ -1649,13 +1652,14 @@ be 30% larger than the estimate put back, a systematic darkening of every frame 
 MARCHED chain keeps 0.7 as ITS value (it adds to the probe, so the two terms overlap and want reconciling),
 which is why that path still needs a config that says so - and why `ssgi_radius` stays at 0.12 rather than
 following the traced path's reach: the marched fallback's resolution is `radius / ssgi_steps`.
-`ssgi_probes` and `ssgi_specular` stay OFF deliberately, and their reasons are measured rather than assumed. The
-cache is a coarse SH-2 approximation whose contribution is now measured in BOTH of its roles - L2.1's tables for
-the fallback a ray that leaves the frame gets, and the second-bounce section below for a hit's own ambient, where
-it moves 0.05% of a frame because the cache is itself a one-bounce estimator. The glossy lobe's stated blocker is
-CLOSED: its denoiser item was "a feature still being measured" and the reflection now has an accumulation of its
-own, reprojected from the point it found (see the mechanisms 1+2 section), so what keeps it off is only that its
-default-on case has not been measured yet. Both remain reachable, and both have a scenario.
+`ssgi_specular` is ON by default as of the L2.3 flip, and `ssgi_probes` with `ssgi_bounce` stay OFF - all three
+reasons measured rather than assumed. The lobe's blocker was its denoiser item, the reflection now has an
+accumulation of its own reprojected from the point it found, and its default-on case was then measured on the
+stock path (see "the lobe's default-on case" below), so the default moved. The cache is a coarse SH-2
+approximation whose contribution is measured in BOTH of its roles - L2.1's tables for the fallback a ray that
+leaves the frame gets, and the hit-ambient correction below, where it changes 23.94% of an interior frame,
+ordered by the scene, and darkens it 0.47%. `ssgi_bounce` is the knob that correction rides, so the two ship
+together or not at all. All three remain reachable, and each has a scenario or a config value that exercises it.
 
 HOW IT WAS VERIFIED, because a default is not a feature and the usual A/B does not apply to one. The gate grew
 a `default_gi` scenario: the compiled defaults with NOTHING overridden (same model, camera and frame count as

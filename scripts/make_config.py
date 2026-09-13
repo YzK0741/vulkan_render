@@ -347,7 +347,7 @@ def ask_all(output_dir: str) -> dict:
     )
     ssgi_specular = ask_bool(
         "render.ssgi_specular",
-        False,
+        True,
         hint="trace a glossy reflection ray per pixel, replacing the environment's specular ambient "
              "(needs traced GI + hit shading; where a ray finds nothing the frame is unchanged)",
     )
