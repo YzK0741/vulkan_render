@@ -1,4 +1,5 @@
-#version 450
+#version 460 // GL_EXT_ray_query is written against GLSL 4.60 (see shaders/rt_shadow.comp)
+#extension GL_EXT_ray_query : require
 
 /**
  * @file shaders/ssgi.comp
@@ -53,6 +54,11 @@ layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal;   // RGBA16F: wor
 layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;    // the pass's own 1x depth
 layout(set = 1, binding = 5) uniform sampler2D direct_radiance;  // HDR scene target: DIRECT light only
 layout(set = 1, binding = 6, rgba16f) uniform image2D gi_output; // half-res RAW indirect, one texel per invocation
+// The scene's top level structure (scene set binding 16, declared only when the device has ray queries):
+// the RAY-TRACED hit oracle, used instead of march() when pc.frame_info.y is set. Nothing else about the
+// pass changes - the rays are the same cosine-weighted ones, the radiance still comes from the same
+// direct-radiance image, and the same denoiser consumes the output.
+layout(set = 0, binding = 16) uniform accelerationStructureEXT tlas;
 
 layout(push_constant) uniform SsgiPush {
     mat4 inv_view_proj; // clip -> world (the same block deferred.frag uses)
@@ -62,6 +68,9 @@ layout(push_constant) uniform SsgiPush {
     vec4 proj_terms;
     // x = a per-frame counter, so the ray sequence differs every frame. A temporal denoiser needs
     // that: a fixed sequence would keep making the same mistake in the same place.
+    // y = 1.0 when the rays are traced against the acceleration structures instead of marched (see
+    // rt_hit_radiance). One lane rather than a field because the push block's size is a pipeline layout
+    // constant every consumer shares.
     vec4 frame_info;
 } pc;
 
@@ -163,6 +172,63 @@ bool march(vec3 origin, vec3 dir, float max_distance, int steps, out vec2 out_uv
     return false;
 }
 
+/**
+ * @brief trace @p dir from @p origin and report the radiance of what it hits
+ * @param origin the WORLD-space start (already pushed off the surface)
+ * @param dir the unit world-space direction
+ * @param max_distance how far to trace, in world units
+ * @param out_hit whether the ray found any surface at all
+ * @return the radiance at the hit, or 0 when the hit contributes nothing
+ *
+ * This is the same estimator as march() with a different hit oracle. marra() has to decide "did I hit
+ * something" from a depth buffer it samples along the way, which is why it needs a distance-scaled
+ * tolerance, misses anything thinner than a step, and calls a ray that leaves the frame a miss; a ray
+ * query answers the same question exactly. The radiance still comes from the screen's DIRECT radiance
+ * image, which is what keeps the result comparable to the marched version and keeps this pass an
+ * ADDITION to the environment probe rather than a replacement for it: a hit that is off screen (or
+ * hidden behind a nearer surface on screen) contributes nothing, exactly as before, so the probe still
+ * owns the off-screen light and `ssgi_intensity` still reconciles the two.
+ *
+ * That last part is deliberate for this step. Filling off-screen hits with the probe's irradiance would
+ * make this pass reproduce the ambient the shading stage ALREADY adds for every pixel, i.e. it would
+ * count the off-screen part twice: doing that correctly means the lighting stage stops adding its own
+ * diffuse ambient when this pass covers it, which is a change to what the ambient MEANS and belongs in
+ * a step of its own with its own measurement.
+ */
+vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, out bool out_hit) {
+    out_hit = false;
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, tlas, gl_RayFlagsOpaqueEXT, 0xFF, origin, 0.01, dir, max_distance);
+    while (rayQueryProceedEXT(query)) {
+    }
+    if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+        return vec3(0.0); // nothing within the ray's length: the probe's business, as for a march miss
+    }
+    out_hit = true;
+
+    // Reproject the hit into the frame and take the direct radiance the lighting stage wrote there -
+    // but only if the depth buffer's surface at that pixel IS the surface that was hit. Reprojection
+    // alone cannot know that: the ray can hit something the camera cannot see (behind a wall, or outside
+    // the frame), and sampling the visible surface's radiance for it would invent light.
+    // The hit's world position from the distance along the ray: GL_EXT_ray_query has no
+    // "intersection world position" query - only the t and the ray (getting the position itself would
+    // mean interpolating the triangle, which needs the vertex data and barycentrics).
+    const float hit_t = rayQueryGetIntersectionTEXT(query, true);
+    const vec3 hit_world = rayQueryGetWorldRayOriginEXT(query) + hit_t * rayQueryGetWorldRayDirectionEXT(query);
+    const vec3 hit_view = (camera.view * vec4(hit_world, 1.0)).xyz;
+    float ndc_z = 0.0;
+    const vec2 hit_uv = project_to_uv(hit_view, ndc_z);
+    if (hit_uv.x < 0.0 || hit_uv.x > 1.0 || hit_uv.y < 0.0 || hit_uv.y > 1.0) {
+        return vec3(0.0); // off screen: no cached radiance exists for it
+    }
+    const float buffer_ndc = texture(gbuffer_depth, hit_uv).r;
+    const float hit_view_depth = -hit_view.z; // view space looks down -Z
+    if (buffer_ndc >= 1.0 || abs(view_depth(buffer_ndc) - hit_view_depth) > 0.05 * hit_view_depth) {
+        return vec3(0.0); // the visible surface there is a different one: the hit is hidden
+    }
+    return texture(direct_radiance, hit_uv).rgb;
+}
+
 void main() {
     const ivec2 gi_extent = ivec2(pc.proj_terms.zw);
     const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -192,6 +258,12 @@ void main() {
 
     const vec3 normal_view = normalize(mat3(camera.view) * texture(gbuffer_normal, uv).xyz);
     const vec3 albedo = texture(gbuffer_albedo, uv).rgb;
+    // The world-space surface, which is where a ray query runs (the acceleration structures are in world
+    // space): the G-buffer normal already is, and the world position falls out of the same
+    // inverse-projection the view-space position does.
+    const vec3 world_pos = world_h.xyz / world_h.w;
+    const vec3 normal_world = normalize(texture(gbuffer_normal, uv).xyz);
+    const bool traced = pc.frame_info.y > 0.5;
 
     // A per-pixel, per-frame seed: the ray sequence has to change between frames or a temporal
     // filter would be fed the same error every frame instead of an average of different errors.
@@ -204,9 +276,20 @@ void main() {
         // Start off the surface by a fraction of the ray length. Starting exactly on it makes the
         // first step compare against the surface's own depth, which self-hits on any slope.
         const vec3 origin = view_pos + normal_view * (radius * 0.02);
-        vec2 hit_uv;
-        if (march(origin, dir, radius, steps, hit_uv)) {
-            radiance_sum += texture(direct_radiance, hit_uv).rgb;
+        if (traced) {
+            // A separate direction/origin in world space: the cosine lobe has to be built around the
+            // WORLD normal, and drawing the two uniforms from the same state keeps the sequence - and so
+            // the noise - identical to the marched path's for the same pixel and frame.
+            const vec2 u = vec2(next_uniform(state), next_uniform(state));
+            const vec3 dir_world = cosine_direction(normal_world, u.x, u.y);
+            const vec3 origin_world = world_pos + normal_world * (radius * 0.02);
+            bool hit = false;
+            radiance_sum += rt_hit_radiance(origin_world, dir_world, radius, hit);
+        } else {
+            vec2 hit_uv;
+            if (march(origin, dir, radius, steps, hit_uv)) {
+                radiance_sum += texture(direct_radiance, hit_uv).rgb;
+            }
         }
     }
 

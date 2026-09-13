@@ -61,6 +61,7 @@ ssgi_steps = 6
 ssgi_spatial_sigma = 2.0
 ssgi_upsample = true
 rt_shadows = false
+ssgi_ray_tracing = false
 
 # ---- [gui] debug overlay ----
 [gui]

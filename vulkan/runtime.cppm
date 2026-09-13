@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.33.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.34.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -361,6 +361,11 @@ namespace vulkan {
         // The tracer's ray sequence has to change every frame: a fixed one would feed a temporal
         // denoiser the same error in the same place every frame instead of an average.
         uint32_t ssgi_frame = 0;
+        // Trace the GI rays against the scene's acceleration structures instead of marching the depth
+        // buffer ([render] ssgi_ray_tracing). Only meaningful with the tracer enabled and a device that
+        // has ray queries AND a built top level structure - the push block's frame_info.y carries the
+        // resolved answer, so the shader never has to know why it is marching instead.
+        bool ssgi_ray_tracing = false;
         struct ssgi_push_constants {
             glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world (the block deferred.frag uses)
             glm::vec4 params = glm::vec4(0.0f);        // x radius, y intensity, z rays, w steps
@@ -1755,6 +1760,16 @@ namespace vulkan {
          */
         void set_rt_shadows(bool enabled) noexcept;
 
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether ANY ray-traced feature is asking for the acceleration structures
+         * @note the structures serve both ray-traced features, so they are built when either wants them -
+         *       and they must be, because both pipelines declare the top level structure as a descriptor:
+         *       a shader that statically uses a binding needs it to have been written, whether or not the
+         *       branch that reads it runs.
+         */
+        [[nodiscard]] bool rt_structures_wanted() const noexcept;
+
         /** @brief whether ray-traced shadows are actually on (asked for AND the device can do it) */
         [[nodiscard]] bool rt_shadows_active() const noexcept;
 
@@ -1914,6 +1929,17 @@ namespace vulkan {
          *       composite, so it does not feed the bloom chain yet
          */
         void set_ssgi(bool enabled, float intensity, float radius, uint32_t rays, uint32_t steps) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief trace the GI rays against the acceleration structures instead of marching the depth buffer
+         * @param enabled true = ray query, false = the screen-space march (the default)
+         * @note granted only when the device has ray queries, the tracer exists and the top level
+         *       structure has been built - otherwise the march keeps running and nothing changes. The
+         *       estimator is the same either way: only the hit oracle differs, so a hit that is off screen
+         *       or hidden contributes nothing in both and the IBL probe still owns the off-screen light.
+         */
+        void set_ssgi_ray_tracing(bool enabled) noexcept;
 
         /**
          * @brief create the GI denoiser's temporal resolve pipeline from shaders/ssgi_temporal.comp

@@ -140,6 +140,11 @@ namespace app_config {
                     settings.render.ssgi_upsample = *value;
                 }
             }
+            if (toml::node const* node = render->get("ssgi_ray_tracing")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.ssgi_ray_tracing = *value;
+                }
+            }
             if (toml::node const* node = render->get("rt_shadows")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.rt_shadows = *value;

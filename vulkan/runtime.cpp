@@ -3087,7 +3087,13 @@ namespace vulkan {
             .inv_view_proj = this->current_inv_view_proj,
             .params = glm::vec4(this->ssgi_radius * this->scene_radius, this->ssgi_intensity, static_cast<float>(this->ssgi_rays), static_cast<float>(this->ssgi_steps)),
             .proj_terms = glm::vec4(this->current_ubo.proj[2][2], this->current_ubo.proj[3][2], static_cast<float>(gi_width), static_cast<float>(gi_height)),
-            .frame_info = glm::vec4(static_cast<float>(this->ssgi_frame), 0.0f, 0.0f, 0.0f)};
+            .frame_info = glm::vec4(static_cast<float>(this->ssgi_frame),
+                                    // ... and y = 1.0 only when the rays are actually traced: the device has ray queries,
+                                    // the tracer ran and the structures exist. Resolved HERE rather than in the shader so
+                                    // the shader never has to know why it is marching instead.
+                                    (this->ssgi_ray_tracing && this->vulkan_core.ray_query_available && this->rt_top_levels.has_value()) ? 1.0f : 0.0f,
+                                    0.0f,
+                                    0.0f)};
         vkCmdPushConstants(command_buffer, this->ssgi_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
 
         constexpr uint32_t group_size = 8; // shaders/ssgi.comp's local_size_x/y
@@ -3278,6 +3284,15 @@ namespace vulkan {
         this->ssgi_spatial_pipeline_layout = built->pipeline_layout;
         this->ssgi_spatial_pipeline = std::move(built->trace);
         return {};
+    }
+
+    void runtime::set_ssgi_ray_tracing(bool const enabled) noexcept {
+        this->ssgi_ray_tracing = enabled;
+        if (enabled && !this->vulkan_core.ray_query_available) {
+            this->warn_missing_feature("ssgi", "GI rays are marched, not traced: this device has no ray queries");
+        } else if (enabled && !this->rt_shadow_pipeline.has_value()) {
+            this->warn_missing_feature("ssgi", "GI rays are marched, not traced: the ray-traced pipelines were not created");
+        }
     }
 
     void runtime::set_ssgi_spatial(float const sigma) noexcept {
@@ -4475,13 +4490,23 @@ namespace vulkan {
         this->light_state.rt_shadows = (enabled && this->rt_shadow_pipeline.has_value() && this->vulkan_core.ray_query_available) ? 1.0f : 0.0f;
     }
 
+    bool runtime::rt_structures_wanted() const noexcept {
+        // `ssgi_on` rather than `ssgi_on && ssgi_ray_tracing`: the GI tracer is ONE shader that declares
+        // the top level structure as a binding whether or not its traced branch runs, and a shader that
+        // statically uses a binding needs it written - so a GI frame has to have structures even when it
+        // marches. The cost of that is one build (Sponza: 17.8 MiB, ~2 ms) plus a per-frame rebuild
+        // (~0.1 ms) for a GI scene that never traces; the alternative is a second shader variant or the
+        // nullDescriptor feature (VK_EXT_robustness2), and both are larger changes than this one.
+        return this->vulkan_core.ray_query_available && (this->rt_shadows || this->ssgi_on);
+    }
+
     bool runtime::rt_shadows_active() const noexcept {
         return this->rt_shadows && this->vulkan_core.ray_query_available;
     }
 
     void runtime::record_acceleration_structures(VkCommandBuffer const command_buffer) {
         core& vk = this->vulkan_core;
-        if (!this->rt_shadows_active() || this->rt_structures_attempted) {
+        if (!this->rt_structures_wanted() || this->rt_structures_attempted) {
             return; // off, unsupported, or already built (see rt_structures_attempted)
         }
         this->rt_structures_attempted = true;
@@ -4571,7 +4596,7 @@ namespace vulkan {
 
     void runtime::record_top_level_structure(VkCommandBuffer const command_buffer) {
         core& vk = this->vulkan_core;
-        if (!this->rt_shadows_active() || !this->rt_bottom_levels.has_value() || !this->rt_top_levels.has_value()) {
+        if (!this->rt_structures_wanted() || !this->rt_bottom_levels.has_value() || !this->rt_top_levels.has_value()) {
             return;
         }
         uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);

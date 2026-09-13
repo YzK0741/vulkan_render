@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.18.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.19.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -58,6 +58,7 @@ import utility;
  * ssgi_spatial_sigma = 2.0  # GI spatial filter width in GI texels; 0 = off (a pass-through)
  * ssgi_upsample = true  # joint-bilateral upsample of the half-res GI in the composite; false = bilinear
  * rt_shadows = false    # ray-traced sun shadows (needs a device with ray queries; else ignored)
+ * ssgi_ray_tracing = false # trace the GI rays instead of marching the depth buffer (same conditions)
  * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id,
  *                        # 6 depth, 7 flags, 8 motion (the motion vector, amplified - see the shader)
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
@@ -158,6 +159,10 @@ namespace app_config {
         // granted only on a device with ray queries - a device without them keeps running the cascaded
         // maps, which is what makes the key safe to leave in a shared config file.
         bool rt_shadows = false;
+        // Trace the screen-space GI rays against the acceleration structures instead of marching the depth
+        // buffer ([render] ssgi_ray_tracing). Same estimator, better hit oracle; ignored unless the device
+        // has ray queries and ssgi itself is on.
+        bool ssgi_ray_tracing = false;
         bool ssao = true;
         float ssao_radius = 0.5f;
         float ssao_intensity = 1.0f;
