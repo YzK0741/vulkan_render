@@ -243,7 +243,14 @@ Gates before any commit:
 
 Habits that caught real errors here:
 
-* verify with hashes and numbers, never with assertions in prose; a capture hash, a mean, a per-tile table;
+* verify with hashes and numbers, never with assertions in prose; a capture hash, a mean, a per-tile table.
+  The instruments are in the repository now (`scripts/measure/`, indexed by its README): `mean.py` for the
+  per-channel means every number is quoted in, `diff.py` for a per-pixel difference and its 4x4 tile table,
+  `tiletab.py` for that table as a percentage of the frame it is measured against, `corr.py` for whether two
+  estimators moved in the same PLACES, `spec_material.py` for an A/B bucketed by G-buffer material,
+  `shadow_pose.py` for the animated-pose difference-of-differences, and the `mask_*.py` three for the
+  alphaMode MASK question. They used to live in the build directory, which meant a `-Clean` took the ability
+  to re-derive every recorded table with it;
 * keep every feature behind an A/B toggle so its effect is measurable, and report NEGATIVE results - several
   slices in this session ended "the measurement disproved the hypothesis", and those are the valuable ones;
 * never commit what has not been verified: REVERT it and record why. Two rounds of this session ended in

@@ -931,8 +931,9 @@ The four captures behind it, so the numbers can be re-derived rather than truste
 `5A2C57779547EF4B9D40D07ABA2652D543136AB3745ED7647BF669E9DD7A294D`, on t=0.5
 `3F04AE499C4EF16EFBDD28F0112C26B11E8C7DB1917508C241B1C99B921F94ED` (mean G 118.7188 against the off
 arm's 117.7957), on t=0.9 `D48DCB71DA45DF16CDD0ED7B4127F2B60434957AE120FDE119C44553B14DA3DC`,
-all four through `scripts/windows/run_furnace.ps1`-style runs of the release build with
-`[render] animation_time` pinned and `--capture-frames 60`, raster shadows off/on as the arm dictates.
+all four through `scripts/windows/capture.ps1` runs of the release build with
+`[render] animation_time` pinned and `--capture-frames 60`, raster shadows off/on as the arm dictates, and
+read with `scripts/measure/shadow_pose.py` (see `scripts/measure/README.md`).
 
 The traced shadow's pose dependence is now the raster one's to four decimal places (+0.4845 against +0.4845 of
 mean brightness), the pixel count that has the raster shadow moving with nothing in the traced path falls by
@@ -972,7 +973,7 @@ camera, so two configs differing only in `rt_skin_bake` differed in the view as 
 END of a config file lands in the LAST table, not in `[render]`: the first ASan smoke run had
 `rt_skin_bake = true` sitting under `[lighting]`, where it was silently ignored, and the pass therefore never
 ran while the run reported a clean exit. Appending is only safe if something pins the table, which is exactly
-what `scripts/windows/run_furnace.ps1`'s in-table override does and what the ad-hoc command did not.
+what `scripts/windows/capture.ps1`'s in-table override does and what the ad-hoc command did not.
 
 ### L2.3, measured: a glossy reflection replaces the environment's specular ambient
 
