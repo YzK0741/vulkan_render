@@ -1,4 +1,4 @@
-// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.10.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
@@ -95,7 +95,7 @@ namespace vulkan::pipelines {
         std::optional<vk_pipeline> pass;
     };
 
-    export std::expected<gi_probe_owned, std::string> build_gi_probe(core& vk, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    export std::expected<gi_probe_owned, std::string> build_gi_probe(core& vk, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
 
     /// the passes that reuse a layout someone else owns, so theirs comes in as a parameter
     export std::expected<vk_pipeline, std::string> build_fxaa(core& vk, VkPipelineLayout post_pipeline_layout, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
@@ -505,7 +505,7 @@ namespace vulkan::pipelines {
     // resolved GI, the depth, and the grid image it is reading - and 3 is the STORAGE 3D image it
     // writes, plus the per-cell surface offsets the filter tests visibility with, which is why two bindings
     // differ from the rest.
-    std::expected<gi_probe_owned, std::string> build_gi_probe(core& vk, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    std::expected<gi_probe_owned, std::string> build_gi_probe(core& vk, VkDescriptorSetLayout const scene_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         gi_probe_owned out;
 
@@ -526,6 +526,10 @@ namespace vulkan::pipelines {
             return fail("gi probe: descriptor set layout creation failed");
         }
 
+        // The shared scene set comes FIRST, because the tracing this pass will do needs what the tracer
+        // already has: the top level structure, the material records, the texture array, the light UBO.
+        std::array<VkDescriptorSetLayout, 2> const set_layouts = {scene_layout, out.set_layout};
+
         VkPushConstantRange push_range = {};
         push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         push_range.offset = 0;
@@ -533,8 +537,8 @@ namespace vulkan::pipelines {
 
         VkPipelineLayoutCreateInfo pipeline_layout_info = {};
         pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &out.set_layout;
+        pipeline_layout_info.setLayoutCount = static_cast<uint32_t>(set_layouts.size());
+        pipeline_layout_info.pSetLayouts = set_layouts.data();
         pipeline_layout_info.pushConstantRangeCount = 1;
         pipeline_layout_info.pPushConstantRanges = &push_range;
         if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {

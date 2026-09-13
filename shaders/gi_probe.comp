@@ -54,17 +54,19 @@
 // 512 workgroups.
 layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 
-// The pass owns its whole descriptor set (like the denoiser's two passes): the grid is not part of the
-// G-buffer set the tracer shares, because it is not a per-swapchain-image target.
-layout(set = 0, binding = 0) uniform sampler2D gi_screen;     // this frame's resolved screen-space GI
-layout(set = 0, binding = 1) uniform sampler2D gbuffer_depth; // full-resolution G-buffer depth
-layout(set = 0, binding = 2) uniform sampler3D grid_src;      // the cells being read (propagation)
-layout(set = 0, binding = 3, rgba16f) uniform image3D grid_dst; // the cells being written (both modes)
+// The pass binds TWO sets: its own (set 1) and the shared scene set (set 0), which is where the top level
+// structure, the material records and the texture array live. It reads none of them YET - the tracing that
+// will fill the grid from geometry rather than from the screen is what needs them, and binding the set now
+// is the plumbing that step requires.
+layout(set = 1, binding = 0) uniform sampler2D gi_screen;     // this frame's resolved screen-space GI
+layout(set = 1, binding = 1) uniform sampler2D gbuffer_depth; // full-resolution G-buffer depth
+layout(set = 1, binding = 2) uniform sampler3D grid_src;      // the cells being read (propagation)
+layout(set = 1, binding = 3, rgba16f) uniform image3D grid_dst; // the cells being written (both modes)
 // ... and the geometry the filter needs in order to know which neighbours it may borrow light from: per
 // cell, the vector from its centre to the surface the injection found at its screen position, with a
 // validity flag in w. ONE image, not a pair: the injection owns this, and the ping-pong applies to
 // radiance. Read and written in GENERAL, like the grids.
-layout(set = 0, binding = 4, rgba16f) uniform image3D grid_surface;
+layout(set = 1, binding = 4, rgba16f) uniform image3D grid_surface;
 
 layout(push_constant) uniform GiProbePush {
     mat4 view_proj;     // world -> clip, for the injection's projection of a cell centre

@@ -3459,7 +3459,7 @@ namespace vulkan {
     }
 
     std::expected<void, std::string> runtime::make_gi_probe_pipeline(std::span<unsigned char const> const compute_shader_code) {
-        auto built = pipelines::build_gi_probe(this->vulkan_core, sizeof(gi_probe_push_constants), compute_shader_code);
+        auto built = pipelines::build_gi_probe(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, sizeof(gi_probe_push_constants), compute_shader_code);
         if (!built) {
             return std::unexpected(std::move(built.error()));
         }
@@ -3573,7 +3573,8 @@ namespace vulkan {
         auto const dispatch = [&](VkDescriptorSet const set, float const mode) {
             push.params.w = mode;
             vkCmdPushConstants(command_buffer, this->gi_probe_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->gi_probe_pipeline_layout, 0, 1, &set, 0, nullptr);
+            std::array<VkDescriptorSet, 2> const probe_sets = {this->scene_sets.set(static_cast<uint32_t>(vk.current_frame)), set};
+            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->gi_probe_pipeline_layout, 0, static_cast<uint32_t>(probe_sets.size()), probe_sets.data(), 0, nullptr);
             vkCmdDispatch(command_buffer, groups, groups, groups);
         };
 
