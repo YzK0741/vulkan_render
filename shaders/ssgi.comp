@@ -241,34 +241,38 @@ vec3 bounce_radiance(vec2 uv) {
 }
 
 /**
- * @brief the world-space probe cache's answer for a hit the frame cannot resolve
+ * @brief what answers a hit the screen cannot resolve: the world-space cache where it is trusted, the
+ *        far-field environment otherwise
  * @param world the hit's world position
- * @return the indirect radiance the cache holds there, scaled by the cell's trust, or 0 when it is off
+ * @param dir the world-space ray direction (what the far-field probe is sampled along)
+ * @return the incoming radiance for that hit
  *
- * This is the half of the fallback the environment probe cannot provide. The probe is the SKY - a
- * far-field environment, the same value in the middle of a room as on the roof - so a ray that lands on
- * a surface the camera cannot see comes back with an approximation that has nothing to do with where it
- * landed. The cache, being anchored to the world (see shaders/gi_probe.comp), does: the position becomes
- * a cell coordinate and the LINEAR sampler interpolates between the eight cells around it.
+ * REPLACE, not add, and that is the whole point of this function. The probe cache's cells trace their own
+ * rays, so a cell that is trusted already holds the incoming radiance from its surroundings - the sky
+ * included, because a ray that escapes is answered by the sky. Adding the far-field probe on top of that
+ * counts the same sky twice, and the measurement said exactly that: the cache was adding five percent of
+ * every region's brightness (5.43% of the darkest third, 5.47% of the middle, 0.43% of the brightest),
+ * which is the signature of an ambient term rather than of recovered off-screen light.
  *
- * The fourth channel is the cell's TRUST, and it is what keeps a cell no frame has deposited into from
- * answering as black: it scales what the cell holds instead, and contributes nothing at all at 0. The
- * fetch itself sits inside the gain branch, for the same reason the multi-bounce fetch does - the grid's
- * texels are undefined until the pass that fills it has run once, and zero times a NaN is a NaN.
+ * So the cache and the far-field probe are two estimates of the SAME quantity and they are blended by how
+ * much the cache is trusted: a cell no ray has filled contributes nothing and the sky answers alone, a
+ * cell the rays have filled answers with what they found. `frame_info.w` is still the knob - it scales how
+ * far the blend goes towards the cache - so 0 remains what it always was: the far-field probe, untouched.
  */
-vec3 probe_radiance(vec3 world) {
-    if (pc.frame_info.w <= 0.0) {
-        return vec3(0.0);
+vec3 probe_radiance(vec3 world, vec3 dir) {
+    const vec3 far_field = texture(irradiance_sampler, dir).rgb;
+    const float trust_scale = clamp(pc.frame_info.w, 0.0, 1.0);
+    if (trust_scale <= 0.0) {
+        return far_field; // the cache is off, or has never been filled: nothing to blend with
     }
     const vec3 cell = (world - pc.probe_grid.xyz) / pc.probe_grid.w;
     const vec3 uvw = (cell + 0.5) / vec3(textureSize(gi_probe_grid, 0));
     if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) {
-        return vec3(0.0); // outside the grid's cube (the scene's bounds): the cache has nothing to say
+        return far_field; // outside the grid's cube (the scene's bounds): the cache has nothing to say
     }
     const vec4 cached = texture(gi_probe_grid, uvw);
-    return pc.frame_info.w * cached.rgb * cached.a;
+    return mix(far_field, cached.rgb, trust_scale * clamp(cached.a, 0.0, 1.0));
 }
-
 // The light UBO, declared as the same truncated PREFIX shaders/rt_shadow.comp uses: the sun's direction
 // is the only field this pass reads (the full block's layout is the lighting stage's business).
 #include "hit_shading.glsl"
@@ -367,7 +371,7 @@ vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, out bool out_hit
         // than a probe. That is the shape of the remaining difference, and testing it means comparing the
         // two answers for the same rays rather than another frame-level A/B.
         if (!rayQueryGetIntersectionFrontFaceEXT(query, true)) {
-            return texture(irradiance_sampler, dir).rgb + probe_radiance(hit_world);
+            return probe_radiance(hit_world, dir);
         }
         vec3 shaded = vec3(0.0);
         if (shade_hit(query, hit_world, dir, instance_table_address(), pc.params.x, shaded)) {
@@ -385,13 +389,13 @@ vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, out bool out_hit
     if (hit_uv.x < 0.0 || hit_uv.x > 1.0 || hit_uv.y < 0.0 || hit_uv.y > 1.0) {
         // Off screen: no cached radiance exists for it on screen, so the environment probe answers - and
         // the world-space cache, which does know where this hit is (see probe_radiance).
-        return texture(irradiance_sampler, dir).rgb + probe_radiance(hit_world);
+        return probe_radiance(hit_world, dir);
     }
     const float buffer_ndc = texture(gbuffer_depth, hit_uv).r;
     const float hit_view_depth = -hit_view.z; // view space looks down -Z
     if (buffer_ndc >= 1.0 || abs(view_depth(buffer_ndc) - hit_view_depth) > 0.05 * hit_view_depth) {
         // The visible surface there is a different one: the hit is hidden, and the same answer as above.
-        return texture(irradiance_sampler, dir).rgb + probe_radiance(hit_world);
+        return probe_radiance(hit_world, dir);
     }
     return texture(direct_radiance, hit_uv).rgb + bounce_radiance(hit_uv);
 }
