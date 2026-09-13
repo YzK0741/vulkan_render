@@ -26,7 +26,7 @@ read come from `scripts/windows/capture.ps1`, which lands PNGs in `<BuildDir>/gi
 
 * **Take the control, and take it as a hash.** A knob that is supposed to do nothing must produce a
   byte-identical frame; if the claim is "this change is invisible", `scripts/windows/check_render.ps1`'s
-  nine scenarios x2 is what verifies it. A frame that merely *looks* the same is not a control.
+  scenario set x2 is what verifies it. A frame that merely *looks* the same is not a control.
 * **A frame-level mean is the weakest reading in this directory.** Always ask for the tile table or the
   material buckets: the whole difference between "the estimator is right" and "the frame got uniformly
   brighter" is whether the change is ordered by the scene or by the material.

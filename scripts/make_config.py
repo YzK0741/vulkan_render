@@ -286,10 +286,12 @@ def ask_all(output_dir: str) -> dict:
     ssao_samples = ask_int("render.ssao_samples", 8, 1, 16, hint="samples per pixel")
 
     print("\n-- render (screen-space global illumination) --")
-    # Defaults are the "no effect" ones: GI is opt-in, because it costs two compute dispatches per
-    # frame and only makes sense once the environment probe (the off-screen fallback) is in place.
-    ssgi = ask_bool("render.ssgi", False, hint="screen-space GI: one bounce of diffuse indirect, temporally denoised")
-    ssgi_intensity = ask_float("render.ssgi_intensity", 0.7, 0.0, 4.0, hint="scales the traced indirect against the IBL probe it overlaps")
+    # These are the SHIPPED defaults, not the "no effect" ones: the traced chain with shaded hits is
+    # what the engine renders a stock config with, and `ssgi_intensity` moves with `ssgi_ray_tracing`
+    # (1.0 on the traced path, which REPLACES the lighting stage's ambient; a marched chain is an
+    # addition to the probe and wants ~0.7). Answering "false" here is how a user gets the pre-GI frame.
+    ssgi = ask_bool("render.ssgi", True, hint="screen-space GI: one bounce of diffuse indirect, temporally denoised (the shipped default)")
+    ssgi_intensity = ask_float("render.ssgi_intensity", 1.0, 0.0, 4.0, hint="scales the traced indirect against the IBL probe it overlaps (1.0 = use the traced estimate, which is the traced path's value; a MARCHED chain wants ~0.7)")
     ssgi_radius = ask_float("render.ssgi_radius", 0.12, 0.0, 2.0, hint="ray length, as a FRACTION of the scene radius")
     ssgi_rays = ask_int("render.ssgi_rays", 2, 0, 16, hint="rays per pixel per frame (the resolve accumulates them)")
     ssgi_steps = ask_int("render.ssgi_steps", 6, 0, 64, hint="depth samples per ray")
@@ -307,8 +309,9 @@ def ask_all(output_dir: str) -> dict:
     )
     ssgi_ray_tracing = ask_bool(
         "render.ssgi_ray_tracing",
-        False,
-        hint="trace the GI rays against the acceleration structures (needs ray queries; else marched)",
+        True,
+        hint="trace the GI rays against the acceleration structures (needs ray queries; else marched - "
+             "which is why the default is safe: the fallback is the same estimator with a worse oracle)",
     )
     ssgi_bounce = ask_float(
         "render.ssgi_bounce",
@@ -338,8 +341,9 @@ def ask_all(output_dir: str) -> dict:
     )
     ssgi_hit_shading = ask_bool(
         "render.ssgi_hit_shading",
-        False,
-        hint="shade the surface a GI ray hit instead of sampling the screen (needs traced GI + ray tracing)",
+        True,
+        hint="shade the surface a GI ray hit instead of sampling the screen (needs traced GI + ray tracing; "
+             "this is what makes the indirect light a fact about the scene rather than about the frame)",
     )
     ssgi_specular = ask_bool(
         "render.ssgi_specular",

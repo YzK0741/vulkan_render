@@ -62,16 +62,35 @@ $workDir = Join-Path $BuildDir "render-check"
 # shadow-cascade count and the transparent pass, because those are the paths whose wiring has broken.
 # ---------------------------------------------------------------------------------------------
 $scenarios = @(
-    @{ name = "deferred";          desc = "deferred G-buffer + lighting, no AA stage";  extra = @{} }
-    @{ name = "deferred_taa_fxaa"; desc = "deferred + TAA + FXAA (the AA path)";        extra = @{ taa = "true"; fxaa = "true" } }
-    @{ name = "deferred_ssao_off"; desc = "deferred with SSAO disabled";               extra = @{ ssao = "false" } }
-    @{ name = "shadow_single";     desc = "one cascade, i.e. the historic shadow path"; extra = @{ shadow_cascades = "1" } }
+    # GI IS ON BY DEFAULT NOW, and every scenario below predates that. Each one that is not ABOUT global
+    # illumination therefore pins `ssgi = "false"`, so its reference frame stays exactly what it has
+    # always been: a reference is a claim about the path the scenario names, and letting the GI chain
+    # into the deferred / shadow / transparent frames would invalidate all of them at once for a reason
+    # none of them is about. Where the SHIPPED default is checked is the `default_gi` scenario, which is
+    # `deferred`'s twin - same model, same camera, same frame count, one key apart.
+    @{ name = "deferred";          desc = "deferred G-buffer + lighting, no AA stage";  extra = @{ ssgi = "false" } }
+    @{ name = "deferred_taa_fxaa"; desc = "deferred + TAA + FXAA (the AA path)";        extra = @{ taa = "true"; fxaa = "true"; ssgi = "false" } }
+    @{ name = "deferred_ssao_off"; desc = "deferred with SSAO disabled";               extra = @{ ssao = "false"; ssgi = "false" } }
+    @{ name = "shadow_single";     desc = "one cascade, i.e. the historic shadow path"; extra = @{ shadow_cascades = "1"; ssgi = "false" } }
+    # `unlit` is deliberately NOT given the ssgi pin, and that asymmetry is a test: `runtime::ssgi_active()`
+    # excludes the flat render mode, because that mode's lighting stage returns the stored albedo - so the
+    # image the tracer would average is not radiance and the GI it would add is a product of two albedos
+    # rather than a transport term. With `ssgi` now defaulting to true this became reachable, so the
+    # scenario's UNCHANGED reference is what verifies the exclusion. If someone removes that gate, this
+    # frame is where it shows up.
     @{ name = "unlit";             desc = "flat base colour, no shading";              extra = @{ unlit = "true" } }
+    # THE SHIPPED CONFIGURATION: not one [render] key of its own, so this frame is what a stock
+    # `config.toml` renders - traced GI, shaded hits, SSAO, IBL, the cascaded shadows. It is here because
+    # the default flip needs a reference of its own: until this existed, every scenario either pinned GI
+    # off or spelled out the traced keys, so nothing rendered the configuration a user actually gets, and
+    # "the default is unreachable" or "the default changed" would both have passed unnoticed. `deferred`
+    # is its A/B (GI off, everything else equal), which makes "what does GI do to this frame" one number.
+    @{ name = "default_gi";        desc = "the compiled defaults: traced GI + hit shading, nothing overridden"; extra = @{} }
     # The one scenario that uses a different model, and it has to: alphaMode BLEND geometry is drawn
     # by a pass of its own, so no model without a BLEND material can exercise it - DamagedHelmet has
     # only OPAQUE/MASK. AlphaBlendModeTest carries one of each alphaMode (OPAQUE / MASK at two cutoffs
     # / BLEND) plus a decal, so this also covers the G-buffer's MASK discard path.
-    @{ name = "transparent_blend"; desc = "deferred + an alphaMode BLEND material";    extra = @{}
+    @{ name = "transparent_blend"; desc = "deferred + an alphaMode BLEND material";    extra = @{ ssgi = "false" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\AlphaBlendModeTest\glTF\AlphaBlendModeTest.gltf"
        camera = "0,5,12.4,0,-4.511,0" }
     # The scene the global-illumination work is measured against, and the only asset here whose
@@ -83,35 +102,47 @@ $scenarios = @(
     # and amplifies a small difference into a different trail, which is the one kind of noise a GI
     # comparison cannot have (measured the hard way while adding object motion vectors). Sponza is a
     # heavy load - 69 textures, ~150k triangles - so this is the slow scenario.
-    @{ name = "sponza";            desc = "Sponza interior, the GI reference scene";    extra = @{ taa = "false" }
+    @{ name = "sponza";            desc = "Sponza interior, the GI reference scene";    extra = @{ taa = "false"; ssgi = "false" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\Sponza\glTF\Sponza.gltf"
        camera = "90,0,6.41,0,-18.548,0" }
-    # The GI CHAIN, which none of the scenarios above exercise - they all run with ssgi off. This one turns
-    # on the screen-space trace, its temporal and spatial denoisers, the composite's joint-bilateral
-    # upsample, and the world-space probe cache that answers the hits the screen cannot (ray-traced cells,
-    # SH-2 storage, the six-neighbour gated blend). It is here because that whole subsystem had NO
-    # regression coverage: the directional-probe change touched eight 3D images, four bindings in the
-    # G-buffer set and a nine-binding set of its own, and nothing in this file would have noticed a break in
-    # any of it. Same scene and camera as `sponza`, so the two are comparable; taa off for the same reason
-    # the other GI comparison keeps it off.
+    # THE GI CHAIN WITH ITS PROBE CACHE, which nothing above covers: `default_gi` renders the shipped
+    # chain, but with `ssgi_probes` at its default of false, so the cache - ray-traced cells, SH-2 storage,
+    # the six-neighbour gated blend - is exercised HERE and nowhere else. This one turns
+    # on the traced path, its temporal and spatial denoisers, the composite's joint-bilateral
+    # upsample, and the world-space probe cache that answers the hits the screen cannot. It is here because
+    # that whole subsystem once had NO regression coverage: the directional-probe change touched eight 3D
+    # images, four bindings in the G-buffer set and a nine-binding set of its own, and nothing in this file
+    # would have noticed a break in any of it. Same scene and camera as `sponza`, so the two are
+    # comparable; taa off for the same reason the other GI comparison keeps it off.
+    # `ssgi` / `ssgi_intensity` / `ssgi_ray_tracing` are no longer listed: they are the compiled defaults
+    # now, so writing them here would be a scenario claiming a difference it does not have - and the
+    # duplicate-key discipline in Write-ScenarioConfig is the wrong place to enforce that (it only knows
+    # the harness's own pins). `ssgi_hit_shading = false` IS pinned, and for reference stability rather
+    # than for the path: this frame was captured with the old default (off), and the traced chain's own
+    # wiring is what the scenario is about - re-seeding it with hit shading on would fold two changes into
+    # one reference. The shaded-hit configuration is `default_gi`'s job, and the shaded path itself has its
+    # own measurement record in docs/gi_hit_shading.md.
     @{ name = "sponza_gi";         desc = "Sponza interior + traced GI chain + probe cache";
-       extra = @{ taa = "false"; ssgi = "true"; ssgi_intensity = "1.0"; ssgi_ray_tracing = "true"; ssgi_probes = "true";
-                  ssgi_probe_rate = "0.08"; ssgi_probe_rounds = "2"; ssgi_probe_gain = "1.0" }
+       extra = @{ taa = "false"; ssgi_probes = "true"; ssgi_hit_shading = "false" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\Sponza\glTF\Sponza.gltf"
        camera = "90,0,6.41,0,-18.548,0" }
-    # The MARCHED GI path, which `sponza_gi` above does NOT cover: it sets ssgi_ray_tracing = true, and
-    # every other scenario has GI off, so until this scenario existed the depth-march oracle and the
-    # marched chain's own semantics were exercised by nothing. Those semantics DIFFER from the traced
-    # path's in a way a regression would silently change: a marched ray dies at the screen edge, so the
-    # environment probe stays the off-screen half and the result is ADDED to it (measured against a
-    # GI-off frame of the same scene and camera: +2.30 of mean green), while the traced path falls back
-    # to the probe inside the ray and REPLACES the lighting stage's ambient instead (measured the same
-    # way: -5.74, legitimately darker because its hits are occluded). It is also the path a device
-    # without ray queries gets, and the intensity that reconciles the probe overlap is that path's own
-    # (0.7, its shipped default) rather than the traced path's 1.0.
+    # The MARCHED GI path, which `sponza_gi` above does NOT cover: it leaves ssgi_ray_tracing at its
+    # default (true), so without this scenario the depth-march oracle
+    # and the marched chain's own semantics would be exercised by nothing. Those semantics DIFFER from the
+    # traced path's in a way a regression would silently change: a marched ray dies at the screen edge, so
+    # the environment probe stays the off-screen half and the result is ADDED to it, while the traced path
+    # falls back to the probe inside the ray and REPLACES the lighting stage's ambient instead. The pair
+    # that says so is these two references against `sponza` (GI off, same scene, camera and 40 frames):
+    # `sponza_march` is 1.42 of mean green BRIGHTER and moves 43% of the pixels, `sponza_gi` is 0.47
+    # DARKER and moves 83% - and the traced path's sign is the feature, because its hits are occluded.
+    # (Both numbers were re-measured when the L2.4 default flip landed; the values this comment used to
+    # carry, +2.30 and -5.74, were stale - the arms they came from are not the arms that exist now.)
+    # It is also the path a device without ray queries gets. The intensity is the one thing here that is
+    # NOT the default and must not be: the marched path is an ADDITION to the probe, so it needs that path's own reconciling value
+    # (0.7) rather than the traced path's 1.0 - which is exactly why the two keys have to be read
+    # together (see the [render] ssgi note in config.example.toml).
     @{ name = "sponza_march";      desc = "Sponza interior + MARCHED GI (no ray queries needed)";
-       extra = @{ taa = "false"; ssgi = "true"; ssgi_ray_tracing = "false"; ssgi_rays = "2"; ssgi_steps = "6";
-                  ssgi_intensity = "0.7"; ssgi_probes = "false"; ssgi_spatial_sigma = "2.0"; ssgi_upsample = "true" }
+       extra = @{ taa = "false"; ssgi_ray_tracing = "false"; ssgi_intensity = "0.7" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\Sponza\glTF\Sponza.gltf"
        camera = "90,0,6.41,0,-18.548,0" }
     # The GLOSSY lobe (`[render] ssgi_specular`), which no other scenario can exercise: Sponza is roughened
@@ -120,13 +151,14 @@ $scenarios = @(
     # metal/roughness sweep is the asset this feature is ABOUT - a grid from smooth metal (a mirror) to
     # rough dielectric - and the measurement's shape is a material response, not a scene average: the effect
     # is +10.6 on the smooth-metal spheres, +7.9 on the rough-metal ones, +1.1 on smooth dielectric and
-    # +0.08 on rough dielectric (see docs/gi_hit_shading.md's L2.3 section). Hit shading is on because the
-    # pass cannot shade a hit without it, and the probe cache is off so the scenario isolates the lobe.
+    # +0.08 on rough dielectric (see docs/gi_hit_shading.md's L2.3 section). The traced path and hit
+    # shading are the compiled defaults now, so this scenario only spells out what it ADDS to them: the
+    # lobe itself, its single ray, and the diffuse reach the compact sweep wants (`ssgi_radius = 0.5` - the
+    # shared radius is a fraction of the SCENE radius, 6.99 here, so the default 0.12 would reach 0.84 of
+    # this model). The probe cache is off by default, i.e. the scenario isolates the lobe.
     # `camera = ""` is deliberate: this scenario lets the scene frame itself (see Invoke-Scenario).
     @{ name = "metal_rough_glossy"; desc = "the material sweep + traced GI + the glossy lobe";
-       extra = @{ taa = "false"; ssgi = "true"; ssgi_intensity = "1.0"; ssgi_ray_tracing = "true";
-                  ssgi_hit_shading = "true"; ssgi_specular = "true"; ssgi_specular_rays = "1";
-                  ssgi_radius = "0.5"; ssgi_probes = "false"; camera_fit = "'exterior'" }
+       extra = @{ taa = "false"; ssgi_specular = "true"; ssgi_radius = "0.5"; camera_fit = "'exterior'" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\MetalRoughSpheres\glTF\MetalRoughSpheres.gltf"
        camera = "" }
     # THE ONLY SCENARIO WHOSE CAMERA MOVES, and it is here because everything else was still: with a fixed
@@ -137,9 +169,7 @@ $scenarios = @(
     # enough that the motion-vector path is in its normal range rather than its clamp. Same scene as
     # `metal_rough_glossy` on purpose, so the moving and still frames of one scene can be compared.
     @{ name = "glossy_motion"; desc = "the material sweep + traced GI + glossy lobe, CAMERA MOVING";
-       extra = @{ taa = "false"; ssgi = "true"; ssgi_intensity = "1.0"; ssgi_ray_tracing = "true";
-                  ssgi_hit_shading = "true"; ssgi_specular = "true"; ssgi_specular_rays = "1";
-                  ssgi_radius = "0.5"; ssgi_probes = "false"; camera_fit = "'exterior'" }
+       extra = @{ taa = "false"; ssgi_specular = "true"; ssgi_radius = "0.5"; camera_fit = "'exterior'" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\MetalRoughSpheres\glTF\MetalRoughSpheres.gltf"
        camera = ""
        sweep = "0.5" }

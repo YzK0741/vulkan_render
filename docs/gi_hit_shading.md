@@ -13,6 +13,7 @@ code comments, and the code comments are the only part a reader of the source wo
 | 1. Shade a hit from its geometry | done and measured; one question open (a model difference, see below) |
 | 2. Wire it into the probe grid's injection, gate the propagation with shadow rays | NOT STARTED |
 | 3. Reference frame and per-pixel error metric | instrument done and used; an independent reference is missing |
+| Shipped: the traced chain + shaded hits are the DEFAULT | done and measured; the two defects the flip exposed are in "L2.4" below |
 
 ## What is built
 
@@ -27,8 +28,8 @@ code comments, and the code comments are the only part a reader of the source wo
   textures from the scene set, and evaluates the sun with a shadow ray plus the split-sum IBL ambient and
   the material's emissive.
 * The switch is the table's own address, riding two push-constant lanes freed for it. Zero means "sample
-  the screen", which is the default, the A/B, and what a marched GI path or a device without ray queries
-  keeps. No descriptor had to be added: the geometry is reached through addresses the acceleration
+  the screen", which is what a marched GI path, a device without ray queries, and `[render]
+  ssgi_hit_shading = false` all keep. It was also the default until the chain shipped (see "L2.4"). No descriptor had to be added: the geometry is reached through addresses the acceleration
   structure build already required.
 * Scene set bindings 1, 2, 4 and 5 (the bindless texture array, the prefiltered environment, the BRDF LUT
   and the material table) now name `COMPUTE` as well as `FRAGMENT`.
@@ -1366,5 +1367,114 @@ the brighter environment probe, i.e. the traced GI was over-bright. On the mater
 same change is -0.0215 with 4.58% of pixels. Both references that changed were re-seeded with that reason, and
 the control that says the lane's split is real is that `sponza_march` - the new marched-path scenario - came
 out BYTE-IDENTICAL through both the origin change and the shadow-ray one.
+
+### L2.4, shipped: the traced chain is the default, and the two defects the flip exposed
+
+The shipped configuration is now `ssgi = true`, `ssgi_ray_tracing = true`, `ssgi_hit_shading = true` and
+`ssgi_intensity = 1.0` (`app_config` 0.26.0; `vulkan.runtime` 0.52.0 carries the one code change below).
+Those four are ONE decision, and the coupling is why: the traced path is what lets a shaded hit be reached at
+all (a marched ray never leaves the frame, so `ssgi_hit_shading` does nothing without it), and the traced path
+is also what turns the chain from an ADDITION to the environment probe into a REPLACEMENT of the lighting
+stage's ambient - so `ssgi_intensity`, which multiplies whichever of the two the frame does, had to move with
+it. 1.0 is the value that means "use the traced estimate"; at 0.7 the ambient the spatial filter removes would
+be 30% larger than the estimate put back, a systematic darkening of every frame rather than a dial. The
+MARCHED chain keeps 0.7 as ITS value (it adds to the probe, so the two terms overlap and want reconciling),
+which is why that path still needs a config that says so - and why `ssgi_radius` stays at 0.12 rather than
+following the traced path's reach: the marched fallback's resolution is `radius / ssgi_steps`.
+`ssgi_probes` and `ssgi_specular` stay OFF deliberately. The cache is a coarse SH-2 approximation whose
+contribution is measured (L2.1, and the sign flip below) but whose default-on case is not, and the glossy lobe
+is a feature still being measured (its denoiser item is open). Both remain reachable, and both have a scenario.
+
+HOW IT WAS VERIFIED, because a default is not a feature and the usual A/B does not apply to one. The gate grew
+a `default_gi` scenario: the compiled defaults with NOTHING overridden (same model, camera and frame count as
+`deferred`, which pins GI off - the pair differs by one key). It exists because every scenario before it either
+pinned `ssgi = "false"` or spelled out the traced keys, so NOTHING in the harness rendered the configuration a
+user actually gets: a default that had become unreachable, or had silently drifted, would have passed. Every
+non-GI scenario then pins `ssgi = "false"` so its reference stays a claim about the path it names, and the keys
+that HAD become defaults were deleted from the scenarios that used to spell them out (`sponza_gi` lost
+`ssgi`, `ssgi_intensity`, `ssgi_ray_tracing`, `ssgi_probe_rate`, `ssgi_probe_rounds`, `ssgi_probe_gain`;
+`sponza_march` lost `ssgi`, `ssgi_rays`, `ssgi_steps`, `ssgi_probes`, `ssgi_spatial_sigma`, `ssgi_upsample`;
+the glossy pair lost `ssgi`, `ssgi_intensity`, `ssgi_ray_tracing`, `ssgi_hit_shading`, `ssgi_specular_rays`,
+`ssgi_probes`) - a key equal to the default is a claim of a difference that does not exist, and it hides the
+day the default moves. `sponza_gi` also had to PIN `ssgi_hit_shading = false`: its frame was captured with the
+old default, and re-seeding it with shaded hits would have folded two changes into one reference.
+THE RUN: 12 scenarios x 2, 0 changed, 0 flaky, 1 unseeded - i.e. all eleven pre-existing references came out
+BYTE-IDENTICAL through the flip (including `sponza_gi` 58EC848DFABE654A, `sponza_march` EEFBBA2515803F46 and
+`metal_rough_glossy` 88F91905A0AA8532, which is what proves the deleted keys were genuinely defaults), and only
+`default_gi` needed seeding. It was seeded with `-Only default_gi -Update` - not a blanket `-Update`, which
+copies unconditionally and would have re-seeded every reference - and the full set was run again afterwards,
+green at 12/12, which is also what proves the new reference is deterministic (the seeding path runs a scenario
+once and never compares two runs).
+
+DEFECT 1, THE FLAT RENDER MODE: with `ssgi` defaulting to true, `[render] unlit` became reachable by the GI
+chain, and it should not be. `ssgi_active()`'s own comment states the premise - "the tracer reads the direct
+radiance the lighting stage produced" - and in the flat mode that stage returns the STORED ALBEDO, so the image
+the tracer averages is not radiance and the GI the composite added was a product of two albedos rather than a
+transport term. It had never happened because GI was opt-in and nobody opted in with `unlit`. The fix is one
+conjunct (`&& !this->unlit_active`) on the predicate every consumer already shares (pass recording, the
+composite's weight, `gi_replaces_ambient`). THE VERIFICATION IS AN UNCHANGED HASH: the `unlit` scenario is left
+deliberately WITHOUT an `ssgi = "false"` pin, so its reference has to come out identical - and it does
+(D445A8E5F3EBDD53 before and after). If someone removes that conjunct, that frame is where it shows up.
+
+DEFECT 2, THE FIXTURE THAT WAS NOT WHAT IT CLAIMED: `tests/fixtures/config_generated_defaults.toml` says in its
+own header that it is a VERBATIM copy of what `python scripts/make_config.py` writes with every question
+answered by its default, and `test_app_config.cpp::test_generated_config_parses` reads it - so it is the guard
+that the generator and the parser still agree. Diffing it against the generator (run the generator into a temp
+directory with blank answers; it takes a minute) found FOUR differences that had accumulated since it was
+copied: `max_fps = 240` against the generator's 0, `taa = true` and `fxaa = true` against its false, and
+`camera_fit` missing from the fixture entirely. A test that reads the fixture cannot see the generator, so the
+two boolean CHECKs had been passing on values the generator does not write, and the one key had no coverage at
+all. Regenerated verbatim (and the fixture header now records the drift and the command that finds it); the two
+CHECKs became `CHECK(!...)` with a comment stating what they can and cannot prove - a key whose generator
+default is false is only proven ACCEPTED by this fixture, because a parser that ignored it would also read
+false, and `config_full.toml` is the fixture that proves the read-back with non-default values.
+
+THE COST, measured rather than estimated, on Sponza at 1080x960, 180 frames, the harness's interior pose
+(`90,0,6.41` targeting the scene centre), RTX 4060, from the GPU pass timings' own intervals - the same
+instrument every other cost figure in this document uses. The arms are the shipped defaults with exactly one
+key moved each, and their IDENTITY WITH THE GATE WAS CHECKED RATHER THAN ASSUMED: the GI-off arm is
+byte-identical to the `sponza` reference and the marched arm to `sponza_march` (SHA256 matches), so the table
+below describes those scenarios and not merely similarly-named configs:
+
+    arm (one key moved)              rt(TLAS)  scene  lighting   gi   composite  total
+    GI off (ssgi=false)                0.00    0.36    0.29    0.01    0.31     1.00 ms
+    marched (ray_tracing=false, 0.7)   0.09    0.34    0.30    0.39    0.29     1.45 ms
+    traced, screen hits (hit_shading=false) 0.10  0.35  0.14    0.64    0.31     1.57 ms
+    SHIPPED (traced + shaded hits)     0.11    0.34    0.15    0.86    0.30     1.81 ms
+
+The shipped default costs **+0.81 ms on a 1.81 ms frame** (1.00 -> 1.81, i.e. 81% more GPU time per frame),
+and where it goes is the interesting half:
+* the chain's own interval is 0.86 ms, against 0.39 marched and 0.01 off. The 0.47 between marched and traced
+  is the oracle (a ray query against the TLAS) and the 0.22 between traced and shipped is hit shading (each
+  shaded hit fetches the triangle's vertices, its material and its textures, and fires a shadow ray);
+* the traced path PAYS BACK 0.16 ms in the LIGHTING interval (0.29-0.30 -> 0.14-0.15): with
+  `gi_replaces_ambient` set, that stage no longer scales the diffuse ambient by SSAO or adds the term the
+  spatial filter is about to remove. The traced path is therefore not "marched plus a better oracle plus
+  shading"; one of its costs is negative;
+* the TLAS build (0.09-0.11 ms per frame here, on top of the one-off 17.8 MiB build) is paid by the MARCHED
+  arm too, because the structures are built for any GI scene;
+* these are ONE machine's numbers at one resolution (uncapped, so the frame is 1-2 ms and every interval is
+  small enough to be noisy at the 0.01 level). The portable part is the ratio and the breakdown, not the
+  milliseconds.
+
+WHAT THE DEFAULT DOES TO THE FRAME, same scene and captures (mean green; `scripts/measure/diff.py` reports its
+difference as A - B, so the signs below are stated explicitly against the GI-off frame):
+* SHIPPED vs GI off: 61.7391 against 62.0736, i.e. **0.33 DARKER**, with 84.0% of pixels differing, 33.4% by
+  more than 4/255, worst pixel 83. The 4x4 table is the point and it is ordered by the SCENE: the bottom row
+  (the floor, the most occluded surface in view) loses 14.8% / 12.9% / 12.6% / 5.1% of its own brightness
+  while the top two rows gain up to 7.9%. A uniform shift would be a bug; this is the shape of indirect light;
+* the MARCHED chain, measured the same way: **1.42 BRIGHTER** (43% of pixels). Its rays die at the screen edge,
+  so the environment probe stays the off-screen half and the result is ADDED to it. Both signs are now quoted
+  in the `sponza_march` scenario's comment, replacing +2.30 and -5.74, which came from arms that no longer
+  exist (different frame counts and pre-fix code);
+* THE TRACED CHAIN'S SIGN DEPENDS ON THE PROBE CACHE, which is worth recording because it looks like a
+  contradiction until the arm is named: with the cache ON (40 frames, the `sponza_gi` arm) traced GI is 0.47
+  DARKER than GI off; with it OFF (180 frames, screen hits) it is 0.54 BRIGHTER. The reason is structural - a
+  hit the screen cannot resolve falls back to the environment probe, which is the SKY, so an interior pixel is
+  lit as though it were outdoors. That is the L2.1 cache's reason to exist, visible in the chain's own A/B;
+* hit shading's own contribution on the default path: 62.6095 with the screen oracle against 61.7391 with
+  shaded hits, i.e. shading the hit makes the frame **0.87 DARKER** over 51.7% of its pixels - the direction
+  the occlusion story predicts, and the opposite of what an unshaded screen reprojection reads.
+
 
 

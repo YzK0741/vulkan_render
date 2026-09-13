@@ -152,9 +152,13 @@ ssao_samples = 8
 
 # ssgi / ssgi_intensity / ssgi_radius / ssgi_rays / ssgi_steps / ssgi_spatial_sigma / ssgi_upsample /
 # ssgi_ray_tracing / ssgi_bounce:
-# screen-space global illumination. `ssgi.comp` traces one bounce of diffuse indirect at HALF
-# resolution - each pixel shoots a few cosine-weighted rays, marches the G-buffer depth and averages the
-# direct radiance it hits - `ssgi_temporal.comp` then accumulates that trace over frames (reprojected
+# global illumination (the `ssgi*` keys - it began as a screen-space chain and still is one whenever
+# `ssgi_ray_tracing` is off), ON BY DEFAULT: with `ssgi_ray_tracing` (also on) this IS the engine's
+# global illumination - one bounce of diffuse indirect, shaded at the hit, denoised over frames and then
+# over the neighbourhood. `ssgi.comp` traces that bounce at HALF resolution - each pixel shoots a few
+# cosine-weighted rays and averages the direct radiance they hit, marching the G-buffer depth or, with
+# `ssgi_ray_tracing`, querying the scene's acceleration structures -
+# `ssgi_temporal.comp` then accumulates that trace over frames (reprojected
 # with the motion vectors, depth-guarded and neighbourhood-clamped), because two rays per pixel is white
 # noise with the right average, and `ssgi_spatial.comp` finally runs a joint-bilateral filter (5x5,
 # stopped at depth and normal edges) over the accumulation to remove the grain that does not move, which
@@ -163,30 +167,44 @@ ssao_samples = 8
 # fetch mixes in the neighbouring texels by position alone, which at a silhouette means mixing two
 # surfaces (or a surface with the background) and shows up as a dark rim on the geometry side and a halo
 # on the sky. Setting it to false restores that bilinear fetch, which is what makes the upsample
-# measurable - it is not a state to ship. The result is ADDED to the environment probe, not a
-# replacement: a ray that leaves the frame hits nothing, so the probe stays the off-screen fallback and
-# `ssgi_intensity` reconciles the two (they overlap light, so more is not better - 0.7 is a starting
-# point, not a physical value). `ssgi_radius` is a FRACTION of the scene radius, so one value means the
-# same thing on a 1.6-unit model and on Sponza's 18.5. `ssgi_rays` x `ssgi_steps` is the per-frame cost;
+# measurable - it is not a state to ship.
+# WHERE THE RESULT GOES DEPENDS ON THE HIT ORACLE, and `ssgi_intensity` moves with it - read both before
+# changing either. On the MARCHED path the result is ADDED to the environment probe: a ray that leaves the
+# frame hits nothing, so the probe stays the off-screen fallback and the intensity reconciles two
+# overlapping terms (0.7 there is a starting point, not a physical value). On the TRACED path the lighting
+# stage stops adding its own diffuse ambient altogether and the traced estimate REPLACES it - which is why
+# the default intensity is 1.0, the value that means "use the traced estimate"; 0.7 would leave the ambient
+# 30% short, a systematic darkening of every frame rather than a dial. (SSAO stops scaling the diffuse
+# ambient on that path too, because the rays answer the occlusion question with real geometry.)
+# `ssgi_radius` is a FRACTION of the scene radius, so one value means the
+# same thing on a 1.6-unit model and on Sponza's 18.5; it stays at 0.12 rather than following the traced
+# path's reach because the MARCHED fallback's resolution is radius / `ssgi_steps`, so a ray length that
+# suits the traced oracle would make the fallback step over the detail between two samples.
+# `ssgi_rays` x `ssgi_steps` is the per-frame cost;
 # the temporal resolve is what turns a small number of rays into a smooth image, so raising `ssgi_rays`
 # before the ray budget is spent is usually the wrong lever. `ssgi_spatial_sigma` is the filter's width
 # in GI texels (0 = the filter is a pass-through, i.e. the temporal-only result). `ssgi = false` makes
-# the frame bit for bit the pre-GI frame (the composite's GI weight is 0 and no GI pass is recorded).
+# the frame bit for bit the pre-GI frame (the composite's GI weight is 0 and no GI pass is recorded) -
+# the gate's non-GI scenarios pin exactly that.
 # There are no overlay controls: these are read once at startup, so changing them needs a restart.
-ssgi = false
-ssgi_intensity = 0.7
+ssgi = true
+ssgi_intensity = 1.0
 ssgi_radius = 0.12
 ssgi_rays = 2
 ssgi_steps = 6
 ssgi_spatial_sigma = 2.0
 ssgi_upsample = true
-# ssgi_ray_tracing: replace the screen-space march with an inline ray query against the scene's
-# acceleration structures. Same estimator and same rays - only the hit oracle changes - so it is still an
-# addition to the probe, but it also sees surfaces the depth buffer cannot resolve and its hits are
-# exact. Costs nothing when off; on Sponza it roughly doubles the GI pass (0.33 ms marched -> 0.70 ms
-# traced at 1080x960) plus the per-frame top level structure work (0.09-0.14 ms). Granted only on a device
-# with ray queries and a built acceleration structure, so the key is safe in a shared config file.
-ssgi_ray_tracing = false
+# ssgi_ray_tracing: ON BY DEFAULT. Replace the screen-space march with an inline ray query against the
+# scene's acceleration structures. Same estimator and same rays - only the hit oracle changes - but it
+# also sees surfaces the depth buffer cannot resolve, its hits are exact, and (this is the part that
+# makes it the default rather than a variant) it is what turns the chain from an ADDITION to the probe
+# into a REPLACEMENT of the lighting stage's ambient, i.e. it is what makes `ssgi_intensity = 1.0` mean a
+# complete answer. On Sponza it roughly doubles the GI pass (0.33 ms marched -> 0.70 ms traced at
+# 1080x960) plus the per-frame top level structure work (0.09-0.14 ms). Granted only on a device
+# with ray queries and a built acceleration structure, so the key is safe in a shared config file: where it
+# cannot be granted the frame falls back to the marched path, which is why the marched path is still
+# maintained - and why a machine that ends up on it wants `ssgi_intensity` around 0.7 (see the note above).
+ssgi_ray_tracing = true
 # ssgi_bounce: how much of the PREVIOUS frame's accumulated indirect a GI ray re-emits at the surface it
 # hit - the multi-bounce (Lumen-style) approximation. At 0 a ray carries direct light only, so a corner
 # that no light reaches directly stays black; 0.6 picks up the second and third bounce, and the rest
@@ -247,17 +265,21 @@ ssgi_probes = false
 ssgi_probe_rate = 0.08
 ssgi_probe_rounds = 2
 ssgi_probe_gain = 1.0
-# ssgi_hit_shading: shade the surface a GI ray LANDED ON from its own geometry, material and textures,
-# instead of reading the screen's direct-radiance image at the pixel it reprojects to. The screen path has
+# ssgi_hit_shading: ON BY DEFAULT. Shade the surface a GI ray LANDED ON from its own geometry, material
+# and textures, instead of reading the screen's direct-radiance image at the pixel it reprojects to. The
+# screen path has
 # two structural limits that both come from that reprojection: a hit the camera does not show (off screen,
 # or hidden behind a nearer surface) has no pixel to read and falls back to a probe - which approximates
 # the light where the RAY STARTED, not radiance arriving from where it landed - and every sample moves with
 # the camera, so a surface's indirect light changes when the view does. Shading the hit removes both: the
-# answer depends on the hit surface and the lights alone. It costs the vertex, index and texture fetches a
-# shaded hit makes (and a shadow ray per hit for the sun, which replaces the cascade lookup), and it needs
-# the acceleration structures and the traced GI path - with the marched path, or on a device without ray
-# queries, it does nothing. Off is the previous behaviour exactly: hits are read from the screen.
-ssgi_hit_shading = false
+# answer depends on the hit surface and the lights alone, which is what makes the indirect a fact about the
+# scene rather than about the frame. It costs the vertex, index and texture fetches a
+# shaded hit makes (and a shadow ray per hit for the sun, which replaces the cascade lookup) - that cost is
+# why the whole-chain frame time roughly doubles on the reference scene, measured and recorded in
+# docs/gi_hit_shading.md - and it needs the acceleration structures and the traced GI path: with the marched
+# path, or on a device without ray queries, it does nothing. Off is the previous behaviour exactly: hits are
+# read from the screen.
+ssgi_hit_shading = true
 # ssgi_specular: trace a GLOSSY REFLECTION ray per pixel and use what it finds as the surface's specular
 # ambient, instead of the lighting stage's split-sum lookup of the prefiltered environment. Until this
 # existed every indirect term in the engine was diffuse, and the specular one knew nothing but the sky: a
@@ -307,7 +329,8 @@ ssgi_hit_shading = false
 # REQUIREMENTS: the traced GI path, `ssgi_hit_shading` and the acceleration structures' instance table (a
 # hit cannot be shaded without it). Where any is missing the pass is not even RECORDED, which is what makes
 # `ssgi_specular = false` byte-identical by construction rather than by arithmetic (verified: the capture
-# harness's 11 scenarios x 2, 0 changed, `metal_rough_glossy` among them since L2.3).
+# harness's 11 scenarios x 2, 0 changed, `metal_rough_glossy` among them since L2.3; 12 scenarios since
+# `default_gi` was added for the default flip).
 ssgi_specular = false
 # ssgi_specular_radius: how far a glossy ray reaches, as a fraction of the scene radius. ITS OWN REACH, not
 # the shared `ssgi_radius`, and the reason is that the two are different questions: a diffuse bounce's reach

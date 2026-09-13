@@ -73,7 +73,8 @@ namespace {
         CHECK(settings.lighting.demo_lights == 0);
         CHECK(settings.render.ssao); // default: screen-space AO runs
         CHECK(settings.render.ssao_samples == 8);
-        CHECK(!settings.render.ssgi); // default: off - GI is opt-in, and costs two dispatches a frame
+        CHECK(settings.render.ssgi);                                                             // default: ON - the traced chain is the shipped configuration
+        CHECK(settings.render.ssgi_intensity > 0.99f && settings.render.ssgi_intensity < 1.01f); // ... at the value that means "use the traced estimate"
         CHECK(settings.render.ssgi_rays == 2);
         CHECK(settings.render.ssgi_steps == 6);
         CHECK(settings.render.ssgi_spatial_sigma > 1.99f && settings.render.ssgi_spatial_sigma < 2.01f);
@@ -138,19 +139,24 @@ namespace {
         CHECK(settings.render.window_width == 1080);
         CHECK(settings.render.window_height == 960);
         CHECK(settings.render.window_title == "vulkan_render");
-        CHECK(!settings.render.vsync); // generator default: Mailbox (uncapped)
-        CHECK(settings.render.max_fps == 240);
+        CHECK(!settings.render.vsync);       // generator default: Mailbox (uncapped)
+        CHECK(settings.render.max_fps == 0); // generator default: 0 = uncapped, and the compiled default too
+        CHECK(settings.render.camera_fit == "exterior");
         CHECK(!settings.render.unlit);
         // [render] shadow mapping
         CHECK(settings.render.shadow);
         CHECK(settings.render.shadow_cascades == 3);
         CHECK(settings.render.shadow_map_size == 2048);
         CHECK(settings.render.shadow_cascade_blend > 0.09f && settings.render.shadow_cascade_blend < 0.11f);
-        // [render] shading + post-processing: the eleven keys the generator used to omit
-        CHECK(settings.render.taa);
+        // [render] shading + post-processing: the eleven keys the generator used to omit. TWO OF THESE
+        // ARE BOOLEANS WHOSE GENERATOR DEFAULT IS false, which is the compiled default as well - so
+        // `CHECK(!taa)` proves the key is ACCEPTED, not that the parser read it (a parser that ignored
+        // `taa` altogether would read false too). `config_full.toml` is the fixture that proves the
+        // read-back, with every one of these keys at a non-default value.
+        CHECK(!settings.render.taa);
         CHECK(settings.render.taa_blend_static > 0.89f && settings.render.taa_blend_static < 0.91f);
         CHECK(settings.render.taa_blend_min > 0.49f && settings.render.taa_blend_min < 0.51f);
-        CHECK(settings.render.fxaa);
+        CHECK(!settings.render.fxaa);
         CHECK(!settings.render.gbuffer_debug);
         CHECK(settings.render.gbuffer_channel == 1);
         CHECK(settings.render.gpu_timings);
@@ -161,23 +167,23 @@ namespace {
         CHECK(settings.render.ssao_intensity > 0.99f && settings.render.ssao_intensity < 1.01f);
         CHECK(settings.render.ssao_samples == 8);
         // [render] screen-space GI: the generator writes these seven, so the fixture has to carry them
-        CHECK(!settings.render.ssgi);
-        CHECK(settings.render.ssgi_intensity > 0.69f && settings.render.ssgi_intensity < 0.71f);
+        CHECK(settings.render.ssgi);
+        CHECK(settings.render.ssgi_intensity > 0.99f && settings.render.ssgi_intensity < 1.01f);
         CHECK(settings.render.ssgi_rays == 2);
         CHECK(settings.render.ssgi_spatial_sigma > 1.99f && settings.render.ssgi_spatial_sigma < 2.01f);
         CHECK(settings.render.ssgi_upsample);
         // [render] ray tracing: written by the generator like every other switch, so it round-trips
         CHECK(!settings.render.rt_shadows);
-        CHECK(!settings.render.rt_mask_bake);         // default: the mask bake is off (see the generated-defaults fixture)
-        CHECK(!settings.render.rt_skin_bake);         // default: the per-frame skin refit is off (same fixture)
-        CHECK(settings.render.animation_time < 0.0f); // default: -1, i.e. play (the generator writes it out)
-        CHECK(!settings.render.ssgi_ray_tracing);
+        CHECK(!settings.render.rt_mask_bake);                                               // default: the mask bake is off (see the generated-defaults fixture)
+        CHECK(!settings.render.rt_skin_bake);                                               // default: the per-frame skin refit is off (same fixture)
+        CHECK(settings.render.animation_time < 0.0f);                                       // default: -1, i.e. play (the generator writes it out)
+        CHECK(settings.render.ssgi_ray_tracing);                                            // default: traced where the device allows it, marched otherwise
         CHECK(settings.render.ssgi_bounce > -0.01f && settings.render.ssgi_bounce < 0.01f); // default: single bounce
         CHECK(!settings.render.ssgi_probes);                                                // default: the screen-space chain alone
         CHECK(settings.render.ssgi_probe_rate > 0.07f && settings.render.ssgi_probe_rate < 0.09f);
         CHECK(settings.render.ssgi_probe_rounds == 2);
         CHECK(settings.render.ssgi_probe_gain > 0.99f && settings.render.ssgi_probe_gain < 1.01f);
-        CHECK(!settings.render.ssgi_hit_shading);                                                            // default: hits are read from the screen
+        CHECK(settings.render.ssgi_hit_shading);                                                             // default: hits are shaded from their own geometry (the shipped configuration)
         CHECK(!settings.render.ssgi_specular);                                                               // default: reflections stay the environment's
         CHECK(settings.render.ssgi_specular_rays == 1);                                                      // default: one glossy ray per pixel
         CHECK(settings.render.ssgi_specular_radius > 0.49f && settings.render.ssgi_specular_radius < 0.51f); // default: the reach's measured knee

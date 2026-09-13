@@ -3126,13 +3126,19 @@ namespace vulkan {
     bool runtime::ssgi_active() const noexcept {
         // The tracer reads the direct radiance the lighting stage produced and the G-buffer depth it
         // wrote, so that stage has to have run. The debug view replaces it, so there is no GI there.
+        // The FLAT render mode is excluded for the same reason and it is not a style choice: in that
+        // mode the lighting stage returns the stored albedo, so the image the tracer averages is not
+        // radiance, and the GI it would add is a product of two albedos rather than a transport term.
+        // It became reachable when `ssgi` defaulted to true, which is why the `unlit` reference frame is
+        // the check for it: with this exclusion in place that frame comes out byte-identical to what it
+        // was before the default moved.
         // The whole denoise chain is required as well, and not merely as a quality step: what the
         // composite samples is the SPATIAL filter's output, so a build with any one of the three
         // passes missing has nothing to composite. Treating that as "GI off" keeps the composite's
         // weight at 0 - the alternative is a full-resolution frame of whatever the last image happens
         // to contain.
         return this->ssgi_on && this->ssgi_pipeline.has_value() && this->ssgi_temporal_pipeline.has_value() &&
-               this->ssgi_spatial_pipeline.has_value() && this->deferred_lit_active();
+               this->ssgi_spatial_pipeline.has_value() && this->deferred_lit_active() && !this->unlit_active;
     }
 
     std::expected<void, std::string> runtime::make_ssgi_pipeline(std::span<unsigned char const> const compute_shader_code) {

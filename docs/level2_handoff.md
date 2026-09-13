@@ -52,6 +52,32 @@ measurable). L2.3's first slice is done too - the glossy reflection works and is
 and what remains of it is the subtraction-site/denoiser work that its own measurement pointed at. See the
 L2.3 paragraph in section 4.
 
+WHAT A STOCK CONFIG RENDERS NOW (the default flip; `app_config` 0.26.0, `vulkan.runtime` 0.52.0):
+`ssgi = true`, `ssgi_ray_tracing = true`, `ssgi_hit_shading = true`, `ssgi_intensity = 1.0`. Those are ONE
+decision and not four knobs that happened to move together: the traced path is what lets a shaded hit be
+reached at all (a marched ray never leaves the frame), and it is also what turns the chain from an ADDITION
+to the probe into a REPLACEMENT of the lighting stage's ambient - so the intensity had to move with it (1.0
+means "use the traced estimate"; at 0.7 the ambient the spatial filter subtracts would be 30% larger than
+the estimate replacing it, i.e. a systematic darkening of every frame). The MARCHED chain keeps 0.7 as its
+own reconciling value, and `ssgi_radius` stays at 0.12 because it is the marched fallback's step size
+(radius / `ssgi_steps`) that pins it - a reach that suits the traced path would make the fallback step over
+the detail between two samples. `ssgi_probes` and `ssgi_specular` remain OFF deliberately: the cache is a
+coarse SH-2 approximation whose contribution is measured but whose default-on case is not, and the glossy
+lobe is a feature still being measured (both stay reachable and both are covered by a scenario).
+THE COST IS MEASURED, not estimated: on Sponza at 1080x960 the shipped default takes the frame from 1.00 ms
+to 1.81 ms of GPU time (+0.81 ms, +81%), of which the chain's own interval is 0.86 ms and the lighting stage
+gives 0.16 ms back (with `gi_replaces_ambient` set it no longer adds an ambient the spatial filter is about
+to remove). The per-interval table and the arm identities are in `docs/gi_hit_shading.md`'s L2.4 section.
+FLIPPING A DEFAULT CHANGES EVERY FRAME, so the gate grew a `default_gi` scenario (the compiled defaults with
+nothing overridden - until it existed, every scenario either pinned GI off or spelled out the traced keys, so
+nothing rendered the configuration a user actually gets) and every non-GI scenario now pins `ssgi = false` so
+its reference stays exactly what it was. The one exception is deliberate: `unlit` gets NO pin, because the
+flip exposed that the chain could run on that render mode at all - the flat mode's shading stage outputs the
+stored albedo, so the image the tracer would average is not radiance and the GI it added was a product of two
+albedos rather than a transport term. `runtime::ssgi_active()` now excludes it, and that scenario's unchanged
+reference is the proof. The cost table, the two defects and the verification are in
+`docs/gi_hit_shading.md`'s L2.4 section.
+
 NOT doing: a surface cache. The reasoning is measured and recorded: UE needs one because it traces 1024 rays
 per probe over 16384 probes; this renderer traces 131k rays in total and shades each hit in 0.15 ms, so
 "shade the hit" IS its cache. Revisit only if the ray count rises by an order of magnitude.
@@ -252,16 +278,28 @@ Gates before any commit:
 
 * Release, Debug and ASan+UBSan builds clean (`-Werror` is on everywhere);
 * `ctest` in the release build: 6/6;
-* the capture harness `scripts/windows/check_render.ps1`: 11 scenarios, each run twice, 0 changed - or the
-  change recorded deliberately with its reason and the baseline re-recorded. Until the L2.1 step every
-  scenario ran with `ssgi = false`, so the whole GI path (the screen-space chain, its denoisers, the probe
-  cache, everything ray-traced) had no coverage and a break in it would have passed this gate; `sponza_gi`
-  exists for that, and a new subsystem should get its own scenario rather than a note (`metal_rough_glossy`
-  is the L2.3 one, and it exists because `sponza_gi` does not even enable hit shading, so the glossy lobe
-  would otherwise be exercised only in its OFF state - which is byte-identical by construction and therefore
-  covered by nothing; `sponza_march` is the one after it, for the same reason one level down: `sponza_gi`
-  sets `ssgi_ray_tracing = true`, so the MARCHED chain and its "addition, not replacement" semantics were
-  exercised by nothing at all). A new scenario's reference is seeded once per machine with `-Update`;
+* the capture harness `scripts/windows/check_render.ps1`: 12 scenarios, each run twice, 0 changed - or the
+  change recorded deliberately with its reason and the baseline re-recorded. A new subsystem gets its own
+  scenario rather than a note: `sponza_gi` exists because until L2.1 every scenario ran with `ssgi = false`,
+  so the whole GI chain (its denoisers, the probe cache, everything ray-traced) had no coverage and a break
+  in it would have passed this gate; `metal_rough_glossy` is the L2.3 one (Sponza is roughened stone
+  everywhere, so the lobe is only visible on the material sweep - and `sponza_gi` does not even enable hit
+  shading, so the lobe would otherwise have been exercised only in its OFF state, which is byte-identical by
+  construction and therefore covered by nothing); `sponza_march` covers the MARCHED chain and its "addition,
+  not replacement" semantics, which the traced scenarios cannot; and `default_gi` is the L2.4 one - the
+  compiled defaults with nothing overridden - which exists because every scenario either pinned GI off or
+  spelled out the traced keys, so NOTHING rendered the configuration a user actually gets, and a default that
+  had become unreachable or had silently drifted would have passed. Its A/B twin is `deferred`: same model,
+  same camera, same frame count, one key apart.
+  WHEN A DEFAULT MOVES, every scenario that is not about it PINS THE OLD VALUE (`ssgi = "false"` on the
+  non-GI scenarios since the L2.4 flip), because a reference frame is a claim about the path the scenario
+  names - letting an unrelated default change into it invalidates eleven references at once for a reason none
+  of them is about. A scenario's `extra` should also not restate a compiled default: a key equal to the
+  default is a claim of a difference that does not exist, and it hides the day the default moves. The
+  deliberate exception is `unlit`, left UNPINNED so that its UNCHANGED reference is what proves the L2.4
+  render-mode gate (`runtime::ssgi_active()` excludes the flat mode, whose shading stage outputs albedo
+  rather than radiance). A new scenario's reference is seeded once per machine with `-Update`, and with
+  `-Only <name>` so the blanket `-Update` cannot silently re-seed every other reference;
 * `doxygen Doxyfile`: exit 0 and an EMPTY warning stream. Capture the real exit code; piping doxygen into
   anything makes `$LASTEXITCODE` the pipeline's, and this was mistaken for a pass once;
 * every measurement run validation clean (the harness greps for `VUID-`, `Validation Error`, `[ERROR]`,
@@ -280,6 +318,15 @@ Habits that caught real errors here:
   to re-derive every recorded table with it;
 * keep every feature behind an A/B toggle so its effect is measurable, and report NEGATIVE results - several
   slices in this session ended "the measurement disproved the hypothesis", and those are the valuable ones;
+* A FIXTURE THAT CLAIMS TO BE A COPY OF A TOOL'S OUTPUT HAS TO BE DIFFED AGAINST THE TOOL, because a test that
+  reads the fixture cannot see the tool at all. `tests/fixtures/config_generated_defaults.toml` says it is
+  verbatim `scripts/make_config.py` output with every question answered by its default, and the test that
+  reads it is the guard that the generator and the parser still agree - but when it was finally diffed
+  against the generator (while the L2.4 defaults moved; `python scripts/make_config.py <tmpdir>` with blank
+  answers, then compare) FOUR values had drifted: `max_fps` 240 against the generator's 0, `taa` and `fxaa`
+  true against its false, and `camera_fit` missing from the fixture entirely - so the guard had a hole for
+  the one key, and its two boolean checks could not have failed. Regenerating it is one command; doing that
+  belongs in the checklist for any change to the generator, and the fixture's own header now says so;
 * never commit what has not been verified: REVERT it and record why. Two rounds of this session ended in
   reverts, and that was the right call both times;
 * when a change is supposed to be invisible, say so and check it (all ten scenarios, 0 changed) - and when a

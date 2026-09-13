@@ -2,7 +2,7 @@
 # renames the screenshot to <Tag>.png, and reports the mean channels plus whether the run was
 # validation clean.
 #
-# WHY IT EXISTS. `check_render.ps1` answers "did this change any of the nine reference frames", which is
+# WHY IT EXISTS. `check_render.ps1` answers "did this change any of the reference frames", which is
 # the gate. It cannot answer "what does this KNOB do", because every measurement here is an A/B on one
 # setting of one frame of one scene, taken dozens of times with different values. This is that
 # instrument: one base config, a list of [render] overrides, and a named capture the python tools in
@@ -148,8 +148,18 @@ if (Test-Path $log) {
     if ($scene) { Write-Host "  scene radius $($scene[0].Matches[0].Groups[1].Value)" }
     $modelLine = Select-String -Path $log -Pattern "^rendering '(.+)' with"
     if ($modelLine) { Write-Host "  model: $($modelLine[0].Matches[0].Groups[1].Value)" }
-    $cam = Select-String -Path $log -Pattern "initial camera: (.+)"
-    if ($cam) { Write-Host "  camera: $($cam[0].Matches[0].Groups[1].Value)" }
+    # The CAPTURE pose, not the "initial camera" one: the app prints both, and on a run that passes
+    # --capture-camera they are DIFFERENT poses (the initial line is `camera_fit`'s unresolved framing -
+    # on Sponza an exterior fit at distance 51 against the interior pose at 6.41). Printing the wrong one
+    # is how a measurement's premise gets quoted wrong, which is exactly what happened the first time the
+    # L2.4 cost arms were read. The fallback is for a run that leaves the pose to the scene.
+    $cam = Select-String -Path $log -Pattern "capture camera: (.+)"
+    if ($cam) {
+        Write-Host "  camera: $($cam[0].Matches[0].Groups[1].Value)"
+    } else {
+        $cam = Select-String -Path $log -Pattern "initial camera: (.+)"
+        if ($cam) { Write-Host "  camera (scene-framed, no --capture-camera): $($cam[0].Matches[0].Groups[1].Value)" }
+    }
 }
 if ($bad) {
     Write-Host "  VALIDATION/LOG PROBLEMS:" -ForegroundColor Red
