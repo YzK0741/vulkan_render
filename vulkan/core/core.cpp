@@ -704,6 +704,41 @@ namespace vulkan {
             gi_spatial_image_views[i] = create_image_view(gi_spatial_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
         }
 
+        // The glossy lobe's own two outputs: same extent, same format and the same usage pair as the trace
+        // target above (a compute pass writes each as a storage image, the resolve samples each back, and
+        // nothing copies out of either). They exist so that a reflection can be accumulated with a
+        // reprojection of its own instead of the diffuse signal's - see core.cppm's note beside these
+        // members and docs/gi_hit_shading.md's L2.3 motion section.
+        gi_spec_images.resize(swap_chain_image_views.size());
+        gi_spec_image_memories.resize(swap_chain_image_views.size());
+        gi_spec_image_views.resize(swap_chain_image_views.size());
+        gi_spec_reproject_images.resize(swap_chain_image_views.size());
+        gi_spec_reproject_image_memories.resize(swap_chain_image_views.size());
+        gi_spec_reproject_image_views.resize(swap_chain_image_views.size());
+        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_spec_images[i],
+                gi_spec_image_memories[i]);
+            gi_spec_image_views[i] = create_image_view(gi_spec_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_spec_reproject_images[i],
+                gi_spec_reproject_image_memories[i]);
+            gi_spec_reproject_image_views[i] = create_image_view(gi_spec_reproject_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+        }
+
         // The world-space probe cache: EIGHT 3D images - four SH-2 coefficients per channel times the two
         // sides of the ping-pong - one set of copies for the whole device rather than one per swapchain
         // image (the grid is anchored to the world, so view independence is the point of it - see the
@@ -917,6 +952,8 @@ namespace vulkan {
             destroy_images(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
             destroy_images(gi_history_images, gi_history_image_memories, gi_history_image_views);
             destroy_images(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
+            destroy_images(gi_spec_images, gi_spec_image_memories, gi_spec_image_views);
+            destroy_images(gi_spec_reproject_images, gi_spec_reproject_image_memories, gi_spec_reproject_image_views);
             destroy_images(gi_probe_images, gi_probe_image_memories, gi_probe_image_views);
             destroy_images(gi_probe_surface_images, gi_probe_surface_image_memories, gi_probe_surface_image_views);
             destroy_images(furnace_cube_images, furnace_cube_memories, furnace_cube_views);
@@ -1638,6 +1675,8 @@ namespace vulkan {
         destroy_target_set(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
         destroy_target_set(gi_history_images, gi_history_image_memories, gi_history_image_views);
         destroy_target_set(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
+        destroy_target_set(gi_spec_images, gi_spec_image_memories, gi_spec_image_views);
+        destroy_target_set(gi_spec_reproject_images, gi_spec_reproject_image_memories, gi_spec_reproject_image_views);
         destroy_target_set(gi_probe_images, gi_probe_image_memories, gi_probe_image_views);
         destroy_target_set(gi_probe_surface_images, gi_probe_surface_image_memories, gi_probe_surface_image_views);
         destroy_target_set(furnace_cube_images, furnace_cube_memories, furnace_cube_views);

@@ -90,10 +90,19 @@ layout(local_size_x = 8, local_size_y = 8) in;
 ///        main), so it is also the threshold that makes a "nothing reachable" configuration expressible.
 const float RAY_TMIN = 0.01;
 
+// The camera block, declared in FULL - the same five members and the same order as
+// shaders/shading.glsl's, even though this pass reads only two of them. A prefix would work (std140
+// offsets do not care that a member is never read), but the two declarations cannot drift apart if they
+// are the same declaration, and the last member is the one this pass now needs: `prev_view_proj` is the
+// JITTER-FREE previous frame's view-projection, which is what turns a world point the reflection landed on
+// into where that point was on screen last frame (see the reprojection store at the end of main, and
+// shaders/gbuffer.frag's motion_vector, which uses the same pair for the same reason).
 layout(set = 0, binding = 0) uniform CameraUBO {
     mat4 view;
     mat4 proj;
-    vec4 camera_pos;
+    vec3 camera_pos;
+    mat4 view_proj_unjittered;
+    mat4 prev_view_proj;
 } camera;
 layout(set = 0, binding = 3) uniform samplerCube irradiance_sampler;
 layout(set = 0, binding = 16) uniform accelerationStructureEXT tlas;
@@ -107,6 +116,15 @@ layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal;   // RGBA16F: wor
 layout(set = 1, binding = 2) uniform sampler2D gbuffer_material; // RGBA8: .b = the material's baked AO
 layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;    // the pass's own 1x depth
 layout(set = 1, binding = 6, rgba16f) uniform image2D gi_trace;  // the raw trace: read, added to, written back
+// The lobe's own two outputs (bindings 13 and 14). The first is the SAME correction this pass adds to the
+// trace above, written a second time into an image of its own, and the second is the reprojection the
+// reflection needs when it is accumulated: where the surface the ray FOUND was on screen last frame
+// (`reproject.xy`, a full-resolution UV like the motion vectors), that point's view depth (`z`, negative
+// when the ray found nothing) and whether it is valid (`w`). See the L2.3 motion section of
+// docs/gi_hit_shading.md: the reflecting surface's own motion says nothing about where a reflection goes,
+// because the surface is usually static while the image slides across it.
+layout(set = 1, binding = 13, rgba16f) uniform image2D gi_spec_trace;
+layout(set = 1, binding = 14, rgba16f) uniform image2D gi_spec_reproject;
 
 #include "hit_shading.glsl"
 
@@ -233,6 +251,13 @@ void main() {
     const bool reachable = pc.params.x > RAY_TMIN;
     uint state = hash_u32(uint(pixel.x) + uint(pixel.y) * 4096u + uint(pc.params.w) * 2654435761u);
     vec3 radiance_sum = vec3(0.0);
+    // What the reflection will be REPROJECTED with (see the store at the end): the world point the first
+    // shaded hit landed on and its view depth, or a negative depth when no ray found anything shaded. With
+    // one ray - the default, and the feature's own definition - this is that ray's landing point; with
+    // several, it is the first sample that landed on geometry, which is an approximation and is why the
+    // knob's default is one.
+    vec3 reproject_world = vec3(0.0);
+    float reproject_depth = -1.0;
     for (int r = 0; r < rays; ++r) {
         if (!reachable) {
             radiance_sum += ibl_specular;
@@ -270,6 +295,14 @@ void main() {
         vec3 shaded = vec3(0.0);
         if (shade_hit(query, hit_world, dir, -dir, table, pc.params.z, shaded)) {
             radiance_sum += shaded;
+            if (reproject_depth < 0.0) {
+                reproject_world = hit_world;
+                // The view-space distance of the point the reflection found. Note WHICH depth this is: not
+                // the reflecting surface's (the resolve has that one from the G-buffer) but the depth of
+                // the thing being reflected, which is what the history's own depth guard has to compare
+                // against - a moving camera changes the two differently.
+                reproject_depth = -(camera.view * vec4(hit_world, 1.0)).z;
+            }
         } else {
             radiance_sum += ibl_specular;
         }
@@ -284,5 +317,19 @@ void main() {
     // a pure radiance: it is a radiance plus a bookkeeping term, which is what the multi-bounce feedback
     // re-emits at a hit (see the file header and docs/gi_hit_shading.md's L2.3 section for the A/B).
     const vec3 traced = ((radiance_sum / float(rays)) * fresnel) * ao;
-    imageStore(gi_trace, pixel, imageLoad(gi_trace, pixel) + vec4(traced - already_added, 0.0));
+    const vec3 correction = traced - already_added;
+    imageStore(gi_trace, pixel, imageLoad(gi_trace, pixel) + vec4(correction, 0.0));
+    // ... and the SAME correction into the lobe's own image, plus the reprojection it will be accumulated
+    // with. NEITHER IS READ YET: this step publishes what a reflection needs in order to be accumulated the
+    // way a reflection has to be, and the resolve that consumes them is the next one (see the L2.3 motion
+    // section of docs/gi_hit_shading.md). Doing it here is what makes that step a change to the RESOLVE
+    // rather than to this pass, and it is inert by construction - a store into an image no pass samples
+    // cannot move a frame, which is the property the capture gate checks.
+    imageStore(gi_spec_trace, pixel, vec4(correction, 0.0));
+    vec2 previous_uv = vec2(0.0);
+    if (reproject_depth >= 0.0) {
+        const vec4 previous_clip = camera.prev_view_proj * vec4(reproject_world, 1.0);
+        previous_uv = (previous_clip.xy / previous_clip.w) * 0.5 + 0.5;
+    }
+    imageStore(gi_spec_reproject, pixel, vec4(previous_uv, reproject_depth, reproject_depth >= 0.0 ? 1.0 : 0.0));
 }

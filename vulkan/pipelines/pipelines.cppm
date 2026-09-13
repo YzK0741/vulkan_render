@@ -1,4 +1,4 @@
-// module version: 0.13.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.14.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
@@ -212,10 +212,16 @@ namespace vulkan::pipelines {
         // They live here rather than in the probe pass's own set because the pass that READS them is the
         // tracer, which binds this set - and the probe pass's own set binds the other half of the
         // ping-pong. Four bindings rather than one because a cell holds four coefficients per channel.
-        std::array<VkDescriptorSetLayoutBinding, 13> bindings = {};
+        //
+        // 13 and 14 are the GLOSSY lobe's own two outputs (shaders/ssgi_spec.comp): the correction it
+        // traced this frame, and the reprojection of the surface that reflection found. Both are STORAGE
+        // images - the lobe writes them, no descriptor of this set ever samples them - and they exist
+        // because a reflection cannot be accumulated with the diffuse signal's reprojection (see the L2.3
+        // motion section of docs/gi_hit_shading.md).
+        std::array<VkDescriptorSetLayoutBinding, 15> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
-            bindings[b].descriptorType = (b == 6u || b == 8u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[b].descriptorType = (b == 6u || b == 8u || b >= 13u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             bindings[b].descriptorCount = 1;
             // EVERY binding lists COMPUTE as well as FRAGMENT. The layout is shared by four consumers
             // and only the shaders know which binding each of them uses: the lighting stage and the

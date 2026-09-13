@@ -331,6 +331,23 @@ namespace vulkan {
         std::vector<VkImage> gi_spatial_images = {};
         std::vector<VkDeviceMemory> gi_spatial_image_memories = {};
         std::vector<VkImageView> gi_spatial_image_views = {};
+        // ... and the GLOSSY pass's own two outputs, which exist so that a reflection can be accumulated
+        // the way a reflection has to be rather than the way a diffuse bounce is (see the L2.3 motion
+        // section of docs/gi_hit_shading.md). `gi_spec_images` is the lobe's correction for this frame -
+        // a radiance plus a bookkeeping term, exactly like the diffuse trace - and
+        // `gi_spec_reproject_images` carries, per pixel, where the surface the reflection FOUND was on
+        // screen last frame plus that point's view depth. That is the reprojection a reflection needs: the
+        // reflecting surface's own motion describes nothing about it (it is usually static while the
+        // reflection slides across it), while the point the ray landed on moves across the screen with the
+        // camera at its own parallax. STORAGE for both (a compute pass writes them), SAMPLED for both (the
+        // resolve reads them back); half resolution like the rest of the chain, and never sampled by the
+        // composite.
+        std::vector<VkImage> gi_spec_images = {};
+        std::vector<VkDeviceMemory> gi_spec_image_memories = {};
+        std::vector<VkImageView> gi_spec_image_views = {};
+        std::vector<VkImage> gi_spec_reproject_images = {};
+        std::vector<VkDeviceMemory> gi_spec_reproject_image_memories = {};
+        std::vector<VkImageView> gi_spec_reproject_image_views = {};
 
         // ---- the world-space radiance probe cache (see shaders/gi_probe.comp) ----
         // EIGHT 3D images of gi_probe_grid_extent^3 RGBA16F cells: four SH-2 coefficients per channel times

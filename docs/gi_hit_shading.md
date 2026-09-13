@@ -1340,6 +1340,46 @@ surface-motion reprojection, which this cap can only SHORTEN rather than correct
 signal on smooth pixels as well. The reference's order is mechanisms 1+2 together, then 3 (a clamp from the
 history's own variance), and 4 (a specular dominant direction) only if a measurement asks for it.
 
+### L2.3, the reflection's own reprojection: published by the lobe, not yet consumed
+
+THE NEXT STEP'S FIRST HALF IS INERT BY CONSTRUCTION. Mechanism 1 needs a reflection to be reprojected from the
+point it actually found rather than from the surface it is painted on, and the pass that can compute that is the
+lobe: it is the only place that knows that point. So `shaders/ssgi_spec.comp` now writes TWO extra outputs, each
+into an image of its own (core's `gi_spec_images` and `gi_spec_reproject_images`, G-buffer set bindings 13 and 14,
+half resolution, STORAGE plus SAMPLED):
+
+* the correction it already adds to the shared trace, written a second time - so the step that consumes it does
+  not have to touch this pass's arithmetic at all;
+* the reprojection: `reproject.xy` is where that world point was on screen LAST frame, from
+  `camera.prev_view_proj` (the jitter-free pair the motion vectors already use - and the reason this file now
+  declares the camera block in FULL instead of as the three-member prefix it used to, since a prefix is only safe
+  while it matches `shading.glsl`'s declaration order), `z` is that point's view depth, and `w` says whether any
+  ray found anything shaded. With the lobe's default single ray it is that ray's landing point; with several it is
+  the first sample that landed on geometry, which is an approximation and is stated here because the knob allows
+  it.
+
+WHY THIS IS A COMMIT RATHER THAN A HALF-FINISHED STEP: nothing samples either image yet, so no frame can move -
+and that is what the gate checks (12 scenarios x 2, 0 changed, 0 flaky, validation clean; `metal_rough_glossy` is
+the one scenario that exercises the new stores at all, and it came out at its reference hash). Landing it
+separately is worth a commit because the plumbing is where this project's traps live and they are now paid for:
+two new per-swapchain-image families created with the trace's own usage pair and destroyed in BOTH teardown paths,
+their descriptors (the G-buffer set grew from 13 bindings to 15, so its pool count and its write loop had to move
+with the layout - being out of step is what the validation layer reported once before), and their FIRST-USE
+transition, `UNDEFINED -> GENERAL` once per target generation behind a new `runtime::gi_spec_seen` flag that is
+reset wherever the targets are regenerated. A new image is not in a legal layout because its neighbours are; that
+one has been paid for twice in this project's history.
+
+WHAT THE NEXT STEP IS, precisely, now that it is a small delta: run the temporal resolve a SECOND time, which is
+mechanisms 1 and 2 together - the reference's own order. It needs a `gi_spec_resolve_images` and a
+`gi_spec_history_images` family, one more binding in the temporal set for the reprojection image, and a mode in
+the resolve's shader: there `previous_uv` comes from `reproject.xy` rather than `uv - velocity`, the disocclusion
+test compares the history's stored HIT depth against `reproject.z` rather than comparing surface depths, the
+output's alpha carries that hit depth forward, and the roughness cap MOVES here from the shared resolve. That
+last part is the second half of the prize: the cap currently also moves the LOBE-OFF arms (0.6131 -> 0.5742 in
+the table above), which is the DIFFUSE signal being shortened on smooth pixels, and with the cap on the
+reflection alone those arms should return to their uncapped values. `ssgi_spatial.comp` then samples both
+accumulations and sums them, and the composite does not change at all.
+
 ### L2.3, the glossy lobe's reach: a shared knob that was pinned by the other path
 
 The lobe's rays used the DIFFUSE bounce's `ssgi_radius`, and the two are different questions. A diffuse

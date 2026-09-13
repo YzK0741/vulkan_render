@@ -5,6 +5,16 @@ Usage: python diff.py <a.png> <b.png>
 Prints the mean signed difference (a - b) per channel, how many pixels differ at all
 and by more than 1, and a 4x4 tile table of the mean difference - the instrument that
 shows whether a frame-level difference is a global bias or is ordered by the scene.
+
+READ THE COUNTS AS GREEN-ONLY, because that is what they are: "differing", "|d|>1",
+"|d|>4" and `max |d|` all test the GREEN channel's difference alone, so a pixel that
+changed only in red or blue is invisible to those four numbers while the per-channel
+means still move. Measured, on a real capture pair: this reported "0 pixels differing"
+for a frame whose decoded arrays differ in one BLUE texel by one step. The means can be
+trusted; the counts cannot be read as "no pixel changed", and every count this project
+recorded before that was noticed inherits the caveat. Not changed here on purpose -
+making the counter all-channel would silently invalidate those recorded numbers against
+their own record (see docs/gi_hit_shading.md's L2.3 motion section, where it bit).
 """
 import sys
 from PIL import Image

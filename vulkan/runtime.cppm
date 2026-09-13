@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.53.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.54.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -600,6 +600,10 @@ namespace vulkan {
         // Whether this target generation's grid images have been transitioned out of UNDEFINED yet
         // (they are created with the swapchain and destroyed with it - see core::create_render_targets).
         bool gi_probe_grid_seen = false;
+        // The glossy lobe's own two output images (core.cppm's gi_spec_*), which need the same per-target
+        // first-use layout transition the GI trace does. One flag rather than a per-image vector: the pair
+        // is always written together, by the same pass, in the same frame.
+        bool gi_spec_seen = false;
         // The global lighting the cache currently holds light for. A material change in it invalidates the
         // whole grid: the cache is a slow EMA, so after the sun moves it holds light for a sun that is no
         // longer there and would take ~1/rate frames to fade instead of starting over. The reference
