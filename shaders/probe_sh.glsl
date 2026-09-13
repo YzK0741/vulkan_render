@@ -58,4 +58,26 @@ vec3 probe_sh_reconstruct(vec4 c0, vec4 c1, vec4 c2, vec4 c3, vec3 dir) {
     return max(c0.rgb * basis.x + c1.rgb * basis.y + c2.rgb * basis.z + c3.rgb * basis.w, vec3(0.0));
 }
 
+/**
+ * @brief the cache's own answer for a cell: reconstruct it, and carry the cell's trust out with it
+ * @param sh0 / @p sh1 / @p sh2 / @p sh3 the four coefficient images, in the basis's own order
+ * @param uvw the cell's texture coordinate (the caller owns world -> grid -> normalized)
+ * @param dir the world-space direction the radiance arrives FROM
+ * @return the reconstructed radiance and, in .a, the cell's trust (the DC coefficient's alpha)
+ *
+ * THE SAMPLERS ARE PARAMETERS rather than bindings, and that is what lets more than one pass use this: the
+ * tracer reads the cache through the G-buffer set's coefficient images while the probe pass reads the other
+ * half of its own ping-pong, so the two cannot share a binding number - but they must share the
+ * RECONSTRUCTION, or a cell written by one would be read differently by the other. It is also the entry
+ * point the hit-shading include uses, so a surface a ray landed on and the ray's own fallback reconstruct
+ * the same field from the same coefficients.
+ */
+vec4 probe_sh_sample(sampler3D sh0, sampler3D sh1, sampler3D sh2, sampler3D sh3, vec3 uvw, vec3 dir) {
+    const vec4 c0 = texture(sh0, uvw);
+    const vec4 c1 = texture(sh1, uvw);
+    const vec4 c2 = texture(sh2, uvw);
+    const vec4 c3 = texture(sh3, uvw);
+    return vec4(probe_sh_reconstruct(c0, c1, c2, c3, dir), c0.a);
+}
+
 #endif // VULKAN_RENDER_PROBE_SH_GLSL

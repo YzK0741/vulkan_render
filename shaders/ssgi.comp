@@ -288,11 +288,9 @@ vec3 bounce_radiance(vec2 uv) {
  * the basis is world-aligned.
  */
 vec4 probe_cache(vec3 uvw, vec3 dir) {
-    const vec4 c0 = texture(gi_probe_sh0, uvw);
-    const vec4 c1 = texture(gi_probe_sh1, uvw);
-    const vec4 c2 = texture(gi_probe_sh2, uvw);
-    const vec4 c3 = texture(gi_probe_sh3, uvw);
-    return vec4(probe_sh_reconstruct(c0, c1, c2, c3, dir), c0.a);
+    // The reconstruction itself is probe_sh.glsl's, shared with the hit-shading include (see
+    // probe_sh_sample) - this is only the tracer's own way of naming its four coefficient images.
+    return probe_sh_sample(gi_probe_sh0, gi_probe_sh1, gi_probe_sh2, gi_probe_sh3, uvw, dir);
 }
 
 /**
