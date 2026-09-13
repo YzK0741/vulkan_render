@@ -514,3 +514,35 @@ The conclusion of E is therefore: the shaded model is independently corroborated
 implementation can reach it (visible surfaces, 0.36%), and the disagreement between the two models lives
 entirely in the hits the screen cannot evaluate - a region where this engine contains no second opinion and
 where a self-built one would be no opinion at all.
+
+## Level 1: final state
+
+    A  probe-cache leakage      DONE   per-cell surface offsets, six-neighbour gather gated by a
+                                      bidirectional segment-versus-surface test, failed pairs dropped
+                                      (no renormalisation), centre weight 1, trust decay removed.
+                                      Measured: the unoccluded spread is gone.
+    B  view independence        DONE   the cells trace their own rays (uniform over the sphere - a cell in
+                                      empty space has no normal), hits shaded through the shared entry
+                                      point, misses answered by the sky; the cache REPLACES the far-field
+                                      probe where it is trusted. gi_probe.comp declares no camera at all,
+                                      so view independence is compiler-enforced rather than claimed.
+                                      Measured: the effect is spatially structured (-0.14% to -6.78%
+                                      across a 4x4 tile table, ordered by the scene) and costs 0.15 ms
+                                      for 131k traced-and-shaded rays.
+    C  lighting-change reset    DONE   the grid is CLEARED when the sun's direction changes by more than
+                                      about 25 degrees. The mechanism is verified by executing it
+                                      (forced trigger: 180 clears, validation clean, which is what proved
+                                      the images need TRANSFER_DST); its EFFECT cannot be observed in a
+                                      static scene, and that is stated rather than glossed.
+    E  independent reference    LIMIT  the possible independent check was made and passed - the engine's
+                                      own lighting stage corroborates the shaded model at visible surfaces
+                                      to 0.36%. Arbitrating the two models where the screen cannot reach
+                                      would need a SECOND independent implementation of a hit's radiance:
+                                      a second renderer, not a pass. A reference built from the shading
+                                      under test would be circular, and the marched one shares the screen
+                                      model's blindness. See the two notes above for the measurements.
+
+The instrument lesson is worth carrying beyond this work: the tertile table built in step 0 was the right
+instrument for "is a small correction added on top of the chain shaped like the light or like the
+ambient" and the wrong one for "is a replacement correct", where a spatial table is what shows the
+structure. Two slices were recorded as failures against an instrument that could not have shown a success.
