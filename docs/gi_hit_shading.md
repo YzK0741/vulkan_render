@@ -999,17 +999,20 @@ replaced the two copies of the same expressions that already existed in `shading
 THE CONTROL, and it is the sharpest instrument this step has. Where a glossy ray finds no geometry, the
 correction the pass writes is `(ibl_specular * F) * ao - (ibl_specular * F) * ao` - the same expression twice,
 in the same association order - so it is EXACTLY zero, and adding an exact zero to a texel is exact. On the
-DamagedHelmet (an isolated model, so its reflections have somewhere to go without touching it) with
-`ssgi_radius = 0.0006`, i.e. a ray length of 0.011 world units:
+DamagedHelmet (an isolated model, so its reflections have somewhere to go without touching it), with BOTH
+reaches pinned so that nothing is reachable - `ssgi_radius = 0.0006` for the diffuse chain and
+`ssgi_specular_radius = 0.002` for the lobe, whose own reach has to be pinned separately since it got a knob
+of its own:
 
     lobe on vs lobe off      pixels differing 0 (0.00%)   max |d| 0   SHA256 IDENTICAL
 
-with the joint-bilateral filter in the loop (sigma 2) AND with it bypassed (sigma 0). The frame is not merely
-close to the feature being off, it IS the feature being off - a bit-exact invariant rather than a tolerance.
-The FIRST version of this step subtracted the term in the spatial filter instead of at the texel, and the same
-control read mean +0.0255 with 4.4% of pixels off by more than 4/255 and a worst pixel of 103, because a
-centre-pixel value was being removed from a FILTERED one. Both designs were built and measured against this
-instrument; the second won on every axis (see "the two candidate fixes" below).
+with the joint-bilateral filter in the loop (sigma 2) AND with it bypassed (sigma 0), and - since the SSAO fix
+in the section below - with SSAO ON as well, which it was not when this was first taken. The frame is not
+merely close to the feature being off, it IS the feature being off: a bit-exact invariant rather than a
+tolerance. The FIRST version of this step subtracted the term in the spatial filter instead of at the texel,
+and the same control read mean +0.0255 with 4.4% of pixels off by more than 4/255 and a worst pixel of 103,
+because a centre-pixel value was being removed from a FILTERED one. Both designs were built and measured
+against this instrument; the second won on every axis (see "the two candidate fixes" below).
 
 The same test on Sponza does NOT collapse, and that is the scene rather than the code: Sponza has surfaces
 within 0.011 units of each other (coplanar panels, double-sided walls), so its reflection rays find geometry
@@ -1151,6 +1154,61 @@ instead of +0.0255, cheaper (the spatial filter lost two bindings, a matrix lane
 theoretical cost turned out to be measurably inert because the lobe requires hit shading. (a) remains the
 answer for the DIFFUSE term if that artifact is ever worth 25 gathers a pixel.
 
+### L2.3, SSAO's leftovers on a traced frame, and a ray query that should never have been issued
+
+TWO DEFECTS FOUND BY ONE INSTRUMENT, and the instrument is the second one. On a traced frame, SSAO is
+supposed to do NOTHING: the rays are the occlusion, the lighting stage's ambient is subtracted and replaced
+by the traced estimate, and `shaders/ssgi_spatial.comp` says so in as many words. So the SSAO-on and SSAO-off
+frames of a traced configuration should agree - and they did not:
+
+    TRACED frame, SSAO on vs off      mean green -1.8990    37.55% of pixels differing   13.70% >4/255   max 71
+    MARCHED frame, same A/B           mean green -1.7141    40.83% differing             12.48% >4/255   max 75
+
+The traced frame was darkened by MORE than the marched one, where the marched chain's SSAO is legitimate
+(that chain ADDS to the ambient, so occluding it is the point). The mechanism is a bookkeeping mismatch: the
+lighting stage adds `albedo * ao * ssao * irradiance * (1 - metallic)` while the chain subtracts
+`albedo * ao * irradiance * (1 - metallic)`, so `ambient * (ssao - 1)` stayed in the frame on top of an
+indirect estimate the rays had already occluded - the ambient darkened twice, and the specular ambient with
+it (which is also why the glossy lobe's bit-exact identity had only ever been measured with `ssao = false`).
+
+THE FIX is one lane and one branch: `shaders/deferred.frag` takes a `gi_replaces_ambient` flag from the
+runtime (the same `ssgi_traced_active()` predicate the spatial filter's subtraction uses, so the two cannot
+disagree), and on a traced frame it sets `si.ao` to the material's baked AO alone - skipping
+`ssao_occlusion()` rather than multiplying by it, which is what makes the acceptance BIT-EXACT:
+
+    traced frame, SSAO on vs off      0 pixels differing, SAME SHA256 (was -1.8990)
+
+and the two controls that say the change is where it is supposed to be: the six GI-off scenarios, `sponza`
+and `sponza_march` all came out BYTE-IDENTICAL through it (the flag is 0 wherever the traced chain is not
+running, so SSAO still works on the marched path), while the two traced references moved - `sponza_gi` by
++1.9238 of mean green with 40.35% of pixels differing, which is the leftover measured above with the
+opposite sign, i.e. two independent measurements of the same term.
+
+WHAT IT COSTS, stated because it is a real trade rather than a pure win: with the traced chain running and the
+glossy lobe OFF, the specular ambient keeps no SSAO occlusion either (the lobe is what replaces that term, and
+when it is off the environment cube is the answer). The alternative was to keep occluding a term the chain
+cannot subtract back, which is the -1.90 above; the configuration is a traced frame without hit shading, and
+the loss is SSAO's effect on a ~4% specular term.
+
+THE SECOND DEFECT was found while testing the first. The identity test's "nothing is reachable" trick had been
+relying on an INVALID RAY QUERY: `ssgi_radius = 0.0006` gives a ray length of 0.00098 world units, below the
+query's own `tmin` of 0.01, and `rayQueryInitializeEXT` with `tmax <= tmin` is forbidden - it returned no hit
+because that is what an invalid query does, silently, which is exactly what the test wanted. It stopped
+working the moment the lobe got a reach of its own with a floor above `tmin`, and the honest fix is not to
+lower the floor back but to make the degenerate case EXPLICIT: `shaders/ssgi_spec.comp` now refuses to issue a
+query whose interval is empty (`RAY_TMIN` is a named constant, used both by the guard and by the initialize
+call) and answers with the environment, which is what "nothing is reachable" means. Verified inert where it
+should be - a reachable frame is byte-identical with and without the guard (`metal_rough_glossy`,
+`88F91905A0AA8532` both) - and with it the identity now holds with SSAO ON as well
+(`CB5EC7B232783B00` for lobe on and lobe off), so the acceptance no longer needs an `ssao = false` caveat.
+The reach clamp's floor is 0.001 scene radii to keep such a configuration expressible at all.
+
+STILL MISSING THE SAME GUARD: `shaders/ssgi.comp` issues its traced rays with the same fixed `tmin` and a
+`max_distance` the user's `ssgi_radius` sets, so a tiny radius there is the same invalid query - and it is the
+one every identity measurement of the traced DIFFUSE chain was taken with (that is why they came out clean).
+It is recorded as the open item it is rather than fixed here, because the marched path shares that block and
+the fix touches both.
+
 ### L2.3, the glossy lobe's reach: a shared knob that was pinned by the other path
 
 The lobe's rays used the DIFFUSE bounce's `ssgi_radius`, and the two are different questions. A diffuse
@@ -1179,10 +1237,12 @@ can reach stops traversing (which is why the curve is flat in COST as well as in
 lobe's own reach is cheap: +0.12 ms isolated, against the +0.94 ms the shared knob charged when it lengthened
 the diffuse rays too - so the coupling was not only a modelling compromise but an expensive one.
 
-`[render] ssgi_specular_radius` is therefore its own key, default 0.5 (the knee), clamped to [0.01, 8]. The
-gate came out 10 scenarios x2 with 0 changed and NO reference re-seeded, which is the check that the change
-is confined to configurations whose read radius was not already at the knee: the one scenario with the lobe
-on sets `ssgi_radius = 0.5`, and the one with the traced path but no hit shading records no lobe at all.
+`[render] ssgi_specular_radius` is therefore its own key, default 0.5 (the knee), clamped to [0.001, 8] - the
+floor low enough for a "nothing reachable" identity configuration, see the SSAO section above for why it is
+0.001 and not 0.01. The gate came out 10 scenarios x2 with 0 changed and NO reference re-seeded, which is the
+check that the change is confined to configurations whose read radius was not already at the knee: the one
+scenario with the lobe on sets `ssgi_radius = 0.5`, and the one with the traced path but no hit shading records
+no lobe at all.
 
 ### L2.3, the ray's origin: a bias that scaled with the wrong knob, measured and fixed
 

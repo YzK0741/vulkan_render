@@ -85,6 +85,11 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
+/// @brief the ray query's own tmin: how far along a ray an intersection is ignored, which is the engine's
+///        fixed self-intersection guard. A ray SHORTER than this has nothing to search (see the guard in
+///        main), so it is also the threshold that makes a "nothing reachable" configuration expressible.
+const float RAY_TMIN = 0.01;
+
 layout(set = 0, binding = 0) uniform CameraUBO {
     mat4 view;
     mat4 proj;
@@ -217,9 +222,22 @@ void main() {
     const vec3 fresnel = ibl_specular_fresnel(normal, v, roughness, f0, 1.0);
     const vec3 already_added = (ibl_specular * fresnel) * ao;
 
+    // A RAY LENGTH AT OR BELOW THE QUERY'S OWN tmin HAS NO INTERVAL TO SEARCH, so the query is not issued:
+    // `rayQueryInitializeEXT` with tmax <= tmin is forbidden by the specification, and "nothing is
+    // reachable" is what it means. This guard is what makes the identity test a DOCUMENTED configuration
+    // rather than an accident - every sample answers with the environment, the correction below is exactly
+    // zero, and the frame must be identical to the lobe being off (see docs/gi_hit_shading.md's L2.3
+    // section). It was an accident until this existed: a ray length below tmin was being ISSUED, and it
+    // returned no hit because that is what an invalid query does - which is also why the same trick worked
+    // in shaders/ssgi.comp, where the guard is still missing (recorded there as an open item).
+    const bool reachable = pc.params.x > RAY_TMIN;
     uint state = hash_u32(uint(pixel.x) + uint(pixel.y) * 4096u + uint(pc.params.w) * 2654435761u);
     vec3 radiance_sum = vec3(0.0);
     for (int r = 0; r < rays; ++r) {
+        if (!reachable) {
+            radiance_sum += ibl_specular;
+            continue;
+        }
         const vec3 h = importance_sample_ggx(vec2(next_uniform(state), next_uniform(state)), normal, roughness);
         const vec3 dir = reflect(-v, h);
         if (dot(dir, normal) <= 0.0) {
@@ -231,7 +249,7 @@ void main() {
         }
         const vec3 origin = world_pos + normal * pc.params.z;
         rayQueryEXT query;
-        rayQueryInitializeEXT(query, tlas, gl_RayFlagsOpaqueEXT, 0xFF, origin, 0.01, dir, pc.params.x);
+        rayQueryInitializeEXT(query, tlas, gl_RayFlagsOpaqueEXT, 0xFF, origin, RAY_TMIN, dir, pc.params.x);
         while (rayQueryProceedEXT(query)) {
         }
         if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {

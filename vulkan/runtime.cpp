@@ -2650,6 +2650,11 @@ namespace vulkan {
                               this->ssao_bias),
             // render mode: the flat "unlit" default pipeline becomes "write the stored albedo" here
             .unlit = this->unlit_active ? 1.0f : 0.0f,
+            // ... and whether the traced chain is replacing the ambient this frame, which the lighting stage
+            // needs so it does not scale a term that is about to be taken back out (see the field's comment).
+            // The SAME predicate the spatial filter's subtraction uses, so the two cannot disagree about
+            // whether the ambient the chain replaces is the occluded one or the plain one.
+            .gi_replaces_ambient = this->ssgi_traced_active() ? 1.0f : 0.0f,
         };
         vkCmdPushConstants(command_buffer, this->deferred_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
@@ -3553,9 +3558,12 @@ namespace vulkan {
         this->ssgi_specular_rays = std::clamp(rays, 1u, 8u);
         // A reach, not a quality knob: below it the reflection falls back to the sky, and past the knee the
         // curve is flat in BOTH effect and cost (measured: -0.907 / -2.126 / -2.350 at 0.12 / 0.5 / 2.0, and
-        // the `gi` interval 1.28 / 2.22 / 2.21 ms). The floor keeps it above the ray query's own tmin, which
-        // is a fixed 0.01 world units.
-        this->ssgi_specular_radius = std::clamp(radius, 0.01f, 8.0f);
+        // the `gi` interval 1.28 / 2.22 / 2.21 ms). The FLOOR is deliberately low enough to be useless: a
+        // reach whose ray length lands at or below the ray query's own tmin (a fixed 0.01 world units) makes
+        // every sample answer with the environment - the identity configuration the L2.3 acceptance is read
+        // in - and a floor above that would not be expressible on a small scene (0.01 scene radii of the
+        // helmet's 1.64 is 0.0164 units, i.e. just past tmin, which is why the floor is 0.001 and not 0.01).
+        this->ssgi_specular_radius = std::clamp(radius, 0.001f, 8.0f);
         if (enabled && !this->ssgi_hit_shading) {
             this->warn_missing_feature("ssgi", "glossy reflections have no effect: without hit shading a reflection ray cannot be shaded where it lands");
         } else if (enabled && !this->ssgi_ray_tracing) {

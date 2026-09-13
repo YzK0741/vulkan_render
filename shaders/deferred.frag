@@ -62,6 +62,16 @@ layout(push_constant) uniform DeferredPush {
     vec4 ssao;
     // 1.0 = "unlit" render mode: write the stored albedo, unshaded (see runtime::set_unlit)
     float unlit;
+    // 1.0 = the traced GI chain replaces BOTH ambient terms this frame, so SSAO must not scale them: the
+    // chain subtracts the ambient the lighting stage added, and it subtracts the UN-occluded form (it
+    // evaluates `albedo * ao * irradiance * (1 - metallic)` from the G-buffer, where the material's baked AO
+    // is all it can see - the SSAO term is computed here and never stored). Scaling them here therefore left
+    // an `ambient * (ssao - 1)` term in the frame rather than occluding anything the chain does not already
+    // answer with real rays: measured, applying it cost -1.90 of mean green on the reference scene with 37.6%
+    // of pixels differing, on a frame whose documented intent is that SSAO does nothing at all there (see
+    // shaders/ssgi_spatial.comp's ambient_removed_at). 0.0 on the marched path and with GI off, so nothing
+    // else in the frame moves.
+    float gi_replaces_ambient;
 } pc;
 
 /**
@@ -190,8 +200,12 @@ void main() {
     si.metallic = albedo_metallic.a;
     si.roughness = normal_roughness.w;
     // ambient occlusion: the material's baked AO map times the screen-space term (M6). With SSAO
-    // off ssao_occlusion() returns exactly 1.0, so this is the pre-M6 value bit for bit.
-    si.ao = material.b * ssao_occlusion(v_uv, depth, si.normal);
+    // off ssao_occlusion() returns exactly 1.0, so this is the pre-M6 value bit for bit - and with the
+    // traced chain running it is ALSO exactly 1.0, because that chain replaces both ambient terms and
+    // subtracts them un-occluded (see the push block's gi_replaces_ambient). Skipping the computation
+    // rather than multiplying by it is what makes an SSAO-on and an SSAO-off traced frame BIT-IDENTICAL,
+    // which is the acceptance for that: on a traced frame the rays are the occlusion.
+    si.ao = material.b * (pc.gi_replaces_ambient > 0.5 ? 1.0 : ssao_occlusion(v_uv, depth, si.normal));
     // emissive is NOT re-evaluated here: the G-buffer pass already added it into the HDR target,
     // because it needs the material's emissive texture and the UVs - neither of which the G-buffer
     // stores (see gbuffer.frag). Adding it again would double it.

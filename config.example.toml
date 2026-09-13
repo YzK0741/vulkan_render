@@ -135,6 +135,16 @@ clustered_lights = true
 # 1..2 to read (that distance dependence is inherent to screen-space AO, not a tuning mistake), and
 # `ssao_samples` trades cost for smoothness (1..16, the shader maximum). `ssao = false` (or an
 # intensity of 0) makes the term return exactly 1.0, so the frame is bit for bit the pre-M6 frame.
+# ON A TRACED GI FRAME THIS KNOB DOES NOTHING, and that is a fix rather than an accident: the traced chain
+# subtracts the ambient the lighting stage added and replaces it with an estimate whose occlusion is real
+# rays, so scaling it here only left `ambient * (ssao - 1)` in the frame - the ambient darkened twice. It
+# measured -1.90 of mean green with 13.7% of its pixels off by more than 4/255 on the reference scene, and
+# the lighting stage now skips the term entirely whenever the traced path is replacing the ambient, which
+# makes an SSAO-on and an SSAO-off traced frame BIT-IDENTICAL. Where the marched chain runs there is no
+# subtraction, so SSAO keeps working there, and the GI-off frame is untouched either way. The one thing it
+# costs: a traced frame WITHOUT the glossy lobe keeps no SSAO on its specular ambient either (that term is
+# only replaced when the lobe runs) - which is the alternative to leaving an SSAO-darkened term in a frame
+# the chain cannot subtract back. See docs/gi_hit_shading.md's L2.3 SSAO section.
 ssao = true
 ssao_radius = 0.5
 ssao_intensity = 1.0
