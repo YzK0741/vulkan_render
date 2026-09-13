@@ -175,3 +175,49 @@ which we do not have (our only reset is a new swapchain generation).
   contents depend on the geometry and the lights rather than on the frame the camera happened to show.
   That is a probe-grid-sized version of Lumen's radiosity pass, and it replaces the screen projection
   rather than supplementing it.
+
+## Step 2, part 2: the surface cache is the actual answer, and what it means at this scale
+
+The second reference study (both are under `docs/reference/`) settles the direction. Every Lumen
+world-space ray resolves a hit as **geometry from a distance field or the TLAS, plus radiance from a
+persistent per-surface texel atlas** - the surface cache - which stores pre-shaded light:
+`(DirectLighting + IndirectLighting) * Albedo/PI + Emissive`, baked by its own pass on a cadence that has
+nothing to do with what the camera is showing. The screen contributes only probe PLACEMENT and a BRDF
+probability function, never radiance. The radiance cache's own probes are filled by tracing the distance
+field and sampling that atlas.
+
+So the thing that makes Lumen's cache view-independent is **not** the probe grid. It is that radiance stops
+being a per-frame quantity at all: it is stored per surface texel, keyed by hit identity and local UV, and
+refreshed on a budget. Their own comment states why the discipline is load-bearing: *"Secure against
+strange values, as we are writing it to a persistent atlas with a feedback loop."*
+
+WHY THIS RENDERER SHOULD NOT BUILD ONE (yet): the atlas exists because Lumen traces a great many rays
+(1024 per radiance-cache probe, 64 per screen probe) and cannot afford to shade a material at each hit, so
+it caches shaded radiance instead. This renderer traces 2 rays per half-resolution pixel and CAN shade the
+hit - measured, and the cost was inside the noise floor. Its equivalent of "cache the shaded value" is
+"shade the hit", which it already has, and its problem is a different one: the probe grid is INJECTED from
+the screen, so a cell holds what the camera saw. The smallest faithful step is therefore to make the grid
+trace its own rays and shade what they hit, which is a probe-grid-sized version of Lumen's radiosity pass,
+and to give the grid the per-cell depth that its filter needs.
+
+WHAT TO COPY, IN DEPENDENCY ORDER, AND WHAT TO SKIP (from the studies' own recommendation):
+* Copy: a per-cell DEPTH so the filter can test visibility; the bidirectional occlusion test (both
+  directions, because one direction misses thin walls); the rule that a rejected neighbour lowers the
+  total weight instead of being redistributed; a blind radius of one cell diagonal with radiance zeroed
+  when a ray starts inside geometry; amortised refresh with staleness priority; a reset when global
+  lighting changes materially (their trigger is a 4x / 0.25x ratio on the light or skylight colour, and it
+  is the one mechanism of theirs this project lacks).
+* Skip deliberately, with the consequence stated: mesh cards and a sub-allocated virtual page atlas (needs
+  another surface parameterisation - this renderer would key an atlas by triangle or mesh if it ever built
+  one); virtual-texture feedback for hi-res pages (distant receivers keep only the coarse pages, which is
+  what UE's bias terms exist to hide); the radiosity bounce (without it, GI is flat ambient with no colour
+  bleeding); the clipmap pyramid with adaptive trace tiles (long rays fall back to sky, energy loss in
+  enclosed interiors).
+
+NUMBERS WORTH HAVING IN VIEW, AS SCALE REFERENCE ONLY (they are UE's, in cm, and each would still have to
+be A/B'd here): cells of ~104 units doubling over four clipmaps of 48^3, with only the 16384 probes a
+consumer marks actually allocated; 1024 rays per probe but only ~100 probes retraced per frame (~164
+frames per full refresh), chosen by a 16-bucket staleness histogram; a probe's rays start at one cell
+diagonal so a probe cannot hit its own cell; the filter is a single-pass 6-neighbour axis gather, not a
+blur; an angular weight of 0.2 rad on where the neighbour's ray landed; a minimum trace distance of two
+cell diagonals before the cache may be consulted at all.
