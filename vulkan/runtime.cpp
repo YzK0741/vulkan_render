@@ -4151,11 +4151,12 @@ namespace vulkan {
             .inv_view_proj = this->current_inv_view_proj,
             // The ray length is the tracer's own scene-relative radius: a reflection's reach is the same
             // question the diffuse bounce answers ("how far can indirect light travel"), and one knob for
-            // both keeps the A/B about the LOBE rather than about the distance. z is free (the shader takes
-            // the shadow ray's bias scale from x, exactly as the tracer does).
+            // both keeps the A/B about the LOBE rather than about the distance. z is the self-intersection
+            // bias as an explicit WORLD length rather than a fraction of x - so that raising the reach does
+            // not also lift every ray's origin further off its surface (see the shader's push comment).
             .params = glm::vec4(this->ssgi_radius * this->scene_radius,
                                 static_cast<float>(this->ssgi_specular_rays),
-                                0.0f,
+                                this->scene_radius * 0.0002f,
                                 static_cast<float>(this->ssgi_frame)),
             .table = glm::vec4(0.0f, 0.0f, table_low, table_high)};
         vkCmdPushConstants(command_buffer, this->ssgi_spec_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);

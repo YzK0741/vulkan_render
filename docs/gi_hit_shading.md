@@ -1151,4 +1151,44 @@ instead of +0.0255, cheaper (the spatial filter lost two bindings, a matrix lane
 theoretical cost turned out to be measurably inert because the lobe requires hit shading. (a) remains the
 answer for the DIFFUSE term if that artifact is ever worth 25 gathers a pixel.
 
+### L2.3, the ray's origin: a bias that scaled with the wrong knob, measured and fixed
+
+The ray's origin is pushed off the surface by a self-intersection bias, and BOTH traced lobes had it as a
+fraction of the RAY LENGTH: `world_pos + normal * (radius * 0.02)`. That makes the bias scale with the reach
+knob - so raising `ssgi_radius` to see further also lifts every ray's origin further off its surface - and the
+numbers are not small, because `radius` is itself a fraction of the scene radius. At the glossy lobe's default
+on Sponza the bias is 0.44 world units: larger than most of Sponza's architectural detail, and larger than the
+banners it should be reflecting off.
+
+THE MEASUREMENT, and it needed the isolation first: the reach and the bias move together, so the experiment was
+to give the specular pass an EXPLICIT bias (its own push block has a free lane, `params.z`) set to
+`scene_radius * 0.0002` - a world-scale meaning that does not move when the reach knob does - and then diff the
+two against each other, everything else identical:
+
+    scene / radius     bias before -> after      mean delta    pixels differing   >4/255   max
+    spheres 0.12        0.017 -> 0.0014            -0.034         2.52%            0.22%     40
+    spheres 0.50        0.070 -> 0.0014            -0.096         5.61%            1.13%     84
+    spheres 1.00        0.140 -> 0.0014            -0.162         6.57%            1.95%    116
+    Sponza  0.25        0.439 -> 0.018             -0.082        23.14%            0.68%     38
+
+Monotone in the size of the bias, which is the control that says the difference is the bias rather than noise,
+and at the reference scene's own default setting it moves 23% of the pixels. The direction is the feature's own
+thesis: the smaller bias makes the reflection find MORE geometry and fall back to the sky less, and the
+feature's effect on Sponza grows from -1.3264 to -1.4082 - 6% stronger - with it.
+
+WHY THE SMALLER VALUE IS THE CORRECT ONE, stated as the argument rather than as a preference: the physically
+right origin is the surface point itself, and the guard against a ray re-hitting its own triangle is `tmin`,
+which both lobes already pass as a fixed 0.01. `scene_radius * 0.0002` is 0.018 units on Sponza, i.e. just
+above that guard, and 0.0014 on the material sweep, i.e. below it - where tmin alone does the work, and the
+captures show no self-intersection artifact either way. The old expression's only real effect was the parallax
+it introduced.
+
+THE SAME EXPRESSION IS STILL IN THE DIFFUSE TRACER, deliberately, and it is the next step rather than part of
+this one: `shaders/ssgi.comp` uses `radius * 0.02` for BOTH of its paths, and its push block is exactly 128
+bytes with no lane to spare. The fix is to push the explicit bias in `params.w` (steps per ray) when the frame
+TRACES and keep the step-relative form when it MARCHES - defensible because a march's bias belongs to its step
+size while a ray's belongs to the world - but that changes what a lane means on a path, and the MARCHED path
+has no gate coverage at all today (every scenario either has GI off or traces). So it wants its own scenario
+and its own measurement, not a ride along with this one.
+
 

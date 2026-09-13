@@ -108,9 +108,16 @@ layout(set = 1, binding = 6, rgba16f) uniform image2D gi_trace;  // the raw trac
 layout(push_constant) uniform SsgiSpecPush {
     mat4 inv_view_proj; // clip -> world, the same block and the same reconstruction the tracer uses
     // x = the ray length in world units (the tracer's own scene-relative radius), y = glossy rays per
-    // pixel, z = free, w = a per-frame counter, which the ray sequence needs: a fixed sequence would feed
-    // a temporal filter the same error every frame instead of an average of different ones. The shadow
-    // ray's bias scale is x, exactly as the tracer passes it to the same function.
+    // pixel, z = the self-intersection bias, a WORLD-SPACE distance the ray's origin is pushed along the
+    // normal, w = a per-frame counter, which the ray sequence needs: a fixed sequence would feed a
+    // temporal filter the same error every frame instead of an average of different ones.
+    //
+    // z IS A LENGTH, NOT A FRACTION OF x, and that is the point of it being its own lane: the tracer
+    // pushes `radius * 0.02` for the same purpose, which makes the bias scale with the ray's REACH - so
+    // raising `ssgi_radius` to see further also lifts every ray's origin further off its surface (at the
+    // material sweep's radius 1.0 that is 0.14 world units, on spheres of about 0.6). The host pushes
+    // `scene_radius * 0.0002` here instead: the same world-scale meaning on a 1.6-unit model and on
+    // Sponza's 87.8, and it does not move when the reach knob does.
     vec4 params;
     // z/w = the instance table's device address in two 32-bit halves (the shape every pass in this
     // project pushes an address in), and 0 is the switch: without a table a hit cannot be shaded, so the
@@ -222,7 +229,7 @@ void main() {
             radiance_sum += ibl_specular;
             continue;
         }
-        const vec3 origin = world_pos + normal * (pc.params.x * 0.02);
+        const vec3 origin = world_pos + normal * pc.params.z;
         rayQueryEXT query;
         rayQueryInitializeEXT(query, tlas, gl_RayFlagsOpaqueEXT, 0xFF, origin, 0.01, dir, pc.params.x);
         while (rayQueryProceedEXT(query)) {

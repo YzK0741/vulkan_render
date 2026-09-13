@@ -207,17 +207,26 @@ and killed. At a ray length that reaches anything (radius 0.5 on the material sw
 survives the shared joint-bilateral filter; the earlier "no reflection visible" reading was the RAY LENGTH,
 because `ssgi_radius` is a fraction of the scene radius and the 0.12 that reaches 4.6 units inside Sponza
 reaches 0.84 on a compact scene (measured curve: +0.47 / +0.71 / +0.89 / +1.06 at radius 0.12 / 0.25 / 0.50 /
-1.00). What is actually open: (1) THE FEATURE IS NEARLY INVISIBLE ON THE SCENE EVERY OTHER GI MEASUREMENT
-USES (Sponza is roughened stone, its roughness channel averages 217/255), which is why the gate grew a
-`metal_rough_glossy` scenario and why the L2.3 evidence that matters is a MATERIAL-ordered table - smooth metal
-+10.33, rough metal +7.61, smooth dielectric +1.23, rough dielectric +0.13 - rather than a tile table; (2) the
-reflection is a point sample of the roughness cone, so a low-roughness reflection aliases at half resolution,
-and the ray origin's bias is a fraction of the RAY LENGTH (`radius * 0.02`), which on a compact scene at a
-large radius lifts the origin by a quarter of a small object's size - a scale inconsistency the diffuse path
-shares; (3) the DIFFUSE subtraction still carries the non-mean-preserving-average artifact (+0.33 convex /
-+0.52 Sponza) and cannot use the mechanism that fixed the specular one, because its image has to stay a
-radiance for the live bounce - fixing it means filtering the removed term with the same weights as the added
-one (25 gathers a pixel) and re-baselining every capture.
+1.00). What is actually open:
+(1) THE DIFFUSE TRACER'S RAY ORIGIN carries the same defect the glossy lobe's was just cured of, and it is now
+the largest known error in the traced path: `world_pos + normal * (radius * 0.02)` puts the origin 0.44 world
+units off the surface at Sponza's default settings, which is larger than most of its architectural detail.
+Measured on the glossy lobe, where it could be isolated (a free push lane): the bias moves 23% of Sponza's
+pixels and its removal makes the reflection 6% stronger, and the effect is monotone in the bias (2.5% / 5.6% /
+6.6% of pixels on the material sweep at 0.017 / 0.070 / 0.140). The fix needs a lane the tracer does not have
+(its block is exactly 128 bytes), so it is `params.w` - steps when the frame MARCHES, the world bias when it
+TRACES. That changes what a lane means on a path, and the MARCHED path has NO gate coverage today, so it wants
+a marched-path scenario and its own A/B first. See `docs/gi_hit_shading.md`'s L2.3 origin section.
+(2) THE FEATURE IS NEARLY INVISIBLE ON THE SCENE EVERY OTHER GI MEASUREMENT USES (Sponza is roughened stone,
+its roughness channel averages 217/255), which is why the gate grew a `metal_rough_glossy` scenario and why the
+L2.3 evidence that matters is a MATERIAL-ordered table - smooth metal +10.33, rough metal +7.61, smooth
+dielectric +1.23, rough dielectric +0.13 - rather than a tile table.
+(3) the reflection is a point sample of the roughness cone, so a low-roughness reflection aliases at half
+resolution.
+(4) the DIFFUSE subtraction still carries the non-mean-preserving-average artifact (+0.33 convex / +0.52
+Sponza) and cannot use the mechanism that fixed the specular one, because its image has to stay a radiance for
+the live bounce - fixing it means filtering the removed term with the same weights as the added one (25 gathers
+a pixel) and re-baselining every capture.
 
 ## 5. Working discipline (non-negotiable; every item was learned the hard way here)
 
