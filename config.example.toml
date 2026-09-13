@@ -159,7 +159,10 @@ gpu_timings = true
 # it, so being able to look at the raw data matters. It replaces the lighting stage while it is on,
 # and it skips alpha-blended geometry, so leave it off for normal runs.
 gbuffer_debug = false
-# gbuffer_channel: 0 albedo, 1 world normal, 2 roughness, 3 metallic, 4 ambient occlusion, 5 material id, 6 depth, 7 flags
+# gbuffer_channel: 0 albedo, 1 world normal, 2 roughness, 3 metallic, 4 ambient occlusion, 5 material id,
+#   6 depth, 7 flags, 8 motion. The last one is TAA's motion vector, amplified (four pixels of motion
+#   saturate) and biased so that "did not move" is flat olive: it answers where reprojection is being
+#   asked to move a sample and which way, which a shaded screenshot cannot show.
 
 # taa: temporal anti-aliasing. The projection is jittered by a Halton(2,3) sequence every frame, the
 # G-buffer carries motion vectors, and a fullscreen resolve blends the current frame with a

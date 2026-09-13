@@ -2723,22 +2723,25 @@ namespace vulkan {
         // contents are rewritten only when the targets below change, and a pool replaced by a later
         // generation is retired rather than destroyed, because recorded frame command buffers still
         // name its sets. on_swapchain_recreated() retires the family, which is what forces the rewrite.
-        std::array<VkImageView, 4> const signature = {
+        std::array<VkImageView, 5> const signature = {
             vk.gbuffer_image_views[0][0],
             vk.gbuffer_image_views[1][0],
             vk.gbuffer_image_views[2][0],
-            vk.gbuffer_depth_image_views[0]};
-        // One set per image with one descriptor per binding: the three stored targets plus the depth.
+            vk.gbuffer_depth_image_views[0],
+            vk.velocity_image_views[0]};
+        // One set per image with one descriptor per binding: the three stored targets, the depth and
+        // the motion-vector target - the same five the signature above fingerprints.
         // image_count is the generation's, signature is only the fingerprint of image 0 above - the two
         // are different things and the family needs both (see vulkan.bindings).
         auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            std::array<VkDescriptorImageInfo, 4> image_infos = {};
-            std::array<VkImageView, 4> const views = {
+            std::array<VkDescriptorImageInfo, 5> image_infos = {};
+            std::array<VkImageView, 5> const views = {
                 vk_ref.gbuffer_image_views[0][image_index],
                 vk_ref.gbuffer_image_views[1][image_index],
                 vk_ref.gbuffer_image_views[2][image_index],
-                vk_ref.gbuffer_depth_image_views[image_index]};
-            std::array<VkWriteDescriptorSet, 4> writes = {};
+                vk_ref.gbuffer_depth_image_views[image_index],
+                vk_ref.velocity_image_views[image_index]};
+            std::array<VkWriteDescriptorSet, 5> writes = {};
             for (uint32_t b = 0; b < views.size(); ++b) {
                 image_infos[b].sampler = *this->gbuffer_sampler;
                 image_infos[b].imageView = views[b];
@@ -2774,16 +2777,23 @@ namespace vulkan {
         //      samples that image: an undefined layout would be a lie, a cleared image is a valid
         //      black frame.
         //   2. the three G-buffer targets the pass just wrote become shader inputs.
-        //   3. the G-buffer depth image becomes a shader input too - through the same accessor the
+        //   3. the motion-vector target becomes a shader input as well. It needs its own transition
+        //      here because the TAA resolve is the only other stage that samples it, and the debug
+        //      view runs INSTEAD of the lighting stage - which is what the TAA resolve hangs off -
+        //      so without this the read happens against COLOR_ATTACHMENT_OPTIMAL, which is a
+        //      validation error and, on a driver that believes it, garbage.
+        //   4. the G-buffer depth image becomes a shader input too - through the same accessor the
         //      other two sampling stages use, because its old layout depends on whether the G-buffer
         //      instance rendered this frame (the aspect must be DEPTH; see the accessor).
-        std::array<VkImageMemoryBarrier2, 4> barriers = {};
+        std::array<VkImageMemoryBarrier2, 5> barriers = {};
         barriers[0] = vulkan::color_attachment_transition;
         barriers[0].image = vk.hdr_images[index];
         for (uint32_t target = 0; target < vulkan::gbuffer_target_count; ++target) {
             barriers[target + 1] = vulkan::hdr_sampling_transition; // COLOR_ATTACHMENT -> SHADER_READ
             barriers[target + 1].image = vk.gbuffer_images[target][index];
         }
+        barriers[4] = vulkan::hdr_sampling_transition; // same COLOR_ATTACHMENT -> SHADER_READ, color aspect
+        barriers[4].image = vk.velocity_images[index];
         VkDependencyInfo const dependency = make_image_dependency_info(static_cast<uint32_t>(barriers.size()), barriers.data());
         vkCmdPipelineBarrier2(command_buffer, &dependency);
         this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(index));
@@ -2808,7 +2818,9 @@ namespace vulkan {
                 .channel = static_cast<float>(this->gbuffer_channel_index),
                 .proj_22 = this->current_ubo.proj[2][2],
                 .proj_32 = this->current_ubo.proj[3][2],
-                .unused = 0.0f};
+                // Four pixels of motion saturate the motion channel (see the field's docs): derived
+                // from the width so it means the same thing at any resolution.
+                .motion_gain = static_cast<float>(vk.swap_chain_extent.width) * 0.25f};
             vkCmdPushConstants(command_buffer, this->gbuffer_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
             vkCmdDraw(command_buffer, 3, 1, 0, 0);
         } else {

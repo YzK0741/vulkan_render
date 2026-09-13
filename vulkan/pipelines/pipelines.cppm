@@ -1,4 +1,4 @@
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
@@ -145,7 +145,11 @@ namespace vulkan::pipelines {
         using fail = std::unexpected<std::string>;
         gbuffer_owned out;
 
-        std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
+        // albedo, normal, material, depth, velocity: the four the debug view displays plus the
+        // motion-vector target. The deferred lighting stage binds this SAME layout as its set 1
+        // and its shader declares only the first four, which is legal - a binding a shader does
+        // not statically use does not need a descriptor written.
+        std::array<VkDescriptorSetLayoutBinding, 5> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
             bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;

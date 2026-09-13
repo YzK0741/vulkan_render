@@ -50,7 +50,8 @@ import utility;
  * gpu_timings = true  # measure + report per-pass GPU milliseconds (timestamp queries)
  * gbuffer_debug = false  # draw the G-buffer + one of its channels instead of the shaded scene
  * taa = false            # temporal anti-aliasing (jitter + resolved history)
- * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags
+ * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id,
+ *                        # 6 depth, 7 flags, 8 motion (the motion vector, amplified - see the shader)
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
  *
  * [gui]
@@ -145,7 +146,7 @@ namespace app_config {
         // chain. A development view of the deferred path's data - the deferred lighting pass (M2)
         // takes over the display role and this stays as the inspection tool.
         bool gbuffer_debug = false;
-        int gbuffer_channel = 1; // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 material id, 6 depth, 7 flags
+        int gbuffer_channel = 1; // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 material id, 6 depth, 7 flags, 8 motion
         // deferred lighting ([render] deferred): the opaque scene is stored in the G-buffer and shaded
         // in screen space afterwards, through the same lighting code the forward path runs per
         // fragment; alpha-blended

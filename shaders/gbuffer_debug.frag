@@ -8,8 +8,8 @@
  * The G-buffer is the one part of the renderer whose contents cannot be judged from a normal
  * screenshot - a wrong normal encoding, a swapped roughness/metallic channel or a wrong material
  * index all look like "the lighting is a bit off" once the lighting pass consumed them. So the
- * deferred path ships with a way to look at the raw data: this fullscreen pass reads the three
- * targets (+ the pass's depth) and writes one selected channel into the HDR scene target, which
+ * deferred path ships with a way to look at the raw data: this fullscreen pass reads the
+ * four stored targets and writes one selected channel into the HDR scene target, which
  * then goes through the ordinary post chain (exposure / tonemapping / FXAA) like any other frame.
  *
  * Push constant: the channel selector plus the two projection terms needed to linearize depth.
@@ -26,12 +26,13 @@ layout(set = 0, binding = 0) uniform sampler2D gbuffer_albedo;  // RGBA8: albedo
 layout(set = 0, binding = 1) uniform sampler2D gbuffer_normal;  // RGBA16F: normal.xyz + roughness
 layout(set = 0, binding = 2) uniform sampler2D gbuffer_material; // RGBA8: id lo/hi + ao + flags
 layout(set = 0, binding = 3) uniform sampler2D gbuffer_depth;   // the pass's single-sampled depth
+layout(set = 0, binding = 4) uniform sampler2D gbuffer_velocity; // RG16F: motion vector, UV space
 
 layout(push_constant) uniform GbufferDebugPush {
-    float channel; // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 material id, 6 depth, 7 flags
-    float proj_22; // projection[2][2]: the depth-linearization terms (see view_depth)
-    float proj_32; // projection[3][2]
-    float unused;
+    float channel;     // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags, 8 motion
+    float proj_22;     // projection[2][2]: the depth-linearization terms (see view_depth)
+    float proj_32;     // projection[3][2]
+    float motion_gain; // channel 8's amplification (the CPU passes width/4: four pixels saturate)
 } pc;
 
 /**
@@ -93,6 +94,14 @@ void main() {
     } else if (channel == 5u) {
         const uint id = uint(round(material.r * 255.0)) | (uint(round(material.g * 255.0)) << 8u);
         color = material_id_color(id);
+    } else if (channel == 8u) {
+        // Motion vector, amplified. It is a UV-space delta, so one pixel of motion at 1080 wide is
+        // 0.00093 - the raw value is black everywhere and tells you nothing. The CPU's gain makes
+        // four pixels saturate, and the +0.5 bias means "did not move" reads as flat olive while
+        // any movement shifts toward red or green by direction. That is the question this channel
+        // answers: WHERE is temporal reprojection being asked to move a sample, and which way.
+        const vec2 motion = texture(gbuffer_velocity, v_uv).rg;
+        color = vec3(clamp(motion * pc.motion_gain + 0.5, 0.0, 1.0), 0.0);
     } else {
         color = vec3(material.a); // raw material flag byte
     }

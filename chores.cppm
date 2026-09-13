@@ -145,7 +145,7 @@ namespace chores {
         // path's stored surface, one channel at a time. Mirrored into the runtime every frame like
         // the FXAA state, so these fields carry the config's initial values.
         bool gbuffer_debug = false; // draw the G-buffer + its debug view instead of the shaded scene
-        int gbuffer_channel = 1;    // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags
+        int gbuffer_channel = 1;    // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags, 8 motion
         // TAA (runtime::set_taa): the engine's anti-aliasing. Mirrored into the runtime every
         // frame like the other render toggles; the blend weights are the two shader knobs.
         bool taa_enabled = false;

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.24.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.25.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -332,10 +332,14 @@ namespace vulkan {
         // which is what used to make every window resize a validation error here.
 
         struct gbuffer_debug_push_constants {
-            float channel = 1.0f; // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags
+            float channel = 1.0f; // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags, 8 motion
             float proj_22 = 0.0f; // projection[2][2] / [3][2]: the depth-linearization terms
             float proj_32 = 0.0f;
-            float unused = 0.0f;
+            // Amplification for the motion channel only. The stored vector is a UV-space delta, so a
+            // pixel of motion at 1080 wide is 0.00093 and the raw value would be black everywhere;
+            // the runtime sets this to width/4 so four pixels saturate the channel, which scales
+            // itself across resolutions instead of being a magic number per window size.
+            float motion_gain = 1.0f;
         };
         struct deferred_push_constants {
             glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip (xy from the pixel, z = depth, w = 1) -> world
@@ -1666,7 +1670,7 @@ namespace vulkan {
         [[nodiscard]] std::string gpu_timing_summary() const;
 
         /** @brief how many channels the G-buffer debug view offers (see set_gbuffer_channel) */
-        static constexpr int gbuffer_channel_count = 8;
+        static constexpr int gbuffer_channel_count = 9;
 
         /**
          * @ingroup vulkan_runtime

@@ -401,7 +401,7 @@ namespace chores {
             panel.push_back(std::move(debug_view));
             auto channel = std::make_unique<vulkan::gui::combo_widget>(
                 "gbuffer channel",
-                std::vector<std::string>{"albedo", "normal", "roughness", "metallic", "ao", "material id", "depth", "flags"},
+                std::vector<std::string>{"albedo", "normal", "roughness", "metallic", "ao", "material id", "depth", "flags", "motion"},
                 &bindings.gbuffer_channel);
             channel->visible_when = [&runtime] { return runtime.feature_active("gbuffer-debug"); };
             panel.push_back(std::move(channel));

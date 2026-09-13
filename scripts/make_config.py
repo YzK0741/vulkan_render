@@ -248,7 +248,7 @@ def ask_all(output_dir: str) -> dict:
     fxaa = ask_bool("render.fxaa", False, hint="final anti-aliasing pass; costs nothing when off")
     gbuffer_debug = ask_bool("render.gbuffer_debug", False, hint="show a stored G-buffer channel")
     gbuffer_channel = ask_int(
-        "render.gbuffer_channel", 1, 0, 7, hint="0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags"
+        "render.gbuffer_channel", 1, 0, 8, hint="0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags, 8 motion"
     )
     gpu_timings = ask_bool("render.gpu_timings", True, hint="per-pass GPU timestamps (a no-op if the device cannot)")
 
