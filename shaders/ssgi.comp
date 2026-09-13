@@ -51,8 +51,13 @@ layout(set = 0, binding = 0) uniform CameraUBO {
 // share it.
 layout(set = 1, binding = 0) uniform sampler2D gbuffer_albedo;   // RGBA8: albedo.rgb + metallic
 layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal;   // RGBA16F: world normal.xyz
+layout(set = 1, binding = 2) uniform sampler2D gbuffer_material; // RGBA8: .b = the material's baked AO (see deferred.frag)
 layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;    // the pass's own 1x depth
 layout(set = 1, binding = 5) uniform sampler2D direct_radiance;  // HDR scene target: DIRECT light only
+// The probe, for the rays that leave the frame or hit something the camera cannot see: the irradiance
+// map the lighting stage uses for its ambient, sampled along the RAY direction. This is what turns the
+// traced path from "screen-space GI" into the full one-bounce diffuse indirect - see rt_hit_radiance.
+layout(set = 0, binding = 3) uniform samplerCube irradiance_sampler;
 layout(set = 1, binding = 6, rgba16f) uniform image2D gi_output; // half-res RAW indirect, one texel per invocation
 // The scene's top level structure (scene set binding 16, declared only when the device has ray queries):
 // the RAY-TRACED hit oracle, used instead of march() when pc.frame_info.y is set. Nothing else about the
@@ -202,7 +207,8 @@ vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, out bool out_hit
     while (rayQueryProceedEXT(query)) {
     }
     if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
-        return vec3(0.0); // nothing within the ray's length: the probe's business, as for a march miss
+        // Nothing within the ray''s length: the probe answers for that direction.
+        return texture(irradiance_sampler, dir).rgb;
     }
     out_hit = true;
 
@@ -219,12 +225,12 @@ vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, out bool out_hit
     float ndc_z = 0.0;
     const vec2 hit_uv = project_to_uv(hit_view, ndc_z);
     if (hit_uv.x < 0.0 || hit_uv.x > 1.0 || hit_uv.y < 0.0 || hit_uv.y > 1.0) {
-        return vec3(0.0); // off screen: no cached radiance exists for it
+        return texture(irradiance_sampler, dir).rgb; // off screen: no cached radiance exists for it
     }
     const float buffer_ndc = texture(gbuffer_depth, hit_uv).r;
     const float hit_view_depth = -hit_view.z; // view space looks down -Z
     if (buffer_ndc >= 1.0 || abs(view_depth(buffer_ndc) - hit_view_depth) > 0.05 * hit_view_depth) {
-        return vec3(0.0); // the visible surface there is a different one: the hit is hidden
+        return texture(irradiance_sampler, dir).rgb; // the visible surface there is a different one: the hit is hidden
     }
     return texture(direct_radiance, hit_uv).rgb;
 }
@@ -293,6 +299,25 @@ void main() {
         }
     }
 
-    const vec3 indirect = albedo * (radiance_sum / float(rays)) * pc.params.y;
+    // The traced path's rays fall back to the probe off screen, so what they estimate is the WHOLE
+    // diffuse indirect - and the lighting stage already adds the probe's ambient for every pixel. What
+    // this image must therefore carry is the DIFFERENCE between the two, or the off-screen part is
+    // counted twice: once as that ambient, again inside every missed ray's sample.
+    //
+    // A signed difference keeps the composite exactly as it was (`color += gi * intensity`) and keeps the
+    // lighting stage's arithmetic UNTOUCHED - which matters more than it sounds: perturbing that
+    // expression re-schedules it by about an ULP, and TAA amplifies that over 40 frames into a different
+    // image, which is what the capture harness caught when the handover was written as a flag there.
+    // Subtracting here means no other shader changes at all.
+    //
+    // The ambient being removed is `ibl_diffuse(normal) * albedo * ao * (1 - metallic)`. The albedo is
+    // already a factor of this image, so the subtraction happens inside the mean; the material's baked AO
+    // is applied here as it was to that ambient; and SSAO is NOT (it lives in the lighting stage and is
+    // never stored), so on a traced frame the occlusion answer comes from the rays rather than from the
+    // depth heuristic. The marched path keeps its old value bit for bit, which is why the MARCHED path
+    // (and GI off) is unchanged by this commit.
+    const float traced_ao = traced ? texture(gbuffer_material, uv).b : 1.0;
+    const vec3 traced_ambient = traced ? texture(irradiance_sampler, normal_world).rgb * (1.0 - texture(gbuffer_albedo, uv).a) : vec3(0.0);
+    const vec3 indirect = albedo * ((radiance_sum / float(rays)) - traced_ambient) * pc.params.y * traced_ao;
     imageStore(gi_output, pixel, vec4(indirect, 1.0));
 }

@@ -183,6 +183,12 @@ ssgi_upsample = true
 # Two limits come with it, both structural: a MASK surface is SOLID to a ray (an inline ray query has no
 # any-hit shader to run the material's discard), and a skinned or morphed mesh casts its BIND POSE (the
 # deformation happens in the vertex shader and never reaches the memory a build reads).
+# NOTE on ssgi_intensity with ssgi_ray_tracing = true: the traced pass is no longer an ADDITION to the
+# probe - its rays fall back to the probe off screen, and the lighting stage stops adding its own
+# diffuse ambient so the two are not counted twice. The intensity therefore multiplies the WHOLE
+# diffuse ambient on such a frame, and 1.0 is the value that means 'use the traced estimate'. 0.7
+# dims the ambient to 70%, and 4.0 over-brightens it four times. SSAO also stops scaling the diffuse
+# ambient then, because the traced rays answer the occlusion question with real geometry instead.
 rt_shadows = false
 
 # fxaa: anti-alias the final image (one extra fullscreen pass over the tonemapped LDR image).

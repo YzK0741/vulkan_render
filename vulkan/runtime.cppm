@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.34.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.35.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -1940,6 +1940,17 @@ namespace vulkan {
          *       or hidden contributes nothing in both and the IBL probe still owns the off-screen light.
          */
         void set_ssgi_ray_tracing(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether this frame's GI pass will actually TRACE its rays
+         * @note the predicate both the tracer's push block and the light UBO's gi_full_indirect are
+         *       composed from, because the second one is a PREDICTION: it tells the lighting stage to
+         *       drop its own diffuse ambient, and predicting wrong darkens the frame (which is what
+         *       happened when it was composed from the config alone: the tracer pipeline was missing, so
+         *       the ambient was removed and nothing replaced it).
+         */
+        [[nodiscard]] bool ssgi_traced_active() const noexcept;
 
         /**
          * @brief create the GI denoiser's temporal resolve pipeline from shaders/ssgi_temporal.comp

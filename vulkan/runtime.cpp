@@ -3286,6 +3286,10 @@ namespace vulkan {
         return {};
     }
 
+    bool runtime::ssgi_traced_active() const noexcept {
+        return this->ssgi_active() && this->ssgi_ray_tracing && this->vulkan_core.ray_query_available && this->rt_top_levels.has_value();
+    }
+
     void runtime::set_ssgi_ray_tracing(bool const enabled) noexcept {
         this->ssgi_ray_tracing = enabled;
         if (enabled && !this->vulkan_core.ray_query_available) {
