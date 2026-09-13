@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.35.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.36.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -252,6 +252,10 @@ namespace vulkan {
                              // forward path, where both of those happen inside the scene instance)
             taa_end,         // after the TAA resolve + its history copy (~0 when TAA is off)
             main_end,        // after the last scene-side work of the frame (the debug view, when it runs)
+            gi_end,          // after the screen-space GI chain (~0 when GI is off). Its own mark because
+                             // those passes are the only compute work in the post chain: without it their
+                             // cost was reported as bloom time, which is where a traced GI's price was
+                             // invisible in the one report a user reads
             bloom_end,       // after the bloom prefilter/downsample chain
             composite_end,   // after the composite (exposure + ACES + display encode)
             fxaa_end,        // after the FXAA pass (and the overlay, when FXAA draws it)
@@ -280,6 +284,7 @@ namespace vulkan {
             {"lighting", false},
             {"taa", false},
             {"debug", true},
+            {"gi", false},
             {"bloom", false},
             {"composite", false},
             {"fxaa", false},

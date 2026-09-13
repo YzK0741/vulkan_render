@@ -3813,6 +3813,10 @@ namespace vulkan {
             vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
         }
 
+        // GPU timing: the GI chain ends here (trace, temporal resolve, spatial filter; the composite's
+        // bilateral upsample is part of the composite). Written unconditionally like every mark, so a
+        // frame with GI off reports 0 ms and the positional labels stay aligned.
+        this->gpu_mark(command_buffer, gpu_mark_id::gi_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         // The G-buffer debug view forces the bloom weight to 0: bloom is a display effect, and a glow
         // smeared over the channel being inspected is the opposite of a debug view (it would also
         // invent colors that are not in the G-buffer at all). The deferred LIT image is a real image,
