@@ -354,6 +354,14 @@ namespace vulkan {
         std::vector<VkImage> gi_probe_surface_images = {};
         std::vector<VkDeviceMemory> gi_probe_surface_image_memories = {};
         std::vector<VkImageView> gi_probe_surface_image_views = {};
+        // The furnace verification mode's constant environment: one texel per face, all six faces at the
+        // mode's level. One element vectors rather than a scalar handle so the teardown paths that already
+        // know how to destroy a target set can be reused unchanged. Its CONTENTS come from a clear, which
+        // together with the binding that points the IBL at it is the next slice; until then nothing samples
+        // it, which is what keeps this addition invisible.
+        std::vector<VkImage> furnace_cube_images = {};
+        std::vector<VkDeviceMemory> furnace_cube_memories = {};
+        std::vector<VkImageView> furnace_cube_views = {};
 
         // ---- ray-traced sun visibility (see shaders/rt_shadow.comp) ----
         // FULL resolution, one per FRAME SLOT rather than per swapchain image: it is written and read
