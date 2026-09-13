@@ -37,6 +37,7 @@ namespace {
         CHECK(settings.render.ssgi_probe_rounds == 3);
         CHECK(settings.render.ssgi_probe_gain > 0.49f && settings.render.ssgi_probe_gain < 0.51f);
         CHECK(settings.render.ssgi_hit_shading); // fixture: hits shaded from geometry
+        CHECK(settings.render.furnace);          // fixture: the analytic verification mode
         CHECK(settings.render.unlit);            // fixture: the flat render mode
         CHECK(settings.render.fxaa);
         CHECK(!settings.render.gpu_timings);
@@ -162,6 +163,7 @@ namespace {
         CHECK(settings.render.ssgi_probe_rounds == 2);
         CHECK(settings.render.ssgi_probe_gain > 0.99f && settings.render.ssgi_probe_gain < 1.01f);
         CHECK(!settings.render.ssgi_hit_shading); // default: hits are read from the screen
+        CHECK(!settings.render.furnace);          // default: a normal frame, not the verification mode
         // [render] validation
         CHECK(settings.render.validation_layers);
         // [gui]

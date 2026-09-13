@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.21.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.22.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -62,6 +62,7 @@ import utility;
  * ssgi_bounce = 0.0     # re-emit this fraction of the previous frame's indirect at a hit (multi-bounce)
  * ssgi_probes = false   # world-space probe cache: answers for hits the screen cannot resolve
  * ssgi_hit_shading = false # shade the surface a ray hit from its geometry, not from the screen
+ * furnace = false       # verification mode: sun off, environment a constant, so the answer is analytic
  * ssgi_probe_rate = 0.08 # how much of a cell one frame's observation replaces
  * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id,
  *                        # 6 depth, 7 flags, 8 motion (the motion vector, amplified - see the shader)
@@ -187,6 +188,12 @@ namespace app_config {
         // path (the marched one never leaves the frame) and the acceleration structures, and it costs the
         // vertex/index/texture fetches a shaded hit makes.
         bool ssgi_hit_shading = false;
+        // The furnace verification mode ([render] furnace): the sun is turned off and the environment becomes
+        // a constant level, so the correct frame is computable by hand - a diffuse surface's outgoing
+        // radiance is exactly albedo * L, and a GI chain that adds anything on top of it is double counting.
+        // It is the one reference in this project that no estimator of its own can flatter, because it is not
+        // an estimator. Off by default, and off is byte-exact.
+        bool furnace = false;
         float ssgi_probe_rate = 0.08f;
         int ssgi_probe_rounds = 2;
         float ssgi_probe_gain = 1.0f;

@@ -189,6 +189,7 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssgi_probe_rounds = {cfg['ssgi_probe_rounds']}",
         f"ssgi_probe_gain = {cfg['ssgi_probe_gain']}",
         f"ssgi_hit_shading = {str(cfg['ssgi_hit_shading']).lower()}",
+        f"furnace = {str(cfg['furnace']).lower()}",
         "",
         "# ---- [gui] debug overlay ----",
         "[gui]",
@@ -333,6 +334,11 @@ def ask_all(output_dir: str) -> dict:
         False,
         hint="shade the surface a GI ray hit instead of sampling the screen (needs traced GI + ray tracing)",
     )
+    furnace = ask_bool(
+        "render.furnace",
+        False,
+        hint="VERIFICATION: sun off + a constant environment, so the correct frame is computable by hand",
+    )
     rt_shadows = ask_bool(
         "render.rt_shadows",
         False,
@@ -400,6 +406,7 @@ def ask_all(output_dir: str) -> dict:
         "ssgi_probe_rounds": ssgi_probe_rounds,
         "ssgi_probe_gain": ssgi_probe_gain,
         "ssgi_hit_shading": ssgi_hit_shading,
+        "furnace": furnace,
         "gui_show": gui_show,
         "panel_width": panel_width,
         "panel_height": panel_height,

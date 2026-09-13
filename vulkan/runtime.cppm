@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.44.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.45.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -2073,6 +2073,18 @@ namespace vulkan {
          *       nothing to the marched path, whose hits are the depth buffer's own surface.
          */
         void set_ssgi_hit_shading(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the furnace verification mode ([render] furnace)
+         * @param enabled true = the sun is off; the constant-environment half is not implemented yet
+         * @note the intent is an analytic reference: with the sun off and the environment a constant level L,
+         *       a diffuse surface's outgoing radiance is exactly albedo * L and a bounce has nothing to add,
+         *       so the frame must not change when the GI chain is switched on. What is wired today is the
+         *       sun lane; forcing the environment needs the constant cube bound to the IBL bindings, which
+         *       is the next slice. Until then this mode is a DIAGNOSTIC, not the acceptance test.
+         */
+        void set_furnace(bool enabled) noexcept;
 
         /**
          * @ingroup vulkan_runtime

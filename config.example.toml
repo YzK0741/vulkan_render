@@ -224,6 +224,13 @@ ssgi_probe_gain = 1.0
 # the acceleration structures and the traced GI path - with the marched path, or on a device without ray
 # queries, it does nothing. Off is the previous behaviour exactly: hits are read from the screen.
 ssgi_hit_shading = false
+# furnace: a VERIFICATION mode, not a look. The sun is turned off and the environment becomes a constant
+# level, which makes the correct frame computable by hand: a diffuse surface''s outgoing radiance is exactly
+# albedo * L, and a bounce has nothing to add because the environment already is the light. So the frame must
+# not change when the GI chain is switched on - and if it does, the excess is an energy error rather than a
+# matter of taste between two of this project''s own estimators. It exists because every other reference
+# available here shares a bias with the model it would be judging. Off by default, and off is byte-exact.
+furnace = false
 # MEASURED, against a CONVERGED SHADED ESTIMATOR (16 rays per pixel, the knob's limit, over 600 frames of
 # a static camera, accumulated by the temporal resolve - the same instrument as the tertile tables, now
 # per pixel instead of per region): a 2-ray frame of the shaded path differs from it by MAE 0.42 / RMSE 0.76

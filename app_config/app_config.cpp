@@ -175,6 +175,11 @@ namespace app_config {
                     settings.render.ssgi_hit_shading = *value;
                 }
             }
+            if (toml::node const* node = render->get("furnace")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.furnace = *value;
+                }
+            }
             if (toml::node const* node = render->get("rt_shadows")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.rt_shadows = *value;

@@ -3421,6 +3421,10 @@ namespace vulkan {
         this->ssgi_bounce = std::clamp(gain, 0.0f, 1.0f);
     }
 
+    void runtime::set_furnace(bool const enabled) noexcept {
+        this->furnace = enabled;
+    }
+
     void runtime::set_ssgi_hit_shading(bool const enabled) noexcept {
         this->ssgi_hit_shading = enabled;
         if (enabled && !this->vulkan_core.ray_query_available) {
