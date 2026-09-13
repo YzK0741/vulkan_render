@@ -600,6 +600,21 @@ vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, out bool out_hit
     // see be answered at all (see shade_hit). The screen path below stays for the frames where it is
     // off - it is the A/B, and it is also what a device whose structures are not built yet gets.
     if (instance_table_address() != 0u) {
+        // A diffuse bounce cannot leave a solid's interior, so a hit on a triangle's BACK face - the ray
+        // was inside the geometry, or is on its way out of it - is not a surface this ray can carry light
+        // from. The traversal is allowed to report those (every geometry is built with facing cull
+        // disabled), and the screen path never had to think about them: its depth guard discarded them.
+        //
+        // It is CORRECTNESS, not the explanation for the shaded path's brightness, and the measurement
+        // says so: rejecting them moves the frame by +0.08 of the 1.29 mean brightness that shading only
+        // the hits the screen confirms recovers. So the population responsible for that difference is
+        // hidden but perfectly VALID surfaces, which the screen path answers with the environment probe (a
+        // sky estimate) and this one with their own shading - shadowed, interior, and legitimately darker
+        // than a probe. That is the shape of the remaining difference, and testing it means comparing the
+        // two answers for the same rays rather than another frame-level A/B.
+        if (!rayQueryGetIntersectionFrontFaceEXT(query, true)) {
+            return texture(irradiance_sampler, dir).rgb + probe_radiance(hit_world);
+        }
         vec3 shaded = vec3(0.0);
         if (shade_hit(query, hit_world, dir, shaded)) {
             // The shaded surface's own outgoing radiance: direct sun, the split-sum IBL ambient and its
