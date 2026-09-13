@@ -790,3 +790,67 @@ scene and camera as `sponza`, with the traced chain, the denoisers and the probe
 reference is a normal machine-local baseline (`-Update` once to seed it, as for every other scenario), and
 the change that added it is the one that needed it: eight new 3D images and two re-shaped descriptor sets
 would otherwise have had nothing watching them.
+
+### L2.2a, measured: the alphaMode MASK bake, and why it is OFF by default
+
+THE LIMITATION IT ATTACKS is documented in three places and is real: an inline ray query has no any-hit
+stage, so a MASK material's `discard` cannot run during traversal and the surface is SOLID to every ray. The
+raster shadow pass cuts the material's holes and a ray-traced one does not - a difference a user sees. The
+reference implementation's answer, and the one the plan named, is to resolve the mask BEFORE the build.
+
+WHAT WAS BUILT, and it is all verified plumbing: `shaders/mask_bake.comp`, a compute pass over the masked
+casters that writes an EXPANDED copy of their vertices - three unique vertices per triangle, no index buffer,
+32 bytes each (position, normal, UV) - with the triangles the mask covers nowhere collapsed to a single
+position (a degenerate triangle traversal can never hit). Hiding a triangle that way is only safe if it owns
+its vertices, which is why the copy is expanded and non-indexed; the bottom level structures and the instance
+table are built from that copy instead, and the hit shading reads a zero index address as "flat vertex list".
+It costs one startup dispatch per masked caster, next to nothing at 3 KB of vertices for a vase of flowers.
+
+THE PLUMBING IS PROVEN EXACT, and the proof is the interesting part: with the rule disabled so that NOTHING
+is collapsed, the traced frame is BYTE-IDENTICAL to the same frame built from the original indexed buffers
+(same SHA256). So the expansion, the non-indexed build, the instance record and the flat-vertex hit path are
+all exact - which matters, because it means every difference the feature makes is the RULE's doing and not
+the mechanism's.
+
+THE RULE MEASURED WORSE THAN THE RASTER PATH, so the knob defaults to off. On GlassVaseFlowers (3818 MASK
+triangles), against the same frame with raster shadows as the reference (that path discards per fragment and
+is therefore correct by construction):
+
+    raster shadows (reference)          122.0241
+    ray-traced, mask solid (no bake)    121.8918     error vs raster: mean 0.1323, mean|.| 0.4071
+    ray-traced, bake on                 123.3137     error vs raster: mean -1.2896, mean|.| 1.6595
+
+The bake moves the shadow 1.29 of mean brightness the WRONG WAY: 33723 pixels change, and only 1474 of them
+move towards the raster reference. Reading it: the bake removes triangles that the raster path still
+shadows. The rule samples every texel of a triangle's UV footprint (and KEEPS any footprint it cannot walk,
+so it never removes geometry it has not looked at), so the disagreement is not sloppiness in the sampling
+but the thing the mechanism cannot do - reproduce a PER-PIXEL mask with a per-triangle structure. The raster
+path's own texel sampling is filtered (mip selection over a shared atlas), so it keeps fragments whose LOD 0
+texels are all below the cutoff, and every such triangle is one this bake deletes.
+
+WHAT THE THREE RULES LOOK LIKE on the same assets, evaluated on the CPU over the same texture and UVs as a
+share of triangles that are cut everywhere:
+
+    GlassVaseFlowers          vertices 1.8%      10-sample grid 1.0%      texel walk 0.1%
+    DiffuseTransmissionPlant  vertices 1.5%      10-sample grid 2.3%      texel walk 0.9%
+
+The vertex rule is the cheapest and the most destructive - a two-quad MASK plane whose pattern sits in the
+middle of the quad looks 100% cut at its corners while 0% of its area is cut - and the texel walk is the only
+honest one. It is also the one that shows how little there is to remove: under 1% of a plant's or a vase's
+masked triangles are entirely empty, so even a perfect per-triangle rule would fix a small part of the
+limitation.
+
+WHAT A BETTER ANSWER NEEDS, which is why this is left as an instrument rather than deleted: a per-triangle
+structure cannot represent a per-pixel mask, so the next attempt has to subdivide along the mask boundary
+(splitting a partly-cut triangle until the pieces are clean) or use the opacity-micromap extension, which
+exists for exactly this problem. Both need the plumbing this step built - the expanded, mask-aware copy of
+the geometry that the structures and the hit shading already read.
+
+THREE THINGS THIS STEP FIXED ON THE WAY, each independent of the bake and each found by a gate rather than
+by inspection: `acceleration_structure::add` documented a zero index address as "a flat vertex list" but left
+the caller's index type in place, which would have had the build read indices from address zero;
+`runtime::make_mask_bake_pipeline` leaked its pipeline layout, which the validation layer reported as
+"vkDestroyDevice(): VkDevice ... has 1 leaked objects" on every run; and a first version of the bake bound
+the per-frame SCENE set and then the same command buffer rewrote that set's binding 16 later in the frame,
+which invalidated the command buffer - 62 validation errors, every subsequent command reported against a
+buffer "now in an invalid state". The bake now owns a descriptor set of its own, written once.

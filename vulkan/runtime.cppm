@@ -566,6 +566,20 @@ namespace vulkan {
             // lane into a table-address half read as a float.
             glm::uvec2 instance_table = glm::uvec2(0u);
         };
+        // The alphaMode MASK bake (shaders/mask_bake.comp): device addresses as two 32-bit halves, the same
+        // shape every pass here pushes them in. Three uvec2s then five uints, so the block is 48 bytes on
+        // the CPU and 44 in the shader - the offsets agree and the range covers both (see the note on
+        // gi_probe_push_constants above for why a MIDDLE uvec2 would be the dangerous case).
+        struct mask_bake_push_constants {
+            glm::uvec2 source_vertices = glm::uvec2(0u); // the source vertex buffer, low and high halves
+            glm::uvec2 source_indices = glm::uvec2(0u);  // ... its index buffer (zero = not indexed)
+            glm::uvec2 destination = glm::uvec2(0u);     // ... the expanded buffer this pass fills
+            uint32_t source_stride = 0;
+            uint32_t destination_stride = 0; // 32: position(3) + normal(3) + uv(2), what hit shading reads
+            uint32_t index_type = 1;         // VkIndexType: 0 = uint16, 1 = uint32 (ignored when unindexed)
+            uint32_t triangle_count = 0;
+            uint32_t material_index = 0; // the material whose alpha texture and cutoff decide the mask
+        };
         struct ssgi_temporal_push_constants {
             float history_valid = 0.0f;
             float blend_static = 0.9f;
@@ -1105,7 +1119,38 @@ namespace vulkan {
         // whose geometry could not be built (no buffer, no stride) has no bottom level and must not get
         // an instance either - and the two walks have to agree about which index is which.
         std::optional<acceleration_structure::top_level_structure> rt_top_levels = {};
-        std::vector<std::pair<primitive const*, uint32_t>> rt_caster_levels = {};
+        // One built caster: its structure, and - when its material's alphaMode is MASK - the EXPANDED,
+        // non-indexed copy of its vertices the mask bake filled. The instance list uses that copy instead of
+        // the original buffers for such a caster, and its zero index address is what tells the hit shading
+        // the geometry is not indexed (see shaders/hit_shading.glsl). A caster that was skipped during the
+        // build has no entry here at all, which is what keeps the two walks in agreement.
+        struct rt_caster_level {
+            primitive const* caster = nullptr;
+            uint32_t blas_index = 0;
+            uint32_t mask_stride = 0;                // 0 = the original, indexed geometry is what was built
+            VkDeviceAddress mask_vertex_address = 0; // the expanded copy's base address, for the table
+        };
+        std::vector<rt_caster_level> rt_caster_levels = {};
+        // The expanded buffers themselves, owned here for as long as the structures are: a build reads one,
+        // and the hit shading reads its vertices through the instance table's address.
+        std::vector<vk_buffer> rt_mask_buffers = {};
+        // The alphaMode MASK bake (see shaders/mask_bake.comp): runs once, inside the same command buffer as
+        // the bottom level builds it feeds. Absent on a device without ray queries - and then masked geometry
+        // is silently solid to a ray, which is the documented behaviour of every traced effect here.
+        std::optional<vk_pipeline> mask_bake_pipeline = std::nullopt;
+        VkPipelineLayout mask_bake_pipeline_layout = VK_NULL_HANDLE;
+        // The bake's OWN descriptor set, created from the SCENE layout so its two bindings have the shapes
+        // the scene set gives them, and written ONCE - never the per-slot scene set. That is not tidiness:
+        // the bake runs before any pass of the frame, and the frame WRITES the scene set's binding 16 (the
+        // top level structure) later in the same command buffer, so a set updated while a recording command
+        // buffer holds it invalidates that buffer. Measured before this was split out: 62 validation errors
+        // per run, every command after the update reported against a command buffer "now in an invalid
+        // state". Only the two bindings the bake reads are written; the rest of the layout stays unwritten,
+        // which is legal because this pass's shader does not statically use them.
+        vk_descriptor_set mask_bake_set = {}; // Whether that bake runs at all ([render] rt_mask_bake). On by default, because a MASK surface that
+        // is solid to a ray is a defect rather than a look - but a knob, because the bake is a per-TRIANGLE
+        // approximation of a per-pixel mask and that difference is what its measurement reads.
+        bool rt_mask_bake = true;
         bool rt_top_level_logged = false;
         // The ray-traced sun shadow pass (see shaders/rt_shadow.comp): one ray per pixel against the top
         // level structure, writing the visibility image the deferred lighting stage multiplies its sun
@@ -1880,6 +1925,18 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief whether the alphaMode MASK bake runs when the structures are built ([render] rt_mask_bake)
+         * @param enabled false = masked geometry is built OPAQUE, i.e. solid to every ray
+         * @note a no-op without ray-traced shadows or the probe cache (no structures, no bake), so a frame
+         *       with them off is byte-identical either way. It exists as a knob because the bake is an
+         *       approximation - a triangle is either in the structure or not, while the raster path discards
+         *       per fragment - and the size of that difference is what its measurement compares (see
+         *       docs/gi_hit_shading.md).
+         */
+        void set_rt_mask_bake(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief whether ANY ray-traced feature is asking for the acceleration structures
          * @note the structures serve both ray-traced features, so they are built when either wants them -
          *       and they must be, because both pipelines declare the top level structure as a descriptor:
@@ -2188,6 +2245,16 @@ namespace vulkan {
          *       lighting stage's override stays off)
          */
         std::expected<void, std::string> make_rt_shadow_pipeline(std::span<unsigned char const> compute_shader_code);
+        /**
+         * @brief create the alphaMode MASK bake pipeline from shaders/mask_bake.comp
+         * @param compute_shader_code the compiled SPIR-V
+         * @return an error string when the device has no ray queries or the pipeline could not be created
+         * @note optional like the rest of the traced features: without it a caster's geometry is built
+         *       OPAQUE and a MASK surface is solid to a ray, exactly as it is today. It runs once, on the
+         *       frame the bottom level structures are built, and writes the expanded vertex buffer each
+         *       masked caster's structure is then built from.
+         */
+        std::expected<void, std::string> make_mask_bake_pipeline(std::span<unsigned char const> compute_shader_code);
 
         /**
          * @brief set the spatial filter's strength

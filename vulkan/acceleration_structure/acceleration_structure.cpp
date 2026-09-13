@@ -98,8 +98,14 @@ namespace vulkan::acceleration_structure {
         triangles.vertexData.deviceAddress = source.vertex_address;
         triangles.vertexStride = source.vertex_stride;
         triangles.maxVertex = source.vertex_count == 0 ? 0u : source.vertex_count - 1u;
-        triangles.indexType = source.index_type;
-        triangles.indexData.deviceAddress = source.index_address;
+        // A zero index address means the geometry is NOT indexed, and the type has to say so: the module's
+        // own geometry_source documents it ("index_address may be 0 for a non-indexed geometry, which the
+        // build then reads as a flat vertex list"), but leaving the caller's index type in place sent the
+        // build to read indices from address zero instead - which the mask bake's expanded geometry would
+        // have hit on its first run (see shaders/mask_bake.comp).
+        bool const indexed = source.index_address != 0;
+        triangles.indexType = indexed ? source.index_type : VK_INDEX_TYPE_NONE_KHR;
+        triangles.indexData.deviceAddress = indexed ? source.index_address : 0;
 
         VkAccelerationStructureGeometryKHR geometry = {};
         geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;

@@ -292,9 +292,10 @@ furnace = false
 # into one band (raising the map to 8192 only sharpens the band; the ray resolves each merlon, verified by
 # comparing the three side by side).
 #
-# Two limits come with it, both structural: a MASK surface is SOLID to a ray (an inline ray query has no
-# any-hit shader to run the material's discard), and a skinned or morphed mesh casts its BIND POSE (the
-# deformation happens in the vertex shader and never reaches the memory a build reads).
+# Two limits come with it, one of which the next key removes: a MASK surface is SOLID to a ray (an inline
+# ray query has no any-hit shader to run the material's discard) unless `rt_mask_bake` is on, and a skinned
+# or morphed mesh casts its BIND POSE (the deformation happens in the vertex shader and never reaches the
+# memory a build reads).
 # NOTE on ssgi_intensity with ssgi_ray_tracing = true: the traced pass is no longer an ADDITION to the
 # probe - its rays fall back to the probe off screen, and the lighting stage stops adding its own
 # diffuse ambient so the two are not counted twice. The intensity therefore multiplies the WHOLE
@@ -302,6 +303,24 @@ furnace = false
 # dims the ambient to 70%, and 4.0 over-brightens it four times. SSAO also stops scaling the diffuse
 # ambient then, because the traced rays answer the occlusion question with real geometry instead.
 rt_shadows = false
+# rt_mask_bake: bake alphaMode MASK into the acceleration structures, so a masked surface is not SOLID to a
+# ray. A compute pass (`shaders/mask_bake.comp`) samples the material's alpha over each triangle of masked
+# geometry and COLLAPSES the triangles the mask covers nowhere - all three of their vertices written at one
+# position, which is a triangle no traversal can report a hit against. Hiding a triangle that way is only
+# safe if it owns its vertices, so the geometry is expanded to three unique vertices per triangle, made
+# non-indexed, written into a buffer of its own, and the structures and the hit shading read that copy.
+# OFF BY DEFAULT, AND THE MEASUREMENT IS WHY - this is an instrument, not a fix that worked. The plumbing is
+# verified (baking with the rule disabled is byte-identical to not baking at all: the expansion, the
+# non-indexed build and the instance table are all exact), but the RULE is a per-triangle decision standing
+# in for a per-fragment one, and on a MASK-heavy sample asset it disagrees with the raster path in the
+# expensive direction: the traced frame came out 1.29 of mean brightness BRIGHTER than the raster shadow it
+# should match, i.e. triangles the raster path still shadows (through its own filtered texel sampling) were
+# removed from the structure. The rule samples every texel of a triangle's UV footprint and keeps anything
+# it cannot walk, so it does not remove geometry it has not looked at - what it cannot do is reproduce a
+# PER-PIXEL mask, which is exactly the limitation the mechanism has and the reason a better answer needs a
+# different mechanism (subdividing along the mask boundary, or the opacity-micromap extension).
+# A no-op without `rt_shadows` and without a traced GI frame: no structures, no bake, byte-identical.
+rt_mask_bake = false
 
 # fxaa: anti-alias the final image (one extra fullscreen pass over the tonemapped LDR image).
 # Cheap and hardware-independent, but it is a screen-space blur of edges: it softens fine detail and

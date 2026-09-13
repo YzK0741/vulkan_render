@@ -145,11 +145,15 @@ evidence for a GI change, and `docs/gi_hit_shading.md`'s tables are the instrume
 
 ## 4. Then L2.2 and L2.3
 
-L2.2 alphaMode MASK: with inline ray queries there is no any-hit stage, so the mask is baked into the
-acceleration structure - a compute pass evaluates the mask and collapses masked-out triangles to degenerate
-ones in the position buffer the BLAS reads, which requires masked geometry to be expanded to three unique
-vertices per triangle and made non-indexed. UE's own fallback when no any-hit shader is available is the
-silent solidity this renderer has, so this is a limitation with a known fix.
+L2.2 alphaMode MASK: BUILT AND MEASURED, AND IT IS OFF BY DEFAULT because the measurement was negative.
+`shaders/mask_bake.comp` resolves the mask before the build and writes an expanded, non-indexed copy of the
+masked geometry with the empty triangles collapsed, exactly the mechanism this section described; the
+plumbing is proven exact (baking with the rule disabled is byte-identical to not baking), but the
+per-triangle RULE moves a ray-traced shadow 1.29 of mean brightness AWAY from the raster reference on a
+MASK-heavy sample asset - it deletes triangles the raster path still shadows, because a triangle cannot
+represent a per-pixel mask. `[render] rt_mask_bake` defaults to false and exists so the next attempt can be
+measured; `docs/gi_hit_shading.md`'s L2.2 section has the numbers, the three rules compared, and what a
+better answer needs (subdivision along the mask boundary, or opacity micromaps).
 
 L2.2 skinned meshes: genuinely larger than it looks. UE's zero-copy path depends on having a compute skinning
 cache whose float3 position buffer IS the BLAS vertex buffer; this engine skins in the VERTEX shader

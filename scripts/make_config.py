@@ -182,6 +182,7 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssgi_spatial_sigma = {cfg['ssgi_spatial_sigma']}",
         f"ssgi_upsample = {str(cfg['ssgi_upsample']).lower()}",
         f"rt_shadows = {str(cfg['rt_shadows']).lower()}",
+        f"rt_mask_bake = {str(cfg['rt_mask_bake']).lower()}",
         f"ssgi_ray_tracing = {str(cfg['ssgi_ray_tracing']).lower()}",
         f"ssgi_bounce = {cfg['ssgi_bounce']}",
         f"ssgi_probes = {str(cfg['ssgi_probes']).lower()}",
@@ -345,6 +346,12 @@ def ask_all(output_dir: str) -> dict:
         False,
         hint="ray-traced sun shadows (needs a device with ray queries; ignored elsewhere)",
     )
+    rt_mask_bake = ask_bool(
+        "render.rt_mask_bake",
+        False,
+        hint="bake alphaMode MASK into the acceleration structures (an instrument: its per-triangle rule "
+             "measured worse than the raster path, so it is off by default)",
+    )
 
     print("\n-- gui (debug overlay) --")
     gui_show = ask_bool("gui.show", True, hint="Dear ImGui debug overlay on by default")
@@ -400,6 +407,7 @@ def ask_all(output_dir: str) -> dict:
         "ssgi_spatial_sigma": ssgi_spatial_sigma,
         "ssgi_upsample": ssgi_upsample,
         "rt_shadows": rt_shadows,
+        "rt_mask_bake": rt_mask_bake,
         "ssgi_ray_tracing": ssgi_ray_tracing,
         "ssgi_bounce": ssgi_bounce,
         "ssgi_probes": ssgi_probes,

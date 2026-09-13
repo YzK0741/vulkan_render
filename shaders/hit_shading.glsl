@@ -120,19 +120,26 @@ vec3 fresnel_schlick(float cos_theta, vec3 f0) {
  * only option here and the better one: it is per-triangle rather than per-quad.
  */
 vec3 hit_surface(hit_instance instance, uint triangle, vec2 bary, bool front_facing, out vec2 out_uv) {
-    GeometryWords indices = GeometryWords(instance.index_address);
     const uint base = triangle * 3u;
     uint vertex_indices[3];
-    for (uint k = 0u; k < 3u; ++k) {
-        const uint i = base + k;
-        // VkIndexType: UINT16 is 0 and UINT32 is 1 (UINT8_EXT is not something the loader produces), so
-        // the 16-bit case is the one that has to read a half of a word. Getting this backwards does not
-        // mis-shade a triangle - it reads a different INDEX, whose vertex lies outside the buffer.
-        if (instance.index_type == 0u) { // VK_INDEX_TYPE_UINT16
-            const uint word = indices.values[i >> 1u];
-            vertex_indices[k] = (i & 1u) == 0u ? (word & 0xFFFFu) : (word >> 16u);
-        } else {
-            vertex_indices[k] = indices.values[i]; // VK_INDEX_TYPE_UINT32
+    if (instance.index_address == 0u) {
+        // NO INDEX BUFFER: this geometry is the mask bake's EXPANDED copy - three unique vertices per
+        // triangle, with the ones a material's alphaMode MASK cut out written at a single position so no ray
+        // can hit them (see shaders/mask_bake.comp) - so the triangle's vertices are simply consecutive.
+        vertex_indices = uint[3](base, base + 1u, base + 2u);
+    } else {
+        GeometryWords indices = GeometryWords(instance.index_address);
+        for (uint k = 0u; k < 3u; ++k) {
+            const uint i = base + k;
+            // VkIndexType: UINT16 is 0 and UINT32 is 1 (UINT8_EXT is not something the loader produces), so
+            // the 16-bit case is the one that has to read a half of a word. Getting this backwards does not
+            // mis-shade a triangle - it reads a different INDEX, whose vertex lies outside the buffer.
+            if (instance.index_type == 0u) { // VK_INDEX_TYPE_UINT16
+                const uint word = indices.values[i >> 1u];
+                vertex_indices[k] = (i & 1u) == 0u ? (word & 0xFFFFu) : (word >> 16u);
+            } else {
+                vertex_indices[k] = indices.values[i]; // VK_INDEX_TYPE_UINT32
+            }
         }
     }
     vec3 positions[3];

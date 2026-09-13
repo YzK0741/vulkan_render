@@ -185,6 +185,11 @@ namespace app_config {
                     settings.render.rt_shadows = *value;
                 }
             }
+            if (toml::node const* node = render->get("rt_mask_bake")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.rt_mask_bake = *value;
+                }
+            }
             if (toml::node const* node = render->get("camera_fit")) {
                 if (std::optional<std::string> const value = node->value<std::string>()) {
                     settings.render.camera_fit = *value;

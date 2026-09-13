@@ -209,6 +209,9 @@ int main(int argc, char** argv) {
     // ray queries, and the acceleration structures are built by the first frame that records with it on
     // (the caster set they are built from is only complete once the scene is loaded and culled).
     runtime.set_rt_shadows(settings.render.rt_shadows);
+    // ... and the alphaMode MASK bake, which is what keeps a masked surface from being SOLID to those rays:
+    // a compute pass collapses the triangles the material's alpha cuts out, before the structures are built.
+    runtime.set_rt_mask_bake(settings.render.rt_mask_bake);
     if (settings.render.ssgi) {
         utility::log("ssgi: screen-space GI on (intensity {:.2f}, radius {:.2f} scene radii, {} rays x {} steps at half res)",
                      settings.render.ssgi_intensity, settings.render.ssgi_radius, settings.render.ssgi_rays, settings.render.ssgi_steps);

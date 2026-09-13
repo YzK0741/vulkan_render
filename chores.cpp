@@ -310,6 +310,19 @@ namespace chores {
             } else {
                 utility::log("SUCCESS: ray-traced sun shadow pipeline created (one ray per pixel, terminated on first hit)");
             }
+
+            // The alphaMode MASK bake (shaders/mask_bake.comp), created here for the same reason and with
+            // the same optionality: without it a MASK surface is solid to a ray. It runs once, inside the
+            // command buffer that builds the bottom level structures, and the structures of masked casters
+            // are built from the expanded, mask-baked copy of their vertices instead of the original ones.
+            std::vector<unsigned char> mask_bake_code;
+            load_shader(shaders_dir, "mask_bake.comp.spv", mask_bake_code);
+            auto const mask_bake_result = runtime.make_mask_bake_pipeline(mask_bake_code);
+            if (!mask_bake_result) {
+                utility::log("alphaMode MASK bake unavailable: {} (masked geometry stays solid to a ray)", mask_bake_result.error());
+            } else {
+                utility::log("SUCCESS: alphaMode MASK bake pipeline created (the mask is collapsed into the structures)");
+            }
         }
     }
 

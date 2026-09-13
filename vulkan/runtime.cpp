@@ -282,6 +282,12 @@ namespace vulkan {
             vkDestroyPipelineLayout(this->vulkan_core.device, this->rt_shadow_pipeline_layout, nullptr);
             this->rt_shadow_pipeline_layout = VK_NULL_HANDLE;
         }
+        if (this->mask_bake_pipeline_layout != VK_NULL_HANDLE) {
+            // It owns no set layout either (it is created from the scene one), so only the layout. Its
+            // descriptor set is a vk_descriptor_set member, which frees itself with the pool still alive.
+            vkDestroyPipelineLayout(this->vulkan_core.device, this->mask_bake_pipeline_layout, nullptr);
+            this->mask_bake_pipeline_layout = VK_NULL_HANDLE;
+        }
         if (this->ssgi_spatial_pipeline_layout != VK_NULL_HANDLE) {
             // it owns no set layout (it binds the shared scene and G-buffer sets), so only the layout
             vkDestroyPipelineLayout(this->vulkan_core.device, this->ssgi_spatial_pipeline_layout, nullptr);
@@ -3743,6 +3749,48 @@ namespace vulkan {
         return true;
     }
 
+    std::expected<void, std::string> runtime::make_mask_bake_pipeline(std::span<unsigned char const> const compute_shader_code) {
+        if (!this->vulkan_core.ray_query_available) {
+            return std::unexpected(std::string("mask bake: this device has no ray queries (VK_KHR_acceleration_structure + VK_KHR_ray_query)"));
+        }
+        // The scene set ALONE, because everything the bake reads is in it: the material table (the alpha
+        // texture's index, the base colour factor's alpha, the cutoff) and the bindless texture array.
+        auto built = pipelines::build_mask_bake(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, sizeof(mask_bake_push_constants), compute_shader_code);
+        if (!built) {
+            return std::unexpected(std::move(built.error()));
+        }
+        this->mask_bake_pipeline_layout = built->pipeline_layout;
+        this->mask_bake_pipeline = std::move(built->trace);
+
+        // The bake's own set (see the member's comment for why it is not the scene set): the layout is the
+        // scene one, so binding 1 is the bindless texture array and binding 5 the material table, exactly as
+        // the raster path declares them. Written once, here, when both already exist.
+        auto const* const material_detail = this->vulkan_core.vma.get_buffer_detail(this->material_buffer.handle());
+        if (material_detail == nullptr || this->owned_texture_views.empty() || this->texture_sampler.get() == VK_NULL_HANDLE) {
+            return std::unexpected(std::string("mask bake: the material table or the texture array is not ready"));
+        }
+        this->mask_bake_set = this->vulkan_core.make_descriptor_set(this->vulkan_core.scene_descriptor_set_layout);
+        if (this->mask_bake_set.get() == VK_NULL_HANDLE) {
+            return std::unexpected(std::string("mask bake: descriptor set allocation failed"));
+        }
+        VkDescriptorImageInfo const textures_info = {
+            .sampler = *this->texture_sampler, .imageView = *this->owned_texture_views[0], .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorBufferInfo const materials_info = {.buffer = material_detail->buffer, .offset = 0, .range = VK_WHOLE_SIZE};
+        std::array<VkWriteDescriptorSet, 2> writes = {};
+        for (uint32_t b = 0; b < writes.size(); ++b) {
+            writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[b].dstSet = this->mask_bake_set.get();
+            writes[b].dstBinding = b == 0u ? 1u : 5u; // the texture array, then the material table
+            writes[b].dstArrayElement = 0;
+            writes[b].descriptorCount = 1;
+            writes[b].descriptorType = b == 0u ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[b].pImageInfo = b == 0u ? &textures_info : nullptr;
+            writes[b].pBufferInfo = b == 0u ? nullptr : &materials_info;
+        }
+        vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        return {};
+    }
+
     std::expected<void, std::string> runtime::make_rt_shadow_pipeline(std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         if (!this->vulkan_core.ray_query_available) {
@@ -4945,6 +4993,12 @@ namespace vulkan {
         this->light_state.rt_shadows = (enabled && this->rt_shadow_pipeline.has_value() && this->vulkan_core.ray_query_available) ? 1.0f : 0.0f;
     }
 
+    void runtime::set_rt_mask_bake(bool const enabled) noexcept {
+        // Read once, when the structures are built (see record_acceleration_structures): the bake is startup
+        // work and the structures are built once, so this can only be settled before the first traced frame.
+        this->rt_mask_bake = enabled;
+    }
+
     bool runtime::rt_structures_wanted() const noexcept {
         // `ssgi_on` rather than `ssgi_on && ssgi_ray_tracing`: the GI tracer is ONE shader that declares
         // the top level structure as a binding whether or not its traced branch runs, and a shader that
@@ -4980,6 +5034,12 @@ namespace vulkan {
         // the structures follow whatever those buffers hold.
         uint32_t skipped_no_address = 0;
         uint32_t skipped_no_stride = 0;
+        // The mask bake: how many casters had an alphaMode MASK baked into their geometry, and how many
+        // could not be (an allocation failure falls back to the documented solid behaviour rather than
+        // failing the whole build).
+        uint32_t mask_baked = 0;
+        uint32_t skipped_mask_buffers = 0;
+        bool mask_bakes_recorded = false;
         for (primitive const* caster : this->shadow_casters) {
             if (caster == nullptr) {
                 continue;
@@ -5006,24 +5066,122 @@ namespace vulkan {
             }
             vertex_address_info.buffer = vertex_detail->buffer;
             index_address_info.buffer = index_detail->buffer;
-            acceleration_structure::geometry_source const source = {
-                .vertex_address = vkGetBufferDeviceAddress(vk.device, &vertex_address_info),
-                .vertex_stride = caster->vertex_stride,
-                .vertex_count = caster->vertex_count,
-                .index_address = vkGetBufferDeviceAddress(vk.device, &index_address_info),
-                .index_type = caster->index_type,
-                .index_count = caster->index_count,
-            };
+            VkDeviceAddress const source_vertex_address = vkGetBufferDeviceAddress(vk.device, &vertex_address_info);
+            VkDeviceAddress const source_index_address = vkGetBufferDeviceAddress(vk.device, &index_address_info);
+
+            // alphaMode MASK: bake the material's holes into an EXPANDED copy of this caster's vertices and
+            // build the structure from that. An inline ray query has no any-hit stage, so a traversal cannot
+            // run the material's discard - this pass is where the mask is applied instead, and it is startup
+            // work because the structures are built once and a MASK material is a property of the file (see
+            // shaders/mask_bake.comp for the rule and for what the mechanism cannot represent).
+            VkDeviceAddress mask_address = 0;
+            uint32_t mask_stride = 0;
+            if (this->rt_mask_bake && this->mask_bake_pipeline.has_value() && this->material_mapped != nullptr) {
+                // material_record::flags bit 4 is alphaMode MASK (see vulkan/primitive.cppm; the bits are
+                // literals in register_material, so they are literals here too).
+                uint32_t const material_index = caster->push.material_index.value;
+                material_record const* const material =
+                    material_index < this->material_count
+                        ? reinterpret_cast<material_record const*>(static_cast<unsigned char const*>(this->material_mapped) + static_cast<std::size_t>(material_index) * sizeof(material_record))
+                        : nullptr;
+                if (material != nullptr && (material->flags & 16u) != 0u && caster->index_count >= 3u) {
+                    // Three vertices per triangle, 32 bytes each: position(3) + normal(3) + uv(2), which is
+                    // what the hit shading reads (offsets 0, 3 and 6). GPU-only and never mapped - the bake
+                    // fills it and the build reads it.
+                    constexpr uint32_t mask_vertex_stride = 32u;
+                    uint64_t const expanded_bytes = static_cast<uint64_t>(caster->index_count) * mask_vertex_stride;
+                    vk_buffer expanded = vk.vma.create_buffer(nullptr, expanded_bytes, buffer_type::storage_gpu_only, acceleration_structure::build_input_usage);
+                    auto const* const expanded_detail = expanded.valid() ? vk.vma.get_buffer_detail(expanded.handle()) : nullptr;
+                    if (expanded_detail != nullptr) {
+                        VkBufferDeviceAddressInfo const expanded_info = {
+                            .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = expanded_detail->buffer};
+                        mask_address = vkGetBufferDeviceAddress(vk.device, &expanded_info);
+                        mask_stride = mask_vertex_stride;
+
+                        mask_bake_push_constants bake = {};
+                        auto const halves = [](VkDeviceAddress const address) {
+                            return glm::uvec2(static_cast<uint32_t>(address & 0xFFFFFFFFu), static_cast<uint32_t>(address >> 32u));
+                        };
+                        bake.source_vertices = halves(source_vertex_address);
+                        bake.source_indices = halves(source_index_address);
+                        bake.destination = halves(mask_address);
+                        bake.source_stride = caster->vertex_stride;
+                        bake.destination_stride = mask_vertex_stride;
+                        bake.index_type = static_cast<uint32_t>(caster->index_type);
+                        bake.triangle_count = caster->index_count / 3u;
+                        bake.material_index = material_index;
+                        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->mask_bake_pipeline->get_pipeline());
+                        // The bake's own set - NOT the frame's scene set, which this same command buffer
+                        // will have updated by the end of the frame (binding 16). See the member's comment.
+                        VkDescriptorSet const bake_set = this->mask_bake_set.get();
+                        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->mask_bake_pipeline_layout, 0, 1, &bake_set, 0, nullptr);
+                        vkCmdPushConstants(command_buffer, this->mask_bake_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(bake), &bake);
+                        constexpr uint32_t mask_bake_group = 64; // shaders/mask_bake.comp's local_size_x
+                        vkCmdDispatch(command_buffer, (bake.triangle_count + mask_bake_group - 1u) / mask_bake_group, 1, 1);
+                        mask_bakes_recorded = true;
+                        ++mask_baked;
+                        // The buffer outlives this loop: the build below reads it, and a hit's shading reads
+                        // its vertices through the instance table for as long as the structures live.
+                        this->rt_mask_buffers.push_back(std::move(expanded));
+                    } else {
+                        ++skipped_mask_buffers;
+                    }
+                }
+            }
+
+            acceleration_structure::geometry_source const source =
+                mask_address != 0
+                    ? acceleration_structure::geometry_source{.vertex_address = mask_address,
+                                                              .vertex_stride = mask_stride,
+                                                              .vertex_count = caster->index_count,
+                                                              .index_address = 0,
+                                                              .index_type = caster->index_type,
+                                                              .index_count = caster->index_count}
+                    : acceleration_structure::geometry_source{.vertex_address = source_vertex_address,
+                                                              .vertex_stride = caster->vertex_stride,
+                                                              .vertex_count = caster->vertex_count,
+                                                              .index_address = source_index_address,
+                                                              .index_type = caster->index_type,
+                                                              .index_count = caster->index_count};
             auto const added = structures.add(source);
             if (!added) {
                 utility::log("ray-traced shadows disabled: {}", added.error());
                 this->rt_bottom_levels.reset();
                 this->rt_top_levels.reset();
+                // The expansion buffers and the caster mapping go with the structures they belong to: a
+                // stale mapping would have the instance list read geometry no structure was built from.
+                this->rt_mask_buffers.clear();
+                this->rt_caster_levels.clear();
                 return;
             }
             // Remember which caster got which index: the per-frame instance list walks THIS, so a
-            // caster that was skipped above is skipped there too and the two walks cannot disagree.
-            this->rt_caster_levels.emplace_back(caster, added.value());
+            // caster that was skipped above is skipped there too and the two walks cannot disagree. The
+            // mask addresses ride along, because that list is what a hit's shading reads the geometry
+            // through - a masked caster must be read from the EXPANDED copy the mask was baked into.
+            this->rt_caster_levels.emplace_back(rt_caster_level{.caster = caster, .blas_index = added.value(), .mask_stride = mask_stride, .mask_vertex_address = mask_address});
+        }
+
+        // Every bake wrote a buffer the build below reads: one barrier covers them all, because every
+        // dispatch is recorded before the first build (add() only sizes and allocates; record_build()
+        // records). A compute WRITE is not visible to an acceleration structure build without it, and the
+        // symptom would be a structure built from an empty buffer - i.e. geometry that stops casting.
+        if (mask_bakes_recorded) {
+            VkMemoryBarrier2 bake_order = {};
+            bake_order.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+            bake_order.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            bake_order.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+            bake_order.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+            bake_order.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            VkDependencyInfo const bake_dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                                      .pNext = nullptr,
+                                                      .dependencyFlags = 0,
+                                                      .memoryBarrierCount = 1,
+                                                      .pMemoryBarriers = &bake_order,
+                                                      .bufferMemoryBarrierCount = 0,
+                                                      .pBufferMemoryBarriers = nullptr,
+                                                      .imageMemoryBarrierCount = 0,
+                                                      .pImageMemoryBarriers = nullptr};
+            vkCmdPipelineBarrier2(command_buffer, &bake_dependency);
         }
 
         if (auto const built = structures.record_build(command_buffer); !built) {
@@ -5047,6 +5205,12 @@ namespace vulkan {
         if (skipped_no_address != 0) {
             utility::log("  {} casters skipped (no vertex/index buffer)", skipped_no_address);
         }
+        if (mask_baked != 0 || skipped_mask_buffers != 0) {
+            // The measurement this feature is read with: how much geometry the mask actually removed is a
+            // property of the asset (a two-quad MASK plane whose pattern is in the middle keeps every
+            // triangle; a vase of flowers loses 40% of them - see docs/gi_hit_shading.md).
+            utility::log("ray-traced shadows: {} MASK casters baked into their structures ({} could not be - those stay solid to a ray)", mask_baked, skipped_mask_buffers);
+        }
     }
 
     void runtime::record_top_level_structure(VkCommandBuffer const command_buffer) {
@@ -5065,26 +5229,39 @@ namespace vulkan {
         // The instance list is the caster set the shadow pass draws, with the world matrix the raster
         // passes use for each caster - the same matrix shadow_geometry_signature() hashes, which is why
         // an animated or moved caster is reflected here for free.
-        for (auto const& [caster, level] : this->rt_caster_levels) {
+        for (auto const& built : this->rt_caster_levels) {
+            primitive const* const caster = built.caster;
             // The addresses a hit-shading path reads the hit triangle from: the same buffers, and the
             // same vkGetBufferDeviceAddress calls, the bottom level build above already used for this
             // caster - so the triangle a shader fetches with them IS the triangle the ray hit. They are
             // the buffers' base addresses (the build applies no offset), which is also what makes them
             // legal as a buffer reference: a buffer's address is aligned, an offset into one need not be.
-            VkBufferDeviceAddressInfo const vertex_address_info = {
-                .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = caster->vertex_detail->buffer};
-            VkBufferDeviceAddressInfo const index_address_info = {
-                .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = caster->index_detail->buffer};
+            //
+            // For a caster whose alphaMode MASK was baked, the address is the EXPANDED copy instead and the
+            // index address is ZERO - three unique vertices per triangle with no index buffer, which is what
+            // shaders/hit_shading.glsl reads as a flat vertex list.
+            VkDeviceAddress vertex_address = built.mask_vertex_address;
+            VkDeviceAddress index_address = 0;
+            uint32_t vertex_stride = built.mask_stride;
+            if (vertex_address == 0) {
+                VkBufferDeviceAddressInfo const vertex_address_info = {
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = caster->vertex_detail->buffer};
+                VkBufferDeviceAddressInfo const index_address_info = {
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = caster->index_detail->buffer};
+                vertex_address = vkGetBufferDeviceAddress(vk.device, &vertex_address_info);
+                index_address = vkGetBufferDeviceAddress(vk.device, &index_address_info);
+                vertex_stride = caster->vertex_stride;
+            }
             acceleration_structure::instance_source const instance = {
                 .transform = caster->push.model,
-                .blas_index = level,
-                .record = {.vertex_address = vkGetBufferDeviceAddress(vk.device, &vertex_address_info),
-                           .index_address = vkGetBufferDeviceAddress(vk.device, &index_address_info),
+                .blas_index = built.blas_index,
+                .record = {.vertex_address = vertex_address,
+                           .index_address = index_address,
                            .model = caster->push.model,
-                           .vertex_stride = caster->vertex_stride,
+                           .vertex_stride = vertex_stride,
                            .index_type = static_cast<uint32_t>(caster->index_type),
                            .material_index = caster->push.material_index.value,
-                           .primitive_index = level},
+                           .primitive_index = built.blas_index},
             };
             if (auto const added = top.add(levels, instance); !added) {
                 utility::log("runtime: {}", added.error());

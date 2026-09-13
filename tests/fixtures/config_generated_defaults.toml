@@ -61,6 +61,7 @@ ssgi_steps = 6
 ssgi_spatial_sigma = 2.0
 ssgi_upsample = true
 rt_shadows = false
+rt_mask_bake = false
 ssgi_ray_tracing = false
 ssgi_bounce = 0.0
 ssgi_probes = false

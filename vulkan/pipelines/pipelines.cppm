@@ -74,6 +74,10 @@ namespace vulkan::pipelines {
     /// camera, the light UBO and - when the device has ray tracing - the top level structure; the
     /// G-buffer set carries the surface the ray starts from)
     export std::expected<ssgi_owned, std::string> build_rt_shadow(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    /// the mask bake: a compute pass over the shared scene set only (the material table and the texture
+    /// array), which collapses the triangles a material's alphaMode MASK cuts out and writes the expanded
+    /// vertices a bottom level structure is then built from - see shaders/mask_bake.comp
+    export std::expected<ssgi_owned, std::string> build_mask_bake(core& vk, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
 
     /// what build_ssgi_temporal() creates: the denoiser's set layout (it owns one - its inputs are
     /// the trace, the history, the motion vectors and the depth, which no other pass groups together)
@@ -351,6 +355,53 @@ namespace vulkan::pipelines {
         VkPipeline pipeline = VK_NULL_HANDLE;
         if (vkCreateComputePipelines(vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("ssgi: vkCreateComputePipelines failed");
+        }
+        out.trace = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
+        return out;
+    }
+
+    // The mask bake (see shaders/mask_bake.comp): a compute pipeline over the shared scene set ALONE, because
+    // everything it needs is there - the material table for the alpha texture's index and the cutoff, and the
+    // bindless texture array to sample it. It owns no set layout, like the tracer, and it is the only compute
+    // pass here whose output is not an image: it writes vertices into a buffer the acceleration structure is
+    // then built from.
+    std::expected<ssgi_owned, std::string> build_mask_bake(core& vk, VkDescriptorSetLayout const scene_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+        using fail = std::unexpected<std::string>;
+        ssgi_owned out;
+
+        VkPushConstantRange push_range = {};
+        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        push_range.offset = 0;
+        push_range.size = push_constant_size;
+
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &scene_layout;
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+            return fail("mask bake: pipeline layout creation failed");
+        }
+
+        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, vk.device);
+        if (!module.has_value()) {
+            return fail("mask bake: compute shader module creation failed");
+        }
+        VkPipelineShaderStageCreateInfo stage_info = {};
+        stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage_info.module = **module;
+        stage_info.pName = "main";
+
+        VkComputePipelineCreateInfo pipeline_info = {};
+        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.stage = stage_info;
+        pipeline_info.layout = out.pipeline_layout;
+
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        if (vkCreateComputePipelines(vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+            return fail("mask bake: vkCreateComputePipelines failed");
         }
         out.trace = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
         return out;

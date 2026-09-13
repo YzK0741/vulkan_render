@@ -30,6 +30,7 @@ namespace {
         CHECK(settings.render.ssgi_spatial_sigma > 3.49f && settings.render.ssgi_spatial_sigma < 3.51f);
         CHECK(!settings.render.ssgi_upsample);                                             // fixture: the bilinear fetch (the measurement setting)
         CHECK(settings.render.rt_shadows);                                                 // fixture: the ray-traced sun shadows
+        CHECK(!settings.render.rt_mask_bake);                                              // fixture: the bake off (the A/B)
         CHECK(settings.render.ssgi_ray_tracing);                                           // fixture: traced GI rays
         CHECK(settings.render.ssgi_bounce > 0.59f && settings.render.ssgi_bounce < 0.61f); // fixture: multi-bounce on
         CHECK(settings.render.ssgi_probes);                                                // fixture: the world-space probe cache
@@ -73,6 +74,7 @@ namespace {
         CHECK(settings.render.ssgi_spatial_sigma > 1.99f && settings.render.ssgi_spatial_sigma < 2.01f);
         CHECK(settings.render.ssgi_upsample);           // default: the joint-bilateral upsample
         CHECK(!settings.render.rt_shadows);             // default: the cascaded shadow maps, not traced rays
+        CHECK(!settings.render.rt_mask_bake);           // default: OFF - the per-triangle rule measured worse than the raster path
         CHECK(settings.render.shadow_map_size == 2048); // default: 2048^2 per cascade layer
         CHECK(settings.gui.show);
     }
@@ -156,6 +158,7 @@ namespace {
         CHECK(settings.render.ssgi_upsample);
         // [render] ray tracing: written by the generator like every other switch, so it round-trips
         CHECK(!settings.render.rt_shadows);
+        CHECK(!settings.render.rt_mask_bake); // default: the mask bake is off (see the generated-defaults fixture)
         CHECK(!settings.render.ssgi_ray_tracing);
         CHECK(settings.render.ssgi_bounce > -0.01f && settings.render.ssgi_bounce < 0.01f); // default: single bounce
         CHECK(!settings.render.ssgi_probes);                                                // default: the screen-space chain alone

@@ -58,6 +58,7 @@ import utility;
  * ssgi_spatial_sigma = 2.0  # GI spatial filter width in GI texels; 0 = off (a pass-through)
  * ssgi_upsample = true  # joint-bilateral upsample of the half-res GI in the composite; false = bilinear
  * rt_shadows = false    # ray-traced sun shadows (needs a device with ray queries; else ignored)
+ * rt_mask_bake = false  # bake alphaMode MASK into the acceleration structures (off: the rule measured worse)
  * ssgi_ray_tracing = false # trace the GI rays instead of marching the depth buffer (same conditions)
  * ssgi_bounce = 0.0     # re-emit this fraction of the previous frame's indirect at a hit (multi-bounce)
  * ssgi_probes = false   # world-space probe cache: answers for hits the screen cannot resolve
@@ -164,6 +165,15 @@ namespace app_config {
         // granted only on a device with ray queries - a device without them keeps running the cascaded
         // maps, which is what makes the key safe to leave in a shared config file.
         bool rt_shadows = false;
+        // Bake alphaMode MASK into the acceleration structures ([render] rt_mask_bake): a compute pass
+        // collapses the triangles a material's alpha covers nowhere, so a ray-traced shadow can agree with
+        // the raster one instead of treating the surface as solid. OFF BY DEFAULT, because the measurement
+        // says the per-triangle rule is not good enough to be on: on a MASK-heavy sample asset it removes
+        // triangles the raster path's own filtered sampling keeps, and the frame comes out 1.29 of mean
+        // brightness BRIGHTER than the raster shadow it should match (docs/gi_hit_shading.md's L2.2
+        // section has the numbers and the verified plumbing). It stays as an instrument: a knob is the only
+        // way to measure the next attempt at the same mechanism.
+        bool rt_mask_bake = false;
         // Trace the screen-space GI rays against the acceleration structures instead of marching the depth
         // buffer ([render] ssgi_ray_tracing). Same estimator, better hit oracle; ignored unless the device
         // has ray queries and ssgi itself is on.

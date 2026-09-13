@@ -200,9 +200,11 @@ namespace {
         }
         case vulkan::buffer_type::acceleration_structure_storage:
             [[fallthrough]];
-        case vulkan::buffer_type::acceleration_structure_scratch: {
-            // Both are device-local and host-untouched: an AS and its scratch are written only by a
-            // build command, so there is nothing to map and nothing to keep coherent.
+        case vulkan::buffer_type::acceleration_structure_scratch:
+            [[fallthrough]];
+        case vulkan::buffer_type::storage_gpu_only: {
+            // All three are device-local and host-untouched: an AS, its scratch and a compute-written
+            // storage buffer are filled by GPU work and never mapped, so there is nothing to keep coherent.
             info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
             break;
         }
@@ -280,6 +282,11 @@ namespace {
             break;
         }
         case vulkan::buffer_type::acceleration_structure_scratch: {
+            info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+            break;
+        }
+        case vulkan::buffer_type::storage_gpu_only: {
             info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
             break;
@@ -854,9 +861,10 @@ namespace vulkan {
 
         case buffer_type::acceleration_structure_storage:
         case buffer_type::acceleration_structure_scratch:
-            // Allocate only, and REFUSE to take contents: these two are filled by a build command on
-            // the GPU, so a data pointer here is a caller that meant a different buffer type - and
-            // staging_upload() would memcpy from it rather than say so.
+        case buffer_type::storage_gpu_only:
+            // Allocate only, and REFUSE to take contents: these are filled by GPU work (a build command, or
+            // a compute pass for the mask bake), so a data pointer here is a caller that meant a different
+            // buffer type - and staging_upload() would memcpy from it rather than say so.
             upload_success = data == nullptr;
             break;
         }
