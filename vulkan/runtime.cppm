@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.30.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.31.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -238,6 +238,8 @@ namespace vulkan {
         // which is why the label table is one entry shorter than the mark list.
         enum class gpu_mark_id : uint32_t {
             frame_begin = 0, // first command of the frame (TOP_OF_PIPE)
+            rt_build_end,    // after the acceleration-structure builds (the bottom levels on the frame
+                             // that creates them, the top level every frame after it)
             shadow_end,      // after the shadow pass + its sampling barrier
             scene_end,       // after the geometry instance: forward main (opaque + transparent), or
                              // the background + G-buffer pass in the deferred path
@@ -267,6 +269,7 @@ namespace vulkan {
             bool new_line; // begin a new line in the overlay report
         };
         static constexpr std::array<gpu_timing_label, gpu_mark_count - 1> gpu_timing_labels = {{
+            {"rt", false},
             {"shadow", false},
             {"scene", false},
             {"lighting", false},
@@ -952,8 +955,17 @@ namespace vulkan {
         // command against structures whose scratch has already been sized and freed.
         std::optional<acceleration_structure::bottom_level_structures> rt_bottom_levels = {};
         bool rt_structures_attempted = false; // built once, success or failure: no retry, no log spam
+        // The top level structure and the mapping from the bottom level indices back to the casters
+        // they were built from: the instance list walks THAT, not the caster set again, because a caster
+        // whose geometry could not be built (no buffer, no stride) has no bottom level and must not get
+        // an instance either - and the two walks have to agree about which index is which.
+        std::optional<acceleration_structure::top_level_structure> rt_top_levels = {};
+        std::vector<std::pair<primitive const*, uint32_t>> rt_caster_levels = {};
+        bool rt_top_level_logged = false;
         /** @brief record the one-time acceleration-structure build into the frame's command buffer */
         void record_acceleration_structures(VkCommandBuffer command_buffer);
+        /** @brief record this frame's top level structure (the culled instance list) */
+        void record_top_level_structure(VkCommandBuffer command_buffer);
         // scene center handed to enable_shadows. The fit falls back to center +- scene_radius when a
         // shadow caster has no world AABB of its own AND is not an instanced draw whose instance
         // matrices we can read (see instanced_world_aabb).

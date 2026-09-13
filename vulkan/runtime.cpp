@@ -1658,6 +1658,17 @@ namespace vulkan {
         //      with the flag on renders exactly like one with it off - what this records is the input
         //      the ray-traced pass will need, not a change to the image.
         this->record_acceleration_structures(*command_buffer);
+        // ... and the top level structure, which is rebuilt EVERY frame: the instance set is culled per
+        // frame and a caster's world matrix can change (animation, a moved node), so the instance list
+        // is frame data like any other. On the frame that builds the bottom levels it is a no-op for
+        // the reasons above (nothing to trace yet); from the next frame on it is the structure a shadow
+        // ray will traverse.
+        this->record_top_level_structure(*command_buffer);
+        // GPU timing: the structures' builds end here. Written UNCONDITIONALLY, like every other mark -
+        // a frame that skips a pass still writes its mark next to the previous one (0 ms interval), and
+        // the report's labels are positional: leaving a gap here relabeled the whole frame ("marks
+        // recorded out of order", which the harness caught on all seven scenarios at once).
+        this->gpu_mark(*command_buffer, gpu_mark_id::rt_build_end, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
 
         // ---- Shadow pass: render the scene's depth from the light into this slot's shadow map.
         //      Drawn before the main pass; the depth-only pipeline shares the flat scene layout
@@ -4274,6 +4285,9 @@ namespace vulkan {
 
         auto const start = std::chrono::steady_clock::now();
         this->rt_bottom_levels.emplace(vk);
+        // The top level structure is per FRAME SLOT (see its class docs): with frames in flight one
+        // buffer would be rewritten by the frame being recorded while the previous one still reads it.
+        this->rt_top_levels.emplace(vk, vulkan::core::MAX_FRAMES_IN_FLIGHT);
         auto& structures = *this->rt_bottom_levels;
 
         // One structure per SHADOW CASTER, which is the set the shadow pass itself draws (and the
@@ -4317,16 +4331,22 @@ namespace vulkan {
                 .index_type = caster->index_type,
                 .index_count = caster->index_count,
             };
-            if (auto const added = structures.add(source); !added) {
+            auto const added = structures.add(source);
+            if (!added) {
                 utility::log("ray-traced shadows disabled: {}", added.error());
                 this->rt_bottom_levels.reset();
+                this->rt_top_levels.reset();
                 return;
             }
+            // Remember which caster got which index: the per-frame instance list walks THIS, so a
+            // caster that was skipped above is skipped there too and the two walks cannot disagree.
+            this->rt_caster_levels.emplace_back(caster, added.value());
         }
 
         if (auto const built = structures.record_build(command_buffer); !built) {
             utility::log("ray-traced shadows disabled: {}", built.error());
             this->rt_bottom_levels.reset();
+            this->rt_top_levels.reset();
             return;
         }
 
@@ -4343,6 +4363,76 @@ namespace vulkan {
         }
         if (skipped_no_address != 0) {
             utility::log("  {} casters skipped (no vertex/index buffer)", skipped_no_address);
+        }
+    }
+
+    void runtime::record_top_level_structure(VkCommandBuffer const command_buffer) {
+        core& vk = this->vulkan_core;
+        if (!this->rt_shadows_active() || !this->rt_bottom_levels.has_value() || !this->rt_top_levels.has_value()) {
+            return;
+        }
+        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
+        auto& levels = *this->rt_bottom_levels;
+        auto& top = *this->rt_top_levels;
+
+        if (auto const begun = top.begin(frame_slot); !begun) {
+            utility::log("runtime: {}", begun.error());
+            return;
+        }
+        // The instance list is the caster set the shadow pass draws, with the world matrix the raster
+        // passes use for each caster - the same matrix shadow_geometry_signature() hashes, which is why
+        // an animated or moved caster is reflected here for free.
+        for (auto const& [caster, level] : this->rt_caster_levels) {
+            acceleration_structure::instance_source const instance = {
+                .transform = caster->push.model,
+                .blas_index = level,
+                .record = {.vertex_address = 0,
+                           .index_address = 0,
+                           .vertex_stride = caster->vertex_stride,
+                           .index_type = static_cast<uint32_t>(caster->index_type),
+                           .material_index = caster->push.material_index.value,
+                           .primitive_index = level},
+            };
+            if (auto const added = top.add(levels, instance); !added) {
+                utility::log("runtime: {}", added.error());
+                return;
+            }
+        }
+
+        // The top level reads the BOTTOM levels, and on the frame that creates them the two builds are
+        // in the same command buffer with nothing between them: without this barrier the driver is free
+        // to run the second build's reads against writes the first one has not published. It costs a
+        // no-op on every later frame (nothing wrote a bottom level in this buffer), which is cheaper
+        // than a flag that would have to track "which frame built them".
+        VkMemoryBarrier2 build_order = {};
+        build_order.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        build_order.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        build_order.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        build_order.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        build_order.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        VkDependencyInfo const build_order_info = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                                   .pNext = nullptr,
+                                                   .dependencyFlags = 0,
+                                                   .memoryBarrierCount = 1,
+                                                   .pMemoryBarriers = &build_order,
+                                                   .bufferMemoryBarrierCount = 0,
+                                                   .pBufferMemoryBarriers = nullptr,
+                                                   .imageMemoryBarrierCount = 0,
+                                                   .pImageMemoryBarriers = nullptr};
+        vkCmdPipelineBarrier2(command_buffer, &build_order_info);
+
+        if (auto const built = top.record_build(command_buffer); !built) {
+            utility::log("runtime: {}", built.error());
+            return;
+        }
+
+        if (!this->rt_top_level_logged) {
+            this->rt_top_level_logged = true;
+            // The class measured the host cost of the build itself (see build_stats); reporting that
+            // rather than a second timer around it keeps one definition of "what the build costs".
+            utility::log("ray-traced shadows: {} instances in the top level structure, one instance table entry each ({:.3f} ms host per frame)",
+                         top.instance_count(frame_slot),
+                         top.last_stats().build_ms);
         }
     }
 

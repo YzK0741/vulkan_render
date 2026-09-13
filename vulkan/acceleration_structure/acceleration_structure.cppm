@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.acceleration_structure
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Ray-tracing acceleration structures: the bottom level structures of the
 // scene's shadow casters, built from the geometry buffers the raster passes
@@ -16,6 +16,7 @@ module;
 
 #include <cstdint>
 #include <expected>
+#include <glm/glm.hpp>
 #include <memory>
 #include <span>
 #include <string>
@@ -38,12 +39,13 @@ export import vulkan.core;
  * triangle count, and nothing in this module knows what a primitive, a material or a draw call is.
  *
  * Two things are deliberately not here yet, and both are additive rather than structural changes:
- *  - the TOP LEVEL structure and its instance table. They belong to the frame (the instance set is
- *    culled per frame, and a per-frame-slot buffer has to survive two frames in flight), so they are
- *    built where the frame's other per-slot resources are - see vulkan.runtime.
- *  - compaction. `VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR` plus a size query and a
+ *  - COMPACTION. `VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR` plus a size query and a
  *    copy typically halves the memory, at the price of a second command and a query reset; measuring
- *    the uncompacted cost first is what makes that decision reviewable rather than assumed.
+ *    the uncompacted cost first (Sponza: 17.8 MiB for 262k triangles) is what makes that decision
+ *    reviewable rather than assumed. It is also a BOTTOM level concern here: the top level is rebuilt
+ *    every frame, and a compacted structure is rebuilt in place rather than re-compacted.
+ *  - the shading a ray-traced hit needs. The instance table IS filled (see instance_record), but no
+ *    shader reads it yet: the first consumer is a shadow ray, which only asks "did anything block me".
  *
  * What a hit can and cannot be told, today, is worth stating where it is decided:
  *  - every geometry is built OPAQUE. Inline ray queries have no any-hit shader, so an alphaMode MASK
@@ -95,6 +97,34 @@ namespace vulkan::acceleration_structure {
         uint64_t structure_bytes = 0;
         uint64_t scratch_bytes = 0; // the scratch BUFFER, i.e. the aligned per-geometry ranges in it
         double build_ms = 0.0;
+    };
+
+    /**
+     * @ingroup vulkan_acceleration_structure
+     * @brief one entry of the instance table: what a shader needs to resolve a hit back to a surface
+     * @note filled now - the build already walks the same instance list - even though the first ray
+     *       that lands (a shadow ray) only asks "did anything block me": shading at a hit needs the
+     *       triangle's vertex data and the material, and reconstructing that list later would mean
+     *       walking the scene a second time for information this pass has in hand.
+     * @note std430 layout: two 8-byte addresses then four 4-byte fields = 32 bytes, no padding
+     */
+    export struct instance_record {
+        VkDeviceAddress vertex_address = 0;
+        VkDeviceAddress index_address = 0;
+        uint32_t vertex_stride = 0;
+        uint32_t index_type = 0;     // VkIndexType, for the shader that indexes with it
+        uint32_t material_index = 0; // into the scene's material table (set 0 binding 5)
+        uint32_t primitive_index = 0;
+    };
+
+    /**
+     * @ingroup vulkan_acceleration_structure
+     * @brief one instance of the top level structure: which bottom level, where it sits, what it is
+     */
+    export struct instance_source {
+        glm::mat4 transform = glm::mat4(1.0f); // the world matrix the raster passes draw this instance with
+        uint32_t blas_index = 0;               // index into the bottom_level_structures it was added to
+        instance_record record = {};           // what the shader sees through instanceCustomIndex
     };
 
     /**
@@ -171,6 +201,102 @@ namespace vulkan::acceleration_structure {
         }
 
         /** @brief what the last build cost (see build_stats) */
+        [[nodiscard]] build_stats const& last_stats() const noexcept {
+            return this->stats;
+        }
+    };
+
+    /**
+     * @ingroup vulkan_acceleration_structure
+     * @brief the scene's top level structure, rebuilt from the instance list once per frame
+     *
+     * @details the instances are host-visible arrays the caller fills through add(), and the structure
+     *          itself is built into a command buffer. One set of resources PER FRAME SLOT, because with
+     *          more than one frame in flight a single buffer would be rewritten by the frame being
+     *          recorded while the previous one is still reading it - the same per-slot rule the
+     *          engine's camera and material buffers follow.
+     *
+     * The build is MODE_BUILD every frame rather than MODE_UPDATE: an update can only change
+     * transforms, requires the same instance count and ALLOW_UPDATE on the original build, and the
+     * instance list here is culled per frame - so the cheaper update path is exactly the one that would
+     * need the most bookkeeping to stay legal. It is PREFER_FAST_BUILD rather than PREFER_FAST_TRACE
+     * for the same reason: this structure is built 60+ times a second and traversed a few times per
+     * pixel, while the bottom levels are built once and traversed constantly.
+     */
+    export class top_level_structure {
+        struct slot {
+            vk_buffer instances = {}; // host-visible VkAccelerationStructureInstanceKHR[capacity]
+            VkBuffer instances_buffer = VK_NULL_HANDLE;
+            void* instances_mapped = nullptr;
+            vk_buffer records = {}; // host-visible instance_record[capacity] (the instance table)
+            VkBuffer records_buffer = VK_NULL_HANDLE;
+            void* records_mapped = nullptr;
+            uint32_t capacity = 0;  // instances the buffers above can hold
+            uint32_t count = 0;     // instances added this frame
+            vk_buffer storage = {}; // the structure's own memory, sized for `capacity`
+            VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
+            VkDeviceSize scratch_size = 0; // what the build of `count` instances needs
+            vk_buffer scratch = {};        // the build's scratch memory, kept once sized
+        };
+
+        core* vk = nullptr; // non-const: VMA's detail lookups and buffer creation are not const
+        struct entry_points;
+        std::unique_ptr<entry_points> functions = {};
+        std::vector<slot> slots = {};
+        uint32_t current_slot = 0;
+        build_stats stats = {};
+
+    public:
+        explicit top_level_structure(core& device, uint32_t frame_slot_count);
+        top_level_structure(top_level_structure const&) = delete;
+        top_level_structure& operator=(top_level_structure const&) = delete;
+        top_level_structure(top_level_structure&&) = delete;
+        top_level_structure& operator=(top_level_structure&&) = delete;
+        ~top_level_structure();
+
+        /**
+         * @ingroup vulkan_acceleration_structure
+         * @brief start a frame's instance list in @p frame_slot (dropping whatever it held)
+         * @param frame_slot the slot the frame being recorded belongs to
+         * @return success, or an error message when the slot's buffers cannot be sized
+         * @note the slot is free to write because the runtime waits for it before recording (see
+         *       runtime::pace_and_acquire), the same reason every other per-slot buffer is.
+         */
+        std::expected<void, std::string> begin(uint32_t frame_slot);
+
+        /**
+         * @ingroup vulkan_acceleration_structure
+         * @brief append one instance to the current slot's list
+         * @note @p source.blas_index must be an index of the bottom_level_structures the reference is
+         *       taken from; a null handle there (a geometry that was skipped) skips the instance, so the
+         *       caller's arrays stay aligned
+         */
+        std::expected<void, std::string> add(bottom_level_structures const& levels, instance_source const& source);
+
+        /**
+         * @ingroup vulkan_acceleration_structure
+         * @brief record the build of the current slot's list into @p command_buffer
+         * @param command_buffer a buffer being recorded outside a rendering instance
+         * @return success, or an error message
+         */
+        std::expected<void, std::string> record_build(VkCommandBuffer command_buffer);
+
+        /** @brief the structure the slot's frame must bind, or VK_NULL_HANDLE when it is empty */
+        [[nodiscard]] VkAccelerationStructureKHR handle(uint32_t frame_slot) const noexcept {
+            return frame_slot < this->slots.size() ? this->slots[frame_slot].handle : VK_NULL_HANDLE;
+        }
+
+        /** @brief the slot's instance table (instance_record[count]); the shading-at-a-hit step binds it */
+        [[nodiscard]] VkBuffer instance_table(uint32_t frame_slot) const noexcept {
+            return frame_slot < this->slots.size() ? this->slots[frame_slot].records_buffer : VK_NULL_HANDLE;
+        }
+
+        /** @brief how many instances the slot's last build held */
+        [[nodiscard]] uint32_t instance_count(uint32_t frame_slot) const noexcept {
+            return frame_slot < this->slots.size() ? this->slots[frame_slot].count : 0;
+        }
+
+        /** @brief what the last recorded build cost (geometry_count is the instance count) */
         [[nodiscard]] build_stats const& last_stats() const noexcept {
             return this->stats;
         }
