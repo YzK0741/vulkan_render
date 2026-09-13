@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.20.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.21.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -412,6 +412,23 @@ namespace vulkan {
          *       reads `create_target_image_3d(w, h, d, ...)` cannot pass a depth of 1 by accident and
          *       then sample the result as a volume.
          */
+        /**
+         * @ingroup vulkan_core
+         * @brief create a single-sampled CUBE target: a six-layer 2D array with CUBE_COMPATIBLE set
+         * @param size the edge length of one face, in texels (all six faces are the same size)
+         * @note its own entry point rather than a generalised array helper, for the same reason
+         *       create_target_image_3d has one: a cube is six layers AND the compatibility flag, and a caller
+         *       that got one of those wrong would have an image the sampler refuses.
+         */
+        void create_target_image_cube(
+            uint32_t size,
+            VkFormat format,
+            VkImageTiling tiling,
+            VkImageUsageFlags usage,
+            VkMemoryPropertyFlags properties,
+            VkImage& image,
+            VkDeviceMemory& image_memory) const noexcept;
+
         void create_target_image_3d(
             uint32_t width,
             uint32_t height,
