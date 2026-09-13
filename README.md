@@ -117,7 +117,7 @@ Related source docs (tracked in the repo):
 - [shader reference](docs/shaders.md) (the pass chain, the shared scene set, push constants, conventions) — also the Doxygen `shaders` group description
 - [global illumination: hit shading](docs/gi_hit_shading.md) — the long one. The record of the GI work: what each step measured, the tables and hashes the numbers come from, the negative results (a MASK bake that is off because it measured *worse*, a knobs-off default that is byte-identical by construction), and the traps that cost time
 - [Level 2 handoff](docs/level2_handoff.md) (state, plan and working discipline for the GI work; read it before changing anything the GI chain touches)
-- [Lumen reference studies](docs/reference/) (`lumen_radiance_cache.md`, `lumen_surface_cache.md`: what UE 5.8.2 does, as a mechanism reference)
+- [Lumen reference studies](docs/reference/) (`lumen_radiance_cache.md`, `lumen_surface_cache.md`, `lumen_reflection_denoiser.md`: what UE 5.8.2 does, as a mechanism reference)
 - [capture harness](scripts/windows/check_render.ps1) and the [measurement instruments](scripts/measure/README.md) every number in the GI docs came out of
 - [docs/official-shaders/](docs/official-shaders/): reference shaders (IBL / PBR / primitive)
 

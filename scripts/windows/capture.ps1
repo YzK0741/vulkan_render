@@ -37,6 +37,12 @@ param(
     [string]$Model = "",
     [string]$BuildDir = "build-release-clang64",
     [string]$WorkDir = "",
+    # Degrees of yaw added per presented frame (`--capture-sweep`). 0 = a fixed camera, which is what every
+    # other measurement in this repository is; a non-zero value makes the capture exercise the reprojection
+    # paths (TAA's history, the GI temporal accumulation, the motion vectors) that a still camera leaves in
+    # their trivial case. It is frame-indexed rather than clock-driven, so a sweep is as reproducible as a
+    # still capture - the harness's own two-run determinism check is what verifies that.
+    [float]$Sweep = 0.0,
     [switch]$KeepLog
 )
 
@@ -121,6 +127,7 @@ $launch = @("--config", $cfg, "--capture-frames", "$Frames")
 # scene and is what the model's framing rule resolves to (the log prints it). The flag is omitted
 # rather than passed empty, because `--capture-camera=` with no numbers is not a valid pose.
 if ($Camera) { $launch += "--capture-camera=$Camera" }
+if ($Sweep -ne 0.0) { $launch += "--capture-sweep=$Sweep" }
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 $p = Start-Process -FilePath $exe -ArgumentList $launch -WorkingDirectory $WorkDir -PassThru -WindowStyle Hidden
 if (-not $p.WaitForExit(300000)) { $p.Kill(); Write-Error "$Tag timed out"; exit 1 }

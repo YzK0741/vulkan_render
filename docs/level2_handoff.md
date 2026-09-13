@@ -212,8 +212,18 @@ reaches 0.84 on a compact scene (measured curve: +0.47 / +0.71 / +0.89 / +1.06 a
 its roughness channel averages 217/255), which is why the gate grew a `metal_rough_glossy` scenario and why the
 L2.3 evidence that matters is a MATERIAL-ordered table - smooth metal +10.33, rough metal +7.61, smooth
 dielectric +1.23, rough dielectric +0.13 - rather than a tile table.
-(2) the reflection is a point sample of the roughness cone, so a low-roughness reflection aliases at half
-resolution. Its REACH is no longer on this list: it has its own knob now (`ssgi_specular_radius`, default 0.5
+(2) the reflection is a point sample of the roughness cone AND it is accumulated by the DIFFUSE temporal
+resolve, which reprojects its history by the SURFACE's motion - correct for a bounce, structurally wrong for a
+reflection, whose image slides at its own rate. The instrument for that now exists (the camera sweep and the
+`glossy_motion` scenario: every capture in this repository used to have a still camera, which exercises every
+reprojection path in its trivial case only) and the baseline is a difference of differences: the reflection
+loses **0.4029 of mean|.|** - about 40% of its own magnitude - to a 20-degree camera orbit, against 0.5198 for
+the whole rest of the frame. Read that number with its caveat: a moving accumulation differs from a converged
+static one even with perfect reprojection, so the acceptance for fixing it is the number COLLAPSING, and the
+mechanism is studied in `docs/reference/lumen_reflection_denoiser.md` (reproject from the reflection HIT's
+depth rather than the surface's, and clamp a smooth pixel's accumulation to ~2 frames - this renderer's shared
+resolve does neither and has no roughness input at all). Its REACH is no longer on the list: it has its own
+knob now (`ssgi_specular_radius`, default 0.5
 of the scene radius), because the shared `ssgi_radius` was pinned low by the marched path's step size and the
 lobe was realized only 39% of the signal available - half of the remainder comes back at 0.5 for +0.12 ms
 isolated (+45% effect: -1.4756 -> -2.1411), and past it the curve is flat in cost and in effect both.
@@ -242,7 +252,7 @@ Gates before any commit:
 
 * Release, Debug and ASan+UBSan builds clean (`-Werror` is on everywhere);
 * `ctest` in the release build: 6/6;
-* the capture harness `scripts/windows/check_render.ps1`: 10 scenarios, each run twice, 0 changed - or the
+* the capture harness `scripts/windows/check_render.ps1`: 11 scenarios, each run twice, 0 changed - or the
   change recorded deliberately with its reason and the baseline re-recorded. Until the L2.1 step every
   scenario ran with `ssgi = false`, so the whole GI path (the screen-space chain, its denoisers, the probe
   cache, everything ray-traced) had no coverage and a break in it would have passed this gate; `sponza_gi`

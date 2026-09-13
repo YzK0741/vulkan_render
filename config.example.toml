@@ -307,7 +307,7 @@ ssgi_hit_shading = false
 # REQUIREMENTS: the traced GI path, `ssgi_hit_shading` and the acceleration structures' instance table (a
 # hit cannot be shaded without it). Where any is missing the pass is not even RECORDED, which is what makes
 # `ssgi_specular = false` byte-identical by construction rather than by arithmetic (verified: the capture
-# harness's 10 scenarios x 2, 0 changed, `metal_rough_glossy` among them since L2.3).
+# harness's 11 scenarios x 2, 0 changed, `metal_rough_glossy` among them since L2.3).
 ssgi_specular = false
 # ssgi_specular_radius: how far a glossy ray reaches, as a fraction of the scene radius. ITS OWN REACH, not
 # the shared `ssgi_radius`, and the reason is that the two are different questions: a diffuse bounce's reach

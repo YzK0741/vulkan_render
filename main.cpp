@@ -30,6 +30,17 @@ namespace {
         int frames = 0;                                            // 0 = normal interactive run
         std::optional<std::array<float, 3>> camera = std::nullopt; // yaw(deg), pitch(deg), distance
         std::optional<glm::vec3> target = std::nullopt;            // orbit target override (optional)
+        // Degrees of YAW added per presented frame (`--capture-sweep`). 0 - the default - is a fixed
+        // camera, which is what every other capture in this repository is.
+        //
+        // WHY IT EXISTS: with the camera still, every reprojection path in the renderer is exercised only
+        // in its trivial case - a motion vector of zero, a history fetched from the pixel it came from.
+        // TAA's resolve, the GI temporal accumulation, the reflection's history and the velocity target
+        // itself are all "correct" under a static camera no matter how they are written, so a break in
+        // any of them passed the capture harness. This makes a capture move the camera by a fixed amount
+        // per FRAME INDEX (not per wall-clock second), so a sweep capture is as reproducible as a still
+        // one - the gate compares two runs of it like any other scenario.
+        float sweep_yaw_deg_per_frame = 0.0f;
     };
 
     // strtof with a full-string check (no exceptions: std::stof would abort under -fno-exceptions)
@@ -99,10 +110,22 @@ namespace {
                 }
                 continue;
             }
+            if (std::optional<std::string_view> const value = take_value(i, arg, "--capture-sweep")) {
+                // degrees of yaw per presented frame - see capture_options::sweep_yaw_deg_per_frame
+                if (std::optional<float> const number = parse_number(*value)) {
+                    options.sweep_yaw_deg_per_frame = *number;
+                } else {
+                    utility::log("capture: ignoring '--capture-sweep {}' (expected degrees of yaw per frame)", *value);
+                }
+                continue;
+            }
             filtered.push_back(argv[i]);
         }
         if (options.frames > 0) {
             utility::log("capture mode: {} frames, then screenshot + quit", options.frames);
+            if (options.sweep_yaw_deg_per_frame != 0.0f) {
+                utility::log("capture camera sweep: {:.3f} deg of yaw per frame, from whatever pose the scene settled on", options.sweep_yaw_deg_per_frame);
+            }
         }
         return options;
     }
@@ -596,6 +619,10 @@ int main(int argc, char** argv) {
                      (*capture.camera)[0], (*capture.camera)[1], (*capture.camera)[2],
                      runtime.camera.target.x, runtime.camera.target.y, runtime.camera.target.z);
     }
+    // The sweep's BASE pose is whatever the camera ended up as - the scene's own `camera_fit`, an authored
+    // glTF camera, or the pinned `--capture-camera` above - so a sweep composes with all three instead of
+    // demanding a pinned pose it would have to be told twice.
+    float const sweep_base_yaw = runtime.camera.yaw;
     int captured_frames = 0; // presented frames so far (scripted capture; see --capture-frames)
     while (true) {
         // Phase 1: poll window events (ESC / native close -> closed, minimized -> skipped)
@@ -611,6 +638,14 @@ int main(int argc, char** argv) {
             continue;
         }
         runtime.recreate_if_minimized();
+
+        // Scripted capture: the camera sweep, advanced by the number of PRESENTED frames - a frame index,
+        // not a clock reading, so two runs of one sweep are byte-identical (the harness's determinism run
+        // is what verifies it). It has to happen before pace_and_acquire(), which is the phase that writes
+        // the camera UBO.
+        if (capture.sweep_yaw_deg_per_frame != 0.0f) {
+            runtime.camera.yaw = sweep_base_yaw + glm::radians(capture.sweep_yaw_deg_per_frame) * static_cast<float>(captured_frames);
+        }
 
         // Phase 2: pace + acquire the next frame slot. After pace_and_acquire() returns
         // proceed, this slot's previous submission has completed, so the per-frame host writes

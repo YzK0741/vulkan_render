@@ -129,6 +129,20 @@ $scenarios = @(
                   ssgi_radius = "0.5"; ssgi_probes = "false"; camera_fit = "'exterior'" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\MetalRoughSpheres\glTF\MetalRoughSpheres.gltf"
        camera = "" }
+    # THE ONLY SCENARIO WHOSE CAMERA MOVES, and it is here because everything else was still: with a fixed
+    # camera every reprojection in the renderer is exercised in the trivial case, so TAA's history, the GI
+    # temporal accumulation, the reflection's history and the motion-vector target could all be broken
+    # without the harness noticing. The sweep is 0.5 degrees of yaw per frame, which over the scenario's 40
+    # frames is a 20-degree orbit - enough that a history fetched from the wrong place shows up, and slow
+    # enough that the motion-vector path is in its normal range rather than its clamp. Same scene as
+    # `metal_rough_glossy` on purpose, so the moving and still frames of one scene can be compared.
+    @{ name = "glossy_motion"; desc = "the material sweep + traced GI + glossy lobe, CAMERA MOVING";
+       extra = @{ taa = "false"; ssgi = "true"; ssgi_intensity = "1.0"; ssgi_ray_tracing = "true";
+                  ssgi_hit_shading = "true"; ssgi_specular = "true"; ssgi_specular_rays = "1";
+                  ssgi_radius = "0.5"; ssgi_probes = "false"; camera_fit = "'exterior'" }
+       model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\MetalRoughSpheres\glTF\MetalRoughSpheres.gltf"
+       camera = ""
+       sweep = "0.5" }
 )
 
 if ($List) {
@@ -207,6 +221,13 @@ function Invoke-Scenario {
     $scenarioCamera = if ($Scenario.ContainsKey('camera')) { $Scenario.camera } else { $Camera }
     $launch = @("--config", $cfg, "--capture-frames", "$Frames")
     if ($scenarioCamera) { $launch += "--capture-camera=$scenarioCamera" }
+    # A scenario may SWEEP the camera (`sweep` = degrees of yaw per presented frame). Every other scenario
+    # holds it still, and a still camera exercises every reprojection path in the renderer - TAA's history,
+    # the GI temporal accumulation, the reflection's history, the velocity target itself - only in the
+    # trivial case where a motion vector is zero and the history comes from the pixel it left. A break in
+    # any of them passed this harness. The sweep is frame-indexed rather than clock-driven, so a sweeping
+    # scenario is as reproducible as a still one (the two-run determinism check below is what proves it).
+    if ($Scenario.ContainsKey('sweep')) { $launch += "--capture-sweep=$($Scenario.sweep)" }
     $p = Start-Process -FilePath $exe -ArgumentList $launch -WorkingDirectory $workDir -PassThru -WindowStyle Hidden
     # the capture exits on its own; the timeout is a safety net, not the expected path
     if (-not $p.WaitForExit(180000)) { $p.Kill(); return @{ ok = $false; why = "timed out" } }

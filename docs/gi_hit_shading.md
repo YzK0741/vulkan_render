@@ -1214,6 +1214,53 @@ the point, since a "fix" that moved those frames would have invalidated the acce
 lobes now name the threshold (`RAY_TMIN`) and use it for the guard and the `rayQueryInitializeEXT` call, so
 the two cannot drift apart.
 
+### L2.3, the first instrument that MOVES: what a still camera was hiding
+
+Every capture in this project had a fixed camera, and that is a coverage hole rather than a simplification:
+with a still camera every reprojection path in the renderer is exercised only in its TRIVIAL case - a motion
+vector of zero, a history fetched from the pixel it left - so TAA's resolve, the GI temporal accumulation, the
+reflection's history and the velocity target itself were all "correct" no matter how they were written. A
+break in any of them passed the harness.
+
+`--capture-sweep=<deg of yaw per frame>` (and `capture.ps1 -Sweep`) advances the camera by a fixed amount per
+PRESENTED FRAME INDEX, not per wall-clock second, so a sweeping capture is as reproducible as a still one -
+and the gate now has an eleventh scenario, `glossy_motion`, which is `metal_rough_glossy` with a 20-degree
+orbit over its 40 frames. Its own two-run determinism check is what verifies the reproducibility claim, and
+the sweep composes with `camera_fit`, an authored camera or a pinned pose (it takes whatever pose the scene
+settled on as its base).
+
+THE POSE CONVENTION, established by a control rather than by reading the code, because getting it wrong is
+invisible: the captured frame is the one rendered at `yaw = base + sweep * frames`, NOT `frames - 1`. The
+control is a 2-frame sweep against a static capture: at `0.5` deg/frame the two agree EXACTLY at a static
+yaw of `1.0` (mean difference 0.0000) and at no other value tried (0.5, 1.5, 2.0 all differ). The first
+attempt at the measurement below used `frames - 1` and was wrong by half a degree, which is the same class of
+false positive as the L2.2b "wrong camera" trap - a pose mismatch shows up as a difference in the
+high-contrast thing being measured.
+
+THE BASELINE, and the instrument is the difference of differences this project already uses for posed
+geometry (`scripts/measure/shadow_pose.py`): with the pose matched, the swept frame and the converged static
+frame at the SAME end pose disagree by
+
+    mean|.|    sweep - static, glossy lobe OFF   0.5198      (the whole rest of the frame)
+    mean|.|    sweep - static, glossy lobe ON    0.8634
+    their difference (the reflection's own)      0.4029      (worst 4x4 tile -2.057)
+
+i.e. the reflection loses about 40% of its own magnitude (its effect is ~0.9 at this radius) to a 20-degree
+camera orbit. WHAT THAT NUMBER DOES AND DOES NOT SAY: a moving temporal accumulation differs from a converged
+static one even when every reprojection is perfect - it is an average over the motion - so part of the 0.40 is
+inherent, and this instrument cannot separate the two. The separation is the NEXT step, and it is one
+measurement away: implement the reprojection the reference study names and see whether this baseline
+collapses, exactly the shape of the L2.2b baseline-then-fix.
+
+THE MECHANISM THE REFERENCE GIVES, and this renderer lacks all of it: UE's reflection denoiser reprojects its
+history from the REFLECTION HIT's depth rather than the surface's (`LumenReflectionDenoiserTemporal.usf:132`,
+two histories chosen between per pixel), and it clamps a smooth pixel's accumulation to at most 2 frames
+(`MaxFramesAccumulated = lerp(2, Max, saturate(Roughness / 0.05))`, line 413) - a sharp reflection cannot be
+reconstructed from a history that has moved. This renderer routes the reflection through the DIFFUSE
+temporal resolve, which reprojects by the surface's motion and has no roughness input at all. The full study,
+with the two further mechanisms (a second-moment clamp and the specular dominant direction) and what each
+would take here, is `docs/reference/lumen_reflection_denoiser.md`.
+
 ### L2.3, the glossy lobe's reach: a shared knob that was pinned by the other path
 
 The lobe's rays used the DIFFUSE bounce's `ssgi_radius`, and the two are different questions. A diffuse
