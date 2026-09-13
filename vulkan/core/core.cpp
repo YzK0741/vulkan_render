@@ -725,6 +725,22 @@ namespace vulkan {
             gi_probe_image_views[i] = create_image_view(gi_probe_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device, VK_IMAGE_VIEW_TYPE_3D);
         }
 
+        // The per-cell surface offset (one image: the ping-pong only applies to radiance, and this is
+        // geometry the injection OWNS rather than something propagation rewrites).
+        gi_probe_surface_images.assign(1, VK_NULL_HANDLE);
+        gi_probe_surface_image_memories.assign(1, VK_NULL_HANDLE);
+        gi_probe_surface_image_views.assign(1, VK_NULL_HANDLE);
+        create_target_image_3d(
+            gi_probe_grid_extent,
+            gi_probe_grid_extent,
+            gi_probe_grid_extent,
+            hdr_format,
+            VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            gi_probe_surface_images[0],
+            gi_probe_surface_image_memories[0]);
+        gi_probe_surface_image_views[0] = create_image_view(gi_probe_surface_images[0], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device, VK_IMAGE_VIEW_TYPE_3D);
         // The ray-traced sun visibility: FULL resolution (one ray per screen pixel) and one per FRAME
         // SLOT - see the member's comment for why the slot, not the swapchain image, is the right
         // lifetime. R16F rather than RGBA16F: the pass writes a single visibility factor, and the
@@ -887,6 +903,7 @@ namespace vulkan {
             destroy_images(gi_history_images, gi_history_image_memories, gi_history_image_views);
             destroy_images(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
             destroy_images(gi_probe_images, gi_probe_image_memories, gi_probe_image_views);
+            destroy_images(gi_probe_surface_images, gi_probe_surface_image_memories, gi_probe_surface_image_views);
             destroy_images(rt_shadow_images, rt_shadow_image_memories, rt_shadow_image_views);
             for (auto const& level_views : bloom_image_views) {
                 for (auto const& view : level_views) {
@@ -1535,6 +1552,7 @@ namespace vulkan {
         destroy_target_set(gi_history_images, gi_history_image_memories, gi_history_image_views);
         destroy_target_set(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
         destroy_target_set(gi_probe_images, gi_probe_image_memories, gi_probe_image_views);
+        destroy_target_set(gi_probe_surface_images, gi_probe_surface_image_memories, gi_probe_surface_image_views);
         destroy_target_set(rt_shadow_images, rt_shadow_image_memories, rt_shadow_image_views);
 
         // 2d. Destroy the bloom targets (all levels)

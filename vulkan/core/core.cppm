@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.18.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.19.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -342,6 +342,18 @@ namespace vulkan {
         std::vector<VkImage> gi_probe_images = {};
         std::vector<VkDeviceMemory> gi_probe_image_memories = {};
         std::vector<VkImageView> gi_probe_image_views = {};
+        // ... and the geometry a filter needs in order to test whether two cells can see each other: one
+        // vector per cell, from the cell's centre to the surface the frame found at its screen position,
+        // plus a front-face and a validity flag (RGBA16F: xyz = the offset in world units, w = the flags).
+        // A probe's DEPTH MAP - per direction - is what the reference implementation stores and what makes
+        // a bidirectional occlusion test possible. This renderer's injection is a screen projection, so the
+        // one surface a cell can report is the surface the frame showed it, and a segment-versus-point test
+        // between two cells is what that supports (see docs/gi_hit_shading.md, step A). One image, not a
+        // pair: the ping-pong applies to radiance, and this is geometry the INJECTION owns rather than
+        // something propagation rewrites.
+        std::vector<VkImage> gi_probe_surface_images = {};
+        std::vector<VkDeviceMemory> gi_probe_surface_image_memories = {};
+        std::vector<VkImageView> gi_probe_surface_image_views = {};
 
         // ---- ray-traced sun visibility (see shaders/rt_shadow.comp) ----
         // FULL resolution, one per FRAME SLOT rather than per swapchain image: it is written and read
