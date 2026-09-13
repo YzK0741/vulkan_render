@@ -3,9 +3,14 @@
 A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), implementing a glTF 2.0 PBR (metallic-roughness) pipeline with CPU-precomputed split-sum IBL lighting, a scene tree with BVH frustum culling, directional shadows, and a Dear ImGui debug overlay.
 
 <p align="center">
-  <img src="snapshot/DamagedHelmet.png" width="49%" alt="DamagedHelmet with PBR + IBL + shadows" />
-  <img src="snapshot/FlightHelmet.png" width="49%" alt="FlightHelmet with PBR + IBL + shadows" />
+  <img src="snapshot/DamagedHelmet.png" width="49%" alt="DamagedHelmet with PBR + IBL + global illumination + shadows" />
+  <img src="snapshot/FlightHelmet.png" width="49%" alt="FlightHelmet with PBR + IBL + global illumination + shadows" />
 </p>
+
+<sub>Both shots are the SHIPPED default configuration - traced global illumination with shaded hits, SSAO,
+TAA, the cascaded shadows and the IBL prefilter - captured headlessly at 1080x960 from the scene's own
+framing, so they can be regenerated rather than re-taken by hand (see
+[`snapshot/README.md`](snapshot/README.md) for the two commands).</sub>
 
 ## Version
 
