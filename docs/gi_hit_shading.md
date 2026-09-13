@@ -393,3 +393,24 @@ STILL OPEN BEYOND B: C (reset the grid when global lighting changes materially -
 mechanism the reference has that this renderer lacks) and E (a reference that is neither of the two
 variants, which is what would make the per-pixel error metric measure accuracy rather than
 self-consistency).
+
+### Decision recorded before the ray loop: retrace everything first, amortise only if it measures slow
+
+The reference implementation's amortisation (a staleness-priority histogram over a fixed per-frame budget)
+exists because its probes trace 1024 rays each over 16384 allocated probes. This renderer's grid is 32768
+cells, and the honest first version of the ray loop should trace ALL of them every frame with a small ray
+count and see what it costs, rather than build the budget machinery first:
+
+* the arithmetic, from numbers this project already measures: the screen-space tracer does 2 rays for each
+  of ~259k half-resolution pixels and reports 0.58-0.9 ms. A probe grid at 32768 cells with 4 rays each is
+  131k rays, i.e. about half that work, so a first estimate is a few tenths of a millisecond - and the
+  probe pass currently costs 0.03 ms for its five dispatches;
+* if that measurement comes back acceptable, the whole staleness apparatus (a per-cell last-traced frame, a
+  priority bucket, a per-frame slice budget) is unnecessary complexity for this renderer's scale, and the
+  grid is simpler than the reference's for a reason that is worth stating rather than copying;
+* if it comes back too slow, the machinery has an obvious shape to copy and the measurement says how much
+  of it is needed - which is the same order every other decision in this project has been made in.
+
+Consequence for the extraction step that comes first: nothing about it should be designed around
+amortisation. The shared entry point takes (query, hit position, direction, instance table address) and
+returns radiance; whether it is called for every cell or for a slice of them is the caller's business.
