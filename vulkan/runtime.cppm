@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.37.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.38.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -371,11 +371,17 @@ namespace vulkan {
         // has ray queries AND a built top level structure - the push block's frame_info.y carries the
         // resolved answer, so the shader never has to know why it is marching instead.
         bool ssgi_ray_tracing = false;
+        // How much of the previous frame's accumulated indirect a GI ray re-emits at a hit: the loop
+        // gain of the multi-bounce approximation ([render] ssgi_bounce, see shaders/ssgi.comp's header).
+        // 0 (the default) leaves the estimator single-bounce, which is what every earlier measurement was
+        // taken with. The image that is fed back already carries ssgi_intensity, so the loop's gain is
+        // this value times that one, and the runtime refuses a gain above one for exactly that reason.
+        float ssgi_bounce = 0.0f;
         struct ssgi_push_constants {
             glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world (the block deferred.frag uses)
             glm::vec4 params = glm::vec4(0.0f);        // x radius, y intensity, z rays, w steps
             glm::vec4 proj_terms = glm::vec4(0.0f);    // x proj[2][2], y [3][2], z/w GI extent
-            glm::vec4 frame_info = glm::vec4(0.0f);    // x = frame counter (see ssgi_frame)
+            glm::vec4 frame_info = glm::vec4(0.0f);    // x = frame counter (see ssgi_frame), y = traced, z = bounce gain
         };
 
         struct deferred_push_constants {
@@ -1951,6 +1957,19 @@ namespace vulkan {
          *       or hidden contributes nothing in both and the IBL probe still owns the off-screen light.
          */
         void set_ssgi_ray_tracing(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief how much of the previous frame's accumulated indirect a GI ray re-emits at a hit
+         * @param gain the loop gain, clamped to [0, 1]
+         * @note the multi-bounce approximation: with a gain above zero a ray returns the light LEAVING
+         *       the surface it hit (indirect included) instead of the direct light alone, so the
+         *       estimator picks up the second, third, ... bounce. 0 - the default - is single-bounce.
+         *       The image being fed back already carries ssgi_intensity, so the effective loop gain is
+         *       this times that; 1.0 is where the geometric series stops being guaranteed to converge
+         *       (a diffuse albedo approaches one), which is why the knob stops there.
+         */
+        void set_ssgi_bounce(float gain) noexcept;
 
         /**
          * @ingroup vulkan_runtime

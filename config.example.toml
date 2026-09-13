@@ -130,7 +130,8 @@ ssao_radius = 0.5
 ssao_intensity = 1.0
 ssao_samples = 8
 
-# ssgi / ssgi_intensity / ssgi_radius / ssgi_rays / ssgi_steps / ssgi_spatial_sigma / ssgi_upsample:
+# ssgi / ssgi_intensity / ssgi_radius / ssgi_rays / ssgi_steps / ssgi_spatial_sigma / ssgi_upsample /
+# ssgi_ray_tracing / ssgi_bounce:
 # screen-space global illumination. `ssgi.comp` traces one bounce of diffuse indirect at HALF
 # resolution - each pixel shoots a few cosine-weighted rays, marches the G-buffer depth and averages the
 # direct radiance it hits - `ssgi_temporal.comp` then accumulates that trace over frames (reprojected
@@ -159,6 +160,22 @@ ssgi_rays = 2
 ssgi_steps = 6
 ssgi_spatial_sigma = 2.0
 ssgi_upsample = true
+# ssgi_ray_tracing: replace the screen-space march with an inline ray query against the scene's
+# acceleration structures. Same estimator and same rays - only the hit oracle changes - so it is still an
+# addition to the probe, but it also sees surfaces the depth buffer cannot resolve and its hits are
+# exact. Costs nothing when off; on Sponza it roughly doubles the GI pass (0.33 ms marched -> 0.70 ms
+# traced at 1080x960) plus the per-frame top level structure work (0.09-0.14 ms). Granted only on a device
+# with ray queries and a built acceleration structure, so the key is safe in a shared config file.
+ssgi_ray_tracing = false
+# ssgi_bounce: how much of the PREVIOUS frame's accumulated indirect a GI ray re-emits at the surface it
+# hit - the multi-bounce (Lumen-style) approximation. At 0 a ray carries direct light only, so a corner
+# that no light reaches directly stays black; 0.6 picks up the second and third bounce, and the rest
+# decays geometrically. It is a feedback loop, so the effective gain is this value TIMES ssgi_intensity,
+# because the image that is fed back already carries the intensity: the stable region is a gain at or
+# below 1 with an intensity at or below 1, and the runtime clamps the gain there. Raising either one
+# inside that region fills an interior in; crossing it makes the frame brighter every frame, which is
+# why the knob is measurable (a static camera whose mean luminance must settle) rather than trusted.
+ssgi_bounce = 0.0
 
 # rt_shadows: ray-traced sun shadows. One ray per pixel against the scene's acceleration structures,
 # which is what makes contact shadows, cascade seams and the resolution limit of a shadow map go away -

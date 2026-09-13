@@ -28,10 +28,11 @@ namespace {
         CHECK(settings.render.ssgi_rays == 4);
         CHECK(settings.render.ssgi_steps == 10);
         CHECK(settings.render.ssgi_spatial_sigma > 3.49f && settings.render.ssgi_spatial_sigma < 3.51f);
-        CHECK(!settings.render.ssgi_upsample);   // fixture: the bilinear fetch (the measurement setting)
-        CHECK(settings.render.rt_shadows);       // fixture: the ray-traced sun shadows
-        CHECK(settings.render.ssgi_ray_tracing); // fixture: traced GI rays
-        CHECK(settings.render.unlit);            // fixture: the flat render mode
+        CHECK(!settings.render.ssgi_upsample);                                             // fixture: the bilinear fetch (the measurement setting)
+        CHECK(settings.render.rt_shadows);                                                 // fixture: the ray-traced sun shadows
+        CHECK(settings.render.ssgi_ray_tracing);                                           // fixture: traced GI rays
+        CHECK(settings.render.ssgi_bounce > 0.59f && settings.render.ssgi_bounce < 0.61f); // fixture: multi-bounce on
+        CHECK(settings.render.unlit);                                                      // fixture: the flat render mode
         CHECK(settings.render.fxaa);
         CHECK(!settings.render.gpu_timings);
         CHECK(settings.render.gbuffer_debug);
@@ -150,6 +151,7 @@ namespace {
         // [render] ray tracing: written by the generator like every other switch, so it round-trips
         CHECK(!settings.render.rt_shadows);
         CHECK(!settings.render.ssgi_ray_tracing);
+        CHECK(settings.render.ssgi_bounce > -0.01f && settings.render.ssgi_bounce < 0.01f); // default: single bounce
         // [render] validation
         CHECK(settings.render.validation_layers);
         // [gui]

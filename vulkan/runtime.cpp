@@ -3068,9 +3068,23 @@ namespace vulkan {
         // there) and so is the HDR scene target (record_post_process transitioned it just before this
         // runs). Only the GI image needs anything: it is written as a storage image, so UNDEFINED ->
         // GENERAL here and GENERAL -> SHADER_READ below, for the composite that samples it.
-        VkImageMemoryBarrier2 to_general = vulkan::undefined_to_general_transition;
-        to_general.image = vk.gi_images[index];
-        VkDependencyInfo const general_dependency = make_image_dependency_info(1, &to_general);
+        //
+        // The resolve image needs one transition too, and only on its FIRST use for this image: the
+        // traced path samples the PREVIOUS frame's resolve at a hit (the multi-bounce feedback), which
+        // is a read of a storage image the temporal pass has not rewritten yet this frame. Every later
+        // frame finds it in SHADER_READ (the denoise pass's hand-back leaves it there) and needs no
+        // barrier at all - and must not get one claiming UNDEFINED, which would discard the very image
+        // the feedback reads. The same per-image first-use flag the history image uses, for the same
+        // reason (see record_ssgi_denoise_pass and gi_history_valid).
+        bool const history_valid = index < this->gi_history_valid.size() && this->gi_history_valid[index];
+        std::array<VkImageMemoryBarrier2, 2> start_barriers = {vulkan::undefined_to_general_transition, vulkan::undefined_to_sampling_transition};
+        start_barriers[0].image = vk.gi_images[index];
+        uint32_t start_count = 1;
+        if (!history_valid && index < vk.gi_resolve_images.size()) {
+            start_barriers[start_count].image = vk.gi_resolve_images[index];
+            ++start_count;
+        }
+        VkDependencyInfo const general_dependency = make_image_dependency_info(start_count, start_barriers.data());
         vkCmdPipelineBarrier2(command_buffer, &general_dependency);
 
         // Same half-resolution rule as the images themselves (create_render_targets).
@@ -3092,7 +3106,12 @@ namespace vulkan {
                                     // the tracer ran and the structures exist. Resolved HERE rather than in the shader so
                                     // the shader never has to know why it is marching instead.
                                     (this->ssgi_ray_tracing && this->vulkan_core.ray_query_available && this->rt_top_levels.has_value()) ? 1.0f : 0.0f,
-                                    0.0f,
+                                    // ... and z = the multi-bounce gain. Pushed on BOTH paths (a marched hit is
+                                    // confirmed against the depth buffer too, so it has an indirect to re-emit), and
+                                    // pushed every frame so that turning the knob off is a byte-exact no-op. Zero on
+                                    // the frames before this image has a resolve: there is no previous frame to
+                                    // re-emit, and the image the feedback would read is not defined yet.
+                                    history_valid ? this->ssgi_bounce : 0.0f,
                                     0.0f)};
         vkCmdPushConstants(command_buffer, this->ssgi_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
 
@@ -3182,8 +3201,11 @@ namespace vulkan {
 
         // Layouts, all before the dispatch (a compute pass may barrier anywhere, but keeping them
         // together is what makes the set of states one image passes through readable):
-        //   resolve -> GENERAL (storage write; UNDEFINED as the old layout is honest because the
-        //   dispatch overwrites every texel).
+        //   resolve -> GENERAL (storage write). The old layout is SHADER_READ once the image has been
+        //   resolved before, and UNDEFINED on its first frame: the resolve is READ across frames (the
+        //   tracer samples the previous frame's copy at a hit, the multi-bounce feedback), so this write
+        //   has to keep its contents - claiming UNDEFINED every frame would discard exactly what the
+        //   feedback reads, which is why record_ssgi_pass's first-use barrier leaves it in SHADER_READ.
         //   history -> SHADER_READ, and only on its FIRST use for this image: the previous frame's
         //   copy left it readable (see the hand-back below), so a later frame needs no barrier at all
         //   - claiming TRANSFER_DST as the old layout would be a layout the image is not in. Exactly
@@ -3193,7 +3215,7 @@ namespace vulkan {
         //   which is the read this dispatch does.
         std::array<VkImageMemoryBarrier2, 2> barriers = {};
         uint32_t barrier_count = 0;
-        barriers[barrier_count] = vulkan::undefined_to_general_transition;
+        barriers[barrier_count] = history_valid ? vulkan::sampling_to_general_transition : vulkan::undefined_to_general_transition;
         barriers[barrier_count].image = vk.gi_resolve_images[index];
         ++barrier_count;
         if (!history_valid) {
@@ -3297,6 +3319,13 @@ namespace vulkan {
         } else if (enabled && !this->rt_shadow_pipeline.has_value()) {
             this->warn_missing_feature("ssgi", "GI rays are marched, not traced: the ray-traced pipelines were not created");
         }
+    }
+
+    void runtime::set_ssgi_bounce(float const gain) noexcept {
+        // The knob stops at one: above it the geometric series a diffuse loop forms is not guaranteed to
+        // converge (the surfaces' albedos approach one), and the failure mode is a frame that gets
+        // brighter every frame rather than a visibly wrong one.
+        this->ssgi_bounce = std::clamp(gain, 0.0f, 1.0f);
     }
 
     void runtime::set_ssgi_spatial(float const sigma) noexcept {

@@ -187,6 +187,10 @@ int main(int argc, char** argv) {
     // Same bargain as the ray-traced shadows: a request the runtime grants only on a device with ray
     // queries and a built top level structure - otherwise the GI rays keep marching the depth buffer.
     runtime.set_ssgi_ray_tracing(settings.render.ssgi_ray_tracing);
+    // The multi-bounce gain: how much of the previous frame's accumulated indirect a GI hit re-emits.
+    // 0 (the default) keeps the estimator single-bounce, and the runtime clamps the knob to [0, 1]
+    // because above one the diffuse loop it closes is not guaranteed to converge.
+    runtime.set_ssgi_bounce(settings.render.ssgi_bounce);
     // Ray-traced sun shadows: a request, not a guarantee - the runtime grants it only on a device with
     // ray queries, and the acceleration structures are built by the first frame that records with it on
     // (the caster set they are built from is only complete once the scene is loaded and culled).

@@ -183,6 +183,7 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssgi_upsample = {str(cfg['ssgi_upsample']).lower()}",
         f"rt_shadows = {str(cfg['rt_shadows']).lower()}",
         f"ssgi_ray_tracing = {str(cfg['ssgi_ray_tracing']).lower()}",
+        f"ssgi_bounce = {cfg['ssgi_bounce']}",
         "",
         "# ---- [gui] debug overlay ----",
         "[gui]",
@@ -297,6 +298,11 @@ def ask_all(output_dir: str) -> dict:
         False,
         hint="trace the GI rays against the acceleration structures (needs ray queries; else marched)",
     )
+    ssgi_bounce = ask_float(
+        "render.ssgi_bounce",
+        0.0,
+        hint="re-emit this fraction of the previous frame's indirect at a GI hit (0 = single bounce)",
+    )
     rt_shadows = ask_bool(
         "render.rt_shadows",
         False,
@@ -358,6 +364,7 @@ def ask_all(output_dir: str) -> dict:
         "ssgi_upsample": ssgi_upsample,
         "rt_shadows": rt_shadows,
         "ssgi_ray_tracing": ssgi_ray_tracing,
+        "ssgi_bounce": ssgi_bounce,
         "gui_show": gui_show,
         "panel_width": panel_width,
         "panel_height": panel_height,

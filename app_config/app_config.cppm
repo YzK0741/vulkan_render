@@ -59,6 +59,7 @@ import utility;
  * ssgi_upsample = true  # joint-bilateral upsample of the half-res GI in the composite; false = bilinear
  * rt_shadows = false    # ray-traced sun shadows (needs a device with ray queries; else ignored)
  * ssgi_ray_tracing = false # trace the GI rays instead of marching the depth buffer (same conditions)
+ * ssgi_bounce = 0.0     # re-emit this fraction of the previous frame's indirect at a hit (multi-bounce)
  * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id,
  *                        # 6 depth, 7 flags, 8 motion (the motion vector, amplified - see the shader)
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
@@ -163,6 +164,12 @@ namespace app_config {
         // buffer ([render] ssgi_ray_tracing). Same estimator, better hit oracle; ignored unless the device
         // has ray queries and ssgi itself is on.
         bool ssgi_ray_tracing = false;
+        // Re-emit a fraction of the previous frame's accumulated indirect at every GI hit ([render]
+        // ssgi_bounce): the multi-bounce approximation, so that a ray also carries the light that
+        // already bounced once at the surface it hit. 0 - the default - is the single-bounce estimator
+        // every earlier measurement was taken with. The image being fed back already carries
+        // ssgi_intensity, so the loop's effective gain is this value times that one.
+        float ssgi_bounce = 0.0f;
         bool ssao = true;
         float ssao_radius = 0.5f;
         float ssao_intensity = 1.0f;

@@ -15,12 +15,26 @@
  * the off-screen half correct is what a ray query (or a surface cache) buys, and it is a later step.
  *
  * WHAT IT SAMPLES, AND WHY THAT MATTERS MORE THAN THE MARCH
- * The radiance at a hit comes from `direct_radiance` = the HDR scene target as it stands after the
- * lighting stage. It is sampled by a pass that runs BEFORE the composite which adds this pass's
+ * The DIRECT radiance at a hit comes from `direct_radiance` = the HDR scene target as it stands after
+ * the lighting stage. It is sampled by a pass that runs BEFORE the composite which adds this pass's
  * output, and the whole image is rewritten earlier in every frame (by the TAA resolve, or by the
- * G-buffer pass's clear when TAA is off). So the tracer can never read its own result. That is not a
- * detail: a screen-space GI that samples an image containing its own previous output has a gain > 1
- * around the loop and accumulates energy every frame.
+ * G-buffer pass's clear when TAA is off). So the tracer can never read its own result.
+ *
+ * The rest of what a ray carries is `gi_resolve`, and that one IS a feedback: it holds the temporal
+ * resolve's output, i.e. the accumulated indirect of the previous frame, and adding a fraction of it
+ * (`pc.frame_info.z`, [render] ssgi_bounce) to a hit is what makes this a MULTI-bounce estimator - a
+ * ray then returns the light LEAVING the surface it hit, indirect included, instead of the direct light
+ * alone. The loop is deliberate and bounded, and the bound has to be stated because it is the whole
+ * risk of the technique: the fraction is the gain, the surfaces' diffuse albedos (which the estimator
+ * multiplies in at both ends) are below one, and what comes back is a temporal average rather than an
+ * immediate echo of this frame's output - so the series converges instead of accumulating energy. It is
+ * bounded but not free: the image being fed back already carries `pc.params.y` (ssgi_intensity), so the
+ * loop's gain is `frame_info.z * ssgi_intensity`, which is why the runtime keeps the gain at or below
+ * one and why a measurement (a static camera whose mean luminance neither decays nor grows over a
+ * hundred frames) is the only thing that shows whether a given pair is stable. It also amplifies
+ * whatever the fed-back image already contains, including the probe's approximation of the off-screen
+ * light - one more reason the gain is a modest fraction rather than one, and a limit that a real
+ * multi-bounce (a surface cache or a radiance probe grid) would remove.
  *
  * The output is `albedo * mean(radiance)` over cosine-weighted hemisphere rays, which is the
  * one-bounce diffuse estimator - the pi factors cancel by construction. It is written at HALF
@@ -54,6 +68,11 @@ layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal;   // RGBA16F: wor
 layout(set = 1, binding = 2) uniform sampler2D gbuffer_material; // RGBA8: .b = the material's baked AO (see deferred.frag)
 layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;    // the pass's own 1x depth
 layout(set = 1, binding = 5) uniform sampler2D direct_radiance;  // HDR scene target: DIRECT light only
+// The temporal resolve's output, sampled at a hit to re-emit the indirect that arrived there (see the
+// file header and pc.frame_info.z). It is the PREVIOUS frame's content of that image: the resolve
+// overwrites it later in this same frame, after this pass has run, which is what keeps the feedback a
+// delay rather than an echo of the frame it is part of.
+layout(set = 1, binding = 7) uniform sampler2D gi_resolve;
 // The probe, for the rays that leave the frame or hit something the camera cannot see: the irradiance
 // map the lighting stage uses for its ambient, sampled along the RAY direction. This is what turns the
 // traced path from "screen-space GI" into the full one-bounce diffuse indirect - see rt_hit_radiance.
@@ -76,6 +95,9 @@ layout(push_constant) uniform SsgiPush {
     // y = 1.0 when the rays are traced against the acceleration structures instead of marched (see
     // rt_hit_radiance). One lane rather than a field because the push block's size is a pipeline layout
     // constant every consumer shares.
+    // z = the fraction of the previous frame's accumulated indirect a hit re-emits: the multi-bounce
+    // gain ([render] ssgi_bounce). 0 makes this a single-bounce estimator, which is what every
+    // measurement taken before the knob existed was taken with.
     vec4 frame_info;
 } pc;
 
@@ -178,6 +200,20 @@ bool march(vec3 origin, vec3 dir, float max_distance, int steps, out vec2 out_uv
 }
 
 /**
+ * @brief what the surface at a hit re-emits along the ray: the multi-bounce term
+ * @param uv the hit, in full-resolution screen UV (the resolve image is half-res; the sampler filters)
+ * @return `frame_info.z * ` the previous frame's accumulated indirect there, or 0 when the gain is off
+ * @note the fetch sits inside the branch rather than being multiplied by a zero gain. The image has no
+ *       defined contents on the frames before it has been resolved once (the runtime transitions it to
+ *       SHADER_READ so the descriptor is legal, but its texels are whatever the allocation held), and
+ *       zero times a NaN is a NaN - which the temporal filter would then carry into the image. Reading
+ *       nothing when the gain is zero is both correct and free.
+ */
+vec3 bounce_radiance(vec2 uv) {
+    return pc.frame_info.z > 0.0 ? pc.frame_info.z * texture(gi_resolve, uv).rgb : vec3(0.0);
+}
+
+/**
  * @brief trace @p dir from @p origin and report the radiance of what it hits
  * @param origin the WORLD-space start (already pushed off the surface)
  * @param dir the unit world-space direction
@@ -199,6 +235,12 @@ bool march(vec3 origin, vec3 dir, float max_distance, int steps, out vec2 out_uv
  * count the off-screen part twice: doing that correctly means the lighting stage stops adding its own
  * diffuse ambient when this pass covers it, which is a change to what the ambient MEANS and belongs in
  * a step of its own with its own measurement.
+ *
+ * The multi-bounce term is added on the SCREEN-VALIDATED path only. The three probe returns below are
+ * rays that found no surface within their length, or whose hit the camera cannot see: there is no
+ * surface there to re-emit anything, and the probe value is an estimate of the ambient at the ORIGIN of
+ * the ray, not radiance arriving from that direction - so scaling it by the gain would amplify an
+ * approximation rather than close a light path.
  */
 vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, out bool out_hit) {
     out_hit = false;
@@ -232,7 +274,7 @@ vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, out bool out_hit
     if (buffer_ndc >= 1.0 || abs(view_depth(buffer_ndc) - hit_view_depth) > 0.05 * hit_view_depth) {
         return texture(irradiance_sampler, dir).rgb; // the visible surface there is a different one: the hit is hidden
     }
-    return texture(direct_radiance, hit_uv).rgb;
+    return texture(direct_radiance, hit_uv).rgb + bounce_radiance(hit_uv);
 }
 
 void main() {
@@ -294,7 +336,7 @@ void main() {
         } else {
             vec2 hit_uv;
             if (march(origin, dir, radius, steps, hit_uv)) {
-                radiance_sum += texture(direct_radiance, hit_uv).rgb;
+                radiance_sum += texture(direct_radiance, hit_uv).rgb + bounce_radiance(hit_uv);
             }
         }
     }
@@ -313,6 +355,8 @@ void main() {
     // filter instead (see ssgi_spatial.comp): that pass still has the surface the ambient belongs to, and
     // it is the last one before the composite, so nothing downstream of this line sees anything but
     // radiance.
+    // radiance. On a frame with a non-zero bounce gain the sum above already carries the higher-order
+    // bounces, for the same reason: what a ray re-emitted was radiance too.
     const float traced_ao = traced ? texture(gbuffer_material, uv).b : 1.0;
     const vec3 indirect = albedo * (radiance_sum / float(rays)) * pc.params.y * traced_ao;
     imageStore(gi_output, pixel, vec4(indirect, 1.0));
