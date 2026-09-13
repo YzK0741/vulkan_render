@@ -42,6 +42,7 @@ namespace {
         CHECK(settings.render.ssgi_hit_shading); // fixture: hits shaded from geometry
         CHECK(settings.render.ssgi_specular);    // fixture: the glossy lobe traced
         CHECK(settings.render.ssgi_specular_rays == 4);
+        CHECK(settings.render.ssgi_specular_radius > 0.74f && settings.render.ssgi_specular_radius < 0.76f);
         CHECK(settings.render.furnace); // fixture: the analytic verification mode
         CHECK(settings.render.unlit);   // fixture: the flat render mode
         CHECK(settings.render.fxaa);
@@ -102,6 +103,7 @@ namespace {
         CHECK(!settings.render.taa);
         CHECK(!settings.render.ssgi_specular);          // the example documents the glossy lobe and ships it off
         CHECK(settings.render.ssgi_specular_rays == 1); // ... at the one ray the feature is defined by
+        CHECK(settings.render.ssgi_specular_radius > 0.49f && settings.render.ssgi_specular_radius < 0.51f);
         CHECK(settings.lighting.demo_lights == 0);
         CHECK(settings.lighting.env_size == 256);
         CHECK(settings.gui.show);
@@ -175,10 +177,11 @@ namespace {
         CHECK(settings.render.ssgi_probe_rate > 0.07f && settings.render.ssgi_probe_rate < 0.09f);
         CHECK(settings.render.ssgi_probe_rounds == 2);
         CHECK(settings.render.ssgi_probe_gain > 0.99f && settings.render.ssgi_probe_gain < 1.01f);
-        CHECK(!settings.render.ssgi_hit_shading);       // default: hits are read from the screen
-        CHECK(!settings.render.ssgi_specular);          // default: reflections stay the environment's
-        CHECK(settings.render.ssgi_specular_rays == 1); // default: one glossy ray per pixel
-        CHECK(!settings.render.furnace);                // default: a normal frame, not the verification mode
+        CHECK(!settings.render.ssgi_hit_shading);                                                            // default: hits are read from the screen
+        CHECK(!settings.render.ssgi_specular);                                                               // default: reflections stay the environment's
+        CHECK(settings.render.ssgi_specular_rays == 1);                                                      // default: one glossy ray per pixel
+        CHECK(settings.render.ssgi_specular_radius > 0.49f && settings.render.ssgi_specular_radius < 0.51f); // default: the reach's measured knee
+        CHECK(!settings.render.furnace);                                                                     // default: a normal frame, not the verification mode
         // [render] validation
         CHECK(settings.render.validation_layers);
         // [gui]

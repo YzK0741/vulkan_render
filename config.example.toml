@@ -286,19 +286,33 @@ ssgi_hit_shading = false
 # whenever hit shading is off), which is why it keeps its approximate subtraction in the spatial filter.
 # THE RAY ORIGIN AND THE SHADOW RAY'S BIAS ARE BOTH EXPLICIT WORLD LENGTHS NOW, in every traced lobe this
 # file's keys can reach, and the reason is a measurement rather than tidiness: both used to be a fraction of
-# the RAY LENGTH, which made them scale with a knob that means REACH. `ssgi_radius` is a fraction of the scene
-# radius, so at the old default on Sponza a traced ray began 0.21 world units above the surface and the sun ray
-# a shaded hit fires began the same - larger than most of the detail they were testing against. Removing it
-# moved 35.57% of the traced reference scenario's pixels and made the traced GI 0.27 of mean green DARKER,
-# i.e. it had been over-bright by falling back to the environment probe whenever a ray started past the
-# geometry beside it. The MARCHED path keeps the fraction of the ray length deliberately, where it is the step
-# size's own scale rather than a scene's. (See `rt_shadows`' two mechanisms below for the limits that are
-# still there, and docs/gi_hit_shading.md's L2.3 origin section for the tables.)
+# the RAY LENGTH, which made them scale with a knob that means REACH - so the same config meant a different
+# distance on every scene (0.017 world units on the metal/roughness sweep and 0.045 inside Sponza at the same
+# `ssgi_radius = 0.12`, whose scene radius is 18.548). Removing it moved 35.57% of the traced reference
+# scenario's pixels and made the traced GI 0.27 of mean green DARKER - it had been over-bright by falling back
+# to the environment probe whenever a ray started past the geometry beside it, and that a sub-decimetre change
+# in where rays START is a frame-level change is itself worth knowing. The MARCHED path keeps the fraction of
+# the ray length deliberately, where it is the step size's own scale rather than a scene's. (See `rt_shadows`'
+# two mechanisms below for the limits that are still there, and docs/gi_hit_shading.md's L2.3 origin section.)
 # REQUIREMENTS: the traced GI path, `ssgi_hit_shading` and the acceleration structures' instance table (a
 # hit cannot be shaded without it). Where any is missing the pass is not even RECORDED, which is what makes
 # `ssgi_specular = false` byte-identical by construction rather than by arithmetic (verified: the capture
 # harness's 10 scenarios x 2, 0 changed, `metal_rough_glossy` among them since L2.3).
 ssgi_specular = false
+# ssgi_specular_radius: how far a glossy ray reaches, as a fraction of the scene radius. ITS OWN REACH, not
+# the shared `ssgi_radius`, and the reason is that the two are different questions: a diffuse bounce's reach
+# is "how far indirect light travels before it is absorbed", while a mirror shows the whole room, and
+# `ssgi_radius` is pinned low by the MARCHED path, whose resolution is radius / ssgi_steps (at 0.5 on Sponza
+# a 6-step march would step 1.55 world units and miss the detail between them).
+# MEASURED on the reference scene, the lobe's effect against its own reach, everything else identical:
+#   reach 0.12 -> -0.907   (the marched path's default, i.e. the lobe realized 39% of the signal there)
+#   reach 0.50 -> -2.126   (2.3x, for +0.94 ms on the GPU timings' `gi` interval: 1.28 -> 2.22 ms)
+#   reach 2.00 -> -2.350   (and NO further cost: 2.21 ms - a ray that reaches the geometry it can reach
+#                           stops traversing, which is why the curve is flat in cost as well as in effect)
+# 0.5 is that knee, so it is the default. Below the knee the reflection falls back to the sky instead of the
+# room; above it there is nothing left to find. The value is a fraction of the scene radius, so it means the
+# same thing on a compact model (0.5 of 6.995 = 3.5 world units) as on Sponza (0.5 of 18.548 = 9.3).
+ssgi_specular_radius = 0.5
 # ssgi_specular_rays: how many glossy rays per pixel, 1 to 8. One is the feature's definition and what its
 # cost was measured at. The hit is a POINT sample of a cone whose width is the material's roughness, so this
 # is the knob that buys a wide lobe's variance down - and the measurement says one ray is already enough

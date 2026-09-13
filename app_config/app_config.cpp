@@ -185,6 +185,11 @@ namespace app_config {
                     settings.render.ssgi_specular_rays = static_cast<int>(*value);
                 }
             }
+            if (toml::node const* node = render->get("ssgi_specular_radius")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.ssgi_specular_radius = static_cast<float>(*value);
+                }
+            }
             if (toml::node const* node = render->get("furnace")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.furnace = *value;

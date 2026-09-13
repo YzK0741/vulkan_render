@@ -119,8 +119,8 @@ layout(push_constant) uniform SsgiPush {
     // frame either marches all its rays or traces all of them, and the shader branches on exactly that
     // flag before either reading). What it buys is that the traced path's origin bias can be a
     // WORLD-SPACE distance rather than a fraction of the ray length: `radius * 0.02` makes the offset
-    // scale with a knob that means REACH, which at Sponza's default settings lifts every traced ray's
-    // origin 0.21 world units off the surface. The marched path keeps the fraction, where it is the step
+    // scale with a knob that means REACH, so the same config lifted the origin 0.045 world units inside
+    // Sponza and 0.017 on a compact model. The marched path keeps the fraction, where it is the step
     // size's own scale rather than a scene's.
     vec4 params;
     // x = projection[2][2], y = [3][2] (the view-depth linearization pair).
@@ -512,8 +512,8 @@ void main() {
         // surface's own depth and self-hit on any slope. The MARCHED path's offset is a fraction of the
         // ray length, which for a march is the step size's own scale; the TRACED path's is a world-space
         // distance pushed by the host, because a fraction of the ray length makes the offset scale with a
-        // knob that means REACH - at this project's defaults that put the origin 0.21 world units above
-        // the surface inside Sponza, larger than most of its detail (see the push block's comment).
+        // knob that means REACH - the same 0.12 config meant 0.045 world units inside Sponza and 0.017 on a
+        // compact model (see the push block's comment).
         const vec3 origin = view_pos + normal_view * (radius * 0.02);
         if (traced) {
             // A separate direction/origin in world space: the cosine lobe has to be built around the

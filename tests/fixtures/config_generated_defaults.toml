@@ -73,6 +73,7 @@ ssgi_probe_gain = 1.0
 ssgi_hit_shading = false
 ssgi_specular = false
 ssgi_specular_rays = 1
+ssgi_specular_radius = 0.5
 furnace = false
 
 # ---- [gui] debug overlay ----

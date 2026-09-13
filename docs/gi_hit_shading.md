@@ -1111,7 +1111,7 @@ metal moves most (+10.33); the ordering inside each class follows the roughness,
 width says it must. Nothing else about the pass could produce that pattern.
 
 THE RAY LENGTH IS THE DOMINANT LEVER ON A COMPACT SCENE, and the knob's units are why. `ssgi_radius` is a
-fraction of the SCENE radius, so the same 0.12 that reaches 4.6 units inside Sponza reaches 0.84 units here -
+fraction of the SCENE radius, so the same 0.12 that reaches 2.23 units inside Sponza reaches 0.84 units here -
 less than the gap between two spheres. The effect as a function of it, same scene, same A/B:
 
     radius   world units   mean green delta
@@ -1151,14 +1151,53 @@ instead of +0.0255, cheaper (the spatial filter lost two bindings, a matrix lane
 theoretical cost turned out to be measurably inert because the lobe requires hit shading. (a) remains the
 answer for the DIFFUSE term if that artifact is ever worth 25 gathers a pixel.
 
+### L2.3, the glossy lobe's reach: a shared knob that was pinned by the other path
+
+The lobe's rays used the DIFFUSE bounce's `ssgi_radius`, and the two are different questions. A diffuse
+bounce's reach is "how far indirect light travels before it is absorbed", where the fallback when it finds
+nothing is the irradiance probe - a decent answer, because ambient light is fairly uniform. A reflection's
+reach is "how much of the room the mirror shows", where the fallback is the SKY, which in an interior is not
+an answer at all. Worse, `ssgi_radius` is pinned low by the path that cannot afford a long one: the MARCHED
+chain's resolution is radius / `ssgi_steps`, so at 0.5 on Sponza a 6-step march would step 1.55 world units
+and miss whatever lies between two of them.
+
+MEASURED, on Sponza, A/B on the knob alone with the diffuse reach held at 0.25 (so the only thing moving is
+the lobe's own reach), 120 frames:
+
+    reach (scene radii)   world units   the lobe's effect   the `gi` GPU interval
+    0.12                       2.23          -0.907               1.28 ms
+    0.50                       9.27          -2.126               2.22 ms
+    2.00                      37.10          -2.350               2.21 ms
+
+    then isolated, with the diffuse reach fixed at 0.25 so the diffuse side cannot move at all:
+    ssgi_specular_radius 0.25 -> 0.50:  effect -1.4756 -> -2.1411 (+45%)   gi 1.65 -> 1.77 ms (+0.12)
+
+Three things are worth reading off that. The default realized **39%** of the signal available at 37 units,
+so the feature as shipped was mostly showing the sky. The knee is at 0.5 - half the potential is recovered by
+0.5 and the remaining 10% costs nothing but buys nothing either, because a ray that reaches the geometry it
+can reach stops traversing (which is why the curve is flat in COST as well as in effect past it). And the
+lobe's own reach is cheap: +0.12 ms isolated, against the +0.94 ms the shared knob charged when it lengthened
+the diffuse rays too - so the coupling was not only a modelling compromise but an expensive one.
+
+`[render] ssgi_specular_radius` is therefore its own key, default 0.5 (the knee), clamped to [0.01, 8]. The
+gate came out 10 scenarios x2 with 0 changed and NO reference re-seeded, which is the check that the change
+is confined to configurations whose read radius was not already at the knee: the one scenario with the lobe
+on sets `ssgi_radius = 0.5`, and the one with the traced path but no hit shading records no lobe at all.
+
 ### L2.3, the ray's origin: a bias that scaled with the wrong knob, measured and fixed
 
 The ray's origin is pushed off the surface by a self-intersection bias, and BOTH traced lobes had it as a
 fraction of the RAY LENGTH: `world_pos + normal * (radius * 0.02)`. That makes the bias scale with the reach
-knob - so raising `ssgi_radius` to see further also lifts every ray's origin further off its surface - and the
-numbers are not small, because `radius` is itself a fraction of the scene radius. At the glossy lobe's default
-on Sponza the bias is 0.44 world units: larger than most of Sponza's architectural detail, and larger than the
-banners it should be reflecting off.
+knob - so raising `ssgi_radius` to see further also lifts every ray's origin further off its surface - and
+because `radius` is itself a fraction of the scene radius, the same CONFIG means a different distance on every
+scene: 0.017 world units on the metal/roughness sweep and 0.045 on Sponza at the same 0.12.
+
+THE SCENE RADIUS THESE NUMBERS ARE CONVERTED WITH, stated once because getting it wrong is a trap this
+section fell into: Sponza's is **18.548** world units, which is what the runtime's `scene_radius` is and what
+`ssgi_radius` multiplies. (Fox's is 87.775, because its sample asset has a huge ground plane - and an earlier
+draft of this section quoted Fox's radius for Sponza, which inflated every world-unit figure below by 4.7x.
+The measurements are unaffected: they are A/B diffs of the same code. The magnitudes were.) So the glossy
+lobe's default, 0.25, is a ray length of 4.64 units, and its bias was 0.09 of them.
 
 THE MEASUREMENT, and it needed the isolation first: the reach and the bias move together, so the experiment was
 to give the specular pass an EXPLICIT bias (its own push block has a free lane, `params.z`) set to
@@ -1169,24 +1208,30 @@ two against each other, everything else identical:
     spheres 0.12        0.017 -> 0.0014            -0.034         2.52%            0.22%     40
     spheres 0.50        0.070 -> 0.0014            -0.096         5.61%            1.13%     84
     spheres 1.00        0.140 -> 0.0014            -0.162         6.57%            1.95%    116
-    Sponza  0.25        0.439 -> 0.018             -0.082        23.14%            0.68%     38
+    Sponza  0.25        0.093 -> 0.0037            -0.082        23.14%            0.68%     38
 
 Monotone in the size of the bias, which is the control that says the difference is the bias rather than noise,
 and at the reference scene's own default setting it moves 23% of the pixels. The direction is the feature's own
 thesis: the smaller bias makes the reflection find MORE geometry and fall back to the sky less, and the
 feature's effect on Sponza grows from -1.3264 to -1.4082 - 6% stronger - with it.
 
+HOW LITTLE THAT IS, and why the measured effect is the argument rather than the magnitude: 0.09 world units is
+about the thickness of one of Sponza's banners, not the grand error a 0.21 would have been. What says it
+mattered is that moving it moved 23% of the pixels and changed the feature's own effect by 6% - a sensitivity
+worth stating, because it means the traced chain reads a sub-decimetre difference in where its rays START as a
+frame-level change.
+
 WHY THE SMALLER VALUE IS THE CORRECT ONE, stated as the argument rather than as a preference: the physically
 right origin is the surface point itself, and the guard against a ray re-hitting its own triangle is `tmin`,
-which both lobes already pass as a fixed 0.01. `scene_radius * 0.0002` is 0.018 units on Sponza, i.e. just
-above that guard, and 0.0014 on the material sweep, i.e. below it - where tmin alone does the work, and the
-captures show no self-intersection artifact either way. The old expression's only real effect was the parallax
-it introduced.
+which both lobes already pass as a fixed 0.01. `scene_radius * 0.0002` is 0.0037 units on Sponza and 0.0014 on
+the material sweep, i.e. below that guard on both - so tmin alone does the work, and the captures show no
+self-intersection artifact either way. The old expression's only remaining effect was the parallax it
+introduced.
 
 THE SAME DEFECT EXISTED A THIRD TIME, IN THE SHADOW RAY A SHADED HIT FIRES, and it is fixed in the same
 step. `shade_hit` starts its sun ray at `hit_world + normal * max(0.01, bias_scale * 0.02)`, and both traced
-lobes passed the RAY LENGTH as `bias_scale` - so at Sponza's defaults a hit's shadow ray began 0.21 world
-units above the surface (0.44 at the glossy pass's default). The callers now pass the world-space bias they
+lobes passed the RAY LENGTH as `bias_scale` - so on Sponza a hit's shadow ray began 0.045 world units above the
+surface at the traced default (0.093 at the glossy pass's own). The callers now pass the world-space bias they
 already computed for their own ray origin, which is what the parameter was always documented to be for. It is
 only read on the SHADED path, so the measured consequence is confined to frames with hit shading on: on the
 material sweep, +0.0348 of mean green, 2.01% of pixels differing, worst pixel 15 - and `sponza_gi`, which
@@ -1202,7 +1247,7 @@ samples per ray on a marched frame, which is a second meaning but not an ambiguo
 marches all its rays or traces all of them, and the shader branches on exactly that flag before either
 reading). The marched path keeps the fraction of the ray length, where it is the step size's own scale rather
 than a scene's. The change is the biggest one this step produced, because the diffuse lobe is the dominant GI
-term: on `sponza_gi` (traced, hit shading off, the default radius that made the bias 0.21 units) it moves
+term: on `sponza_gi` (traced, hit shading off, the default radius that made the bias 0.045 units) it moves
 35.57% of the pixels, mean -0.2696 of green, 9.56% of them by more than 1/255 - and the sign says what the
 floating origin was doing, since a ray that starts too far out misses the geometry beside it and falls back to
 the brighter environment probe, i.e. the traced GI was over-bright. On the material sweep (radius 0.5) the

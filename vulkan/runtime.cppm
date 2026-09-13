@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.49.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.50.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -401,6 +401,12 @@ namespace vulkan {
         // when a ray finds nothing - which is what the spatial filter's second subtraction takes back out
         // (see shaders/ssgi_spec.comp and shaders/ssgi_spatial.comp's ambient_removed_at). Off by default.
         bool ssgi_specular = false;
+        // ... and how far those rays reach ([render] ssgi_specular_radius), as a fraction of the scene
+        // radius. Its own reach rather than the shared `ssgi_radius`, which the MARCHED path pins low: that
+        // path's resolution is radius / ssgi_steps, so a reflection's reach would make its steps too coarse
+        // to find anything between them. Measured on Sponza, the lobe's effect is 39% of its potential at
+        // the marched path's 0.12 and 90% at 0.5, with the curve flat past it.
+        float ssgi_specular_radius = 0.5f;
         // ... and how many of those rays per pixel ([render] ssgi_specular_rays). One is the feature's
         // definition ("a glossy ray per pixel") and is what the cost was measured at; more is what buys a
         // wide lobe's variance down, which is the denoiser problem this feature brings with it.
@@ -2255,8 +2261,15 @@ namespace vulkan {
          *       depth buffer's own surface and cannot be shaded from its geometry - so it is granted only
          *       where all three hold, and the pass is not even recorded otherwise (which is what makes the
          *       knob-off frame byte-identical by construction rather than by arithmetic).
+         * @param radius how far the rays reach as a fraction of the scene radius
+         *        ([render] ssgi_specular_radius), clamped to [0.01, 8]. It is NOT the shared
+         *        `ssgi_radius`, and the difference matters: that one is pinned low by the MARCHED path,
+         *        whose resolution is radius / ssgi_steps, so a reflection's reach would make its steps too
+         *        coarse to find anything between them. Measured on Sponza, the lobe's effect is -0.907 at
+         *        0.12 (the marched default, i.e. 39% of what is available), -2.126 at 0.5 and -2.350 at
+         *        2.0, the cost rising +0.94 ms from the first to the second and not at all after it.
          */
-        void set_ssgi_specular(bool enabled, uint32_t rays) noexcept;
+        void set_ssgi_specular(bool enabled, uint32_t rays, float radius) noexcept;
 
         /**
          * @ingroup vulkan_runtime

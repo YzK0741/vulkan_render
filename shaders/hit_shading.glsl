@@ -246,9 +246,9 @@ bool shade_hit(rayQueryEXT query, vec3 hit_world, vec3 dir, vec3 to_viewer, uint
     // a fraction of the scene radius rather than a fraction of the ray length.
     //
     // IT USED TO BE THE RAY LENGTH for both traced lobes, and that is a defect of the same class the ray
-    // origin bias had: it made the shadow ray's start scale with a knob that means REACH, so at this
-    // project's default settings the shadow ray began 0.21 world units above the surface it was testing
-    // inside Sponza (0.44 at the glossy pass's own default). Measured when both callers were changed: on
+    // origin bias had: it made the shadow ray's start scale with a knob that means REACH, so the same
+    // config meant a different distance on every scene - 0.045 world units above the surface inside Sponza
+    // at the traced default, 0.093 at the glossy pass's own. Measured when both callers were changed: on
     // the material sweep, where hit shading is on, +0.0348 of mean green with 2.01% of pixels differing and
     // a worst pixel of 15 - and NOTHING at all in `sponza_gi`, because that scenario shades no hits (the
     // parameter is only read on the shaded path). The SIGN is not what the obvious story predicts: a larger

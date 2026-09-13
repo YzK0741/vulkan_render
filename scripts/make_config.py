@@ -194,6 +194,7 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssgi_hit_shading = {str(cfg['ssgi_hit_shading']).lower()}",
         f"ssgi_specular = {str(cfg['ssgi_specular']).lower()}",
         f"ssgi_specular_rays = {cfg['ssgi_specular_rays']}",
+        f"ssgi_specular_radius = {cfg['ssgi_specular_radius']}",
         f"furnace = {str(cfg['furnace']).lower()}",
         "",
         "# ---- [gui] debug overlay ----",
@@ -351,6 +352,12 @@ def ask_all(output_dir: str) -> dict:
         1,
         hint="glossy rays per pixel (1 - 8; one is the feature's definition and its measured cost)",
     )
+    ssgi_specular_radius = ask_float(
+        "render.ssgi_specular_radius",
+        0.5,
+        hint="how far a glossy ray reaches, as a fraction of the scene radius (its own reach: the shared "
+             "ssgi_radius is pinned low by the marched path's step size; the measured knee is 0.5)",
+    )
     furnace = ask_bool(
         "render.furnace",
         False,
@@ -447,6 +454,7 @@ def ask_all(output_dir: str) -> dict:
         "ssgi_hit_shading": ssgi_hit_shading,
         "ssgi_specular": ssgi_specular,
         "ssgi_specular_rays": ssgi_specular_rays,
+        "ssgi_specular_radius": ssgi_specular_radius,
         "furnace": furnace,
         "gui_show": gui_show,
         "panel_width": panel_width,

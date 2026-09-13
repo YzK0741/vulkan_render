@@ -205,7 +205,7 @@ section has all of it.
 WHAT IS LEFT OF L2.3, and it is NOT the denoiser problem the plan predicted - that hypothesis was measured
 and killed. At a ray length that reaches anything (radius 0.5 on the material sweep) the reflection's structure
 survives the shared joint-bilateral filter; the earlier "no reflection visible" reading was the RAY LENGTH,
-because `ssgi_radius` is a fraction of the scene radius and the 0.12 that reaches 4.6 units inside Sponza
+because `ssgi_radius` is a fraction of the scene radius and the 0.12 that reaches 2.23 units inside Sponza
 reaches 0.84 on a compact scene (measured curve: +0.47 / +0.71 / +0.89 / +1.06 at radius 0.12 / 0.25 / 0.50 /
 1.00). What is actually open:
 (1) THE FEATURE IS NEARLY INVISIBLE ON THE SCENE EVERY OTHER GI MEASUREMENT USES (Sponza is roughened stone,
@@ -213,7 +213,10 @@ its roughness channel averages 217/255), which is why the gate grew a `metal_rou
 L2.3 evidence that matters is a MATERIAL-ordered table - smooth metal +10.33, rough metal +7.61, smooth
 dielectric +1.23, rough dielectric +0.13 - rather than a tile table.
 (2) the reflection is a point sample of the roughness cone, so a low-roughness reflection aliases at half
-resolution.
+resolution. Its REACH is no longer on this list: it has its own knob now (`ssgi_specular_radius`, default 0.5
+of the scene radius), because the shared `ssgi_radius` was pinned low by the marched path's step size and the
+lobe was realized only 39% of the signal available - half of the remainder comes back at 0.5 for +0.12 ms
+isolated (+45% effect: -1.4756 -> -2.1411), and past it the curve is flat in cost and in effect both.
 (3) the DIFFUSE subtraction still carries the non-mean-preserving-average artifact (+0.33 convex / +0.52
 Sponza) and cannot use the mechanism that fixed the specular one, because its image has to stay a radiance for
 the live bounce - fixing it means filtering the removed term with the same weights as the added one (25 gathers
@@ -222,8 +225,11 @@ a pixel) and re-baselining every capture.
 the shadow ray a shaded hit fires - and the MARCHED path keeps its fraction-of-the-ray-length form on purpose
 (there it is the step size's own scale). Those fixes were among the largest errors the traced path had: the
 diffuse origin alone moved 35.57% of `sponza_gi`'s pixels and its removal made the traced GI 0.27 of mean green
-DARKER, i.e. it had been over-bright because its rays started 0.21 world units above the surface and missed the
-geometry beside them.
+DARKER, i.e. it had been over-bright because its rays started past the geometry beside them and fell back to the
+environment probe. THE DISTANCES ARE SMALLER THAN AN EARLIER DRAFT OF THIS NOTE SAID and the measurements are
+the same ones: Sponza's scene radius is 18.548 (not Fox's 87.775), so the bias was 0.045 world units at the
+traced default, not 0.21. That a sub-decimetre change in where rays START moves a third of the frame is the
+finding; quoting the wrong scene's radius was a trap, and it is recorded in section 5.
 
 ## 5. Working discipline (non-negotiable; every item was learned the hard way here)
 
@@ -295,7 +301,15 @@ Edit mechanics this repository punishes:
   amplifies a one-ULP code-generation difference over forty frames, and it changed 2 of the 7 scenarios once.
   Force INPUTS instead (the light UBO lanes, the descriptors), which leaves the default byte-exact by
   construction;
-* `git` will warn about LF/CRLF on nearly every edit; that is normal and no line-ending fixing should be run.
+* `git` will warn about LF/CRLF on nearly every edit; that is normal and no line-ending fixing should be run;
+* THE SCENE RADIUS IS PER ASSET AND IT IS EASY TO QUOTE THE WRONG ONE: it is `scene_radius`, printed both as
+  "scene bounds (aabb): ... radius N" and as the light frustum's radius, and it is what `ssgi_radius`
+  multiplies. Sponza's is 18.548, the metal/roughness sweep's is 6.995, and Fox's is 87.775 - because that
+  sample asset carries a huge ground plane. An earlier draft of the L2.3 origin section took Fox's figure for
+  Sponza and reported a 0.045-unit bias as 0.21, i.e. off by 4.7x, in a document whose whole point is that its
+  numbers can be re-derived. The A/B measurements were unaffected (same code, two values), but every
+  "world units" claim in that section had to be recomputed - so when a number is a CONVERSION, print the
+  quantity it was converted FROM next to it.
 
 Commit and reporting style:
 

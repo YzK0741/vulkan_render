@@ -3545,12 +3545,17 @@ namespace vulkan {
         return this->ssgi_specular && this->ssgi_hit_shading && this->ssgi_traced_active() && this->ssgi_spec_pipeline.has_value();
     }
 
-    void runtime::set_ssgi_specular(bool const enabled, uint32_t const rays) noexcept {
+    void runtime::set_ssgi_specular(bool const enabled, uint32_t const rays, float const radius) noexcept {
         this->ssgi_specular = enabled;
         // One is the feature's definition and the low end of the noise/cost trade; the upper bound is a
         // cost guard, not a quality claim - the pass shades every hit it finds, which is the expensive
         // part of this chain.
         this->ssgi_specular_rays = std::clamp(rays, 1u, 8u);
+        // A reach, not a quality knob: below it the reflection falls back to the sky, and past the knee the
+        // curve is flat in BOTH effect and cost (measured: -0.907 / -2.126 / -2.350 at 0.12 / 0.5 / 2.0, and
+        // the `gi` interval 1.28 / 2.22 / 2.21 ms). The floor keeps it above the ray query's own tmin, which
+        // is a fixed 0.01 world units.
+        this->ssgi_specular_radius = std::clamp(radius, 0.01f, 8.0f);
         if (enabled && !this->ssgi_hit_shading) {
             this->warn_missing_feature("ssgi", "glossy reflections have no effect: without hit shading a reflection ray cannot be shaded where it lands");
         } else if (enabled && !this->ssgi_ray_tracing) {
@@ -4161,12 +4166,13 @@ namespace vulkan {
         float const table_high = std::bit_cast<float>(static_cast<uint32_t>(instance_table >> 32u));
         ssgi_spec_push_constants const push = {
             .inv_view_proj = this->current_inv_view_proj,
-            // The ray length is the tracer's own scene-relative radius: a reflection's reach is the same
-            // question the diffuse bounce answers ("how far can indirect light travel"), and one knob for
-            // both keeps the A/B about the LOBE rather than about the distance. z is the self-intersection
-            // bias as an explicit WORLD length rather than a fraction of x - so that raising the reach does
-            // not also lift every ray's origin further off its surface (see the shader's push comment).
-            .params = glm::vec4(this->ssgi_radius * this->scene_radius,
+            // The ray length is the lobe's OWN reach (`ssgi_specular_radius`), not the diffuse bounce's
+            // `ssgi_radius` - see the setter for why the two are different questions and what the curve
+            // between them costs (measured: 39% of the available signal at the marched path's 0.12, 90% at
+            // 0.5, flat past it). z is the self-intersection bias as an explicit WORLD length rather than a
+            // fraction of x - so that raising the reach does not also lift every ray's origin further off its
+            // surface (see the shader's push comment).
+            .params = glm::vec4(this->ssgi_specular_radius * this->scene_radius,
                                 static_cast<float>(this->ssgi_specular_rays),
                                 this->scene_radius * 0.0002f,
                                 static_cast<float>(this->ssgi_frame)),

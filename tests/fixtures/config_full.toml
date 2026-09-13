@@ -41,6 +41,7 @@ ssgi_probe_gain = 0.5
 ssgi_hit_shading = true
 ssgi_specular = true
 ssgi_specular_rays = 4
+ssgi_specular_radius = 0.75
 furnace = true
 unlit = true
 fxaa = true

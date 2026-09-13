@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.24.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.25.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -218,6 +218,15 @@ namespace app_config {
         // something local to show. Off by default; it needs the traced GI path, hit shading and the
         // acceleration structures, and it is not recorded at all where those are missing.
         bool ssgi_specular = false;
+        // ... and how far its rays reach ([render] ssgi_specular_radius, a fraction of the scene radius).
+        // A REACH OF ITS OWN, because the shared `ssgi_radius` is pinned by the MARCHED path: that path's
+        // resolution is radius / ssgi_steps, so a radius large enough for a reflection (0.5, i.e. 9 world
+        // units on Sponza) would give a 6-step march 1.55-unit steps and miss the detail between them.
+        // Measured on the reference scene, the glossy effect against its reach: -0.907 at 0.12, -2.126 at
+        // 0.5 and -2.350 at 2.0 - so the default realizes 39% of the signal available, half of it recovers
+        // 2.3x, and beyond 0.5 the curve is flat (both in effect and in cost, since a ray that reaches the
+        // geometry it can reach stops traversing). 0.5 is that knee.
+        float ssgi_specular_radius = 0.5f;
         // ... and how many rays per pixel ([render] ssgi_specular_rays, clamped to [1, 8]). One is the
         // feature's definition and what its cost was measured at; the hit is a POINT sample of a cone whose
         // width is the material's roughness, so this is the knob that buys a wide lobe's noise down - the
