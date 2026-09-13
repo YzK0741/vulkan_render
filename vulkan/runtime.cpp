@@ -1650,6 +1650,15 @@ namespace vulkan {
             this->record_cluster_pass(*command_buffer);
         }
 
+        // ---- Ray-traced shadows: build the acceleration structures once, before the passes that will
+        //      trace against them. It happens HERE (inside the frame's command buffer, before any
+        //      rendering instance opens) because a build is a transfer/compute-class command that must
+        //      not be recorded inside vkCmdBeginRendering, and because the caster set is only complete
+        //      now that the scene is loaded and culled. Nothing reads the structures yet, so a frame
+        //      with the flag on renders exactly like one with it off - what this records is the input
+        //      the ray-traced pass will need, not a change to the image.
+        this->record_acceleration_structures(*command_buffer);
+
         // ---- Shadow pass: render the scene's depth from the light into this slot's shadow map.
         //      Drawn before the main pass; the depth-only pipeline shares the flat scene layout
         //      and the primitive draw() path (same vertex buffers / push constants), so the shadow
@@ -4248,6 +4257,95 @@ namespace vulkan {
                      scene_center.x, scene_center.y, scene_center.z, scene_radius);
     }
 
+    void runtime::set_rt_shadows(bool const enabled) noexcept {
+        this->rt_shadows = enabled;
+    }
+
+    bool runtime::rt_shadows_active() const noexcept {
+        return this->rt_shadows && this->vulkan_core.ray_query_available;
+    }
+
+    void runtime::record_acceleration_structures(VkCommandBuffer const command_buffer) {
+        core& vk = this->vulkan_core;
+        if (!this->rt_shadows_active() || this->rt_structures_attempted) {
+            return; // off, unsupported, or already built (see rt_structures_attempted)
+        }
+        this->rt_structures_attempted = true;
+
+        auto const start = std::chrono::steady_clock::now();
+        this->rt_bottom_levels.emplace(vk);
+        auto& structures = *this->rt_bottom_levels;
+
+        // One structure per SHADOW CASTER, which is the set the shadow pass itself draws (and the
+        // reason it is the right set: a caster can sit off screen and still throw a shadow into the
+        // view, so the visible set would be wrong). The geometry is the renderer's own: the build
+        // reads the vertex and index buffers through their DEVICE ADDRESSES, so nothing is copied and
+        // the structures follow whatever those buffers hold.
+        uint32_t skipped_no_address = 0;
+        uint32_t skipped_no_stride = 0;
+        for (primitive const* caster : this->shadow_casters) {
+            if (caster == nullptr) {
+                continue;
+            }
+            VkBufferDeviceAddressInfo vertex_address_info = {};
+            vertex_address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+            VkBufferDeviceAddressInfo index_address_info = vertex_address_info;
+
+            auto const* const vertex_detail = caster->vertex_detail;
+            auto const* const index_detail = caster->index_detail;
+            if (vertex_detail == nullptr || index_detail == nullptr || vertex_detail->buffer == VK_NULL_HANDLE || index_detail->buffer == VK_NULL_HANDLE) {
+                ++skipped_no_address;
+                continue;
+            }
+            // A buffer only has a device address when it was created with SHADER_DEVICE_ADDRESS_BIT,
+            // which the primitive uploads add when this device has the extensions - so this is a check
+            // on a device that has ray queries but whose buffers were uploaded before the flag... which
+            // cannot happen: the buffers are uploaded with the bits whenever the device supports them,
+            // regardless of the config. Kept as a guard because the alternative is a validation error
+            // per frame instead of one line in the log.
+            if (caster->vertex_stride == 0) {
+                ++skipped_no_stride;
+                continue;
+            }
+            vertex_address_info.buffer = vertex_detail->buffer;
+            index_address_info.buffer = index_detail->buffer;
+            acceleration_structure::geometry_source const source = {
+                .vertex_address = vkGetBufferDeviceAddress(vk.device, &vertex_address_info),
+                .vertex_stride = caster->vertex_stride,
+                .vertex_count = caster->vertex_count,
+                .index_address = vkGetBufferDeviceAddress(vk.device, &index_address_info),
+                .index_type = caster->index_type,
+                .index_count = caster->index_count,
+            };
+            if (auto const added = structures.add(source); !added) {
+                utility::log("ray-traced shadows disabled: {}", added.error());
+                this->rt_bottom_levels.reset();
+                return;
+            }
+        }
+
+        if (auto const built = structures.record_build(command_buffer); !built) {
+            utility::log("ray-traced shadows disabled: {}", built.error());
+            this->rt_bottom_levels.reset();
+            return;
+        }
+
+        acceleration_structure::build_stats const& stats = structures.last_stats();
+        double const host_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        utility::log("ray-traced shadows: built {} bottom level structures ({} triangles, {:.1f} MiB + {:.1f} MiB scratch) in {:.1f} ms",
+                     stats.geometry_count,
+                     stats.triangle_count,
+                     static_cast<double>(stats.structure_bytes) / (1024.0 * 1024.0),
+                     static_cast<double>(stats.scratch_bytes) / (1024.0 * 1024.0),
+                     host_ms);
+        if (skipped_no_stride != 0) {
+            utility::log("  {} casters skipped (no vertex stride recorded - a primitive not created by make_primitive)", skipped_no_stride);
+        }
+        if (skipped_no_address != 0) {
+            utility::log("  {} casters skipped (no vertex/index buffer)", skipped_no_address);
+        }
+    }
+
     void runtime::set_shadow_enabled(bool const enabled) {
         if (this->shadow_enabled == enabled) {
             return;
@@ -4502,7 +4600,14 @@ namespace vulkan {
         auto result = std::make_unique<normal_draw_primitive>();
 
         // ---- geometry buffers ----
-        result->vertex_buffer = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex);
+        // The vertex and index buffers carry the acceleration-structure build-input usage when the
+        // device has ray tracing, so a later build can read them through their device addresses
+        // instead of a second copy of the geometry. The flag is the DEVICE's, not the config's: the
+        // usage bit needs the extension enabled, and a buffer uploaded without it can never be built
+        // from - so it is decided where the upload happens, once, and not per frame by whoever wants
+        // to trace.
+        VkBufferUsageFlags const rt_input_usage = this->vulkan_core.ray_query_available ? acceleration_structure::build_input_usage : 0u;
+        result->vertex_buffer = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex, rt_input_usage);
         if (!result->vertex_buffer.valid()) {
             utility::panic("failed to create vertex buffer");
         }
@@ -4511,7 +4616,7 @@ namespace vulkan {
             utility::panic("failed to get vertex buffer detail");
         }
 
-        result->index_buffer = this->vulkan_core.vma.create_buffer(info.index_data.data(), info.index_data.size_bytes(), vulkan::buffer_type::index);
+        result->index_buffer = this->vulkan_core.vma.create_buffer(info.index_data.data(), info.index_data.size_bytes(), vulkan::buffer_type::index, rt_input_usage);
         if (!result->index_buffer.valid()) {
             utility::panic("failed to create index buffer");
         }
@@ -4523,6 +4628,10 @@ namespace vulkan {
         result->index_type = info.index_type;
         result->index_count = info.index_count;
         result->vertex_count = info.vertex_count;
+        // Kept for the acceleration-structure build, which reads the vertex buffer directly and has to
+        // be told the stride the interleaved layout uses (nothing else needs it after the upload: the
+        // raster pipelines take it from the vertex input state).
+        result->vertex_stride = info.vertex_stride;
 
         // ---- local-space AABB for frustum culling: the interleaved vertex layout starts every
         //      vertex with a vec3 position (see the loader's vertex struct / pbr.vert), so scan
@@ -4644,7 +4753,9 @@ namespace vulkan {
         auto result = std::make_unique<static_draw_primitive>();
 
         // ---- merged geometry buffers (owned by this primitive) ----
-        result->vertex_buffer = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex);
+        // Same build-input usage as create_primitive's, for the same reason (see there).
+        VkBufferUsageFlags const rt_input_usage = this->vulkan_core.ray_query_available ? acceleration_structure::build_input_usage : 0u;
+        result->vertex_buffer = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex, rt_input_usage);
         if (!result->vertex_buffer.valid()) {
             utility::panic("failed to create static vertex buffer");
         }
@@ -4652,7 +4763,7 @@ namespace vulkan {
         if (result->vertex_detail == nullptr) {
             utility::panic("failed to get static vertex buffer detail");
         }
-        result->index_buffer = this->vulkan_core.vma.create_buffer(info.index_data.data(), info.index_data.size_bytes(), vulkan::buffer_type::index);
+        result->index_buffer = this->vulkan_core.vma.create_buffer(info.index_data.data(), info.index_data.size_bytes(), vulkan::buffer_type::index, rt_input_usage);
         if (!result->index_buffer.valid()) {
             utility::panic("failed to create static index buffer");
         }
@@ -4663,6 +4774,7 @@ namespace vulkan {
         result->index_type = info.index_type;
         result->index_count = info.index_count;
         result->vertex_count = info.vertex_count;
+        result->vertex_stride = info.vertex_stride; // see create_primitive: the AS build reads the buffer
 
         // ---- local AABB over the whole merged geometry (batch-level culling) ----
         if (info.vertex_count > 0 && info.vertex_stride >= sizeof(glm::vec3) && !info.vertex_data.empty()) {

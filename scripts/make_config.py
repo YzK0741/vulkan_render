@@ -181,6 +181,7 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssgi_steps = {cfg['ssgi_steps']}",
         f"ssgi_spatial_sigma = {cfg['ssgi_spatial_sigma']}",
         f"ssgi_upsample = {str(cfg['ssgi_upsample']).lower()}",
+        f"rt_shadows = {str(cfg['rt_shadows']).lower()}",
         "",
         "# ---- [gui] debug overlay ----",
         "[gui]",
@@ -290,6 +291,11 @@ def ask_all(output_dir: str) -> dict:
         True,
         hint="joint-bilateral upsample of the half-res GI (false = plain bilinear, for measurement)",
     )
+    rt_shadows = ask_bool(
+        "render.rt_shadows",
+        False,
+        hint="ray-traced sun shadows (needs a device with ray queries; ignored elsewhere)",
+    )
 
     print("\n-- gui (debug overlay) --")
     gui_show = ask_bool("gui.show", True, hint="Dear ImGui debug overlay on by default")
@@ -344,6 +350,7 @@ def ask_all(output_dir: str) -> dict:
         "ssgi_steps": ssgi_steps,
         "ssgi_spatial_sigma": ssgi_spatial_sigma,
         "ssgi_upsample": ssgi_upsample,
+        "rt_shadows": rt_shadows,
         "gui_show": gui_show,
         "panel_width": panel_width,
         "panel_height": panel_height,

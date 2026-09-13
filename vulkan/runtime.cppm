@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.29.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.30.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -25,9 +25,10 @@ module;
 export module vulkan.runtime;
 
 import vulkan.profiling;
-import vulkan.bindings;   // the per-image descriptor-set families (the G-buffer debug view's for now)
-import vulkan.shadow_fit; // the cascade fit itself (pure CPU; the runtime gathers and caches)
-import vulkan.readback;   // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
+import vulkan.bindings;               // the per-image descriptor-set families (the G-buffer debug view's for now)
+import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
+import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
+import vulkan.acceleration_structure; // the ray-tracing bottom level structures (built once, lazily)
 export import vstd;
 export import vulkan.core;
 export import vulkan.core.filter;
@@ -938,6 +939,21 @@ namespace vulkan {
         // how far up-light of the camera frustum a caster still matters (its shadow can still
         // reach the view). Scene-scale heuristic: max(1, scene_radius / 8); see enable_shadows.
         float shadow_caster_extent = 1.0f;
+
+        // ---- ray-traced shadows (see [render] rt_shadows / set_rt_shadows) ----
+        // The flag is the CONFIG's wish; whether anything can be built from it also depends on the
+        // device (core::ray_query_available), and the two are kept apart on purpose: a device without
+        // ray queries must run the cascaded maps exactly as before, silently, rather than fail or log
+        // once per frame.
+        bool rt_shadows = false;
+        // The scene's bottom level structures, built once - lazily, on the first frame the flag is on.
+        // Lazy rather than at load time because the caster set is what they are built from, and that
+        // is only known once the scene has been culled; once because a rebuild would be a second
+        // command against structures whose scratch has already been sized and freed.
+        std::optional<acceleration_structure::bottom_level_structures> rt_bottom_levels = {};
+        bool rt_structures_attempted = false; // built once, success or failure: no retry, no log spam
+        /** @brief record the one-time acceleration-structure build into the frame's command buffer */
+        void record_acceleration_structures(VkCommandBuffer command_buffer);
         // scene center handed to enable_shadows. The fit falls back to center +- scene_radius when a
         // shadow caster has no world AABB of its own AND is not an instanced draw whose instance
         // matrices we can read (see instanced_world_aabb).
@@ -1674,6 +1690,21 @@ namespace vulkan {
          *       and no command is recorded; the shader simply stops sampling the stale map
          */
         void set_shadow_enabled(bool enabled);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief ask for ray-traced sun shadows ([render] rt_shadows)
+         * @param enabled true = shadows are traced against the scene's acceleration structures
+         * @note the request is granted only on a device with ray queries (core::ray_query_available);
+         *       everywhere else, and while the flag is false, the cascaded shadow maps are what the
+         *       shading stages sample and nothing about the frame changes
+         * @note the structures themselves are built by the first frame that records with the flag on,
+         *       because the caster set they are built from is only complete once the scene is loaded
+         */
+        void set_rt_shadows(bool enabled) noexcept;
+
+        /** @brief whether ray-traced shadows are actually on (asked for AND the device can do it) */
+        [[nodiscard]] bool rt_shadows_active() const noexcept;
 
         /**
          * @ingroup vulkan_runtime

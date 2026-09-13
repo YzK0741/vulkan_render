@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.17.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.18.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -57,6 +57,7 @@ import utility;
  * ssgi_steps = 6        # depth samples per ray (1..64)
  * ssgi_spatial_sigma = 2.0  # GI spatial filter width in GI texels; 0 = off (a pass-through)
  * ssgi_upsample = true  # joint-bilateral upsample of the half-res GI in the composite; false = bilinear
+ * rt_shadows = false    # ray-traced sun shadows (needs a device with ray queries; else ignored)
  * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id,
  *                        # 6 depth, 7 flags, 8 motion (the motion vector, amplified - see the shader)
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
@@ -152,6 +153,11 @@ namespace app_config {
         // (true) or a plain bilinear fetch (false). Not a quality knob: bilinear is what the chain did
         // before the upsample existed, and keeping it reachable is what makes its effect measurable.
         bool ssgi_upsample = true;
+        // Ray-traced sun shadows ([render] rt_shadows): one ray per pixel against the scene's
+        // acceleration structures instead of a sample of the cascaded shadow maps. Off by default, and
+        // granted only on a device with ray queries - a device without them keeps running the cascaded
+        // maps, which is what makes the key safe to leave in a shared config file.
+        bool rt_shadows = false;
         bool ssao = true;
         float ssao_radius = 0.5f;
         float ssao_intensity = 1.0f;

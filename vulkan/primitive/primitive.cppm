@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene set; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -509,6 +509,10 @@ namespace vulkan {
         VkIndexType index_type = VK_INDEX_TYPE_UINT32;
         uint32_t index_count = 0;
         uint32_t vertex_count = 0;
+        // Bytes per vertex of the interleaved layout (position first). Only the acceleration-structure
+        // build reads it: the raster pipelines get the stride from their vertex input state, so this is
+        // the one consumer that has to be told (see vulkan.acceleration_structure).
+        uint32_t vertex_stride = 0;
 
         // Pipeline the primitive draws with. Empty = DEFAULT semantics: the primitive does not
         // care which pipeline records it, it asks the draw-time render_environment to bind that

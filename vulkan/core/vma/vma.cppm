@@ -67,16 +67,23 @@ namespace vulkan {
      * @brief buffer usage type, decides memory properties and upload strategy
      */
     export enum class buffer_type {
-        vertex,            // GPU_ONLY, requires a staging buffer
-        index,             // GPU_ONLY, requires a staging buffer
-        uniform_gpu_only,  // GPU_ONLY, suited for uniforms updated infrequently
-        uniform_coherent,  // HOST_VISIBLE | HOST_COHERENT, suited for per-frame uniforms
-        uniform_cached,    // HOST_VISIBLE | HOST_CACHED, suited for read-back
-        storage_coherent,  // HOST_VISIBLE | HOST_COHERENT storage buffer (e.g. GPU-visible material table)
-        readback_coherent, // HOST_VISIBLE | HOST_COHERENT with TRANSFER_DST: GPU -> CPU read-back
-                           // (e.g. a screenshot copy). Created without initial contents: pass a
-                           // null data pointer + the byte size to create_buffer(), which then only
-                           // allocates (see direct_upload).
+        vertex,                         // GPU_ONLY, requires a staging buffer
+        index,                          // GPU_ONLY, requires a staging buffer
+        uniform_gpu_only,               // GPU_ONLY, suited for uniforms updated infrequently
+        uniform_coherent,               // HOST_VISIBLE | HOST_COHERENT, suited for per-frame uniforms
+        uniform_cached,                 // HOST_VISIBLE | HOST_CACHED, suited for read-back
+        storage_coherent,               // HOST_VISIBLE | HOST_COHERENT storage buffer (e.g. GPU-visible material table)
+        readback_coherent,              // HOST_VISIBLE | HOST_COHERENT with TRANSFER_DST: GPU -> CPU read-back
+                                        // (e.g. a screenshot copy). Created without initial contents: pass a
+                                        // null data pointer + the byte size to create_buffer(), which then only
+                                        // allocates (see direct_upload).
+        acceleration_structure_storage, // GPU_ONLY, ACCELERATION_STRUCTURE_STORAGE: the memory a
+                                        // bottom/top level structure lives in. Allocate-only for the
+                                        // same reason as the read-back type - a build command fills it,
+                                        // the host never uploads into it.
+        acceleration_structure_scratch, // GPU_ONLY, STORAGE + SHADER_DEVICE_ADDRESS: the build's
+                                        // scratch space. Allocate-only, and its DEVICE ADDRESS (not its
+                                        // offset) is what has to be aligned - see the AS module.
     };
 
     /**
@@ -260,10 +267,17 @@ namespace vulkan {
          * @param data source bytes to upload
          * @param size_byte byte size of the data
          * @param type buffer usage type
+         * @param extra_usage additional VkBufferUsageFlags to OR in
          * @return an owning vk_buffer (copying shares the buffer, destroying releases one
          *         reference); empty when creation failed
+         * @note @p extra_usage exists for the bits that are only legal when an OPTIONAL extension is
+         *       enabled - the acceleration-structure build input bit on a vertex/index buffer, which
+         *       requires VK_KHR_acceleration_structure - so the caller decides, and a device without
+         *       the extension never sees the bit. It is OR'd into the type's own usage, never a
+         *       replacement for it (a usage bit is not a feature; enabling one the device lacks is a
+         *       validation error, not a fallback).
          */
-        vk_buffer create_buffer(unsigned char const* data, uint64_t size_byte, buffer_type type);
+        vk_buffer create_buffer(unsigned char const* data, uint64_t size_byte, buffer_type type, VkBufferUsageFlags extra_usage = 0);
 
         /**
          * @ingroup vulkan_vma
@@ -271,11 +285,12 @@ namespace vulkan {
          * @tparam T element type of the span
          * @param data source data to upload
          * @param type buffer usage type
+         * @param extra_usage additional VkBufferUsageFlags to OR in (see the byte-span overload)
          * @return an owning vk_buffer (see create_buffer)
          */
         template <typename T>
-        vk_buffer create_buffer(std::span<T> data, buffer_type const type) {
-            return this->create_buffer(reinterpret_cast<unsigned char*>(data.data()), data.size_bytes(), type);
+        vk_buffer create_buffer(std::span<T> data, buffer_type const type, VkBufferUsageFlags const extra_usage = 0) {
+            return this->create_buffer(reinterpret_cast<unsigned char*>(data.data()), data.size_bytes(), type, extra_usage);
         }
 
         /**
@@ -285,11 +300,12 @@ namespace vulkan {
          * @tparam N element count of the span
          * @param data source data to upload
          * @param type buffer usage type
+         * @param extra_usage additional VkBufferUsageFlags to OR in (see the byte-span overload)
          * @return an owning vk_buffer (see create_buffer)
          */
         template <typename T, std::size_t N>
-        vk_buffer create_buffer(std::span<T, N> data, buffer_type const type) {
-            return this->create_buffer(reinterpret_cast<unsigned char*>(data.data()), data.size_bytes(), type);
+        vk_buffer create_buffer(std::span<T, N> data, buffer_type const type, VkBufferUsageFlags const extra_usage = 0) {
+            return this->create_buffer(reinterpret_cast<unsigned char*>(data.data()), data.size_bytes(), type, extra_usage);
         }
 
         /**

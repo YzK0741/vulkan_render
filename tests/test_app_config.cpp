@@ -29,6 +29,7 @@ namespace {
         CHECK(settings.render.ssgi_steps == 10);
         CHECK(settings.render.ssgi_spatial_sigma > 3.49f && settings.render.ssgi_spatial_sigma < 3.51f);
         CHECK(!settings.render.ssgi_upsample); // fixture: the bilinear fetch (the measurement setting)
+        CHECK(settings.render.rt_shadows);     // fixture: the ray-traced sun shadows
         CHECK(settings.render.unlit);          // fixture: the flat render mode
         CHECK(settings.render.fxaa);
         CHECK(!settings.render.gpu_timings);
@@ -62,8 +63,8 @@ namespace {
         CHECK(settings.render.ssgi_rays == 2);
         CHECK(settings.render.ssgi_steps == 6);
         CHECK(settings.render.ssgi_spatial_sigma > 1.99f && settings.render.ssgi_spatial_sigma < 2.01f);
-        CHECK(settings.render.ssgi_upsample); // default: the joint-bilateral upsample
-        CHECK(settings.render.ssgi_spatial_sigma > 1.99f && settings.render.ssgi_spatial_sigma < 2.01f);
+        CHECK(settings.render.ssgi_upsample);           // default: the joint-bilateral upsample
+        CHECK(!settings.render.rt_shadows);             // default: the cascaded shadow maps, not traced rays
         CHECK(settings.render.shadow_map_size == 2048); // default: 2048^2 per cascade layer
         CHECK(settings.gui.show);
     }
@@ -145,6 +146,8 @@ namespace {
         CHECK(settings.render.ssgi_rays == 2);
         CHECK(settings.render.ssgi_spatial_sigma > 1.99f && settings.render.ssgi_spatial_sigma < 2.01f);
         CHECK(settings.render.ssgi_upsample);
+        // [render] ray tracing: written by the generator like every other switch, so it round-trips
+        CHECK(!settings.render.rt_shadows);
         // [render] validation
         CHECK(settings.render.validation_layers);
         // [gui]

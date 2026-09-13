@@ -184,6 +184,10 @@ int main(int argc, char** argv) {
                      static_cast<uint32_t>(settings.render.ssgi_steps));
     runtime.set_ssgi_spatial(settings.render.ssgi_spatial_sigma);
     runtime.set_ssgi_upsample(settings.render.ssgi_upsample);
+    // Ray-traced sun shadows: a request, not a guarantee - the runtime grants it only on a device with
+    // ray queries, and the acceleration structures are built by the first frame that records with it on
+    // (the caster set they are built from is only complete once the scene is loaded and culled).
+    runtime.set_rt_shadows(settings.render.rt_shadows);
     if (settings.render.ssgi) {
         utility::log("ssgi: screen-space GI on (intensity {:.2f}, radius {:.2f} scene radii, {} rays x {} steps at half res)",
                      settings.render.ssgi_intensity, settings.render.ssgi_radius, settings.render.ssgi_rays, settings.render.ssgi_steps);

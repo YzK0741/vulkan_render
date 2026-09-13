@@ -160,6 +160,18 @@ ssgi_steps = 6
 ssgi_spatial_sigma = 2.0
 ssgi_upsample = true
 
+# rt_shadows: ray-traced sun shadows. One ray per pixel against the scene's acceleration structures,
+# which is what makes contact shadows, cascade seams and the resolution limit of a shadow map go away -
+# and what removes the "all or nothing" bias tuning a depth map needs. It is granted only on a device
+# with ray queries (`VK_KHR_acceleration_structure` + `VK_KHR_ray_query`); everywhere else the key is
+# ignored and the cascaded maps run, so it is safe to leave in a shared config.
+#
+# IN PROGRESS: turning this on today builds the scene's acceleration structures (once, at the first
+# frame that records with it on - the startup log reports the structure count, triangle count, memory
+# and host time) and then renders exactly as before. The pass that TRACES the shadow against them is
+# the next commit, so the image is unchanged for now by design.
+rt_shadows = false
+
 # fxaa: anti-alias the final image (one extra fullscreen pass over the tonemapped LDR image).
 # Cheap and hardware-independent, but it is a screen-space blur of edges: it softens fine detail and
 # cannot remove sub-pixel shimmer in motion. Its two knobs (sub-pixel strength, edge threshold) live
