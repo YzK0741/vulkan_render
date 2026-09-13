@@ -467,12 +467,23 @@ bool shade_hit(rayQueryEXT query, vec3 hit_world, vec3 dir, out vec3 out_radianc
     //
     // It is NOT what decides this term's weight, and the measurement says so: quadrupling the offset (a
     // fixed 0.01 to 0.045 on Sponza) moved the frame by 0.045 of a mean brightness out of the 3.23 the
-    // shadow ray removes in total. So what the ray occludes is real geometry rather than the hit's own
-    // triangle - but it occludes MORE than the cascaded maps do (the ray removes 3.23, the maps remove
-    // 2.11: a shadow-free variant is 63.51, the ray 60.28, the screen 61.40), and that gap is not yet
-    // explained. The candidates left are the ones a cascade cannot see - occluders above the camera, and
-    // the cascade's own resolution and depth range - but until it is isolated this term is the shaded
-    // path's open question, not a difference to call a correction.
+    // shadow ray removes in total, and aiming the offset along whichever side the ray came from (the
+    // traversal is allowed to hit back faces) moved it by -0.03. Neither is the cause.
+    //
+    // WHERE THE DIFFERENCE IS, isolated by shading ONLY the hits the screen confirms (the shaded block
+    // temporarily moved below the depth guard, nothing else changed): that frame is 61.6175 against the
+    // screen path's 61.3964, so on surfaces the camera can SEE, shading a hit agrees with the lighting
+    // stage to 0.22 of a mean brightness (0.36%) - which is what a different shadow method and the
+    // punctual lights this path does not evaluate are worth. The full shaded frame is 60.3263, so the
+    // whole of the remaining difference comes from the hits the screen path REFUSES to answer.
+    //
+    // That is a structural difference, not a numerical one: the screen path discards a hidden hit and
+    // hands it probe ambient, while this one answers it with its own shading - and a ray that ends on the
+    // unlit far side of a wall, or inside one, is legitimately dark. So the shaded path is closer to right
+    // for hidden surfaces that are real, and it exposes what the screen path grants the ones it never
+    // evaluated; for hits INSIDE solid geometry neither answer is right (a diffuse bounce cannot leave a
+    // solid's interior), and rejecting those - a back-face hit is the cheap signature of one - is the
+    // refinement this measurement points at.
     float sun_visibility = 1.0;
     {
         rayQueryEXT shadow_query;
