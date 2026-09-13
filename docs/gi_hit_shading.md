@@ -112,3 +112,66 @@ model question above.
 * **A chunked `static_draw_primitive` carries one material per instance** while its chunks have their
   own. `runtime::make_static_draw` has no caller in this repository, so nothing exercises it today, but a
   hit into one would be shaded with the wrong material.
+
+## Step 2, revised against UE 5.8.2's Lumen (reference study)
+
+The reference is `C:\UnrealEngine-5.8.2-release`, read for mechanism only; no numbers are copied, because
+they belong to UE's scale. Three findings change the design, and one of them explains a measurement this
+project already made.
+
+### 1. The measured "environment-shaped contribution" has a name: unity DC gain
+
+Step 0 measured the probe cache adding a nearly identical FRACTION of every region's brightness (0.81% of
+the darkest third, 0.75% of the middle), and concluded "ambient-shaped, not structured". UE's filter
+comments name the mechanism exactly: an unoccluded, NORMALISED blur has unity DC gain and no notion of
+whether two cells can see each other, so its relative spread is independent of the light field. That is
+what `Σw·L / Σw` with `w = kernel × trust` is. The fix is not a better kernel, it is:
+**a failed visibility test must DROP a contribution, lowering the total weight, instead of being
+redistributed over the survivors** (UE: `TotalWeight` starts at 1.0 for the centre cell, neighbours add
+`AngleWeight * OcclusionWeight`, and a rejected neighbour adds nothing to either sum).
+
+### 2. Per-cell depth is the entire leak defence
+
+UE's radiance cache stores, per probe, a 32×32 equi-area-octahedral radiance map AND a 32×32 depth map
+(16-bit distance, sign bit = front face, one mantissa bit = two-sided, 0xFFFF = miss). The filter's
+occlusion test is BIDIRECTIONAL and needs nothing else:
+`OcclusionWeight = neighbour.bFrontface || neighbour.bTwoSided ? 1 : 0`, then "can this cell see the
+neighbour's ray start, and can the neighbour see ours" - each a lookup in the OTHER cell's depth map along
+the direction between them, at an offset of `2 * cellSize * sqrt(3)` - plus clamping the neighbour's hit
+distance to the receiver's own, and an angular weight from where the neighbour's ray actually landed
+(UE: 0.2 rad). Trust decay cannot substitute for any of it; it is a scalar that says how much a cell was
+seen, not whether two cells can see each other.
+
+For this renderer that means the grid gains a second 3D image (a distance per cell, or the view depth the
+injection already has plus a front-face flag), and the propagation becomes a 6-neighbour bilateral gather
+with an axis-only kernel instead of the 3×3×3 blur.
+
+### 3. The cache's feedback loop is bounded by construction, not by a clamp
+
+UE has no energy clamp on the cache. What bounds it: a blind radius per probe (`ProbeTMin = cellSize *
+sqrt(3)`) with radiance zeroed when a ray starts inside geometry; an INCREMENTAL refresh (about 100 of
+16384 probes per frame, staleness-prioritised, so every probe holds its old value until its turn - a damped
+Jacobi iteration); no write-back from the cache into the source it reads; and a hard reset when global
+lighting changes materially (a 4x / 0.25x ratio on the light or skylight colour). This project reached the
+same discipline by measurement instead - the cache's convergence is judged by whether the increments
+between distant frame counts shrink - and the one mechanism worth adopting is the reset-on-change trigger,
+which we do not have (our only reset is a new swapchain generation).
+
+### 4. What they do NOT do, which matters for Step 2's direction
+
+* Their world cache's INTERPOLATION has no per-probe depth rejection at all - the depth test in
+  `LumenRadianceCacheInterpolation.ush` is `#define`d out, because rejection happened in the filter. The
+  consumer that does reject by geometry is the irradiance-field one (Chebyshev from a per-probe
+  (mean, mean²) occlusion pair, a normal-wrap weight, a probe validity mask, and a weight crush below 0.2).
+* Their probe traces never read the radiance cache: the loop is closed through the SURFACE CACHE instead
+  (surface cache at frame N-1 feeds the probes at frame N, the probes feed the screen-probe gather, which
+  writes the surface cache). Their probes do not shade materials either - a trace resolves geometry
+  against a distance field and reads the surface cache's final-lighting atlas.
+* That is the structural answer to Step 2's original goal: **the thing that makes Lumen's cache
+  view-independent is the surface cache, not the probe grid.** This renderer has no surface cache, and
+  building one (mesh cards, a virtual atlas, capture passes, per-frame budgets) is a different scale of
+  work. What it has instead is the ability to shade a hit from its real geometry - so the smallest
+  faithful step here is to TRACE from the grid's cells and shade the hits, which makes the cache's
+  contents depend on the geometry and the lights rather than on the frame the camera happened to show.
+  That is a probe-grid-sized version of Lumen's radiosity pass, and it replaces the screen projection
+  rather than supplementing it.
