@@ -168,6 +168,12 @@ the structure must be REFIT, not rebuilt. Worth noting for morale: UE itself kee
 instanced-skinned meshes permanently in BIND POSE in its ray tracing scene, so the current limitation is a
 documented mode in the reference.
 
+THE BASELINE IS MEASURED, so the fix's acceptance is already written down: with the pose pinned at two times,
+the difference of differences between raster and traced shadows leaves 0.7296 of mean absolute green (and
++3.8 per tile where the shadow is) that only the raster path has - i.e. the traced shadow's pose dependence is
+zero, and 1953 pixels show the raster shadow moving while the traced one does not. That table collapsing to the
+usual traced-versus-cascade difference IS the acceptance; `docs/gi_hit_shading.md`'s L2.2b section has it.
+
 L2.3 specular GI: currently the bounce chain is diffuse-only (the specular in a hit's shading is the direct and
 IBL term). A glossy ray per pixel is the feature, and it brings a denoiser problem with it - treat it as its own
 objective rather than a step.

@@ -854,3 +854,38 @@ the caller's index type in place, which would have had the build read indices fr
 the per-frame SCENE set and then the same command buffer rewrote that set's binding 16 later in the frame,
 which invalidated the command buffer - 62 validation errors, every subsequent command reported against a
 buffer "now in an invalid state". The bake now owns a descriptor set of its own, written once.
+
+### L2.2b, the baseline measured first: an animated skinned mesh's traced shadow does not follow the pose
+
+The limitation is documented - a skinned or morphed mesh is built from its SOURCE vertex buffer, which holds
+the bind pose - and it is worth measuring before it is fixed, because the fix's acceptance IS this number.
+The instrument has to cope with the object moving as well, so a plain frame difference says nothing. The four
+captures below are the same animated model (Fox, three clips) at two PINNED poses (`[render] animation_time`,
+which exists for this) with raster and ray-traced shadows, and the quantity that matters is the difference OF
+the differences:
+
+    d_raster = raster(t0) - raster(t1)     the object's motion PLUS its shadow following the pose
+    d_rt     = rt(t0)     - rt(t1)         the object's motion plus whatever the traced shadow does
+    d        = d_raster - d_rt             the part of the pose's effect only the RASTER path has,
+                                           i.e. the traced shadow's MISSING pose dependence
+
+    raster shadows, pose0 - pose1    mean +0.4845   mean|.| 2.5983
+    traced shadows, pose0 - pose1    mean -0.0535   mean|.| 2.4757
+    d, only the raster has it        mean +0.5380   mean|.| 0.7296
+                                     1953 pixels where the raster shadow moved and the traced one did not
+
+    d in a 4x4 table:      +0.000  +0.000  -0.000  +0.000
+                           +0.000  +3.573  +3.780  +0.000
+                           +0.000  +1.260  -0.006  +0.000
+                           +0.000  +0.000  +0.000  +0.000
+
+The traced shadow's pose dependence is ZERO exactly where the raster one's is up to 3.8 per tile: the model's
+own pixels move in both captures (the 2.47 of d_rt) while its shadow moves in only one. THE ACCEPTANCE FOR THE
+FIX is this table collapsing to the usual traced-versus-cascade difference, and it is measurable today, in one
+config, with no new pass.
+
+WHAT THE FIX NEEDS, from the plan plus the two steps before this one: a compute skinning pass writing an
+expanded vertex record a structure can be built from - `shaders/mask_bake.comp` is a working example of that
+exact shape, down to the flat-vertex index path in `shaders/hit_shading.glsl` - then `ALLOW_UPDATE` at build
+and a per-frame `MODE_UPDATE` refit, because a skinned mesh's positions change every frame while its triangle
+count does not.
