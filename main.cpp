@@ -244,7 +244,14 @@ int main(int argc, char** argv) {
     // at rest (the baseline table in docs/gi_hit_shading.md's L2.2b section is that error, measured).
     runtime.set_rt_skin_bake(settings.render.rt_skin_bake);
     if (settings.render.ssgi) {
-        utility::log("ssgi: screen-space GI on (intensity {:.2f}, radius {:.2f} scene radii, {} rays x {} steps at half res)",
+        // The ORACLE and the hit shading are named and not just the ray counts: the shipped configuration
+        // is the traced path with shaded hits (see the [render] ssgi note in config.example.toml), and this
+        // line is what a reader uses to tell which of the two chains is about to run. It says "as
+        // configured" because the DEVICE decides in the end - the runtime logs a pipeline it could not
+        // create, and a device without ray queries silently keeps the marched path.
+        utility::log("ssgi: GI on as configured - {}, {} (intensity {:.2f}, radius {:.2f} scene radii, {} rays x {} steps at half res)",
+                     settings.render.ssgi_ray_tracing ? "traced rays" : "marched depth",
+                     settings.render.ssgi_hit_shading ? "hits shaded from their own geometry" : "hits read from the screen",
                      settings.render.ssgi_intensity, settings.render.ssgi_radius, settings.render.ssgi_rays, settings.render.ssgi_steps);
     }
 
