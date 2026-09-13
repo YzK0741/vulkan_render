@@ -24,31 +24,40 @@
  * one. The tracer makes exactly that split (see rt_hit_radiance in shaders/ssgi.comp).
  *
  * HOW A CELL GETS ITS VALUE, AND WHY IT IS DONE THIS WAY
- * INJECTION (mode 0) projects the cell's centre into the current frame and, if the depth buffer there
- * holds a surface at that same distance, takes the screen-space chain's resolved radiance for that
- * pixel. This is a gather, one invocation per cell, so there are no atomics anywhere - which is what
- * keeps the cache to a plain RGBA16F 3D image and lets it run on a device without float atomics. A cell
- * whose centre lands off screen, behind the camera, or inside geometry simply keeps what it had: the
- * grid is a persistent cache, and a frame that cannot see a cell is not evidence that the cell is dark.
+ * INJECTION (mode 0) makes each cell TRACE ITS OWN RAYS. Four directions uniformly over the sphere (a
+ * cell in empty space has no normal to build a lobe around), starting one cell diagonal away so a probe
+ * cannot hit its own cell; a hit is shaded from its own geometry, material and lights through the shared
+ * hit shading, and a ray that finds nothing is answered by the sky. That is what makes this cache
+ * VIEW-INDEPENDENT: the pass declares no camera, carries none in its push block, reads neither the
+ * frame's depth nor the screen-space chain, and a cell therefore holds a fact about the scene rather
+ * than about the frame the camera happened to show. It replaced an injection that projected a cell's
+ * centre into the frame and took that pixel's radiance, which left every cell the camera had not looked
+ * at empty.
  *
- * PROPAGATION (mode 1) is a confidence-weighted 3x3x3 gather, run as a ping-pong between two grid
- * images so that no dispatch reads what it writes. It serves two purposes: it fills the cells the frame
- * could not see at all (the ones behind the camera, which is what makes this world-space rather than a
- * reprojected screen-space blur), and it is the only denoiser the injected values get - a cell is fed by
- * a single pixel's estimate, where the screen-space image is filtered by a whole chain.
+ * A cell is filled at the grid's own slow rate (pc.params.x): four rays are an estimate, and this is the
+ * cache that has to survive the camera turning away, so one frame's rays move a cell a little rather
+ * than replacing it. The same dispatch records, per cell, the offset to the NEAREST surface those rays
+ * found - the geometry the propagation tests visibility with.
  *
- * The fourth channel is TRUST, in [0, 1]: 1 for a cell the frame deposited into, halved for each
- * propagation step away from one, and the tracer scales the radiance it takes by it. That single number
- * does two jobs. It keeps uninitialised cells (trust 0) out of the averages, so an empty cell darkens
- * nothing; and it makes the spread FADE with distance, which matters because this blur has no geometry
- * test - nothing here knows whether a wall stands between two cells - so light does leak through thin
- * geometry. Leaking a wall's light at a quarter of its value, two cells away, is a stated approximation
- * rather than a runaway; a shadow-ray-gated propagation is the honest fix and a later step.
+ * PROPAGATION (mode 1) blends a cell with the six axis neighbours it can SEE, run as a ping-pong between
+ * two grid images so that no dispatch reads what it writes. Each neighbour is gated by a BIDIRECTIONAL
+ * segment-versus-surface test - does the surface recorded HERE lie between the two centres, and does the
+ * surface recorded THERE - because one direction alone misses a thin wall. A pair that fails DROPS OUT of
+ * both the sum and the weight rather than being redistributed over the survivors: a normalised unoccluded
+ * blur has unity DC gain, so it adds the same FRACTION of whatever every region already holds, which is
+ * exactly what the version this replaced was measured doing (0.81% of the frame's darkest third, 0.75% of
+ * the middle, 0.06% of the brightest). The centre always contributes at weight 1, so a cell whose
+ * neighbours are all occluded keeps its own value instead of decaying towards the average of nothing.
  *
- * LIMITATIONS, STATED: the blur is unoccluded (above); a cell is dominated by whatever surface the
- * frame's pixel at its centre happens to show, so a cell straddling two surfaces mixes them; and a
- * moving object's light stays behind in the grid after it has moved, because the grid is not
- * reprojected - it decays at the injection rate instead (pc.params.x).
+ * The fourth channel is TRUST, in [0, 1], raised by the injection while a cell is filled and NOT decayed
+ * by propagation any more. It says whether a cell was ever filled, which is what decides whether the
+ * tracer mixes the cache in at all and whether a neighbour may lend its light; it no longer stands in for
+ * occlusion, because the visibility test does that now.
+ *
+ * LIMITATIONS, STATED: the propagation's visibility test is one surface offset per cell, so a thin wall
+ * that neither cell recorded can still leak; a cell that straddles two surfaces mixes them; and a moving
+ * object's light stays behind in the grid after it has moved, because the grid is not reprojected - it
+ * decays at the injection rate instead.
  */
 
 // One invocation per cell, in three dimensions. 4x4x4 = 64 threads per workgroup, so a 32^3 grid is
@@ -62,24 +71,22 @@ layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 #define PROBE_RAYS 4
 
 // The pass binds TWO sets: its own (set 1) and the shared scene set (set 0), which is where the top level
-// structure, the material records and the texture array live. It reads none of them YET - the tracing that
-// will fill the grid from geometry rather than from the screen is what needs them, and binding the set now
-// is the plumbing that step requires.
-layout(set = 1, binding = 0) uniform sampler2D gi_screen;     // this frame's resolved screen-space GI
-layout(set = 1, binding = 1) uniform sampler2D gbuffer_depth; // full-resolution G-buffer depth
-layout(set = 1, binding = 2) uniform sampler3D grid_src;      // the cells being read (propagation)
-layout(set = 1, binding = 3, rgba16f) uniform image3D grid_dst; // the cells being written (both modes)
+// structure, the material records and the texture array live - the things a cell's OWN ray needs in order
+// to resolve a hit and shade it. Set 1 is only the grid: what it reads, what it writes, and the per-cell
+// geometry the propagation tests visibility with. Two bindings this set used to carry (this frame's
+// resolved screen-space GI and the G-buffer depth) went with the screen projection that used them.
+layout(set = 1, binding = 0) uniform sampler3D grid_src;        // the cells being read (propagation)
+layout(set = 1, binding = 1, rgba16f) uniform image3D grid_dst;  // the cells being written (both modes)
 // ... and the geometry the filter needs in order to know which neighbours it may borrow light from: per
-// cell, the vector from its centre to the surface the injection found at its screen position, with a
-// validity flag in w. ONE image, not a pair: the injection owns this, and the ping-pong applies to
-// radiance. Read and written in GENERAL, like the grids.
-layout(set = 1, binding = 4, rgba16f) uniform image3D grid_surface;
+// cell, the vector from its centre to the surface the injection found, with a validity flag in w. ONE
+// image, not a pair: the injection owns this, and the ping-pong applies to radiance. Read and written in
+// GENERAL, like the grids.
+layout(set = 1, binding = 2, rgba16f) uniform image3D grid_surface;
 
-// The scene set's top level structure: the geometry the probe cells will trace against, so that a cell can
-// be filled from what its own rays find rather than from the pixel it happens to project to. Declared
-// before it is used for the same reason the scene set was bound a slice earlier - the ray loop is next -
-// and a pass whose layout does not name this binding cannot be created at all, which is one more reason
-// this pass stays optional: a missing pipeline disables the cache and the tracer keeps its screen path.
+// The scene set's top level structure: the geometry the cells trace against, so a cell is filled from what
+// its own rays find. A pass whose layout does not name this binding cannot be created at all, which is one
+// more reason this pass stays optional: a missing pipeline disables the cache and the tracer keeps its
+// environment fallback.
 layout(set = 0, binding = 16) uniform accelerationStructureEXT tlas;
 // What the shared hit shading expects its INCLUDER to declare, because each pass reaches these through its
 // own stage: the irradiance cube (a probe ray that hits nothing is answered by the sky, exactly as the
@@ -89,35 +96,23 @@ layout(set = 0, binding = 16) uniform accelerationStructureEXT tlas;
 layout(set = 0, binding = 3) uniform samplerCube irradiance_sampler;
 
 #include "hit_shading.glsl"
+// FORTY bytes, and deliberately not one lane of camera in it: the grid's own placement, the injection's
+// rate and mode, and the instance table's address. Everything else a cell needs it gets from the scene
+// itself. The block used to carry a world-to-clip matrix and the camera's position for an injection that
+// projected a cell into the frame; that injection is gone, and leaving the lanes behind would have left
+// the pass looking as if it could depend on the view.
 layout(push_constant) uniform GiProbePush {
-    mat4 view_proj;     // world -> clip, for the injection's projection of a cell centre
     // xyz = the world position of cell (0,0,0)'s corner, w = one cell's size in world units. The grid
     // covers the scene's bounds, so the cell size falls out of the bounds and the resolution.
     vec4 grid_min_cell;
-    // xyz = the camera's world position, w = unused. It is here for the one thing the injection needs
-    // beyond the projection: the world-space direction of the ray through a cell, so that the surface it
-    // finds can be recorded as an OFFSET from the cell rather than as a depth. The grid's extent no
-    // longer needs a lane of its own - the image knows its size (imageSize in main()).
-    vec4 camera_pos;
-    // x = the injection's rate (the grid's own blend over frames), y = projection[2][2], z =
-    // projection[3][2] (the view-depth linearization pair every depth test in this project uses),
-    // w = the mode: 0 = inject, 1 = propagate
+    // x = the injection's rate (the grid's own blend over frames), w = the mode: 0 = inject, 1 = propagate.
+    // y and z are free; the grid's extent needs no lane because the image knows its own size (imageSize).
     vec4 params;
     // The acceleration structures' instance table, as the low and high halves of one device address - the
     // same shape the tracer's push carries, reinterpreted in the shader. Zero means there is no table, so a
-    // cell has nothing to resolve a hit against. Not read yet: the loop that reads it is the rest of step B.
+    // cell has nothing to resolve a hit against and keeps what it holds.
     uvec2 instance_table;
 } pc;
-
-/**
- * @brief view-space distance of a depth-buffer value
- * @param z_ndc a depth in [0,1]
- * @return a positive view-space distance
- * @note the same inversion the tracer and the denoiser use: z_view = proj_32 / (z_ndc + proj_22)
- */
-float view_depth(float z_ndc) {
-    return pc.params.z / (z_ndc + pc.params.y);
-}
 
 /** @brief whether @p cell is inside the grid (the dispatch is rounded up to the workgroup size) */
 bool inside(ivec3 cell, ivec3 extent) {

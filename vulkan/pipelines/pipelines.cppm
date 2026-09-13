@@ -519,10 +519,14 @@ namespace vulkan::pipelines {
         using fail = std::unexpected<std::string>;
         gi_probe_owned out;
 
-        std::array<VkDescriptorSetLayoutBinding, 5> bindings = {};
+        // THREE bindings: the grid being read, the grid being written, and the per-cell surface offsets the
+        // propagation tests visibility with. Two more (a screen-space GI sampler and the G-buffer depth)
+        // went with the screen-space injection that used them, and the shader no longer declares them - a
+        // binding the layout names and the shader does not is a slot nothing can be checked against.
+        std::array<VkDescriptorSetLayoutBinding, 3> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
-            bindings[b].descriptorType = (b == 3u || b == 4u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[b].descriptorType = (b == 1u || b == 2u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             bindings[b].descriptorCount = 1;
             bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
             bindings[b].pImmutableSamplers = nullptr;

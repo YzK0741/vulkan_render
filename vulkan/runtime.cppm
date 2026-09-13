@@ -529,6 +529,14 @@ namespace vulkan {
         // How much of the grid's answer the tracer adds on top of the environment probe for a hit it
         // cannot resolve on screen ([render] ssgi_probe_gain). 0 turns the contribution off while
         // leaving the cache running, which is the A/B that measures what the grid actually adds.
+        //
+        // The SIGN is a second A/B, and it exists to answer one question: is this cache DIRECTIONAL? A
+        // negative value means the same gain with the cache looked up along the OPPOSITE direction of the
+        // ray - the same cell, the other side - and nothing else changes, because the far-field term is
+        // still sampled along the ray itself. So the two captures differ only through the cache, and a
+        // cell that holds a single RGB makes them byte-identical BY CONSTRUCTION. That is the L2.1
+        // acceptance test: it has to fail before the SH-2 change and pass after (see
+        // shaders/ssgi.comp's probe_radiance and docs/gi_hit_shading.md).
         float gi_probe_gain = 1.0f;
         // Whether the grid holds anything at all: false until the first probe dispatch has run. The
         // tracer's gain is forced to 0 until then, because a grid nobody has written has undefined
@@ -545,16 +553,17 @@ namespace vulkan {
         glm::vec3 gi_probe_light_dir = glm::vec3(0.0f);
         bool gi_probe_light_dir_valid = false;
         struct gi_probe_push_constants {
-            glm::mat4 view_proj = glm::mat4(1.0f);     // world -> clip, for the injection's projection
             glm::vec4 grid_min_cell = glm::vec4(0.0f); // xyz = cell (0,0,0)'s corner, w = cell size
-            glm::vec4 camera_pos = glm::vec4(0.0f);    // xyz = the eye, for the injection's offset vectors
-            // x = the injection rate, y = proj[2][2], z = proj[3][2], w = the mode (0 = inject,
-            // 1 = propagate)
+            // x = the injection rate, w = the mode (0 = inject, 1 = propagate). y and z are free now: they
+            // carried the projection pair for an injection that projected a cell into the frame, and the
+            // cells trace their own rays instead. No camera data is left in this block at all, which is
+            // what makes the cache's view independence a property of its inputs rather than a claim.
             glm::vec4 params = glm::vec4(0.0f);
             // The instance table's device address, split into two 32-bit halves - the same shape the
-            // tracer's push uses. LAST, and that is not cosmetic: an 8-byte field followed by a vec4 pads
-            // the block to 128 bytes on the CPU while the shader's copy stays 120, which shifts every lane
-            // after it and silently turns the mode lane into a table-address half read as a float.
+            // tracer's push uses. LAST, so the padding a 16-byte-aligned block adds after it lands past
+            // every lane the shader reads: an 8-byte field in the MIDDLE would pad the CPU struct while the
+            // shader's block stays packed, which shifts every lane after it and silently turns the mode
+            // lane into a table-address half read as a float.
             glm::uvec2 instance_table = glm::uvec2(0u);
         };
         struct ssgi_temporal_push_constants {

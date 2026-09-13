@@ -194,6 +194,13 @@ ssgi_bounce = 0.0
 # the frame could see; that is also how the propagation's contribution is measured).
 # ssgi_probe_gain: how much of the cache's answer is added on top of the environment probe, 0 = the cache
 # still runs and is simply never sampled (the A/B that measures what the grid actually adds).
+# The SIGN of this value is a second A/B, and it asks a different question: is the cache DIRECTIONAL? A
+# negative value means the same gain with the cell looked up along the OPPOSITE direction of the ray - the
+# same cell, the other side - and nothing else changes, because the far-field environment term is still
+# sampled along the ray itself. So the two captures differ ONLY through the cache, and while a cell holds
+# one RGB they are byte-identical BY CONSTRUCTION (measured: same SHA256 at +1 and at -1). That is what
+# makes this the acceptance test for the directional-probe step: it fails today and has to pass once a
+# cell carries a direction.
 #
 # WHAT THE CACHE'S CONTRIBUTION IS MADE OF, MEASURED (Sponza interior, traced GI, gain 1, rate 0.08,
 # rounds 2, frames 360, bucketed by the frame's own luminance into thirds): the addition is +0.127 in the

@@ -181,7 +181,10 @@ namespace app_config {
         // replaces (its own loop gain), `ssgi_probe_rounds` how far a frame spreads what it deposited
         // (0 = injection only, which is how the propagation is measured), and `ssgi_probe_gain` how much
         // of the cache's answer is added on top of the environment probe (0 = the cache runs, and is
-        // still not sampled: that is the A/B that measures what it adds).
+        // still not sampled: that is the A/B that measures what it adds). The gain's SIGN is a second A/B:
+        // negative means the same gain with the cell looked up along the opposite direction of the ray,
+        // which differs from the positive one only through the cache - so the two captures are identical
+        // until a cell carries a direction, and that is the directional-probe step's acceptance test.
         bool ssgi_probes = false;
         // Shade the surface a GI ray hit from the geometry it landed on, instead of sampling the screen's
         // direct-radiance image there ([render] ssgi_hit_shading). Off by default; it needs the traced GI

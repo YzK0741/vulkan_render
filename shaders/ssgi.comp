@@ -259,9 +259,32 @@ vec3 bounce_radiance(vec2 uv) {
  * cell the rays have filled answers with what they found. `frame_info.w` is still the knob - it scales how
  * far the blend goes towards the cache - so 0 remains what it always was: the far-field probe, untouched.
  */
+/**
+ * @brief the cache's answer at @p uvw for radiance arriving from @p dir
+ * @param uvw the cell's position in the grid, normalized
+ * @param dir the world-space direction the radiance arrives FROM (the caller flips it when the direction
+ *        A/B is on)
+ * @return the cell's radiance and its trust
+ *
+ * ONE RGB PER CELL, so @p dir is IGNORED: this cache cannot tell a bright window to its left from a dark
+ * wall to its right, and it answers the same for a ray arriving along @p dir and one arriving along
+ * -@p dir. That is the L2.1 step's whole subject: the body below becomes an SH-2 evaluation (four
+ * coefficients per channel, a dot product with @p dir), and the direction A/B in probe_radiance is the
+ * test that measures whether it moved - it changes nothing else and must therefore produce two
+ * byte-identical captures while this body ignores its second argument.
+ */
+vec4 probe_cache(vec3 uvw, vec3 dir) {
+    return texture(gi_probe_grid, uvw);
+}
+
 vec3 probe_radiance(vec3 world, vec3 dir) {
     const vec3 far_field = texture(irradiance_sampler, dir).rgb;
-    const float trust_scale = clamp(pc.frame_info.w, 0.0, 1.0);
+    // The gain's SIGN is the cache's direction A/B, and it is the only thing that changes with it: the
+    // far-field term above is sampled along the ray either way, so a capture at -gain differs from one at
+    // +gain ONLY through the cache. |gain| is the gain; a negative gain asks the same cell for the
+    // radiance arriving from the OPPOSITE side.
+    const float gain = pc.frame_info.w;
+    const float trust_scale = clamp(abs(gain), 0.0, 1.0);
     if (trust_scale <= 0.0) {
         return far_field; // the cache is off, or has never been filled: nothing to blend with
     }
@@ -270,7 +293,7 @@ vec3 probe_radiance(vec3 world, vec3 dir) {
     if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) {
         return far_field; // outside the grid's cube (the scene's bounds): the cache has nothing to say
     }
-    const vec4 cached = texture(gi_probe_grid, uvw);
+    const vec4 cached = probe_cache(uvw, gain < 0.0 ? -dir : dir);
     return mix(far_field, cached.rgb, trust_scale * clamp(cached.a, 0.0, 1.0));
 }
 // The light UBO, declared as the same truncated PREFIX shaders/rt_shadow.comp uses: the sun's direction

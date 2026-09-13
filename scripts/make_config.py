@@ -327,7 +327,8 @@ def ask_all(output_dir: str) -> dict:
     ssgi_probe_gain = ask_float(
         "render.ssgi_probe_gain",
         1.0,
-        hint="how much of the cache's answer to add (0 = run it but never sample it)",
+        hint="how much of the cache's answer to add (0 = run it but never sample it; NEGATIVE = the same "
+             "gain with the cell looked up along the opposite ray direction, the direction A/B)",
     )
     ssgi_hit_shading = ask_bool(
         "render.ssgi_hit_shading",

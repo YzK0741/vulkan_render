@@ -3496,7 +3496,10 @@ namespace vulkan {
         // of 1 would make the grid an immediate echo of the frame that read it, so it stops below that.
         this->gi_probe_rate = std::clamp(rate, 0.0f, 0.5f);
         this->gi_probe_rounds = std::clamp(rounds, 0u, 4u);
-        this->gi_probe_gain = std::clamp(gain, 0.0f, 4.0f);
+        // The sign is the cache's DIRECTION A/B rather than a mistake: |gain| is the gain, and a negative
+        // value looks the cache up along the opposite direction of the ray - the same cell, the other side.
+        // It is clamped rather than rejected because it is a documented measurement setting.
+        this->gi_probe_gain = std::clamp(gain, -4.0f, 4.0f);
         if (enabled && !this->ssgi_on) {
             this->warn_missing_feature("ssgi", "the probe cache has no effect: it is injected from the screen-space GI chain, which is off");
         } else if (enabled && !this->gi_probe_pipeline.has_value()) {
@@ -3528,40 +3531,39 @@ namespace vulkan {
             return;
         }
         std::size_t const image_count = vk.gi_resolve_images.size();
-        if (image_count == 0 || vk.gi_probe_image_views.size() != 2 || vk.gbuffer_depth_image_views.size() != image_count) {
+        if (image_count == 0 || vk.gi_probe_image_views.size() != 2 || vk.gi_probe_surface_image_views.empty()) {
             return;
         }
-        // Four fingerprints: this frame's resolved GI, the depth the injection tests against, and the two
-        // grid images. The grids are ONE image each for the whole device rather than one per swapchain
-        // image, which a single-element list expresses - the family compares what a set points at, it
-        // does not index these lists per image.
+        // Three fingerprints, because three images are what these sets point at now: the grid being read,
+        // the grid being written, and the per-cell surface offsets. The G-buffer depth used to be one of
+        // them, bound for an injection that projected a cell into the frame; the cells trace their own rays
+        // instead, so nothing here reads that image at all. The grids are ONE image each for the whole
+        // device rather than one per swapchain image, which a single-element list expresses - the family
+        // compares what a set points at, it does not index these lists per image.
         std::array<VkImageView, 1> const cache_view = {vk.gi_probe_image_views[0]};
         std::array<VkImageView, 1> const scratch_view = {vk.gi_probe_image_views[1]};
         std::array<VkImageView, 1> const surface_view = {vk.gi_probe_surface_image_views[0]};
-        std::array<std::span<VkImageView const>, 5> const fingerprints = {
-            vk.gi_resolve_image_views, vk.gbuffer_depth_image_views, cache_view, scratch_view, surface_view};
+        std::array<std::span<VkImageView const>, 3> const fingerprints = {cache_view, scratch_view, surface_view};
         // TWO sets per swapchain image, and they are the entire ping-pong: set 0 writes the cache and
         // reads the scratch, set 1 the other way round. Choosing a set per dispatch is why the propagation
         // needs no descriptor rewrite between its dispatches (see record_gi_probe_pass).
-        auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
+        auto const write_sets = [this](core const& vk_ref, uint32_t const /*image_index*/, std::span<VkDescriptorSet const> const sets) {
             for (uint32_t which = 0; which < sets.size(); ++which) {
                 VkImageView const destination = vk_ref.gi_probe_image_views[which];
                 VkImageView const source = vk_ref.gi_probe_image_views[1u - which];
-                std::array<VkDescriptorImageInfo, 5> image_infos = {};
-                std::array<VkImageView, 5> const views = {
-                    vk_ref.gi_resolve_image_views[image_index], vk_ref.gbuffer_depth_image_views[image_index], source, destination, vk_ref.gi_probe_surface_image_views[0]};
-                std::array<VkWriteDescriptorSet, 5> writes = {};
+                std::array<VkDescriptorImageInfo, 3> image_infos = {};
+                std::array<VkImageView, 3> const views = {source, destination, vk_ref.gi_probe_surface_image_views[0]};
+                std::array<VkWriteDescriptorSet, 3> writes = {};
                 for (uint32_t b = 0; b < views.size(); ++b) {
-                    // Binding 3 is the STORAGE 3D image the pass writes. The two grid bindings are
-                    // declared GENERAL and not SHADER_READ: both grids stay in GENERAL for the whole
-                    // update (that is what the same-layout barrier between dispatches is for), and a
-                    // descriptor that claims SHADER_READ for an image the pass writes would be a lie
-                    // validation rejects at the first dispatch.
-                    bool const storage = b == 3u || b == 4u;
-                    bool const grid_source = b == 2u;
-                    image_infos[b].sampler = storage ? VK_NULL_HANDLE : (b == 0u ? *this->gbuffer_sampler : *this->gi_probe_sampler);
+                    // Bindings 1 and 2 are the STORAGE images the pass writes (the grid and the offsets).
+                    // ALL THREE stay in GENERAL: the two grids stay there for the whole update (that is
+                    // what makes the propagation's barriers same-layout ones), and the offsets are written
+                    // by the injection and read by the propagation in the same dispatch sequence, so a
+                    // descriptor claiming SHADER_READ for them would be a lie validation rejects.
+                    bool const storage = b == 1u || b == 2u;
+                    image_infos[b].sampler = storage ? VK_NULL_HANDLE : *this->gi_probe_sampler;
                     image_infos[b].imageView = views[b];
-                    image_infos[b].imageLayout = (storage || grid_source) ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    image_infos[b].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
                     writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                     writes[b].dstSet = sets[which];
                     writes[b].dstBinding = b;
@@ -3572,7 +3574,7 @@ namespace vulkan {
                 vkUpdateDescriptorSets(vk_ref.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
             }
         };
-        if (!this->gi_probe_family.ensure_all(vk, this->gi_probe_set_layout, static_cast<uint32_t>(image_count), 2u, 5u, fingerprints, write_sets)) {
+        if (!this->gi_probe_family.ensure_all(vk, this->gi_probe_set_layout, static_cast<uint32_t>(image_count), 2u, 3u, fingerprints, write_sets)) {
             utility::log("runtime: probe cache descriptor sets unavailable - the tracer keeps its environment fallback");
         }
     }
@@ -3627,14 +3629,11 @@ namespace vulkan {
         // thing on a 1.6-unit model and on Sponza's 18.5.
         float const cell_size = (2.0f * this->scene_radius) / static_cast<float>(vulkan::gi_probe_grid_extent);
         gi_probe_push_constants push = {};
-        // The SAME projection the G-buffer depth was rendered with (the jittered one), because the
-        // injection's whole test is "does the depth buffer at this cell's screen position hold this
-        // cell's distance" - a different matrix would offset every cell by half a pixel of jitter.
-        push.view_proj = this->current_ubo.proj * this->current_ubo.view;
         push.grid_min_cell = glm::vec4(this->shadow_scene_center - glm::vec3(this->scene_radius), cell_size);
-        push.camera_pos = glm::vec4(this->current_ubo.camera_pos.x, this->current_ubo.camera_pos.y, this->current_ubo.camera_pos.z, 0.0f);
         // The same instance table the tracer publishes, so that the cells can trace and shade their own
-        // hits in the next slice. A frame without built structures pushes zero.
+        // hits. A frame without built structures pushes zero. Nothing else is pushed: the block used to
+        // carry the frame's view-projection and the eye position for an injection that projected a cell
+        // into the frame, and that injection is gone (see shaders/gi_probe.comp).
         uint64_t probe_table = 0;
         if (this->rt_top_levels.has_value()) {
             VkBuffer const table = this->rt_top_levels->instance_table(static_cast<uint32_t>(vk.current_frame));
@@ -3645,7 +3644,7 @@ namespace vulkan {
             }
         }
         push.instance_table = glm::uvec2(static_cast<uint32_t>(probe_table & 0xFFFFFFFFu), static_cast<uint32_t>(probe_table >> 32u));
-        push.params = glm::vec4(this->gi_probe_rate, this->current_ubo.proj[2][2], this->current_ubo.proj[3][2], 0.0f);
+        push.params = glm::vec4(this->gi_probe_rate, 0.0f, 0.0f, 0.0f);
 
         constexpr uint32_t group_size = 4; // shaders/gi_probe.comp's local_size_x/y/z
         uint32_t const groups = (vulkan::gi_probe_grid_extent + group_size - 1) / group_size;
