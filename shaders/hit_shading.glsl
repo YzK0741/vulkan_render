@@ -13,9 +13,10 @@
  * declared below, and an includer must NOT declare any of it: the same binding declared twice in one
  * translation unit does not compile.
  *
- * The instance table's address is a PARAMETER rather than something read from a push block: the tracer
- * carries it in proj_terms.zw and the probe pass carries it in a lane of its own, and a shared function
- * cannot depend on which.
+ * The instance table's address and the scale the shadow ray's self-intersection bias is relative to are
+ * PARAMETERS rather than something read from a push block: the tracer carries the address in
+ * proj_terms.zw and the probe pass in a lane of its own, and the two passes' scene-relative lengths are not
+ * the same number either. A shared function cannot depend on which pass called it.
  *
  * WHAT IT DOES NOT REPRODUCE, stated rather than discovered later: the toon and non-PBR presets of
  * shading.glsl's brdf_model/diffuse_model (this is the default PBR path), alphaMode MASK (the geometry is
@@ -185,7 +186,7 @@ vec3 hit_surface(hit_instance instance, uint triangle, vec2 bary, bool front_fac
  * traced effect in this engine), skinning and morphing (the structures hold the bind pose), and the
  * punctual-light cluster, which is a screen-space structure a hit outside the frame has no entry in.
  */
-bool shade_hit(rayQueryEXT query, vec3 hit_world, vec3 dir, uint64_t table_address, out vec3 out_radiance) {
+bool shade_hit(rayQueryEXT query, vec3 hit_world, vec3 dir, uint64_t table_address, float bias_scale, out vec3 out_radiance) {
     InstanceTable table = InstanceTable(table_address);
     const hit_instance instance = table.records[rayQueryGetIntersectionInstanceCustomIndexEXT(query, true)];
     const hit_material mat = hit_materials.materials[instance.material_index];
@@ -235,7 +236,7 @@ bool shade_hit(rayQueryEXT query, vec3 hit_world, vec3 dir, uint64_t table_addre
     {
         rayQueryEXT shadow_query;
         rayQueryInitializeEXT(shadow_query, tlas, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
-                             hit_world + normal * max(0.01, pc.params.x * 0.02), 0.01, light.light_dir.xyz, 1e30);
+                             hit_world + normal * max(0.01, bias_scale * 0.02), 0.01, light.light_dir.xyz, 1e30);
         while (rayQueryProceedEXT(shadow_query)) {
         }
         if (rayQueryGetIntersectionTypeEXT(shadow_query, true) != gl_RayQueryCommittedIntersectionNoneEXT) {

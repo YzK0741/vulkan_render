@@ -55,6 +55,12 @@
 // 512 workgroups.
 layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 
+// Rays per cell per frame. Four is the first version's number, and the reasoning is recorded rather than
+// tuned: 32768 cells at four rays is 131k rays, about half the screen-space tracer's 259k, which costs
+// 0.58-0.9 ms in this project's own measurements. If that comes back acceptable the reference
+// implementation's staleness-budgeted slice machinery is complexity this renderer does not need.
+#define PROBE_RAYS 4
+
 // The pass binds TWO sets: its own (set 1) and the shared scene set (set 0), which is where the top level
 // structure, the material records and the texture array live. It reads none of them YET - the tracing that
 // will fill the grid from geometry rather than from the screen is what needs them, and binding the set now
@@ -75,6 +81,17 @@ layout(set = 1, binding = 4, rgba16f) uniform image3D grid_surface;
 // and a pass whose layout does not name this binding cannot be created at all, which is one more reason
 // this pass stays optional: a missing pipeline disables the cache and the tracer keeps its screen path.
 layout(set = 0, binding = 16) uniform accelerationStructureEXT tlas;
+// What the shared hit shading expects its INCLUDER to declare, because each pass reaches these through its
+// own stage: the camera (the shared code needs the eye for the view vector) and the irradiance cube (a
+// probe ray that hits nothing is answered by the sky, exactly as the tracer answers one).
+layout(set = 0, binding = 0) uniform CameraUBO {
+    mat4 view;
+    mat4 proj;
+    vec4 camera_pos;
+} camera;
+layout(set = 0, binding = 3) uniform samplerCube irradiance_sampler;
+
+#include "hit_shading.glsl"
 layout(push_constant) uniform GiProbePush {
     mat4 view_proj;     // world -> clip, for the injection's projection of a cell centre
     // xyz = the world position of cell (0,0,0)'s corner, w = one cell's size in world units. The grid
@@ -110,15 +127,54 @@ bool inside(ivec3 cell, ivec3 extent) {
     return all(greaterThanEqual(cell, ivec3(0))) && all(lessThan(cell, extent));
 }
 
+/** @brief a hash for a cell's ray sequence (the tracer's own hash chain, seeded per cell) */
+uint hash_cell(ivec3 cell) {
+    uint x = uint(cell.x) * 73856093u ^ uint(cell.y) * 19349663u ^ uint(cell.z) * 83492791u;
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+/** @brief the next uniform in [0,1) from @p state (the tracer's chain, so no table and no texture) */
+float next_uniform(inout uint state) {
+    state ^= state >> 16;
+    state *= 0x7feb352du;
+    state ^= state >> 15;
+    state *= 0x846ca68bu;
+    state ^= state >> 16;
+    return float(state) * (1.0 / 4294967296.0);
+}
+
 /**
- * @brief take the frame's screen-space GI for this cell, if the frame can see a surface here
+ * @brief a uniformly distributed direction on the sphere
+ * @param u1 / @p u2 two uniforms in [0,1)
+ * @note uniform rather than cosine-weighted, and that is a decision rather than an omission: a cache cell
+ *       in empty space has NO surface normal, so there is no hemisphere to weight a cosine lobe towards.
+ *       The sphere average is what a probe means, and it is why the reference implementation's probe traces
+ *       are a 32x32 octahedral map of directions rather than a lobe.
+ */
+vec3 sphere_direction(float u1, float u2) {
+    const float z = 1.0 - 2.0 * u1;
+    const float r = sqrt(max(1.0 - z * z, 0.0));
+    const float phi = 6.283185307179586 * u2;
+    return vec3(r * cos(phi), r * sin(phi), z);
+}
+
+/**
+ * @brief fill this cell from what its OWN rays find, instead of from the pixel it projects to
  * @param cell the cell to write
  *
- * The test is the tracer's, in reverse: the cell's centre is projected, and the depth buffer at that
- * pixel has to hold a surface at the SAME distance (5% relative) for the radiance to belong to this
- * cell. Without it a cell behind a wall would take the wall's radiance - which is precisely the light
- * leak the grid is supposed to be honest about, except that here it would be deposited with full trust
- * and then spread.
+ * This is the change that makes the cache view-independent. Until now a cell took the radiance of whatever
+ * the frame happened to show at its screen position, so a cell the camera had never looked at held nothing
+ * - and a whole class of approximations existed to paper over that (an unoccluded blur to spread light into
+ * it, which is the leak step A removed). A cell now traces its own rays, shades what they hit with the
+ * shared hit shading, and takes the sky when they hit nothing; what it holds is a fact about the scene.
+ *
+ * Rays start one cell diagonal away so a probe cannot hit its own cell, and directions are uniform over the
+ * sphere because a cell in empty space has no normal to build a lobe around.
  */
 void inject(ivec3 cell) {
     const vec4 stored = imageLoad(grid_dst, cell);
@@ -126,41 +182,52 @@ void inject(ivec3 cell) {
     if (rate <= 0.0) {
         return; // a rate of 0 is the off switch: the grid keeps whatever it has
     }
+    const uint64_t table = (uint64_t(pc.instance_table.y) << 32u) | uint64_t(pc.instance_table.x);
+    if (table == 0u) {
+        return; // no structures to trace against this frame: the cell keeps what it has
+    }
     const vec3 world = pc.grid_min_cell.xyz + (vec3(cell) + 0.5) * pc.grid_min_cell.w;
-    const vec4 clip = pc.view_proj * vec4(world, 1.0);
-    if (clip.w <= 0.0) {
-        return; // behind the eye: this frame has nothing to say about this cell
+    const float start = pc.grid_min_cell.w * 1.7320508; // one cell diagonal
+
+    vec3 radiance_sum = vec3(0.0);
+    float nearest = 1e30;
+    vec3 nearest_offset = vec3(0.0);
+    uint state = hash_cell(cell);
+    for (int i = 0; i < PROBE_RAYS; ++i) {
+        const vec3 dir = sphere_direction(next_uniform(state), next_uniform(state));
+        rayQueryEXT query;
+        rayQueryInitializeEXT(query, tlas, gl_RayFlagsOpaqueEXT, 0xFF, world + dir * start, 0.01, dir, 1e30);
+        while (rayQueryProceedEXT(query)) {
+        }
+        if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+            radiance_sum += texture(irradiance_sampler, dir).rgb; // nothing there: the sky answers
+            continue;
+        }
+        const float t = rayQueryGetIntersectionTEXT(query, true);
+        const vec3 hit_world = rayQueryGetWorldRayOriginEXT(query) + t * rayQueryGetWorldRayDirectionEXT(query);
+        vec3 shaded = vec3(0.0);
+        if (!shade_hit(query, hit_world, dir, table, pc.grid_min_cell.w * 2.0, shaded)) {
+            radiance_sum += texture(irradiance_sampler, dir).rgb;
+            continue;
+        }
+        radiance_sum += shaded;
+        const float distance = length(hit_world - world);
+        if (distance < nearest) {
+            nearest = distance;
+            nearest_offset = hit_world - world;
+        }
     }
-    const vec2 uv = (clip.xy / clip.w) * 0.5 + 0.5;
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-        return; // off screen: same
-    }
-    const float buffer_ndc = texture(gbuffer_depth, uv).r;
-    if (buffer_ndc >= 1.0) {
-        return; // empty space: there is no surface here to take radiance from
-    }
-    const float probe_view = view_depth(clip.z / clip.w);
-    const float buffer_view = view_depth(buffer_ndc);
-    if (abs(probe_view - buffer_view) > 0.05 * probe_view) {
-        return; // the visible surface here is a different one: what the cell already holds is better
-    }
-    // An exponential blend in the grid's OWN time base, not the denoiser's: this cache is meant to be
-    // slow (it is the part that survives the camera turning away), so the rate is small and the trust
-    // climbs to 1 over roughly 1/rate frames of being seen.
-    const vec3 radiance = texture(gi_screen, uv).rgb;
+
+    // The blend is still the grid's own slow one: this cache is the part that has to survive the camera
+    // turning away, so one frame's rays do not replace what it holds, they move it a little.
+    const vec3 radiance = radiance_sum / float(PROBE_RAYS);
     imageStore(grid_dst, cell, vec4(mix(stored.rgb, radiance, rate), min(1.0, stored.a + rate)));
 
-    // The geometry, recorded as an OFFSET from the cell rather than as a depth: the surface lies on the ray
-    // from the camera through this cell (the cell projects to the pixel the depth was read from), so the
-    // offset is that direction times the difference of the two view depths. The difference is measured
-    // along the VIEW AXIS while the direction follows the ray, so its length carries a cosine error that
-    // grows towards the frame's edges. That is acceptable for an occlusion test with a threshold, and it
-    // is stated here rather than hidden: a per-direction depth map - what the reference implementation
-    // stores per probe - is what would remove it, and this renderer's injection has no direction to store.
-    const vec3 surface_direction = normalize(world - pc.camera_pos.xyz);
-    imageStore(grid_surface, cell, vec4(surface_direction * (buffer_view - probe_view), 1.0));
+    // The geometry the filter tests visibility with: the offset to the NEAREST surface a ray found, which
+    // is the one that would block a segment from this cell. A cell whose rays all escaped holds nothing, and
+    // then no segment through it is blocked - which is the honest answer for empty space.
+    imageStore(grid_surface, cell, vec4(nearest_offset, nearest < 1e29 ? 1.0 : 0.0));
 }
-
 /**
  * @brief whether the segment @p from -> @p to stays in front of the surface recorded at @p from
  * @param surface_at_from the offset from @p from to the surface its injection found (w = validity)

@@ -534,13 +534,14 @@ namespace vulkan {
             glm::mat4 view_proj = glm::mat4(1.0f);     // world -> clip, for the injection's projection
             glm::vec4 grid_min_cell = glm::vec4(0.0f); // xyz = cell (0,0,0)'s corner, w = cell size
             glm::vec4 camera_pos = glm::vec4(0.0f);    // xyz = the eye, for the injection's offset vectors
-            // The instance table's device address, split into two 32-bit halves - the same shape the
-            // tracer's push uses. Zero when there is no table, which is when the cells have nothing to
-            // trace against and the cache stays screen-fed.
-            glm::uvec2 instance_table = glm::uvec2(0u);
             // x = the injection rate, y = proj[2][2], z = proj[3][2], w = the mode (0 = inject,
             // 1 = propagate)
             glm::vec4 params = glm::vec4(0.0f);
+            // The instance table's device address, split into two 32-bit halves - the same shape the
+            // tracer's push uses. LAST, and that is not cosmetic: an 8-byte field followed by a vec4 pads
+            // the block to 128 bytes on the CPU while the shader's copy stays 120, which shifts every lane
+            // after it and silently turns the mode lane into a table-address half read as a float.
+            glm::uvec2 instance_table = glm::uvec2(0u);
         };
         struct ssgi_temporal_push_constants {
             float history_valid = 0.0f;
