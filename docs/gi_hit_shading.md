@@ -989,42 +989,48 @@ environment chain is prefiltered with, traces along the reflection, and shades w
 hit's own geometry - which is why it needs `ssgi_hit_shading`. Its push block carries its own ray count, which
 is half of why it is a separate pass at all: the tracer's block is exactly 128 bytes (the smallest range
 Vulkan guarantees) and has no lane left, and the other half matters more - a pass that is not RECORDED cannot
-perturb the frame, which is a stronger statement than a branch that arithmetically cancels.
-`shaders/ssgi_spatial.comp` then removes the lighting stage's specular term for those pixels, so the traced
-reflection REPLACES it rather than adding to it; the two sides of that subtraction both come from a new shared
-`shaders/ibl_specular.glsl`, which also replaced the two copies of the same expressions that already existed
-in `shading.glsl` and `hit_shading.glsl` (verified byte-exact: 8 scenarios, 0 changed).
+perturb the frame, which is a stronger statement than a branch that arithmetically cancels. The pass also
+subtracts the lighting stage's specular term, AT ITS OWN TEXEL (see below for why that placement is the
+result of this step rather than an implementation detail), so the traced reflection REPLACES that term rather
+than adding to it. Both sides of the subtraction come from a new shared `shaders/ibl_specular.glsl`, which also
+replaced the two copies of the same expressions that already existed in `shading.glsl` and `hit_shading.glsl`
+(verified byte-exact: 8 scenarios, 0 changed; the gate has nine now).
 
 THE CONTROL, and it is the sharpest instrument this step has. Where a glossy ray finds no geometry, the
-estimate IS the lighting stage's term - the same expression, from the same file, in the same association order
-- so with the ray length short enough that nothing is reachable, the feature on and off must agree. On the
-DamagedHelmet (an isolated model, so its convex-ish silhouette gives reflections somewhere to go) with the
-joint-bilateral filter BYPASSED (`ssgi_spatial_sigma = 0`) and `ssgi_radius = 0.0006` (0.011 world units):
+correction the pass writes is `(ibl_specular * F) * ao - (ibl_specular * F) * ao` - the same expression twice,
+in the same association order - so it is EXACTLY zero, and adding an exact zero to a texel is exact. On the
+DamagedHelmet (an isolated model, so its reflections have somewhere to go without touching it) with
+`ssgi_radius = 0.0006`, i.e. a ray length of 0.011 world units:
 
-    pixels differing         856 (0.08%)      |d|>1        0        max |d|  1
-    mean green              -0.0008
+    lobe on vs lobe off      pixels differing 0 (0.00%)   max |d| 0   SHA256 IDENTICAL
 
-One 8-bit step on 0.08% of pixels and nothing beyond it: the arithmetic is exact, and what is left is the
-half-float round trip through the trace image (the estimate is added, stored as RGBA16F, loaded and
-subtracted again, and `(a + b) - b` is not `a` in floating point). The same test on Sponza at the same ray
-length does NOT collapse (mean -0.0126, 1.12% of pixels, max 47) and the difference is the scene, not the
-code: Sponza has surfaces within 0.011 units of each other (coplanar panels, double-sided walls), so its
-reflection rays find geometry the helmet's cannot. Zeroing the diffuse estimate (`ssgi_intensity = 0`, which
-makes the tracer write exactly 0 and leaves only the add/subtract pair) halves that residual to -0.0059 while
-the outliers survive - which is what identified them as hits rather than arithmetic.
+with the joint-bilateral filter in the loop (sigma 2) AND with it bypassed (sigma 0). The frame is not merely
+close to the feature being off, it IS the feature being off - a bit-exact invariant rather than a tolerance.
+The FIRST version of this step subtracted the term in the spatial filter instead of at the texel, and the same
+control read mean +0.0255 with 4.4% of pixels off by more than 4/255 and a worst pixel of 103, because a
+centre-pixel value was being removed from a FILTERED one. Both designs were built and measured against this
+instrument; the second won on every axis (see "the two candidate fixes" below).
+
+The same test on Sponza does NOT collapse, and that is the scene rather than the code: Sponza has surfaces
+within 0.011 units of each other (coplanar panels, double-sided walls), so its reflection rays find geometry
+the helmet's cannot. Measured at `ssgi_radius = 0.002` (0.037 world units), sigma 0: mean -0.0567, 4.78% of
+pixels differing, max 38. It read mean -0.0793 / 12.45% / max 58 before the subtraction moved, and the
+decomposition that says the remainder is HITS is zeroing the diffuse estimate (`ssgi_intensity = 0`, which
+makes the tracer write exactly 0 and leaves only the correction): the residual halves and the outliers
+survive.
 
 THE EFFECT, Sponza interior, the traced-hit-shading config, A/B on `ssgi_specular` alone, 120 frames
-(60 frames gives -1.3763 against -1.3860, so the chain has converged and nothing drifts):
+(60 frames gives -1.3763 against -1.3860 on the earlier design, so the chain is converged):
 
-    frame mean green        56.3324 -> 54.9465      -1.3860  (-2.5%)
+    frame mean green        56.3324 -> 55.0060      -1.3264  (-2.4%)
 
     4x4 tiles of mean green difference, absolute and as a percentage of that tile's own frame:
-      -1.128  -2.288  -0.605  -0.343        -2.61%  -3.02%  -0.48%  -0.29%
-      -1.208  -2.118  -0.481  +0.113        -4.65%  -7.33%  -0.57%  +0.16%
-      -2.339  -2.329  -1.615  -0.742        -7.43%  -8.92%  -2.81%  -0.63%
-      -2.085  -1.827  -1.782  -1.396       -16.78%  -9.23%  -9.14%  -3.13%
+      -1.036  -2.176  -0.554  -0.335        -2.40%  -2.87%  -0.44%  -0.28%
+      -1.118  -2.033  -0.476  +0.081        -4.30%  -7.04%  -0.56%  +0.12%
+      -2.250  -2.241  -1.576  -0.710        -7.14%  -8.59%  -2.74%  -0.60%
+      -1.991  -1.740  -1.708  -1.361       -16.02%  -8.79%  -8.76%  -3.05%
 
-Ordered by the SCENE, in the same shape the L2.1 probe-cache tables have: the interior tiles lose 7% to 17%
+Ordered by the SCENE, in the same shape the L2.1 probe-cache tables have: the interior tiles lose 7% to 16%
 while the sky-facing ones move 0.1-0.3%. That is what a correct local reflection looks like - the sky's
 specular contribution to a dark interior is a large share of that interior's brightness, and the interior's
 own reflection is darker than the sky. Isolating the specular channel (the diffuse estimate zeroed, so
@@ -1033,7 +1039,7 @@ nothing else can move) says the same thing harder: -1.1266, with the interior ti
 
 CONVERGENCE. The hit is a POINT sample of a cone whose width is the material's roughness, so one ray is the
 feature's definition but not obviously enough. Measured, 1 ray against 4: +0.0028 of mean green, 0.60% of
-pixels beyond 1/255 and 0.05% beyond 4 - against the feature's own -1.3860. Four times the cost buys 0.2% of
+pixels beyond 1/255 and 0.05% beyond 4 - against the feature's own -1.33. Four times the cost buys 0.2% of
 the signal after the temporal and spatial denoisers, so one ray is what the default is.
 
 COST, the GPU timings' `gi` interval (which carries the tracer, this pass and both denoisers) at 1080x960:
@@ -1041,17 +1047,38 @@ COST, the GPU timings' `gi` interval (which carries the tracer, this pass and bo
 further one. The whole-frame totals (2.80 / 2.70 / 3.69 ms) are noisier than that delta and should not be
 read as the feature's cost.
 
-THE RESIDUAL, and it is the honest half of this result. The subtraction happens after the joint-bilateral
-filter has AVERAGED the estimate, while the removed value is the centre pixel's own: the added quantity is
-filtered and the subtracted one is not. So the "a ray that misses changes nothing" property holds exactly
-only when the filter is bypassed. On the same helmet, with the filter ON (sigma 2) and still nothing
-reachable, the two arms differ by mean +0.027 with 1.0% of pixels beyond 4/255 and a worst pixel of 109 -
-and zeroing the diffuse estimate leaves that unchanged (+0.0271, max 109), which is what proves it is the
-filter and not a hit. This is the same class of artifact the DIFFUSE subtraction has carried since it was
-written (the recorded non-mean-preserving-average note: +0.33 convex / +0.52 Sponza), and it is not fixed
-here for the same reason the diffuse one was not: the correct fix is to filter the REMOVED term with the same
-weights as the added one - 25 more gathers per pixel - and to do it for both terms at once, which changes
-every existing capture and belongs in a step of its own with its own re-baseline.
+THE TWO CANDIDATE FIXES FOR ITS ONE RESIDUAL, and which one the measurement chose. The pass has to remove a
+term the lighting stage added; the options were to do it in the spatial filter (where the DIFFUSE ambient is
+removed today) or at the pass's own texel, before anything filters either side. Both were built and measured
+on the same control:
+
+                                              subtract in the filter      subtract at the texel
+    isolated model, nothing reachable          +0.0255 mean, 4.4% >4/255,   0 pixels, IDENTICAL SHA256
+    filter BYPASSED, same scene                  max 103                    0 pixels, IDENTICAL SHA256
+    Sponza, short rays, sigma 0                -0.0793, 12.45%, max 58      -0.0567, 4.78%, max 38
+    Sponza, 120 frames, the effect              -1.3860                     -1.3264
+
+and the one thing the second option costs is measured too: the trace image stops being a pure radiance (it
+becomes a radiance plus a specular correction), so the multi-bounce feedback would re-emit the correction at
+a hit. That is the property the Level 1 work established, and this is the one place it can be given up safely,
+because the lobe REQUIRES hit shading and hit shading is what makes the feedback unreachable: measured,
+`ssgi_bounce` 0 against 0.5 is a byte-exact no-op on the material sweep, in both designs. The DIFFUSE term
+cannot be handled this way and is not: its image has to stay a radiance because the bounce is live whenever
+hit shading is off. So the spatial filter keeps its diffuse subtraction and no longer knows the specular
+exists - which is also why it lost the two bindings, the inverse view-projection and the push lane that the
+first design had added to it.
+
+THE RESIDUAL THAT IS LEFT, and what it is now. With the correction taken off at the texel, the only difference
+a glossy frame can have from a lobe-off frame where nothing was hit is EXACTLY ZERO (measured, both filter
+settings), so the residual that remains is the population of rays that found geometry - including geometry
+essentially coincident with the surface they started from, which is what Sponza's short-ray test above shows.
+The old design's residual was NOT that: it was a centre-pixel value subtracted from a filtered one, and it also
+partly CANCELLED the hit residual on Sponza, which is why the un-decomposed number looked smaller (-0.0126 on
+an even shorter ray) than the honest one. The same class of artifact still exists for the DIFFUSE subtraction -
+the recorded non-mean-preserving-average note, +0.33 convex / +0.52 Sponza - and it is deliberately NOT fixed
+here: it cannot use this mechanism (its image has to stay a radiance because the bounce is live), so fixing it
+means filtering the removed term with the same weights as the added one, 25 more gathers per pixel, and that
+re-baselines every capture in the repository.
 
 WHAT IT DOES NOT DO: morph targets (inherited: the structures hold the bind pose), alphaMode MASK (a MASK
 surface is solid to the ray), and the reflection is a point sample rather than a cone-filtered one, so a
@@ -1069,29 +1096,29 @@ ambient-like contribution and there is no reflection to see. The feature's whole
 inside a room reflects the sky") is not exercised by the scene every other GI measurement uses. The asset that
 does exercise it is `MetalRoughSpheres`, a grid from smooth metal (a mirror) to rough dielectric.
 
-MEASURED ON THAT GRID, radius 0.5 (3.5 world units), sigma 2, 120 frames, A/B on `ssgi_specular` alone, the
+MEASURED ON THAT GRID, radius 1.0 (7.0 world units), sigma 2, 120 frames, A/B on `ssgi_specular` alone, the
 effect bucketed BY MATERIAL rather than by tile - the cleanest evidence this step produced, because it is the
 BRDF's own prediction rather than a spatial average:
 
     mean green delta            dielectric      metal
-    smooth (roughness ~ 0)         +1.07        +10.57
-    rough  (roughness high)        +0.08         +7.88
+    smooth (roughness ~ 0)         +1.23        +10.33
+    rough  (roughness high)        +0.13         +7.61
 
-    by metallic alone:   dielectric +0.16 (50033 px)      metal +8.31 (135251 px)
+    by metallic alone:   dielectric +0.22 (50033 px)      metal +8.04 (135251 px)
 
-Rough dielectric is untouched (+0.08, i.e. 1/13 of a level on 46201 pixels - a dielectric's f0 is 0.04);
-smooth metal moves most (+10.57); the ordering inside each class follows the roughness, which is what the GGX
-lobe's width says it must. Nothing else about the pass could produce that pattern.
+Rough dielectric is untouched (+0.13, i.e. half a level on 46201 pixels - a dielectric's f0 is 0.04); smooth
+metal moves most (+10.33); the ordering inside each class follows the roughness, which is what the GGX lobe's
+width says it must. Nothing else about the pass could produce that pattern.
 
 THE RAY LENGTH IS THE DOMINANT LEVER ON A COMPACT SCENE, and the knob's units are why. `ssgi_radius` is a
 fraction of the SCENE radius, so the same 0.12 that reaches 4.6 units inside Sponza reaches 0.84 units here -
 less than the gap between two spheres. The effect as a function of it, same scene, same A/B:
 
     radius   world units   mean green delta
-    0.12        0.84           +0.48
-    0.25        1.75           +0.74
-    0.50        3.50           +0.92
-    1.00        6.99           +1.09
+    0.12        0.84           +0.47
+    0.25        1.75           +0.71
+    0.50        3.50           +0.89
+    1.00        6.99           +1.06
 
 Monotone and decelerating, i.e. it saturates as the rays reach everything the compact scene contains. At 0.12
 the captures look almost identical to the feature being off; at 0.5 the smooth-metal spheres visibly carry
@@ -1101,10 +1128,9 @@ saw nothing" is exactly the reading it produces.
 
 TWO HYPOTHESES THIS KILLED, both worth recording because each was plausible enough to have shaped the plan.
 (1) "The shared joint-bilateral filter destroys the reflection." It does not: at radius 0.5 the structure
-survives with sigma 2 (the effect is LARGER with the filter on - +0.92 against +0.79 at sigma 0, and 4.58% of
-pixels beyond 4/255 against 3.59% - because the filter averages the estimate over its neighbourhood while the
-subtraction removes only the centre's, which spreads and inflates it). The earlier "no reflection visible"
-reading was the ray length, not the filter. So the plan's own framing, "it brings a denoiser problem with it",
+survives with sigma 2, and the effect is LARGER with the filter on (+0.89 against +0.79 at sigma 0) because the
+filter averages the estimate over its neighbourhood. The earlier "no reflection visible" reading was the RAY
+LENGTH, not the filter. So the plan's own framing, "it brings a denoiser problem with it",
 is not what the measurement found; what the filter costs a sharp reflection is a bias to be measured on its
 own, not a blocker. (2) "The residual in the identity test is an arithmetic mismatch." It is not - see the
 control above, and the decomposition that identified it as hits.
@@ -1116,18 +1142,13 @@ and therefore covered by nothing. The new scenario turns on hit shading and the 
 off so it isolates this pass, and lets the scene frame itself (`camera = ""`, which the runner now supports)
 rather than pinning a pose that would have to be reverse-engineered from the fitted one.
 
-THE TWO CANDIDATE FIXES FOR THAT RESIDUAL, with the trade-off already visible, recorded so the next step does
-not have to re-derive it. (a) Filter the removed term with the same weights as the added one - 25 extra
-gathers per pixel, three texture fetches each, so the spatial filter's cost roughly triples - and do it for
-the diffuse term in the same change, which also removes the pre-existing +0.33/+0.52 note. The images upstream
-stay pure radiance, which is what the multi-bounce feedback needs. (b) Have the glossy pass write the NET
-correction `E - ibl_specular` instead of `E`, and drop the spatial filter's specular subtraction entirely: the
-identity then cancels EXACTLY even with the filter on (`filter(A + 0) == filter(A)`, bit for bit), for zero
-extra cost, and one less place for the two halves to disagree. What it costs is the property the L1 work
-fought for - the trace image stops being a radiance and becomes a radiance plus a bookkeeping term, so the
-bounce feedback (`[render] ssgi_bounce`, off by default) would re-emit a correction at a specular hit. (a) is
-the architecturally consistent one and (b) is the cheap one; the reason this is written down rather than
-decided is that the choice is a measurement away either way, and (b)'s numbers are one config change from
-being taken.
+THE DECISION THIS SECTION USED TO LEAVE OPEN, closed by the table above. (a) was "filter the removed term with
+the same weights as the added one" - 25 extra gathers per pixel, three fetches each, which would also have
+fixed the diffuse term's +0.33/+0.52 - and (b) was "have the glossy pass write the net correction instead of
+the estimate, and drop the filter's specular subtraction", which the section described as "one config change
+from being taken". It was taken: (b) is what this commit ships, and it won every measured axis - bit-exact
+instead of +0.0255, cheaper (the spatial filter lost two bindings, a matrix lane and a term), and its one
+theoretical cost turned out to be measurably inert because the lobe requires hit shading. (a) remains the
+answer for the DIFFUSE term if that artifact is ever worth 25 gathers a pixel.
 
 

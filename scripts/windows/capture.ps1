@@ -150,5 +150,13 @@ if ($bad) {
 } else {
     Write-Host "  validation clean" -ForegroundColor Green
 }
-python $mean_tool $out
+# The instruments in scripts/measure/ need Pillow, and a shell whose `python` is a different one (a
+# toolchain's, say) turns that into a traceback under a capture that otherwise succeeded - which reads
+# as a failed run. Say what is missing instead.
+python -c "import PIL" 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  capture OK, but this shell's python has no Pillow: run 'python scripts/measure/mean.py $out' with one that does" -ForegroundColor Yellow
+} else {
+    python $mean_tool $out
+}
 if (-not $KeepLog) { Copy-Item $log (Join-Path $WorkDir "$Tag.log") -Force -ErrorAction SilentlyContinue }

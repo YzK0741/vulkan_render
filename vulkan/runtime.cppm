@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.47.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.48.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -510,9 +510,6 @@ namespace vulkan {
         std::optional<vk_pipeline> ssgi_spec_pipeline = std::nullopt;
         VkPipelineLayout ssgi_spec_pipeline_layout = VK_NULL_HANDLE;
         struct ssgi_spatial_push_constants {
-            // Clip -> world, for the one thing this pass has to reconstruct: the view direction of the
-            // surface it centres on, which the specular ambient's Fresnel term is a function of.
-            glm::mat4 inv_view_proj = glm::mat4(1.0f);
             float depth_scale = 0.0f;   // proj[2][2]
             float depth_offset = 0.0f;  // proj[3][2]
             float sigma_spatial = 2.0f; // in GI texels; 0 = pass-through
@@ -525,10 +522,11 @@ namespace vulkan {
             // because that is the last pass that still knows which surface the ambient belongs to, which is
             // also what lets the images upstream stay pure RADIANCE (a bounce has to re-emit them).
             float subtract_ambient = 0.0f;
-            // 1.0 = ... and the SPECULAR ambient as well, for the pixels the glossy pass replaced with a
-            // traced reflection (shaders/ssgi_spec.comp). Only ever set when that pass actually ran, which
-            // is what keeps its subtraction and its addition the same decision.
-            float subtract_specular = 0.0f;
+            // The SPECULAR ambient is deliberately NOT here: the glossy pass takes the lighting stage's
+            // specular term off at the texel it adds its own, before this filter sees either, which is
+            // exact where a subtraction here could only approximate (see that shader's header and
+            // docs/gi_hit_shading.md's L2.3 section, where both were measured against each other).
+            float unused1 = 0.0f;
             float unused2 = 0.0f;
             glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent
         };

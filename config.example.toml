@@ -256,28 +256,34 @@ ssgi_hit_shading = false
 # and shades what it lands on from that hit's own geometry (so this needs `ssgi_hit_shading`), exactly as
 # the diffuse tracer does for its own hits.
 # IT REPLACES THE LIGHTING STAGE'S TERM, IT DOES NOT ADD TO IT: wherever a ray finds no geometry the
-# estimate IS `ibl_specular * F * ao` - the lighting stage's own expression, from the same
-# shaders/ibl_specular.glsl, in the same association order - and the spatial filter then removes that term
-# for the pixels the pass ran on. A ray that misses therefore changes nothing, and only a ray that HITS
-# changes the frame. Measured, on the DamagedHelmet with the filter bypassed (spatial sigma 0) and a ray
-# length short enough that nothing is reachable: the feature on and off differ on 0.08% of pixels by ONE
-# 8-bit step and on none by more (max |d| 1, |d|>1 zero pixels) - the residue of the half-float round trip
-# through the trace image, since the estimate is added, stored, loaded and subtracted again.
+# correction this pass writes is EXACTLY zero - `(ibl_specular * F) * ao` minus itself, the same expression
+# twice - and it is taken off at the pass's own texel, before the joint-bilateral filter sees either side.
+# Measured, on an isolated model with a ray length short enough that nothing is reachable: the feature on and
+# off produce the SAME SHA256, 0 pixels differing, with the filter in the loop and with it bypassed. That is a
+# bit-exact invariant, not a tolerance. The first version of this step subtracted the lighting stage's term in
+# the spatial filter instead (where the DIFFUSE ambient is removed), which subtracts a centre-pixel value from
+# a filtered one: the same control read mean +0.0255 with 4.4% of pixels beyond 4/255 and a worst pixel of 103,
+# and on Sponza's short-ray test it read 12.45% of pixels against 4.78% now - the old number was partly the
+# artifact and partly it CANCELLING the residual from rays that found touching geometry.
 # MEASURED EFFECT, Sponza interior, 120 frames, the traced-hit-shading config, A/B on this key alone:
-# -1.3860 of mean green (-2.5%), and the 4x4 table is ordered by the SCENE rather than flat - the interior
-# tiles lose 7.4% to 16.8% while the sky-facing ones move 0.1-0.3%, in the same shape the L2.1 probe-cache
+# -1.3264 of mean green (-2.4%), and the 4x4 table is ordered by the SCENE rather than flat - the interior
+# tiles lose 7.1% to 16.0% while the sky-facing ones move 0.1-0.3%, in the same shape the L2.1 probe-cache
 # tables have. Isolated to the specular channel alone (the diffuse estimate zeroed, so nothing else can
 # move): -1.1266, -20% to -33% in the interior tiles against -0.4% where the view is sky. That is what a
 # correct local reflection looks like: the sky's contribution to a dark interior is a large share of that
 # interior's brightness, and the interior's own reflection is darker than the sky.
-# ITS RESIDUAL, stated: the subtraction happens after the joint-bilateral filter has averaged the estimate,
-# so the added value is a filtered one while the removed one is the centre pixel's. On the same helmet, with
-# the filter ON and still nothing reachable, the two arms differ by mean +0.027 with 1.0% of pixels beyond
-# 4/255 and a worst pixel of 109 - the filter's own non-mean-preserving average applied to a term that varies
-# fast across a low-roughness surface, which is the same class of artifact the DIFFUSE subtraction has
-# carried since it was written (see the recorded +0.33 convex / +0.52 Sponza note). Fixing it means filtering
-# the removed term with the same weights as the added one - 25 more gathers per pixel - and doing it for both
-# terms at once, which is the next slice rather than this one.
+# AND THE SAME A/B ON THE MATERIAL SWEEP, which is where the effect is visible at all (Sponza's roughness
+# channel averages 217/255 - roughened stone from end to end - so it can only show a 2% correction):
+# smooth metal +10.33, rough metal +7.61, smooth dielectric +1.23, rough dielectric +0.13, i.e. the ordering
+# the BRDF predicts rather than a scene average. Watch the units of `ssgi_radius` on a compact scene: it is a
+# fraction of the SCENE radius, and the material sweep's own radius is 6.99 world units, so the default 0.12
+# reaches 0.84 there (measured effect +0.47) against 3.50 at 0.5 (+0.89) and 6.99 at 1.0 (+1.06).
+# THE ONE THING THIS COSTS, measured: the trace image stops being a pure radiance (it is a radiance plus this
+# correction), so the multi-bounce feedback would re-emit the correction at a hit. That is safe HERE and only
+# here, for a structural reason: the lobe requires `ssgi_hit_shading`, and with hit shading on every hit is
+# answered by the hit's own shading before the feedback is reached - measured, `ssgi_bounce` 0 against 0.5 is a
+# byte-exact no-op on the material sweep. The diffuse term cannot use this mechanism (its bounce is live
+# whenever hit shading is off), which is why it keeps its approximate subtraction in the spatial filter.
 # REQUIREMENTS: the traced GI path, `ssgi_hit_shading` and the acceleration structures' instance table (a
 # hit cannot be shaded without it). Where any is missing the pass is not even RECORDED, which is what makes
 # `ssgi_specular = false` byte-identical by construction rather than by arithmetic (verified: the capture

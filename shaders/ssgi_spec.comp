@@ -25,45 +25,56 @@
  * IT IS A REPLACEMENT, NOT AN ADDITION, and the arithmetic of that is the design. What the lighting
  * stage already added is `ibl_specular * F * ao`, and what this pass writes is
  * `ao * (1/N) * sum_i L_i * F` where `L_i` is either the radiance a ray found or - when it found
- * nothing - `ibl_specular` ITSELF, the same prefiltered lookup along the mirror direction. So:
+ * nothing - `ibl_specular` ITSELF, the same prefiltered lookup along the mirror direction, MINUS that
+ * same term. So:
  *
- *   * a ray that MISSES contributes exactly the value the lighting stage used, and
+ *   * a ray that MISSES contributes exactly the value the lighting stage used, so the correction is
+ *     exactly zero, and
  *   * a ray that HITS contributes the radiance of the surface it landed on,
  *
- * which makes the whole pass reducible to the lighting stage's term by construction: on a frame whose
- * rays all miss, the estimate is `(ibl_specular * F) * ao` - the lighting stage's own expression, in its
- * own association order - and the spatial filter's subtraction (shaders/ssgi_spatial.comp) then removes
- * it again. That is an algebraic identity rather than a statistical one, and it is what the acceptance
- * measures: with the ray length short enough that nothing is reachable, a specular-GI frame and the same
- * frame with the feature off differ only by the half-float round trip through this image (the estimate is
- * added to the trace, stored, loaded and subtracted again, and `(a + b) - b` is not `a` in floating
- * point), which is a residual to measure rather than to assume away - see docs/gi_hit_shading.md's L2.3
- * section for what it came out as. The fallback deliberately does NOT sample the environment along the
- * SAMPLED direction: the prefiltered cube is already the GGX cone's average, so averaging several of its
- * values would filter it twice and widen the lobe. A miss re-reads the cone's own answer; only a hit is a
- * point sample of the cone.
+ * and the subtraction happens HERE, at the texel, BEFORE the joint-bilateral filter sees either side.
+ * That placement is the whole result of this step and it was chosen by measurement: subtracting the
+ * lighting stage's term in the spatial filter instead (which is where the DIFFUSE ambient is removed)
+ * subtracts a CENTRE-pixel value from a FILTERED one, and the difference is not small. Measured on an
+ * isolated model whose rays reach nothing, so that the correct answer is "the frame does not change at
+ * all": mean +0.0255 with 4.4% of pixels off by more than 4/255 and a worst pixel of 103 that way
+ * against 0 pixels and the same SHA256 this way - BIT-IDENTICAL to the feature being off, with the
+ * filter in the loop and with it bypassed. docs/gi_hit_shading.md's L2.3 section has both tables.
+ *
+ * WHAT THAT COSTS, measured rather than argued: this image is no longer a pure radiance, it is a
+ * radiance plus the specular correction, and the multi-bounce feedback re-emits whatever is here at a
+ * hit. That is the property the Level 1 work established and this pass is the one place it can be given
+ * up safely, for a reason that is structural: the lobe requires `ssgi_hit_shading`, and with hit shading
+ * on every hit is answered by `shade_hit` before the code that would add the feedback is reached (see
+ * shaders/ssgi.comp's rt_hit_radiance - "the ambient a shaded hit carries already IS its indirect
+ * estimate"). Measured: `ssgi_bounce` 0 against 0.5 is a byte-exact no-op on the material sweep, before
+ * and after this change. The DIFFUSE term cannot be handled this way, and is not: its image has to stay
+ * a radiance because the bounce is live whenever hit shading is off.
+ *
+ * The fallback deliberately does NOT sample the environment along the SAMPLED direction: the prefiltered
+ * cube is already the GGX cone's average, so averaging several of its values would filter it twice and
+ * widen the lobe. A miss re-reads the cone's own answer; only a hit is a point sample of the cone.
  *
  * WHAT IT SHARES WITH THE TRACER, and why the output is the tracer's own image. This pass does not own
- * an image: it READS the raw trace and ADDS its lobe to it (imageLoad / imageStore, with a
- * compute-to-compute barrier between the two dispatches). Three things fall out of that, and each one is
+ * an image: it READS the raw trace and ADDS its correction to it (imageLoad / imageStore, with a
+ * compute-to-compute barrier between the two dispatches). Two things fall out of that, and each one is
  * the reason it is done this way rather than with an image of its own:
  *   1. the denoiser needs no new input. The temporal resolve's neighbourhood clamp is taken from the
  *      "current frame's raw trace", and if the specular lobe lived in a second image that clamp would
  *      box in the diffuse-only range and reject the specular from the history - the accumulation would
  *      then never average the very signal that needs averaging most;
- *   2. the additive path is the same radiance quantity the chain already carries, so the bounce feedback
- *      (which re-emits what arrived at a hit) keeps meaning what it means;
- *   3. nothing about the descriptor sets changes: the set the tracer binds already has this image as a
+ *   2. nothing about the descriptor sets changes: the set the tracer binds already has this image as a
  *      read-write storage image at binding 6, and this pass binds the SAME two sets.
  *
- * THE FALLBACK IS EXACT ONLY WHEN THE RAY MISSES. `shade_hit` answers with the hit surface's own
- * outgoing radiance (its sun with a shadow ray, its split-sum ambient and its emissive), which is a
- * POINT sample of a cone that a prefiltered lookup would have averaged: at high roughness a single
- * glossy ray is a noisy estimate of a wide lobe, and `[render] ssgi_specular_rays` is the knob that buys
- * samples. Two further limits belong to the hit path and are inherited from shaders/hit_shading.glsl:
- * a MASK surface is solid to the ray and a skinned or morphed mesh is shaded in its bind pose, because
- * the structures hold what the build read. A BACK-FACE hit (a ray that ended inside geometry) is treated
- * as a miss: there is no surface there to reflect.
+ * THE FALLBACK IS EXACT ONLY WHEN THE RAY MISSES, and the hit path is where the approximation is:
+ * `shade_hit` answers with the hit surface's own outgoing radiance (its sun with a shadow ray, its
+ * split-sum ambient and its emissive), which is a POINT sample of a cone a prefiltered lookup would have
+ * averaged - at high roughness a single glossy ray is a noisy estimate of a wide lobe, and
+ * `[render] ssgi_specular_rays` is the knob that buys samples (measured: one ray is already converged
+ * after the denoisers). Two further limits belong to the hit path and are inherited from
+ * shaders/hit_shading.glsl: a MASK surface is solid to the ray and a skinned or morphed mesh is shaded in
+ * its bind pose, because the structures hold what the build read. A BACK-FACE hit (a ray that ended
+ * inside geometry) is treated as a miss: there is no surface there to reflect.
  *
  * WHAT THE INCLUDER MUST PROVIDE (see shaders/hit_shading.glsl): the top level structure (set 0 binding
  * 16) and the irradiance cube (binding 3) are declared below, and the camera (binding 0) because the
@@ -190,12 +201,14 @@ void main() {
 
     const vec3 v = normalize(camera.camera_pos.xyz - world_pos);
     const vec3 f0 = mix(vec3(0.04), albedo_metallic.rgb, albedo_metallic.a);
-    // The lighting stage's term, computed from the SAME expressions (shaders/ibl_specular.glsl) in the
-    // same association order - `ibl * fresnel * ao`, left to right - because this value is SUBTRACTED
-    // again by the spatial filter and a different association would leave a rounding difference behind.
+    // WHAT THE LIGHTING STAGE ALREADY ADDED for this surface, from the SAME expressions
+    // (shaders/ibl_specular.glsl) in the same association order - `ibl * fresnel * ao`, left to right.
+    // This value is what makes the pass a REPLACEMENT rather than an addition: it is what the estimate
+    // below converges to when a ray finds no geometry, and it is SUBTRACTED here rather than removed
+    // again downstream (see the store at the end, and the header for why that is the exact option).
     const vec3 ibl_specular = ibl_specular_radiance(normal, v, roughness);
     const vec3 fresnel = ibl_specular_fresnel(normal, v, roughness, f0, 1.0);
-    const vec3 environment = (ibl_specular * fresnel) * ao;
+    const vec3 already_added = (ibl_specular * fresnel) * ao;
 
     uint state = hash_u32(uint(pixel.x) + uint(pixel.y) * 4096u + uint(pc.params.w) * 2654435761u);
     vec3 radiance_sum = vec3(0.0);
@@ -237,9 +250,14 @@ void main() {
         }
     }
 
-    // The BRDF weight is applied once, to the average: `ao * mean(L) * F` would be a different
-    // association from the lighting stage's and is not used - this is `mean` scaled by the term the
-    // spatial filter removes, term for term.
-    const vec3 estimate = ((radiance_sum / float(rays)) * fresnel) * ao;
-    imageStore(gi_trace, pixel, imageLoad(gi_trace, pixel) + vec4(estimate, 0.0));
+    // The BRDF weight is applied once, to the average, and the term the lighting stage already added is
+    // taken off HERE - before anything filters this image - rather than by a subtraction in the spatial
+    // filter after the fact. That is the difference between an exact replacement and an approximate one:
+    // a ray that finds no geometry makes this value EXACTLY zero (`(ibl*F)*ao - (ibl*F)*ao`, the same
+    // expression twice), and adding an exact zero to a texel is exact, so such a frame is bit-identical
+    // to the feature being off even with the filter in the loop. The cost is that this image is no longer
+    // a pure radiance: it is a radiance plus a bookkeeping term, which is what the multi-bounce feedback
+    // re-emits at a hit (see the file header and docs/gi_hit_shading.md's L2.3 section for the A/B).
+    const vec3 traced = ((radiance_sum / float(rays)) * fresnel) * ao;
+    imageStore(gi_trace, pixel, imageLoad(gi_trace, pixel) + vec4(traced - already_added, 0.0));
 }

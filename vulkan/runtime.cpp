@@ -4060,7 +4060,6 @@ namespace vulkan {
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_spatial_pipeline->get_pipeline());
 
         ssgi_spatial_push_constants const push = {
-            .inv_view_proj = this->current_inv_view_proj,
             .depth_scale = this->current_ubo.proj[2][2],
             .depth_offset = this->current_ubo.proj[3][2],
             .sigma_spatial = this->gi_spatial_sigma,
@@ -4070,11 +4069,10 @@ namespace vulkan {
             // ambient, so it must not remove anything. Same predicate the tracer's push uses, evaluated in
             // the same frame, so the two cannot disagree about which path ran.
             .subtract_ambient = this->ssgi_traced_active() ? 1.0f : 0.0f,
-            // ... and the specular half is removed exactly when the glossy pass ADDED it, which is the same
-            // predicate record_ssgi_spec_pass returns. Evaluated as a pure function of the frame's state
-            // rather than cached from that call, so the two cannot drift apart - and `gi_resolved` below is
-            // what tells the composite whether any of this produced an image at all.
-            .subtract_specular = this->ssgi_specular_active() ? 1.0f : 0.0f,
+            // ... and there is no specular lane here at all: the glossy pass removes the lighting stage's
+            // specular term at its own texel, before this filter runs (see shaders/ssgi_spatial.comp's
+            // binding comment and docs/gi_hit_shading.md's L2.3 section for the measurement that chose it).
+            .unused1 = 0.0f,
             .unused2 = 0.0f,
             .gi_size = glm::vec4(static_cast<float>(gi_width), static_cast<float>(gi_height),
                                  static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height))};

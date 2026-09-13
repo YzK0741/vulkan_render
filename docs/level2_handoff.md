@@ -190,36 +190,34 @@ subtraction come from a new shared `shaders/ibl_specular.glsl`, which also colla
 expressions that already existed. `[render] ssgi_specular` (off by default) and `ssgi_specular_rays` (1-8,
 default 1) are the knobs.
 WHAT IT MEASURED. The control is the sharpest instrument in this whole document: where a ray finds nothing the
-estimate IS the lighting stage's term, so with the filter bypassed and a ray length too short to reach
-anything, the feature on and off must agree - and on an isolated model they do to ONE 8-bit step on 0.08% of
-pixels and nothing beyond it (the half-float round trip through the trace image). On Sponza the effect is
--1.3860 of mean green (-2.5%) in a 4x4 table ordered by the SCENE (interior tiles -7% to -17%, sky-facing
-0.1-0.3%), which is what a correct local reflection looks like; isolating the specular channel alone gives
--20% to -33% in the interior against -0.4% at the sky. One ray is already converged (1 vs 4 rays differ by
-+0.0028 against the feature's -1.3860), and the cost is +0.13 ms at one ray / +0.81 ms at four on the GPU
-timings' `gi` interval. `docs/gi_hit_shading.md`'s L2.3 section has all of it.
+correction the pass writes is exactly zero, so with a ray length too short to reach anything the lobe-on frame
+and the lobe-off frame are the SAME SHA256 - 0 pixels differing, with the denoiser in the loop and with it
+bypassed. That is a bit-exact invariant rather than a tolerance, and it is the RESULT of this step, not its
+starting point: the first version subtracted the lighting stage's term in the spatial filter, which subtracts a
+centre-pixel value from a filtered one, and the same control read mean +0.0255 with 4.4% of pixels beyond
+4/255. Both designs were built and measured; the second won on every axis and is what shipped. On Sponza the
+effect is -1.3264 of mean green (-2.4%) in a 4x4 table ordered by the SCENE (interior tiles -7% to -16%,
+sky-facing 0.1-0.3%); isolating the specular channel alone gives -20% to -33% in the interior against -0.4% at
+the sky. One ray is already converged (1 vs 4 rays differ by +0.0028 against the feature's -1.33), and the cost
+is +0.13 ms at one ray / +0.81 ms at four on the GPU timings' `gi` interval. `docs/gi_hit_shading.md`'s L2.3
+section has all of it.
 
 WHAT IS LEFT OF L2.3, and it is NOT the denoiser problem the plan predicted - that hypothesis was measured
 and killed. At a ray length that reaches anything (radius 0.5 on the material sweep) the reflection's structure
 survives the shared joint-bilateral filter; the earlier "no reflection visible" reading was the RAY LENGTH,
 because `ssgi_radius` is a fraction of the scene radius and the 0.12 that reaches 4.6 units inside Sponza
-reaches 0.84 on a compact scene (measured curve: +0.48 / +0.74 / +0.92 / +1.09 at radius 0.12 / 0.25 / 0.50 /
-1.00). What is actually open: (1) the subtraction residual below, with its two candidate fixes; (2) the
-reflection is a point sample of the roughness cone, so a low-roughness reflection aliases at half resolution;
-(3) THE FEATURE IS NEARLY INVISIBLE ON THE SCENE EVERY OTHER GI MEASUREMENT USES (Sponza is roughened stone,
-its roughness channel averages 217/255), which is why the gate grew a `metal_rough_glossy` scenario and why
-the L2.3 evidence that matters is a MATERIAL-ordered table - smooth metal +10.57, rough metal +7.88, smooth
-dielectric +1.07, rough dielectric +0.08 - rather than a tile table.
-THE RESIDUAL, stated with its number: the subtraction happens after the joint-bilateral filter has averaged the
-estimate while the removed value is the centre pixel's own, so "a ray that misses changes nothing" is exact
-only with the filter bypassed. With it on and still nothing reachable, an isolated model moves by mean +0.027
-with 1.0% of pixels beyond 4/255 and a worst pixel of 109. The DIFFUSE subtraction has carried the same
-artifact since it was written (the recorded +0.33 convex / +0.52 Sponza note). TWO FIXES ARE ON THE TABLE and
-`docs/gi_hit_shading.md`'s L2.3 section has the trade-off: filter the removed value with the same weights as
-the added one (architecturally consistent, costs 25 gathers per pixel), or have the glossy pass write the NET
-correction `E - ibl_specular` and drop the subtraction (exact for zero cost, but puts a bookkeeping term into
-an image the multi-bounce feedback re-emits - the property the L1 work fought for). Either way it re-baselines
-every GI capture, so it is its own step.
+reaches 0.84 on a compact scene (measured curve: +0.47 / +0.71 / +0.89 / +1.06 at radius 0.12 / 0.25 / 0.50 /
+1.00). What is actually open: (1) THE FEATURE IS NEARLY INVISIBLE ON THE SCENE EVERY OTHER GI MEASUREMENT
+USES (Sponza is roughened stone, its roughness channel averages 217/255), which is why the gate grew a
+`metal_rough_glossy` scenario and why the L2.3 evidence that matters is a MATERIAL-ordered table - smooth metal
++10.33, rough metal +7.61, smooth dielectric +1.23, rough dielectric +0.13 - rather than a tile table; (2) the
+reflection is a point sample of the roughness cone, so a low-roughness reflection aliases at half resolution,
+and the ray origin's bias is a fraction of the RAY LENGTH (`radius * 0.02`), which on a compact scene at a
+large radius lifts the origin by a quarter of a small object's size - a scale inconsistency the diffuse path
+shares; (3) the DIFFUSE subtraction still carries the non-mean-preserving-average artifact (+0.33 convex /
++0.52 Sponza) and cannot use the mechanism that fixed the specular one, because its image has to stay a
+radiance for the live bounce - fixing it means filtering the removed term with the same weights as the added
+one (25 gathers a pixel) and re-baselining every capture.
 
 ## 5. Working discipline (non-negotiable; every item was learned the hard way here)
 
