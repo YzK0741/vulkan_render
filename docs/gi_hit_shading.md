@@ -445,3 +445,35 @@ Two consequences worth carrying forward:
 * the tertile tables earlier in this file must be read as statements about *brightness thirds*, not about
   the cache's quality, wherever they were used to judge a replacement rather than an addition. The numbers
   themselves are right; the interpretation attached to them was not.
+
+### Step E, measured: the only independent reference this engine has is not a neutral one
+
+Step E asks for an answer that is neither of the two models being compared, so that the per-pixel error
+measures accuracy rather than self-consistency. The cheapest such estimator this engine can produce is the
+MARCHED tracer at 16 rays over 600 frames: its hit radiance comes from the lighting stage''s own output
+rather than from the hit-shading code under test, so its radiance source is genuinely independent. Measured
+against it, in the same interior view and at the same 8-bit green channel:
+
+    against the marched reference (independent)     screen-sampled MAE 5.5062  RMSE 9.2515  max 76
+                                                    shaded         MAE 5.9116  RMSE 9.9911  max 73
+    against the shaded estimator (circular)         screen-sampled MAE 1.5544  RMSE 3.0372  max 46
+                                                    shaded         MAE 0.4249  RMSE 0.7555  max 14
+
+Two things are visible and only one of them is about the models. Against its own estimator the shaded path
+is 3.7x closer, which is exactly the circularity: it is being compared with itself. Against the independent
+one both models sit far away (MAE 5.5-5.9) and essentially TIED - and the shaded path is marginally the
+WORSE of the two, by seven percent of MAE.
+
+WHY THAT COMPARISON CANNOT DECIDE, which is the actual finding of this step: the marched reference is not a
+neutral estimator. A screen-space march cannot see off screen at all, so in an interior scene it is blind to
+exactly the light the shaded path exists to recover, and it takes its per-pixel radiance from a lighting
+stage that evaluates shadows and occlusion per screen pixel. It therefore SHARES the screen model''s central
+limitation, and any measurement that treats it as truth is biased in favour of the screen model. The shaded
+path being seven percent worse under a reference biased against it is weak evidence for either model, not a
+verdict.
+
+So step E is measured but not satisfied, and the honest statement of what remains is this: the engine has no
+neutral reference, and producing one means an estimator that shares neither model''s bias - a reference pass
+that (a) traces against the geometry rather than the depth buffer, (b) shades what it hits rather than
+reading the screen, (c) accumulates a large number of bounces rather than one, and (d) is averaged over
+frames with no denoiser in the loop. That is a new pass, not a knob, and it is the last piece of Level 1.
