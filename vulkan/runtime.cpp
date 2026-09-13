@@ -4898,11 +4898,21 @@ namespace vulkan {
         // passes use for each caster - the same matrix shadow_geometry_signature() hashes, which is why
         // an animated or moved caster is reflected here for free.
         for (auto const& [caster, level] : this->rt_caster_levels) {
+            // The addresses a hit-shading path reads the hit triangle from: the same buffers, and the
+            // same vkGetBufferDeviceAddress calls, the bottom level build above already used for this
+            // caster - so the triangle a shader fetches with them IS the triangle the ray hit. They are
+            // the buffers' base addresses (the build applies no offset), which is also what makes them
+            // legal as a buffer reference: a buffer's address is aligned, an offset into one need not be.
+            VkBufferDeviceAddressInfo const vertex_address_info = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = caster->vertex_detail->buffer};
+            VkBufferDeviceAddressInfo const index_address_info = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = caster->index_detail->buffer};
             acceleration_structure::instance_source const instance = {
                 .transform = caster->push.model,
                 .blas_index = level,
-                .record = {.vertex_address = 0,
-                           .index_address = 0,
+                .record = {.vertex_address = vkGetBufferDeviceAddress(vk.device, &vertex_address_info),
+                           .index_address = vkGetBufferDeviceAddress(vk.device, &index_address_info),
+                           .model = caster->push.model,
                            .vertex_stride = caster->vertex_stride,
                            .index_type = static_cast<uint32_t>(caster->index_type),
                            .material_index = caster->push.material_index.value,

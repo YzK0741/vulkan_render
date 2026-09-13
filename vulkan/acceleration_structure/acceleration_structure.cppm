@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.acceleration_structure
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Ray-tracing acceleration structures: the bottom level structures of the
 // scene's shadow casters, built from the geometry buffers the raster passes
@@ -106,16 +106,32 @@ namespace vulkan::acceleration_structure {
      *       that lands (a shadow ray) only asks "did anything block me": shading at a hit needs the
      *       triangle's vertex data and the material, and reconstructing that list later would mean
      *       walking the scene a second time for information this pass has in hand.
-     * @note std430 layout: two 8-byte addresses then four 4-byte fields = 32 bytes, no padding
+     * @note the two addresses are the BUFFER's device address (the base), not an offset into it, and
+     *       they are the same value the bottom level build feeds the geometry - which is what makes a
+     *       shader's `index_buffer[3 * triangle]` fetch the very triangle the ray hit. A buffer has an
+     *       address only because the primitive upload sets SHADER_DEVICE_ADDRESS_BIT whenever the
+     *       device supports it (see acceleration_structure::build_input_usage), so a shader reads them
+     *       through a buffer reference and needs no descriptor for them.
+     * @note `model` is the object -> world matrix the raster passes draw with, for the one thing a hit
+     *       cannot get from the ray: the interpolated vertex NORMAL is in object space, and turning it
+     *       into the shading normal is `normalize(mat3(model) * n)` - exactly what pbr.vert does. The
+     *       hit's world POSITION does not need it: that is the ray's origin plus t times its direction.
+     * @note `index_type` is a VkIndexType: a shader reads 16-bit indices by loading a 32-bit word and
+     *       taking the half its index falls in, which avoids depending on 16-bit storage access.
+     * @note std430 layout as the shader declares it: two 8-byte addresses, a 16-byte-aligned mat4, then
+     *       four 4-byte fields = 96 bytes, no padding. The static_assert below is what keeps a field
+     *       added here from silently shifting every lane after it in the shader's copy of this struct.
      */
     export struct instance_record {
-        VkDeviceAddress vertex_address = 0;
-        VkDeviceAddress index_address = 0;
+        VkDeviceAddress vertex_address = 0; // the vertex buffer's device address (base)
+        VkDeviceAddress index_address = 0;  // the index buffer's device address (base)
+        glm::mat4 model = glm::mat4(1.0f);  // object -> world, for the vertex normal
         uint32_t vertex_stride = 0;
         uint32_t index_type = 0;     // VkIndexType, for the shader that indexes with it
         uint32_t material_index = 0; // into the scene's material table (set 0 binding 5)
         uint32_t primitive_index = 0;
     };
+    static_assert(sizeof(instance_record) == 96, "the shader's copy of instance_record must match this layout");
 
     /**
      * @ingroup vulkan_acceleration_structure
