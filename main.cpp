@@ -173,10 +173,10 @@ int main(int argc, char** argv) {
     //    imported scene) and the directional shadow pass. The legacy
     //    triangle demo pipeline is no longer created - nothing draws it.
     chores::setup_pipeline(runtime, shaders_dir);
-    // Screen-space GI has to be told AFTER the pipelines exist: its compute pipeline is created by
-    // setup_pipeline above, and set_ssgi() warns when it is missing. Startup-only knobs - the
-    // intensity and the ray budget are read here rather than per frame, so turning the config value
-    // needs a restart (the overlay sliders are the live path).
+    // Screen-space GI has to be told AFTER the pipelines exist: its compute pipeline and its temporal
+    // resolve are created by setup_pipeline above, and set_ssgi() warns when either is missing.
+    // Startup-only knobs - the intensity and the ray budget are read here rather than per frame, so
+    // changing the config value needs a restart (there is no overlay control for them).
     runtime.set_ssgi(settings.render.ssgi,
                      settings.render.ssgi_intensity,
                      settings.render.ssgi_radius,

@@ -629,6 +629,39 @@ namespace vulkan {
             gi_image_views[i] = create_image_view(gi_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
         }
 
+        // The denoiser's resolve target (same use as the trace target: STORAGE for the compute pass
+        // that writes it, SAMPLED for the composite) and the history it accumulates into (written by
+        // a copy and read next frame, so TRANSFER_DST | SAMPLED and nothing else).
+        gi_resolve_images.resize(swap_chain_image_views.size());
+        gi_resolve_image_memories.resize(swap_chain_image_views.size());
+        gi_resolve_image_views.resize(swap_chain_image_views.size());
+        gi_history_images.resize(swap_chain_image_views.size());
+        gi_history_image_memories.resize(swap_chain_image_views.size());
+        gi_history_image_views.resize(swap_chain_image_views.size());
+        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_resolve_images[i],
+                gi_resolve_image_memories[i]);
+            gi_resolve_image_views[i] = create_image_view(gi_resolve_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_history_images[i],
+                gi_history_image_memories[i]);
+            gi_history_image_views[i] = create_image_view(gi_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+        }
+
         gbuffer_depth_images.resize(swap_chain_image_views.size());
         gbuffer_depth_image_memories.resize(swap_chain_image_views.size());
         gbuffer_depth_image_views.resize(swap_chain_image_views.size());
@@ -766,6 +799,8 @@ namespace vulkan {
             destroy_images(scene_color_images, scene_color_image_memories, scene_color_image_views);
             destroy_images(taa_history_images, taa_history_image_memories, taa_history_image_views);
             destroy_images(gi_images, gi_image_memories, gi_image_views);
+            destroy_images(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
+            destroy_images(gi_history_images, gi_history_image_memories, gi_history_image_views);
             for (auto const& level_views : bloom_image_views) {
                 for (auto const& view : level_views) {
                     vkDestroyImageView(device, view, nullptr);
@@ -1336,6 +1371,8 @@ namespace vulkan {
         destroy_target_set(scene_color_images, scene_color_image_memories, scene_color_image_views);
         destroy_target_set(taa_history_images, taa_history_image_memories, taa_history_image_views);
         destroy_target_set(gi_images, gi_image_memories, gi_image_views);
+        destroy_target_set(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
+        destroy_target_set(gi_history_images, gi_history_image_memories, gi_history_image_views);
 
         // 2d. Destroy the bloom targets (all levels)
         for (auto const& level_views : bloom_image_views) {

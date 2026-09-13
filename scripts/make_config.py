@@ -173,6 +173,13 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssao_intensity = {cfg['ssao_intensity']}",
         f"ssao_samples = {cfg['ssao_samples']}",
         "",
+        "# ---- [render] screen-space global illumination ----",
+        f"ssgi = {str(cfg['ssgi']).lower()}",
+        f"ssgi_intensity = {cfg['ssgi_intensity']}",
+        f"ssgi_radius = {cfg['ssgi_radius']}",
+        f"ssgi_rays = {cfg['ssgi_rays']}",
+        f"ssgi_steps = {cfg['ssgi_steps']}",
+        "",
         "# ---- [gui] debug overlay ----",
         "[gui]",
         f"show = {str(cfg['gui_show']).lower()}",
@@ -261,6 +268,15 @@ def ask_all(output_dir: str) -> dict:
     ssao_intensity = ask_float("render.ssao_intensity", 1.0, 0.0, 1.0, hint="1 = full occlusion, 0 = off")
     ssao_samples = ask_int("render.ssao_samples", 8, 1, 16, hint="samples per pixel")
 
+    print("\n-- render (screen-space global illumination) --")
+    # Defaults are the "no effect" ones: GI is opt-in, because it costs two compute dispatches per
+    # frame and only makes sense once the environment probe (the off-screen fallback) is in place.
+    ssgi = ask_bool("render.ssgi", False, hint="screen-space GI: one bounce of diffuse indirect, temporally denoised")
+    ssgi_intensity = ask_float("render.ssgi_intensity", 0.7, 0.0, 4.0, hint="scales the traced indirect against the IBL probe it overlaps")
+    ssgi_radius = ask_float("render.ssgi_radius", 0.12, 0.0, 2.0, hint="ray length, as a FRACTION of the scene radius")
+    ssgi_rays = ask_int("render.ssgi_rays", 2, 0, 16, hint="rays per pixel per frame (the resolve accumulates them)")
+    ssgi_steps = ask_int("render.ssgi_steps", 6, 0, 64, hint="depth samples per ray")
+
     print("\n-- gui (debug overlay) --")
     gui_show = ask_bool("gui.show", True, hint="Dear ImGui debug overlay on by default")
     panel_width = ask_int("gui.panel_width", 380, 0, hint="0 = ImGui auto-size")
@@ -307,6 +323,11 @@ def ask_all(output_dir: str) -> dict:
         "ssao_radius": ssao_radius,
         "ssao_intensity": ssao_intensity,
         "ssao_samples": ssao_samples,
+        "ssgi": ssgi,
+        "ssgi_intensity": ssgi_intensity,
+        "ssgi_radius": ssgi_radius,
+        "ssgi_rays": ssgi_rays,
+        "ssgi_steps": ssgi_steps,
         "gui_show": gui_show,
         "panel_width": panel_width,
         "panel_height": panel_height,

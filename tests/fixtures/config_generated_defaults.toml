@@ -52,6 +52,13 @@ ssao_radius = 0.5
 ssao_intensity = 1.0
 ssao_samples = 8
 
+# ---- [render] screen-space global illumination ----
+ssgi = false
+ssgi_intensity = 0.7
+ssgi_radius = 0.12
+ssgi_rays = 2
+ssgi_steps = 6
+
 # ---- [gui] debug overlay ----
 [gui]
 show = true

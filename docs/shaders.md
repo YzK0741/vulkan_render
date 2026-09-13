@@ -39,6 +39,9 @@
  *  post.vert + gbuffer_debug.frag  (debug alternative, never together with the lighting stage) show
  *                                one stored channel instead of lighting it
  *        |
+ *  ssgi.comp                     compute: one bounce of screen-space diffuse indirect, half res
+ *  ssgi_temporal.comp            compute: the temporal resolve that accumulates the trace
+ *        |
  *  post.vert + post.frag         mode 0 bright-pass prefilter (HDR -> bloom L0)
  *                                mode 1 downsample x3 (L0 -> L1 -> L2 -> L3)
  *                                mode 2 composite (HDR + bloom -> exposure -> ACES -> display)
@@ -144,6 +147,50 @@
  * (the 4x4 inverse view-projection plus the `vec4 ssao`), so nothing new is bound. It is deliberately
  * hemisphere SSAO rather than horizon-based GTAO, and being screen-space it cannot see occluders off
  * screen - the usual set of approximations.
+ *
+ * @section shader_ssgi Screen-space global illumination
+ *
+ * `ssgi.comp` is one bounce of diffuse indirect light. Each invocation takes its pixel's stored
+ * normal and albedo, shoots `ssgi_rays` cosine-weighted rays, marches the G-buffer depth in screen
+ * space and averages the direct radiance it finds at the hits - `albedo * mean(radiance)`, where the
+ * pi factors cancel by construction. It runs at HALF resolution because the signal is low-frequency
+ * and its cost scales with the sample count, and it samples the HDR scene target as it stands after
+ * the lighting stage. That pass POSITION is what keeps it stable: the image is rewritten earlier in
+ * every frame, so a hit can never return the tracer's own previous output - a screen-space GI that
+ * samples an image containing its own result has a loop gain above 1 and accumulates energy.
+ *
+ * Two rays per pixel is white noise with the right average, so the raw trace is not what the
+ * composite sees. `ssgi_temporal.comp` is a second compute pass at the same resolution that turns it
+ * into an image: it reprojects the previous frame's resolved result with the motion-vector target,
+ * drops the history on a view-depth mismatch (the classic disocclusion), clamps it into the 3x3
+ * neighbourhood of the RAW trace and blends it in. The clamp box is deliberately wide - it is taken
+ * from the noisy current frame, so it rejects little, which is exactly what lets the accumulation
+ * average ten frames of differently-seeded rays per pixel. A tighter box against a filtered current
+ * frame is the classic way a temporal filter ends up not denoising; tightening belongs in a spatial
+ * filter after this one. The weights are the GI pass's own (`gi_blend_static` / `gi_blend_min`)
+ * rather than TAA's, because the signal is far noisier than shading aliasing, and a copy of the
+ * resolved image becomes the next frame's history - the same copy-not-ping-pong arrangement the TAA
+ * resolve uses, which is what keeps every descriptor set in the frame stable.
+ *
+ * The result is an ADDITION to the environment probe, not a replacement: a ray that leaves the frame
+ * hits nothing and contributes nothing, so the probe is the off-screen fallback and
+ * `[render] ssgi_intensity` is what reconciles the two (they overlap). `ssgi_radius` is a fraction of
+ * the scene radius, so one value means the same thing on a 1.6-unit model and on Sponza's 18.5.
+ *
+ * Bindings, because these two passes are the only ones that bind the G-buffer set as COMPUTE: the
+ * tracer uses set 0 (the shared scene set above, for the camera block) plus set 1 = the G-buffer set's
+ * albedo (0), normal (1), depth (3), `direct_radiance` (5, the HDR target) and `gi_output` (6, a
+ * STORAGE image - it writes the raw trace rather than sampling it). The resolve has a set of its own:
+ * the raw trace (0), the history (1), the motion-vector target (2), the G-buffer depth (3) and the
+ * resolved image (4, also STORAGE). Every binding of the G-buffer set layout therefore names
+ * FRAGMENT and COMPUTE both, and every layout transition that publishes one of those images to a
+ * sampler names both stages too.
+ *
+ * Known limitations, stated rather than discovered later: geometry outside the frame and thin
+ * occluders between two march steps contribute nothing; alphaMode MASK surfaces are solid, because a
+ * depth buffer has no alpha (which is also what an inline ray query sees without any-hit shaders);
+ * and a deforming mesh has no motion vector, so its GI trails. There are no GUI controls: `set_ssgi`
+ * is applied once at startup from the config, so changing it needs a restart.
  *
  * @section shader_bindings The shared scene descriptor set (set 0)
  *

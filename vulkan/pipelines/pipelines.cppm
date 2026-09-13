@@ -1,4 +1,4 @@
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
@@ -68,6 +68,16 @@ namespace vulkan::pipelines {
     export std::expected<gbuffer_owned, std::string> build_gbuffer_debug(core& vk, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     export std::expected<taa_owned, std::string> build_taa(core& vk, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     export std::expected<ssgi_owned, std::string> build_ssgi(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+
+    /// what build_ssgi_temporal() creates: the denoiser's set layout (it owns one - its inputs are
+    /// the trace, the history, the motion vectors and the depth, which no other pass groups together)
+    export struct ssgi_temporal_owned {
+        VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+        std::optional<vk_pipeline> resolve;
+    };
+
+    export std::expected<ssgi_temporal_owned, std::string> build_ssgi_temporal(core& vk, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
 
     /// the passes that reuse a layout someone else owns, so theirs comes in as a parameter
     export std::expected<vk_pipeline, std::string> build_fxaa(core& vk, VkPipelineLayout post_pipeline_layout, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
@@ -304,6 +314,70 @@ namespace vulkan::pipelines {
             return fail("ssgi: vkCreateComputePipelines failed");
         }
         out.trace = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
+        return out;
+    }
+
+    // The GI temporal resolve: its own set layout, because it groups four things no other pass puts
+    // together (the raw trace, the accumulated history, the motion vectors and the depth). It binds
+    // no scene set: the push block carries the two projection terms its depth guard needs.
+    std::expected<ssgi_temporal_owned, std::string> build_ssgi_temporal(core& vk, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+        using fail = std::unexpected<std::string>;
+        ssgi_temporal_owned out;
+
+        // 0..3 are sampler bindings (trace, history, motion vectors, depth); 4 is the STORAGE image
+        // the resolve writes, which is why one binding differs from the rest.
+        std::array<VkDescriptorSetLayoutBinding, 5> bindings = {};
+        for (uint32_t b = 0; b < bindings.size(); ++b) {
+            bindings[b].binding = b;
+            bindings[b].descriptorType = b == 4u ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[b].descriptorCount = 1;
+            bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            bindings[b].pImmutableSamplers = nullptr;
+        }
+
+        VkDescriptorSetLayoutCreateInfo layout_info = {};
+        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
+        layout_info.pBindings = bindings.data();
+        if (vkCreateDescriptorSetLayout(vk.device, &layout_info, nullptr, &out.set_layout) != VK_SUCCESS) {
+            return fail("ssgi temporal: descriptor set layout creation failed");
+        }
+
+        VkPushConstantRange push_range = {};
+        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        push_range.offset = 0;
+        push_range.size = push_constant_size;
+
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &out.set_layout;
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+            return fail("ssgi temporal: pipeline layout creation failed");
+        }
+
+        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, vk.device);
+        if (!module.has_value()) {
+            return fail("ssgi temporal: compute shader module creation failed");
+        }
+        VkPipelineShaderStageCreateInfo stage_info = {};
+        stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage_info.module = **module;
+        stage_info.pName = "main";
+
+        VkComputePipelineCreateInfo pipeline_info = {};
+        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.stage = stage_info;
+        pipeline_info.layout = out.pipeline_layout;
+
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        if (vkCreateComputePipelines(vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+            return fail("ssgi temporal: vkCreateComputePipelines failed");
+        }
+        out.resolve = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
         return out;
     }
     std::expected<deferred_owned, std::string> build_deferred(core& vk, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<VkPipelineColorBlendAttachmentState const> const color_blend, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {

@@ -23,8 +23,11 @@
  *
  * The output is `albedo * mean(radiance)` over cosine-weighted hemisphere rays, which is the
  * one-bounce diffuse estimator - the pi factors cancel by construction. It is written at HALF
- * resolution and upsampled by the composite, because the signal is low-frequency and this is the
- * pass whose cost scales with sample count.
+ * resolution, because the signal is low-frequency and this is the pass whose cost scales with sample
+ * count, and it is a RAW one: 2 rays per pixel is a field of white noise with the right average, and
+ * what turns that into an image is the temporal resolve in shaders/ssgi_temporal.comp, which reads
+ * this pass's output as its `gi_trace` binding. The composite samples that resolve's result, not this
+ * image - the two are separate so that the accumulation reads and writes different images.
  *
  * Known limitations, stated rather than discovered later: geometry outside the frame contributes
  * nothing; thin occluders are missed between steps; and alphaMode MASK surfaces are solid here,
@@ -40,13 +43,14 @@ layout(set = 0, binding = 0) uniform CameraUBO {
 } camera;
 
 // The G-buffer set (see runtime::ensure_gbuffer_descriptors): this pass reads the stored surface and
-// the direct radiance, and writes the GI image. The bindings it does not declare (material, velocity)
-// are still in the layout because the lighting stage and the debug view share it.
+// the direct radiance, and writes the raw GI image the denoiser resolves. The bindings it does not
+// declare (material, velocity) are still in the layout because the lighting stage and the debug view
+// share it.
 layout(set = 1, binding = 0) uniform sampler2D gbuffer_albedo;   // RGBA8: albedo.rgb + metallic
 layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal;   // RGBA16F: world normal.xyz
 layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;    // the pass's own 1x depth
 layout(set = 1, binding = 5) uniform sampler2D direct_radiance;  // HDR scene target: DIRECT light only
-layout(set = 1, binding = 6, rgba16f) uniform image2D gi_output; // half-res indirect, one texel per invocation
+layout(set = 1, binding = 6, rgba16f) uniform image2D gi_output; // half-res RAW indirect, one texel per invocation
 
 layout(push_constant) uniform SsgiPush {
     mat4 inv_view_proj; // clip -> world (the same block deferred.frag uses)

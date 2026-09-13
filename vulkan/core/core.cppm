@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.10.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.11.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -287,12 +287,22 @@ namespace vulkan {
 
         // ---- screen-space global illumination (see shaders/ssgi.comp) ----
         // HALF resolution, one per swapchain image: the tracer writes it as a storage image and the
-        // post composite samples it back. Half res because the signal is low-frequency and this is
-        // the pass whose cost scales with sample count; the composite's bilinear fetch is the
-        // upsample. STORAGE because a compute pass writes a storage image, not an attachment.
+        // denoiser's resolve samples it back as the RAW trace. Half res because the signal is
+        // low-frequency and this is the pass whose cost scales with sample count; the composite's
+        // bilinear fetch is the upsample. STORAGE because a compute pass writes a storage image, not
+        // an attachment.
         std::vector<VkImage> gi_images = {};
         std::vector<VkDeviceMemory> gi_image_memories = {};
         std::vector<VkImageView> gi_image_views = {};
+        // The denoiser's two, also half resolution: the RESOLVED result (what the composite reads,
+        // and what becomes the next frame's history) and the history itself, which is written only
+        // by a copy - hence TRANSFER_DST plus SAMPLED, and nothing else.
+        std::vector<VkImage> gi_resolve_images = {};
+        std::vector<VkDeviceMemory> gi_resolve_image_memories = {};
+        std::vector<VkImageView> gi_resolve_image_views = {};
+        std::vector<VkImage> gi_history_images = {};
+        std::vector<VkDeviceMemory> gi_history_image_memories = {};
+        std::vector<VkImageView> gi_history_image_views = {};
 
         // ---- temporal anti-aliasing (see runtime::set_taa) ----
         // The scene color TAA resolves FROM, one per swapchain image: when TAA is on, the geometry

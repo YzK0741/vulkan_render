@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.constant_init
-// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Compile-time Vulkan info-struct conventions: constexpr factories + constinit
 // "transition" defaults for the structs the engine fills identically everywhere
@@ -685,13 +685,18 @@ export namespace vulkan {
         .image = VK_NULL_HANDLE,
         .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
     };
-    /** @brief depth attachment -> SHADER_READ_ONLY_OPTIMAL, fragment-shader sampled read (the shadow map back to the main pass) */
+    /** @brief depth attachment -> SHADER_READ_ONLY_OPTIMAL, sampled read (the shadow map back to the
+     *         main pass, and the G-buffer depth to everything that reconstructs from it).
+     * @note BOTH consumer stages are named: the G-buffer images have had a COMPUTE consumer since the
+     *       screen-space GI passes started reading the stored surface directly (see
+     *       build_gbuffer_debug, whose set layout declares FRAGMENT|COMPUTE for the same reason), and
+     *       a layout transition has to name every stage that reads the image afterwards. */
     inline constexpr VkImageMemoryBarrier2 shadow_map_sampling_transition = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext = nullptr,
         .srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
         .srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -736,15 +741,18 @@ export namespace vulkan {
         .image = VK_NULL_HANDLE,
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
-    /** @brief GENERAL -> SHADER_READ_ONLY_OPTIMAL, fragment-shader sampled read (the GI image handed
-     *         to the composite that samples it: a compute SHADER_WRITE is not visible to a later
-     *         FRAGMENT_SHADER read without this) */
+    /** @brief GENERAL -> SHADER_READ_ONLY_OPTIMAL (the GI images handed on as samples: a compute
+     *         SHADER_WRITE is not visible to a later read without this).
+     * @note BOTH consumer stages are named, because the two GI images are handed to different ones:
+     *       the raw trace goes to the denoiser's resolve, which is another COMPUTE dispatch, while the
+     *       resolved image goes to the FRAGMENT composite. Naming only FRAGMENT would leave the
+     *       trace -> resolve hand-off unordered - the resolve could sample a half-written trace. */
     inline constexpr VkImageMemoryBarrier2 general_to_sampling_transition = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext = nullptr,
         .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
         .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -753,13 +761,52 @@ export namespace vulkan {
         .image = VK_NULL_HANDLE,
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
-    /** @brief color attachment -> SHADER_READ_ONLY_OPTIMAL, fragment-shader sampled read (the HDR scene target into the post-process pass) */
+    /** @brief GENERAL -> TRANSFER_SRC_OPTIMAL: an image written as a storage image (so it is in
+     *         GENERAL) is copied out of - the GI resolve becoming the next frame's history. The
+     *         compute write has to be published to the transfer too, which is what the src masks say. */
+    inline constexpr VkImageMemoryBarrier2 general_to_transfer_src_transition = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .pNext = nullptr,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = VK_NULL_HANDLE,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    /** @brief TRANSFER_SRC_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL: the same image, handed on to whatever
+     *         samples it after the copy (the composite, for the GI resolve).
+     * @note BOTH consumer stages are named, like every other transition that hands an image to a
+     *       sampler (see shadow_map_sampling_transition). */
+    inline constexpr VkImageMemoryBarrier2 transfer_src_to_sampling_transition = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .pNext = nullptr,
+        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = VK_NULL_HANDLE,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    /** @brief color attachment -> SHADER_READ_ONLY_OPTIMAL, sampled read (the HDR scene target and the
+     *         motion-vector / stored-surface targets into the passes that sample them)
+     * @note BOTH consumer stages are named, as in shadow_map_sampling_transition: the motion-vector
+     *       target is sampled by the GI denoiser's COMPUTE resolve as well as by the TAA fragment
+     *       resolve, and a layout transition has to name every stage that reads the image afterwards. */
     inline constexpr VkImageMemoryBarrier2 hdr_sampling_transition = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext = nullptr,
         .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
         .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -797,13 +844,15 @@ export namespace vulkan {
     /** @brief UNDEFINED -> SHADER_READ_ONLY_OPTIMAL: make a transient target readable without
      *         claiming a layout it may not be in (the bloom chain when the passes are skipped - the
      *         composite still samples those bindings statically, so the layout must be valid, but the
-     *         contents are multiplied by zero) */
+     *         contents are multiplied by zero; and a history image's very first use)
+     * @note BOTH consumer stages are named, as everywhere else a transition hands an image to a
+     *       sampler: the first frame of the GI history is read by a COMPUTE resolve. */
     inline constexpr VkImageMemoryBarrier2 undefined_to_sampling_transition = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext = nullptr,
         .srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
         .srcAccessMask = 0,
-        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -812,12 +861,15 @@ export namespace vulkan {
         .image = VK_NULL_HANDLE,
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
-    /** @brief SHADER_READ_ONLY_OPTIMAL -> TRANSFER_DST_OPTIMAL: the TAA history image is overwritten
-     *         with the newly resolved frame after the resolve sampled it */
+    /** @brief SHADER_READ_ONLY_OPTIMAL -> TRANSFER_DST_OPTIMAL: a history image is overwritten with
+     *         the newly resolved frame after the resolve sampled it
+     * @note BOTH reading stages are named on the src side, for the same reason the sampling
+     *       transitions name both on the dst side: the last reader of a history image before the copy
+     *       is TAA's fragment resolve or the GI denoiser's compute one. */
     inline constexpr VkImageMemoryBarrier2 sampling_to_transfer_dst_transition = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext = nullptr,
-        .srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         .srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
         .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -844,14 +896,17 @@ export namespace vulkan {
         .image = VK_NULL_HANDLE,
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
-    /** @brief TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL: the TAA history image, written by the
-     *         history copy at the end of a frame and sampled by the next frame's resolve */
+    /** @brief TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL: a history image, written by the
+     *         history copy at the end of a frame and sampled by the next frame's resolve
+     * @note BOTH consumer stages are named (TAA's resolve is a fragment stage, the GI denoiser's is a
+     *       compute one), because a layout transition has to name every stage that reads the image
+     *       afterwards - see shadow_map_sampling_transition for the same note. */
     inline constexpr VkImageMemoryBarrier2 transfer_dst_to_sampling_transition = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext = nullptr,
         .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
         .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,

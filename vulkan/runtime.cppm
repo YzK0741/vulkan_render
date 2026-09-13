@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.26.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.27.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -401,6 +401,36 @@ namespace vulkan {
         // next frame's history (no ping-pong, hence no per-frame descriptor rewrites).
         std::optional<vk_pipeline> taa_pipeline = std::nullopt;
         vk_sampler taa_sampler = {};
+        // ---- the GI denoiser's temporal resolve (see shaders/ssgi_temporal.comp) ----
+        std::optional<vk_pipeline> ssgi_temporal_pipeline = std::nullopt;
+        VkDescriptorSetLayout ssgi_temporal_set_layout = VK_NULL_HANDLE;
+        VkPipelineLayout ssgi_temporal_pipeline_layout = VK_NULL_HANDLE;
+        bindings::image_set_family ssgi_temporal_family;
+        // Per swapchain image: whether that image has a GI history yet. First frame after startup or
+        // after a resize there is none, and the resolve then uses the current trace alone.
+        std::vector<bool> gi_history_valid = {};
+        // The GI history is accumulated with its OWN weights rather than TAA's: the signal is far
+        // noisier than shading aliasing, so it wants a longer memory, and it must not be tuned by
+        // whatever the AA sliders are set to.
+        float gi_blend_static = 0.9f;
+        float gi_blend_min = 0.6f;
+        // Whether THIS frame's GI resolve actually ran and wrote the image the composite samples.
+        // Cleared once per frame before the GI passes and set by the resolve itself, so that the
+        // composite can push a weight of exactly 0 whenever there is no GI to add - GI off, but also
+        // GI on with a missing descriptor set, which is a frame with a tracer and no resolved image.
+        bool gi_resolved = false;
+        struct ssgi_temporal_push_constants {
+            float history_valid = 0.0f;
+            float blend_static = 0.9f;
+            float blend_min = 0.6f;
+            float depth_scale = 0.0f;  // proj[2][2]
+            float depth_offset = 0.0f; // proj[3][2]
+            float unused0 = 0.0f;
+            float unused1 = 0.0f;
+            float unused2 = 0.0f;
+            glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent
+        };
+
         VkDescriptorSetLayout taa_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout taa_pipeline_layout = VK_NULL_HANDLE;
         // The resolve's sets, one per swapchain image: the same per-image family the G-buffer debug
@@ -427,6 +457,17 @@ namespace vulkan {
             float unused = 0.0f;
         };
         void ensure_taa_descriptors();
+        /**
+         * @ingroup vulkan_runtime
+         * @brief record the GI temporal resolve and the history copy into @p command_buffer
+         * @return whether the resolve ran, i.e. whether the composite may use this frame's GI
+         * @note runs right after record_ssgi_pass(), at the GI resolution, and turns the frame's raw
+         *       trace into the accumulated image the composite reads - see shaders/ssgi_temporal.comp
+         *       for the reprojection / depth-guard / clamp trio it needs to accumulate rather than smear
+         */
+        bool record_ssgi_denoise_pass(VkCommandBuffer command_buffer);
+        /** @brief allocate or rewrite the denoiser's per-image descriptor sets (see vulkan.bindings) */
+        void ensure_ssgi_denoise_descriptors();
         void record_taa_pass(VkCommandBuffer command_buffer);
         /** @brief whether the TAA resolve runs this frame (enabled + deferred lighting + pipeline) */
         [[nodiscard]] bool taa_active() const noexcept;
@@ -469,6 +510,23 @@ namespace vulkan {
         // its own depth image, and that depth keeps whatever layout its last recorded frame left it
         // in until that image comes around again.
         std::vector<bool> gbuffer_depth_written = {};
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief publish the G-buffer motion-vector target's attachment write and make it a sample
+         * @return whether a transition was recorded (false = the image was already readable)
+         * @note the same "whose write is it" question ensure_gbuffer_depth_sampled() answers, for the
+         *       motion-vector target: the G-buffer instance writes it as a COLOR attachment, and the
+         *       two stages that sample it are the TAA resolve (a FRAGMENT stage, which transitions it
+         *       itself as part of its own barrier batch) and the GI denoiser's resolve (a COMPUTE
+         *       stage, which is why this exists - a second unconditional COLOR_ATTACHMENT old layout
+         *       would be a lie on every frame where TAA already moved the image).
+         * @note must be called outside a rendering instance (it records a pipeline barrier)
+         */
+        bool ensure_velocity_sampled(VkCommandBuffer command_buffer, uint32_t image_index);
+        // Per-swapchain-image flag: set by the G-buffer instance, cleared by whichever stage first
+        // hands the motion-vector target to a sampler (see ensure_velocity_sampled).
+        std::vector<bool> velocity_written = {};
 
         /** @brief the swapchain was rebuilt: drop everything that pointed at the old generation
          *         (the debug overlay's backend + the G-buffer descriptor sets, whose views are gone) */
@@ -1718,6 +1776,15 @@ namespace vulkan {
          *       composite, so it does not feed the bloom chain yet
          */
         void set_ssgi(bool enabled, float intensity, float radius, uint32_t rays, uint32_t steps) noexcept;
+
+        /**
+         * @brief create the GI denoiser's temporal resolve pipeline from shaders/ssgi_temporal.comp
+         * @param compute_shader_code raw SPIR-V of the resolve
+         * @return success, or an error message on failure
+         * @note optional: without it the composite reads the RAW trace (noisy), which is what the
+         *       frame looked like before the denoiser existed rather than a broken frame
+         */
+        std::expected<void, std::string> make_ssgi_temporal_pipeline(std::span<unsigned char const> compute_shader_code);
 
         /** @brief whether the tracer runs this frame (see set_ssgi) */
         [[nodiscard]] bool ssgi_active() const noexcept;

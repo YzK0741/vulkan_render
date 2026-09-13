@@ -264,6 +264,17 @@ namespace chores {
             } else {
                 utility::log("SUCCESS: ssgi compute pipeline created (screen-space global illumination)");
             }
+            // The denoiser's temporal resolve, next to the tracer it denoises. Required, not optional:
+            // the composite samples the RESOLVED image, so GI without this pass has nothing to show
+            // and runtime::ssgi_active() stays false.
+            std::vector<unsigned char> temporal_code;
+            load_shader(shaders_dir, "ssgi_temporal.comp.spv", temporal_code);
+            auto const temporal_result = runtime.make_ssgi_temporal_pipeline(temporal_code);
+            if (!temporal_result) {
+                utility::log("GI temporal denoiser disabled (screen-space GI will stay off): {}", temporal_result.error());
+            } else {
+                utility::log("SUCCESS: GI temporal denoiser created (history accumulation)");
+            }
         }
     }
 
