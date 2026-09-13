@@ -10,10 +10,13 @@ code comments, and the code comments are the only part a reader of the source wo
 | Step | State |
 | --- | --- |
 | 0. Measure the probe cache's contribution | done, committed, recorded (negative result) |
-| 1. Shade a hit from its geometry | done and measured; one question open (a model difference, see below) |
-| 2. Wire it into the probe grid's injection, gate the propagation with shadow rays | NOT STARTED |
-| 3. Reference frame and per-pixel error metric | instrument done and used; an independent reference is missing |
-| Shipped: the traced chain + shaded hits are the DEFAULT | done and measured; the two defects the flip exposed are in "L2.4" below |
+| 1. Shade a hit from its geometry | done and measured |
+| 2. Wire it into the probe grid's injection, gate the propagation with shadow rays | done - "L2.1" below: SH-2 cells that trace and shade their own rays, and a neighbour blend gated by a bidirectional visibility test |
+| 3. Reference frame and per-pixel error metric | instrument done and used; the independent reference it wanted turned out to be the FURNACE mode ("L2.0"), whose identity holds exactly on a scene whose traced rays cannot reach absorbing geometry |
+| Level 2 as planned (L2.0 - L2.3) | done and measured: "L2.1" to "L2.3" below carry the directional probes, the MASK bake, the skinned refit and the glossy lobe, and "L2.4" shipped the traced chain as the DEFAULT |
+| The reflection's motion handling (the reference's mechanisms 1+2) | done and measured: `mean\|DD\|` 0.4029 -> 0.3068, worst 4x4 tile 1.942 -> 0.848 |
+| A second bounce through the probe cache | built, measured, and OFF: it moves 0.05% of a frame, because the cache is itself a ONE-bounce estimator |
+| Still open | the reference's reflection mechanisms 3 and 4 (no measurement has asked for them), the reflection's half-resolution noise floor, and the `deferred` gate flake recorded in `docs/level2_handoff.md` |
 
 ## What is built
 
@@ -1598,9 +1601,13 @@ be 30% larger than the estimate put back, a systematic darkening of every frame 
 MARCHED chain keeps 0.7 as ITS value (it adds to the probe, so the two terms overlap and want reconciling),
 which is why that path still needs a config that says so - and why `ssgi_radius` stays at 0.12 rather than
 following the traced path's reach: the marched fallback's resolution is `radius / ssgi_steps`.
-`ssgi_probes` and `ssgi_specular` stay OFF deliberately. The cache is a coarse SH-2 approximation whose
-contribution is measured (L2.1, and the sign flip below) but whose default-on case is not, and the glossy lobe
-is a feature still being measured (its denoiser item is open). Both remain reachable, and both have a scenario.
+`ssgi_probes` and `ssgi_specular` stay OFF deliberately, and their reasons are measured rather than assumed. The
+cache is a coarse SH-2 approximation whose contribution is now measured in BOTH of its roles - L2.1's tables for
+the fallback a ray that leaves the frame gets, and the second-bounce section below for a hit's own ambient, where
+it moves 0.05% of a frame because the cache is itself a one-bounce estimator. The glossy lobe's stated blocker is
+CLOSED: its denoiser item was "a feature still being measured" and the reflection now has an accumulation of its
+own, reprojected from the point it found (see the mechanisms 1+2 section), so what keeps it off is only that its
+default-on case has not been measured yet. Both remain reachable, and both have a scenario.
 
 HOW IT WAS VERIFIED, because a default is not a feature and the usual A/B does not apply to one. The gate grew
 a `default_gi` scenario: the compiled defaults with NOTHING overridden (same model, camera and frame count as
