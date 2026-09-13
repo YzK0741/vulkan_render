@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.16.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.17.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -144,6 +144,21 @@ namespace vulkan {
      *       not measured) instead of overflowing into the next slot's range.
      */
     export constexpr uint32_t gpu_timing_mark_capacity = 16;
+
+    /**
+     * @ingroup vulkan_core
+     * @brief edge length, in cells, of one side of the world-space radiance probe grid (see
+     *        shaders/gi_probe.comp)
+     *
+     * A CUBE, so the grid has this many cells on every axis, and FIXED rather than a setting: the grid
+     * is anchored to the scene's bounds and its cell size therefore scales with the scene (a 1.6-unit
+     * model and Sponza's 18.5 get the same number of cells over a volume each of them fills), which is
+     * the same reasoning the shadow fit's cascades and `ssgi_radius` follow. 32^3 cells at RGBA16F is
+     * 256 KiB per grid, and the cache needs two of them (it ping-pongs) - small enough that fixing the
+     * resolution costs nothing worth a knob, and a fixed extent means the images can be created once,
+     * with the swapchain, instead of following a config value into the render-target code.
+     */
+    export constexpr uint32_t gi_probe_grid_extent = 32;
 
     /**
      * @ingroup vulkan_core
@@ -317,6 +332,17 @@ namespace vulkan {
         std::vector<VkDeviceMemory> gi_spatial_image_memories = {};
         std::vector<VkImageView> gi_spatial_image_views = {};
 
+        // ---- the world-space radiance probe cache (see shaders/gi_probe.comp) ----
+        // Two 3D images of gi_probe_grid_extent^3 RGBA16F cells: cell (x, y, z) covers a cube of the
+        // scene's bounds, and the pair exists because propagation reads one and writes the other (no
+        // dispatch ever reads what it writes). NOT per swapchain image: the cache is anchored to the
+        // world, not to a view, so one copy serves every frame slot - which is the whole point of it.
+        // The first is the cache (it is also what the tracer samples: the ping-pong is arranged so that
+        // a frame's last propagation lands back in it), the second is its scratch.
+        std::vector<VkImage> gi_probe_images = {};
+        std::vector<VkDeviceMemory> gi_probe_image_memories = {};
+        std::vector<VkImageView> gi_probe_image_views = {};
+
         // ---- ray-traced sun visibility (see shaders/rt_shadow.comp) ----
         // FULL resolution, one per FRAME SLOT rather than per swapchain image: it is written and read
         // within one frame, and BOTH ends are bound in the scene set, which is the per-slot set. A
@@ -358,6 +384,26 @@ namespace vulkan {
         void create_target_image(
             uint32_t width,
             uint32_t height,
+            VkFormat format,
+            VkImageTiling tiling,
+            VkImageUsageFlags usage,
+            VkMemoryPropertyFlags properties,
+            VkImage& image,
+            VkDeviceMemory& image_memory) const noexcept;
+
+        /**
+         * @ingroup vulkan_core
+         * @brief create a single-sampled 3D target image (the same allocation path as the 2D one)
+         * @param width / @p height / @p depth the three extents, in texels
+         * @note its own entry point rather than a defaulted fourth parameter on create_target_image:
+         *       the two differ in exactly one field of VkImageCreateInfo (imageType), and a caller that
+         *       reads `create_target_image_3d(w, h, d, ...)` cannot pass a depth of 1 by accident and
+         *       then sample the result as a volume.
+         */
+        void create_target_image_3d(
+            uint32_t width,
+            uint32_t height,
+            uint32_t depth,
             VkFormat format,
             VkImageTiling tiling,
             VkImageUsageFlags usage,

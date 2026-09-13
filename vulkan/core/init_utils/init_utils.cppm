@@ -272,3 +272,19 @@ export VkFormat find_depth_format(VkPhysicalDevice physical_device) noexcept;
  * @return the created image view
  */
 export VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device) noexcept;
+
+/**
+ * @ingroup vulkan_init_utils
+ * @brief create an image view of a chosen dimensionality for the given image
+ * @param image the source image
+ * @param format the image format
+ * @param aspect_flags the image aspect mask
+ * @param device the logical device
+ * @param view_type the view's dimensionality (VK_IMAGE_VIEW_TYPE_2D for everything the engine drew
+ *        before the probe grid existed, VK_IMAGE_VIEW_TYPE_3D for the world-space probe cache)
+ * @return the created image view
+ * @note a view's type has to agree with the image's: a 2D view of a 3D image is a validation error the
+ *       moment it is used, and a sampler3D binding needs the 3D one. One mip and one layer, like the
+ *       2D overload - neither the grid nor any target here is mipped or layered.
+ */
+export VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device, VkImageViewType view_type) noexcept;

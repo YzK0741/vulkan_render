@@ -184,6 +184,10 @@ def write_toml(path: str, cfg: dict) -> None:
         f"rt_shadows = {str(cfg['rt_shadows']).lower()}",
         f"ssgi_ray_tracing = {str(cfg['ssgi_ray_tracing']).lower()}",
         f"ssgi_bounce = {cfg['ssgi_bounce']}",
+        f"ssgi_probes = {str(cfg['ssgi_probes']).lower()}",
+        f"ssgi_probe_rate = {cfg['ssgi_probe_rate']}",
+        f"ssgi_probe_rounds = {cfg['ssgi_probe_rounds']}",
+        f"ssgi_probe_gain = {cfg['ssgi_probe_gain']}",
         "",
         "# ---- [gui] debug overlay ----",
         "[gui]",
@@ -303,6 +307,26 @@ def ask_all(output_dir: str) -> dict:
         0.0,
         hint="re-emit this fraction of the previous frame's indirect at a GI hit (0 = single bounce)",
     )
+    ssgi_probes = ask_bool(
+        "render.ssgi_probes",
+        False,
+        hint="world-space probe cache: answers GI rays the screen cannot resolve (needs ssgi)",
+    )
+    ssgi_probe_rate = ask_float(
+        "render.ssgi_probe_rate",
+        0.08,
+        hint="how much of a cell one frame's observation replaces (0.01 - 0.5)",
+    )
+    ssgi_probe_rounds = ask_int(
+        "render.ssgi_probe_rounds",
+        2,
+        hint="propagation rounds per frame (0 = injection only, 1 - 4)",
+    )
+    ssgi_probe_gain = ask_float(
+        "render.ssgi_probe_gain",
+        1.0,
+        hint="how much of the cache's answer to add (0 = run it but never sample it)",
+    )
     rt_shadows = ask_bool(
         "render.rt_shadows",
         False,
@@ -365,6 +389,10 @@ def ask_all(output_dir: str) -> dict:
         "rt_shadows": rt_shadows,
         "ssgi_ray_tracing": ssgi_ray_tracing,
         "ssgi_bounce": ssgi_bounce,
+        "ssgi_probes": ssgi_probes,
+        "ssgi_probe_rate": ssgi_probe_rate,
+        "ssgi_probe_rounds": ssgi_probe_rounds,
+        "ssgi_probe_gain": ssgi_probe_gain,
         "gui_show": gui_show,
         "panel_width": panel_width,
         "panel_height": panel_height,

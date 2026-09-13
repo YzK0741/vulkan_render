@@ -32,7 +32,11 @@ namespace {
         CHECK(settings.render.rt_shadows);                                                 // fixture: the ray-traced sun shadows
         CHECK(settings.render.ssgi_ray_tracing);                                           // fixture: traced GI rays
         CHECK(settings.render.ssgi_bounce > 0.59f && settings.render.ssgi_bounce < 0.61f); // fixture: multi-bounce on
-        CHECK(settings.render.unlit);                                                      // fixture: the flat render mode
+        CHECK(settings.render.ssgi_probes);                                                // fixture: the world-space probe cache
+        CHECK(settings.render.ssgi_probe_rate > 0.14f && settings.render.ssgi_probe_rate < 0.16f);
+        CHECK(settings.render.ssgi_probe_rounds == 3);
+        CHECK(settings.render.ssgi_probe_gain > 0.49f && settings.render.ssgi_probe_gain < 0.51f);
+        CHECK(settings.render.unlit); // fixture: the flat render mode
         CHECK(settings.render.fxaa);
         CHECK(!settings.render.gpu_timings);
         CHECK(settings.render.gbuffer_debug);
@@ -152,6 +156,10 @@ namespace {
         CHECK(!settings.render.rt_shadows);
         CHECK(!settings.render.ssgi_ray_tracing);
         CHECK(settings.render.ssgi_bounce > -0.01f && settings.render.ssgi_bounce < 0.01f); // default: single bounce
+        CHECK(!settings.render.ssgi_probes);                                                // default: the screen-space chain alone
+        CHECK(settings.render.ssgi_probe_rate > 0.07f && settings.render.ssgi_probe_rate < 0.09f);
+        CHECK(settings.render.ssgi_probe_rounds == 2);
+        CHECK(settings.render.ssgi_probe_gain > 0.99f && settings.render.ssgi_probe_gain < 1.01f);
         // [render] validation
         CHECK(settings.render.validation_layers);
         // [gui]

@@ -83,6 +83,12 @@ layout(set = 1, binding = 6, rgba16f) uniform image2D gi_output; // half-res RAW
 // pass changes - the rays are the same cosine-weighted ones, the radiance still comes from the same
 // direct-radiance image, and the same denoiser consumes the output.
 layout(set = 0, binding = 16) uniform accelerationStructureEXT tlas;
+// The world-space radiance probe cache (G-buffer set binding 9, declared only because the tracer is the
+// pass that reads it): a sampler3D covering the scene's bounds, holding the indirect radiance the frames
+// before this one deposited into each cell. It is the answer for a hit the SCREEN cannot resolve - off
+// screen, or hidden behind a nearer surface - which is where the environment probe below is only the sky
+// at infinity. Not sampled at all while its gain is 0.
+layout(set = 1, binding = 9) uniform sampler3D gi_probe_grid;
 
 layout(push_constant) uniform SsgiPush {
     mat4 inv_view_proj; // clip -> world (the same block deferred.frag uses)
@@ -98,7 +104,14 @@ layout(push_constant) uniform SsgiPush {
     // z = the fraction of the previous frame's accumulated indirect a hit re-emits: the multi-bounce
     // gain ([render] ssgi_bounce). 0 makes this a single-bounce estimator, which is what every
     // measurement taken before the knob existed was taken with.
+    // w = how much of the world-space probe cache's answer to add for a hit the screen cannot resolve
+    // (see probe_radiance). 0 - the default - leaves those hits on the environment probe alone, and it
+    // also means the cache is not even fetched.
     vec4 frame_info;
+    // xyz = the world position of the probe grid's cell (0,0,0) CORNER, w = one cell's size in world
+    // units. The grid's extent comes from textureSize() below rather than from a lane of its own: this
+    // block is exactly 128 bytes, the smallest range Vulkan guarantees.
+    vec4 probe_grid;
 } pc;
 
 /**
@@ -214,6 +227,35 @@ vec3 bounce_radiance(vec2 uv) {
 }
 
 /**
+ * @brief the world-space probe cache's answer for a hit the frame cannot resolve
+ * @param world the hit's world position
+ * @return the indirect radiance the cache holds there, scaled by the cell's trust, or 0 when it is off
+ *
+ * This is the half of the fallback the environment probe cannot provide. The probe is the SKY - a
+ * far-field environment, the same value in the middle of a room as on the roof - so a ray that lands on
+ * a surface the camera cannot see comes back with an approximation that has nothing to do with where it
+ * landed. The cache, being anchored to the world (see shaders/gi_probe.comp), does: the position becomes
+ * a cell coordinate and the LINEAR sampler interpolates between the eight cells around it.
+ *
+ * The fourth channel is the cell's TRUST, and it is what keeps a cell no frame has deposited into from
+ * answering as black: it scales what the cell holds instead, and contributes nothing at all at 0. The
+ * fetch itself sits inside the gain branch, for the same reason the multi-bounce fetch does - the grid's
+ * texels are undefined until the pass that fills it has run once, and zero times a NaN is a NaN.
+ */
+vec3 probe_radiance(vec3 world) {
+    if (pc.frame_info.w <= 0.0) {
+        return vec3(0.0);
+    }
+    const vec3 cell = (world - pc.probe_grid.xyz) / pc.probe_grid.w;
+    const vec3 uvw = (cell + 0.5) / vec3(textureSize(gi_probe_grid, 0));
+    if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) {
+        return vec3(0.0); // outside the grid's cube (the scene's bounds): the cache has nothing to say
+    }
+    const vec4 cached = texture(gi_probe_grid, uvw);
+    return pc.frame_info.w * cached.rgb * cached.a;
+}
+
+/**
  * @brief trace @p dir from @p origin and report the radiance of what it hits
  * @param origin the WORLD-space start (already pushed off the surface)
  * @param dir the unit world-space direction
@@ -241,6 +283,10 @@ vec3 bounce_radiance(vec2 uv) {
  * surface there to re-emit anything, and the probe value is an estimate of the ambient at the ORIGIN of
  * the ray, not radiance arriving from that direction - so scaling it by the gain would amplify an
  * approximation rather than close a light path.
+ *
+ * The world-space cache IS added on two of those three returns, and the difference is the whole reason
+ * it exists: a hit that is off screen or hidden still has a world POSITION, and the cache is defined
+ * there (see probe_radiance). It is the one fallback that knows where the ray landed.
  */
 vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, out bool out_hit) {
     out_hit = false;
@@ -267,12 +313,15 @@ vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, out bool out_hit
     float ndc_z = 0.0;
     const vec2 hit_uv = project_to_uv(hit_view, ndc_z);
     if (hit_uv.x < 0.0 || hit_uv.x > 1.0 || hit_uv.y < 0.0 || hit_uv.y > 1.0) {
-        return texture(irradiance_sampler, dir).rgb; // off screen: no cached radiance exists for it
+        // Off screen: no cached radiance exists for it on screen, so the environment probe answers - and
+        // the world-space cache, which does know where this hit is (see probe_radiance).
+        return texture(irradiance_sampler, dir).rgb + probe_radiance(hit_world);
     }
     const float buffer_ndc = texture(gbuffer_depth, hit_uv).r;
     const float hit_view_depth = -hit_view.z; // view space looks down -Z
     if (buffer_ndc >= 1.0 || abs(view_depth(buffer_ndc) - hit_view_depth) > 0.05 * hit_view_depth) {
-        return texture(irradiance_sampler, dir).rgb; // the visible surface there is a different one: the hit is hidden
+        // The visible surface there is a different one: the hit is hidden, and the same answer as above.
+        return texture(irradiance_sampler, dir).rgb + probe_radiance(hit_world);
     }
     return texture(direct_radiance, hit_uv).rgb + bounce_radiance(hit_uv);
 }

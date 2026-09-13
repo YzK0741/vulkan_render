@@ -285,6 +285,19 @@ namespace chores {
             } else {
                 utility::log("SUCCESS: GI spatial filter created (joint-bilateral, depth + normal edge stops)");
             }
+            // The world-space probe cache. OPTIONAL, unlike the three above: it is what answers for a hit
+            // the screen cannot resolve (off screen or hidden), where the tracer otherwise falls back to
+            // the far-field environment probe - so a build without it renders exactly as it did before it
+            // existed, and runtime::gi_probe_active() keeps the tracer from sampling a grid that is not
+            // there.
+            std::vector<unsigned char> probe_code;
+            load_shader(shaders_dir, "gi_probe.comp.spv", probe_code);
+            auto const probe_result = runtime.make_gi_probe_pipeline(probe_code);
+            if (!probe_result) {
+                utility::log("world-space probe cache disabled (the tracer keeps its environment fallback): {}", probe_result.error());
+            } else {
+                utility::log("SUCCESS: probe cache pipeline created (injection + propagation, world-space GI)");
+            }
 
             // Ray-traced sun shadows: one ray per pixel against the scene's acceleration structures.
             // Created only on a device with ray queries (the builder says so as an error otherwise), and

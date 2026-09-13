@@ -176,6 +176,28 @@ ssgi_ray_tracing = false
 # inside that region fills an interior in; crossing it makes the frame brighter every frame, which is
 # why the knob is measurable (a static camera whose mean luminance must settle) rather than trusted.
 ssgi_bounce = 0.0
+# ssgi_probes: the world-space probe cache. A grid of cells covering the scene's bounds (a fixed 32^3,
+# so a cell is scene-relative), each holding the indirect radiance the previous frames deposited into it
+# from the screen-space chain, spread into the neighbouring cells by a confidence-weighted 3x3x3 blur.
+# It exists for the one thing a screen-space chain cannot do: a GI ray that leaves the frame, or that
+# hits a surface hidden behind a nearer one, has no cached radiance to read - and the environment probe
+# it falls back to is the SKY at infinity, the same value in the middle of a room as on the roof. The
+# cache is anchored to the world, so it knows where that ray landed, and it survives the camera turning
+# away instead of forgetting what left the frame. It is a cache and not a lighting model: a cell is
+# coarse (~1.2 units on Sponza), the propagation has no occlusion test (light leaks through thin
+# geometry, halved in trust at every step away from a cell the frame saw), and a moving object's light
+# stays behind in the grid after it moves. Off is a no-op: the tracer does not even fetch it.
+# ssgi_probe_rate: how much of a cell one frame's observation replaces. Small on purpose - this is the
+# cache that has to survive the camera turning away - and it is also the loop gain of the grid's own
+# cycle (tracer -> resolve -> grid -> tracer), so it is the number that decides whether that settles.
+# ssgi_probe_rounds: propagation rounds per frame (0 = injection only, i.e. the cache holds exactly what
+# the frame could see; that is also how the propagation's contribution is measured).
+# ssgi_probe_gain: how much of the cache's answer is added on top of the environment probe, 0 = the cache
+# still runs and is simply never sampled (the A/B that measures what the grid actually adds).
+ssgi_probes = false
+ssgi_probe_rate = 0.08
+ssgi_probe_rounds = 2
+ssgi_probe_gain = 1.0
 
 # rt_shadows: ray-traced sun shadows. One ray per pixel against the scene's acceleration structures,
 # which is what makes contact shadows, cascade seams and the resolution limit of a shadow map go away -

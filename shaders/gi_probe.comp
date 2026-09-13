@@ -1,0 +1,183 @@
+#version 450
+
+/**
+ * @file shaders/gi_probe.comp
+ * @brief The world-space radiance probe cache: one dispatch deposits the frame's screen-space GI into
+ *        the grid cells it can see, and the rest spread it into the neighbouring cells.
+ * @ingroup shaders
+ *
+ * WHY A WORLD-SPACE GRID, WHEN THERE IS ALREADY A SCREEN-SPACE CHAIN
+ * The GI chain up to here (ssgi.comp -> ssgi_temporal.comp -> ssgi_spatial.comp) lives in screen space,
+ * and that has two consequences the chain cannot fix from the inside. First, a ray that leaves the frame
+ * or hits something hidden behind a nearer surface has no cached radiance to read, so it falls back to
+ * the far-field environment probe - which is the SKY at infinity, not the light in the next room, and it
+ * is the same value for a surface in the middle of the scene as for one on the roof. Second, everything
+ * the chain knows is lost the moment the surface leaves the frame: turning the camera away throws away
+ * its indirect light, and turning back re-discovers it over the next twenty frames.
+ *
+ * A grid of cells in WORLD space has neither problem. It is anchored to the scene rather than to the
+ * view, so it survives the camera; and a ray that misses the screen can still be answered from wherever
+ * it hit, because the grid is defined there. What it costs is resolution - a cell is a cell, and a
+ * surface's radiance is smeared over the volume it occupies - which is why it is a CACHE that answers
+ * for the places the screen cannot, and not a replacement for the screen-space estimate where there is
+ * one. The tracer makes exactly that split (see rt_hit_radiance in shaders/ssgi.comp).
+ *
+ * HOW A CELL GETS ITS VALUE, AND WHY IT IS DONE THIS WAY
+ * INJECTION (mode 0) projects the cell's centre into the current frame and, if the depth buffer there
+ * holds a surface at that same distance, takes the screen-space chain's resolved radiance for that
+ * pixel. This is a gather, one invocation per cell, so there are no atomics anywhere - which is what
+ * keeps the cache to a plain RGBA16F 3D image and lets it run on a device without float atomics. A cell
+ * whose centre lands off screen, behind the camera, or inside geometry simply keeps what it had: the
+ * grid is a persistent cache, and a frame that cannot see a cell is not evidence that the cell is dark.
+ *
+ * PROPAGATION (mode 1) is a confidence-weighted 3x3x3 gather, run as a ping-pong between two grid
+ * images so that no dispatch reads what it writes. It serves two purposes: it fills the cells the frame
+ * could not see at all (the ones behind the camera, which is what makes this world-space rather than a
+ * reprojected screen-space blur), and it is the only denoiser the injected values get - a cell is fed by
+ * a single pixel's estimate, where the screen-space image is filtered by a whole chain.
+ *
+ * The fourth channel is TRUST, in [0, 1]: 1 for a cell the frame deposited into, halved for each
+ * propagation step away from one, and the tracer scales the radiance it takes by it. That single number
+ * does two jobs. It keeps uninitialised cells (trust 0) out of the averages, so an empty cell darkens
+ * nothing; and it makes the spread FADE with distance, which matters because this blur has no geometry
+ * test - nothing here knows whether a wall stands between two cells - so light does leak through thin
+ * geometry. Leaking a wall's light at a quarter of its value, two cells away, is a stated approximation
+ * rather than a runaway; a shadow-ray-gated propagation is the honest fix and a later step.
+ *
+ * LIMITATIONS, STATED: the blur is unoccluded (above); a cell is dominated by whatever surface the
+ * frame's pixel at its centre happens to show, so a cell straddling two surfaces mixes them; and a
+ * moving object's light stays behind in the grid after it has moved, because the grid is not
+ * reprojected - it decays at the injection rate instead (pc.params.x).
+ */
+
+// One invocation per cell, in three dimensions. 4x4x4 = 64 threads per workgroup, so a 32^3 grid is
+// 512 workgroups.
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+// The pass owns its whole descriptor set (like the denoiser's two passes): the grid is not part of the
+// G-buffer set the tracer shares, because it is not a per-swapchain-image target.
+layout(set = 0, binding = 0) uniform sampler2D gi_screen;     // this frame's resolved screen-space GI
+layout(set = 0, binding = 1) uniform sampler2D gbuffer_depth; // full-resolution G-buffer depth
+layout(set = 0, binding = 2) uniform sampler3D grid_src;      // the cells being read (propagation)
+layout(set = 0, binding = 3, rgba16f) uniform image3D grid_dst; // the cells being written (both modes)
+
+layout(push_constant) uniform GiProbePush {
+    mat4 view_proj;     // world -> clip, for the injection's projection of a cell centre
+    // xyz = the world position of cell (0,0,0)'s corner, w = one cell's size in world units. The grid
+    // covers the scene's bounds, so the cell size falls out of the bounds and the resolution.
+    vec4 grid_min_cell;
+    // xyz = the grid's extent in cells, w = unused
+    vec4 grid_extent;
+    // x = the injection's rate (the grid's own blend over frames), y = projection[2][2], z =
+    // projection[3][2] (the view-depth linearization pair every depth test in this project uses),
+    // w = the mode: 0 = inject, 1 = propagate
+    vec4 params;
+} pc;
+
+/**
+ * @brief view-space distance of a depth-buffer value
+ * @param z_ndc a depth in [0,1]
+ * @return a positive view-space distance
+ * @note the same inversion the tracer and the denoiser use: z_view = proj_32 / (z_ndc + proj_22)
+ */
+float view_depth(float z_ndc) {
+    return pc.params.z / (z_ndc + pc.params.y);
+}
+
+/** @brief whether @p cell is inside the grid (the dispatch is rounded up to the workgroup size) */
+bool inside(ivec3 cell, ivec3 extent) {
+    return all(greaterThanEqual(cell, ivec3(0))) && all(lessThan(cell, extent));
+}
+
+/**
+ * @brief take the frame's screen-space GI for this cell, if the frame can see a surface here
+ * @param cell the cell to write
+ *
+ * The test is the tracer's, in reverse: the cell's centre is projected, and the depth buffer at that
+ * pixel has to hold a surface at the SAME distance (5% relative) for the radiance to belong to this
+ * cell. Without it a cell behind a wall would take the wall's radiance - which is precisely the light
+ * leak the grid is supposed to be honest about, except that here it would be deposited with full trust
+ * and then spread.
+ */
+void inject(ivec3 cell) {
+    const vec4 stored = imageLoad(grid_dst, cell);
+    const float rate = pc.params.x;
+    if (rate <= 0.0) {
+        return; // a rate of 0 is the off switch: the grid keeps whatever it has
+    }
+    const vec3 world = pc.grid_min_cell.xyz + (vec3(cell) + 0.5) * pc.grid_min_cell.w;
+    const vec4 clip = pc.view_proj * vec4(world, 1.0);
+    if (clip.w <= 0.0) {
+        return; // behind the eye: this frame has nothing to say about this cell
+    }
+    const vec2 uv = (clip.xy / clip.w) * 0.5 + 0.5;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return; // off screen: same
+    }
+    const float buffer_ndc = texture(gbuffer_depth, uv).r;
+    if (buffer_ndc >= 1.0) {
+        return; // empty space: there is no surface here to take radiance from
+    }
+    const float probe_view = view_depth(clip.z / clip.w);
+    const float buffer_view = view_depth(buffer_ndc);
+    if (abs(probe_view - buffer_view) > 0.05 * probe_view) {
+        return; // the visible surface here is a different one: what the cell already holds is better
+    }
+    // An exponential blend in the grid's OWN time base, not the denoiser's: this cache is meant to be
+    // slow (it is the part that survives the camera turning away), so the rate is small and the trust
+    // climbs to 1 over roughly 1/rate frames of being seen.
+    const vec3 radiance = texture(gi_screen, uv).rgb;
+    imageStore(grid_dst, cell, vec4(mix(stored.rgb, radiance, rate), min(1.0, stored.a + rate)));
+}
+
+/**
+ * @brief spread the neighbouring cells' radiance into this one, weighted by their trust
+ * @param cell the cell to write
+ *
+ * A separable 1-2-1 kernel in three dimensions (so a face neighbour counts 2, an edge 4, a corner 8
+ * before the trust term), read from one grid image and written to the other: no dispatch ever reads
+ * what it writes, which is what makes an unoccluded blur safe to run.
+ */
+void propagate(ivec3 cell, ivec3 extent) {
+    vec3 sum = vec3(0.0);
+    float weight_sum = 0.0;
+    float best_neighbour = 0.0;
+    for (int z = -1; z <= 1; ++z) {
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                const ivec3 at = cell + ivec3(x, y, z);
+                if (!inside(at, extent)) {
+                    continue;
+                }
+                const vec4 tap = texelFetch(grid_src, at, 0);
+                // The kernel weight times the tap's trust: an untrusted cell (trust 0 - never injected
+                // and never reached) takes no part, which is what keeps empty space from averaging the
+                // filled cells towards black.
+                const float weight = float(2 - abs(x)) * float(2 - abs(y)) * float(2 - abs(z)) * tap.a;
+                sum += tap.rgb * weight;
+                weight_sum += weight;
+                best_neighbour = max(best_neighbour, tap.a);
+            }
+        }
+    }
+    const vec4 center = texelFetch(grid_src, cell, 0);
+    const vec3 rgb = weight_sum > 0.0 ? sum / weight_sum : center.rgb;
+    // A cell that only heard about the light from somewhere else is worth half as much as one the frame
+    // deposited into directly, and that halves again at every step: the spread fades with distance
+    // instead of leaking a wall's light indefinitely.
+    const float trust = max(center.a, best_neighbour * 0.5);
+    imageStore(grid_dst, cell, vec4(rgb, trust));
+}
+
+void main() {
+    const ivec3 extent = ivec3(pc.grid_extent.xyz);
+    const ivec3 cell = ivec3(gl_GlobalInvocationID.xyz);
+    if (!inside(cell, extent)) {
+        return; // the dispatch is rounded up to the workgroup size
+    }
+    if (pc.params.w < 0.5) {
+        inject(cell);
+    } else {
+        propagate(cell, extent);
+    }
+}

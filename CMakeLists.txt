@@ -605,6 +605,7 @@ set(VR_SHADER_SOURCES
     ssgi.comp
     ssgi_temporal.comp
     ssgi_spatial.comp
+    gi_probe.comp
     rt_shadow.comp
     shadow.vert shadow.frag post.vert post.frag fxaa.frag
 )

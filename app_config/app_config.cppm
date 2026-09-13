@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.19.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.20.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -60,6 +60,8 @@ import utility;
  * rt_shadows = false    # ray-traced sun shadows (needs a device with ray queries; else ignored)
  * ssgi_ray_tracing = false # trace the GI rays instead of marching the depth buffer (same conditions)
  * ssgi_bounce = 0.0     # re-emit this fraction of the previous frame's indirect at a hit (multi-bounce)
+ * ssgi_probes = false   # world-space probe cache: answers for hits the screen cannot resolve
+ * ssgi_probe_rate = 0.08 # how much of a cell one frame's observation replaces
  * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id,
  *                        # 6 depth, 7 flags, 8 motion (the motion vector, amplified - see the shader)
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
@@ -170,6 +172,18 @@ namespace app_config {
         // every earlier measurement was taken with. The image being fed back already carries
         // ssgi_intensity, so the loop's effective gain is this value times that one.
         float ssgi_bounce = 0.0f;
+        // The world-space probe cache ([render] ssgi_probes): a persistent grid of cells over the scene's
+        // bounds, injected from the screen-space chain and sampled by the tracer for a hit the screen
+        // cannot resolve. Off by default, and a no-op when off - the tracer's fallback for those hits is
+        // then exactly what it was. `ssgi_probe_rate` is how much of a cell one frame's observation
+        // replaces (its own loop gain), `ssgi_probe_rounds` how far a frame spreads what it deposited
+        // (0 = injection only, which is how the propagation is measured), and `ssgi_probe_gain` how much
+        // of the cache's answer is added on top of the environment probe (0 = the cache runs, and is
+        // still not sampled: that is the A/B that measures what it adds).
+        bool ssgi_probes = false;
+        float ssgi_probe_rate = 0.08f;
+        int ssgi_probe_rounds = 2;
+        float ssgi_probe_gain = 1.0f;
         bool ssao = true;
         float ssao_radius = 0.5f;
         float ssao_intensity = 1.0f;

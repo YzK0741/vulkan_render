@@ -659,8 +659,13 @@ VkFormat find_depth_format(VkPhysicalDevice physical_device) noexcept {
 }
 
 VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device) noexcept {
-    // 2D view, identity swizzle, one mip + one layer (see vulkan::make_image_view_info)
-    VkImageViewCreateInfo const view_info = vulkan::make_image_view_info(image, format, VK_IMAGE_VIEW_TYPE_2D, aspect_flags, 1, 1);
+    return create_image_view(image, format, aspect_flags, device, VK_IMAGE_VIEW_TYPE_2D);
+}
+
+VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device, VkImageViewType view_type) noexcept {
+    // identity swizzle, one mip + one layer (see vulkan::make_image_view_info); only the
+    // dimensionality differs between callers
+    VkImageViewCreateInfo const view_info = vulkan::make_image_view_info(image, format, view_type, aspect_flags, 1, 1);
 
     VkImageView image_view;
     if (vkCreateImageView(device, &view_info, nullptr, &image_view) != VK_SUCCESS) {

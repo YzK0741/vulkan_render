@@ -704,6 +704,27 @@ namespace vulkan {
             gi_spatial_image_views[i] = create_image_view(gi_spatial_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
         }
 
+        // The world-space probe cache: two 3D images, one copy for the whole device rather than one per
+        // swapchain image (the grid is anchored to the world, so a view-independent cache is the point
+        // of it - see the member's comment). A 3D VIEW, because a sampler3D binding needs one: the same
+        // image looked at with a 2D view is a validation error the moment the tracer samples it.
+        gi_probe_images.assign(2, VK_NULL_HANDLE);
+        gi_probe_image_memories.assign(2, VK_NULL_HANDLE);
+        gi_probe_image_views.assign(2, VK_NULL_HANDLE);
+        for (size_t i = 0; i < gi_probe_images.size(); i++) {
+            create_target_image_3d(
+                gi_probe_grid_extent,
+                gi_probe_grid_extent,
+                gi_probe_grid_extent,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_probe_images[i],
+                gi_probe_image_memories[i]);
+            gi_probe_image_views[i] = create_image_view(gi_probe_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device, VK_IMAGE_VIEW_TYPE_3D);
+        }
+
         // The ray-traced sun visibility: FULL resolution (one ray per screen pixel) and one per FRAME
         // SLOT - see the member's comment for why the slot, not the swapchain image, is the right
         // lifetime. R16F rather than RGBA16F: the pass writes a single visibility factor, and the
@@ -865,6 +886,7 @@ namespace vulkan {
             destroy_images(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
             destroy_images(gi_history_images, gi_history_image_memories, gi_history_image_views);
             destroy_images(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
+            destroy_images(gi_probe_images, gi_probe_image_memories, gi_probe_image_views);
             destroy_images(rt_shadow_images, rt_shadow_image_memories, rt_shadow_image_views);
             for (auto const& level_views : bloom_image_views) {
                 for (auto const& view : level_views) {
@@ -942,6 +964,53 @@ namespace vulkan {
 
         if (vkAllocateMemory(device, &alloc_info, nullptr, &image_memory) != VK_SUCCESS) {
             utility::panic("can't allocate target image memory");
+        }
+
+        vkBindImageMemory(device, image, image_memory, 0);
+    }
+
+    void core::create_target_image_3d(
+        uint32_t width,
+        uint32_t height,
+        uint32_t depth,
+        VkFormat format,
+        VkImageTiling tiling,
+        VkImageUsageFlags usage,
+        VkMemoryPropertyFlags properties,
+        VkImage& image,
+        VkDeviceMemory& image_memory) const noexcept {
+        VkImageCreateInfo image_info = {};
+        image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image_info.imageType = VK_IMAGE_TYPE_3D; // the only field that differs from the 2D path
+        image_info.extent.width = width;
+        image_info.extent.height = height;
+        image_info.extent.depth = depth;
+        image_info.mipLevels = 1;
+        image_info.arrayLayers = 1;
+        image_info.format = format;
+        image_info.tiling = tiling;
+        image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        image_info.usage = usage;
+        image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+        image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateImage(device, &image_info, nullptr, &image) != VK_SUCCESS) {
+            utility::panic("can't create 3D target image");
+        }
+
+        VkMemoryRequirements mem_requirements;
+        vkGetImageMemoryRequirements(device, image, &mem_requirements);
+
+        VkMemoryAllocateInfo alloc_info = {};
+        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc_info.allocationSize = mem_requirements.size;
+        alloc_info.memoryTypeIndex = find_memory_type(
+            mem_requirements.memoryTypeBits,
+            properties,
+            physical_device);
+
+        if (vkAllocateMemory(device, &alloc_info, nullptr, &image_memory) != VK_SUCCESS) {
+            utility::panic("can't allocate 3D target image memory");
         }
 
         vkBindImageMemory(device, image, image_memory, 0);
@@ -1462,6 +1531,7 @@ namespace vulkan {
         destroy_target_set(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
         destroy_target_set(gi_history_images, gi_history_image_memories, gi_history_image_views);
         destroy_target_set(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
+        destroy_target_set(gi_probe_images, gi_probe_image_memories, gi_probe_image_views);
         destroy_target_set(rt_shadow_images, rt_shadow_image_memories, rt_shadow_image_views);
 
         // 2d. Destroy the bloom targets (all levels)

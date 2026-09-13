@@ -1,4 +1,4 @@
-// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
@@ -84,6 +84,18 @@ namespace vulkan::pipelines {
     };
 
     export std::expected<ssgi_temporal_owned, std::string> build_ssgi_temporal(core& vk, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+
+    /// what build_gi_probe() creates: the world-space probe cache's pass, which owns its set layout for
+    /// the same reason the denoiser's resolve does - the things it binds (this frame's resolved
+    /// screen-space GI, the depth, and the two grid images it ping-pongs between) are grouped by no
+    /// other pass. It binds no scene set: the push block carries the projection it needs.
+    export struct gi_probe_owned {
+        VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+        std::optional<vk_pipeline> pass;
+    };
+
+    export std::expected<gi_probe_owned, std::string> build_gi_probe(core& vk, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
 
     /// the passes that reuse a layout someone else owns, so theirs comes in as a parameter
     export std::expected<vk_pipeline, std::string> build_fxaa(core& vk, VkPipelineLayout post_pipeline_layout, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
@@ -185,7 +197,11 @@ namespace vulkan::pipelines {
         // and 8 are STORAGE images rather than samplers because a compute pass writes a storage image,
         // and because those passes run at half the composite's resolution - the two ends of each are
         // different kinds of thing.
-        std::array<VkDescriptorSetLayoutBinding, 9> bindings = {};
+        //
+        // 9 is the world-space probe cache, a sampler3D the TRACER samples for a hit the screen cannot
+        // answer (see shaders/gi_probe.comp). It lives here rather than in the probe pass's own set
+        // because the pass that reads it is the tracer, which binds this set.
+        std::array<VkDescriptorSetLayoutBinding, 10> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
             bindings[b].descriptorType = (b == 6u || b == 8u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -481,6 +497,69 @@ namespace vulkan::pipelines {
             return fail("ssgi temporal: vkCreateComputePipelines failed");
         }
         out.resolve = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
+        return out;
+    }
+
+    // The world-space probe cache: injection and propagation share one pipeline (the mode is a push
+    // constant), so there is one shader and one layout. 0..2 are the samplers it reads - this frame's
+    // resolved GI, the depth, and the grid image it is reading - and 3 is the STORAGE 3D image it
+    // writes, which is why one binding differs from the rest.
+    std::expected<gi_probe_owned, std::string> build_gi_probe(core& vk, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+        using fail = std::unexpected<std::string>;
+        gi_probe_owned out;
+
+        std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
+        for (uint32_t b = 0; b < bindings.size(); ++b) {
+            bindings[b].binding = b;
+            bindings[b].descriptorType = b == 3u ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[b].descriptorCount = 1;
+            bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            bindings[b].pImmutableSamplers = nullptr;
+        }
+
+        VkDescriptorSetLayoutCreateInfo layout_info = {};
+        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
+        layout_info.pBindings = bindings.data();
+        if (vkCreateDescriptorSetLayout(vk.device, &layout_info, nullptr, &out.set_layout) != VK_SUCCESS) {
+            return fail("gi probe: descriptor set layout creation failed");
+        }
+
+        VkPushConstantRange push_range = {};
+        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        push_range.offset = 0;
+        push_range.size = push_constant_size;
+
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &out.set_layout;
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+            return fail("gi probe: pipeline layout creation failed");
+        }
+
+        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, vk.device);
+        if (!module.has_value()) {
+            return fail("gi probe: compute shader module creation failed");
+        }
+        VkPipelineShaderStageCreateInfo stage_info = {};
+        stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage_info.module = **module;
+        stage_info.pName = "main";
+
+        VkComputePipelineCreateInfo pipeline_info = {};
+        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.stage = stage_info;
+        pipeline_info.layout = out.pipeline_layout;
+
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        if (vkCreateComputePipelines(vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+            return fail("gi probe: vkCreateComputePipelines failed");
+        }
+        out.pass = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
         return out;
     }
     std::expected<deferred_owned, std::string> build_deferred(core& vk, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<VkPipelineColorBlendAttachmentState const> const color_blend, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {

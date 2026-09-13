@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.38.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.39.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -256,6 +256,10 @@ namespace vulkan {
                              // those passes are the only compute work in the post chain: without it their
                              // cost was reported as bloom time, which is where a traced GI's price was
                              // invisible in the one report a user reads
+            gi_probe_end,    // after the world-space probe cache's dispatches (~0 when it is off). Its
+                             // own mark for the same reason gi_end has one: it is compute work in the
+                             // same stretch of the frame, and folding it into "gi" would hide which of
+                             // the two the GI budget is going to
             bloom_end,       // after the bloom prefilter/downsample chain
             composite_end,   // after the composite (exposure + ACES + display encode)
             fxaa_end,        // after the FXAA pass (and the overlay, when FXAA draws it)
@@ -285,6 +289,7 @@ namespace vulkan {
             {"taa", false},
             {"debug", true},
             {"gi", false},
+            {"gi probe", false},
             {"bloom", false},
             {"composite", false},
             {"fxaa", false},
@@ -331,6 +336,11 @@ namespace vulkan {
         // which channel the debug view shows (see gbuffer_debug.frag / set_gbuffer_channel)
         int gbuffer_channel_index = 1;
         vk_sampler gbuffer_sampler = {};
+        // The world-space probe cache's sampler (G-buffer set binding 9): LINEAR rather than the
+        // G-buffer sampler's NEAREST, because a 3D fetch's whole purpose here is interpolating between
+        // cells - a nearest fetch would turn the cache into 32^3 blocks - and CLAMP_TO_EDGE, because the
+        // grid's edge IS the scene's bounds and there is nothing beyond them to repeat or mirror.
+        vk_sampler gi_probe_sampler = {};
         VkDescriptorSetLayout gbuffer_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout gbuffer_pipeline_layout = VK_NULL_HANDLE;
         // the deferred lighting stage needs BOTH sets: set 0 = the shared scene set (camera, IBL,
@@ -381,7 +391,12 @@ namespace vulkan {
             glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world (the block deferred.frag uses)
             glm::vec4 params = glm::vec4(0.0f);        // x radius, y intensity, z rays, w steps
             glm::vec4 proj_terms = glm::vec4(0.0f);    // x proj[2][2], y [3][2], z/w GI extent
-            glm::vec4 frame_info = glm::vec4(0.0f);    // x = frame counter (see ssgi_frame), y = traced, z = bounce gain
+            glm::vec4 frame_info = glm::vec4(0.0f);    // x = frame counter (see ssgi_frame), y = traced, z = bounce gain, w = probe gain
+            // xyz = the world position of the probe grid's cell (0,0,0) corner, w = one cell's size in
+            // world units. The grid's EXTENT comes from textureSize() in the shader rather than a lane
+            // of its own: this block is exactly 128 bytes, which is the smallest push-constant range
+            // Vulkan guarantees, and a fifth vector would overflow it.
+            glm::vec4 probe_grid = glm::vec4(0.0f);
         };
 
         struct deferred_push_constants {
@@ -472,6 +487,49 @@ namespace vulkan {
         // GI off, but also GI on with a missing descriptor set or a filter that declined to run, which
         // are frames whose sampled image holds something else (or nothing at all).
         bool gi_resolved = false;
+
+        // ---- the world-space radiance probe cache (see shaders/gi_probe.comp) ----
+        // Where the screen-space chain cannot answer: a ray that leaves the frame or hits something the
+        // camera cannot see gets its radiance from a persistent 3D grid anchored to the SCENE instead of
+        // from the far-field environment probe, which is the sky at infinity rather than the light in
+        // the next room. Off by default - with it off the tracer's fallback is exactly what it was - and
+        // the whole feature costs nothing but its own dispatches, because it is not sampled at all while
+        // its gain is 0 (the tracer branches on the gain rather than multiplying by it).
+        std::optional<vk_pipeline> gi_probe_pipeline = std::nullopt;
+        VkDescriptorSetLayout gi_probe_set_layout = VK_NULL_HANDLE;
+        VkPipelineLayout gi_probe_pipeline_layout = VK_NULL_HANDLE;
+        bindings::image_set_family gi_probe_family;
+        bool gi_probe_enabled = false;
+        // The grid's own blend rate ([render] ssgi_probe_rate): how much of a cell's stored value one
+        // frame's observation replaces. Small on purpose - this is the cache that is meant to survive
+        // the camera turning away, so it has to be slow, and it is also the loop gain of the
+        // tracer -> resolve -> grid -> tracer cycle (the grid feeds the tracer, which feeds the
+        // resolve, which is injected into the grid), so it is the number that decides whether that
+        // cycle settles.
+        float gi_probe_rate = 0.08f;
+        // How many times the grid is propagated per frame ([render] ssgi_probe_rounds): each round is
+        // two ping-pong dispatches, so a round spreads trust one cell further and the trust halves each
+        // time (see the shader). 0 = injection only, which is what makes the propagation measurable.
+        uint32_t gi_probe_rounds = 2;
+        // How much of the grid's answer the tracer adds on top of the environment probe for a hit it
+        // cannot resolve on screen ([render] ssgi_probe_gain). 0 turns the contribution off while
+        // leaving the cache running, which is the A/B that measures what the grid actually adds.
+        float gi_probe_gain = 1.0f;
+        // Whether the grid holds anything at all: false until the first probe dispatch has run. The
+        // tracer's gain is forced to 0 until then, because a grid nobody has written has undefined
+        // texels and the pass's first-use transition only makes its LAYOUT legal.
+        bool gi_probe_valid = false;
+        // Whether this target generation's grid images have been transitioned out of UNDEFINED yet
+        // (they are created with the swapchain and destroyed with it - see core::create_render_targets).
+        bool gi_probe_grid_seen = false;
+        struct gi_probe_push_constants {
+            glm::mat4 view_proj = glm::mat4(1.0f);     // world -> clip, for the injection's projection
+            glm::vec4 grid_min_cell = glm::vec4(0.0f); // xyz = cell (0,0,0)'s corner, w = cell size
+            glm::vec4 grid_extent = glm::vec4(0.0f);   // xyz = the extent in cells, w = unused
+            // x = the injection rate, y = proj[2][2], z = proj[3][2], w = the mode (0 = inject,
+            // 1 = propagate)
+            glm::vec4 params = glm::vec4(0.0f);
+        };
         struct ssgi_temporal_push_constants {
             float history_valid = 0.0f;
             float blend_static = 0.9f;
@@ -521,6 +579,13 @@ namespace vulkan {
         bool record_ssgi_denoise_pass(VkCommandBuffer command_buffer);
         /** @brief allocate or rewrite the denoiser's per-image descriptor sets (see vulkan.bindings) */
         void ensure_ssgi_denoise_descriptors();
+        /**
+         * @brief allocate or rewrite the probe cache's per-image descriptor sets (see vulkan.bindings)
+         * @note the two sets are the ping-pong's two directions - set 0 writes the cache, set 1 the
+         *       scratch - so the propagation picks a set per dispatch instead of rewriting descriptors
+         *       between its dispatches
+         */
+        void ensure_gi_probe_descriptors();
         /**
          * @ingroup vulkan_runtime
          * @brief record the GI spatial filter into @p command_buffer
@@ -1970,6 +2035,56 @@ namespace vulkan {
          *       (a diffuse albedo approaches one), which is why the knob stops there.
          */
         void set_ssgi_bounce(float gain) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the world-space probe cache: what the tracer answers with where the screen cannot
+         * @param enabled master switch ([render] ssgi_probes); false is a byte-exact no-op
+         * @param rate how much of a cell one frame's observation replaces, clamped to [0, 1]
+         * @param rounds propagation rounds per frame, clamped to [0, 4]
+         * @param gain how much of the grid's answer is added on top of the environment probe, clamped
+         *        to [0, 4]
+         * @note a CACHE, not a lighting model: it exists so that a ray which leaves the frame, or hits
+         *       something hidden behind a nearer surface, can be answered from a grid anchored to the
+         *       scene - the environment probe it replaces there is the sky at infinity, and it is the
+         *       same value in the middle of a room as on the roof. It requires the screen-space chain
+         *       (it is injected from that chain's result) and the deferred path, and it is a no-op on a
+         *       device where either is missing: with the gain at 0 the tracer never samples it.
+         */
+        void set_ssgi_probes(bool enabled, float rate, uint32_t rounds, float gain) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether this frame's tracer will sample the world-space probe cache
+         * @note the predicate the tracer's push block composes the grid's gain from. False until the
+         *       grid has been written once: the images exist from startup, but a grid nothing has
+         *       deposited into holds undefined texels, and the pass that would fill it runs AFTER the
+         *       tracer in the frame it is first enabled on.
+         */
+        [[nodiscard]] bool gi_probe_active() const noexcept;
+
+        /**
+         * @brief create the world-space probe cache's pipeline from shaders/gi_probe.comp
+         * @param compute_shader_code raw SPIR-V of the pass (injection and propagation are one shader)
+         * @return success, or an error message on failure
+         * @note OPTIONAL, unlike the three screen-space GI pipelines: with no cache the tracer falls back
+         *       to the environment probe exactly as it did before this existed, so a build that cannot
+         *       create it keeps rendering - it just does not get the grid's answer for the light the
+         *       frame cannot see
+         */
+        std::expected<void, std::string> make_gi_probe_pipeline(std::span<unsigned char const> compute_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief record the probe cache's dispatches for this frame, if it is active
+         * @param command_buffer the frame's command buffer
+         * @return true when the grid was updated (and therefore holds something to sample)
+         * @note runs AFTER the screen-space chain, because what it deposits is that chain's resolved
+         *       result for this frame, and BEFORE the composite, because it reads the resolved image
+         *       while it is still this frame's. Its own result is read by the NEXT frame's tracer: a grid
+         *       cell is a cache, and one frame of delay is what a cache costs.
+         */
+        bool record_gi_probe_pass(VkCommandBuffer command_buffer);
 
         /**
          * @ingroup vulkan_runtime

@@ -150,6 +150,26 @@ namespace app_config {
                     settings.render.ssgi_bounce = static_cast<float>(*value);
                 }
             }
+            if (toml::node const* node = render->get("ssgi_probes")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.ssgi_probes = *value;
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_probe_rate")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.ssgi_probe_rate = static_cast<float>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_probe_rounds")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.render.ssgi_probe_rounds = static_cast<int>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_probe_gain")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.ssgi_probe_gain = static_cast<float>(*value);
+                }
+            }
             if (toml::node const* node = render->get("rt_shadows")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.rt_shadows = *value;
