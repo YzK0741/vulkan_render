@@ -1059,4 +1059,18 @@ takes the worst off, not all of it. Neither the ray length nor the exclusion of 
 reject was tuned: the length is the diffuse bounce's own radius, and a mirror that should reflect the far side
 of a room needs a longer reach than the light that bounced off the floor.
 
+THE TWO CANDIDATE FIXES FOR THAT RESIDUAL, with the trade-off already visible, recorded so the next step does
+not have to re-derive it. (a) Filter the removed term with the same weights as the added one - 25 extra
+gathers per pixel, three texture fetches each, so the spatial filter's cost roughly triples - and do it for
+the diffuse term in the same change, which also removes the pre-existing +0.33/+0.52 note. The images upstream
+stay pure radiance, which is what the multi-bounce feedback needs. (b) Have the glossy pass write the NET
+correction `E - ibl_specular` instead of `E`, and drop the spatial filter's specular subtraction entirely: the
+identity then cancels EXACTLY even with the filter on (`filter(A + 0) == filter(A)`, bit for bit), for zero
+extra cost, and one less place for the two halves to disagree. What it costs is the property the L1 work
+fought for - the trace image stops being a radiance and becomes a radiance plus a bookkeeping term, so the
+bounce feedback (`[render] ssgi_bounce`, off by default) would re-emit a correction at a specular hit. (a) is
+the architecturally consistent one and (b) is the cheap one; the reason this is written down rather than
+decided is that the choice is a measurement away either way, and (b)'s numbers are one config change from
+being taken.
+
 

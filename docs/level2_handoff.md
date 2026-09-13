@@ -189,7 +189,6 @@ pixels, which makes the traced reflection a REPLACEMENT rather than an addition;
 subtraction come from a new shared `shaders/ibl_specular.glsl`, which also collapsed the two copies of those
 expressions that already existed. `[render] ssgi_specular` (off by default) and `ssgi_specular_rays` (1-8,
 default 1) are the knobs.
-
 WHAT IT MEASURED. The control is the sharpest instrument in this whole document: where a ray finds nothing the
 estimate IS the lighting stage's term, so with the filter bypassed and a ray length too short to reach
 anything, the feature on and off must agree - and on an isolated model they do to ONE 8-bit step on 0.08% of
@@ -205,10 +204,13 @@ subtraction happens after the joint-bilateral filter has averaged the estimate w
 centre pixel's own, so "a ray that misses changes nothing" is exact only with the filter bypassed: with it on
 and still nothing reachable, an isolated model moves by mean +0.027 with 1.0% of pixels beyond 4/255 and a
 worst pixel of 109. The DIFFUSE subtraction has carried the same artifact since it was written (the recorded
-+0.33 convex / +0.52 Sponza note). The fix is one change for both terms - filter the REMOVED value with the
-same weights as the added one, 25 more gathers per pixel - and it re-baselines every capture, so it is its own
-step. Also open: the reflection is a point sample of the roughness cone (a low-roughness reflection aliases at
-half resolution), and its ray length is the diffuse bounce's radius rather than a reflection's own reach.
++0.33 convex / +0.52 Sponza note). TWO FIXES ARE ON THE TABLE and `docs/gi_hit_shading.md`'s L2.3 section has
+the trade-off: filter the removed value with the same weights as the added one (architecturally consistent,
+costs 25 gathers per pixel), or have the glossy pass write the NET correction `E - ibl_specular` and drop the
+subtraction (exact for zero cost, but puts a bookkeeping term into an image the multi-bounce feedback re-emits
+- the property the L1 work fought for). Either way it re-baselines every GI capture, so it is its own step.
+Also open: the reflection is a point sample of the roughness cone (a low-roughness reflection aliases at half
+resolution), and its ray length is the diffuse bounce's radius rather than a reflection's own reach.
 
 ## 5. Working discipline (non-negotiable; every item was learned the hard way here)
 
