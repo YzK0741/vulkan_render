@@ -9,7 +9,8 @@ repository; where something is unverified it says so.
 * `docs/gi_hit_shading.md` - the full record. Level 1 (leak fix, view independence, reset) with the measurement
   that closed each; Level 2's four-step plan; the whole history of the furnace verification mode, ending in the
   section that records what it measured, the energy error it found, and why its acceptance is an exactness test
-  only a scene its premise holds in can pass; and every trap that cost time.
+  only a scene its premise holds in can pass; the L2.1 section, which records the SH-2 probes, the direction A/B
+  that proves they are directional, and their stated limits; and every trap that cost time.
 * `docs/reference/lumen_radiance_cache.md` and `docs/reference/lumen_surface_cache.md` - studies of the UE 5.8.2
   source (available at `C:\UnrealEngine-5.8.2-release`). They are mechanism references, not numbers to copy.
 * `config.example.toml` - every `[render]` knob with its reasoning, including the furnace key, which is marked
@@ -112,22 +113,35 @@ Before this step's change the same scene read +1.4005, so the bar is met by a fi
 tolerance. In an interior it cannot be met, and the number there measures the scene's occlusion rather than
 the chain's energy. The default (furnace off) stayed byte-exact - see the gates in section 5.
 
-## 3. Then L2.1: directional probes
+## 3. L2.1: directional probes - DONE, with the planned shape and the planned test
 
-The measured gap this closes: a cell stores ONE RGB, so "a bright window to the left and a dark wall to the
-right" average away. UE stores a 32x32 octahedral radiance map plus a depth map per probe; the study notes this
-as the main structural divergence from this renderer.
+The gap it closed: a cell stored ONE RGB, so "a bright window to the left and a dark wall to the right"
+averaged away. UE stores a 32x32 octahedral radiance map plus a depth map per probe; the study calls that the
+main structural divergence from this renderer.
 
-Shape that fits here: **SH-2 (four coefficients per channel)** - cheap to store, cheap to project in the
-injection (the cell's rays each contribute to four basis values), and the tracer's lookup becomes a dot product
-with the direction it already has. The storage is the interesting part: the current grid is one RGBA16F 3D
-image plus a geometry image, ping-ponged for propagation, so four coefficients need either four images or two
-RGBA images per coefficient pair - and the ping-pong must carry all of them.
+WHAT WAS BUILT, exactly the shape this section predicted: **SH-2, four coefficients per channel**, in four
+RGBA16F 3D images per ping-pong side (eight images, 2 MB, 32^3 cells). The basis is one shared include
+(`shaders/probe_sh.glsl`) so the projection and the reconstruction cannot disagree; the tracer's lookup is a
+dot product with the direction it already had; the probe pass's projection is four basis values per ray. The
+4*pi in the projection is what makes a uniform field reconstruct as itself, i.e. the furnace's identity.
 
-ACCEPTANCE, and it is worth building the test before the change: sample the SAME cell in two opposite
-directions and require the two values to DIFFER. Today the representation answers identically for both by
-construction, so the test must fail before the change and pass after - the cleanest before/after this project
-has. The 4x4 spatial table must stay structured, and the furnace acceptance of section 2 must still pass.
+THE TEST WAS BUILT FIRST, and it is the cleanest before/after this project has, because it needed an A/B that
+changes nothing but the cache's direction and the probe gain's SIGN provides one: |gain| is the gain, a
+negative gain looks the same cell up along the opposite ray direction, and the far-field term stays sampled
+along the ray. Two captures at +1 and -1 are therefore identical unless the cache is directional:
+
+    before the change   byte-identical (same SHA256, mean green 60.0420), as the representation required
+    after the change    hashes differ; 234921 pixels (22.66%) differ, up to 14 of 255
+
+The 4x4 spatial table stayed STRUCTURED (-0.03% to -7.53%, ordered by the scene, against the recorded -0.14%
+to -6.78%), the furnace acceptance still passes (-0.0001 on the convex scene), the captures are deterministic,
+and the gates are green. `docs/gi_hit_shading.md`'s L2.1 section has the tables, the numbers and the stated
+limits - the directional terms are four rays per frame and converge over ~100 frames, the reconstruction
+clamps at zero, and a cell still holds one surface offset rather than a per-direction depth map.
+
+NOT DONE, and worth knowing before building on it: nothing in the gate exercises this path. The seven
+`check_render` scenarios all run with GI off, so a probe-cache regression would be invisible to them; the
+measurements above are the coverage this subsystem has (see section 5).
 
 ## 4. Then L2.2 and L2.3
 
@@ -155,7 +169,11 @@ Gates before any commit:
 * Release, Debug and ASan+UBSan builds clean (`-Werror` is on everywhere);
 * `ctest` in the release build: 6/6;
 * the capture harness `scripts/windows/check_render.ps1`: 7 scenarios, each run twice, 0 changed - or the
-  change recorded deliberately with its reason and the baseline re-recorded;
+  change recorded deliberately with its reason and the baseline re-recorded. ITS BLIND SPOT IS THE GI PATH:
+  every scenario runs with `ssgi = false`, so nothing there exercises the screen-space chain, the probe cache,
+  the accumulator or anything ray-traced - a regression in those would pass this gate. Changes to them need
+  their own measurement (the L2.0 and L2.1 sections are the shape of one), and widening the scenario list is
+  the obvious next improvement to the gate;
 * `doxygen Doxyfile`: exit 0 and an EMPTY warning stream. Capture the real exit code; piping doxygen into
   anything makes `$LASTEXITCODE` the pipeline's, and this was mistaken for a pass once;
 * every measurement run validation clean (the harness greps for `VUID-`, `Validation Error`, `[ERROR]`,

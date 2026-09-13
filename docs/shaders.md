@@ -121,6 +121,17 @@
  * and the deferred path's `deferred.frag` (the pixels whose G-buffer depth is still the far plane).
  * Two backgrounds from one function means the two paths cannot disagree about the sky.
  *
+ * @section shader_probe_sh The probe cache's SH-2 basis (probe_sh.glsl)
+ *
+ * `probe_sh.glsl` is the one place the world-space probe cache's basis is defined, because the pass that
+ * PROJECTS into a cell (`gi_probe.comp`, four basis values per traced ray) and the tracer that RECONSTRUCTS
+ * from it (`ssgi.comp`'s `probe_cache`, a dot product with the direction the ray already has) have to agree
+ * exactly - two copies of the constants would be two chances to disagree, and the result would look like a
+ * slightly wrong image rather than like a bug. The projection carries the 4*pi that makes a uniform radiance
+ * field reconstruct as itself, which is the identity the furnace verification mode checks, so that constant
+ * is load-bearing. The basis is WORLD-aligned on purpose: it makes a blend of two cells' coefficients the
+ * coefficients of the blend of their radiance functions, with no rotation between neighbours.
+ *
  * @section shader_clusters Clustered light culling (M5)
  *
  * `shaders/light_cluster.comp` runs once per frame on the graphics queue, one invocation per

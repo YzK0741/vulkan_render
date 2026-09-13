@@ -174,17 +174,19 @@ namespace app_config {
         // every earlier measurement was taken with. The image being fed back already carries
         // ssgi_intensity, so the loop's effective gain is this value times that one.
         float ssgi_bounce = 0.0f;
-        // The world-space probe cache ([render] ssgi_probes): a persistent grid of cells over the scene's
-        // bounds, injected from the screen-space chain and sampled by the tracer for a hit the screen
-        // cannot resolve. Off by default, and a no-op when off - the tracer's fallback for those hits is
+        // The world-space probe cache ([render] ssgi_probes): a persistent grid of SH-2 cells over the
+        // scene's bounds - four coefficients per channel, so a cell answers for a DIRECTION - each filled by
+        // tracing its OWN rays and sampled by the tracer for a hit the screen cannot resolve. The pass
+        // declares no camera at all, which is what makes a cell a fact about the scene rather than about the
+        // frame. Off by default, and a no-op when off - the tracer's fallback for those hits is
         // then exactly what it was. `ssgi_probe_rate` is how much of a cell one frame's observation
         // replaces (its own loop gain), `ssgi_probe_rounds` how far a frame spreads what it deposited
         // (0 = injection only, which is how the propagation is measured), and `ssgi_probe_gain` how much
         // of the cache's answer is added on top of the environment probe (0 = the cache runs, and is
         // still not sampled: that is the A/B that measures what it adds). The gain's SIGN is a second A/B:
         // negative means the same gain with the cell looked up along the opposite direction of the ray,
-        // which differs from the positive one only through the cache - so the two captures are identical
-        // until a cell carries a direction, and that is the directional-probe step's acceptance test.
+        // which differs from the positive one only through the cache - so the two captures were identical
+        // until a cell carried a direction (measured: same SHA256), and differ on 22.7% of pixels now.
         bool ssgi_probes = false;
         // Shade the surface a GI ray hit from the geometry it landed on, instead of sampling the screen's
         // direct-radiance image there ([render] ssgi_hit_shading). Off by default; it needs the traced GI

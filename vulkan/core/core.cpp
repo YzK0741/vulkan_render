@@ -704,13 +704,14 @@ namespace vulkan {
             gi_spatial_image_views[i] = create_image_view(gi_spatial_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
         }
 
-        // The world-space probe cache: two 3D images, one copy for the whole device rather than one per
-        // swapchain image (the grid is anchored to the world, so a view-independent cache is the point
-        // of it - see the member's comment). A 3D VIEW, because a sampler3D binding needs one: the same
-        // image looked at with a 2D view is a validation error the moment the tracer samples it.
-        gi_probe_images.assign(2, VK_NULL_HANDLE);
-        gi_probe_image_memories.assign(2, VK_NULL_HANDLE);
-        gi_probe_image_views.assign(2, VK_NULL_HANDLE);
+        // The world-space probe cache: EIGHT 3D images - four SH-2 coefficients per channel times the two
+        // sides of the ping-pong - one set of copies for the whole device rather than one per swapchain
+        // image (the grid is anchored to the world, so view independence is the point of it - see the
+        // member's comment). A 3D VIEW, because a sampler3D binding needs one: the same image looked at with
+        // a 2D view is a validation error the moment the tracer samples it.
+        gi_probe_images.assign(8, VK_NULL_HANDLE);
+        gi_probe_image_memories.assign(8, VK_NULL_HANDLE);
+        gi_probe_image_views.assign(8, VK_NULL_HANDLE);
         for (size_t i = 0; i < gi_probe_images.size(); i++) {
             create_target_image_3d(
                 gi_probe_grid_extent,

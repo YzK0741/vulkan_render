@@ -333,23 +333,23 @@ namespace vulkan {
         std::vector<VkImageView> gi_spatial_image_views = {};
 
         // ---- the world-space radiance probe cache (see shaders/gi_probe.comp) ----
-        // Two 3D images of gi_probe_grid_extent^3 RGBA16F cells: cell (x, y, z) covers a cube of the
-        // scene's bounds, and the pair exists because propagation reads one and writes the other (no
-        // dispatch ever reads what it writes). NOT per swapchain image: the cache is anchored to the
-        // world, not to a view, so one copy serves every frame slot - which is the whole point of it.
-        // The first is the cache (it is also what the tracer samples: the ping-pong is arranged so that
-        // a frame's last propagation lands back in it), the second is its scratch.
+        // EIGHT 3D images of gi_probe_grid_extent^3 RGBA16F cells: four SH-2 coefficients per channel times
+        // the two sides of the propagation's ping-pong, at index side * 4 + coefficient. Cell (x, y, z)
+        // covers a cube of the scene's bounds. NOT per swapchain image: the cache is anchored to the world,
+        // not to a view, so one copy serves every frame slot - which is the whole point of it. Side 0 is the
+        // cache (it is also what the tracer samples: the ping-pong is arranged so that a frame's last
+        // propagation lands back in it) and side 1 is its scratch. Coefficient 0's alpha is the cell's
+        // TRUST; the other three alphas are unused (shaders/probe_sh.glsl says what a coefficient is).
         std::vector<VkImage> gi_probe_images = {};
         std::vector<VkDeviceMemory> gi_probe_image_memories = {};
         std::vector<VkImageView> gi_probe_image_views = {};
-        // ... and the geometry a filter needs in order to test whether two cells can see each other: one
-        // vector per cell, from the cell's centre to the surface the frame found at its screen position,
-        // plus a front-face and a validity flag (RGBA16F: xyz = the offset in world units, w = the flags).
-        // A probe's DEPTH MAP - per direction - is what the reference implementation stores and what makes
-        // a bidirectional occlusion test possible. This renderer's injection is a screen projection, so the
-        // one surface a cell can report is the surface the frame showed it, and a segment-versus-point test
-        // between two cells is what that supports (see docs/gi_hit_shading.md, step A). One image, not a
-        // pair: the ping-pong applies to radiance, and this is geometry the INJECTION owns rather than
+        // ... and the geometry the propagation needs in order to test whether two cells can see each other:
+        // one vector per cell, from its centre to the NEAREST surface its own rays found, plus a validity
+        // flag (RGBA16F: xyz = the offset in world units, w = the flag). A probe's DEPTH MAP - per direction
+        // - is what the reference implementation stores and what makes a full bidirectional occlusion test
+        // possible; this renderer's cells each report the one surface closest to them, which is what a
+        // segment-versus-point test between two cells needs (see docs/gi_hit_shading.md, step A). One image,
+        // not a pair: the ping-pong applies to radiance, and this is geometry the INJECTION owns rather than
         // something propagation rewrites.
         std::vector<VkImage> gi_probe_surface_images = {};
         std::vector<VkDeviceMemory> gi_probe_surface_image_memories = {};

@@ -91,12 +91,17 @@ layout(set = 1, binding = 6, rgba16f) uniform image2D gi_output; // half-res RAW
 // pass changes - the rays are the same cosine-weighted ones, the radiance still comes from the same
 // direct-radiance image, and the same denoiser consumes the output.
 layout(set = 0, binding = 16) uniform accelerationStructureEXT tlas;
-// The world-space radiance probe cache (G-buffer set binding 9, declared only because the tracer is the
-// pass that reads it): a sampler3D covering the scene's bounds, holding the indirect radiance the frames
-// before this one deposited into each cell. It is the answer for a hit the SCREEN cannot resolve - off
-// screen, or hidden behind a nearer surface - which is where the environment probe below is only the sky
-// at infinity. Not sampled at all while its gain is 0.
-layout(set = 1, binding = 9) uniform sampler3D gi_probe_grid;
+// The world-space radiance cache (G-buffer set bindings 9..12, declared only because the tracer is the pass
+// that reads it): FOUR sampler3D images covering the scene's bounds, holding the SH-2 radiance the frames
+// before this one deposited into each cell - sh0 is the DC coefficient and carries the cell's TRUST in its
+// alpha, then the three first-order terms (see shaders/probe_sh.glsl). Together they answer for a
+// DIRECTION, which is what makes the cache able to say "bright to my left, dark to my right". It is the
+// answer for a hit the SCREEN cannot resolve - off screen, or hidden behind a nearer surface - which is
+// where the environment probe below is only the sky at infinity. Not sampled at all while the gain is 0.
+layout(set = 1, binding = 9) uniform sampler3D gi_probe_sh0;
+layout(set = 1, binding = 10) uniform sampler3D gi_probe_sh1;
+layout(set = 1, binding = 11) uniform sampler3D gi_probe_sh2;
+layout(set = 1, binding = 12) uniform sampler3D gi_probe_sh3;
 
 layout(push_constant) uniform SsgiPush {
     mat4 inv_view_proj; // clip -> world (the same block deferred.frag uses)
@@ -240,6 +245,35 @@ vec3 bounce_radiance(vec2 uv) {
     return pc.frame_info.z > 0.0 ? pc.frame_info.z * texture(gi_resolve, uv).rgb : vec3(0.0);
 }
 
+// The SH-2 basis and the reconstruction, shared with the pass that fills these cells: the projection there
+// and the reconstruction here have to agree exactly, so they are one definition.
+#include "probe_sh.glsl"
+
+/**
+ * @brief the cache's answer at @p uvw for radiance arriving from @p dir
+ * @param uvw the cell's position in the grid, normalized
+ * @param dir the world-space direction the radiance arrives FROM (the caller flips it when the direction
+ *        A/B is on)
+ * @return the cell's radiance and its trust
+ *
+ * FOUR COEFFICIENTS PER CHANNEL, so @p dir DECIDES the answer: this is the L2.1 change. A cell between a
+ * bright window and a dark wall used to average the two into one RGB and answer identically for a ray
+ * arriving along @p dir and one arriving along -@p dir; it now answers both separately. The direction A/B in
+ * probe_radiance is the measurement of exactly that: it changes nothing else, and it produced two
+ * byte-identical captures while the previous body ignored its second argument.
+ *
+ * The four images are sampled with the binding's LINEAR sampler3D, so a lookup is a trilinear blend of the
+ * neighbouring cells' coefficients - which is the same thing as a blend of their radiance functions, because
+ * the basis is world-aligned.
+ */
+vec4 probe_cache(vec3 uvw, vec3 dir) {
+    const vec4 c0 = texture(gi_probe_sh0, uvw);
+    const vec4 c1 = texture(gi_probe_sh1, uvw);
+    const vec4 c2 = texture(gi_probe_sh2, uvw);
+    const vec4 c3 = texture(gi_probe_sh3, uvw);
+    return vec4(probe_sh_reconstruct(c0, c1, c2, c3, dir), c0.a);
+}
+
 /**
  * @brief what answers a hit the screen cannot resolve: the world-space cache where it is trusted, the
  *        far-field environment otherwise
@@ -259,24 +293,6 @@ vec3 bounce_radiance(vec2 uv) {
  * cell the rays have filled answers with what they found. `frame_info.w` is still the knob - it scales how
  * far the blend goes towards the cache - so 0 remains what it always was: the far-field probe, untouched.
  */
-/**
- * @brief the cache's answer at @p uvw for radiance arriving from @p dir
- * @param uvw the cell's position in the grid, normalized
- * @param dir the world-space direction the radiance arrives FROM (the caller flips it when the direction
- *        A/B is on)
- * @return the cell's radiance and its trust
- *
- * ONE RGB PER CELL, so @p dir is IGNORED: this cache cannot tell a bright window to its left from a dark
- * wall to its right, and it answers the same for a ray arriving along @p dir and one arriving along
- * -@p dir. That is the L2.1 step's whole subject: the body below becomes an SH-2 evaluation (four
- * coefficients per channel, a dot product with @p dir), and the direction A/B in probe_radiance is the
- * test that measures whether it moved - it changes nothing else and must therefore produce two
- * byte-identical captures while this body ignores its second argument.
- */
-vec4 probe_cache(vec3 uvw, vec3 dir) {
-    return texture(gi_probe_grid, uvw);
-}
-
 vec3 probe_radiance(vec3 world, vec3 dir) {
     const vec3 far_field = texture(irradiance_sampler, dir).rgb;
     // The gain's SIGN is the cache's direction A/B, and it is the only thing that changes with it: the
@@ -289,7 +305,7 @@ vec3 probe_radiance(vec3 world, vec3 dir) {
         return far_field; // the cache is off, or has never been filled: nothing to blend with
     }
     const vec3 cell = (world - pc.probe_grid.xyz) / pc.probe_grid.w;
-    const vec3 uvw = (cell + 0.5) / vec3(textureSize(gi_probe_grid, 0));
+    const vec3 uvw = (cell + 0.5) / vec3(textureSize(gi_probe_sh0, 0)); // all four coefficient images share it
     if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) {
         return far_field; // outside the grid's cube (the scene's bounds): the cache has nothing to say
     }

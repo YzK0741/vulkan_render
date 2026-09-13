@@ -598,6 +598,11 @@ set(VR_SHADER_INCLUDES
     "${VR_SHADER_SRC_DIR}/surface.glsl"
     "${VR_SHADER_SRC_DIR}/shading.glsl"
     "${VR_SHADER_SRC_DIR}/sky.glsl"
+    # hit_shading.glsl was MISSING here since it was added: the two passes that include it (ssgi.comp and
+    # gi_probe.comp) did not list it as a dependency, so editing it alone left the SPIR-V stale - the exact
+    # trap the comment above describes, from the other side. Found while adding probe_sh.glsl next to it.
+    "${VR_SHADER_SRC_DIR}/hit_shading.glsl"
+    "${VR_SHADER_SRC_DIR}/probe_sh.glsl"
 )
 set(VR_SHADER_SOURCES
     pbr.vert pbr.frag unlit.frag gbuffer.frag gbuffer_debug.frag deferred.frag taa.frag

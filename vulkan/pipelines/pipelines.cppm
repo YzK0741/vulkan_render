@@ -198,10 +198,12 @@ namespace vulkan::pipelines {
         // and because those passes run at half the composite's resolution - the two ends of each are
         // different kinds of thing.
         //
-        // 9 is the world-space probe cache, a sampler3D the TRACER samples for a hit the screen cannot
-        // answer (see shaders/gi_probe.comp). It lives here rather than in the probe pass's own set
-        // because the pass that reads it is the tracer, which binds this set.
-        std::array<VkDescriptorSetLayoutBinding, 10> bindings = {};
+        // 9..12 are the world-space probe cache's four SH-2 coefficient images, sampler3D images the TRACER
+        // samples for a hit the screen cannot answer (see shaders/gi_probe.comp and shaders/probe_sh.glsl).
+        // They live here rather than in the probe pass's own set because the pass that READS them is the
+        // tracer, which binds this set - and the probe pass's own set binds the other half of the
+        // ping-pong. Four bindings rather than one because a cell holds four coefficients per channel.
+        std::array<VkDescriptorSetLayoutBinding, 13> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
             bindings[b].descriptorType = (b == 6u || b == 8u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -519,14 +521,15 @@ namespace vulkan::pipelines {
         using fail = std::unexpected<std::string>;
         gi_probe_owned out;
 
-        // THREE bindings: the grid being read, the grid being written, and the per-cell surface offsets the
-        // propagation tests visibility with. Two more (a screen-space GI sampler and the G-buffer depth)
-        // went with the screen-space injection that used them, and the shader no longer declares them - a
-        // binding the layout names and the shader does not is a slot nothing can be checked against.
-        std::array<VkDescriptorSetLayoutBinding, 3> bindings = {};
+        // NINE bindings: the four SH-2 coefficient images being READ (0..3), the four being WRITTEN (4..7),
+        // and the per-cell surface offsets the propagation tests visibility with (8). The read side has to
+        // be sampler3D images - a lookup blends neighbouring cells trilinearly - and the write side storage
+        // images. The two dead bindings this layout used to carry (this frame's resolved GI and the G-buffer
+        // depth, for the screen-projection injection) went with that injection.
+        std::array<VkDescriptorSetLayoutBinding, 9> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
-            bindings[b].descriptorType = (b == 1u || b == 2u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[b].descriptorType = b >= 4u ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             bindings[b].descriptorCount = 1;
             bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
             bindings[b].pImmutableSamplers = nullptr;

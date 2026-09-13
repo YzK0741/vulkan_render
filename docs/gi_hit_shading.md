@@ -716,3 +716,68 @@ THE ACCEPTANCE, where it is well posed. The mode is the right instrument and it 
 One honest note on the tolerance, because it is easy to misread: the acceptance as written asks the two
 frames to agree "within the noise of two captures", and the noise is zero. The convex measurement meets
 that bar to a single 8-bit step; the interior one cannot meet it at all, for the reason above.
+
+### L2.1, measured: directional probes (SH-2), and the test that was built before them
+
+WHAT CHANGED. A cell used to hold ONE RGB, so a cell between a bright window and a dark wall averaged the two
+into one value and answered identically for a ray arriving from either side. It now holds real SH-2 - four
+coefficients per channel, the DC term and the three first-order terms - in FOUR RGBA16F 3D images per
+ping-pong side (binding order sh0..sh3, with the trust the fourth channel always carried living in the DC
+image's alpha). 32^3 cells, two sides, four coefficients: eight images, 2 MB. The basis lives in ONE shared
+include (`shaders/probe_sh.glsl`), because the projection in the probe pass and the reconstruction in the
+tracer have to agree exactly and a disagreement there would look like a slightly wrong image rather than like
+a bug. The projection carries the 4*pi that makes a uniform field reconstruct as itself - which is the
+furnace's identity, so that constant is load-bearing rather than conventional.
+
+THE ACCEPTANCE TEST WAS BUILT FIRST, and it needed an A/B that changes NOTHING but the cache's direction. The
+probe gain's sign is where it fits: |gain| is the gain, and a negative gain looks a cell up along the OPPOSITE
+direction of the ray, while the far-field environment term is still sampled along the ray itself. So the two
+captures differ only through the cache - and while a cell held one RGB they were byte-identical BY
+CONSTRUCTION. Measured before any of the storage changed (Sponza interior, traced GI, probes on, 180 frames,
+the check_render sponza camera):
+
+    gain +1 and gain -1    byte-identical, mean green 60.0420
+                           SHA256 1C6AF8F1B4D2E14F77B0A9FC7B615BA317072DC8D341275BF8AB5AED02FEE5C1
+
+and after the change, in the same configuration:
+
+    gain +1  60.0429   |   gain -1  60.0449     hashes differ
+    234921 pixels (22.66%) differ, by up to 14 of 255, in the green channel
+
+which is the cleanest before/after this project has: one configuration, one scene, one frame count, and a test
+whose two sides were provably identical until the representation changed.
+
+THE 4x4 SPATIAL TABLE STAYED STRUCTURED, the step's second condition. The numbers below are the cache's
+effect on the frame (gain 1 against gain 0) as a percentage of each tile's own brightness, in the same scene,
+camera and configuration as the tables this file already carries:
+
+    absolute mean difference                    as a percentage of the tile's own brightness
+    -0.62  -0.12  -0.04  -0.26                  -1.50%  -0.16%  -0.03%  -0.22%
+    -2.37  -1.13  -0.85  -1.64                  -7.53%  -3.64%  -0.98%  -2.22%
+    -2.08  -1.27  -0.91  -0.99                  -4.92%  -3.85%  -1.45%  -0.81%
+    -0.65  -0.97  -1.02  -0.52                  -4.29%  -2.94%  -3.16%  -1.06%
+
+The span is -0.03% to -7.53% against the recorded -0.14% to -6.78%, and the ORDER is the same: the sky-facing
+tiles (top right) lose a tenth to two tenths of a percent, the interior ones lose one and a half to seven and
+a half. The frame itself moved by +0.0009 of mean brightness (60.0420 to 60.0429), so the directional part is
+a small correction on top of a DC term that behaves as it did before.
+
+THE FURNACE ACCEPTANCE STILL PASSES: on the convex acceptance scene (whose configs have the cache off) GI-on
+and GI-off still agree to -0.0001 of mean brightness, unchanged. The captures are deterministic: two runs of
+one configuration are byte-identical, before and after.
+
+WHAT THIS DOES NOT DO, stated rather than discovered later. The directional terms are estimated from FOUR rays
+per frame and blended at `ssgi_probe_rate` 0.08, so they converge over something like a hundred frames: a
+single frame's first-order coefficients are mostly sampling noise, and that is the price of four rays. The
+reconstruction CLAMPS AT ZERO, because four coefficients cannot describe a field that is bright on one side
+and dark on the other - the energy that costs lands in exactly the directions the cache has no evidence about.
+A cell still holds ONE surface offset for the visibility test, so this is not the reference implementation's
+per-direction depth map. And blending neighbouring cells averages coefficients: exact for a WORLD-aligned
+basis, but it rotates nothing - which is precisely why the basis is world-space.
+
+WHERE IT LIVES: `shaders/probe_sh.glsl` (the basis, the constant, the reconstruction), `shaders/gi_probe.comp`
+(the projection and the six-neighbour blend, now over four images per side), `probe_cache` in
+`shaders/ssgi.comp`, the eight images and their views in `vulkan/core`, and the ping-pong, barriers and
+descriptors in `vulkan/runtime.cpp`. The probe pass's push block is 40 bytes and carries no camera data at
+all; the pass's own set is nine bindings (four read, four written, one geometry) and the G-buffer set gained
+bindings 10..12 for the three first-order coefficients.
