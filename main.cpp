@@ -173,6 +173,19 @@ int main(int argc, char** argv) {
     //    imported scene) and the directional shadow pass. The legacy
     //    triangle demo pipeline is no longer created - nothing draws it.
     chores::setup_pipeline(runtime, shaders_dir);
+    // Screen-space GI has to be told AFTER the pipelines exist: its compute pipeline is created by
+    // setup_pipeline above, and set_ssgi() warns when it is missing. Startup-only knobs - the
+    // intensity and the ray budget are read here rather than per frame, so turning the config value
+    // needs a restart (the overlay sliders are the live path).
+    runtime.set_ssgi(settings.render.ssgi,
+                     settings.render.ssgi_intensity,
+                     settings.render.ssgi_radius,
+                     static_cast<uint32_t>(settings.render.ssgi_rays),
+                     static_cast<uint32_t>(settings.render.ssgi_steps));
+    if (settings.render.ssgi) {
+        utility::log("ssgi: screen-space GI on (intensity {:.2f}, radius {:.2f} scene radii, {} rays x {} steps at half res)",
+                     settings.render.ssgi_intensity, settings.render.ssgi_radius, settings.render.ssgi_rays, settings.render.ssgi_steps);
+    }
 
     // 7. Collect the async startup results
     auto scenes = load_future.get();

@@ -251,6 +251,20 @@ namespace chores {
                 }
             }
         }
+
+        {
+            // Screen-space global illumination tracer: one bounce of diffuse indirect, marched against
+            // the depth buffer. Optional - without it set_ssgi(true) does nothing, and the frame is
+            // exactly what it was before GI existed (the composite's GI weight is 0).
+            std::vector<unsigned char> compute_code;
+            load_shader(shaders_dir, "ssgi.comp.spv", compute_code);
+            auto const ssgi_result = runtime.make_ssgi_pipeline(compute_code);
+            if (!ssgi_result) {
+                utility::log("screen-space GI disabled: {}", ssgi_result.error());
+            } else {
+                utility::log("SUCCESS: ssgi compute pipeline created (screen-space global illumination)");
+            }
+        }
     }
 
     // Optional instancing stress: grid_side > 1 (config or argv) draws the first imported

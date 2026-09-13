@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.25.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.26.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -341,6 +341,24 @@ namespace vulkan {
             // itself across resolutions instead of being a magic number per window size.
             float motion_gain = 1.0f;
         };
+        // ---- screen-space global illumination (see shaders/ssgi.comp) ----
+        std::optional<vk_pipeline> ssgi_pipeline = std::nullopt;
+        VkPipelineLayout ssgi_pipeline_layout = VK_NULL_HANDLE;
+        bool ssgi_on = false;
+        float ssgi_intensity = 0.7f; // scales the traced indirect against the IBL probe it overlaps
+        float ssgi_radius = 3.0f;    // ray length, view units
+        uint32_t ssgi_rays = 2;      // rays per pixel, per frame
+        uint32_t ssgi_steps = 6;     // depth samples per ray
+        // The tracer's ray sequence has to change every frame: a fixed one would feed a temporal
+        // denoiser the same error in the same place every frame instead of an average.
+        uint32_t ssgi_frame = 0;
+        struct ssgi_push_constants {
+            glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world (the block deferred.frag uses)
+            glm::vec4 params = glm::vec4(0.0f);        // x radius, y intensity, z rays, w steps
+            glm::vec4 proj_terms = glm::vec4(0.0f);    // x proj[2][2], y [3][2], z/w GI extent
+            glm::vec4 frame_info = glm::vec4(0.0f);    // x = frame counter (see ssgi_frame)
+        };
+
         struct deferred_push_constants {
             glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip (xy from the pixel, z = depth, w = 1) -> world
             // screen-space ambient occlusion (M6): x = radius, y = intensity (0 = off), z = samples,
@@ -470,6 +488,11 @@ namespace vulkan {
             // (UNORM attachment) gamma. The FXAA pass also forces it to 1: it renders into the R16F
             // LDR image, which must hold gamma-encoded values for FXAA's luma thresholds.
             float encode_gamma = 0.0f;
+            // composite only: the weight on the screen-space GI image (1 = GI is on and full strength,
+            // 0 = the added term is exactly zero, which is what keeps GI-off frames byte-identical).
+            // The tracer scales the signal itself; this is the on/off switch folded into the push block
+            // rather than a shader branch on a feature flag it cannot see.
+            float gi_intensity = 0.0f;
             // FXAA lanes (fxaa.frag): the sub-pixel term strength (0 = pure directional blend) and
             // the relative luma contrast below which a pixel counts as flat.
             float fxaa_subpixel = 0.75f;
@@ -1669,6 +1692,45 @@ namespace vulkan {
          */
         [[nodiscard]] std::string gpu_timing_summary() const;
 
+        /**
+         * @ingroup vulkan_runtime
+         * @brief create the screen-space GI compute pipeline from shaders/ssgi.comp
+         * @param compute_shader_code raw SPIR-V of the tracer
+         * @return success, or an error message on failure
+         * @note optional, and required for set_ssgi(true) to do anything. It reuses the shared
+         *       scene set and the G-buffer set (which carries the direct-radiance sampler and the
+         *       half-resolution image the tracer writes), so it owns only its pipeline layout -
+         *       which is why the deferred lighting pipeline has to exist first.
+         */
+        std::expected<void, std::string> make_ssgi_pipeline(std::span<unsigned char const> compute_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief enable screen-space GI and set its cost/quality knobs
+         * @param enabled trace one bounce of diffuse indirect from the G-buffer and add it
+         * @param intensity weight on the traced indirect. It exists because the IBL probe already
+         *        supplies some of this light and a screen-space trace only sees what is on screen:
+         *        the two overlap, and this is the reconciliation - not a taste knob
+         * @param radius ray length as a FRACTION of the scene radius, so one value means the same
+         *        thing on a 1.6-unit model and on Sponza's 18.5
+         * @param rays rays per pixel per frame (0..16); @param steps depth samples per ray (0..64)
+         * @note cost is the product of the two, at half resolution; GI is added by the post
+         *       composite, so it does not feed the bloom chain yet
+         */
+        void set_ssgi(bool enabled, float intensity, float radius, uint32_t rays, uint32_t steps) noexcept;
+
+        /** @brief whether the tracer runs this frame (see set_ssgi) */
+        [[nodiscard]] bool ssgi_active() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief record the screen-space GI dispatch into @p command_buffer
+         * @note called from record_post_process() right after the HDR target becomes a shader input
+         *       and before the composite that adds its output - the two facts that together keep the
+         *       tracer from sampling an image containing its own result (see the call site)
+         */
+        void record_ssgi_pass(VkCommandBuffer command_buffer);
+
         /** @brief how many channels the G-buffer debug view offers (see set_gbuffer_channel) */
         static constexpr int gbuffer_channel_count = 9;
 
@@ -1881,6 +1943,7 @@ namespace vulkan {
         struct render_features {
             bool unlit = false;         // the flat render mode (no lighting anywhere)
             bool gbuffer_debug = false; // the opaque pass stores the G-buffer for the debug view
+            bool ssgi = false;          // trace one bounce of screen-space diffuse indirect
             bool shadow = false;        // record the directional shadow pass
             bool clustered = false;     // record the cluster compute pass
             bool taa = false;           // resolve TAA
@@ -1912,7 +1975,8 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief whether a feature is available AND switched on right now (name-keyed)
          * @param name "gbuffer-debug", "taa", "fxaa", "shadow", "clustered",
-         *        "ssao", "bloom", "unlit", "transparent" - the same vocabulary as feature_available()
+         *        "ssao", "bloom", "unlit", "transparent", "ssgi" - the same vocabulary as
+         *        feature_available()
          *
          * This is what the overlay gates its controls on (`vulkan::gui::widget::visible_when`): a
          * control is offered exactly when switching it could change the frame. feature_available()

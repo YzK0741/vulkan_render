@@ -1,0 +1,209 @@
+#version 450
+
+/**
+ * @file shaders/ssgi.comp
+ * @brief Screen-space global illumination: one bounce of diffuse indirect light, at half resolution.
+ * @ingroup shaders
+ *
+ * This is the tracer, and it is deliberately the CHEAP half of a global-illumination system: it
+ * marches the depth buffer in screen space, so it can only see what is already on screen. A ray that
+ * leaves the frame finds nothing and contributes nothing, which is why the result is added ON TOP of
+ * the environment probe (shading.glsl's split-sum IBL) rather than replacing it - the probe is the
+ * off-screen fallback, and it is also why `ssgi_intensity` exists: the probe already claims some of
+ * this light, so the two together over-brighten unless the screen-space part is dialled back. Making
+ * the off-screen half correct is what a ray query (or a surface cache) buys, and it is a later step.
+ *
+ * WHAT IT SAMPLES, AND WHY THAT MATTERS MORE THAN THE MARCH
+ * The radiance at a hit comes from `direct_radiance` = the HDR scene target as it stands after the
+ * lighting stage. It is sampled by a pass that runs BEFORE the composite which adds this pass's
+ * output, and the whole image is rewritten earlier in every frame (by the TAA resolve, or by the
+ * G-buffer pass's clear when TAA is off). So the tracer can never read its own result. That is not a
+ * detail: a screen-space GI that samples an image containing its own previous output has a gain > 1
+ * around the loop and accumulates energy every frame.
+ *
+ * The output is `albedo * mean(radiance)` over cosine-weighted hemisphere rays, which is the
+ * one-bounce diffuse estimator - the pi factors cancel by construction. It is written at HALF
+ * resolution and upsampled by the composite, because the signal is low-frequency and this is the
+ * pass whose cost scales with sample count.
+ *
+ * Known limitations, stated rather than discovered later: geometry outside the frame contributes
+ * nothing; thin occluders are missed between steps; and alphaMode MASK surfaces are solid here,
+ * because a depth buffer has no alpha.
+ */
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform CameraUBO {
+    mat4 view;
+    mat4 proj;
+    vec4 camera_pos;
+} camera;
+
+// The G-buffer set (see runtime::ensure_gbuffer_descriptors): this pass reads the stored surface and
+// the direct radiance, and writes the GI image. The bindings it does not declare (material, velocity)
+// are still in the layout because the lighting stage and the debug view share it.
+layout(set = 1, binding = 0) uniform sampler2D gbuffer_albedo;   // RGBA8: albedo.rgb + metallic
+layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal;   // RGBA16F: world normal.xyz
+layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;    // the pass's own 1x depth
+layout(set = 1, binding = 5) uniform sampler2D direct_radiance;  // HDR scene target: DIRECT light only
+layout(set = 1, binding = 6, rgba16f) uniform image2D gi_output; // half-res indirect, one texel per invocation
+
+layout(push_constant) uniform SsgiPush {
+    mat4 inv_view_proj; // clip -> world (the same block deferred.frag uses)
+    // x = ray length in view units, y = intensity, z = rays per pixel, w = steps per ray
+    vec4 params;
+    // x = projection[2][2], y = [3][2] (the view-depth linearization pair), z/w = the GI extent
+    vec4 proj_terms;
+    // x = a per-frame counter, so the ray sequence differs every frame. A temporal denoiser needs
+    // that: a fixed sequence would keep making the same mistake in the same place.
+    vec4 frame_info;
+} pc;
+
+/**
+ * @brief view-space distance of a depth-buffer value
+ * @param z_ndc the stored depth in [0,1]
+ * @return a positive view-space distance
+ * @note the same inversion the G-buffer debug view uses: the stored z is (proj_22 * z_view +
+ *       proj_32) / -z_view, so z_view = proj_32 / (z_ndc + proj_22).
+ */
+float view_depth(float z_ndc) {
+    return pc.proj_terms.y / (z_ndc + pc.proj_terms.x);
+}
+
+/**
+ * @brief project a view-space point to the screen
+ * @param view_pos the point
+ * @param out_ndc_z the point's NDC depth
+ * @return the UV, in the same convention as the G-buffer's v_uv (0,0 top-left - the y flip is
+ *         already inside camera.proj, which is what makes a texture() at this UV line up)
+ */
+vec2 project_to_uv(vec3 view_pos, out float out_ndc_z) {
+    const vec4 clip = camera.proj * vec4(view_pos, 1.0);
+    const vec3 ndc = clip.xyz / clip.w;
+    out_ndc_z = ndc.z;
+    return ndc.xy * 0.5 + 0.5;
+}
+
+/**
+ * @brief a cosine-weighted direction in the hemisphere around @p n
+ * @param n the surface normal (any space; the result is in the same one)
+ * @param u1 / @p u2 two uniforms in [0,1)
+ * @return a unit direction, distributed as cos(theta)/pi
+ *
+ * Cosine weighting is what makes the estimator `albedo * mean(radiance)` with no extra factor, and it
+ * concentrates the rays where the cosine term is large - which is both correct and cheaper than
+ * uniform sampling for the same noise.
+ */
+vec3 cosine_direction(vec3 n, float u1, float u2) {
+    const float r = sqrt(u1);
+    const float phi = 6.283185307179586 * u2;
+    const vec3 helper = abs(n.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+    const vec3 tangent = normalize(cross(helper, n));
+    const vec3 bitangent = cross(n, tangent);
+    return normalize(tangent * (r * cos(phi)) + bitangent * (r * sin(phi)) + n * sqrt(max(1.0 - u1, 0.0)));
+}
+
+/** @brief a PCG-style integer hash: the ray sequence's only source of randomness */
+uint hash_u32(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+/** @brief the next uniform in [0,1) from @p state (a hash chain, so no table and no texture) */
+float next_uniform(inout uint state) {
+    state = hash_u32(state);
+    return float(state) * (1.0 / 4294967296.0);
+}
+
+/**
+ * @brief march @p dir from @p origin and report the first screen-space hit
+ * @param origin the view-space start (already pushed off the surface)
+ * @param dir the unit view-space direction
+ * @param max_distance how far to march, in view units
+ * @param steps how many samples to take along the way
+ * @param out_uv the UV of the hit
+ * @return true when the ray passed behind geometry that the depth buffer knows about
+ *
+ * The test is "is this sample behind the surface the depth buffer holds here": sample_view >
+ * buffer_view. The tolerance grows with distance because a screen-space march has no idea how the
+ * surface is sloped - a fixed epsilon either self-hits on a steep surface or lets a ray pass through
+ * a distant wall. A ray that runs off the frame or finds nothing is a miss, and a miss contributes
+ * zero: that is the honest answer for a technique that cannot see off screen.
+ */
+bool march(vec3 origin, vec3 dir, float max_distance, int steps, out vec2 out_uv) {
+    const float step_length = max_distance / float(steps);
+    for (int i = 1; i <= steps; ++i) {
+        const vec3 point = origin + dir * (step_length * float(i));
+        float ndc_z = 0.0;
+        const vec2 uv = project_to_uv(point, ndc_z);
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+            return false; // off screen: nothing to hit
+        }
+        const float buffer_ndc = texture(gbuffer_depth, uv).r;
+        if (buffer_ndc >= 1.0) {
+            continue; // empty space (the cleared far plane): keep marching
+        }
+        const float buffer_view = view_depth(buffer_ndc);
+        const float sample_view = -point.z; // view space looks down -Z, so depth is the negation
+        if (sample_view > buffer_view + max(0.02 * sample_view, 0.02)) {
+            out_uv = uv;
+            return true;
+        }
+    }
+    return false;
+}
+
+void main() {
+    const ivec2 gi_extent = ivec2(pc.proj_terms.zw);
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= gi_extent.x || pixel.y >= gi_extent.y) {
+        return; // the dispatch is rounded up to the workgroup size
+    }
+
+    const vec2 uv = (vec2(pixel) + 0.5) / vec2(gi_extent);
+    const float depth_ndc = texture(gbuffer_depth, uv).r;
+    if (depth_ndc >= 1.0) {
+        imageStore(gi_output, pixel, vec4(0.0)); // background: no surface, no bounce
+        return;
+    }
+
+    const int rays = int(pc.params.z);
+    const int steps = int(pc.params.w);
+    if (rays <= 0 || steps <= 0) {
+        imageStore(gi_output, pixel, vec4(0.0));
+        return;
+    }
+
+    // This pixel's surface, in both spaces: world (to match the G-buffer's stored normal) and view
+    // (which is where the march happens, because projection needs the view-space point anyway).
+    const vec4 clip = vec4(uv * 2.0 - 1.0, depth_ndc, 1.0);
+    const vec4 world_h = pc.inv_view_proj * clip;
+    const vec3 view_pos = (camera.view * vec4(world_h.xyz / world_h.w, 1.0)).xyz;
+
+    const vec3 normal_view = normalize(mat3(camera.view) * texture(gbuffer_normal, uv).xyz);
+    const vec3 albedo = texture(gbuffer_albedo, uv).rgb;
+
+    // A per-pixel, per-frame seed: the ray sequence has to change between frames or a temporal
+    // filter would be fed the same error every frame instead of an average of different errors.
+    uint state = hash_u32(uint(pixel.x) + uint(pixel.y) * 4096u + uint(pc.frame_info.x) * 2654435761u);
+
+    const float radius = pc.params.x;
+    vec3 radiance_sum = vec3(0.0);
+    for (int r = 0; r < rays; ++r) {
+        const vec3 dir = cosine_direction(normal_view, next_uniform(state), next_uniform(state));
+        // Start off the surface by a fraction of the ray length. Starting exactly on it makes the
+        // first step compare against the surface's own depth, which self-hits on any slope.
+        const vec3 origin = view_pos + normal_view * (radius * 0.02);
+        vec2 hit_uv;
+        if (march(origin, dir, radius, steps, hit_uv)) {
+            radiance_sum += texture(direct_radiance, hit_uv).rgb;
+        }
+    }
+
+    const vec3 indirect = albedo * (radiance_sum / float(rays)) * pc.params.y;
+    imageStore(gi_output, pixel, vec4(indirect, 1.0));
+}

@@ -600,6 +600,7 @@ set(VR_SHADER_INCLUDES
 set(VR_SHADER_SOURCES
     pbr.vert pbr.frag unlit.frag gbuffer.frag gbuffer_debug.frag deferred.frag taa.frag
     light_cluster.comp
+    ssgi.comp
     shadow.vert shadow.frag post.vert post.frag fxaa.frag
 )
 set(VR_SHADER_OUTPUTS "")

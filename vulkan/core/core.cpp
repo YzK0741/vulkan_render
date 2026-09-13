@@ -608,6 +608,27 @@ namespace vulkan {
             taa_history_image_views[i] = create_image_view(taa_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
         }
 
+        // The GI image (half resolution, one per swapchain image): STORAGE for the tracer's
+        // imageStore and SAMPLED for the composite's fetch. No TRANSFER_* - nothing copies it.
+        uint32_t const gi_width = std::max(1u, swap_chain_extent.width / 2u);
+        uint32_t const gi_height = std::max(1u, swap_chain_extent.height / 2u);
+        gi_images.resize(swap_chain_image_views.size());
+        gi_image_memories.resize(swap_chain_image_views.size());
+        gi_image_views.resize(swap_chain_image_views.size());
+        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_images[i],
+                gi_image_memories[i]);
+
+            gi_image_views[i] = create_image_view(gi_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+        }
+
         gbuffer_depth_images.resize(swap_chain_image_views.size());
         gbuffer_depth_image_memories.resize(swap_chain_image_views.size());
         gbuffer_depth_image_views.resize(swap_chain_image_views.size());
@@ -744,6 +765,7 @@ namespace vulkan {
             destroy_images(velocity_images, velocity_image_memories, velocity_image_views);
             destroy_images(scene_color_images, scene_color_image_memories, scene_color_image_views);
             destroy_images(taa_history_images, taa_history_image_memories, taa_history_image_views);
+            destroy_images(gi_images, gi_image_memories, gi_image_views);
             for (auto const& level_views : bloom_image_views) {
                 for (auto const& view : level_views) {
                     vkDestroyImageView(device, view, nullptr);
@@ -1313,6 +1335,7 @@ namespace vulkan {
         destroy_target_set(velocity_images, velocity_image_memories, velocity_image_views);
         destroy_target_set(scene_color_images, scene_color_image_memories, scene_color_image_views);
         destroy_target_set(taa_history_images, taa_history_image_memories, taa_history_image_views);
+        destroy_target_set(gi_images, gi_image_memories, gi_image_views);
 
         // 2d. Destroy the bloom targets (all levels)
         for (auto const& level_views : bloom_image_views) {

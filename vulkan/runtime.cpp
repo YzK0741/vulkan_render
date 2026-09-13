@@ -249,6 +249,11 @@ namespace vulkan {
             vkDestroyPipelineLayout(this->vulkan_core.device, this->deferred_pipeline_layout, nullptr);
             this->deferred_pipeline_layout = VK_NULL_HANDLE;
         }
+        // ... and the GI tracer's (same two sets, which is why it needs a layout of its own)
+        if (this->ssgi_pipeline_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(this->vulkan_core.device, this->ssgi_pipeline_layout, nullptr);
+            this->ssgi_pipeline_layout = VK_NULL_HANDLE;
+        }
         // ... and the TAA resolve's own objects (its set layout and layout are raw handles; the pool
         // belongs to taa_family, whose destructor destroys it and the generations it retired)
         if (this->taa_pipeline_layout != VK_NULL_HANDLE) {
@@ -2197,14 +2202,14 @@ namespace vulkan {
         auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
             // every set gets all six bindings; the unused ones point at the same view as binding 0
             // (binding 5 is the LDR image, which only the FXAA pass reads)
-            auto const write_set = [&vk_ref, this](VkDescriptorSet const set, std::array<VkImageView, 6> const& views) {
-                std::array<VkDescriptorImageInfo, 6> image_infos = {};
+            auto const write_set = [&vk_ref, this](VkDescriptorSet const set, std::array<VkImageView, 7> const& views) {
+                std::array<VkDescriptorImageInfo, 7> image_infos = {};
                 for (uint32_t b = 0; b < image_infos.size(); ++b) {
                     image_infos[b].sampler = *this->post_sampler;
                     image_infos[b].imageView = views[b];
                     image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 }
-                std::array<VkWriteDescriptorSet, 6> writes = {};
+                std::array<VkWriteDescriptorSet, 7> writes = {};
                 for (uint32_t b = 0; b < writes.size(); ++b) {
                     writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                     writes[b].dstSet = set;
@@ -2218,19 +2223,20 @@ namespace vulkan {
 
             VkImageView const hdr = vk_ref.hdr_image_views[image_index];
             VkImageView const ldr = vk_ref.ldr_image_views[image_index];
-            std::array<VkImageView, 6> const hdr_set = {hdr, hdr, hdr, hdr, hdr, ldr};
+            VkImageView const gi = vk_ref.gi_image_views[image_index];
+            std::array<VkImageView, 7> const hdr_set = {hdr, hdr, hdr, hdr, hdr, ldr, gi};
             write_set(sets[0], hdr_set);
 
             for (std::size_t level = 0; level < 3; ++level) {
                 VkImageView const input = vk_ref.bloom_image_views[level][image_index];
-                std::array<VkImageView, 6> const level_set = {input, input, input, input, input, ldr};
+                std::array<VkImageView, 7> const level_set = {input, input, input, input, input, ldr, gi};
                 write_set(sets[1 + level], level_set);
             }
 
-            std::array<VkImageView, 6> const composite_set = {hdr, vk_ref.bloom_image_views[0][image_index], vk_ref.bloom_image_views[1][image_index], vk_ref.bloom_image_views[2][image_index], vk_ref.bloom_image_views[3][image_index], ldr};
+            std::array<VkImageView, 7> const composite_set = {hdr, vk_ref.bloom_image_views[0][image_index], vk_ref.bloom_image_views[1][image_index], vk_ref.bloom_image_views[2][image_index], vk_ref.bloom_image_views[3][image_index], ldr, gi};
             write_set(sets[4], composite_set);
         };
-        if (!this->post_family.ensure_all(vk, this->post_set_layout, static_cast<uint32_t>(image_count), 5u, 6u, fingerprints, write_sets)) {
+        if (!this->post_family.ensure_all(vk, this->post_set_layout, static_cast<uint32_t>(image_count), 5u, 7u, fingerprints, write_sets)) {
             utility::log("runtime: post descriptor sets unavailable - post pass skipped");
         }
     }
@@ -2716,41 +2722,48 @@ namespace vulkan {
             return;
         }
         std::size_t const image_count = vk.gbuffer_image_views[0].size();
-        if (image_count == 0 || vk.gbuffer_depth_image_views.size() != image_count) {
+        if (image_count == 0 || vk.gbuffer_depth_image_views.size() != image_count || vk.hdr_image_views.size() != image_count || vk.gi_image_views.size() != image_count) {
             return;
         }
         // The family owns the rebinding rule now (see vulkan.bindings): the sets stay allocated, their
         // contents are rewritten only when the targets below change, and a pool replaced by a later
         // generation is retired rather than destroyed, because recorded frame command buffers still
         // name its sets. on_swapchain_recreated() retires the family, which is what forces the rewrite.
-        std::array<VkImageView, 5> const signature = {
+        std::array<VkImageView, 7> const signature = {
             vk.gbuffer_image_views[0][0],
             vk.gbuffer_image_views[1][0],
             vk.gbuffer_image_views[2][0],
             vk.gbuffer_depth_image_views[0],
-            vk.velocity_image_views[0]};
+            vk.velocity_image_views[0],
+            vk.hdr_image_views[0],
+            vk.gi_image_views[0]};
         // One set per image with one descriptor per binding: the three stored targets, the depth and
         // the motion-vector target - the same five the signature above fingerprints.
         // image_count is the generation's, signature is only the fingerprint of image 0 above - the two
         // are different things and the family needs both (see vulkan.bindings).
         auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            std::array<VkDescriptorImageInfo, 5> image_infos = {};
-            std::array<VkImageView, 5> const views = {
+            std::array<VkDescriptorImageInfo, 7> image_infos = {};
+            std::array<VkImageView, 7> const views = {
                 vk_ref.gbuffer_image_views[0][image_index],
                 vk_ref.gbuffer_image_views[1][image_index],
                 vk_ref.gbuffer_image_views[2][image_index],
                 vk_ref.gbuffer_depth_image_views[image_index],
-                vk_ref.velocity_image_views[image_index]};
-            std::array<VkWriteDescriptorSet, 5> writes = {};
+                vk_ref.velocity_image_views[image_index],
+                vk_ref.hdr_image_views[image_index], // 5: direct radiance, what a hit returns
+                vk_ref.gi_image_views[image_index]}; // 6: the GI image the tracer writes
+            std::array<VkWriteDescriptorSet, 7> writes = {};
             for (uint32_t b = 0; b < views.size(); ++b) {
-                image_infos[b].sampler = *this->gbuffer_sampler;
+                // 6 is a STORAGE image (a compute pass writes it) and therefore has no sampler and
+                // lives in GENERAL; the six sampler bindings are all SHADER_READ.
+                bool const storage = b == 6u;
+                image_infos[b].sampler = storage ? VK_NULL_HANDLE : *this->gbuffer_sampler;
                 image_infos[b].imageView = views[b];
-                image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                image_infos[b].imageLayout = storage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 writes[b].dstSet = sets[0];
                 writes[b].dstBinding = b;
                 writes[b].descriptorCount = 1;
-                writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[b].descriptorType = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                 writes[b].pImageInfo = &image_infos[b];
             }
             vkUpdateDescriptorSets(vk_ref.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
@@ -2758,6 +2771,85 @@ namespace vulkan {
         if (!this->gbuffer_family.ensure(vk, this->gbuffer_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
             utility::log("runtime: gbuffer debug descriptor sets unavailable - debug view skipped");
         }
+    }
+
+    bool runtime::ssgi_active() const noexcept {
+        // The tracer reads the direct radiance the lighting stage produced and the G-buffer depth it
+        // wrote, so that stage has to have run. The debug view replaces it, so there is no GI there.
+        return this->ssgi_on && this->ssgi_pipeline.has_value() && this->deferred_lit_active();
+    }
+
+    std::expected<void, std::string> runtime::make_ssgi_pipeline(std::span<unsigned char const> const compute_shader_code) {
+        using fail = std::unexpected<std::string>;
+        if (!this->deferred_pipeline.has_value()) {
+            return fail(std::string("ssgi: create the deferred lighting pipeline first (it owns the G-buffer set layout)"));
+        }
+        auto built = pipelines::build_ssgi(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, this->gbuffer_set_layout, sizeof(ssgi_push_constants), compute_shader_code);
+        if (!built) {
+            return fail(built.error());
+        }
+        this->ssgi_pipeline_layout = built->pipeline_layout;
+        this->ssgi_pipeline = std::move(built->trace);
+        return {};
+    }
+
+    void runtime::set_ssgi(bool const enabled, float const intensity, float const radius, uint32_t const rays, uint32_t const steps) noexcept {
+        this->ssgi_on = enabled;
+        this->ssgi_intensity = intensity;
+        this->ssgi_radius = radius;
+        this->ssgi_rays = std::clamp(rays, 0u, 16u);
+        this->ssgi_steps = std::clamp(steps, 0u, 64u);
+        if (enabled && !this->ssgi_pipeline.has_value()) {
+            this->warn_missing_feature("ssgi", "screen-space GI has no effect: its compute pipeline was not created (see the startup log)");
+        }
+    }
+
+    void runtime::record_ssgi_pass(VkCommandBuffer const command_buffer) {
+        core& vk = this->vulkan_core;
+        std::size_t const index = this->current_image_index;
+        if (index >= vk.gi_images.size() || vk.gi_images[index] == VK_NULL_HANDLE) {
+            return;
+        }
+        this->ensure_gbuffer_descriptors();
+        VkDescriptorSet const gbuffer_set = this->gbuffer_family.set(static_cast<uint32_t>(index), 0);
+        if (gbuffer_set == VK_NULL_HANDLE) {
+            return;
+        }
+
+        // The G-buffer depth, albedo and normal are already SHADER_READ (the lighting stage put them
+        // there) and so is the HDR scene target (record_post_process transitioned it just before this
+        // runs). Only the GI image needs anything: it is written as a storage image, so UNDEFINED ->
+        // GENERAL here and GENERAL -> SHADER_READ below, for the composite that samples it.
+        VkImageMemoryBarrier2 to_general = vulkan::undefined_to_general_transition;
+        to_general.image = vk.gi_images[index];
+        VkDependencyInfo const general_dependency = make_image_dependency_info(1, &to_general);
+        vkCmdPipelineBarrier2(command_buffer, &general_dependency);
+
+        // Same half-resolution rule as the images themselves (create_render_targets).
+        uint32_t const gi_width = std::max(1u, vk.swap_chain_extent.width / 2u);
+        uint32_t const gi_height = std::max(1u, vk.swap_chain_extent.height / 2u);
+
+        std::array<VkDescriptorSet, 2> const sets = {this->scene_sets.set(static_cast<uint32_t>(vk.current_frame)), gbuffer_set};
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_pipeline->get_pipeline());
+
+        // ssgi_radius is a FRACTION of the scene radius, so one value means the same thing on a 1.6
+        // unit model and on Sponza's 18.5 (the same reason shadow_fit works in scene units).
+        ssgi_push_constants const push = {
+            .inv_view_proj = this->current_inv_view_proj,
+            .params = glm::vec4(this->ssgi_radius * this->scene_radius, this->ssgi_intensity, static_cast<float>(this->ssgi_rays), static_cast<float>(this->ssgi_steps)),
+            .proj_terms = glm::vec4(this->current_ubo.proj[2][2], this->current_ubo.proj[3][2], static_cast<float>(gi_width), static_cast<float>(gi_height)),
+            .frame_info = glm::vec4(static_cast<float>(this->ssgi_frame), 0.0f, 0.0f, 0.0f)};
+        vkCmdPushConstants(command_buffer, this->ssgi_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+
+        constexpr uint32_t group_size = 8; // shaders/ssgi.comp's local_size_x/y
+        vkCmdDispatch(command_buffer, (gi_width + group_size - 1) / group_size, (gi_height + group_size - 1) / group_size, 1);
+
+        // A compute SHADER_WRITE is not visible to a later FRAGMENT_SHADER read without this.
+        VkImageMemoryBarrier2 to_sampling = vulkan::general_to_sampling_transition;
+        to_sampling.image = vk.gi_images[index];
+        VkDependencyInfo const sampling_dependency = make_image_dependency_info(1, &to_sampling);
+        vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
     }
 
     void runtime::record_gbuffer_debug_pass(VkCommandBuffer const command_buffer) {
@@ -2987,6 +3079,8 @@ namespace vulkan {
             .bloom_threshold = this->bloom_threshold,
             .mode = 2.0f,
             .encode_gamma = composite_encode_gamma,
+            // 0 when GI is off, which makes the composite's added term exactly zero
+            .gi_intensity = this->ssgi_active() ? 1.0f : 0.0f,
             .fxaa_subpixel = this->fxaa_subpixel,
             .fxaa_edge_threshold = this->fxaa_edge_threshold};
         this->record_fullscreen_triangle(command_buffer, composite_pipeline, composite_view, full_extent, this->post_family.set(image_index, 4), composite_push, /*overlay_after=*/!fxaa);
@@ -3034,6 +3128,29 @@ namespace vulkan {
 
         // HDR scene target -> fragment-shader read (the prefilter and the composite both read it)
         this->barrier_image_to_sampling(command_buffer, vk.hdr_images[index]);
+
+        // Screen-space GI runs HERE, and the position is the whole reason it cannot feed back: `hdr`
+        // was rewritten earlier in this frame (by the TAA resolve, or by the G-buffer pass's clear
+        // when TAA is off) and the composite that ADDS this pass's output is downstream, so what the
+        // tracer samples at a hit is direct radiance and never its own previous result. Sampling an
+        // image that already contained GI would make the loop gain > 1 and accumulate energy.
+        if (this->ssgi_active()) {
+            this->record_ssgi_pass(command_buffer);
+            ++this->ssgi_frame; // the next frame's ray sequence must differ (see ssgi_frame)
+        } else if (index < vk.gi_images.size() && vk.gi_images[index] != VK_NULL_HANDLE) {
+            // GI is off, but the composite's descriptor set still declares the GI image as a shader
+            // input - its shader uses that binding and multiplies it by a weight of 0, and Vulkan
+            // requires a statically-used binding's descriptor to be in the layout the write declared,
+            // whether or not the value ends up mattering. Nothing else touches the image in this case,
+            // so it would sit in UNDEFINED and every frame would be a layout error. This is the same
+            // situation the shadow map's spare layers are in, and the same answer: an UNDEFINED old
+            // layout asserts nothing (it discards the contents rather than claiming a layout), so the
+            // transition is valid whether the image is untouched or already readable.
+            VkImageMemoryBarrier2 to_sampling = vulkan::undefined_to_sampling_transition;
+            to_sampling.image = vk.gi_images[index];
+            VkDependencyInfo const sampling_dependency = make_image_dependency_info(1, &to_sampling);
+            vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
+        }
 
         // The G-buffer debug view forces the bloom weight to 0: bloom is a display effect, and a glow
         // smeared over the channel being inspected is the opposite of a debug view (it would also
@@ -3275,6 +3392,7 @@ namespace vulkan {
         render_features f;
         f.unlit = this->unlit_active;
         f.gbuffer_debug = this->gbuffer_debug && this->gbuffer_pipeline.has_value() && this->gbuffer_debug_pipeline.has_value();
+        f.ssgi = this->ssgi_active();
         // The G-buffer pass and its lighting stage are the engine's only scene path, so there is no
         // flag for them: taa/ssao below ask this instead, and the debug view stands in for the
         // lighting stage rather than running alongside it (the two write the HDR target differently).
@@ -3300,6 +3418,9 @@ namespace vulkan {
         render_features const f = this->active_features();
         if (name == "gbuffer-debug") {
             return f.gbuffer_debug;
+        }
+        if (name == "ssgi") {
+            return f.ssgi;
         }
         if (name == "taa") {
             return f.taa;
@@ -3371,6 +3492,9 @@ namespace vulkan {
         if (name == "clustered") {
             return this->cluster_pipeline.has_value();
         }
+        if (name == "ssgi") {
+            return this->ssgi_pipeline.has_value();
+        }
         return false;
     }
 
@@ -3378,8 +3502,9 @@ namespace vulkan {
         // One line naming every optional feature, so "why does this switch do nothing?" is answerable
         // from the log alone. `on` means the pipeline exists and the feature CAN run; whether it is
         // currently switched on is the overlay's and the config's business.
-        utility::log("features: gbuffer-debug={} taa={} fxaa={} shadow={} clustered-lights={}",
+        utility::log("features: gbuffer-debug={} ssgi={} taa={} fxaa={} shadow={} clustered-lights={}",
                      this->feature_available("gbuffer-debug") ? "on" : "UNAVAILABLE",
+                     this->feature_available("ssgi") ? "on" : "UNAVAILABLE",
                      this->feature_available("taa") ? "on" : "UNAVAILABLE",
                      this->feature_available("fxaa") ? "on" : "UNAVAILABLE",
                      this->feature_available("shadow") ? "on" : "UNAVAILABLE",

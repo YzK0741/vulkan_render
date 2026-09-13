@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.14.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.15.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -50,6 +50,11 @@ import utility;
  * gpu_timings = true  # measure + report per-pass GPU milliseconds (timestamp queries)
  * gbuffer_debug = false  # draw the G-buffer + one of its channels instead of the shaded scene
  * taa = false            # temporal anti-aliasing (jitter + resolved history)
+ * ssgi = false          # trace one bounce of screen-space diffuse indirect (adds to the IBL probe)
+ * ssgi_intensity = 0.7  # weight on the traced indirect (it overlaps the probe; see the note below)
+ * ssgi_radius = 0.12    # ray length as a fraction of the scene radius
+ * ssgi_rays = 2         # rays per pixel per frame (1..16)
+ * ssgi_steps = 6        # depth samples per ray (1..64)
  * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id,
  *                        # 6 depth, 7 flags, 8 motion (the motion vector, amplified - see the shader)
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
@@ -126,6 +131,17 @@ namespace app_config {
         // shadow_map_size^2 x 4 layers x 4 bytes per cascade set, per frame slot). Applied before the
         // scene import; the runtime clamps it to 256..8192 and rounds to a power of two.
         int shadow_map_size = 2048;
+        // Screen-space global illumination ([render] ssgi*): one bounce of diffuse indirect, traced
+        // against the depth buffer at half resolution and added by the post composite. It can only see
+        // what is on screen, so it is an ADDITION to the IBL probe rather than a replacement for it -
+        // which is why it has an intensity: the probe already claims some of this light, and the two
+        // together over-brighten unless the screen-space part is dialled back. `ssgi_radius` is a
+        // fraction of the scene radius, `ssgi_rays` x `ssgi_steps` is the cost per half-res pixel.
+        bool ssgi = false;
+        float ssgi_intensity = 0.7f;
+        float ssgi_radius = 0.12f;
+        int ssgi_rays = 2;
+        int ssgi_steps = 6;
         bool ssao = true;
         float ssao_radius = 0.5f;
         float ssao_intensity = 1.0f;

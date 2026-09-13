@@ -29,6 +29,7 @@ layout(set = 0, binding = 1) uniform sampler2D bloom_l0;     // composite only
 layout(set = 0, binding = 2) uniform sampler2D bloom_l1;
 layout(set = 0, binding = 3) uniform sampler2D bloom_l2;
 layout(set = 0, binding = 4) uniform sampler2D bloom_l3;
+layout(set = 0, binding = 6) uniform sampler2D gi_indirect; // composite only: screen-space GI, half res
 
 layout(push_constant) uniform PostPush {
     float exposure;        // linear exposure scale (runtime::set_exposure)
@@ -37,6 +38,8 @@ layout(push_constant) uniform PostPush {
     float mode;            // 0 prefilter / 1 downsample / 2 composite
     float encode_gamma;    // composite only: 1 = encode to sRGB by hand (non-sRGB swapchain), 0 = the
                            // attachment is an sRGB format and the hardware encodes on write
+    float gi_intensity;    // composite only: weight on gi_indirect. 0 when GI is off, which makes the
+                           // added term exactly zero - that is what keeps a GI-off frame unchanged
 } pc;
 
 /**
@@ -182,6 +185,12 @@ void main() {
     bloom += sample_tent(bloom_l3, v_uv) * 0.12;
 
     vec3 color = texture(source_color, v_uv).rgb;
+    // Screen-space GI, added to the DIRECT radiance the scene target holds. The tracer's output is
+    // half resolution, so this bilinear fetch is its upsample (the signal is low-frequency, which is
+    // why half resolution is affordable). It is added BEFORE the exposure so it goes through the same
+    // tonemapping as everything else, but AFTER the bloom chain - a bloom pass reads the scene target
+    // directly, so indirect light does not feed the glow yet.
+    color += texture(gi_indirect, v_uv).rgb * pc.gi_intensity;
     color += bloom * pc.bloom_intensity;
     color *= pc.exposure;
     color = aces_tone_mapping(color);

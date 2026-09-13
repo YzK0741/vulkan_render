@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.10.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -284,6 +284,15 @@ namespace vulkan {
         std::vector<VkImage> velocity_images = {};
         std::vector<VkDeviceMemory> velocity_image_memories = {};
         std::vector<VkImageView> velocity_image_views = {};
+
+        // ---- screen-space global illumination (see shaders/ssgi.comp) ----
+        // HALF resolution, one per swapchain image: the tracer writes it as a storage image and the
+        // post composite samples it back. Half res because the signal is low-frequency and this is
+        // the pass whose cost scales with sample count; the composite's bilinear fetch is the
+        // upsample. STORAGE because a compute pass writes a storage image, not an attachment.
+        std::vector<VkImage> gi_images = {};
+        std::vector<VkDeviceMemory> gi_image_memories = {};
+        std::vector<VkImageView> gi_image_views = {};
 
         // ---- temporal anti-aliasing (see runtime::set_taa) ----
         // The scene color TAA resolves FROM, one per swapchain image: when TAA is on, the geometry

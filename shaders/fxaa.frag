@@ -42,6 +42,11 @@ layout(push_constant) uniform PostPush {
     float bloom_threshold;
     float mode;
     float encode_gamma;
+    // Declared but unused here: post.frag's composite puts the screen-space GI weight in this slot,
+    // and the two shaders share this push block (and the post pipeline layout). A stage may declare
+    // FEWER members than the CPU writes, but not a different layout up to the ones it uses - without
+    // this line fxaa_subpixel would land on gi_intensity's offset and read the GI weight instead.
+    float gi_intensity;
     float fxaa_subpixel;      // 0 = pure directional blend, up to 1 = also blend away single-pixel aliasing
     float fxaa_edge_threshold; // relative luma contrast below which a pixel counts as flat (0.166 = FXAA default)
 } pc;
