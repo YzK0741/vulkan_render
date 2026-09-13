@@ -199,18 +199,27 @@ pixels and nothing beyond it (the half-float round trip through the trace image)
 +0.0028 against the feature's -1.3860), and the cost is +0.13 ms at one ray / +0.81 ms at four on the GPU
 timings' `gi` interval. `docs/gi_hit_shading.md`'s L2.3 section has all of it.
 
-WHAT IS LEFT OF L2.3, and it is the denoiser problem the plan warned about, now with a number. The
-subtraction happens after the joint-bilateral filter has averaged the estimate while the removed value is the
-centre pixel's own, so "a ray that misses changes nothing" is exact only with the filter bypassed: with it on
-and still nothing reachable, an isolated model moves by mean +0.027 with 1.0% of pixels beyond 4/255 and a
-worst pixel of 109. The DIFFUSE subtraction has carried the same artifact since it was written (the recorded
-+0.33 convex / +0.52 Sponza note). TWO FIXES ARE ON THE TABLE and `docs/gi_hit_shading.md`'s L2.3 section has
-the trade-off: filter the removed value with the same weights as the added one (architecturally consistent,
-costs 25 gathers per pixel), or have the glossy pass write the NET correction `E - ibl_specular` and drop the
-subtraction (exact for zero cost, but puts a bookkeeping term into an image the multi-bounce feedback re-emits
-- the property the L1 work fought for). Either way it re-baselines every GI capture, so it is its own step.
-Also open: the reflection is a point sample of the roughness cone (a low-roughness reflection aliases at half
-resolution), and its ray length is the diffuse bounce's radius rather than a reflection's own reach.
+WHAT IS LEFT OF L2.3, and it is NOT the denoiser problem the plan predicted - that hypothesis was measured
+and killed. At a ray length that reaches anything (radius 0.5 on the material sweep) the reflection's structure
+survives the shared joint-bilateral filter; the earlier "no reflection visible" reading was the RAY LENGTH,
+because `ssgi_radius` is a fraction of the scene radius and the 0.12 that reaches 4.6 units inside Sponza
+reaches 0.84 on a compact scene (measured curve: +0.48 / +0.74 / +0.92 / +1.09 at radius 0.12 / 0.25 / 0.50 /
+1.00). What is actually open: (1) the subtraction residual below, with its two candidate fixes; (2) the
+reflection is a point sample of the roughness cone, so a low-roughness reflection aliases at half resolution;
+(3) THE FEATURE IS NEARLY INVISIBLE ON THE SCENE EVERY OTHER GI MEASUREMENT USES (Sponza is roughened stone,
+its roughness channel averages 217/255), which is why the gate grew a `metal_rough_glossy` scenario and why
+the L2.3 evidence that matters is a MATERIAL-ordered table - smooth metal +10.57, rough metal +7.88, smooth
+dielectric +1.07, rough dielectric +0.08 - rather than a tile table.
+THE RESIDUAL, stated with its number: the subtraction happens after the joint-bilateral filter has averaged the
+estimate while the removed value is the centre pixel's own, so "a ray that misses changes nothing" is exact
+only with the filter bypassed. With it on and still nothing reachable, an isolated model moves by mean +0.027
+with 1.0% of pixels beyond 4/255 and a worst pixel of 109. The DIFFUSE subtraction has carried the same
+artifact since it was written (the recorded +0.33 convex / +0.52 Sponza note). TWO FIXES ARE ON THE TABLE and
+`docs/gi_hit_shading.md`'s L2.3 section has the trade-off: filter the removed value with the same weights as
+the added one (architecturally consistent, costs 25 gathers per pixel), or have the glossy pass write the NET
+correction `E - ibl_specular` and drop the subtraction (exact for zero cost, but puts a bookkeeping term into
+an image the multi-bounce feedback re-emits - the property the L1 work fought for). Either way it re-baselines
+every GI capture, so it is its own step.
 
 ## 5. Working discipline (non-negotiable; every item was learned the hard way here)
 
@@ -218,12 +227,14 @@ Gates before any commit:
 
 * Release, Debug and ASan+UBSan builds clean (`-Werror` is on everywhere);
 * `ctest` in the release build: 6/6;
-* the capture harness `scripts/windows/check_render.ps1`: 8 scenarios, each run twice, 0 changed - or the
+* the capture harness `scripts/windows/check_render.ps1`: 9 scenarios, each run twice, 0 changed - or the
   change recorded deliberately with its reason and the baseline re-recorded. Until the L2.1 step every
   scenario ran with `ssgi = false`, so the whole GI path (the screen-space chain, its denoisers, the probe
   cache, everything ray-traced) had no coverage and a break in it would have passed this gate; `sponza_gi`
-  exists for that, and a new subsystem should get its own scenario rather than a note. A new scenario's
-  reference is seeded once per machine with `-Update`;
+  exists for that, and a new subsystem should get its own scenario rather than a note (`metal_rough_glossy`
+  is the L2.3 one, and it exists because `sponza_gi` does not even enable hit shading, so the glossy lobe
+  would otherwise be exercised only in its OFF state - which is byte-identical by construction and therefore
+  covered by nothing). A new scenario's reference is seeded once per machine with `-Update`;
 * `doxygen Doxyfile`: exit 0 and an EMPTY warning stream. Capture the real exit code; piping doxygen into
   anything makes `$LASTEXITCODE` the pipeline's, and this was mistaken for a pass once;
 * every measurement run validation clean (the harness greps for `VUID-`, `Validation Error`, `[ERROR]`,
@@ -237,7 +248,7 @@ Habits that caught real errors here:
   slices in this session ended "the measurement disproved the hypothesis", and those are the valuable ones;
 * never commit what has not been verified: REVERT it and record why. Two rounds of this session ended in
   reverts, and that was the right call both times;
-* when a change is supposed to be invisible, say so and check it (all eight scenarios, 0 changed).
+* when a change is supposed to be invisible, say so and check it (all nine scenarios, 0 changed).
 * A CAPTURE OF AN ANIMATED SCENE IS NOT REPRODUCIBLE BY DEFAULT: playback is driven by the wall clock
   (`frame_clock::delta_seconds`), so two runs of one animated config differ (measured: identical means to
   four decimals, different pixels). `[render] animation_time = <seconds>` pins the pose - it sets the time

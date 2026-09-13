@@ -99,6 +99,21 @@ $scenarios = @(
                   ssgi_probe_rate = "0.08"; ssgi_probe_rounds = "2"; ssgi_probe_gain = "1.0" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\Sponza\glTF\Sponza.gltf"
        camera = "90,0,6.41,0,-18.548,0" }
+    # The GLOSSY lobe (`[render] ssgi_specular`), which no other scenario can exercise: Sponza is roughened
+    # stone everywhere (its roughness channel reads 217/255 on average), so replacing the environment's
+    # specular with a traced reflection moves its interior by ~2% and shows nothing recognisable. The
+    # metal/roughness sweep is the asset this feature is ABOUT - a grid from smooth metal (a mirror) to
+    # rough dielectric - and the measurement's shape is a material response, not a scene average: the effect
+    # is +10.6 on the smooth-metal spheres, +7.9 on the rough-metal ones, +1.1 on smooth dielectric and
+    # +0.08 on rough dielectric (see docs/gi_hit_shading.md's L2.3 section). Hit shading is on because the
+    # pass cannot shade a hit without it, and the probe cache is off so the scenario isolates the lobe.
+    # `camera = ""` is deliberate: this scenario lets the scene frame itself (see Invoke-Scenario).
+    @{ name = "metal_rough_glossy"; desc = "the material sweep + traced GI + the glossY lobe";
+       extra = @{ taa = "false"; ssgi = "true"; ssgi_intensity = "1.0"; ssgi_ray_tracing = "true";
+                  ssgi_hit_shading = "true"; ssgi_specular = "true"; ssgi_specular_rays = "1";
+                  ssgi_radius = "0.5"; ssgi_probes = "false"; camera_fit = "'exterior'" }
+       model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\MetalRoughSpheres\glTF\MetalRoughSpheres.gltf"
+       camera = "" }
 )
 
 if ($List) {
@@ -168,8 +183,15 @@ function Invoke-Scenario {
 
     # NOT $args: that is PowerShell's automatic argument array, and assigning to it is the kind of
     # thing that works until it does not.
+    #
+    # An EMPTY scenario camera means "let the scene frame itself" (camera_fit), and the flag is then
+    # omitted rather than passed empty: `--capture-camera=` with no numbers is not a valid pose, and one
+    # scenario needs the scene's own framing - the metal/roughness sweep, whose grid a pinned pose would
+    # have to be reverse-engineered for. camera_fit is deterministic for a static scene (the metadata
+    # rule, not the clock), which is the same reason a scenario may pin one.
     $scenarioCamera = if ($Scenario.ContainsKey('camera')) { $Scenario.camera } else { $Camera }
-    $launch = @("--config", $cfg, "--capture-frames", "$Frames", "--capture-camera=$scenarioCamera")
+    $launch = @("--config", $cfg, "--capture-frames", "$Frames")
+    if ($scenarioCamera) { $launch += "--capture-camera=$scenarioCamera" }
     $p = Start-Process -FilePath $exe -ArgumentList $launch -WorkingDirectory $workDir -PassThru -WindowStyle Hidden
     # the capture exits on its own; the timeout is a safety net, not the expected path
     if (-not $p.WaitForExit(180000)) { $p.Kill(); return @{ ok = $false; why = "timed out" } }

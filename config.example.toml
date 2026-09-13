@@ -281,7 +281,7 @@ ssgi_hit_shading = false
 # REQUIREMENTS: the traced GI path, `ssgi_hit_shading` and the acceleration structures' instance table (a
 # hit cannot be shaded without it). Where any is missing the pass is not even RECORDED, which is what makes
 # `ssgi_specular = false` byte-identical by construction rather than by arithmetic (verified: the capture
-# harness's 8 scenarios x 2, 0 changed).
+# harness's 9 scenarios x 2, 0 changed, `metal_rough_glossy` among them since L2.3).
 ssgi_specular = false
 # ssgi_specular_rays: how many glossy rays per pixel, 1 to 8. One is the feature's definition and what its
 # cost was measured at. The hit is a POINT sample of a cone whose width is the material's roughness, so this

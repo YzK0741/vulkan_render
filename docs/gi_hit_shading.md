@@ -1059,6 +1059,62 @@ takes the worst off, not all of it. Neither the ray length nor the exclusion of 
 reject was tuned: the length is the diffuse bounce's own radius, and a mirror that should reflect the far side
 of a room needs a longer reach than the light that bounced off the floor.
 
+### L2.3, the scene that actually shows it, and the two hypotheses that measurement killed
+
+THE FIRST LESSON IS ABOUT THE SCENE, and it was found by LOOKING at two captures rather than by another
+table: on Sponza the feature is nearly invisible (a 2.5% darkening), because Sponza's roughness channel reads
+217/255 on average - it is roughened stone from end to end - so the term being replaced is a weak, wide,
+ambient-like contribution and there is no reflection to see. The feature's whole justification ("a metal panel
+inside a room reflects the sky") is not exercised by the scene every other GI measurement uses. The asset that
+does exercise it is `MetalRoughSpheres`, a grid from smooth metal (a mirror) to rough dielectric.
+
+MEASURED ON THAT GRID, radius 0.5 (3.5 world units), sigma 2, 120 frames, A/B on `ssgi_specular` alone, the
+effect bucketed BY MATERIAL rather than by tile - the cleanest evidence this step produced, because it is the
+BRDF's own prediction rather than a spatial average:
+
+    mean green delta            dielectric      metal
+    smooth (roughness ~ 0)         +1.07        +10.57
+    rough  (roughness high)        +0.08         +7.88
+
+    by metallic alone:   dielectric +0.16 (50033 px)      metal +8.31 (135251 px)
+
+Rough dielectric is untouched (+0.08, i.e. 1/13 of a level on 46201 pixels - a dielectric's f0 is 0.04);
+smooth metal moves most (+10.57); the ordering inside each class follows the roughness, which is what the GGX
+lobe's width says it must. Nothing else about the pass could produce that pattern.
+
+THE RAY LENGTH IS THE DOMINANT LEVER ON A COMPACT SCENE, and the knob's units are why. `ssgi_radius` is a
+fraction of the SCENE radius, so the same 0.12 that reaches 4.6 units inside Sponza reaches 0.84 units here -
+less than the gap between two spheres. The effect as a function of it, same scene, same A/B:
+
+    radius   world units   mean green delta
+    0.12        0.84           +0.48
+    0.25        1.75           +0.74
+    0.50        3.50           +0.92
+    1.00        6.99           +1.09
+
+Monotone and decelerating, i.e. it saturates as the rays reach everything the compact scene contains. At 0.12
+the captures look almost identical to the feature being off; at 0.5 the smooth-metal spheres visibly carry
+patches of their neighbours. THE SAME 0.12 IS THE DEFAULT, and it is a reasonable default for an interior -
+this is a scene-scale hazard, not a wrong value, and it is worth stating because "I turned the feature on and
+saw nothing" is exactly the reading it produces.
+
+TWO HYPOTHESES THIS KILLED, both worth recording because each was plausible enough to have shaped the plan.
+(1) "The shared joint-bilateral filter destroys the reflection." It does not: at radius 0.5 the structure
+survives with sigma 2 (the effect is LARGER with the filter on - +0.92 against +0.79 at sigma 0, and 4.58% of
+pixels beyond 4/255 against 3.59% - because the filter averages the estimate over its neighbourhood while the
+subtraction removes only the centre's, which spreads and inflates it). The earlier "no reflection visible"
+reading was the ray length, not the filter. So the plan's own framing, "it brings a denoiser problem with it",
+is not what the measurement found; what the filter costs a sharp reflection is a bias to be measured on its
+own, not a blocker. (2) "The residual in the identity test is an arithmetic mismatch." It is not - see the
+control above, and the decomposition that identified it as hits.
+
+A GATE SCENARIO NOW COVERS IT (`metal_rough_glossy`, the ninth), and the reason is a coverage hole worth
+naming: `sponza_gi` does not enable `ssgi_hit_shading`, and the glossy pass is not even RECORDED without it -
+so the whole feature was exercised by the gate only in its OFF state, which is byte-identical by construction
+and therefore covered by nothing. The new scenario turns on hit shading and the lobe, keeps the probe cache
+off so it isolates this pass, and lets the scene frame itself (`camera = ""`, which the runner now supports)
+rather than pinning a pose that would have to be reverse-engineered from the fitted one.
+
 THE TWO CANDIDATE FIXES FOR THAT RESIDUAL, with the trade-off already visible, recorded so the next step does
 not have to re-derive it. (a) Filter the removed term with the same weights as the added one - 25 extra
 gathers per pixel, three texture fetches each, so the spatial filter's cost roughly triples - and do it for
