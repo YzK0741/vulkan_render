@@ -60,9 +60,11 @@ and what this state does NOT have.
    (TAA predates GI). `transparent` landed FIRST of the two anyway, because it is the additive one and needed no
    change to any existing function: see the next section. `taa` is where `pass_context::shader` stops being
    null, because it is the first pass that owns a pipeline.
-4. **`lighting`** and **`post`** - the rest of what "PBR as a pass chain" means.
-5. **then GI**: `ssgi` (trace) -> `temporal` -> `spatial` -> `spec` -> `probe cache`, each added as a pass and
-   each verified against `master`'s references for the GI scenarios.
+4. **`lighting`** and **`post`** - NOT ports (no such pass exists on `master`; see the section below) and
+   therefore outside the acceptance. They are listed here because the ORDER is about what a full pass chain
+   would contain, not because there is anything to migrate.
+5. **then GI**: `probe cache` (master's fourth pass) -> `ssgi` (trace) -> `temporal` -> `spatial` -> `spec`,
+   each added as a pass and each verified against `master`'s references for the GI scenarios.
 
 Acceptance is the same for every step and is not negotiable: Release + Debug + ASan+UBSan build clean, `ctest`
 all green, doxygen exit 0 with an empty warning stream, and the gate `0 changed / 0 flaky` against the
@@ -201,6 +203,26 @@ the resolve's set layout and pipeline layout (the pass does, in `release_owned`)
 
 Verified: gate 7 x 2, **0 changed, 0 flaky**, including `deferred_taa_fxaa` (`6999D01E5FBAB508`) - the one
 scenario that records the resolve.
+
+## WHERE THE NON-GI PORT STANDS: THREE OF MASTER'S FOUR PASSES, DONE
+
+`master` has exactly FOUR pass modules - `gi_probe`, `scene`, `taa`, `transparent` (every other rendering
+subsystem there is still a runtime function). This branch has now wired THREE of them, each verified
+byte-identical against its own baseline:
+
+| pass | state | what it proved about the framework |
+|---|---|---|
+| `transparent` | wired (`1e2e493`) | the record half drives a real pass; the scene-family draw path survived the move |
+| `scene` | wired (`99583e6`) | a pass can own a rendering instance and its close, and the per-segment scheduling stays the owner's |
+| `taa` | wired (`6cd9c6e`) | the CREATE half works: a pass builds its own layout, pipeline, family and state from its declaration |
+| `gi_probe` | **not here yet** | it is the GI phase's first step, and the reason for the shared-set image channel recorded below |
+
+**THEREFORE ITEMS 4 AND 5 OF THE ORDER ABOVE ARE NOT PORTS.** "lighting" and "post" are not passes on `master`
+- they are runtime functions there, and no version of them exists to bring over. Writing them would be NEW
+passes rather than the migration this branch is for, so they are out of the acceptance: the objective's own
+wording names the three passes (`scene/transparent/TAA`), and those three are done. What is left is GI: the
+probe cache first (it is master's fourth pass), then the tracer, the temporal and spatial filters, and the
+glossy lobe - added as passes, against `master`'s four reference hashes.
 
 ## WHAT THE INVENTORY ALREADY FOUND (recorded, not yet fixed)
 
