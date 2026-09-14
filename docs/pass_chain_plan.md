@@ -483,19 +483,29 @@ Each of the two failed attempts is preserved in this document rather than in the
 `b7633e0`, whose code is `f117f29` (fully verified: Release/Debug/ASan, ctest, doxygen, gate 12 x 2 with 0
 changed and 0 flaky), because a half-wired pass is worse than an unimplemented one.
 
-## WHAT THE INVENTORY ALREADY FOUND (recorded, not yet fixed)
+## WHAT THE INVENTORY ALREADY FOUND (RE-AUDITED AGAINST THE CURRENT TREE)
 
-* The named scene pipelines are built with `swap_chain_image_format` (`B8G8R8A8_SRGB`) while the transparent
-  pass's instance declares `vulkan::hdr_format` (`R16G16B16A16_SFLOAT`) for its single colour attachment. The
-  gate reports no validation finding on this state, so it is either tolerated or the formats are in fact
-  compatible - but a declaration that names its target's format would settle it, which is one of the reasons
-  the transparent pass gets a declaration.
-* `sampler_hint::probe_grid` is part of the hint vocabulary on this branch, and no sampler backs it here (the
-  six-hint set is `master`'s). A hint nothing can resolve is a lie in the vocabulary.
-* Stale references in comments and docs: a "skybox" pipeline that does not exist (the sky is evaluated inside
-  the lighting stage's shader), a `draw_skybox` parameter that no signature has, an implemented-but-undocumented
-  `feature_available("skybox")`, an overlay-record comment pointing at the wrong function, and a shadow-sampler
-  doc that contradicts `constant_init`.
+The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought `master`'s files over, so most
+of these were FIXED by that - and a stale finding is its own defect in the record, which is why each entry now
+says what a re-audit of the current tree found.
+
+* **STILL OPEN - the transparent pass's attachment format vs the named scene pipelines.** `runtime::make_pipeline`
+  builds the named scene pipelines with `vk.swap_chain_image_format` while the transparent pass's declaration
+  names `vulkan::hdr_format` for its single colour attachment. The gate reports no validation finding on this
+  state, so it is either tolerated or the formats are compatible - but a declaration that names its target's
+  format would settle it. **This one is a real, open question.**
+* **RESOLVED - `sampler_hint::probe_grid` with no backing sampler.** The hint now has one:
+  `gi_probe_sampler` is created for the probe cache's declaration to choose, and `shared_samplers()` fills that
+  slot. The "lying vocabulary" was a property of the pre-GI state, not of the schema.
+* **RESOLVED - the "skybox" references.** `draw_skybox` does not exist as a parameter, nothing implements
+  `feature_available("skybox")` (zero hits), and the only remaining mentions of a skybox are comments that say
+  the pass was REMOVED ("the same function the removed forward skybox pass used"). The vocabulary is clean.
+* **RESOLVED - the shadow-sampler doc.** `core::make_shadow_sampler` really does build a depth-compare sampler
+  (`make_shadow_sampler_info`, with the comment naming the PCF contract), which is what the runtime's member
+  comment claims. The two agree.
+* **NOT RE-VERIFIED - "an overlay-record comment pointing at the wrong function".** The audit did not locate it
+  (the overlay's own comments and the `gui` import read correctly), so it is neither confirmed nor denied here
+  rather than being repeated as fact.
 
 ## HANDOFF: WHERE THIS STANDS AND WHAT IS LEFT, EXACTLY
 
