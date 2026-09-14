@@ -703,7 +703,7 @@ namespace vulkan::pipelines {
         // THAT THE GENERATED LAYOUT IS THE ONE THIS FUNCTION CARRIED IS ASSERTED BY THE CAPTURE GATE, not by a
         // comment: `sponza_gi` is the scenario that runs with the probe cache ON, so its frame is compared byte
         // for byte across this change.
-        std::expected<VkDescriptorSetLayout, std::string> const layout = bindings::make_set_layout(vk, render_resource::gi_probe_io, render_resource::gi_probe_io.own_set);
+        std::expected<VkDescriptorSetLayout, std::string> const layout = bindings::make_set_layout(vk.device, render_resource::gi_probe_io, render_resource::gi_probe_io.own_set);
         if (!layout.has_value()) {
             return fail(layout.error());
         }

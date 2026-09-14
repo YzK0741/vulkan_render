@@ -2436,11 +2436,11 @@ namespace vulkan {
         // image's five sets are written.
         std::array<std::span<VkImageView const>, 6> const fingerprints = {
             vk.hdr_image_views, vk.bloom_image_views[0], vk.ldr_image_views, vk.gi_spatial_image_views, vk.gbuffer_depth_image_views, vk.gbuffer_image_views[1]};
-        auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
+        auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
             // every set gets all nine bindings; the unused ones point at the same view as binding 0
             // (binding 5 is the LDR image, which only the FXAA pass reads, and 7/8 are the G-buffer
             // depth and normal, which only the composite's GI upsample reads)
-            auto const write_set = [&vk_ref, this](VkDescriptorSet const set, std::array<VkImageView, 9> const& views) {
+            auto const write_set = [this](VkDescriptorSet const set, std::array<VkImageView, 9> const& views) {
                 std::array<VkDescriptorImageInfo, 9> image_infos = {};
                 for (uint32_t b = 0; b < image_infos.size(); ++b) {
                     // The composite's GI upsample taps the depth and the normal AT texel centres, and
@@ -2466,38 +2466,38 @@ namespace vulkan {
                     writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                     writes[b].pImageInfo = &image_infos[b];
                 }
-                vkUpdateDescriptorSets(vk_ref.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+                vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
             };
 
-            VkImageView const hdr = vk_ref.hdr_image_views[image_index];
-            VkImageView const ldr = vk_ref.ldr_image_views[image_index];
+            VkImageView const hdr = this->vulkan_core.hdr_image_views[image_index];
+            VkImageView const ldr = this->vulkan_core.ldr_image_views[image_index];
             // The FILTERED GI (the last pass of the GI chain), not the raw trace or the temporal
             // accumulation: the composite is the consumer of the denoiser's output, and the earlier
             // images are bound in the G-buffer set or in the denoiser's own set instead.
-            VkImageView const gi = vk_ref.gi_spatial_image_views[image_index];
-            VkImageView const depth = vk_ref.gbuffer_depth_image_views[image_index];
-            VkImageView const normal = vk_ref.gbuffer_image_views[1][image_index];
+            VkImageView const gi = this->vulkan_core.gi_spatial_image_views[image_index];
+            VkImageView const depth = this->vulkan_core.gbuffer_depth_image_views[image_index];
+            VkImageView const normal = this->vulkan_core.gbuffer_image_views[1][image_index];
             std::array<VkImageView, 9> const hdr_set = {hdr, hdr, hdr, hdr, hdr, ldr, gi, depth, normal};
             write_set(sets[0], hdr_set);
 
             for (std::size_t level = 0; level < 3; ++level) {
-                VkImageView const input = vk_ref.bloom_image_views[level][image_index];
+                VkImageView const input = this->vulkan_core.bloom_image_views[level][image_index];
                 std::array<VkImageView, 9> const level_set = {input, input, input, input, input, ldr, gi, depth, normal};
                 write_set(sets[1 + level], level_set);
             }
 
             std::array<VkImageView, 9> const composite_set = {hdr,
-                                                              vk_ref.bloom_image_views[0][image_index],
-                                                              vk_ref.bloom_image_views[1][image_index],
-                                                              vk_ref.bloom_image_views[2][image_index],
-                                                              vk_ref.bloom_image_views[3][image_index],
+                                                              this->vulkan_core.bloom_image_views[0][image_index],
+                                                              this->vulkan_core.bloom_image_views[1][image_index],
+                                                              this->vulkan_core.bloom_image_views[2][image_index],
+                                                              this->vulkan_core.bloom_image_views[3][image_index],
                                                               ldr,
                                                               gi,
                                                               depth,
                                                               normal};
             write_set(sets[4], composite_set);
         };
-        if (!this->post_family.ensure_all(vk, this->post_set_layout, static_cast<uint32_t>(image_count), 5u, 9u, fingerprints, write_sets)) {
+        if (!this->post_family.ensure_all(vk.device, this->post_set_layout, static_cast<uint32_t>(image_count), 5u, 9u, fingerprints, write_sets)) {
             utility::log("runtime: post descriptor sets unavailable - post pass skipped");
         }
     }
@@ -2832,8 +2832,8 @@ namespace vulkan {
         // The family owns the rebinding rule and the pool lifetime now (see vulkan.bindings): the sets
         // stay allocated, their contents are rewritten only when the views above change, and a pool a
         // later generation replaces is retired rather than destroyed.
-        auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            std::array<VkImageView, 4> const views = {vk_ref.scene_color_image_views[image_index], vk_ref.taa_history_image_views[image_index], vk_ref.velocity_image_views[image_index], vk_ref.gbuffer_depth_image_views[image_index]};
+        auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
+            std::array<VkImageView, 4> const views = {this->vulkan_core.scene_color_image_views[image_index], this->vulkan_core.taa_history_image_views[image_index], this->vulkan_core.velocity_image_views[image_index], this->vulkan_core.gbuffer_depth_image_views[image_index]};
             std::array<VkDescriptorImageInfo, 4> image_infos = {};
             std::array<VkWriteDescriptorSet, 4> writes = {};
             for (uint32_t b = 0; b < views.size(); ++b) {
@@ -2847,10 +2847,10 @@ namespace vulkan {
                 writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                 writes[b].pImageInfo = &image_infos[b];
             }
-            vkUpdateDescriptorSets(vk_ref.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         };
         // image_count is the generation's, signature is the fingerprint of image 0 above: two things.
-        if (!this->taa_family.ensure(vk, this->taa_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
+        if (!this->taa_family.ensure(vk.device, this->taa_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
             utility::log("runtime: taa descriptor sets unavailable - TAA skipped");
         }
     }
@@ -3091,31 +3091,31 @@ namespace vulkan {
         // the same fifteen the signature above fingerprints.
         // image_count is the generation's, signature is only the fingerprint of image 0 above - the two
         // are different things and the family needs both (see vulkan.bindings).
-        auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
+        auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
             std::array<VkDescriptorImageInfo, 16> image_infos = {};
             std::array<VkImageView, 16> const views = {
-                vk_ref.gbuffer_image_views[0][image_index],
-                vk_ref.gbuffer_image_views[1][image_index],
-                vk_ref.gbuffer_image_views[2][image_index],
-                vk_ref.gbuffer_depth_image_views[image_index],
-                vk_ref.velocity_image_views[image_index],
-                vk_ref.hdr_image_views[image_index],        // 5: direct radiance, what a hit returns
-                vk_ref.gi_image_views[image_index],         // 6: the RAW trace the tracer writes
-                vk_ref.gi_resolve_image_views[image_index], // 7: the accumulation the filter reads
-                vk_ref.gi_spatial_image_views[image_index], // 8: the filtered GI the composite reads
+                this->vulkan_core.gbuffer_image_views[0][image_index],
+                this->vulkan_core.gbuffer_image_views[1][image_index],
+                this->vulkan_core.gbuffer_image_views[2][image_index],
+                this->vulkan_core.gbuffer_depth_image_views[image_index],
+                this->vulkan_core.velocity_image_views[image_index],
+                this->vulkan_core.hdr_image_views[image_index],        // 5: direct radiance, what a hit returns
+                this->vulkan_core.gi_image_views[image_index],         // 6: the RAW trace the tracer writes
+                this->vulkan_core.gi_resolve_image_views[image_index], // 7: the accumulation the filter reads
+                this->vulkan_core.gi_spatial_image_views[image_index], // 8: the filtered GI the composite reads
                 // 9..12: the world-space probe cache's four SH-2 coefficients (one copy for the whole
                 // device, so index 0 rather than this image's - see the ping-pong in record_gi_probe_pass:
                 // the cache side is always the one the tracer reads).
-                vk_ref.gi_probe_image_views[0],
-                vk_ref.gi_probe_image_views[1],
-                vk_ref.gi_probe_image_views[2],
-                vk_ref.gi_probe_image_views[3],
+                this->vulkan_core.gi_probe_image_views[0],
+                this->vulkan_core.gi_probe_image_views[1],
+                this->vulkan_core.gi_probe_image_views[2],
+                this->vulkan_core.gi_probe_image_views[3],
                 // 13 and 14: the glossy lobe's own two outputs (see core.cppm's gi_spec_*).
-                vk_ref.gi_spec_image_views[image_index],
-                vk_ref.gi_spec_reproject_image_views[image_index],
+                this->vulkan_core.gi_spec_image_views[image_index],
+                this->vulkan_core.gi_spec_reproject_image_views[image_index],
                 // 15: the reflection's own accumulation, which the spatial filter samples and sums the
                 // diffuse one into (see shaders/ssgi_spatial.comp and ssgi_temporal.comp's mode 1).
-                vk_ref.gi_spec_resolve_image_views[image_index]};
+                this->vulkan_core.gi_spec_resolve_image_views[image_index]};
             std::array<VkWriteDescriptorSet, 16> writes = {};
             for (uint32_t b = 0; b < views.size(); ++b) {
                 // 6, 8, 13 and 14 are STORAGE images (a compute pass writes each) and therefore have no
@@ -3134,9 +3134,9 @@ namespace vulkan {
                 writes[b].descriptorType = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                 writes[b].pImageInfo = &image_infos[b];
             }
-            vkUpdateDescriptorSets(vk_ref.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         };
-        if (!this->gbuffer_family.ensure(vk, this->gbuffer_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
+        if (!this->gbuffer_family.ensure(vk.device, this->gbuffer_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
             utility::log("runtime: gbuffer debug descriptor sets unavailable - debug view skipped");
         }
     }
@@ -3409,22 +3409,22 @@ namespace vulkan {
         std::array<VkImageView, 7> const signature = {vk.gi_image_views[0], vk.gi_history_image_views[0], vk.velocity_image_views[0],
                                                       vk.gbuffer_depth_image_views[0], vk.gi_resolve_image_views[0], vk.gbuffer_image_views[1][0],
                                                       vk.gbuffer_depth_image_views[0]};
-        auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
+        auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
             std::array<VkDescriptorImageInfo, 7> image_infos = {};
             std::array<VkImageView, 7> const views = {
-                vk_ref.gi_image_views[image_index],
-                vk_ref.gi_history_image_views[image_index],
-                vk_ref.velocity_image_views[image_index],
-                vk_ref.gbuffer_depth_image_views[image_index],
-                vk_ref.gi_resolve_image_views[image_index],
-                vk_ref.gbuffer_image_views[1][image_index],
+                this->vulkan_core.gi_image_views[image_index],
+                this->vulkan_core.gi_history_image_views[image_index],
+                this->vulkan_core.velocity_image_views[image_index],
+                this->vulkan_core.gbuffer_depth_image_views[image_index],
+                this->vulkan_core.gi_resolve_image_views[image_index],
+                this->vulkan_core.gbuffer_image_views[1][image_index],
                 // Binding 6 is the REFLECTION's reprojection, which only mode 1 reads. The diffuse dispatch
                 // still has to name a valid view there (a shader that samples it in a branch leaves the
                 // access in the SPIR-V, so validation checks the descriptor whether or not the branch is
                 // taken), and binding the lobe's image would make the diffuse resolve require a layout that
                 // only the lobe maintains - which fails on exactly the frames the lobe is OFF. The depth
                 // target is always readable on a frame that resolves anything, and mode 0 ignores the value.
-                vk_ref.gbuffer_depth_image_views[image_index]};
+                this->vulkan_core.gbuffer_depth_image_views[image_index]};
             std::array<VkWriteDescriptorSet, 7> writes = {};
             for (uint32_t b = 0; b < views.size(); ++b) {
                 // 4 is the STORAGE image the resolve writes: no sampler, and GENERAL rather than
@@ -3440,9 +3440,9 @@ namespace vulkan {
                 writes[b].descriptorType = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                 writes[b].pImageInfo = &image_infos[b];
             }
-            vkUpdateDescriptorSets(vk_ref.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         };
-        if (!this->ssgi_temporal_family.ensure(vk, this->ssgi_temporal_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
+        if (!this->ssgi_temporal_family.ensure(vk.device, this->ssgi_temporal_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
             utility::log("runtime: GI denoiser descriptor sets unavailable - this frame has no GI (its weight stays 0)");
         }
         // ... and the reflection's own resolve: the SAME layout with a different list of images, which is what
@@ -3453,16 +3453,16 @@ namespace vulkan {
         std::array<VkImageView, 7> const spec_signature = {vk.gi_spec_image_views[0], vk.gi_spec_history_image_views[0], vk.velocity_image_views[0],
                                                            vk.gbuffer_depth_image_views[0], vk.gi_spec_resolve_image_views[0], vk.gbuffer_image_views[1][0],
                                                            vk.gi_spec_reproject_image_views[0]};
-        auto const write_spec_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
+        auto const write_spec_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
             std::array<VkDescriptorImageInfo, 7> image_infos = {};
             std::array<VkImageView, 7> const views = {
-                vk_ref.gi_spec_image_views[image_index],
-                vk_ref.gi_spec_history_image_views[image_index],
-                vk_ref.velocity_image_views[image_index],
-                vk_ref.gbuffer_depth_image_views[image_index],
-                vk_ref.gi_spec_resolve_image_views[image_index],
-                vk_ref.gbuffer_image_views[1][image_index],
-                vk_ref.gi_spec_reproject_image_views[image_index]};
+                this->vulkan_core.gi_spec_image_views[image_index],
+                this->vulkan_core.gi_spec_history_image_views[image_index],
+                this->vulkan_core.velocity_image_views[image_index],
+                this->vulkan_core.gbuffer_depth_image_views[image_index],
+                this->vulkan_core.gi_spec_resolve_image_views[image_index],
+                this->vulkan_core.gbuffer_image_views[1][image_index],
+                this->vulkan_core.gi_spec_reproject_image_views[image_index]};
             std::array<VkWriteDescriptorSet, 7> writes = {};
             for (uint32_t b = 0; b < views.size(); ++b) {
                 bool const storage = b == 4u;
@@ -3476,9 +3476,9 @@ namespace vulkan {
                 writes[b].descriptorType = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                 writes[b].pImageInfo = &image_infos[b];
             }
-            vkUpdateDescriptorSets(vk_ref.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         };
-        if (!this->ssgi_spec_temporal_family.ensure(vk, this->ssgi_temporal_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(spec_signature.size()), spec_signature, write_spec_sets)) {
+        if (!this->ssgi_spec_temporal_family.ensure(vk.device, this->ssgi_temporal_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(spec_signature.size()), spec_signature, write_spec_sets)) {
             utility::log("runtime: GI reflection descriptor sets unavailable - this frame's reflection is not resolved");
         }
     }
@@ -3783,7 +3783,7 @@ namespace vulkan {
         // the scratch, set 1 the other way round. Choosing a set per dispatch is why the propagation needs
         // no descriptor rewrite between its dispatches (see record_gi_probe_pass). The two sides are at
         // index side * 4 + coefficient.
-        auto const write_sets = [this](core const& vk_ref, uint32_t const /*image_index*/, std::span<VkDescriptorSet const> const sets) {
+        auto const write_sets = [this](uint32_t const /*image_index*/, std::span<VkDescriptorSet const> const sets) {
             // The nine views are all this lambda still decides, because WHICH half of the ping-pong each of the
             // family's two sets reads and writes is the one thing that differs between them. Everything else -
             // the nine binding numbers, their descriptor types, their counts, their GENERAL layouts (all nine,
@@ -3795,17 +3795,17 @@ namespace vulkan {
                 uint32_t const read_side = (1u - which) * 4u;
                 uint32_t const write_side = which * 4u;
                 std::array<VkImageView, 9> const views = {
-                    vk_ref.gi_probe_image_views[read_side + 0u],
-                    vk_ref.gi_probe_image_views[read_side + 1u],
-                    vk_ref.gi_probe_image_views[read_side + 2u],
-                    vk_ref.gi_probe_image_views[read_side + 3u],
-                    vk_ref.gi_probe_image_views[write_side + 0u],
-                    vk_ref.gi_probe_image_views[write_side + 1u],
-                    vk_ref.gi_probe_image_views[write_side + 2u],
-                    vk_ref.gi_probe_image_views[write_side + 3u],
-                    vk_ref.gi_probe_surface_image_views[0]};
+                    this->vulkan_core.gi_probe_image_views[read_side + 0u],
+                    this->vulkan_core.gi_probe_image_views[read_side + 1u],
+                    this->vulkan_core.gi_probe_image_views[read_side + 2u],
+                    this->vulkan_core.gi_probe_image_views[read_side + 3u],
+                    this->vulkan_core.gi_probe_image_views[write_side + 0u],
+                    this->vulkan_core.gi_probe_image_views[write_side + 1u],
+                    this->vulkan_core.gi_probe_image_views[write_side + 2u],
+                    this->vulkan_core.gi_probe_image_views[write_side + 3u],
+                    this->vulkan_core.gi_probe_surface_image_views[0]};
                 render_resource::shared::sampler_set const samplers = {.probe_grid = *this->gi_probe_sampler};
-                auto const written = bindings::write_set(vk_ref, render_resource::gi_probe_io, render_resource::gi_probe_io.own_set, sets[which], views, {}, samplers);
+                auto const written = bindings::write_set(this->vulkan_core.device, render_resource::gi_probe_io, render_resource::gi_probe_io.own_set, sets[which], views, {}, samplers);
                 if (!written) {
                     utility::log("runtime: probe cache descriptors: {}", written.error());
                 }
@@ -3816,7 +3816,7 @@ namespace vulkan {
         // bug (a pool sized for four descriptors per set while the layout asked for five). A pool size is a
         // capacity rather than an allocation, so deriving it costs nothing.
         uint32_t const own_descriptors = render_resource::descriptor_counts_for(render_resource::gi_probe_io, render_resource::gi_probe_io.own_set).total();
-        if (!this->gi_probe_family.ensure_all(vk, this->gi_probe_set_layout, static_cast<uint32_t>(image_count), 2u, own_descriptors, fingerprints, write_sets)) {
+        if (!this->gi_probe_family.ensure_all(vk.device, this->gi_probe_set_layout, static_cast<uint32_t>(image_count), 2u, own_descriptors, fingerprints, write_sets)) {
             utility::log("runtime: probe cache descriptor sets unavailable - the tracer keeps its environment fallback");
         }
     }

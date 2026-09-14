@@ -1,4 +1,4 @@
-// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/bindings/bindings.cppm
@@ -101,7 +101,8 @@ namespace vulkan::bindings {
 
     /**
      * @brief build a `VkDescriptorSetLayout` from a pass's declaration
-     * @param vk the device to create it on
+     * @param device the device to create it on (a DEVICE rather than the core: the generator needs nothing
+     *        else, and this is what lets a pass build its own set layout out of what the host gives it)
      * @param io the declaration; its bindings for @p set become the layout, and everything else is ignored
      * @param set which set to generate - the pass's own, normally `io.own_set`
      * @return the layout, or a message naming the pass and the set it was building
@@ -111,7 +112,7 @@ namespace vulkan::bindings {
      * a pass's own bindings to be numbered contiguously from zero: the generated layout is then the same thing
      * the shader declares, and the number in the shader and the number in the declaration cannot drift.
      */
-    export [[nodiscard]] inline std::expected<VkDescriptorSetLayout, std::string> make_set_layout(core const& vk, render_resource::pass_io const& io, uint32_t const set) {
+    export [[nodiscard]] inline std::expected<VkDescriptorSetLayout, std::string> make_set_layout(VkDevice const device, render_resource::pass_io const& io, uint32_t const set) {
         std::array<VkDescriptorSetLayoutBinding, max_set_bindings> bindings = {};
         uint32_t count = 0;
         for (render_resource::pass_binding const& b : io.bindings) {
@@ -133,7 +134,7 @@ namespace vulkan::bindings {
         layout_info.bindingCount = count;
         layout_info.pBindings = bindings.data();
         VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-        if (vkCreateDescriptorSetLayout(vk.device, &layout_info, nullptr, &layout) != VK_SUCCESS) {
+        if (vkCreateDescriptorSetLayout(device, &layout_info, nullptr, &layout) != VK_SUCCESS) {
             return std::unexpected(std::string(io.name) + ": set " + std::to_string(set) + " layout creation failed");
         }
         return layout;
@@ -157,7 +158,8 @@ namespace vulkan::bindings {
 
     /**
      * @brief write a set's descriptors from a pass's declaration
-     * @param vk the device that owns @p target
+     * @param device the device that owns @p target (only the device is needed, so a pass can generate its
+     *        own writes without being handed anything that could create or destroy a resource)
      * @param io the declaration whose bindings for @p set are written
      * @param set which set to write
      * @param target the descriptor set to write into
@@ -176,7 +178,7 @@ namespace vulkan::bindings {
      * a `pNext` chain this function does not build - the top level structure is bound by the scene set's own
      * owner today, which is where it belongs until a pass declares one of its own.
      */
-    export [[nodiscard]] inline std::expected<void, std::string> write_set(core const& vk, render_resource::pass_io const& io, uint32_t const set, VkDescriptorSet const target,
+    export [[nodiscard]] inline std::expected<void, std::string> write_set(VkDevice const device, render_resource::pass_io const& io, uint32_t const set, VkDescriptorSet const target,
                                                                            std::span<VkImageView const> const views, std::span<VkBuffer const> const buffers, render_resource::shared::sampler_set const& samplers) {
         std::array<VkDescriptorImageInfo, max_set_bindings> image_infos = {};
         std::array<VkDescriptorBufferInfo, max_set_bindings> buffer_infos = {};
@@ -230,7 +232,7 @@ namespace vulkan::bindings {
             ++count;
         }
         if (count != 0) {
-            vkUpdateDescriptorSets(vk.device, count, writes.data(), 0, nullptr);
+            vkUpdateDescriptorSets(device, count, writes.data(), 0, nullptr);
         }
         return {};
     }
@@ -293,20 +295,26 @@ namespace vulkan::bindings {
     export class image_set_family {
     public:
         /// describes one image's sets to the family: the caller writes them (bindings depend on the
-        /// pass's own view layout, which only the call site knows)
-        using write_sets_fn = std::function<void(core const& vk, uint32_t image_index, std::span<VkDescriptorSet const> sets)>;
+        /// pass's own view layout, which only the call site knows). `image_index` is passed so a family
+        /// whose sets differ per image (the post chain's do not, the G-buffer debug view's do not) can say
+        /// so; a caller that keeps its views in the pass - as a pass that owns its family does - ignores it
+        using write_sets_fn = std::function<void(uint32_t image_index, std::span<VkDescriptorSet const> sets)>;
 
         /**
          * @brief make sure this family's sets exist, are allocated for @p signature_views.size() images
          *        and point at @p signature_views; returns false when the inputs are not usable yet
-         * @param vk the core (device, and the per-image views the caller passes in the callback)
+         * @param device the device the pool and the sets live on (a DEVICE rather than the core: a family
+         *        is about descriptor sets, and the views it binds arrive through @p write)
          * @param layout the set layout the family allocates from (owned by the pass, see vulkan.pipelines)
-         * @param image_count how many images the family must serve (the swapchain generation's count)
-         * @param sets_per_image how many sets each image needs (1 unless a chain like post's needs more)
-         * @param descriptors_per_set how many combined-image-sampler descriptors one of those sets holds
+         * @param image_count how many images the family must serve (the swapchain generation's count, NOT
+         *        the number of fingerprint views - the first version of this class conflated the two)
+         * @param sets_per_image how many sets each image needs (1 unless a chain like post's needs more,
+         *        or a ping-pong like the probe cache's)
+         * @param descriptors_per_set how many descriptors of each declared kind one of those sets holds
          *        (the caller decides the pool size, so a wrong count shows up as an allocation failure)
-         * @param signature_views the views whose identity decides whether a rebind is needed: one per
-         *        image, or - as the G-buffer debug view passes it - the few views of image 0 that
+         * @param signatures the fingerprints: the views whose identity decides whether a rebind is needed
+         *        - one list per KIND of thing the sets point at (the probe cache passes its coefficients,
+         *        its scratch and its per-cell geometry), or a single list of the few views of image 0 that
          *        identify the generation. It says NOTHING about how many images there are (image_count
          *        does), which is exactly the distinction the first version of this class got wrong
          * @param write called for each image that needs (re)binding, with that image's sets
@@ -315,7 +323,7 @@ namespace vulkan::bindings {
         /// the bloom and the LDR view lists; the others need one)
         using signatures_t = std::span<std::span<VkImageView const> const>;
 
-        [[nodiscard]] bool ensure(core const& vk,
+        [[nodiscard]] bool ensure(VkDevice device,
                                   VkDescriptorSetLayout layout,
                                   uint32_t image_count,
                                   uint32_t sets_per_image,
@@ -328,7 +336,7 @@ namespace vulkan::bindings {
          *        compared and a rebind happens when any of them changed
          * @param signatures the fingerprints (empty is rejected like a null layout)
          */
-        [[nodiscard]] bool ensure_all(core const& vk,
+        [[nodiscard]] bool ensure_all(VkDevice device,
                                       VkDescriptorSetLayout layout,
                                       uint32_t image_count,
                                       uint32_t sets_per_image,
@@ -463,15 +471,15 @@ namespace vulkan::bindings {
         }
     }
 
-    bool image_set_family::ensure(core const& vk, VkDescriptorSetLayout const layout, uint32_t const image_count, uint32_t const per_image,
+    bool image_set_family::ensure(VkDevice const device, VkDescriptorSetLayout const layout, uint32_t const image_count, uint32_t const per_image,
                                   uint32_t const descriptors_per_set, std::span<VkImageView const> const signature_views, write_sets_fn const& write) {
         std::array<std::span<VkImageView const>, 1> const one = {signature_views};
-        return this->ensure_all(vk, layout, image_count, per_image, descriptors_per_set, one, write);
+        return this->ensure_all(device, layout, image_count, per_image, descriptors_per_set, one, write);
     }
 
-    bool image_set_family::ensure_all(core const& vk, VkDescriptorSetLayout const layout, uint32_t const image_count, uint32_t const per_image,
+    bool image_set_family::ensure_all(VkDevice const device, VkDescriptorSetLayout const layout, uint32_t const image_count, uint32_t const per_image,
                                       uint32_t const descriptors_per_set, signatures_t const signatures, write_sets_fn const& write) {
-        this->device = vk.device;
+        this->device = device;
         if (layout == VK_NULL_HANDLE || !static_cast<bool>(write) || image_count == 0 || per_image == 0 || signatures.empty()) {
             return false;
         }
@@ -543,7 +551,7 @@ namespace vulkan::bindings {
         }
 
         for (std::size_t i = 0; i < image_count; ++i) {
-            write(vk, static_cast<uint32_t>(i), std::span<VkDescriptorSet const>(this->flat_sets.data() + i * per_image, per_image));
+            write(static_cast<uint32_t>(i), std::span<VkDescriptorSet const>(this->flat_sets.data() + i * per_image, per_image));
         }
         this->bound_signatures.clear();
         this->bound_signatures.reserve(signatures.size());
