@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.58.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.59.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -28,6 +28,7 @@ import vulkan.profiling;
 import vulkan.bindings;               // the per-image descriptor-set families (the G-buffer debug view's for now)
 import vulkan.pass;                   // the pass framework: the host the runner talks to, and the stage runner
 import vulkan.pass.gi_probe;          // the first real pass (its member is declared below, so the class must be complete)
+import vulkan.pass.taa;               // the second, and the first GRAPHICS one
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
@@ -505,7 +506,8 @@ namespace vulkan {
         // core::scene_color and the resolve writes the HDR target, so the whole post chain keeps
         // reading exactly what it read before TAA existed. A copy of the resolved frame becomes the
         // next frame's history (no ping-pong, hence no per-frame descriptor rewrites).
-        std::optional<vk_pipeline> taa_pipeline = std::nullopt;
+        // The TAA resolve is a PASS (vulkan.pass.taa): it owns its set layout, pipeline layout, pipeline and
+        // descriptor family, so all that is left here is the pass member and the stage the runner is handed.
         vk_sampler taa_sampler = {};
         // ---- the GI denoiser's temporal resolve (see shaders/ssgi_temporal.comp) ----
         std::optional<vk_pipeline> ssgi_temporal_pipeline = std::nullopt;
@@ -670,32 +672,19 @@ namespace vulkan {
             glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent
         };
 
-        VkDescriptorSetLayout taa_set_layout = VK_NULL_HANDLE;
-        VkPipelineLayout taa_pipeline_layout = VK_NULL_HANDLE;
-        // The resolve's sets, one per swapchain image: the same per-image family the G-buffer debug
-        // view uses, for the same reason - the rebinding rule and the pool lifetime belong to the sets.
-        bindings::image_set_family taa_family;
+        pass::taa_pass taa_resolve;
+        std::array<pass::frame_pass*, 1> taa_stage = {&this->taa_resolve};
         bool taa_on = false;           // [render] taa
         float taa_blend_static = 0.9f; // history weight for a static pixel
         float taa_blend_min = 0.5f;    // history weight floor under motion
         uint32_t taa_jitter_index = 0; // position in the Halton sequence
-        // The view-projection each swapchain image's history was rendered with, and whether that
-        // history holds anything. Remembered PER IMAGE on purpose: with several swapchain images in
-        // rotation, "the previous frame's camera" is not what that image's history was rendered with,
-        // and reprojecting against the wrong matrix is exactly what makes a TAA history smear.
+        // The view-projection each swapchain image's history was rendered with. Remembered PER IMAGE on
+        // purpose: with several swapchain images in rotation, "the previous frame's camera" is not what that
+        // image's history was rendered with, and reprojecting against the wrong matrix is exactly what makes a
+        // TAA history smear. It stays HERE rather than in the pass because the camera UBO is what reads it -
+        // as `prev_view_proj`, which is where the motion vectors come from - while the pass is what writes it
+        // (through `taa_pass::wrote_history`, the renderer updates it only for a frame that really resolved).
         std::vector<glm::mat4> image_view_proj = {};
-        std::vector<bool> taa_history_valid = {};
-        struct taa_push_constants {
-            float history_valid = 0.0f; // 1 = trust the history, 0 = first frame for this image
-            float blend_static = 0.9f;  // history weight for a static pixel
-            float blend_min = 0.5f;     // history weight floor under motion
-            float texel_size_x = 0.0f;  // 1 / target width
-            float texel_size_y = 0.0f;  // 1 / target height
-            float depth_scale = 0.0f;   // projection[2][2]: the depth-linearization term
-            float depth_offset = 0.0f;  // projection[3][2]
-            float unused = 0.0f;
-        };
-        void ensure_taa_descriptors();
         /**
          * @ingroup vulkan_runtime
          * @brief record the GI temporal resolve and the history copy into @p command_buffer
@@ -736,6 +725,9 @@ namespace vulkan {
         [[nodiscard]] std::span<unsigned char const> registered_shader(std::string_view name) const noexcept;
         /// the six samplers a declaration chooses between, in one place (see pass_context::samplers)
         [[nodiscard]] render_resource::shared::sampler_set shared_samplers() const noexcept;
+        /// create the TAA resolve's shared sampler if it does not exist (see create_passes for why it is
+        /// made here rather than in a pipeline builder)
+        void ensure_taa_sampler();
         /**
          * @brief resolve a pass's declaration into this frame's handles (the runner's `resolve` callback)
          * @return false when this frame cannot run the pass, which skips it WITHOUT recording anything
@@ -764,7 +756,6 @@ namespace vulkan {
          *          traced estimate rather than the lighting stage's - the spatial filter's second
          *          subtraction is gated on the same predicate (see ssgi_specular_active) */
         bool record_ssgi_spec_pass(VkCommandBuffer command_buffer);
-        void record_taa_pass(VkCommandBuffer command_buffer);
         /** @brief whether the TAA resolve runs this frame (enabled + deferred lighting + pipeline) */
         [[nodiscard]] bool taa_active() const noexcept;
         /** @brief the image the scene-side passes write into (the TAA input, or the HDR target) */
@@ -2580,15 +2571,12 @@ namespace vulkan {
         static constexpr uint32_t taa_jitter_count = 8;
 
         /**
-         * @ingroup vulkan_runtime
-         * @brief create the TAA resolve pipeline (fullscreen: scene color + history + motion vectors +
-         *        depth -> the HDR target)
-         * @param vertex_shader_code raw SPIR-V of post.vert (the fullscreen triangle)
-         * @param fragment_shader_code raw SPIR-V of taa.frag
-         * @return success, or an error message on failure
-         * @note optional but required for set_taa(true) to take effect
+         * @brief resolve the TAA pass's declaration into this frame's handles (the runner's `resolve` callback)
+         * @return false when this frame cannot run it (no target generation, or the pass has no pipeline)
+         * @note the four per-swapchain-image inputs are the pass's own bindings and the HDR image it renders
+         *       into is a declared TARGET - resolved the same way, so the pass reaches nothing it did not name
          */
-        std::expected<void, std::string> make_taa_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+        bool resolve_taa_pass(pass::resolved_io& out);
 
         /**
          * @ingroup vulkan_runtime
@@ -2597,8 +2585,8 @@ namespace vulkan {
          *        jittered every frame, the G-buffer's motion vectors are resolved against a reprojected
          *        history, and the result is what the post chain processes. This is the deferred path's
          *        anti-aliasing: it resolves sub-pixel detail no edge filter can, AND the
-         *        shimmer in motion that no edge filter can remove. Requires make_taa_pipeline(); without
-         *        it the flag has no effect.
+         *        shimmer in motion that no edge filter can remove. The pass builds its own pipeline
+         *        (vulkan.pass.taa); without it the flag has no effect.
          * @param blend_static history weight for a pixel that did not move (0.9 = 10% of the current
          *        frame per frame; higher converges smoother but reacts slower to lighting changes)
          * @param blend_min history weight floor once a pixel moves a pixel or more per frame (lower =

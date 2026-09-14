@@ -211,5 +211,33 @@ int main() {
         CHECK(!rr::validate(io).has_value()); // the same image twice
     }
 
+    // ---- the SECOND declaration: the TAA resolve, whose bindings are FRAGMENT and whose own set is 0 with no
+    //      shared set beside it, and which is the first one to declare a render TARGET ----
+    {
+        CHECK(rr::validate(rr::taa_io).has_value());
+        CHECK(rr::taa_io.own_set == 0);
+        CHECK(rr::taa_io.bindings.size() == 4);
+        for (rr::pass_binding const& b : rr::taa_io.bindings) {
+            CHECK(b.set == rr::taa_io.own_set);
+            CHECK(b.owner == rr::set_owner::own);
+            CHECK(b.kind == rr::binding_kind::sampled_image);
+            CHECK(b.sampler == rr::sampler_hint::taa);
+            // THE STAGE FLAGS COME FROM THE DECLARATION, so a fragment binding declared compute would build a
+            // layout the fragment stage cannot see: every declaration before this one was a compute pass and
+            // took the default.
+            CHECK(rr::has_stage(b.stages, rr::stage_flag::fragment));
+            CHECK(!rr::has_stage(b.stages, rr::stage_flag::compute));
+        }
+        CHECK(rr::taa_io.targets.size() == 1);
+        CHECK(rr::taa_io.targets[0].resource == rr::resource_id::hdr);
+        CHECK(rr::taa_io.push->size == 32); // eight floats: the history flag, two weights, texel size, two depth terms
+        CHECK(rr::taa_io.push->stages == rr::stage_flag::fragment);
+        rr::descriptor_counts const own = rr::descriptor_counts_for(rr::taa_io, rr::taa_io.own_set);
+        CHECK(own.sampled_image == 4);
+        CHECK(own.total() == 4);
+        // nothing is declared in a shared set: the resolve's four inputs are all its own
+        CHECK(rr::descriptor_counts_for(rr::taa_io, 1).total() == 0);
+    }
+
     return vk_test::finish("test_render_resources");
 }

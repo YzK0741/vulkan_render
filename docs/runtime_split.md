@@ -134,6 +134,22 @@ only drove compute. Its half of the framework (declared render targets, a graphi
 viewport/scissor a pass cannot forget) landed first and separately; the extraction order below is unchanged, only
 the cost of entry 2 is now two steps instead of one.
 
+**Extraction 2 is DONE too (`vulkan.pass.taa`, version 0.1.0)**, and it cost the three things the map could not
+see either:
+
+* the SAMPLER was created inside the factory it was extracted from, so moving the factory deleted the sampler and
+  the first frame under TAA crashed with a null sampler in a descriptor write (validation named it exactly). It
+  is now created by `runtime::ensure_taa_sampler`, before `create_passes` fills the context - and the two
+  samplers still made inside `make_gbuffer_debug_pipeline` are the same accident, still to be collected;
+* the per-image descriptor family needed a GENERATION fingerprint, and the current image's views are exactly the
+  wrong one (they differ every frame, which would rewrite sets a pending frame names). The pass caches the first
+  frame's views and drops them in `on_swapchain_recreated` - the framework's recreate contract, used for
+  something real for the first time;
+* two lines of the resolve's own sequence belong to OTHER passes: the G-buffer depth's transition (its flag is
+  the G-buffer pass's) and clearing the motion-vector flag. Both stay with the host, gated on the same predicate
+  the runner gates the stage on, and they are the barrier/order stage's entry point - the first concrete one this
+  sequence produced.
+
 ## 6. Step 1 - the file-level split of `runtime.cpp`, and its honest value
 
 The build already lists a module's implementation units under `target_sources(... PRIVATE ...)`

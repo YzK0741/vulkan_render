@@ -1,4 +1,4 @@
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/render_resource/render_resource.cppm
@@ -699,6 +699,44 @@ export namespace vulkan::render_resource {
         // `static_assert` that ties this number to that struct - a fact in two units that the compiler keeps
         // in agreement is the next best thing to a fact in one.
         .push = push_block{.offset = 0, .size = 56, .stages = stage_flag::compute},
+    };
+
+    // =============================================================================================
+    // 5. THE SECOND DECLARATION - the TAA resolve, read off shaders/taa.frag
+    // =============================================================================================
+
+    /**
+     * @brief the temporal resolve's I/O, as its shader declares it
+     *
+     * This is the first declaration whose bindings live in set 0 with no shared set beside them: the four
+     * inputs (this frame's colour, the reprojected history, the motion vectors and the depth the
+     * disocclusion guard reads) are all per-swapchain-image and all this pass's. `stages` is FRAGMENT and has
+     * to be said: the generated layout's stage flags come from the declaration, and a resolve whose bindings
+     * were declared COMPUTE would be a layout the fragment stage cannot see - which is the drift this
+     * generator exists to make impossible, now in the other direction (the field is easy to forget when every
+     * other declaration so far was a compute pass).
+     */
+    inline constexpr std::array<pass_binding, 4> taa_bindings = {{
+        {.set = 0, .binding = 0, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::scene_color, .access = binding_access::read, .sampler = sampler_hint::taa, .layout = image_layout::sampled, .stages = stage_flag::fragment},
+        {.set = 0, .binding = 1, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::taa_history, .access = binding_access::read, .sampler = sampler_hint::taa, .layout = image_layout::sampled, .stages = stage_flag::fragment},
+        {.set = 0, .binding = 2, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::velocity, .access = binding_access::read, .sampler = sampler_hint::taa, .layout = image_layout::sampled, .stages = stage_flag::fragment},
+        {.set = 0, .binding = 3, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gbuffer_depth, .access = binding_access::read, .sampler = sampler_hint::taa, .layout = image_layout::sampled, .stages = stage_flag::fragment},
+    }};
+
+    /// @brief the resolve RENDERS INTO the frame's HDR target, which is why it needs a target and not a binding
+    inline constexpr render_target taa_target = {.resource = resource_id::hdr, .element = 0};
+    inline constexpr std::array<render_target, 1> taa_targets = {taa_target};
+
+    /// @brief the temporal resolve's declaration
+    /// @ingroup vulkan_render_resource
+    inline constexpr pass_io taa_io = {
+        .name = "taa",
+        .own_set = 0,
+        .bindings = taa_bindings,
+        .targets = taa_targets,
+        // eight floats: the history flag, the two blend weights, the texel size, and the projection's two
+        // depth terms (see vulkan.pass.taa::taa_pass::push_constants, which static_asserts this number)
+        .push = push_block{.offset = 0, .size = 32, .stages = stage_flag::fragment},
     };
 
 } // namespace vulkan::render_resource

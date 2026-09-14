@@ -1,4 +1,4 @@
-// module version: 0.18.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.19.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
@@ -51,9 +51,10 @@ namespace vulkan::pipelines {
         std::optional<vk_pipeline> debug;
     };
 
-    /// what build_taa() creates
+    /// what build_taa() creates: the pipeline layout and the resolve pipeline. The SET layout comes IN as a
+    /// parameter, because it is the PASS's (see vulkan.pass.taa) - this builder is handed the one the pass
+    /// generated from its declaration, which is why the caller must have run its create step first.
     export struct taa_owned {
-        VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> resolve;
     };
@@ -68,7 +69,8 @@ namespace vulkan::pipelines {
 
     export std::expected<post_owned, std::string> build_post(core& vk, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     export std::expected<gbuffer_owned, std::string> build_gbuffer_debug(core& vk, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
-    export std::expected<taa_owned, std::string> build_taa(core& vk, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export std::expected<taa_owned, std::string> build_taa(VkDevice device, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code,
+                                                           std::span<unsigned char const> fragment_shader_code);
     export std::expected<ssgi_owned, std::string> build_ssgi(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
     /// the spatial half of the same denoiser: same two set layouts, same shape, its own push block
     export std::expected<ssgi_owned, std::string> build_ssgi_spatial(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
@@ -274,35 +276,18 @@ namespace vulkan::pipelines {
     // taa: the resolve pass' owner. It writes the HDR target, so its rendering color format is hdr_format
     // (a span of one), and its sampler is the odd one out - linear magnification, nearest minification,
     // because the resolve upsamples the scene color but must not average neighbouring history texels.
-    std::expected<taa_owned, std::string> build_taa(core& vk, uint32_t const push_constant_size, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+    std::expected<taa_owned, std::string> build_taa(VkDevice const device, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;
         taa_owned out;
 
-        // FOUR bindings, because four is what shaders/taa.frag declares (current color, history,
-        // velocity, depth) and what runtime::ensure_taa_descriptors writes. The count is not cosmetic:
-        // it is also this layout's descriptor count, so a layout declaring one binding more than the
-        // family is SIZED for makes that family's pool too small for its own allocation. The validation
-        // layer named it - "Trying to allocate 15 of VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
-        // descriptors from VkDescriptorPool ..., but this pool only has a total of 12 descriptors for
-        // this type" (3 images x 5 bindings against a pool built for 3 x 4, because image_set_family
-        // sizes its pool from the signature's length) - and a driver that enforces the rule would fail
-        // the allocation, which runtime::ensure_taa_descriptors turns into TAA silently switching itself
-        // off rather than a frame that is merely missing a descriptor.
-        std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
-        for (uint32_t b = 0; b < bindings.size(); ++b) {
-            bindings[b].binding = b;
-            bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            bindings[b].descriptorCount = 1;
-            bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-            bindings[b].pImmutableSamplers = nullptr;
-        }
-
-        VkDescriptorSetLayoutCreateInfo layout_info = {};
-        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
-        layout_info.pBindings = bindings.data();
-        if (vkCreateDescriptorSetLayout(vk.device, &layout_info, nullptr, &out.set_layout) != VK_SUCCESS) {
-            return fail("taa: descriptor set layout creation failed");
+        // THE SET LAYOUT IS THE PASS'S (see vulkan.pass.taa): four combined-image-sampler bindings generated
+        // from `render_resource::taa_io`, so the layout the fragment stage sees and the declaration cannot
+        // drift. The count is not cosmetic: it is also what the pass's descriptor family sizes its pool from,
+        // and the validation layer has already named that pair's failure once ("Trying to allocate 15 of
+        // VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER descriptors from VkDescriptorPool ..., but this pool only
+        // has a total of 12 descriptors for this type" - 3 images x 5 bindings against a pool built for 3 x 4).
+        if (pass_set_layout == VK_NULL_HANDLE) {
+            return fail("taa: the pass has no set layout yet (its create step must run first)");
         }
 
         VkPushConstantRange push_range = {};
@@ -313,16 +298,16 @@ namespace vulkan::pipelines {
         VkPipelineLayoutCreateInfo pipeline_layout_info = {};
         pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &out.set_layout;
+        pipeline_layout_info.pSetLayouts = &pass_set_layout;
         pipeline_layout_info.pushConstantRangeCount = 1;
         pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
             return fail("taa: pipeline layout creation failed");
         }
 
         std::array<VkFormat, 1> const color_formats = {vulkan::hdr_format};
         auto pipeline_result = vulkan::make_pipeline(
-            vk.device, out.pipeline_layout, std::span<VkFormat const>(color_formats), VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, 0.0f, 0.0f, 0.0f);
+            device, out.pipeline_layout, std::span<VkFormat const>(color_formats), VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, 0.0f, 0.0f, 0.0f);
         if (!pipeline_result) {
             return fail(std::string(pipeline_result.error()));
         }

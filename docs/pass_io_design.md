@@ -270,6 +270,27 @@ one thing this layer exists to prevent.
                                                         `bindings` no longer defines a second `sampler_set` of
                                                         its own; the shared image/buffer handles follow a
                                                         consumer, not this table
+    the second consumer: vulkan.pass.taa           DONE, and it is the temporal resolve - the first GRAPHICS
+                                                        pass, and the one that proves the other half of the
+                                                        shape: a declared render target, its own rendering
+                                                        instance (the load op is the pass's), the runner's
+                                                        graphics bind point and viewport resync, and a
+                                                        per-image family whose fingerprint is the GENERATION
+                                                        rather than the current image. `runtime` lost
+                                                        `record_taa_pass`, `ensure_taa_descriptors`,
+                                                        `make_taa_pipeline`, the family and both history
+                                                        flags; `image_view_proj` stayed because the camera UBO
+                                                        reads it, and the two lines that belong to the
+                                                        G-buffer pass (the depth transition, the motion-vector
+                                                        flag) stayed as the barrier stage's entry point.
+                                                        Byte-identical: `deferred_taa_fxaa` back to
+                                                        6999D01E5FBAB508, 12 x 2 with 0 changed and 0 flaky.
+                                                        THREE THINGS IT FOUND: the sampler was created inside
+                                                        the factory being moved (a null sampler in a descriptor
+                                                        write is a crash, and validation named the VUID); the
+                                                        per-image family cannot fingerprint the current image;
+                                                        and a pass's own sequence may contain another pass's
+                                                        bookkeeping
     step 1: the layout generator                  DONE for the probe cache, and PROVEN BY THE GATE rather
                                                         than by a comparison test: `bindings::make_set_layout`
                                                         generates the pass's layout from the declaration, and

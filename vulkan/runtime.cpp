@@ -312,17 +312,9 @@ namespace vulkan {
         }
         // The probe cache's pipeline and its layout are NOT destroyed here any more: they are the pass's
         // (vulkan.pass.gi_probe builds and destroys them), which is the whole point of the extraction - a
-        // handle only that pass names is that pass's to release.
-        // ... and the TAA resolve's own objects (its set layout and layout are raw handles; the pool
-        // belongs to taa_family, whose destructor destroys it and the generations it retired)
-        if (this->taa_pipeline_layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->vulkan_core.device, this->taa_pipeline_layout, nullptr);
-            this->taa_pipeline_layout = VK_NULL_HANDLE;
-        }
-        if (this->taa_set_layout != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->taa_set_layout, nullptr);
-            this->taa_set_layout = VK_NULL_HANDLE;
-        }
+        // handle only that pass names is that pass's to release. The TAA resolve's set layout, pipeline
+        // layout, pipeline AND descriptor family left the same way (vulkan.pass.taa), so nothing about it is
+        // torn down here either.
 
         // Shared scene resources: views/sets/samplers/buffers/images are RAII and free
         // themselves as this runtime's members destruct (after this body; vulkan_core, which
@@ -1210,8 +1202,9 @@ namespace vulkan {
         // The post chain's family forgets its sets and retires its pool (five sets per image, so the
         // largest of the three); the next frame allocates fresh ones from a fresh pool.
         this->post_family.retire_all();
-        // Same for the TAA resolve's family: forget the sets, retire the pool rather than destroy it.
-        this->taa_family.retire_all();
+        // The TAA resolve's family is NOT retired here any more: the pass owns it, and the call below tells
+        // the pass (vulkan.pass.taa::on_swapchain_recreated retires its own family and forgets the
+        // generation it fingerprinted).
         // ... and the GI denoiser's, which binds five per-image views (trace, history, motion, depth,
         // resolve) and is therefore the one family here with the most stale pointers in it.
         this->ssgi_temporal_family.retire_all();
@@ -1222,14 +1215,16 @@ namespace vulkan {
         // remembers: `recreate_stage` calls every pass in the stage, and a pass added to it is covered.
         {
             pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
-            [[maybe_unused]] pass::run_report const recreated = pass::recreate_stage(probe_stage, this->make_pass_host());
+            [[maybe_unused]] pass::run_report const probe_recreated = pass::recreate_stage(probe_stage, this->make_pass_host());
+            pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
+            [[maybe_unused]] pass::run_report const taa_recreated = pass::recreate_stage(taa_stage, this->make_pass_host());
         }
         // Every swapchain image's history died with the old generation (and its size may have
-        // changed): forget the matrices and mark the histories invalid, so the next frame for each
-        // image starts a new accumulation instead of blending in a misaligned one.
+        // changed): forget the matrices, so the next frame for each image starts a new accumulation
+        // instead of blending in a misaligned one. (WHETHER a history holds anything is the TAA pass's own
+        // state, and the call above is what cleared it.)
         std::size_t const image_count = this->vulkan_core.taa_history_images.size();
         this->image_view_proj.assign(image_count, this->current_ubo.view_proj_unjittered);
-        this->taa_history_valid.assign(image_count, false);
         // The GI accumulation is per image for the same reason (see gi_history_valid): a new
         // generation has no history to blend with, and the resolve would otherwise reproject into an
         // image that holds a different resolution's data.
@@ -2104,13 +2099,10 @@ namespace vulkan {
             this->deferred_pipeline->viewport = full_viewport;
             this->deferred_pipeline->scissor = full_scissor;
         }
-        // the TAA resolve is a fullscreen pass too, and begin_pipeline() re-emits the stored viewport:
-        // leaving it at the creation-time zero made every resolve set a 0-wide viewport (the same VUID
-        // the post pipelines hit once)
-        if (this->taa_pipeline) {
-            this->taa_pipeline->viewport = full_viewport;
-            this->taa_pipeline->scissor = full_scissor;
-        }
+        // The TAA resolve's pipeline and viewport are NOT resynced here: the runner sets a fullscreen pass's
+        // viewport and scissor from the extent its declaration produced, which is what `resync_viewport`
+        // means once a pass states it (see vulkan.pass's behaviour). The hazard this list used to guard - a
+        // fullscreen pass setting a zero-width viewport because it was left out - is gone by construction.
     }
 
     // The opaque scene: the surface write pass. Alpha-blended geometry is NOT here - it is
@@ -2757,7 +2749,7 @@ namespace vulkan {
     bool runtime::taa_active() const noexcept {
         // The forward path has no motion vectors (its fragment stage does not write them), so TAA is
         // the engine's answer to aliasing, now that there is no MSAA to fall back on.
-        return this->taa_on && this->taa_pipeline.has_value() && this->deferred_lit_active();
+        return this->taa_on && this->taa_resolve.pipeline_ready() && this->deferred_lit_active();
     }
 
     VkImage runtime::scene_target_image(uint32_t const image_index) const noexcept {
@@ -2774,7 +2766,7 @@ namespace vulkan {
         bool const was_on = this->taa_on;
         this->taa_on = enabled;
         if (enabled) {
-            if (!this->taa_pipeline.has_value()) {
+            if (!this->taa_resolve.pipeline_ready()) {
                 this->warn_missing_feature("taa", "TAA has no effect: the taa pipeline was not created (see the startup log)");
             } else if (!this->deferred_lit_active()) {
                 this->warn_missing_feature("taa", "TAA has no effect: the G-buffer pass or its lighting stage was not created (see the startup log)");
@@ -2788,188 +2780,14 @@ namespace vulkan {
             // invalidate the history on every frame: the resolve would fall back to the current
             // (jittered, aliased) frame forever, which looks like TAA running while doing nothing.
             std::size_t const image_count = this->vulkan_core.taa_history_images.size();
-            this->taa_history_valid.assign(image_count, false);
+            this->taa_resolve.reset_history(); // the pass owns whether each image's history holds anything
             this->image_view_proj.assign(image_count, this->current_ubo.view_proj_unjittered);
             this->taa_jitter_index = 0;
         }
     }
 
-    std::expected<void, std::string> runtime::make_taa_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
-        core& vk = this->vulkan_core;
-        auto built = pipelines::build_taa(vk, sizeof(taa_push_constants), vertex_shader_code, fragment_shader_code);
-        if (!built) {
-            return std::unexpected(std::move(built.error()));
-        }
-        this->taa_set_layout = built->set_layout;
-        this->taa_pipeline_layout = built->pipeline_layout;
-        this->taa_pipeline = std::move(built->resolve);
-
-        // linear magnification, nearest minification: the resolve upsamples the scene color but must
-        // not average neighbouring history texels
-        VkSamplerCreateInfo sampler_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
-        sampler_info.magFilter = VK_FILTER_LINEAR;
-        sampler_info.minFilter = VK_FILTER_NEAREST;
-        VkSampler sampler = VK_NULL_HANDLE;
-        if (vkCreateSampler(vk.device, &sampler_info, nullptr, &sampler) != VK_SUCCESS) {
-            return std::unexpected(std::string("taa: sampler creation failed"));
-        }
-        this->taa_sampler = vk_sampler(sampler, vk.device);
-        return {};
-    }
-
-    void runtime::ensure_taa_descriptors() {
-        core& vk = this->vulkan_core;
-        if (this->taa_pipeline == std::nullopt || this->taa_set_layout == VK_NULL_HANDLE) {
-            return;
-        }
-        std::size_t const image_count = vk.scene_color_image_views.size();
-        if (image_count == 0 || vk.taa_history_image_views.size() != image_count || vk.velocity_image_views.size() != image_count) {
-            return;
-        }
-        std::array<VkImageView, 4> const signature = {vk.scene_color_image_views[0], vk.taa_history_image_views[0], vk.velocity_image_views[0], vk.gbuffer_depth_image_views[0]};
-        // The family owns the rebinding rule and the pool lifetime now (see vulkan.bindings): the sets
-        // stay allocated, their contents are rewritten only when the views above change, and a pool a
-        // later generation replaces is retired rather than destroyed.
-        auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            std::array<VkImageView, 4> const views = {this->vulkan_core.scene_color_image_views[image_index], this->vulkan_core.taa_history_image_views[image_index], this->vulkan_core.velocity_image_views[image_index], this->vulkan_core.gbuffer_depth_image_views[image_index]};
-            std::array<VkDescriptorImageInfo, 4> image_infos = {};
-            std::array<VkWriteDescriptorSet, 4> writes = {};
-            for (uint32_t b = 0; b < views.size(); ++b) {
-                image_infos[b].sampler = *this->taa_sampler;
-                image_infos[b].imageView = views[b];
-                image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[b].dstSet = sets[0];
-                writes[b].dstBinding = b;
-                writes[b].descriptorCount = 1;
-                writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                writes[b].pImageInfo = &image_infos[b];
-            }
-            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-        };
-        // image_count is the generation's, signature is the fingerprint of image 0 above: two things.
-        if (!this->taa_family.ensure(vk.device, this->taa_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
-            utility::log("runtime: taa descriptor sets unavailable - TAA skipped");
-        }
-    }
-
-    void runtime::record_taa_pass(VkCommandBuffer const command_buffer) {
-        core const& vk = this->vulkan_core;
-        if (!this->taa_active()) {
-            return;
-        }
-        std::size_t const index = this->current_image_index;
-        bool const history_valid = index < this->taa_history_valid.size() && this->taa_history_valid[index];
-
-        this->ensure_taa_descriptors();
-        if (this->taa_family.set(static_cast<uint32_t>(index), 0) == VK_NULL_HANDLE) {
-            utility::log("runtime: TAA has no descriptor set - the frame is shown unresolved");
-            return;
-        }
-
-        // Layouts, all before vkCmdBeginRendering: the scene color the deferred stage wrote becomes an
-        // input, the motion vectors and the depth become inputs, the history becomes an input, and the
-        // HDR target - still untouched this frame - becomes the resolve's attachment.
-        // The history image is left in SHADER_READ_ONLY by the previous frame's copy (and is only ever
-        // read as a texture), so it needs no barrier at all once it is valid - only its very first use
-        // transitions it out of UNDEFINED (its contents are then garbage, and history_valid is 0, so
-        // the resolve ignores them).
-        std::array<VkImageMemoryBarrier2, 4> barriers = {};
-        barriers[0] = vulkan::hdr_sampling_transition; // scene_color: COLOR_ATTACHMENT -> SHADER_READ
-        barriers[0].image = vk.scene_color_images[index];
-        barriers[1] = vulkan::hdr_sampling_transition; // velocity: same transition, COLOR aspect
-        barriers[1].image = vk.velocity_images[index];
-        // this batch handed the motion-vector target to a fragment sampler, so the flag the G-buffer
-        // instance set is answered: a later COMPUTE sampler must not repeat the transition (see
-        // ensure_velocity_sampled).
-        if (index < this->velocity_written.size()) {
-            this->velocity_written[index] = false;
-        }
-        uint32_t barrier_count = 2;
-        if (!history_valid) {
-            barriers[barrier_count] = vulkan::undefined_to_sampling_transition;
-            barriers[barrier_count].image = vk.taa_history_images[index];
-            ++barrier_count;
-        }
-        VkDependencyInfo const dependency = make_image_dependency_info(barrier_count, barriers.data());
-        vkCmdPipelineBarrier2(command_buffer, &dependency);
-        // the G-buffer depth the disocclusion guard samples: its own barrier, written only if the
-        // G-buffer pass actually rendered this frame (the lighting stage normally got here first)
-        this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(index));
-
-        std::array<VkImageMemoryBarrier2, 1> output_barrier = {vulkan::color_attachment_transition};
-        output_barrier[0].image = vk.hdr_images[index];
-        VkDependencyInfo const output_dependency = make_image_dependency_info(1, output_barrier.data());
-        vkCmdPipelineBarrier2(command_buffer, &output_dependency);
-
-        VkClearValue clear = {};
-        VkRenderingAttachmentInfo const color_attachment = make_color_attachment_info(vk.hdr_image_views[index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
-        VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &color_attachment, nullptr);
-        vkCmdBeginRendering(command_buffer, &rendering_info);
-        this->taa_pipeline->begin_pipeline(command_buffer);
-        VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height), 0.0f, 1.0f};
-        VkRect2D const scissor = {{0, 0}, vk.swap_chain_extent};
-        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
-        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
-        vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
-        VkDescriptorSet const set = this->taa_family.set(static_cast<uint32_t>(index), 0);
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->taa_pipeline_layout, 0, 1, &set, 0, nullptr);
-        taa_push_constants const push = {
-            .history_valid = history_valid ? 1.0f : 0.0f,
-            .blend_static = this->taa_blend_static,
-            .blend_min = this->taa_blend_min,
-            .texel_size_x = 1.0f / static_cast<float>(vk.swap_chain_extent.width),
-            .texel_size_y = 1.0f / static_cast<float>(vk.swap_chain_extent.height),
-            .depth_scale = this->current_ubo.proj[2][2],
-            .depth_offset = this->current_ubo.proj[3][2],
-            .unused = 0.0f};
-        vkCmdPushConstants(command_buffer, this->taa_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
-        vkCmdDraw(command_buffer, 3, 1, 0, 0);
-        vkCmdEndRendering(command_buffer);
-
-        // ---- the resolved frame becomes the next frame's history ----
-        // A copy rather than a ping-pong: the resolve necessarily writes the image the post chain
-        // reads, so the history has to be a separate image, and copying into it keeps every descriptor
-        // set in the frame stable (no per-frame rewrites). The barriers move the HDR target out to
-        // TRANSFER_SRC and back - the post chain still finds it in COLOR_ATTACHMENT_OPTIMAL, exactly
-        // where it expects it.
-        std::array<VkImageMemoryBarrier2, 2> copy_barriers = {};
-        copy_barriers[0] = vulkan::color_attachment_to_transfer_transition; // HDR -> TRANSFER_SRC
-        copy_barriers[0].image = vk.hdr_images[index];
-        copy_barriers[1] = vulkan::sampling_to_transfer_dst_transition; // history: SHADER_READ -> TRANSFER_DST
-        copy_barriers[1].image = vk.taa_history_images[index];
-        VkDependencyInfo const copy_dependency = make_image_dependency_info(static_cast<uint32_t>(copy_barriers.size()), copy_barriers.data());
-        vkCmdPipelineBarrier2(command_buffer, &copy_dependency);
-
-        VkImageCopy const region = {
-            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-            .srcOffset = {0, 0, 0},
-            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-            .dstOffset = {0, 0, 0},
-            .extent = {vk.swap_chain_extent.width, vk.swap_chain_extent.height, 1},
-        };
-        vkCmdCopyImage(command_buffer, vk.hdr_images[index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.taa_history_images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-        // hand both images on: the HDR target back to the post chain, the history copy to the next
-        // frame's resolve (which will find it in TRANSFER_DST and transition it from there)
-        std::array<VkImageMemoryBarrier2, 2> hand_back = {};
-        hand_back[0] = vulkan::transfer_to_color_attachment_transition; // HDR -> COLOR_ATTACHMENT
-        hand_back[0].image = vk.hdr_images[index];
-        hand_back[1] = vulkan::transfer_dst_to_sampling_transition; // history -> SHADER_READ
-        hand_back[1].image = vk.taa_history_images[index];
-        VkDependencyInfo const hand_back_dependency = make_image_dependency_info(static_cast<uint32_t>(hand_back.size()), hand_back.data());
-        vkCmdPipelineBarrier2(command_buffer, &hand_back_dependency);
-
-        // bookkeeping for the NEXT frame that renders this swapchain image: the matrix its history was
-        // rendered with, and the fact that there is a history now. The slot must be the one this frame
-        // is recorded into - the other slot is still in flight.
-        if (this->image_view_proj.size() > index) {
-            this->image_view_proj[index] = this->current_ubo.view_proj_unjittered;
-        }
-        if (this->taa_history_valid.size() > index) {
-            this->taa_history_valid[index] = true;
-        }
-    }
+    // The TAA resolve's factory is gone: `vulkan.pass.taa` builds its own set layout, pipeline layout and
+    // pipeline in its create step, from its own declaration and its own shaders (the app registers those).
 
     bool runtime::ensure_gbuffer_depth_sampled(VkCommandBuffer const command_buffer, uint32_t const image_index) {
         // Nothing to do when no G-buffer instance ran for this image: the depth is already in the
@@ -3772,6 +3590,14 @@ namespace vulkan {
         // IT IS HANDED A CONTEXT, NOT A HOST: building a pass needs a device and the shared lookups, and it
         // needs no frame. ANY owner can fill this struct - that is what makes a pass usable outside this
         // renderer - and this runtime is one such owner, filling the device from the core it owns.
+        //
+        // The SHARED samplers must exist before the context is filled, because a pass caches the six it may
+        // choose between at create time (a declaration picks one by hint, and a null sampler in a set is a
+        // validation error rather than a skipped fetch). Two of the six are still created inside the pipeline
+        // builders that first needed them - `make_gbuffer_debug_pipeline` makes the G-buffer pair's and the
+        // probe grid's - which is the naming accident `docs/runtime_split.md` records; the TAA resolve's is
+        // made here because the pass that declares it is what needs it now.
+        this->ensure_taa_sampler();
         pass::pass_context const build = {
             .device = this->vulkan_core.device,
             .samplers = this->shared_samplers(),
@@ -3788,6 +3614,30 @@ namespace vulkan {
         if (!created.rejected.empty()) {
             utility::log("pass '{}': its declaration was refused by the validator, so it does not run", created.rejected);
         }
+        pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
+        pass::run_report const taa_created = pass::create_stage(taa_stage, build);
+        if (!taa_created.rejected.empty()) {
+            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", taa_created.rejected);
+        }
+    }
+
+    void runtime::ensure_taa_sampler() {
+        // The resolve upsamples the scene colour but must not average neighbouring history texels: linear
+        // magnification, nearest minification. It was created inside `make_taa_pipeline` before this pass owned
+        // that pipeline; the sampler is a SHARED handle (a declaration chooses it by hint) so it stays the
+        // renderer's, and it has to exist before the pass caches the six it may choose between.
+        if (this->taa_sampler.get() != VK_NULL_HANDLE) {
+            return;
+        }
+        VkSamplerCreateInfo sampler_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
+        sampler_info.magFilter = VK_FILTER_LINEAR;
+        sampler_info.minFilter = VK_FILTER_NEAREST;
+        VkSampler sampler = VK_NULL_HANDLE;
+        if (vkCreateSampler(this->vulkan_core.device, &sampler_info, nullptr, &sampler) != VK_SUCCESS) {
+            utility::log("runtime: the TAA resolve's sampler could not be created - the resolve will have no descriptor to write");
+            return;
+        }
+        this->taa_sampler = vk_sampler(sampler, this->vulkan_core.device);
     }
 
     render_resource::shared::sampler_set runtime::shared_samplers() const noexcept {
@@ -3846,6 +3696,9 @@ namespace vulkan {
 
     bool runtime::resolve_pass(pass::frame_pass const& pass, pass::resolved_io& out) {
         core const& vk = this->vulkan_core;
+        if (&pass == static_cast<pass::frame_pass const*>(&this->taa_resolve)) {
+            return this->resolve_taa_pass(out);
+        }
         if (&pass != static_cast<pass::frame_pass const*>(&this->gi_probe)) {
             return false; // no other pass is wired into a stage yet
         }
@@ -3914,6 +3767,53 @@ namespace vulkan {
             break;
         }
         out.extent = extent;
+        return true;
+    }
+
+    bool runtime::resolve_taa_pass(pass::resolved_io& out) {
+        core const& vk = this->vulkan_core;
+        std::size_t const image_count = vk.scene_color_image_views.size();
+        std::size_t const index = this->current_image_index;
+        // A frame whose targets are not there cannot run this pass at all: they are created and destroyed with
+        // the target generation (see core::create_render_targets).
+        if (image_count == 0 || index >= image_count || vk.taa_history_image_views.size() != image_count || vk.velocity_image_views.size() != image_count ||
+            vk.gbuffer_depth_image_views.size() != image_count || vk.hdr_image_views.size() != image_count || !this->taa_resolve.pipeline_ready()) {
+            return false;
+        }
+        out.frame = this->pass_frame();
+        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
+        // The four own bindings, resolved BY DECLARATION ELEMENT: the declaration names four per-swapchain-image
+        // resources, so the element selects within the family (all four are element 0) and the FRAME selects the
+        // image. The views are what the descriptor takes and the images are what the pass's barriers take.
+        out.own_storage[0] = {.view = vk.scene_color_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.scene_color_images[index]};
+        out.own_storage[1] = {.view = vk.taa_history_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.taa_history_images[index]};
+        out.own_storage[2] = {.view = vk.velocity_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.velocity_images[index]};
+        out.own_storage[3] = {.view = vk.gbuffer_depth_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_depth_images[index]};
+        out.own = std::span<pass::resolved_binding const>(out.own_storage.data(), 4);
+        // The declared render TARGET: the frame's HDR image, which the resolve writes as its colour attachment
+        // and then copies out of. Resolved the same way an own binding is, so the pass reaches nothing it did
+        // not declare - and the pass owns the rendering instance over it.
+        out.target_storage[0] = {.view = vk.hdr_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.hdr_images[index]};
+        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), 1);
+        out.own_set = VK_NULL_HANDLE;      // the pass owns its family and therefore its sets
+        out.shared.scene = VK_NULL_HANDLE; // the resolve reads nothing shared: its four inputs are its own
+        out.pipeline_storage[0] = this->taa_resolve.pipeline();
+        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
+        out.pipeline_layout = this->taa_resolve.pipeline_layout();
+        // The push block, composed HERE because its values are the renderer's: the two blend weights are the
+        // config's, the texel size is the target's, and the two depth terms come from this frame's projection.
+        // The lane that says whether the history may be trusted is the PASS's, and it writes that one itself.
+        pass::taa_pass::push_constants push = {};
+        push.blend_static = this->taa_blend_static;
+        push.blend_min = this->taa_blend_min;
+        push.texel_size_x = 1.0f / static_cast<float>(vk.swap_chain_extent.width);
+        push.texel_size_y = 1.0f / static_cast<float>(vk.swap_chain_extent.height);
+        push.depth_scale = this->current_ubo.proj[2][2];
+        push.depth_offset = this->current_ubo.proj[3][2];
+        static_assert(sizeof(push) <= pass::max_push_bytes, "the TAA resolve's push block must fit the guaranteed minimum");
+        std::memcpy(out.push_storage.data(), &push, sizeof(push));
+        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
+        out.extent = vk.swap_chain_extent; // the declaration's rule is `full`
         return true;
     }
 
@@ -4479,8 +4379,35 @@ namespace vulkan {
 
         // TAA resolve: blend the scene color with the reprojected history into the HDR target the post
         // chain reads, then copy the result into the history image for the next frame that renders this
-        // swapchain image (see record_taa_pass).
-        this->record_taa_pass(command_buffer);
+        // swapchain image. The PASS owns all of that now (vulkan.pass.taa), and the two lines below are the
+        // part it cannot own yet:
+        //
+        //  * the G-buffer depth's transition to a sampled layout, whose "was it written this frame" flag
+        //    belongs to the G-buffer pass, and
+        //  * clearing the motion-vector flag, which is what stops the GI chain (later in the same frame) from
+        //    transitioning the velocity image a second time.
+        //
+        // Both are shared per-image bookkeeping - the barrier/order stage's job in the long run - and both are
+        // gated on THE SAME predicate the runner gates the stage on, so the host never touches them on a frame
+        // the pass does not run (clearing the velocity flag for a frame with no resolve would make the GI
+        // tracer sample an image still in ATTACHMENT layout).
+        if (this->active_features().taa) {
+            if (this->current_image_index < this->velocity_written.size()) {
+                this->velocity_written[this->current_image_index] = false;
+            }
+            static_cast<void>(this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(this->current_image_index)));
+        }
+        {
+            pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
+            [[maybe_unused]] pass::run_report const taa_report = pass::record_stage(taa_stage, this->make_pass_host());
+        }
+        // The matrix the NEXT frame's motion vectors are computed against is this frame's, and it is only
+        // recorded when the resolve actually wrote a history: a resolve that bailed out (no descriptor set)
+        // must not claim one. `image_view_proj` stays the renderer's because the camera UBO - not TAA - reads
+        // it as `prev_view_proj`.
+        if (this->taa_resolve.wrote_history() && this->current_image_index < this->image_view_proj.size()) {
+            this->image_view_proj[this->current_image_index] = this->current_ubo.view_proj_unjittered;
+        }
         this->gpu_mark(command_buffer, gpu_mark_id::taa_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         // G-buffer debug mode (an inspection of the stored data, never combined with the lighting
@@ -5006,7 +4933,7 @@ namespace vulkan {
         // Same argument for the cluster pass: flat shading reads no light list, and with no active
         // punctual light there is nothing to sort in the first place.
         f.clustered = this->clustered_lights && this->cluster_pipeline.has_value() && this->light_state.light_count.x > 0.5f && !f.unlit;
-        f.taa = this->taa_on && this->taa_pipeline.has_value() && shaded_scene;
+        f.taa = this->taa_on && this->taa_resolve.pipeline_ready() && shaded_scene;
         f.ssao = this->ssao_enabled && shaded_scene; // shader-side gate: no pass of its own to skip
         f.bloom = this->bloom_intensity > 0.0f && this->post_hdr_pipeline.has_value() && !f.gbuffer_debug;
         f.fxaa = this->fxaa_on && this->post_fxaa_pipeline.has_value();
@@ -5086,7 +5013,7 @@ namespace vulkan {
             return this->gbuffer_pipeline.has_value() && this->gbuffer_debug_pipeline.has_value();
         }
         if (name == "taa") {
-            return this->taa_pipeline.has_value();
+            return this->taa_resolve.pipeline_ready();
         }
         if (name == "fxaa") {
             return this->post_fxaa_pipeline.has_value();
