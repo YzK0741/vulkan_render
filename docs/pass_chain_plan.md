@@ -489,11 +489,21 @@ The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought
 of these were FIXED by that - and a stale finding is its own defect in the record, which is why each entry now
 says what a re-audit of the current tree found.
 
-* **STILL OPEN - the transparent pass's attachment format vs the named scene pipelines.** `runtime::make_pipeline`
-  builds the named scene pipelines with `vk.swap_chain_image_format` while the transparent pass's declaration
-  names `vulkan::hdr_format` for its single colour attachment. The gate reports no validation finding on this
-  state, so it is either tolerated or the formats are compatible - but a declaration that names its target's
-  format would settle it. **This one is a real, open question.**
+* **STILL OPEN, and now measured - the transparent pass's attachment format vs the named scene pipelines.**
+  The transparent pass's instance is declared with `vulkan::hdr_format` = `VK_FORMAT_R16G16B16A16_SFLOAT` for its
+  colour attachment and `depth_format` for its depth, while the leaves it draws go through the named scene
+  pipelines, which `core::make_pipeline` creates with `this->swap_chain_image_format` (the surface's format, e.g.
+  `B8G8R8A8_SRGB`) and `this->depth_format`. Those are not the same format *or* the same format class, and the
+  gate reports no validation finding on `transparent_blend` - the scenario that actually draws a BLEND material
+  through that instance - so the layer tolerates the pair on this driver, which is exactly the kind of thing that
+  is a validation error on a stricter one. Two candidate fixes, and they are not equivalent:
+  (a) **name the format in the declaration** (`render_target` has no format field today), which is the general
+  answer and would let every pass state what it renders into; or
+  (b) **build the named scene pipelines with the format the instance uses**, which is narrower and would need the
+  pipeline registry to know which instance a leaf is drawn into - a leaf can be drawn in both the G-buffer and
+  the transparent instance, so this is likely wrong.
+  Either way the finding is real rather than bookkeeping: it is the one recorded item that a stricter driver
+  would fail, and it is why "a declaration names its target's format" is on the list at all.
 * **RESOLVED - `sampler_hint::probe_grid` with no backing sampler.** The hint now has one:
   `gi_probe_sampler` is created for the probe cache's declaration to choose, and `shared_samplers()` fills that
   slot. The "lying vocabulary" was a property of the pre-GI state, not of the schema.
