@@ -123,6 +123,7 @@ target_sources(vulkancorekit
         vulkan/bindings/bindings.cppm
         vulkan/pipelines/pipelines.cppm
         vulkan/render_resource/render_resource.cppm
+        vulkan/render_resource/shared.cppm
         vulkan/pass/pass.cppm
         vulkan/profiling/profiling.cppm
         vulkan/shadow_fit/shadow_fit.cppm

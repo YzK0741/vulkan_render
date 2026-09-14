@@ -14,6 +14,7 @@ import vulkan.profiling;
 import vulkan.pipelines;
 import vulkan.bindings;
 import vulkan.render_resource;
+import vulkan.render_resource.shared;
 
 import utility;
 import vulkan.constant_init;
@@ -3803,7 +3804,7 @@ namespace vulkan {
                     vk_ref.gi_probe_image_views[write_side + 2u],
                     vk_ref.gi_probe_image_views[write_side + 3u],
                     vk_ref.gi_probe_surface_image_views[0]};
-                bindings::sampler_set const samplers = {.probe_grid = *this->gi_probe_sampler};
+                render_resource::shared::sampler_set const samplers = {.probe_grid = *this->gi_probe_sampler};
                 auto const written = bindings::write_set(vk_ref, render_resource::gi_probe_io, render_resource::gi_probe_io.own_set, sets[which], views, {}, samplers);
                 if (!written) {
                     utility::log("runtime: probe cache descriptors: {}", written.error());

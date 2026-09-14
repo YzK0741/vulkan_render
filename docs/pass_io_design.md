@@ -189,6 +189,15 @@ was open in the first draft of this document:
   pipelines by name (`make_pipeline` / `set_default_pipeline` / `get_pipeline`), so a pass names what it records
   with and the host resolves those names into `resolved_io::pipelines`, in order. The 787 lines of
   `vulkan.pipelines` stay where they are, with the pipeline layouts still built there.
+* **handles stay with their owner, and the SHARED ones get a nested module.** The rule is the schema's own
+  scopes applied to ownership: a pass's private family belongs to that pass, anything the frame loop alone
+  touches stays in the frame loop, and a handle more than one consumer needs and none owns goes to
+  `vulkan.render_resource.shared` - nested, because this layer must stay pure CPU (section 1) while
+  `VkSampler` is not. The six samplers are its first tenant: a declaration names a `sampler_hint` and never a
+  `VkSampler`, so a pass cannot pick the wrong filter, and `bindings::write_set` resolves the hint against a
+  `sampler_set` the runtime fills once. Shared IMAGE and BUFFER handles are deliberately absent until a
+  consumer writes a shared set through a declaration, because that consumer is what says which keys the table
+  needs.
 
 STILL OPEN, stated rather than implied: push constants are the one input that is neither a resource nor a
 behaviour, and they are composed by the runtime today (camera matrices, radii, the frame counter, the instance
@@ -204,6 +213,12 @@ pass's push layout). And parallel recording (`main_segments` + the task pool) is
     framework module (vulkan.pass)                DONE: behaviour vocabulary, resolved_io, the base class,
                                                         pass_host, stage, and the three runner functions;
                                                         no consumer yet
+    shared handles (vulkan.render_resource.shared) DONE for the samplers, which is the first tenant: the probe
+                                                        cache's writes now CHOOSE one through its declaration
+                                                        (`sampler_hint`) instead of naming a `VkSampler`, and
+                                                        `bindings` no longer defines a second `sampler_set` of
+                                                        its own; the shared image/buffer handles follow a
+                                                        consumer, not this table
     step 1: the layout generator                  DONE for the probe cache, and PROVEN BY THE GATE rather
                                                         than by a comparison test: `bindings::make_set_layout`
                                                         generates `build_gi_probe`'s layout from the
