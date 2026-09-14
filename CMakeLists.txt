@@ -122,6 +122,7 @@ target_sources(vulkancorekit
         vulkan/runtime.cppm
         vulkan/bindings/bindings.cppm
         vulkan/pipelines/pipelines.cppm
+        vulkan/render_resource/render_resource.cppm
         vulkan/profiling/profiling.cppm
         vulkan/shadow_fit/shadow_fit.cppm
         vulkan/readback/readback.cppm
@@ -395,7 +396,7 @@ option(VR_BUILD_TESTS "Build the headless unit tests" ON)
 if(VR_BUILD_TESTS)
     enable_testing()
 
-    set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit)
+    set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit test_render_resources)
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-run")
 
     foreach(test_target IN ITEMS ${VR_TEST_TARGETS})
@@ -423,6 +424,13 @@ if(VR_BUILD_TESTS)
     # link chain just rides the library's PUBLIC dependencies (Vulkan/glfw are not pulled in
     # unless the math code actually references them).
     target_link_libraries(test_math
+            vulkancorekit
+            vstd_lib
+    )
+    # vulkan.render_resource is pure CPU on purpose (its own enums, no Vulkan type): the invariants it exists
+    # for - usage is a subset of the schema, kind and access fit, a pass's own bindings are contiguous, a pool
+    # count is derivable - are checkable WITHOUT a device, which is the only way they can be checked in CI.
+    target_link_libraries(test_render_resources
             vulkancorekit
             vstd_lib
     )

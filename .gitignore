@@ -22,3 +22,7 @@ imgui_layout.ini
 #local startup config (generated from config.example.toml by the setup scripts)
 config.toml
 .commit-msg.tmp
+
+# A plain out-of-source build directory (cmake -B build): not part of the repository, same as the
+# per-configuration ones above. Found tracked once by accident, via compile_commands.json.
+/build/
