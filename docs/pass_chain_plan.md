@@ -551,6 +551,10 @@ says what a re-audit of the current tree found.
      state (`history_valid`, `mode`), the history copy and the hand-backs while the set layout, the pipeline and
      both per-image families stay the renderer's. That is the part where the ORDER lives (after the tracer and
      the lobe, before the spatial filter), and it is worth taking on its own.
+     **THE DRAFT IS IN THE REPOSITORY**: `docs/drafts/ssgi_temporal.cppm.txt` and `.cpp.txt` are that module,
+     written and read through, with `docs/drafts/README.md` listing the exact host-side remainder (the resolver,
+     the `resolve_pass` branch, the driver's `record_stage`, the two stage registrations, and how `resolved_` is
+     reported back). They are `.txt` on purpose: not compiled, not formatted, not doxygen-scanned.
    * **(1b) the pass-owned FAMILY**, which is what `own_per_image` was added for: the pass then ensures its own
      set from the declaration, writes each image's set from that image's views, and keeps its own history flags
      (the tracer reading them through an accessor). This is the step that measured the channel.
