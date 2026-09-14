@@ -184,6 +184,22 @@ export namespace vulkan::pass {
         std::array<resolved_binding, max_own_bindings> own_storage = {};
         /// the pass's own binding number -> the handles that binding's resource is (exactly one is set)
         std::span<resolved_binding const> own = {};
+        /**
+         * The same own bindings, ONE VIEW PER SWAPCHAIN IMAGE: `own_per_image[k][image]` is the view binding @c k
+         * has for swapchain image @c image (each span is `frame.image_count` long, or empty where the host filled
+         * nothing).
+         *
+         * WHY A PASS NEEDS THIS, measured rather than anticipated: a pass that owns a per-image descriptor family
+         * has to write EACH IMAGE's views into THAT IMAGE's set - `image_set_family::ensure` hands its write
+         * callback an image index for exactly that reason - and `own` only carries the CURRENT frame's handles.
+         * The host-written families reach into the core for this (`vulkan_core.gi_images[i]` and friends); a pass
+         * cannot, which is what blocked the GI denoiser's extraction twice (see docs/pass_chain_plan.md: the
+         * second failure was a descriptor pointing at another image, in another layout).
+         *
+         * The FIRST entry is also what a per-generation fingerprint wants: `own_per_image[k][0]` is stable for as
+         * long as the target generation lives, while `own[k].view` changes with every frame's image.
+         */
+        std::array<std::span<VkImageView const>, max_own_bindings> own_per_image = {};
         VkDescriptorSet own_set = VK_NULL_HANDLE;
         shared_sets shared = {};
         /**

@@ -463,6 +463,12 @@ a pass's write callback is handed an `image_index` precisely so it can look up t
 entry doubles as the per-generation fingerprint (`own_per_image[k][0]` is stable for as long as the target
 generation lives, while `own[k].view` changes every frame).
 
+**THE CHANNEL IS IN** (this step): `resolved_io::own_per_image` exists, documented with the measurement that
+asked for it, and `test_pass.cpp` now proves the runner hands it through untouched - the framework does not
+interpret it, and a pass that owns a per-image family is the only thing that reads it. Nothing else changed, so
+the gate is 12 x 2 with 0 changed and 0 flaky, which is also the evidence that adding a channel is inert until its
+user arrives.
+
 The three places it lands, in the order they should be done:
 
 1. **the temporal resolve** (the diffuse signal first, as a pass of its own - its declaration is already in

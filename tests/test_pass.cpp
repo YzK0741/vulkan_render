@@ -48,6 +48,10 @@ namespace {
         reinterpret_cast<VkPipeline>(0x1), reinterpret_cast<VkPipeline>(0x2), reinterpret_cast<VkPipeline>(0x3), reinterpret_cast<VkPipeline>(0x4)};
     /// the push block the fake host composes: raw bytes, as a real host does (the framework has no pass's type)
     std::array<std::byte, 4> const fake_push = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+    /// the per-image view lists the fake host resolves (one entry per swapchain image of its fake frame): what a
+    /// pass that owns a per-image descriptor family is handed, so the test can assert the runner passes them on
+    std::array<VkImageView, 3> const fake_per_image = {
+        reinterpret_cast<VkImageView>(0xA0), reinterpret_cast<VkImageView>(0xA1), reinterpret_cast<VkImageView>(0xA2)};
 
     /// the host's own state: the log every callback writes, plus what the fake host answers
     struct host_state {
@@ -92,6 +96,13 @@ namespace {
             out.target_storage[t] = {.view = reinterpret_cast<VkImageView>(0x70 + t), .buffer = VK_NULL_HANDLE, .image = reinterpret_cast<VkImage>(0x80 + t)};
         }
         out.targets = std::span<vp::resolved_binding const>(out.target_storage.data(), pass.io().targets.size());
+        // THE PER-IMAGE VIEW LISTS: what a pass that owns a per-image descriptor family needs (its write callback
+        // is handed an image index, and `own` only carries the current frame's handles). A synthetic host fills
+        // them here so the test can assert the runner hands them through untouched - the framework does not
+        // interpret them.
+        for (std::size_t k = 0; k < pass.io().bindings.size() && k < out.own_per_image.size(); ++k) {
+            out.own_per_image[k] = std::span<VkImageView const>(fake_per_image.data(), fake_per_image.size());
+        }
         out.extent = behaviour.extent == vp::extent_rule::half ? VkExtent2D{state.frame.extent.width / 2u, state.frame.extent.height / 2u} : state.frame.extent;
         return true;
     }
@@ -205,6 +216,9 @@ namespace {
             last_targets = io.targets.size();
             last_target_view = io.targets.empty() ? VK_NULL_HANDLE : io.targets[0].view;
             last_target_image = io.targets.empty() ? VK_NULL_HANDLE : io.targets[0].image;
+            // the per-image view lists, as the pass received them (see resolved_io::own_per_image)
+            last_per_image_first = io.own_per_image.empty() || io.own_per_image[0].empty() ? VK_NULL_HANDLE : io.own_per_image[0][0];
+            last_per_image_length = io.own_per_image.empty() ? 0 : io.own_per_image[0].size();
         }
 
         VkCommandBuffer last_cmd = VK_NULL_HANDLE;
@@ -220,6 +234,8 @@ namespace {
         std::size_t last_targets = 0;
         VkImageView last_target_view = VK_NULL_HANDLE;
         VkImage last_target_image = VK_NULL_HANDLE;
+        VkImageView last_per_image_first = VK_NULL_HANDLE;
+        std::size_t last_per_image_length = 0;
 
     private:
         rr::pass_io io_;
@@ -324,6 +340,11 @@ int main() {
         CHECK(tail.last_targets == 1);
         CHECK(tail.last_target_view == reinterpret_cast<VkImageView>(0x70));
         CHECK(tail.last_target_image == reinterpret_cast<VkImage>(0x80));
+        // ... and the PER-IMAGE VIEW LISTS reached the pass untouched: a pass that owns a per-image descriptor
+        // family writes each image's set from that image's own handles, which `own` (the current frame's) cannot
+        // supply - see resolved_io::own_per_image and docs/pass_chain_plan.md
+        CHECK(probe.last_per_image_length == 3); // one entry per swapchain image of the frame
+        CHECK(probe.last_per_image_first != VK_NULL_HANDLE);
     }
 
     // ---- the create-time context on its own: a pass is built from THIS and nothing else ----
