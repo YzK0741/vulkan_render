@@ -1,5 +1,13 @@
 # The pass chain, rebuilt on the pre-GI state
 
+> **READ THIS FIRST - THE TENSE OF THIS DOCUMENT.** Everything above the "HANDOFF" section is a CHRONOLOGICAL
+> RECORD: each section was written as its step landed and describes the tree AS IT WAS THEN, including steps that
+> later steps superseded (the pre-GI sections speak of a branch with no GI in it, of a `pass_context::shader` that
+> is null, and of samplers nothing backs - all of which the GI attach changed). The **HANDOFF** section at the
+> end is the only part that describes the tree as it IS, and `docs/drafts/README.md` carries the one piece of
+> work that is designed but not installed. Read the record for why things are the way they are; read the handoff
+> to act.
+
 This branch (`pass-chain`, forked at `281ab06` - the commit immediately before the first GI commit) exists to do
 one thing the later work could not do in place: let the PBR rendering be **built** as passes rather than
 migrated into them, and then let GI be **added** to that architecture pass by pass. The later state on `master`
