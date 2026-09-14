@@ -320,6 +320,20 @@ int main() {
         CHECK(stage_flags_of(rr::stage_flag::compute) == VK_SHADER_STAGE_COMPUTE_BIT);
         CHECK(stage_flags_of(rr::stage_flag::fragment | rr::stage_flag::compute) == (VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT));
         CHECK(stage_flags_of(rr::stage_flag::none) == 0u);
+        // the layout mapping, and the sampler CHOICE a declaration makes instead of a handle
+        CHECK(image_layout_of(rr::image_layout::sampled) == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        CHECK(image_layout_of(rr::image_layout::general) == VK_IMAGE_LAYOUT_GENERAL);
+        sampler_set const samplers = {.gbuffer = reinterpret_cast<VkSampler>(0x11), .probe_grid = reinterpret_cast<VkSampler>(0x22)};
+        CHECK(samplers.of(rr::sampler_hint::probe_grid) == reinterpret_cast<VkSampler>(0x22));
+        CHECK(samplers.of(rr::sampler_hint::gbuffer) == reinterpret_cast<VkSampler>(0x11));
+        CHECK(samplers.of(rr::sampler_hint::none) == VK_NULL_HANDLE); // "no sampler", which the validator enforces
+        // the probe declaration's nine own bindings all declare GENERAL: both ping-pong sides and the geometry
+        // stay in that layout for the whole update, which is what makes the propagation's barriers same-layout
+        for (rr::pass_binding const& b : rr::gi_probe_io.bindings) {
+            if (b.set == rr::gi_probe_io.own_set) {
+                CHECK(b.layout == rr::image_layout::general);
+            }
+        }
         // the probe declaration's own set is exactly the nine bindings its shader declares, in order, and the
         // generated layout is what `pipelines::build_gi_probe` now builds from them
         uint32_t own = 0;

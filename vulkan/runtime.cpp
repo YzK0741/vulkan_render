@@ -13,6 +13,7 @@ module vulkan.runtime;
 import vulkan.profiling;
 import vulkan.pipelines;
 import vulkan.bindings;
+import vulkan.render_resource;
 
 import utility;
 import vulkan.constant_init;
@@ -3782,10 +3783,16 @@ namespace vulkan {
         // no descriptor rewrite between its dispatches (see record_gi_probe_pass). The two sides are at
         // index side * 4 + coefficient.
         auto const write_sets = [this](core const& vk_ref, uint32_t const /*image_index*/, std::span<VkDescriptorSet const> const sets) {
+            // The nine views are all this lambda still decides, because WHICH half of the ping-pong each of the
+            // family's two sets reads and writes is the one thing that differs between them. Everything else -
+            // the nine binding numbers, their descriptor types, their counts, their GENERAL layouts (all nine,
+            // see the declaration: the grid's sides stay in GENERAL for the whole update) and the fact that the
+            // four sampled ones take the probe grid's sampler - is generated from the pass's declaration by
+            // `bindings::write_set`. That is the point: the layout and the writes used to be two hand-written
+            // halves, and this project has already paid twice for them drifting apart.
             for (uint32_t which = 0; which < sets.size(); ++which) {
                 uint32_t const read_side = (1u - which) * 4u;
                 uint32_t const write_side = which * 4u;
-                std::array<VkDescriptorImageInfo, 9> image_infos = {};
                 std::array<VkImageView, 9> const views = {
                     vk_ref.gi_probe_image_views[read_side + 0u],
                     vk_ref.gi_probe_image_views[read_side + 1u],
@@ -3796,26 +3803,11 @@ namespace vulkan {
                     vk_ref.gi_probe_image_views[write_side + 2u],
                     vk_ref.gi_probe_image_views[write_side + 3u],
                     vk_ref.gi_probe_surface_image_views[0]};
-                std::array<VkWriteDescriptorSet, 9> writes = {};
-                for (uint32_t b = 0; b < views.size(); ++b) {
-                    // 4..8 are the STORAGE images the pass writes (the four coefficients and the geometry);
-                    // 0..3 are the other half of the ping-pong, sampled. ALL NINE are in GENERAL: the two
-                    // grid sides stay there for the whole update (that is what makes the propagation's
-                    // barriers same-layout ones), and the geometry is written by the injection and read by
-                    // the propagation in the same dispatch sequence. A descriptor claiming SHADER_READ for
-                    // one of them would be a lie validation rejects.
-                    bool const storage = b >= 4u;
-                    image_infos[b].sampler = storage ? VK_NULL_HANDLE : *this->gi_probe_sampler;
-                    image_infos[b].imageView = views[b];
-                    image_infos[b].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-                    writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    writes[b].dstSet = sets[which];
-                    writes[b].dstBinding = b;
-                    writes[b].descriptorCount = 1;
-                    writes[b].descriptorType = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                    writes[b].pImageInfo = &image_infos[b];
+                bindings::sampler_set const samplers = {.probe_grid = *this->gi_probe_sampler};
+                auto const written = bindings::write_set(vk_ref, render_resource::gi_probe_io, render_resource::gi_probe_io.own_set, sets[which], views, {}, samplers);
+                if (!written) {
+                    utility::log("runtime: probe cache descriptors: {}", written.error());
                 }
-                vkUpdateDescriptorSets(vk_ref.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
             }
         };
         if (!this->gi_probe_family.ensure_all(vk, this->gi_probe_set_layout, static_cast<uint32_t>(image_count), 2u, 9u, fingerprints, write_sets)) {

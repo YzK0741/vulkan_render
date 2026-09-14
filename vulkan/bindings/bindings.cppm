@@ -138,6 +138,137 @@ namespace vulkan::bindings {
         return layout;
     }
 
+    /// @brief the `VkImageLayout` a declared binding layout means
+    /// @ingroup vulkan_bindings
+    export [[nodiscard]] constexpr VkImageLayout image_layout_of(render_resource::image_layout const layout) noexcept {
+        switch (layout) {
+        case render_resource::image_layout::sampled:
+            return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        case render_resource::image_layout::general:
+            return VK_IMAGE_LAYOUT_GENERAL;
+        }
+        return VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+
+    /**
+     * @brief the six samplers this renderer owns, addressed by what a declaration asks for
+     * @ingroup vulkan_bindings
+     *
+     * A declaration names a CHOICE (`sampler_hint`), never a `VkSampler`: the samplers belong to the runtime -
+     * six of them exist and each was created for a reason (the probe grid's is LINEAR over a 3D image, the
+     * G-buffer's is NEAREST, the post chain's is LINEAR over 2D) - so a pass that could name a raw handle could
+     * also name the wrong one. `hint::none` means "this binding has no sampler", which the declaration's
+     * validator enforces exactly.
+     */
+    export struct sampler_set {
+        VkSampler gbuffer = VK_NULL_HANDLE;
+        VkSampler probe_grid = VK_NULL_HANDLE;
+        VkSampler taa = VK_NULL_HANDLE;
+        VkSampler post = VK_NULL_HANDLE;
+        VkSampler nearest = VK_NULL_HANDLE;
+        VkSampler shadow = VK_NULL_HANDLE;
+
+        [[nodiscard]] constexpr VkSampler of(render_resource::sampler_hint const hint) const noexcept {
+            switch (hint) {
+            case render_resource::sampler_hint::none:
+                return VK_NULL_HANDLE;
+            case render_resource::sampler_hint::gbuffer:
+                return gbuffer;
+            case render_resource::sampler_hint::probe_grid:
+                return probe_grid;
+            case render_resource::sampler_hint::taa:
+                return taa;
+            case render_resource::sampler_hint::post:
+                return post;
+            case render_resource::sampler_hint::nearest:
+                return nearest;
+            case render_resource::sampler_hint::shadow:
+                return shadow;
+            }
+            return VK_NULL_HANDLE;
+        }
+    };
+
+    /**
+     * @brief write a set's descriptors from a pass's declaration
+     * @param vk the device that owns @p target
+     * @param io the declaration whose bindings for @p set are written
+     * @param set which set to write
+     * @param target the descriptor set to write into
+     * @param views the view for each binding NUMBER of that set (only the image kinds read it)
+     * @param buffers the buffer for each binding NUMBER of that set (only the buffer kinds read it)
+     * @param samplers the renderer's six samplers, chosen by each binding's declared hint
+     * @return nothing, or a message naming the pass and the binding that could not be written
+     * @ingroup vulkan_bindings
+     *
+     * THE OTHER HALF OF THE GENERATOR, and the half that removes the drift this project actually suffered: the
+     * layout (above) and the writes (here) come from one declaration, so a binding's type, its descriptor
+     * count, its layout and its sampler cannot disagree with the layout they are written against. Two cases
+     * are refused rather than guessed, and both are refused LOUDLY because guessing them is how a descriptor
+     * silently points at the wrong thing: an ARRAY binding (`descriptor_count > 1`, the bindless texture
+     * array) is written element by element by the owner of that capacity, and an ACCELERATION STRUCTURE needs
+     * a `pNext` chain this function does not build - the top level structure is bound by the scene set's own
+     * owner today, which is where it belongs until a pass declares one of its own.
+     */
+    export [[nodiscard]] inline std::expected<void, std::string> write_set(core const& vk, render_resource::pass_io const& io, uint32_t const set, VkDescriptorSet const target,
+                                                                           std::span<VkImageView const> const views, std::span<VkBuffer const> const buffers, sampler_set const& samplers) {
+        std::array<VkDescriptorImageInfo, max_set_bindings> image_infos = {};
+        std::array<VkDescriptorBufferInfo, max_set_bindings> buffer_infos = {};
+        std::array<VkWriteDescriptorSet, max_set_bindings> writes = {};
+        uint32_t count = 0;
+        for (render_resource::pass_binding const& b : io.bindings) {
+            if (b.set != set) {
+                continue;
+            }
+            std::string const where = std::string(io.name) + ": set " + std::to_string(set) + " binding " + std::to_string(b.binding);
+            if (count == writes.size()) {
+                return std::unexpected(std::string(io.name) + ": set " + std::to_string(set) + " declares more than " + std::to_string(max_set_bindings) + " bindings");
+            }
+            if (b.descriptor_count != 1) {
+                return std::unexpected(where + " is an array binding, which its owner writes");
+            }
+            VkWriteDescriptorSet& write = writes[count];
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = target;
+            write.dstBinding = b.binding;
+            write.descriptorCount = b.descriptor_count;
+            write.descriptorType = descriptor_type_of(b.kind);
+            switch (b.kind) {
+            case render_resource::binding_kind::sampled_image:
+            case render_resource::binding_kind::storage_image:
+            case render_resource::binding_kind::input_attachment:
+            case render_resource::binding_kind::sampler: {
+                if (b.binding >= views.size()) {
+                    return std::unexpected(where + " has no view to bind");
+                }
+                image_infos[count].sampler = samplers.of(b.sampler);
+                image_infos[count].imageView = b.kind == render_resource::binding_kind::sampler ? VK_NULL_HANDLE : views[b.binding];
+                image_infos[count].imageLayout = image_layout_of(b.layout);
+                write.pImageInfo = &image_infos[count];
+                break;
+            }
+            case render_resource::binding_kind::uniform_buffer:
+            case render_resource::binding_kind::storage_buffer: {
+                if (b.binding >= buffers.size()) {
+                    return std::unexpected(where + " has no buffer to bind");
+                }
+                buffer_infos[count].buffer = buffers[b.binding];
+                buffer_infos[count].offset = 0;
+                buffer_infos[count].range = VK_WHOLE_SIZE;
+                write.pBufferInfo = &buffer_infos[count];
+                break;
+            }
+            case render_resource::binding_kind::acceleration_structure:
+                return std::unexpected(where + " is an acceleration structure, which the owner of its set writes");
+            }
+            ++count;
+        }
+        if (count != 0) {
+            vkUpdateDescriptorSets(vk.device, count, writes.data(), 0, nullptr);
+        }
+        return {};
+    }
+
     /**
      * @brief the descriptor sets of one per-image family (post chain, G-buffer debug view, TAA)
      * @ingroup vulkan_bindings

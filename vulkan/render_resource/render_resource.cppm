@@ -272,6 +272,22 @@ export namespace vulkan::render_resource {
     };
 
     /**
+     * @brief the image layout a binding's DESCRIPTOR declares
+     *
+     * THIS FIELD EXISTS BECAUSE THE KIND DOES NOT IMPLY THE LAYOUT, which the first real conversion found
+     * rather than assumed: the probe cache keeps ALL NINE of its own bindings in `GENERAL` - both ping-pong
+     * sides and the per-cell geometry - because the propagation's barriers are same-layout ones for the whole
+     * update, and a descriptor claiming `SHADER_READ_ONLY_OPTIMAL` for one of those images would be a lie the
+     * validation layer rejects. Deriving the layout from "storage versus sampled" would have been wrong for
+     * that pass on the first try.
+     */
+    enum class image_layout : uint8_t {
+        sampled, // SHADER_READ_ONLY_OPTIMAL: a sampled image that is only ever read in that layout
+        general, // GENERAL: a resource whose owner keeps it there for its whole life (a storage image, or a
+                 // grid a propagation ping-pongs in place)
+    };
+
+    /**
      * @brief who owns the SET a binding lives in
      *
      * `own` is the pass's private family, whose layout it declares in full. The other three name shared sets
@@ -366,6 +382,8 @@ export namespace vulkan::render_resource {
         uint16_t descriptor_count = 1;
         binding_access access = binding_access::read;
         sampler_hint sampler = sampler_hint::none;
+        /// the layout this binding's descriptor declares (see image_layout: NOT derivable from the kind)
+        image_layout layout = image_layout::sampled;
         stage_flag stages = stage_flag::compute;
     };
 
@@ -495,6 +513,11 @@ export namespace vulkan::render_resource {
             if (!compatible(b.kind, b.access)) {
                 return std::unexpected(where + " is a " + std::string(name_of(b.kind)) + " used for " + std::string(name_of(b.access)));
             }
+            if (b.kind == binding_kind::storage_image && b.layout != image_layout::general) {
+                // a storage image is written, and a descriptor that claims SHADER_READ_ONLY_OPTIMAL for one
+                // describes an image the pass is not allowed to write - validation rejects it at submit
+                return std::unexpected(where + " is a storage image, whose descriptor must declare GENERAL");
+            }
             if (b.element >= info->count) {
                 return std::unexpected(where + " names element " + std::to_string(b.element) + " of " + std::string(info->name) +
                                        ", which holds " + std::to_string(info->count));
@@ -597,15 +620,20 @@ export namespace vulkan::render_resource {
      * keeping the schema in one place and the usage with the pass.
      */
     inline constexpr std::array<pass_binding, 16> gi_probe_bindings = {{
-        {.set = 1, .binding = 0, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 0, .access = binding_access::read, .sampler = sampler_hint::probe_grid},
-        {.set = 1, .binding = 1, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 1, .access = binding_access::read, .sampler = sampler_hint::probe_grid},
-        {.set = 1, .binding = 2, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 2, .access = binding_access::read, .sampler = sampler_hint::probe_grid},
-        {.set = 1, .binding = 3, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 3, .access = binding_access::read, .sampler = sampler_hint::probe_grid},
-        {.set = 1, .binding = 4, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 4, .access = binding_access::write},
-        {.set = 1, .binding = 5, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 5, .access = binding_access::write},
-        {.set = 1, .binding = 6, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 6, .access = binding_access::write},
-        {.set = 1, .binding = 7, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 7, .access = binding_access::write},
-        {.set = 1, .binding = 8, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_surface, .element = 0, .access = binding_access::write},
+        // ALL NINE OF THE PASS'S OWN BINDINGS DECLARE `GENERAL`, and that is not tidiness: the two ping-pong
+        // sides stay in GENERAL for the whole update (which is what makes the propagation's barriers
+        // same-layout ones), and the per-cell geometry is written by the injection and read by the propagation
+        // in the same dispatch sequence. A descriptor claiming SHADER_READ for a sampled one of them would be a
+        // lie validation rejects at submit.
+        {.set = 1, .binding = 0, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 0, .access = binding_access::read, .sampler = sampler_hint::probe_grid, .layout = image_layout::general},
+        {.set = 1, .binding = 1, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 1, .access = binding_access::read, .sampler = sampler_hint::probe_grid, .layout = image_layout::general},
+        {.set = 1, .binding = 2, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 2, .access = binding_access::read, .sampler = sampler_hint::probe_grid, .layout = image_layout::general},
+        {.set = 1, .binding = 3, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 3, .access = binding_access::read, .sampler = sampler_hint::probe_grid, .layout = image_layout::general},
+        {.set = 1, .binding = 4, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 4, .access = binding_access::write, .layout = image_layout::general},
+        {.set = 1, .binding = 5, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 5, .access = binding_access::write, .layout = image_layout::general},
+        {.set = 1, .binding = 6, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 6, .access = binding_access::write, .layout = image_layout::general},
+        {.set = 1, .binding = 7, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 7, .access = binding_access::write, .layout = image_layout::general},
+        {.set = 1, .binding = 8, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_surface, .element = 0, .access = binding_access::write, .layout = image_layout::general},
         {.set = 0, .binding = 1, .owner = set_owner::scene, .kind = binding_kind::sampled_image, .resource = resource_id::scene_textures, .access = binding_access::read, .sampler = sampler_hint::post},
         {.set = 0, .binding = 2, .owner = set_owner::scene, .kind = binding_kind::sampled_image, .resource = resource_id::ibl_env, .access = binding_access::read, .sampler = sampler_hint::post},
         {.set = 0, .binding = 3, .owner = set_owner::scene, .kind = binding_kind::sampled_image, .resource = resource_id::ibl_irradiance, .access = binding_access::read, .sampler = sampler_hint::post},
