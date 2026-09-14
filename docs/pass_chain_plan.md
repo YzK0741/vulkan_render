@@ -55,6 +55,7 @@ the same run. Re-verified with the RELATIVE spelling afterwards: 12 x 2, 0 chang
 | this step | **GI IS ATTACHED**: the 37-row declaration layer, the `gi_probe` pass, the GI pipeline builders, the acceleration structures, the GI shaders and config, and the 12-scenario gate. **12 x 2, 0 changed, 0 flaky**, including all four GI reference hashes |
 | this step | the **SSGI tracer is extracted** (`vulkan.pass.ssgi_trace`), which closed the framework gap the plan named: `pass_io::barrier_images` + `resolved_io::barrier_images` let a pass transition images that live in a SHARED set and own no descriptor. Gate 12 x 2, 0 changed, 0 flaky |
 | this step | the **glossy lobe is extracted** (`vulkan.pass.ssgi_spec`) on the same channel, and doing it found a defect in the tracer: nothing told the pass its generation had changed (`recreate_stage` now does). Gate 12 x 2, 0 changed, 0 flaky |
+| this step | the **GI denoiser's layout is generated from a declaration** (`ssgi_temporal_io`), replacing the hand-written seven bindings that its own comments record as having drifted from the pool count once. The pass extraction itself is recorded as blocked on a framework decision (two signals over one layout). Gate 12 x 2, 0 changed, 0 flaky |
 
 `docs/pass_chain_inventory.md` (192 lines) is the read-only map of this state: its resource set, the frame's
 recording spine and mark intervals, every function of the PBR/scene chain with its attachments, sets,
@@ -377,6 +378,42 @@ ones that decide this move.
 WHAT IS LEFT: the temporal resolve and the spatial filter. Both own a SET LAYOUT of their own (the temporal
 denoiser's four inputs), so they are the first GI stages that need the `pass_context` create half as well as the
 frame half - which the TAA resolve already demonstrated.
+
+## THE GI DENOISER: ITS LAYOUT IS GENERATED NOW, AND WHY THE PASS ITSELF IS NOT EXTRACTED YET
+
+Two things came out of attempting the temporal resolve, and the second is the more useful one.
+
+**DONE: the denoiser's set layout is generated from a declaration.** `render_resource::ssgi_temporal_io` now
+describes its seven bindings (the trace, the history, the motion vectors, the depth, the accumulation it WRITES,
+the normal/roughness target for the reflection's cap, and the lobe's reprojection), and
+`runtime::make_ssgi_temporal_pipeline` builds the layout from it with `bindings::make_set_layout` - the same
+pattern `build_taa` and `build_ssgi*` already use. The family's pool count comes from
+`descriptor_counts_for(ssgi_temporal_io, 0)` instead of `signature.size()`. **That closes a drift the code's own
+comments record as having happened**: the layout and the pool count were two hand-written lists of the same
+seven bindings, they were once out of step by one, and the validation layer found it
+("Trying to allocate 15 of VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER descriptors ... but this pool only has a
+total of 12"). One declaration now feeds both.
+
+**NOT DONE, AND THE MEASURED REASON: the pass itself does not fit the framework yet.** The denoiser resolves TWO
+signals - the diffuse bounce and the reflection - with ONE pipeline and ONE layout, and each signal has its own
+pair of images in the SAME seven slots. So:
+
+* `resolved_io::own` can describe one set's contents, and the reflection's set needs a DIFFERENT image in the
+  same slot. A declaration that named the diffuse images would be right for one family and wrong for the other;
+* declaring the reflection's images side by side would need the declaration to say "these two lists are the same
+  slots", which the schema has no way to express;
+* and `resolved_io` carries exactly ONE own-set handle, while this pass needs two.
+
+The honest options, for whoever takes it next, are one of: a per-pass `variants` concept (N binding lists over
+one layout), a second own-set slot in `resolved_io`, or a declaration that names only the SLOTS (kind, count,
+layout, stages) and lets the host supply the images - each is a real framework decision rather than a local
+hack, which is why it was not made inside a pass-extraction step. What did land is the half that needed no such
+decision, and it is verified: gate 12 x 2, **0 changed, 0 flaky**, all four GI hashes plus `sponza_march` and the
+seven pre-GI scenarios - i.e. a generated layout produces byte-identical frames to the hand-written one.
+
+ONE HARNESS NOTE, the same intermittent one recorded earlier: this step's FIRST full gate run reported one
+scenario FLAKY (`changed: 0` in every run, and the tail I captured did not name it); the immediate re-run was
+12 x 2 clean with all twelve hashes matching. Nothing about the renderer changed between the two runs.
 
 ## WHAT THE INVENTORY ALREADY FOUND (recorded, not yet fixed)
 

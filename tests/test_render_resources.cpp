@@ -345,5 +345,38 @@ int main() {
         CHECK(rr::ssgi_spec_io.push->stages == rr::stage_flag::compute);
     }
 
+    // ---- the SIXTH declaration: the GI denoiser, the first GI stage with a set of its OWN - and the reason it
+    //      has one is that it groups four things no other pass puts together ----
+    {
+        CHECK(rr::validate(rr::ssgi_temporal_io).has_value());
+        CHECK(rr::ssgi_temporal_io.own_set == 0);
+        CHECK(rr::ssgi_temporal_io.bindings.size() == 7);
+        CHECK(rr::ssgi_temporal_io.shared_sets.empty()); // everything it reads is in its own set
+        CHECK(rr::ssgi_temporal_io.targets.empty());     // it is a compute pass
+        // the own bindings are contiguous from zero, which is what the pass indexes its sets by
+        for (std::size_t b = 0; b < rr::ssgi_temporal_io.bindings.size(); ++b) {
+            CHECK(rr::ssgi_temporal_io.bindings[b].binding == b);
+            CHECK(rr::ssgi_temporal_io.bindings[b].owner == rr::set_owner::own);
+            CHECK(rr::ssgi_temporal_io.bindings[b].set == 0);
+        }
+        rr::descriptor_counts const counts = rr::descriptor_counts_for(rr::ssgi_temporal_io, 0);
+        CHECK(counts.sampled_image == 6); // trace, history, velocity, depth, the normal target, the reprojection
+        CHECK(counts.storage_image == 1); // the accumulation it WRITES
+        CHECK(counts.total() == 7);       // ... and this is the pool count the family is sized from now
+        CHECK(rr::ssgi_temporal_io.bindings[4].kind == rr::binding_kind::storage_image);
+        CHECK(rr::ssgi_temporal_io.bindings[4].layout == rr::image_layout::general); // a storage image must say so
+        CHECK(rr::ssgi_temporal_io.bindings[5].resource == rr::resource_id::gbuffer_targets);
+        CHECK(rr::ssgi_temporal_io.bindings[5].element == 1); // the normal/roughness target, for roughness
+        // the four images it transitions: both signals' accumulations and histories
+        CHECK(rr::ssgi_temporal_io.barrier_images.size() == 4);
+        CHECK(rr::ssgi_temporal_io.barrier_images[0].resource == rr::resource_id::gi_resolve);
+        CHECK(rr::ssgi_temporal_io.barrier_images[1].resource == rr::resource_id::gi_history);
+        CHECK(rr::ssgi_temporal_io.barrier_images[2].resource == rr::resource_id::gi_spec_resolve);
+        CHECK(rr::ssgi_temporal_io.barrier_images[3].resource == rr::resource_id::gi_spec_history);
+        CHECK(rr::ssgi_temporal_io.push.has_value());
+        CHECK(rr::ssgi_temporal_io.push->size == 48); // eight floats and the two extents
+        CHECK(rr::ssgi_temporal_io.push->stages == rr::stage_flag::compute);
+    }
+
     return vk_test::finish("test_render_resources");
 }

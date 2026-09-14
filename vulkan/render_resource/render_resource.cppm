@@ -1001,4 +1001,67 @@ export namespace vulkan::render_resource {
         .push = push_block{.offset = 0, .size = 96, .stages = stage_flag::compute},
     };
 
+    /**
+     * @brief the temporal resolve's own bindings: the first GI stage whose inputs are its OWN set
+     *
+     * The first GI declaration with `own` bindings at all - the tracer and the lobe reach everything through
+     * the two shared sets, while the denoiser needs a set nobody else has, because it groups four things no
+     * other pass puts together (the raw trace, the accumulated history, the motion vectors and the depth) plus
+     * the image it writes and two more it samples. The layout is GENERATED from this list
+     * (`bindings::make_set_layout`), which is why the seven bindings and the family's pool count cannot drift:
+     * they were out of step once, by hand, and the validation layer is what caught it.
+     *
+     * BINDING 6 IS ONE SLOT FOR TWO IMAGES, and that is the one place this declaration describes a KIND rather
+     * than an exact resource: mode 1 (the reflection) samples the lobe's reprojection there, while mode 0 (the
+     * diffuse bounce, which ignores the value) is given the depth target instead - always readable on a frame
+     * that resolves anything, where the lobe's image is not (it fails on exactly the frames the lobe is off).
+     * The layout is identical either way, and which image goes in is the pass's own write.
+     */
+    inline constexpr std::array<pass_binding, 7> ssgi_temporal_bindings = {{
+        {.set = 0, .binding = 0, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gi_trace, .access = binding_access::read, .sampler = sampler_hint::gbuffer, .layout = image_layout::sampled},
+        {.set = 0, .binding = 1, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gi_history, .access = binding_access::read, .sampler = sampler_hint::gbuffer, .layout = image_layout::sampled},
+        {.set = 0, .binding = 2, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::velocity, .access = binding_access::read, .sampler = sampler_hint::gbuffer, .layout = image_layout::sampled},
+        {.set = 0, .binding = 3, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gbuffer_depth, .access = binding_access::read, .sampler = sampler_hint::gbuffer, .layout = image_layout::sampled},
+        {.set = 0, .binding = 4, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::gi_resolve, .access = binding_access::write, .layout = image_layout::general},
+        {.set = 0, .binding = 5, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gbuffer_targets, .element = 1, .access = binding_access::read, .sampler = sampler_hint::gbuffer, .layout = image_layout::sampled},
+        {.set = 0, .binding = 6, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gi_spec_reproject, .access = binding_access::read, .sampler = sampler_hint::gbuffer, .layout = image_layout::sampled},
+    }};
+
+    /**
+     * @brief the images the temporal resolve transitions beyond its own bindings
+     *
+     * Four, because the pass resolves TWO signals with ONE layout: the diffuse pair is also in its own set
+     * (bindings 1 and 4), but the reflection's pair is not - the same seven slots hold the reflection's images
+     * in the second family - so both pairs are declared here and the host hands over all four. The order is the
+     * pass's interface:
+     *
+     *   0: `gi_resolve`         the diffuse accumulation this dispatch WRITES (also binding 4)
+     *   1: `gi_history`         the diffuse history it reads and then copies into (also binding 1)
+     *   2: `gi_spec_resolve`    the reflection's accumulation, mode 1 only
+     *   3: `gi_spec_history`    the reflection's history, mode 1 only
+     */
+    inline constexpr std::array<barrier_image, 4> ssgi_temporal_barriers = {{
+        {.resource = resource_id::gi_resolve, .element = 0},
+        {.resource = resource_id::gi_history, .element = 0},
+        {.resource = resource_id::gi_spec_resolve, .element = 0},
+        {.resource = resource_id::gi_spec_history, .element = 0},
+    }};
+
+    /**
+     * @brief the temporal resolve's declaration: the denoiser that turns the raw trace into an accumulation
+     *
+     * The FIRST GI declaration with a set of its own AND the first whose `barrier_images` and `own` bindings
+     * name the same two resources - deliberately, because the pass both binds them and moves them, and the two
+     * lists answer different questions (what the descriptor says, and what the barriers take).
+     */
+    inline constexpr pass_io ssgi_temporal_io = {
+        .name = "ssgi_temporal",
+        .own_set = 0,
+        .bindings = ssgi_temporal_bindings,
+        .shared_sets = {},
+        .targets = {},
+        .barrier_images = ssgi_temporal_barriers,
+        .push = push_block{.offset = 0, .size = 48, .stages = stage_flag::compute},
+    };
+
 } // namespace vulkan::render_resource

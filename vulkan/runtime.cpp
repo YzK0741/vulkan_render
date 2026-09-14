@@ -2899,11 +2899,20 @@ namespace vulkan {
 
     std::expected<void, std::string> runtime::make_ssgi_temporal_pipeline(std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
-        auto built = pipelines::build_ssgi_temporal(this->vulkan_core, sizeof(ssgi_temporal_push_constants), compute_shader_code);
+        // THE LAYOUT IS GENERATED FROM THE DECLARATION, not written by hand - which is the whole reason
+        // `render_resource::ssgi_temporal_io` exists: the seven bindings and the descriptor family's pool count
+        // were two hand-written lists once, and the validation layer named the mismatch between them. The
+        // declaration is now the single source for both (the family's count comes from
+        // `descriptor_counts_for` in ensure_ssgi_denoise_descriptors, the layout from here).
+        std::expected<VkDescriptorSetLayout, std::string> const layout = bindings::make_set_layout(this->vulkan_core.device, render_resource::ssgi_temporal_io, render_resource::ssgi_temporal_io.own_set);
+        if (!layout.has_value()) {
+            return fail(layout.error());
+        }
+        this->ssgi_temporal_set_layout = *layout;
+        auto built = pipelines::build_ssgi_temporal(this->vulkan_core.device, this->ssgi_temporal_set_layout, render_resource::ssgi_temporal_io.push->size, compute_shader_code);
         if (!built) {
             return fail(built.error());
         }
-        this->ssgi_temporal_set_layout = built->set_layout;
         this->ssgi_temporal_pipeline_layout = built->pipeline_layout;
         this->ssgi_temporal_pipeline = std::move(built->resolve);
         return {};
@@ -2968,7 +2977,11 @@ namespace vulkan {
             }
             vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         };
-        if (!this->ssgi_temporal_family.ensure(vk.device, this->ssgi_temporal_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
+        // THE COUNT COMES FROM THE DECLARATION, which is what makes it impossible for the pool and the layout to
+        // disagree: this number and the layout `make_ssgi_temporal_pipeline` generated are both derived from
+        // `ssgi_temporal_io` now. (They were two hand-written lists once, and the layer named the mismatch.)
+        uint32_t const descriptors_per_set = render_resource::descriptor_counts_for(render_resource::ssgi_temporal_io, render_resource::ssgi_temporal_io.own_set).total();
+        if (!this->ssgi_temporal_family.ensure(vk.device, this->ssgi_temporal_set_layout, static_cast<uint32_t>(image_count), 1u, descriptors_per_set, signature, write_sets)) {
             utility::log("runtime: GI denoiser descriptor sets unavailable - this frame has no GI (its weight stays 0)");
         }
         // ... and the reflection's own resolve: the SAME layout with a different list of images, which is what
@@ -3004,7 +3017,7 @@ namespace vulkan {
             }
             vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         };
-        if (!this->ssgi_spec_temporal_family.ensure(vk.device, this->ssgi_temporal_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(spec_signature.size()), spec_signature, write_spec_sets)) {
+        if (!this->ssgi_spec_temporal_family.ensure(vk.device, this->ssgi_temporal_set_layout, static_cast<uint32_t>(image_count), 1u, descriptors_per_set, spec_signature, write_spec_sets)) {
             utility::log("runtime: GI reflection descriptor sets unavailable - this frame's reflection is not resolved");
         }
     }
