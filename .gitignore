@@ -1,3 +1,6 @@
+# a bare `build/` (the VS Code / cmake default dir this branch was first configured with): it holds
+# generated objects and the compiled shader copies, and committing it once was a mistake worth recording
+/build/
 #clion folders
 cmake-build-*/
 build-*-clang64/
