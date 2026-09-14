@@ -120,6 +120,9 @@ target_sources(vulkancorekit
         vulkan/math/math.cppm
         vulkan/constant_init/constant_init.cppm
         vulkan/runtime.cppm
+        vulkan/render_resource/render_resource.cppm
+        vulkan/render_resource/shared.cppm
+        vulkan/pass/pass.cppm
         vulkan/bindings/bindings.cppm
         vulkan/pipelines/pipelines.cppm
         vulkan/profiling/profiling.cppm
