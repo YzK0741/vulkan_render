@@ -59,6 +59,22 @@ Acceptance is the same for every step and is not negotiable: Release + Debug + A
 all green, doxygen exit 0 with an empty warning stream, and the gate `0 changed / 0 flaky` against the
 branch's own baseline directory (and against `master`'s references once GI starts coming back).
 
+## THE GENERATOR PORT'S EXACT SCOPE, MEASURED ON THIS BRANCH
+
+The step that makes the passes possible is a signature change, and reading the branch rather than assuming
+`master`'s diff gives its real size:
+
+* three write callbacks still take `core const&` - `runtime.cpp:2197` (post), `2540` (TAA), `2736` (G-buffer
+  debug) - and three `ensure*` call sites pass `vk` rather than `vk.device` (`2233`, `2558`, `2758`);
+* three layouts are still built by hand in `pipelines.cppm` (`vkCreateDescriptorSetLayout` at `96` post, `165`
+  G-buffer debug, `213` TAA).
+
+**AND ONLY ONE OF THEM CAN BE GENERATED TODAY**, which is the finding worth recording: `make_set_layout` takes
+a declaration, and this branch has exactly ONE declaration that owns bindings (`taa_io`). The post chain and
+the G-buffer debug view have no declarations yet, so their hand-written layouts are not a missed conversion -
+they are the honest state until those passes are written. That is why the order in this document puts the
+declarations and the passes together: a layout cannot be generated before the thing that declares it exists.
+
 ## WHAT THE INVENTORY ALREADY FOUND (recorded, not yet fixed)
 
 * The named scene pipelines are built with `swap_chain_image_format` (`B8G8R8A8_SRGB`) while the transparent
