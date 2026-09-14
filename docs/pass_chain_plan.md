@@ -496,3 +496,49 @@ changed and 0 flaky), because a half-wired pass is worse than an unimplemented o
   the lighting stage's shader), a `draw_skybox` parameter that no signature has, an implemented-but-undocumented
   `feature_available("skybox")`, an overlay-record comment pointing at the wrong function, and a shadow-sampler
   doc that contradicts `constant_init`.
+
+## HANDOFF: WHERE THIS STANDS AND WHAT IS LEFT, EXACTLY
+
+**DONE, and each step verified byte-for-byte against the capture gate as it landed.**
+
+* The non-GI PBR chain is passes: `vulkan.pass` (framework), the declaration layer (`render_resource`), the
+  generators (`make_set_layout` / `write_set` / `image_set_family` taking a `VkDevice`), and `scene`,
+  `transparent` and `taa` wired and recording (commits `bfed4cd` .. `6cd9c6e`). The branch's own baselines
+  proved it while it was pre-GI.
+* GI is attached (`5036a01`): the 37-family declaration layer, `gi_probe` (a pass on `master` already), the GI
+  pipeline builders, the acceleration structures, the GI shaders and config, the 12-scenario gate. All four
+  acceptance hashes match (`default_gi` `BF180E98ADB29E7E`, `sponza_gi` `58EC848DFABE654A`,
+  `metal_rough_glossy` `46F9851B7BC89872`, `glossy_motion` `98B06F2190B49519`) plus `sponza_march` and the seven
+  pre-GI scenarios, 12 x 2 with 0 changed and 0 flaky.
+* The GI chain's diffuse tracer (`b62c4b3`, `vulkan.pass.ssgi_trace`) and glossy lobe (`d2f5715`,
+  `vulkan.pass.ssgi_spec`) are passes, on the `pass_io::barrier_images` channel that the tracer's extraction had
+  to add - and doing it found and fixed a real defect (a pass's generation state was never reset, because
+  `on_swapchain_recreated` did not call `recreate_stage` for its stage).
+* The denoiser's set layout is generated from its declaration (`f117f29`), closing a drift the code's own
+  comments record as having happened once.
+* The per-image view channel exists (`4e89078`), with a contract test.
+
+**NOT DONE, with the reason and the exact next step.**
+
+1. **The diffuse temporal resolve as a pass.** Every piece is ready: `render_resource::ssgi_temporal_io` is
+   declared, generated and tested; `build_ssgi_temporal` already takes a device and the pass's layout;
+   `resolved_io::own_per_image` is the channel its family needs. The change is the one two attempts outlined:
+   a `vulkan.pass.ssgi_temporal` module (ownership: set layout, pipeline layout, pipeline, family, per-image
+   history flags, barriers, dispatch, history copy, hand-backs), a frame carrying `history_valid` (snapshotted
+   by the host BEFORE the stage, so the reflection's dispatch - which runs after it, in the same frame - blends
+   with the same value) and an `ensure_inputs` callback for the two transitions whose flags belong to other
+   passes, and the host side: a resolver filling `own` + `own_per_image` + the push, a driver recording the
+   stage, `ssgi_active()` reading the pass, `create_passes` and `recreate_stage` including its stage, and
+   `ensure_ssgi_denoise_descriptors` shrinking to the REFLECTION's family (which stays in the runtime and uses
+   the pass's layout through `set_layout()`). Acceptance: gate 12 x 2, 0 changed, 0 flaky.
+2. **The spatial filter**, after (1): it reads the temporal resolve's output and binds both of its sets, so it
+   is the second reader of the same channel.
+3. **The TAA pass's per-image defect** (recorded above): it writes the current frame's views into every set, so
+   with more than one swapchain image (this machine: `minImageCount + 1`, mailbox) every set points at one
+   image's history. Fixing it uses `own_per_image` and **changes frames**, so it is a deliberate change with a
+   reference update - it must not be folded into an extraction whose acceptance is "0 changed".
+
+**THE RULE THAT KEEPS THE ANCHOR USABLE**: every gate run compares against
+`%LOCALAPPDATA%\vulkan_render\baseline` (12 scenarios) and never passes `-Update` without an explicit override;
+and `-BuildDir` must be ABSOLUTE or the script's relative `screenshot_dir` produces a false FLAKY (fixed in the
+script, `5036a01`).
