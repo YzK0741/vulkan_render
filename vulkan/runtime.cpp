@@ -2194,10 +2194,10 @@ namespace vulkan {
         // post chain: three fingerprints - HDR, bloom and LDR views - and how one image's five sets
         // are written.
         std::array<std::span<VkImageView const>, 3> const fingerprints = {vk.hdr_image_views, vk.bloom_image_views[0], vk.ldr_image_views};
-        auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
+        auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
             // every set gets all six bindings; the unused ones point at the same view as binding 0
             // (binding 5 is the LDR image, which only the FXAA pass reads)
-            auto const write_set = [&vk_ref, this](VkDescriptorSet const set, std::array<VkImageView, 6> const& views) {
+            auto const write_set = [this](VkDescriptorSet const set, std::array<VkImageView, 6> const& views) {
                 std::array<VkDescriptorImageInfo, 6> image_infos = {};
                 for (uint32_t b = 0; b < image_infos.size(); ++b) {
                     image_infos[b].sampler = *this->post_sampler;
@@ -2213,24 +2213,24 @@ namespace vulkan {
                     writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                     writes[b].pImageInfo = &image_infos[b];
                 }
-                vkUpdateDescriptorSets(vk_ref.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+                vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
             };
 
-            VkImageView const hdr = vk_ref.hdr_image_views[image_index];
-            VkImageView const ldr = vk_ref.ldr_image_views[image_index];
+            VkImageView const hdr = this->vulkan_core.hdr_image_views[image_index];
+            VkImageView const ldr = this->vulkan_core.ldr_image_views[image_index];
             std::array<VkImageView, 6> const hdr_set = {hdr, hdr, hdr, hdr, hdr, ldr};
             write_set(sets[0], hdr_set);
 
             for (std::size_t level = 0; level < 3; ++level) {
-                VkImageView const input = vk_ref.bloom_image_views[level][image_index];
+                VkImageView const input = this->vulkan_core.bloom_image_views[level][image_index];
                 std::array<VkImageView, 6> const level_set = {input, input, input, input, input, ldr};
                 write_set(sets[1 + level], level_set);
             }
 
-            std::array<VkImageView, 6> const composite_set = {hdr, vk_ref.bloom_image_views[0][image_index], vk_ref.bloom_image_views[1][image_index], vk_ref.bloom_image_views[2][image_index], vk_ref.bloom_image_views[3][image_index], ldr};
+            std::array<VkImageView, 6> const composite_set = {hdr, this->vulkan_core.bloom_image_views[0][image_index], this->vulkan_core.bloom_image_views[1][image_index], this->vulkan_core.bloom_image_views[2][image_index], this->vulkan_core.bloom_image_views[3][image_index], ldr};
             write_set(sets[4], composite_set);
         };
-        if (!this->post_family.ensure_all(vk, this->post_set_layout, static_cast<uint32_t>(image_count), 5u, 6u, fingerprints, write_sets)) {
+        if (!this->post_family.ensure_all(vk.device, this->post_set_layout, static_cast<uint32_t>(image_count), 5u, 6u, fingerprints, write_sets)) {
             utility::log("runtime: post descriptor sets unavailable - post pass skipped");
         }
     }
@@ -2537,8 +2537,8 @@ namespace vulkan {
         // The family owns the rebinding rule and the pool lifetime now (see vulkan.bindings): the sets
         // stay allocated, their contents are rewritten only when the views above change, and a pool a
         // later generation replaces is retired rather than destroyed.
-        auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            std::array<VkImageView, 4> const views = {vk_ref.scene_color_image_views[image_index], vk_ref.taa_history_image_views[image_index], vk_ref.velocity_image_views[image_index], vk_ref.gbuffer_depth_image_views[image_index]};
+        auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
+            std::array<VkImageView, 4> const views = {this->vulkan_core.scene_color_image_views[image_index], this->vulkan_core.taa_history_image_views[image_index], this->vulkan_core.velocity_image_views[image_index], this->vulkan_core.gbuffer_depth_image_views[image_index]};
             std::array<VkDescriptorImageInfo, 4> image_infos = {};
             std::array<VkWriteDescriptorSet, 4> writes = {};
             for (uint32_t b = 0; b < views.size(); ++b) {
@@ -2552,10 +2552,10 @@ namespace vulkan {
                 writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                 writes[b].pImageInfo = &image_infos[b];
             }
-            vkUpdateDescriptorSets(vk_ref.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         };
         // image_count is the generation's, signature is the fingerprint of image 0 above: two things.
-        if (!this->taa_family.ensure(vk, this->taa_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
+        if (!this->taa_family.ensure(vk.device, this->taa_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
             utility::log("runtime: taa descriptor sets unavailable - TAA skipped");
         }
     }
@@ -2733,14 +2733,14 @@ namespace vulkan {
         // the motion-vector target - the same five the signature above fingerprints.
         // image_count is the generation's, signature is only the fingerprint of image 0 above - the two
         // are different things and the family needs both (see vulkan.bindings).
-        auto const write_sets = [this](core const& vk_ref, uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
+        auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
             std::array<VkDescriptorImageInfo, 5> image_infos = {};
             std::array<VkImageView, 5> const views = {
-                vk_ref.gbuffer_image_views[0][image_index],
-                vk_ref.gbuffer_image_views[1][image_index],
-                vk_ref.gbuffer_image_views[2][image_index],
-                vk_ref.gbuffer_depth_image_views[image_index],
-                vk_ref.velocity_image_views[image_index]};
+                this->vulkan_core.gbuffer_image_views[0][image_index],
+                this->vulkan_core.gbuffer_image_views[1][image_index],
+                this->vulkan_core.gbuffer_image_views[2][image_index],
+                this->vulkan_core.gbuffer_depth_image_views[image_index],
+                this->vulkan_core.velocity_image_views[image_index]};
             std::array<VkWriteDescriptorSet, 5> writes = {};
             for (uint32_t b = 0; b < views.size(); ++b) {
                 image_infos[b].sampler = *this->gbuffer_sampler;
@@ -2753,9 +2753,9 @@ namespace vulkan {
                 writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                 writes[b].pImageInfo = &image_infos[b];
             }
-            vkUpdateDescriptorSets(vk_ref.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         };
-        if (!this->gbuffer_family.ensure(vk, this->gbuffer_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
+        if (!this->gbuffer_family.ensure(vk.device, this->gbuffer_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
             utility::log("runtime: gbuffer debug descriptor sets unavailable - debug view skipped");
         }
     }
