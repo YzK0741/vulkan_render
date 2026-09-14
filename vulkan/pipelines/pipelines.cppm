@@ -1,4 +1,4 @@
-// module version: 0.17.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.18.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
@@ -105,7 +105,7 @@ namespace vulkan::pipelines {
         std::optional<vk_pipeline> pass;
     };
 
-    export std::expected<gi_probe_owned, std::string> build_gi_probe(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size,
+    export std::expected<gi_probe_owned, std::string> build_gi_probe(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size,
                                                                      std::span<unsigned char const> compute_shader_code);
 
     /// the passes that reuse a layout someone else owns, so theirs comes in as a parameter
@@ -683,7 +683,7 @@ namespace vulkan::pipelines {
     // resolved GI, the depth, and the grid image it is reading - and 3 is the STORAGE 3D image it
     // writes, plus the per-cell surface offsets the filter tests visibility with, which is why two bindings
     // differ from the rest.
-    std::expected<gi_probe_owned, std::string> build_gi_probe(core& vk, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size,
+    std::expected<gi_probe_owned, std::string> build_gi_probe(VkDevice const device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size,
                                                               std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         gi_probe_owned out;
@@ -718,11 +718,11 @@ namespace vulkan::pipelines {
         pipeline_layout_info.pSetLayouts = set_layouts.data();
         pipeline_layout_info.pushConstantRangeCount = 1;
         pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
             return fail("gi probe: pipeline layout creation failed");
         }
 
-        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, vk.device);
+        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
         if (!module.has_value()) {
             return fail("gi probe: compute shader module creation failed");
         }
@@ -738,10 +738,10 @@ namespace vulkan::pipelines {
         pipeline_info.layout = out.pipeline_layout;
 
         VkPipeline pipeline = VK_NULL_HANDLE;
-        if (vkCreateComputePipelines(vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+        if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("gi probe: vkCreateComputePipelines failed");
         }
-        out.pass = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
+        out.pass = vk_pipeline(pipeline, out.pipeline_layout, device);
         return out;
     }
     std::expected<deferred_owned, std::string> build_deferred(core& vk, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<VkPipelineColorBlendAttachmentState const> const color_blend, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {

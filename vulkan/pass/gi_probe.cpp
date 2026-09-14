@@ -1,7 +1,7 @@
 // The probe cache's implementation: everything the pass does between "the runner resolved this frame" and
-// "the grid holds this frame's observation". Moved out of `vulkan.runtime` unchanged in behaviour - the
-// dispatch sequence, the barrier order, the light-change reset and the log lines are the ones that were
-// there, which is what makes the capture gate able to decide the move.
+// "the grid holds this frame's observation", plus what it builds for itself. Moved out of `vulkan.runtime`
+// unchanged in behaviour - the dispatch sequence, the barrier order, the light-change reset, the pipeline and
+// the log lines are the ones that were there, which is what makes the capture gate able to decide the move.
 
 module;
 
@@ -10,19 +10,31 @@ module;
 #include <cstring>
 #include <glm/glm.hpp>
 #include <span>
+#include <string>
 #include <vulkan/vulkan.h>
 
 module vulkan.pass.gi_probe;
 
 import vulkan.render_resource;
 import vulkan.constant_init;
+import vulkan.pipelines;
 import utility;
 
 namespace vulkan::pass {
 
     gi_probe_pass::~gi_probe_pass() {
-        // The pass owns the set layout it built (the renderer owns the pipeline LAYOUT, which is created from
-        // this one and destroyed first, in the runtime's teardown body - before members destruct).
+        this->release_owned();
+    }
+
+    void gi_probe_pass::release_owned() noexcept {
+        // ORDER MATTERS: the set layout was created first, the pipeline layout FROM it, the pipeline from
+        // that - so they are released in the order they were made. The pipeline is RAII (`vk_pipeline` owns
+        // the VkPipeline and not the layout), the two layouts are raw handles this pass destroys itself.
+        this->pipeline_.reset();
+        if (this->pipeline_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(this->device_, this->pipeline_layout_, nullptr);
+            this->pipeline_layout_ = VK_NULL_HANDLE;
+        }
         if (this->set_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(this->device_, this->set_layout_, nullptr);
             this->set_layout_ = VK_NULL_HANDLE;
@@ -48,6 +60,18 @@ namespace vulkan::pass {
         return this->set_layout_;
     }
 
+    bool gi_probe_pass::pipeline_ready() const noexcept {
+        return this->pipeline_.has_value();
+    }
+
+    VkPipeline gi_probe_pass::pipeline() const noexcept {
+        return this->pipeline_.has_value() ? this->pipeline_->get_pipeline() : VK_NULL_HANDLE;
+    }
+
+    VkPipelineLayout gi_probe_pass::pipeline_layout() const noexcept {
+        return this->pipeline_layout_;
+    }
+
     void gi_probe_pass::set_rounds(uint32_t const rounds) noexcept {
         this->rounds_ = rounds;
     }
@@ -57,12 +81,31 @@ namespace vulkan::pass {
     }
 
     void gi_probe_pass::create(pass_host const& host) {
-        if (this->device_ == VK_NULL_HANDLE) {
-            this->device_ = host.device;
-            this->samplers_ = host.samplers;
+        if (host.device == VK_NULL_HANDLE) {
+            return; // no device, nothing to build on (the create step is a no-op before the core exists)
         }
-        if (this->set_layout_ != VK_NULL_HANDLE || host.device == VK_NULL_HANDLE) {
-            return; // already built (create is called once per device generation, and is idempotent)
+        if (this->device_ != VK_NULL_HANDLE && this->device_ != host.device) {
+            // A NEW DEVICE GENERATION: everything this pass built belongs to the old one. Releasing first is
+            // what makes `create` correct on every generation rather than only on the first.
+            this->release_owned();
+        }
+        this->device_ = host.device;
+        this->samplers_ = host.samplers;
+        if (this->set_layout_ != VK_NULL_HANDLE) {
+            return; // already built for this device
+        }
+        // WHAT THE PASS NEEDS FROM ITS HOST, all of it at create time and none of it a capability: the device
+        // (above), the layout of the SHARED set its pipeline layout must be built against, and its own
+        // shader's SPIR-V. It owns the three objects it makes from them.
+        VkDescriptorSetLayout const scene_layout = host.shared_set_layout != nullptr ? host.shared_set_layout(host.context, 0) : VK_NULL_HANDLE;
+        std::span<unsigned char const> const spirv = host.shader != nullptr ? host.shader(host.context, shader_name) : std::span<unsigned char const>{};
+        if (scene_layout == VK_NULL_HANDLE) {
+            utility::log("world-space probe cache disabled (the tracer keeps its environment fallback): the shared scene set layout is not there yet");
+            return;
+        }
+        if (spirv.empty()) {
+            utility::log("world-space probe cache disabled (the tracer keeps its environment fallback): the renderer has no {}", shader_name);
+            return;
         }
         // THE LAYOUT IS GENERATED FROM THE PASS'S OWN DECLARATION, which is the other half of the sequence
         // that generated the writes below: the nine bindings this pass used to spell out - four coefficient
@@ -72,10 +115,23 @@ namespace vulkan::pass {
         std::expected<VkDescriptorSetLayout, std::string> const layout =
             bindings::make_set_layout(host.device, render_resource::gi_probe_io, render_resource::gi_probe_io.own_set);
         if (!layout.has_value()) {
-            utility::log("probe cache: {}", layout.error());
-            return; // the renderer's pipeline build fails on the null layout and says why
+            utility::log("world-space probe cache disabled (the tracer keeps its environment fallback): {}", layout.error());
+            return;
         }
         this->set_layout_ = *layout;
+        // ... and the pipeline, whose LAYOUT is built from the declaration too: the shared scene set at 0, the
+        // pass's own at 1, and the push range the declaration carries (the `static_assert` at the end of this
+        // module ties that number to the struct the pass pushes).
+        auto built = pipelines::build_gi_probe(host.device, scene_layout, this->set_layout_, render_resource::gi_probe_io.push->size, spirv);
+        if (!built) {
+            utility::log("world-space probe cache disabled (the tracer keeps its environment fallback): {}", built.error());
+            this->release_owned();
+            return;
+        }
+        this->pipeline_layout_ = built->pipeline_layout;
+        this->pipeline_ = std::move(built->pass);
+        // The line the renderer used to print for this pass, now printed by the thing that built it.
+        utility::log("SUCCESS: probe cache pipeline created (injection + propagation, world-space GI)");
     }
 
     void gi_probe_pass::on_swapchain_recreated(pass_host const&) {

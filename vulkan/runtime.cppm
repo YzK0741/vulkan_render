@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.56.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.57.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -582,14 +582,12 @@ namespace vulkan {
         // the next room. Off by default - with it off the tracer's fallback is exactly what it was - and
         // the whole feature costs nothing but its own dispatches, because it is not sampled at all while
         // its gain is 0 (the tracer branches on the gain rather than multiplying by it).
-        std::optional<vk_pipeline> gi_probe_pipeline = std::nullopt;
-        VkPipelineLayout gi_probe_pipeline_layout = VK_NULL_HANDLE;
-        // THE FIRST REAL PASS. It owns what is only its own: the set layout it generated from its
-        // declaration, the two-set ping-pong descriptor family, the dispatch sequence with its barriers, and
-        // the two pieces of state that say what the grid currently holds (its validity, and the light it was
-        // filled under). What stays here is what the RENDERER owns: the pipeline and its layout (the pass
-        // names them and the runtime builds and destroys them), the switch, and the values the pass's push
-        // block needs - which are the renderer's, so it composes the block.
+        // THE FIRST REAL PASS. It owns everything exclusive to it: the set layout it generated from its
+        // declaration, the two-set ping-pong descriptor family, the dispatch sequence with its barriers, the
+        // two pieces of state that say what the grid currently holds (its validity, and the light it was
+        // filled under), and - since the second half of the extraction - its pipeline layout and its
+        // pipeline, which it builds in its own create step. What stays here is what the RENDERER owns: the
+        // switch, and the VALUES the pass's push block needs (which are the renderer's, so it composes them).
         pass::gi_probe_pass gi_probe;
         // ... and the stage the runner is handed. One entry, and the pass is declared before this initialiser
         // so it refers to a constructed object; a pass list is pointers in DECLARATION ORDER, never a
@@ -598,6 +596,10 @@ namespace vulkan {
         // The storage `resolved_io::push` points into for the frame. It is the pass's own block type, so the
         // two sides of the boundary cannot disagree about the layout; the host fills it, the pass reads it.
         std::array<std::byte, sizeof(pass::gi_probe_pass::push_constants)> gi_probe_push = {};
+        // The shaders the app has loaded, by file name, for the passes that build their own pipelines. The APP
+        // is the loader (it knows the shader directory); the runtime is only the place a pass asks. A copy
+        // rather than a view, because the caller's buffer is a local in a startup scope.
+        std::vector<std::pair<std::string, std::vector<unsigned char>>> registered_shaders = {};
         bool gi_probe_enabled = false;
         // The grid's own blend rate ([render] ssgi_probe_rate): how much of a cell's stored value one
         // frame's observation replaces. Small on purpose - this is the cache that is meant to survive
@@ -729,6 +731,8 @@ namespace vulkan {
          *       per-image descriptor family sizes it from the first and indexes with the second
          */
         [[nodiscard]] pass::frame_identity pass_frame() const noexcept;
+        /// the bytes of a shader the app registered, by file name (empty when it did not)
+        [[nodiscard]] std::span<unsigned char const> registered_shader(std::string_view name) const noexcept;
         /**
          * @brief resolve a pass's declaration into this frame's handles (the runner's `resolve` callback)
          * @return false when this frame cannot run the pass, which skips it WITHOUT recording anything
@@ -2381,15 +2385,26 @@ namespace vulkan {
         [[nodiscard]] bool gi_probe_active() const noexcept;
 
         /**
-         * @brief create the world-space probe cache's pipeline from shaders/gi_probe.comp
-         * @param compute_shader_code raw SPIR-V of the pass (injection and propagation are one shader)
-         * @return success, or an error message on failure
-         * @note OPTIONAL, unlike the three screen-space GI pipelines: with no cache the tracer falls back
-         *       to the environment probe exactly as it did before this existed, so a build that cannot
-         *       create it keeps rendering - it just does not get the grid's answer for the light the
-         *       frame cannot see
+         * @ingroup vulkan_runtime
+         * @brief hand the runtime a loaded shader, by file name, for the passes that build their own pipelines
+         * @param name the file name a pass asks for at create time (a pass's own constant)
+         * @param bytecode raw SPIR-V; copied, because the caller's buffer is a local in a startup scope
+         * @note THE APP IS THE SHADER LOADER and this is the hand-over: the runtime knows a shader DIRECTORY
+         *       and a file format nowhere, and a pass knows neither - it asks for its own by name. Register
+         *       before calling create_passes(); a pass whose shader is missing says so and does not run.
          */
-        std::expected<void, std::string> make_gi_probe_pipeline(std::span<unsigned char const> compute_shader_code);
+        void register_shader(std::string_view name, std::span<unsigned char const> bytecode);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief run every wired pass's CREATE step: what a pass owns, built from its own declaration
+         * @return nothing; a pass that cannot build what it records with logs why and stays inactive
+         * @note Idempotent (a pass is created once per device generation), and it must run after the shared
+         *       set layouts exist, because a pass's pipeline layout is built against them. Until it runs, the
+         *       passes that own a pipeline are inactive and the frame records exactly what it did before they
+         *       existed - which is why a startup failure here is a log line and not a broken frame.
+         */
+        void create_passes();
 
         /**
          * @ingroup vulkan_runtime

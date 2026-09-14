@@ -198,6 +198,17 @@ was open in the first draft of this document:
   `sampler_set` the runtime fills once. Shared IMAGE and BUFFER handles are deliberately absent until a
   consumer writes a shared set through a declaration, because that consumer is what says which keys the table
   needs.
+* **EXCLUSIVE means exclusive, the pipeline included.** The probe cache's pipeline and pipeline layout stayed
+  in the renderer through the first pass of this work, on the argument that a pass only names what it records
+  with. That was the rule applied to the convenient half of its range: a handle ONLY that pass names and ONLY
+  that pass needs is that pass's to build and to destroy, and leaving it behind meant the pass owned its
+  family but not the pipeline that family's sets are bound through. So a pass now builds its own pipeline from
+  its own declaration, which needed exactly two create-time facts added to `pass_host`: its shader's SPIR-V
+  (the app loads shaders and registers them; a pass asks for its own by file name) and the layout of the
+  shared set its pipeline layout must be built against (asked by SET INDEX, the same vocabulary the
+  declaration already uses). The runner still binds the pipeline before the pass records - ownership and
+  binding are different questions - and `resolved_io::pipelines`/`pipeline_layout` stay the channel it does it
+  through, filled from the pass's own handles when the pass owns them.
 
 STILL OPEN, stated rather than implied: parallel recording (`main_segments` + the task pool) is not expressible
 in `stage` yet.
@@ -251,18 +262,24 @@ one thing this layer exists to prevent.
     step 3: the SPIR-V check                      NOT STARTED
     step 4: barrier and order derivation          NOT STARTED, and deliberately last (see section 7)
     the first consumer: vulkan.pass.gi_probe      DONE, and it is the probe cache: the pass owns its set
-                                                        layout, its two-set ping-pong family, its barriers,
-                                                        its clear and its push, while the renderer keeps the
-                                                        pipeline and its layout. `runtime` lost
-                                                        `record_gi_probe_pass` and
-                                                        `ensure_gi_probe_descriptors` entirely, and the frame
-                                                        is byte-identical across the move - `sponza_gi` back
-                                                        to 58EC848DFABE654A, 12 x 2 with 0 changed and 0
-                                                        flaky. WHAT IT DISCOVERED is in `vulkan.pass` itself
-                                                        (the create-time host, the generation's image count,
-                                                        the layout and the host-composed push, non-const
-                                                        record, and an image handle next to the view) and in
-                                                        section 8 above
+                                                        layout, its two-set ping-pong family, its pipeline
+                                                        layout, its pipeline, its barriers, its clear and
+                                                        its push, while the renderer keeps the switch and
+                                                        the values the push block is composed from.
+                                                        `runtime` lost `record_gi_probe_pass`,
+                                                        `ensure_gi_probe_descriptors` and
+                                                        `make_gi_probe_pipeline` entirely, and the frame is
+                                                        byte-identical across both halves of the move -
+                                                        `sponza_gi` back to 58EC848DFABE654A, 12 x 2 with 0
+                                                        changed and 0 flaky. The pass's create step logs its
+                                                        own outcome, and `runtime::register_shader` +
+                                                        `runtime::create_passes` are the app's two calls:
+                                                        the app owns the FILE, the pass owns the PIPELINE.
+                                                        WHAT IT DISCOVERED is in `vulkan.pass` itself (the
+                                                        create-time host, the generation's image count, the
+                                                        layout and the host-composed push, non-const record,
+                                                        and an image handle next to the view) and in section
+                                                        8 above
 
 THE CHOICE THAT MADE STEP 1 PROVABLE is worth keeping: the generator emits bindings IN DECLARATION ORDER, and
 `validate` requires a pass's own bindings to be contiguous from zero - so the layout the shader sees and the

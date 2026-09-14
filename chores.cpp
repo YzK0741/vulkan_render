@@ -303,14 +303,15 @@ namespace chores {
             // the far-field environment probe - so a build without it renders exactly as it did before it
             // existed, and runtime::gi_probe_active() keeps the tracer from sampling a grid that is not
             // there.
+            //
+            // IT IS A PASS, so there is no make_* here any more: the app loads the shader and hands the bytes
+            // over, then asks the runtime to run the passes' create step - and the pass builds its own set
+            // layout, pipeline layout and pipeline, and logs its own outcome. The app's job is the file (it
+            // knows the shader directory); the pass's job is the pipeline.
             std::vector<unsigned char> probe_code;
             load_shader(shaders_dir, "gi_probe.comp.spv", probe_code);
-            auto const probe_result = runtime.make_gi_probe_pipeline(probe_code);
-            if (!probe_result) {
-                utility::log("world-space probe cache disabled (the tracer keeps its environment fallback): {}", probe_result.error());
-            } else {
-                utility::log("SUCCESS: probe cache pipeline created (injection + propagation, world-space GI)");
-            }
+            runtime.register_shader("gi_probe.comp.spv", probe_code);
+            runtime.create_passes();
 
             // Ray-traced sun shadows: one ray per pixel against the scene's acceleration structures.
             // Created only on a device with ray queries (the builder says so as an error otherwise), and

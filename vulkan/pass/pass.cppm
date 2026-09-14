@@ -1,4 +1,4 @@
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/pass.cppm
@@ -217,7 +217,9 @@ export namespace vulkan::pass {
      * in rather than inherited), which is why this framework depends on NEITHER `vulkan.runtime` NOR
      * `vulkan.core`: `main.cpp`'s replacement, or a test, can supply one.
      *
-     * IT IS NOT FOR PASSES. A pass sees only `resolved_io`.
+     * A PASS SEES IT AT CREATE TIME ONLY. Recording is done through `resolved_io`, and that separation is
+     * what stops this from becoming a context object that hands out whatever the newest pass wants: the two
+     * callbacks below answer questions a pass must answer exactly once, while it is building what it owns.
      */
     struct pass_host {
         void* context = nullptr;
@@ -225,14 +227,33 @@ export namespace vulkan::pass {
          * The device a pass builds its own objects on, and the renderer's six samplers.
          *
          * THIS IS THE CREATE-TIME INTERFACE, and it is deliberately this narrow: a pass may create a
-         * `VkDescriptorSetLayout` from its own declaration and descriptor sets from it, and it never names a
-         * `VkSampler` (a declaration CHOOSES one by `sampler_hint`, and the six exist for six reasons). What
-         * is absent is the point: no instance, no physical device, no allocator, no queue, no command pool -
-         * `vulkan.core` remains the only thing that creates an image, and a pass that wanted to would be
-         * taking over an image family, which is a resource-layer change and has to be argued as one.
+         * `VkDescriptorSetLayout` from its own declaration, the descriptor sets from it, and the pipeline it
+         * records with. What is absent is the point: no instance, no physical device, no allocator, no queue,
+         * no command pool - `vulkan.core` remains the only thing that creates an IMAGE, and a pass that wanted
+         * to would be taking over an image family, which is a resource-layer change and has to be argued as
+         * one.
          */
         VkDevice device = VK_NULL_HANDLE;
         render_resource::shared::sampler_set samplers = {};
+        /**
+         * The SPIR-V of one of this pass's shaders, by the name it declares; empty when the renderer does not
+         * have it.
+         *
+         * Why a CALLBACK rather than bytes in this struct: a pass needs its shaders exactly once, at create
+         * time, and only the ones it actually declares - so it asks for them. The renderer is the side that
+         * knows where shader files come from (the app loads them; `register_shader` hands them over), which is
+         * what keeps a path or a file format out of this framework.
+         */
+        std::span<unsigned char const> (*shader)(void* context, std::string_view name) = nullptr;
+        /**
+         * The layout that occupies SHARED set @p set, or `VK_NULL_HANDLE` when the renderer has none there.
+         *
+         * A pass does not own the shared set layouts (the scene set's is `vulkan.core`'s), and it cannot build
+         * its own pipeline layout without them - the pipeline layout is created from the set layouts its
+         * pipeline binds, in order. Asking by SET INDEX rather than by name is what makes this the same
+         * vocabulary as the declaration, which already says which set each of its bindings lives in.
+         */
+        VkDescriptorSetLayout (*shared_set_layout)(void* context, uint32_t set) = nullptr;
         /// the frame being recorded
         frame_identity (*frame)(void* context) = nullptr;
         /// whether a pass's feature is active this frame (`feature()`; empty means always)

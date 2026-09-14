@@ -123,11 +123,12 @@ The boundary the project chose for a pass is `vulkan.pass` (the framework) plus 
 (`vulkan.pass.gi_probe`), because the thing being extracted is not "some code in a file" but a unit with a
 DECLARED interface - and the declaration is what made the move provable: the frame is byte-identical
 (`sponza_gi` back to 58EC848DFABE654A). What moved is narrower than the `218 cpp + 70 cppm, 8 members` above and
-what stayed is on purpose: the pass owns its set layout, its two-set ping-pong family, its barriers, its clear and
-its push; `vulkan.runtime` keeps the pipeline, the pipeline layout, the switch, and the values the push block is
-composed from (they are the renderer's). `record_gi_probe_pass` and `ensure_gi_probe_descriptors` are gone, and
-`gi_probe_valid`/`gi_probe_light_dir_valid` are the pass's state now. The remaining entries in the order above are
-unchanged, and TAA is next.
+what stayed is on purpose: the pass owns its set layout, its two-set ping-pong family, its pipeline layout, its
+pipeline, its barriers, its clear and its push; `vulkan.runtime` keeps the switch, and the values the push block
+is composed from (they are the renderer's). `record_gi_probe_pass`, `ensure_gi_probe_descriptors` and
+`make_gi_probe_pipeline` are gone, and `gi_probe_valid`/`gi_probe_light_dir_valid` are the pass's state now. The
+app's two calls are `register_shader` (it owns the file) and `create_passes` (the pass owns the pipeline). The
+remaining entries in the order above are unchanged, and TAA is next.
 
 ## 6. Step 1 - the file-level split of `runtime.cpp`, and its honest value
 

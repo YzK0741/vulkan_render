@@ -1,4 +1,4 @@
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/gi_probe.cppm
@@ -27,9 +27,13 @@
  *    the two halves EXCHANGED. No declaration could express that and no host should have to know it, which is
  *    exactly why the family belongs here rather than in the runtime.
  *
- * WHAT THE PASS DOES NOT OWN, deliberately: the pipelines and their layout (`vulkan.runtime` still builds and
- * destroys them, and the pass names what it records with), and the IMAGES (they are `vulkan.core`'s, created
- * and destroyed with the target generation - the pass is handed their handles per frame and holds none).
+ * WHAT THE PASS DOES NOT OWN, deliberately: the IMAGES (they are `vulkan.core`'s, created and destroyed with
+ * the target generation - the pass is handed their handles per frame and holds none), and the SHARED set
+ * layouts, which belong to the owners of those sets (`vulkan.core` owns the scene set's). What it does own is
+ * everything EXCLUSIVE to it: its set layout, its two-set ping-pong family, its pipeline layout and its
+ * pipeline. The last two came over in a second pass, once the pass was already recording itself through them,
+ * because "exclusive" is the whole rule: a handle only this pass names and only this pass needs is this pass's
+ * to build and to destroy.
  */
 
 module;
@@ -37,6 +41,7 @@ module;
 #include <array>
 #include <cstdint>
 #include <glm/glm.hpp>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vulkan/vulkan.h>
@@ -48,6 +53,8 @@ import vulkan.render_resource;
 import vulkan.render_resource.shared;
 import vulkan.bindings;
 import vulkan.constant_init;
+import vulkan.core.handles; // vk_pipeline: the RAII owner of the pipeline this pass builds
+import vulkan.pipelines;    // build_gi_probe: the builder, called by the pass that owns what it builds
 
 export namespace vulkan::pass {
 
@@ -102,13 +109,20 @@ export namespace vulkan::pass {
         /**
          * @brief the set layout this pass built from its declaration
          *
-         * The renderer builds the pass's pipeline layout from it, which is the one ordering constraint the
-         * pass owning its layout introduces: `create` must run before the pipeline is built.
+         * It is the pass's own object (it destroys it), and it is what its pipeline layout - and therefore its
+         * pipeline - was created from. `create` must run before anything can record with the pass.
          */
         [[nodiscard]] VkDescriptorSetLayout set_layout() const noexcept;
 
         /// how many times the grid is propagated per frame ([render] ssgi_probe_rounds; 0 = injection only)
         void set_rounds(uint32_t rounds) noexcept;
+
+        /// @brief whether the pass built everything it records with (the renderer gates the feature on this)
+        [[nodiscard]] bool pipeline_ready() const noexcept;
+        /// @brief the pipeline the runner binds before this pass records
+        [[nodiscard]] VkPipeline pipeline() const noexcept;
+        /// @brief the layout that pipeline binds its sets and takes its push constants through
+        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept;
 
         /**
          * @brief whether the grid holds anything the tracer may sample
@@ -128,8 +142,10 @@ export namespace vulkan::pass {
         static constexpr float light_reset_cosine = 0.9f;
         /// the shader's `local_size_x/y/z` (shaders/gi_probe.comp)
         static constexpr uint32_t group_size = 4;
+        /// the shader this pass is, by the name it asks its host for at create time
+        static constexpr std::string_view shader_name = "gi_probe.comp.spv";
 
-        /// the pipeline name the renderer resolves; the pass never builds one
+        /// what the pass records with, by name; the object behind the name is the pass's own (see pipeline())
         static constexpr std::array<std::string_view, 1> pipeline_names = {"gi_probe"};
         inline static constexpr vulkan::pass::behaviour behaviour_ = {
             .kind = behaviour_kind::compute,
@@ -141,10 +157,15 @@ export namespace vulkan::pass {
             .pipelines = pipeline_names,
             .resync_viewport = false,
         };
+        /// destroy everything this pass built, for a device generation change or for the destructor
+        void release_owned() noexcept;
 
         VkDevice device_ = VK_NULL_HANDLE;
         render_resource::shared::sampler_set samplers_ = {};
         VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
+        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+        /// RAII: destroying this destroys the pipeline (the LAYOUT is destroyed by release_owned, after it)
+        std::optional<vk_pipeline> pipeline_ = std::nullopt;
         bindings::image_set_family family_ = {};
         /// what the host pushed this pass's values into, and what the pass owns
         uint32_t rounds_ = 2;

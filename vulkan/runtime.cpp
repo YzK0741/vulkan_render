@@ -310,13 +310,9 @@ namespace vulkan {
             vkDestroyPipelineLayout(this->vulkan_core.device, this->ssgi_spec_pipeline_layout, nullptr);
             this->ssgi_spec_pipeline_layout = VK_NULL_HANDLE;
         }
-        // ... and the probe cache's PIPELINE LAYOUT, for the same reason: it is a raw handle and the pass
-        // that records through it owns the SET layout it was created from (the pass destroys that one
-        // itself, which happens after this body - so the layout that references it goes first, here).
-        if (this->gi_probe_pipeline_layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->vulkan_core.device, this->gi_probe_pipeline_layout, nullptr);
-            this->gi_probe_pipeline_layout = VK_NULL_HANDLE;
-        }
+        // The probe cache's pipeline and its layout are NOT destroyed here any more: they are the pass's
+        // (vulkan.pass.gi_probe builds and destroys them), which is the whole point of the extraction - a
+        // handle only that pass names is that pass's to release.
         // ... and the TAA resolve's own objects (its set layout and layout are raw handles; the pool
         // belongs to taa_family, whose destructor destroys it and the generations it retired)
         if (this->taa_pipeline_layout != VK_NULL_HANDLE) {
@@ -3743,41 +3739,49 @@ namespace vulkan {
         this->gi_probe_gain = std::clamp(gain, -4.0f, 4.0f);
         if (enabled && !this->ssgi_on) {
             this->warn_missing_feature("ssgi", "the probe cache has no effect: it is injected from the screen-space GI chain, which is off");
-        } else if (enabled && !this->gi_probe_pipeline.has_value()) {
-            this->warn_missing_feature("ssgi", "the probe cache has no effect: its pipeline was not created (see the startup log)");
+        } else if (enabled && !this->gi_probe.pipeline_ready()) {
+            this->warn_missing_feature("ssgi", "the probe cache has no effect: it has not built its pipeline (see the startup log)");
         }
     }
 
     bool runtime::gi_probe_active() const noexcept {
         // The cache is deposited from the screen-space chain's resolved image and lives on the deferred
-        // path's G-buffer, so it needs both of those, plus its own (optional) pipeline: a build without
-        // it keeps the tracer's environment-probe fallback and changes nothing else.
-        return this->gi_probe_enabled && this->gi_probe_pipeline.has_value() && this->ssgi_active();
+        // path's G-buffer, so it needs both of those, plus the pass having built what it records with: a
+        // build without the cache keeps the tracer's environment-probe fallback and changes nothing else.
+        return this->gi_probe_enabled && this->gi_probe.pipeline_ready() && this->ssgi_active();
     }
 
-    std::expected<void, std::string> runtime::make_gi_probe_pipeline(std::span<unsigned char const> const compute_shader_code) {
-        // THE PASS BUILDS WHAT IT OWNS FIRST, and this is the one ordering constraint that the pass owning
-        // its set layout introduces: the pipeline layout below is created FROM that layout. The runner runs
-        // the create step (it validates the declaration before it builds anything), exactly as it runs the
-        // record step later - so the pipeline is built for the pass the pass itself described.
+    void runtime::register_shader(std::string_view const name, std::span<unsigned char const> const bytecode) {
+        // The app loads shaders (it knows the directory and the file names) and hands them over here; a pass
+        // asks for its own by name at create time. A COPY, because the caller's buffer is a startup local.
+        for (auto& [registered_name, registered_bytes] : this->registered_shaders) {
+            if (registered_name == name) {
+                registered_bytes.assign(bytecode.begin(), bytecode.end());
+                return;
+            }
+        }
+        this->registered_shaders.emplace_back(std::string(name), std::vector<unsigned char>(bytecode.begin(), bytecode.end()));
+    }
+
+    void runtime::create_passes() {
+        // The runner's create step for every stage this runtime wires. A pass builds what it owns from its own
+        // declaration and its own shader, so this is also where a pass that could not build itself says so -
+        // and a pass that says so stays INACTIVE (its feature predicate is false), which is what makes a
+        // startup failure here a log line rather than a broken frame.
         pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
         pass::run_report const created = pass::create_stage(probe_stage, this->make_pass_host());
         if (!created.rejected.empty()) {
-            return std::unexpected(std::string("gi probe: the declaration was refused"));
+            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", created.rejected);
         }
-        if (this->gi_probe.set_layout() == VK_NULL_HANDLE) {
-            return std::unexpected(std::string("gi probe: the pass could not build its set layout"));
+    }
+
+    std::span<unsigned char const> runtime::registered_shader(std::string_view const name) const noexcept {
+        for (auto const& [registered_name, registered_bytes] : this->registered_shaders) {
+            if (registered_name == name) {
+                return registered_bytes;
+            }
         }
-        // The push range comes from the DECLARATION too (the pass's own block size), so the range the driver
-        // is told about and the bytes the pass pushes cannot disagree.
-        auto built = pipelines::build_gi_probe(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, this->gi_probe.set_layout(),
-                                               render_resource::gi_probe_io.push->size, compute_shader_code);
-        if (!built) {
-            return std::unexpected(std::move(built.error()));
-        }
-        this->gi_probe_pipeline_layout = built->pipeline_layout;
-        this->gi_probe_pipeline = std::move(built->pass);
-        return {};
+        return {}; // a pass whose shader was never registered builds nothing and says so
     }
 
     pass::frame_identity runtime::pass_frame() const noexcept {
@@ -3809,6 +3813,15 @@ namespace vulkan {
                          .post = *this->post_sampler,
                          .nearest = *this->post_nearest_sampler,
                          .shadow = *this->shadow_sampler},
+            // the two create-time questions a pass asks while building what it owns: its shader's bytes (the
+            // app registered them, see register_shader) and the layout of a shared set its pipeline layout
+            // must be built against. Both answer "I do not have it" rather than guessing.
+            .shader = [](void* context, std::string_view const name) { return static_cast<runtime*>(context)->registered_shader(name); },
+            .shared_set_layout = [](void* context, uint32_t const set) {
+                // The scene set is the only shared set a pass's OWN pipeline layout ever needs today: it is
+                // set 0, and it is what every compute pass's tracing/shading reads. A pass asking for any
+                // other set gets "none", which makes it build nothing and say so.
+                return set == 0u ? static_cast<runtime*>(context)->vulkan_core.scene_descriptor_set_layout : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
             .frame = [](void* context) { return static_cast<runtime*>(context)->pass_frame(); },
             .feature_active = [](void* context, std::string_view const feature) { return static_cast<runtime*>(context)->feature_active(feature); },
             .resolve = [](void* context, pass::frame_pass const& pass, pass::resolved_io& out) { return static_cast<runtime*>(context)->resolve_pass(pass, out); },
@@ -3830,7 +3843,7 @@ namespace vulkan {
         // A frame whose grid images are not there cannot run this pass at all: the images are created and
         // destroyed with the target generation (see core::create_render_targets).
         if (vk.gi_probe_image_views.size() != 8 || vk.gi_probe_images.size() != 8 || vk.gi_probe_surface_image_views.empty() || vk.gi_probe_surface_images.empty() ||
-            !this->gi_probe_pipeline.has_value()) {
+            !this->gi_probe.pipeline_ready()) {
             return false;
         }
         out.frame = this->pass_frame();
@@ -3848,14 +3861,12 @@ namespace vulkan {
         // declaration uses (a cell's ray needs the top level structure, the material table, the light UBO).
         out.own_set = VK_NULL_HANDLE;
         out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
-        // The pipeline, by the name the behaviour declares - the mechanism this renderer already had for the
-        // scene's pipelines, used here for a compute pass, with the layout it was built from.
-        if (pass.behaviour().pipelines.size() != 1 || pass.behaviour().pipelines[0] != "gi_probe") {
-            return false;
-        }
-        out.pipeline_storage[0] = this->gi_probe_pipeline->get_pipeline();
+        // The pipeline and its layout are the PASS's objects now (it built them in its create step), and the
+        // host relays them to the runner the same way it would relay its own: the runner's guarantee - bind
+        // before record, through the layout the pass pushes and binds with - does not depend on who owns them.
+        out.pipeline_storage[0] = this->gi_probe.pipeline();
         out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
-        out.pipeline_layout = this->gi_probe_pipeline_layout;
+        out.pipeline_layout = this->gi_probe.pipeline_layout();
         // The push block, composed HERE because its values are the renderer's: the grid is anchored to the
         // scene's bounds (the same cube the shadow fit uses, so one set of numbers means the same thing on a
         // 1.6-unit model and on Sponza's 18.5), the rate is the config's, the table address is the tracing
