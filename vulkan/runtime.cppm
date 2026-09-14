@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.59.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.60.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -29,6 +29,7 @@ import vulkan.bindings;               // the per-image descriptor-set families (
 import vulkan.pass;                   // the pass framework: the host the runner talks to, and the stage runner
 import vulkan.pass.gi_probe;          // the first real pass (its member is declared below, so the class must be complete)
 import vulkan.pass.taa;               // the second, and the first GRAPHICS one
+import vulkan.pass.scene;             // the third: the scene itself, whose work is DATA rather than a declaration
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
@@ -673,6 +674,15 @@ namespace vulkan {
         };
 
         pass::taa_pass taa_resolve;
+        // THE SCENE PASS (vulkan.pass.scene): it owns the surface instance, the segment strategy and the draw
+        // loop; the renderer hands it the leaves through a typed frame (see make_scene_frame) and keeps the
+        // pipeline registry, the secondary buffers and the scheduler.
+        pass::scene_pass scene;
+        std::array<pass::frame_pass*, 1> scene_stage = {&this->scene};
+        /// the scene frame's view of the per-slot segments (a member, so the span it hands the pass outlives it)
+        std::vector<pass::segment_buffer> scene_segment_view = {};
+        /// the colour formats the scene pass's secondaries inherit, in attachment order
+        std::array<VkFormat, vulkan::gbuffer_pass_attachment_count> scene_color_formats = {};
         std::array<pass::frame_pass*, 1> taa_stage = {&this->taa_resolve};
         bool taa_on = false;           // [render] taa
         float taa_blend_static = 0.9f; // history weight for a static pixel
@@ -2577,6 +2587,22 @@ namespace vulkan {
          *       into is a declared TARGET - resolved the same way, so the pass reaches nothing it did not name
          */
         bool resolve_taa_pass(pass::resolved_io& out);
+
+        /**
+         * @brief this frame's SCENE, as the scene pass needs it (see vulkan.pass.scene::scene_frame)
+         * @note the leaves, the per-slot secondary buffers and the three callbacks the pass cannot answer for
+         *       itself: a fresh draw state per segment, the scheduler, and the attachment formats
+         */
+        [[nodiscard]] pass::scene_frame make_scene_frame() noexcept;
+        /** @brief build ONE segment's draw state (the renderer owns the pipeline registry and the mode) */
+        static render_environment make_scene_environment(void* owner, VkCommandBuffer command_buffer, bool gbuffer);
+        /** @brief the renderer's scheduler, handed to the pass so the segment fan-out stays the frame loop's */
+        static void run_scene_tasks(void* owner, std::span<std::function<void()>> tasks);
+        /**
+         * @brief resolve the scene pass's declaration: its six targets and the shared scene set
+         * @return false when there is no surface pipeline or no target generation (see record_scene)
+         */
+        [[nodiscard]] bool resolve_scene_pass(pass::resolved_io& out);
 
         /**
          * @ingroup vulkan_runtime

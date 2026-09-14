@@ -1978,7 +1978,22 @@ namespace vulkan {
     void runtime::record_scene(VkCommandBuffer const command_buffer) {
         this->record_scene_attachments(command_buffer);
         this->update_pass_geometry();
-        this->record_opaque_scene(command_buffer);
+        // THE SCENE PASS records the surface write: the instance over its six declared targets, the segmented
+        // draw of the visible leaves, and closing the instance - all inside one function now (see
+        // vulkan.pass.scene for why that is the point of this extraction).
+        if (this->gbuffer_pass_active()) {
+            this->scene.set_frame(this->make_scene_frame());
+            pass::stage const scene_stage = {.name = "scene", .passes = this->scene_stage, .marks = false};
+            [[maybe_unused]] pass::run_report const scene_report = pass::record_stage(scene_stage, this->make_pass_host());
+            return;
+        }
+        // THE DEGENERATE CASE, which is all the old begin_rendering() is still needed for: no surface pipeline,
+        // so there is no pass to run. An EMPTY instance is opened and closed anyway, so the frame keeps a
+        // matching pair and the scene target ends in a layout the post chain can sample. (The old code also
+        // recorded the scene segments here - with a pipeline that does not exist, which validation would have
+        // refused; drawing nothing is both shorter and true.)
+        this->begin_rendering(command_buffer, this->current_image_index, 0);
+        vkCmdEndRendering(command_buffer);
     }
 
     // Move the scene pass's attachments into their render layouts; see the declaration for why this
@@ -2103,95 +2118,6 @@ namespace vulkan {
         // viewport and scissor from the extent its declaration produced, which is what `resync_viewport`
         // means once a pass states it (see vulkan.pass's behaviour). The hazard this list used to guard - a
         // fullscreen pass setting a zero-width viewport because it was left out - is gone by construction.
-    }
-
-    // The opaque scene: the surface write pass. Alpha-blended geometry is NOT here - it is
-    // composited over the shaded frame by record_transparent_pass(), after the lighting stage.
-    void runtime::record_opaque_scene(VkCommandBuffer const command_buffer) {
-        core& vk = this->vulkan_core;
-        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
-        // Stage 3 of parallel recording: the main-pass visible leaves are split into up-to-N
-        // contiguous sub_render_tasks (N = task-pool workers), each recording its own per-slot
-        // SECONDARY command buffer; the batch is posted to the task pool and the recording
-        // priority group is waited on. The primary then executes the segments in order inside
-        // the main rendering instance (VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT).
-        // Rendering is identical to inline (same leaves, same order, same batching per
-        // segment); only the recording is parallel. Shadow + attachment barriers stay on the
-        // primary (see above). The gui overlay (same rendering instance) records on the last
-        // worker as one more task.
-        // one {pool, secondary} pair per task-pool worker (see the member docs): a worker never
-        // shares its pool, so parallel recording cannot race on a VkCommandPool
-        std::vector<std::pair<VkCommandPool, vk_command_buffer>>& main_segments = this->main_segments[static_cast<std::size_t>(frame_slot)];
-
-        // Main secondaries inherit the color + depth attachments (dynamic rendering 1.3): the three
-        // surface targets + the velocity target + the scene color the emissive is added into, at 1x.
-        // The gui overlay draws into the same color+depth instance, so it inherits identically.
-        std::array<VkFormat, vulkan::gbuffer_pass_attachment_count> const pass_color_formats = {
-            vulkan::gbuffer_formats[0], vulkan::gbuffer_formats[1], vulkan::gbuffer_formats[2], vulkan::gbuffer_velocity_format, vulkan::hdr_format};
-        uint32_t const pass_color_count = vulkan::gbuffer_pass_attachment_count;
-        VkCommandBufferInheritanceRenderingInfo const main_inheritance = make_inheritance_rendering_info(pass_color_formats.data(), pass_color_count, vk.depth_format, VK_SAMPLE_COUNT_1_BIT);
-        VkCommandBufferInheritanceInfo const main_sec_inherit = make_inheritance_info(&main_inheritance);
-        VkCommandBufferBeginInfo const main_sec_begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &main_sec_inherit);
-
-        std::size_t const leaf_count = this->frame_visible.size();
-        std::size_t const segment_count = std::min<std::size_t>(main_segments.size(), std::max<std::size_t>(1, leaf_count));
-
-        if (segment_count == 1 || leaf_count < 4) {
-            // Few leaves: parallel recording would cost more than it saves - record the whole
-            // main pass on one segment (identical to stage 2) on this thread.
-            VkCommandBuffer const single_main = *main_segments[0].second;
-            bool main_recorded = false;
-            if (vkBeginCommandBuffer(single_main, &main_sec_begin) == VK_SUCCESS) {
-                this->record_main_segment(single_main, this->frame_visible, /*gbuffer_pass=*/true);
-                vkEndCommandBuffer(single_main);
-                main_recorded = true;
-            } else {
-                utility::log("runtime: main secondary begin failed - scene skipped this frame");
-            }
-
-            this->begin_rendering(command_buffer, this->current_image_index, VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT);
-            if (main_recorded) {
-                vkCmdExecuteCommands(command_buffer, 1, &single_main);
-            }
-
-            return;
-        }
-
-        // Parallel: slice frame_visible into segment_count contiguous spans; one sub_render_task
-        // per segment records its own secondary on a pool worker. The tasks only read shared state
-        // (scene set / pipeline caches / the leaf pointers) and write their own command buffer, so
-        // they run concurrently; the recording priority group is waited on before the primary
-        // executes the segments in order. Each task's recorded flag is set only on a successful
-        // begin+end; the primary skips a segment whose flag stayed false (executing an unrecorded
-        // secondary is a VUID).
-        std::vector<std::function<void()>> tasks;
-        tasks.reserve(segment_count);
-        std::vector<std::atomic<bool>> segment_recorded(segment_count);
-        for (std::size_t s = 0; s < segment_count; ++s) {
-            std::size_t const seg_first = leaf_count * s / segment_count;
-            std::size_t const seg_last = leaf_count * (s + 1) / segment_count;
-            sub_render_task task = {};
-            task.command_buffer = *main_segments[s].second;
-            task.leaves = std::span<primitive const* const>(this->frame_visible.data() + seg_first, seg_last - seg_first);
-            task.color_formats = pass_color_formats;
-            task.color_count = pass_color_count;
-            task.depth_format = vk.depth_format;
-            task.rasterization_samples = VK_SAMPLE_COUNT_1_BIT;
-            task.gbuffer_pass = true;
-            task.owner = this;
-            task.recorded = &segment_recorded[s];
-            tasks.emplace_back(std::move(task)); // std::function copies the value task
-        }
-        this->run_tasks(tasks, vulkan::task_priority::recording);
-
-        this->begin_rendering(command_buffer, this->current_image_index, VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT);
-        for (std::size_t s = 0; s < segment_count; ++s) {
-            if (!segment_recorded[s].load(std::memory_order_relaxed)) {
-                continue; // this segment's begin failed - never execute the unrecorded buffer
-            }
-            VkCommandBuffer const seg_cb = *main_segments[s].second;
-            vkCmdExecuteCommands(command_buffer, 1, &seg_cb);
-        }
     }
 
     // Depth-only shadow-pass content: bind the shared scene set (the light UBO binding 7) +
@@ -2338,29 +2264,6 @@ namespace vulkan {
         env.layout = vk.scene_pipeline_layout;
         for (primitive const* const m : leaves) {
             m->draw(env); // polymorphic: normal / instanced / static / custom
-        }
-    }
-
-    // One parallel recording job (see the declaration): begin the secondary command buffer with
-    // dynamic-rendering inheritance (color + depth attachments, sample count), record the
-    // segment's leaves (skybox on the carrying segment) and end it. Self-contained - built
-    // fresh each call so the pNext chains point at this invocation's stack structs; safe to run
-    // on any pool worker.
-    void runtime::sub_render_task::operator()() const {
-        VkCommandBufferInheritanceRenderingInfo const rendering_inherit = make_inheritance_rendering_info(this->color_formats.data(), this->color_count, this->depth_format, this->rasterization_samples);
-        VkCommandBufferInheritanceInfo const inherit = make_inheritance_info(&rendering_inherit);
-        VkCommandBufferBeginInfo const begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &inherit);
-        if (vkBeginCommandBuffer(this->command_buffer, &begin) != VK_SUCCESS) {
-            utility::log("runtime: main segment secondary begin failed - segment skipped this frame");
-            if (this->recorded != nullptr) {
-                this->recorded->store(false, std::memory_order_relaxed);
-            }
-            return;
-        }
-        this->owner->record_main_segment(this->command_buffer, this->leaves, this->gbuffer_pass);
-        vkEndCommandBuffer(this->command_buffer);
-        if (this->recorded != nullptr) {
-            this->recorded->store(true, std::memory_order_relaxed);
         }
     }
 
@@ -3609,6 +3512,11 @@ namespace vulkan {
             .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
             .owner = this,
         };
+        pass::stage const scene_stage = {.name = "scene", .passes = this->scene_stage, .marks = false};
+        pass::run_report const scene_created = pass::create_stage(scene_stage, build);
+        if (!scene_created.rejected.empty()) {
+            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", scene_created.rejected);
+        }
         pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
         pass::run_report const created = pass::create_stage(probe_stage, build);
         if (!created.rejected.empty()) {
@@ -3660,6 +3568,112 @@ namespace vulkan {
         return {}; // a pass whose shader was never registered builds nothing and says so
     }
 
+    /// the scene pass's per-frame input: the leaves, the segments, and the three things only the renderer can
+    /// answer (see scene_frame). Built here rather than stored, because every field is this frame's.
+    pass::scene_frame runtime::make_scene_frame() noexcept {
+        core const& vk = this->vulkan_core;
+        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
+        // the pass's view of the per-slot secondary buffers (members, so the span it holds outlives the stage)
+        auto const& segments = this->main_segments[static_cast<std::size_t>(frame_slot)];
+        this->scene_segment_view.clear();
+        this->scene_segment_view.reserve(segments.size());
+        for (auto const& [pool, buffer] : segments) {
+            this->scene_segment_view.push_back(pass::segment_buffer{.pool = pool, .buffer = *buffer});
+        }
+        // the secondaries inherit the instance's attachments: the three surface targets in order, the velocity
+        // target, and the scene colour - the same order the pass's declaration lists them in
+        this->scene_color_formats = {vulkan::gbuffer_formats[0], vulkan::gbuffer_formats[1], vulkan::gbuffer_formats[2], vulkan::gbuffer_velocity_format, vulkan::hdr_format};
+        return pass::scene_frame{
+            .leaves = this->frame_visible,
+            .segments = this->scene_segment_view,
+            .make_environment = &runtime::make_scene_environment,
+            .run_tasks = &runtime::run_scene_tasks,
+            .owner = this,
+            .color_formats = this->scene_color_formats,
+            .depth_format = vk.depth_format,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .gbuffer = true,
+            .extent = vk.swap_chain_extent,
+        };
+    }
+
+    /// build ONE segment's draw state; a fresh one per segment, because the pipeline-dedup state is per
+    /// recording session (see scene_frame::make_environment)
+    render_environment runtime::make_scene_environment(void* owner, VkCommandBuffer const command_buffer, bool const gbuffer) {
+        runtime& self = *static_cast<runtime*>(owner);
+        render_environment env;
+        env.command_buffer = command_buffer;
+        // The G-buffer pass binds its own pipeline as the pass default (see gbuffer_pipeline_name): same
+        // leaves, same draw path, but the fragment stage writes the surface instead of shading.
+        {
+            std::shared_lock const lock(self.access_mutex);
+            env.default_name = gbuffer ? gbuffer_pipeline_name : self.default_pipeline_name;
+        }
+        env.bind = [&self, gbuffer](VkCommandBuffer const cb, std::string_view const name) {
+            if (gbuffer) {
+                if (name == gbuffer_pipeline_name) {
+                    self.gbuffer_pipeline->begin_pipeline(cb);
+                    return;
+                }
+                // a leaf with explicit pipeline semantics cannot draw in the G-buffer instance (the named
+                // pipelines declare the single HDR attachment): say so once per leaf instead of issuing a draw
+                // that would be a validation error
+                utility::log("runtime: leaf requests pipeline '{}' during the G-buffer pass - draw skipped (only default-semantics leaves write the G-buffer)", name);
+                return;
+            }
+            if (auto const it = self.pipelines.find(name); it != self.pipelines.end()) {
+                it->second.begin_pipeline(cb);
+            } else {
+                utility::log("runtime: main pass references unknown pipeline '{}' - draw skipped", name);
+            }
+        };
+        // transparent leaves toggle depth writes off via this (core dynamic state, 1.3)
+        env.set_depth_write_fn = [](VkCommandBuffer const cb, VkBool32 const enabled) { vkCmdSetDepthWriteEnable(cb, enabled); };
+        // single-sided materials keep back-face culling here (the shadow pass overrides it with env.two_sided;
+        // the main pass must not, or double-sided handling would cost fill rate)
+        env.set_cull_mode_fn = [](VkCommandBuffer const cb, VkCullModeFlags const mode) { vkCmdSetCullMode(cb, mode); };
+        env.layout = self.vulkan_core.scene_pipeline_layout;
+        return env;
+    }
+
+    /// the renderer's scheduler, handed to the pass so the segment fan-out stays the frame loop's policy
+    void runtime::run_scene_tasks(void* owner, std::span<std::function<void()>> const tasks) {
+        static_cast<runtime*>(owner)->run_tasks(tasks, vulkan::task_priority::recording);
+    }
+
+    bool runtime::resolve_scene_pass(pass::resolved_io& out) {
+        core const& vk = this->vulkan_core;
+        std::size_t const index = this->current_image_index;
+        std::size_t const image_count = vk.gbuffer_image_views.empty() ? 0 : vk.gbuffer_image_views[0].size();
+        if (!this->gbuffer_pass_active() || image_count == 0 || index >= image_count || vk.velocity_image_views.size() != image_count ||
+            vk.gbuffer_depth_image_views.size() != image_count) {
+            return false; // no surface pipeline, or no target generation to draw into
+        }
+        out.frame = this->pass_frame();
+        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
+        out.own = {};
+        out.own_set = VK_NULL_HANDLE;
+        // the shared scene set (the pass's declaration names the SET, not its bindings: its owner decides them)
+        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
+        // the six declared targets, in declaration order: the three stored surface targets, the motion-vector
+        // target, the scene colour target (an ALIAS - see scene_io: the TAA input while the resolve runs, the
+        // HDR target otherwise) and the surface depth
+        out.target_storage[0] = {.view = vk.gbuffer_image_views[0][index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_images[0][index]};
+        out.target_storage[1] = {.view = vk.gbuffer_image_views[1][index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_images[1][index]};
+        out.target_storage[2] = {.view = vk.gbuffer_image_views[2][index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_images[2][index]};
+        out.target_storage[3] = {.view = vk.velocity_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.velocity_images[index]};
+        out.target_storage[4] = {.view = this->scene_target_view(index), .buffer = VK_NULL_HANDLE, .image = this->scene_target_image(index)};
+        out.target_storage[5] = {.view = vk.gbuffer_depth_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_depth_images[index]};
+        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), 6);
+        // NO pipelines: a leaf names the pipeline it wants and the renderer's registry resolves it through the
+        // environment the pass is handed (see scene_frame::make_environment)
+        out.pipelines = {};
+        out.pipeline_layout = VK_NULL_HANDLE;
+        out.push = {};
+        out.extent = vk.swap_chain_extent;
+        return true;
+    }
+
     pass::frame_identity runtime::pass_frame() const noexcept {
         core const& vk = this->vulkan_core;
         return pass::frame_identity{
@@ -3696,6 +3710,9 @@ namespace vulkan {
 
     bool runtime::resolve_pass(pass::frame_pass const& pass, pass::resolved_io& out) {
         core const& vk = this->vulkan_core;
+        if (&pass == static_cast<pass::frame_pass const*>(&this->scene)) {
+            return this->resolve_scene_pass(out);
+        }
         if (&pass == static_cast<pass::frame_pass const*>(&this->taa_resolve)) {
             return this->resolve_taa_pass(out);
         }
@@ -4328,9 +4345,10 @@ namespace vulkan {
     }
 
     void runtime::record_scene_tail(VkCommandBuffer const command_buffer) {
-        vkCmdEndRendering(command_buffer);
-        // GPU timing: the geometry instance ends with the instance close above (the forward main
-        // pass, or the G-buffer write pass in the deferred path).
+        // NO vkCmdEndRendering HERE ANY MORE: the scene PASS owns its instance and closes it at the end of its
+        // own record (see vulkan.pass.scene). That line used to be the far half of a pair whose near half was
+        // three functions away - the coupling this extraction removed.
+        // GPU timing: the geometry instance ended where the scene pass closed it (the surface write).
         this->gpu_mark(command_buffer, gpu_mark_id::scene_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         core const& vk = this->vulkan_core;
 
