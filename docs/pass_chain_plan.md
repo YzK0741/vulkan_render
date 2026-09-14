@@ -538,6 +538,14 @@ changed and 0 flaky), because a half-wired pass is worse than an unimplemented o
    image's history. Fixing it uses `own_per_image` and **changes frames**, so it is a deliberate change with a
    reference update - it must not be folded into an extraction whose acceptance is "0 changed".
 
+**AND THE TWO ANCHORS AGREE, which is the strongest statement this branch can make about "the rest is
+unchanged".** The seven pre-GI scenarios were re-run against the branch's OWN origin baselines
+(`%LOCALAPPDATA%\vulkan_render\baseline-pass-chain`, captured on the pre-GI state before any pass work) at the
+tip of the GI-attached tree: 7 passed, **0 changed, 0 flaky** - the same seven hashes master's directory holds.
+The five GI scenarios are reported NOT SEEDED there, which is what that directory is: it predates them. So the
+whole journey - pre-GI state, the three extracted PBR passes, and the GI feature set attached on top - left every
+frame that predates GI byte-identical, measured against BOTH the branch's origin and `master`'s references.
+
 **THE RULE THAT KEEPS THE ANCHOR USABLE**: every gate run compares against
 `%LOCALAPPDATA%\vulkan_render\baseline` (12 scenarios) and never passes `-Update` without an explicit override;
 and `-BuildDir` must be ABSOLUTE or the script's relative `screenshot_dir` produces a false FLAKY (fixed in the
