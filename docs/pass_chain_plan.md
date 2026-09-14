@@ -540,19 +540,22 @@ says what a re-audit of the current tree found.
 
 **NOT DONE, with the reason and the exact next step.**
 
-1. **The diffuse temporal resolve as a pass.** Every piece is ready: `render_resource::ssgi_temporal_io` is
-   declared, generated and tested; `build_ssgi_temporal` already takes a device and the pass's layout;
-   `resolved_io::own_per_image` is the channel its family needs. The change is the one two attempts outlined:
-   a `vulkan.pass.ssgi_temporal` module (ownership: set layout, pipeline layout, pipeline, family, per-image
-   history flags, barriers, dispatch, history copy, hand-backs), a frame carrying `history_valid` (snapshotted
-   by the host BEFORE the stage, so the reflection's dispatch - which runs after it, in the same frame - blends
-   with the same value) and an `ensure_inputs` callback for the two transitions whose flags belong to other
-   passes, and the host side: a resolver filling `own` + `own_per_image` + the push, a driver recording the
-   stage, `ssgi_active()` reading the pass, `create_passes` and `recreate_stage` including its stage, and
-   `ensure_ssgi_denoise_descriptors` shrinking to the REFLECTION's family (which stays in the runtime and uses
-   the pass's layout through `set_layout()`). Acceptance: gate 12 x 2, 0 changed, 0 flaky.
-2. **The spatial filter**, after (1): it reads the temporal resolve's output and binds both of its sets, so it
-   is the second reader of the same channel.
+1. **The diffuse temporal resolve as a pass - and it is TWO steps, not one.** Every piece is ready:
+   `render_resource::ssgi_temporal_io` is declared, generated and tested; `build_ssgi_temporal` already takes a
+   device and the pass's layout; `resolved_io::own_per_image` is the channel its family needs. But the extraction
+   splits cleanly, and taking the first half first is both smaller and honest:
+   * **(1a) the RECORDING, which needs no new framework at all.** A pass whose set and pipeline arrive through
+     `resolved_io::own_set` and `resolved_io::pipelines` is WITHIN the framework's contract - those fields exist
+     for exactly that, and the scene pass's leaves already get their pipelines from the owner. So a
+     `vulkan.pass.ssgi_temporal` can own the barriers, the dispatch, the two push lanes that describe its own
+     state (`history_valid`, `mode`), the history copy and the hand-backs while the set layout, the pipeline and
+     both per-image families stay the renderer's. That is the part where the ORDER lives (after the tracer and
+     the lobe, before the spatial filter), and it is worth taking on its own.
+   * **(1b) the pass-owned FAMILY**, which is what `own_per_image` was added for: the pass then ensures its own
+     set from the declaration, writes each image's set from that image's views, and keeps its own history flags
+     (the tracer reading them through an accessor). This is the step that measured the channel.
+2. **The spatial filter**, after (1): it reads the temporal resolve's output and binds both of its sets, so it is
+   the second reader of the same channel.
 3. **The TAA pass's per-image defect** (recorded above): it writes the current frame's views into every set, so
    with more than one swapchain image (this machine: `minImageCount + 1`, mailbox) every set points at one
    image's history. Fixing it uses `own_per_image` and **changes frames**, so it is a deliberate change with a
