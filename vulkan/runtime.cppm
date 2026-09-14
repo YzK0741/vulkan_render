@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.57.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.58.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -28,6 +28,7 @@ import vulkan.profiling;
 import vulkan.bindings;               // the per-image descriptor-set families (the G-buffer debug view's for now)
 import vulkan.pass;                   // the pass framework: the host the runner talks to, and the stage runner
 import vulkan.pass.gi_probe;          // the first real pass (its member is declared below, so the class must be complete)
+import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
 import vulkan.acceleration_structure; // the ray-tracing bottom level structures (built once, lazily)
@@ -733,6 +734,8 @@ namespace vulkan {
         [[nodiscard]] pass::frame_identity pass_frame() const noexcept;
         /// the bytes of a shader the app registered, by file name (empty when it did not)
         [[nodiscard]] std::span<unsigned char const> registered_shader(std::string_view name) const noexcept;
+        /// the six samplers a declaration chooses between, in one place (see pass_context::samplers)
+        [[nodiscard]] render_resource::shared::sampler_set shared_samplers() const noexcept;
         /**
          * @brief resolve a pass's declaration into this frame's handles (the runner's `resolve` callback)
          * @return false when this frame cannot run the pass, which skips it WITHOUT recording anything

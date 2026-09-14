@@ -1,4 +1,4 @@
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/pass.cppm
@@ -207,8 +207,56 @@ export namespace vulkan::pass {
     };
 
     // =============================================================================================
-    // 2. WHAT THE RUNNER TALKS TO - the host, filled once by the runtime
+    // 2. WHAT A PASS IS GIVEN (create) AND WHAT THE RUNNER TALKS TO (record)
+    //
+    // TWO STRUCTS, and the split is a decision rather than bookkeeping: they have different OWNERS and
+    // different LIFETIMES. `pass_context` answers "build what you own" and can be filled by anyone who has a
+    // device and the shared facts (the runtime is one such owner, not the only one) - which is what lets a
+    // pass exist outside this renderer. `pass_host` answers "run this frame" and only a frame loop can fill it.
     // =============================================================================================
+
+    /**
+     * @brief what a pass is given to BUILD what it owns; fillable by any owner, not only a runtime
+     *
+     * WHY IT IS SEPARATE FROM `pass_host`: a pass's create step needs things the frame loop does not have and
+     * a frame loop needs things a create step does not. Merging them produced one struct that grew with every
+     * pass - the shape this layer exists to avoid - and it made "who may create a pass" the same question as
+     * "who may run a frame", which is not true: an editor, a test or another renderer's main() can build these
+     * three facts (a device, six samplers, two lookups) and own a pass.
+     *
+     * WHAT IS IN IT, and what is deliberately not: the device; the renderer's six samplers, which a
+     * declaration CHOOSES between by `sampler_hint` (a pass never names a `VkSampler` of its own, or the six
+     * would become seven); the layout that occupies a shared set, asked BY SET INDEX - the same vocabulary the
+     * declaration already uses; and a pass's own shader bytes, asked by name. NOT here: no instance, no
+     * physical device, no allocator, no queue, no command pool, and no frame. `vulkan.core` remains the only
+     * thing that creates an IMAGE, so a pass cannot take over an image family through this struct.
+     */
+    struct pass_context {
+        /// the device a pass builds its own objects on (the owner fills this from the filtered core view)
+        VkDevice device = VK_NULL_HANDLE;
+        render_resource::shared::sampler_set samplers = {};
+        /**
+         * The layout that occupies SHARED set @p set, or `VK_NULL_HANDLE` when the owner has none there.
+         *
+         * A pass does not own the shared set layouts (the scene set's is `vulkan.core`'s), and it cannot build
+         * its own pipeline layout without them - the pipeline layout is created from the set layouts its
+         * pipeline binds, in order. Asking by SET INDEX rather than by name is what makes this the same
+         * vocabulary as the declaration, which already says which set each of its bindings lives in.
+         */
+        VkDescriptorSetLayout (*shared_set_layout)(void* owner, uint32_t set) = nullptr;
+        /**
+         * The SPIR-V of one of this pass's shaders, by the name it declares; empty when the owner does not
+         * have it.
+         *
+         * A CALLBACK rather than bytes, because a pass needs its shaders exactly once and only the ones it
+         * declares - so it asks for them. The OWNER is the side that knows where shader files come from (in
+         * this renderer the app loads them and hands them over), which keeps a path and a file format out of
+         * this framework.
+         */
+        std::span<unsigned char const> (*shader)(void* owner, std::string_view name) = nullptr;
+        /// what the two lookups above are called with (the renderer passes itself)
+        void* owner = nullptr;
+    };
 
     /**
      * @brief the runner's interface to the renderer: callbacks plus a context, no virtuals, no allocation
@@ -217,43 +265,12 @@ export namespace vulkan::pass {
      * in rather than inherited), which is why this framework depends on NEITHER `vulkan.runtime` NOR
      * `vulkan.core`: `main.cpp`'s replacement, or a test, can supply one.
      *
-     * A PASS SEES IT AT CREATE TIME ONLY. Recording is done through `resolved_io`, and that separation is
-     * what stops this from becoming a context object that hands out whatever the newest pass wants: the two
-     * callbacks below answer questions a pass must answer exactly once, while it is building what it owns.
+     * IT IS THE RUNNER'S, NOT A PASS'S: what a pass is given is `resolved_io` at record time and
+     * `pass_context` at create time. A pass has no reason to see this struct at all, which is what stops it
+     * from growing into a context object that hands out whatever the newest pass wants.
      */
     struct pass_host {
         void* context = nullptr;
-        /**
-         * The device a pass builds its own objects on, and the renderer's six samplers.
-         *
-         * THIS IS THE CREATE-TIME INTERFACE, and it is deliberately this narrow: a pass may create a
-         * `VkDescriptorSetLayout` from its own declaration, the descriptor sets from it, and the pipeline it
-         * records with. What is absent is the point: no instance, no physical device, no allocator, no queue,
-         * no command pool - `vulkan.core` remains the only thing that creates an IMAGE, and a pass that wanted
-         * to would be taking over an image family, which is a resource-layer change and has to be argued as
-         * one.
-         */
-        VkDevice device = VK_NULL_HANDLE;
-        render_resource::shared::sampler_set samplers = {};
-        /**
-         * The SPIR-V of one of this pass's shaders, by the name it declares; empty when the renderer does not
-         * have it.
-         *
-         * Why a CALLBACK rather than bytes in this struct: a pass needs its shaders exactly once, at create
-         * time, and only the ones it actually declares - so it asks for them. The renderer is the side that
-         * knows where shader files come from (the app loads them; `register_shader` hands them over), which is
-         * what keeps a path or a file format out of this framework.
-         */
-        std::span<unsigned char const> (*shader)(void* context, std::string_view name) = nullptr;
-        /**
-         * The layout that occupies SHARED set @p set, or `VK_NULL_HANDLE` when the renderer has none there.
-         *
-         * A pass does not own the shared set layouts (the scene set's is `vulkan.core`'s), and it cannot build
-         * its own pipeline layout without them - the pipeline layout is created from the set layouts its
-         * pipeline binds, in order. Asking by SET INDEX rather than by name is what makes this the same
-         * vocabulary as the declaration, which already says which set each of its bindings lives in.
-         */
-        VkDescriptorSetLayout (*shared_set_layout)(void* context, uint32_t set) = nullptr;
         /// the frame being recorded
         frame_identity (*frame)(void* context) = nullptr;
         /// whether a pass's feature is active this frame (`feature()`; empty means always)
@@ -297,9 +314,9 @@ export namespace vulkan::pass {
         [[nodiscard]] virtual behaviour const& behaviour() const noexcept = 0;
         /// @brief the feature that gates it ([render] keys); empty means "always"
         [[nodiscard]] virtual std::string_view feature() const noexcept = 0;
-        /// @brief build what this pass owns (its set layout, its descriptor family) through the host; once
-        ///        per device generation
-        virtual void create(pass_host const& host) = 0;
+        /// @brief build what this pass owns (its set layout, its descriptor family, its pipeline) from
+        ///        @p context; once per device generation
+        virtual void create(pass_context const& context) = 0;
         /// @brief the swapchain was rebuilt, so every per-image resource this pass held is stale
         virtual void on_swapchain_recreated(pass_host const& host) = 0;
         /**
@@ -364,8 +381,12 @@ export namespace vulkan::pass {
      * The validation is `vulkan.render_resource::validate`, which is pure data: it needs no device, so a bad
      * declaration is caught at startup on every machine rather than by a validation-layer message at submit
      * time, on the machine that happens to run that pass.
+     *
+     * The CONTEXT is the only argument, because building a pass needs nothing else: a frame loop is not
+     * involved, and a caller that builds passes without ever running a frame (an editor, a test, a tool that
+     * compiles pipelines) needs exactly this one struct.
      */
-    [[nodiscard]] inline run_report create_stage(stage const& st, pass_host const& host) {
+    [[nodiscard]] inline run_report create_stage(stage const& st, pass_context const& context) {
         run_report report;
         for (frame_pass* const p : st.passes) {
             if (p == nullptr) {
@@ -375,7 +396,7 @@ export namespace vulkan::pass {
                 report.rejected = p->io().name;
                 return report;
             }
-            p->create(host);
+            p->create(context);
             ++report.created;
         }
         return report;

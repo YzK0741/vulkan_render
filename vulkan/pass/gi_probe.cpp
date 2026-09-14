@@ -80,31 +80,31 @@ namespace vulkan::pass {
         return this->cache_valid_;
     }
 
-    void gi_probe_pass::create(pass_host const& host) {
-        if (host.device == VK_NULL_HANDLE) {
+    void gi_probe_pass::create(pass_context const& context) {
+        if (context.device == VK_NULL_HANDLE) {
             return; // no device, nothing to build on (the create step is a no-op before the core exists)
         }
-        if (this->device_ != VK_NULL_HANDLE && this->device_ != host.device) {
+        if (this->device_ != VK_NULL_HANDLE && this->device_ != context.device) {
             // A NEW DEVICE GENERATION: everything this pass built belongs to the old one. Releasing first is
             // what makes `create` correct on every generation rather than only on the first.
             this->release_owned();
         }
-        this->device_ = host.device;
-        this->samplers_ = host.samplers;
+        this->device_ = context.device;
+        this->samplers_ = context.samplers;
         if (this->set_layout_ != VK_NULL_HANDLE) {
             return; // already built for this device
         }
-        // WHAT THE PASS NEEDS FROM ITS HOST, all of it at create time and none of it a capability: the device
+        // WHAT THE PASS NEEDS FROM ITS OWNER, all of it at create time and none of it a capability: the device
         // (above), the layout of the SHARED set its pipeline layout must be built against, and its own
         // shader's SPIR-V. It owns the three objects it makes from them.
-        VkDescriptorSetLayout const scene_layout = host.shared_set_layout != nullptr ? host.shared_set_layout(host.context, 0) : VK_NULL_HANDLE;
-        std::span<unsigned char const> const spirv = host.shader != nullptr ? host.shader(host.context, shader_name) : std::span<unsigned char const>{};
+        VkDescriptorSetLayout const scene_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 0) : VK_NULL_HANDLE;
+        std::span<unsigned char const> const spirv = context.shader != nullptr ? context.shader(context.owner, shader_name) : std::span<unsigned char const>{};
         if (scene_layout == VK_NULL_HANDLE) {
             utility::log("world-space probe cache disabled (the tracer keeps its environment fallback): the shared scene set layout is not there yet");
             return;
         }
         if (spirv.empty()) {
-            utility::log("world-space probe cache disabled (the tracer keeps its environment fallback): the renderer has no {}", shader_name);
+            utility::log("world-space probe cache disabled (the tracer keeps its environment fallback): the owner has no {}", shader_name);
             return;
         }
         // THE LAYOUT IS GENERATED FROM THE PASS'S OWN DECLARATION, which is the other half of the sequence
@@ -113,7 +113,7 @@ namespace vulkan::pass {
         // shader sees and the declaration cannot drift. That the generated layout is the one the renderer
         // carried is decided by the capture gate: `sponza_gi` runs with this pass ON.
         std::expected<VkDescriptorSetLayout, std::string> const layout =
-            bindings::make_set_layout(host.device, render_resource::gi_probe_io, render_resource::gi_probe_io.own_set);
+            bindings::make_set_layout(context.device, render_resource::gi_probe_io, render_resource::gi_probe_io.own_set);
         if (!layout.has_value()) {
             utility::log("world-space probe cache disabled (the tracer keeps its environment fallback): {}", layout.error());
             return;
@@ -122,7 +122,7 @@ namespace vulkan::pass {
         // ... and the pipeline, whose LAYOUT is built from the declaration too: the shared scene set at 0, the
         // pass's own at 1, and the push range the declaration carries (the `static_assert` at the end of this
         // module ties that number to the struct the pass pushes).
-        auto built = pipelines::build_gi_probe(host.device, scene_layout, this->set_layout_, render_resource::gi_probe_io.push->size, spirv);
+        auto built = pipelines::build_gi_probe(context.device, scene_layout, this->set_layout_, render_resource::gi_probe_io.push->size, spirv);
         if (!built) {
             utility::log("world-space probe cache disabled (the tracer keeps its environment fallback): {}", built.error());
             this->release_owned();

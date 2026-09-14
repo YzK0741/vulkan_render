@@ -106,14 +106,34 @@ namespace {
     vp::pass_host make_host(host_state& state) {
         return vp::pass_host{
             .context = &state,
-            .device = fake_device,
-            .samplers = {.probe_grid = fake_probe_sampler},
             .frame = host_frame,
             .feature_active = host_feature_active,
             .resolve = host_resolve,
             .apply_behaviour = host_apply_behaviour,
             .mark_begin = host_mark_begin,
             .mark_end = host_mark_end,
+        };
+    }
+
+    /// the create-time context: what a pass builds itself from, and the point of the split is that ANY owner can
+    /// fill it - this fake one below needs no device, no runtime and no frame, which is exactly what the test
+    /// asserts a pass may rely on
+    VkDescriptorSetLayout fake_shared_layout(void* /*owner*/, uint32_t const set) {
+        return set == 0u ? reinterpret_cast<VkDescriptorSetLayout>(0x0C) : VK_NULL_HANDLE;
+    }
+
+    std::span<unsigned char const> fake_shader(void* /*owner*/, std::string_view const name) {
+        static std::array<unsigned char, 3> const bytes = {0x03, 0x02, 0x23};
+        return name == "fake.comp.spv" ? std::span<unsigned char const>(bytes) : std::span<unsigned char const>{};
+    }
+
+    vp::pass_context make_context() {
+        return vp::pass_context{
+            .device = fake_device,
+            .samplers = {.probe_grid = fake_probe_sampler},
+            .shared_set_layout = fake_shared_layout,
+            .shader = fake_shader,
+            .owner = nullptr,
         };
     }
 
@@ -155,10 +175,10 @@ namespace {
         [[nodiscard]] std::string_view feature() const noexcept override {
             return feature_;
         }
-        void create(vp::pass_host const& host) override {
+        void create(vp::pass_context const& context) override {
             state_->log.emplace_back(std::string("create:") + std::string(io_.name));
-            state_->created_with_device = host.device;
-            state_->created_with_sampler = host.samplers.of(rr::sampler_hint::probe_grid);
+            state_->created_with_device = context.device;
+            state_->created_with_sampler = context.samplers.of(rr::sampler_hint::probe_grid);
         }
         void on_swapchain_recreated(vp::pass_host const&) override {
             state_->log.emplace_back(std::string("recreate:") + std::string(io_.name));
@@ -218,7 +238,7 @@ int main() {
         std::array<frame_pass*, 2> passes = {&probe, &tail};
         stage const st = {.name = "scene", .passes = passes};
         state.log.clear();
-        run_report const report = create_stage(st, host);
+        run_report const report = create_stage(st, make_context());
         CHECK(report.created == 2);
         CHECK(report.rejected.empty());
         CHECK(at(state.log, "create:probe") < at(state.log, "create:tail")); // declaration order, not container order
@@ -227,7 +247,7 @@ int main() {
         std::array<frame_pass*, 2> passes = {&probe, &bad};
         stage const st = {.name = "scene", .passes = passes};
         state.log.clear();
-        run_report const report = create_stage(st, host);
+        run_report const report = create_stage(st, make_context());
         CHECK(report.rejected == "bad"); // the pass's own name, for a startup message that says which one
         CHECK(report.created == 1);      // and the stage stops there rather than running a bad declaration
         CHECK(!has(state.log, "create:bad"));
@@ -236,7 +256,7 @@ int main() {
         std::array<frame_pass*, 3> passes = {&probe, nullptr, &tail};
         stage const st = {.name = "scene", .passes = passes};
         state.log.clear();
-        CHECK(create_stage(st, host).created == 2); // a null slot is skipped, not counted
+        CHECK(create_stage(st, make_context()).created == 2); // a null slot is skipped, not counted
     }
 
     // ---- record: the order of resolve, behaviour and record, and the stage's mark around all of it ----
@@ -282,14 +302,28 @@ int main() {
         CHECK(probe.last_image_count == 3);
     }
 
-    // ---- what a pass is given at CREATE time: a device and the six samplers, and nothing that allocates ----
+    // ---- the create-time context on its own: a pass is built from THIS and nothing else ----
+    {
+        vp::pass_context const context = make_context();
+        // a pass is built from the CONTEXT alone: no frame, no runner, no runtime - the property that makes a
+        // pass constructible outside this renderer
+        CHECK(context.device == fake_device);
+        CHECK(context.samplers.of(rr::sampler_hint::probe_grid) == fake_probe_sampler);
+        CHECK(context.shared_set_layout(context.owner, 0) == reinterpret_cast<VkDescriptorSetLayout>(0x0C));
+        CHECK(context.shared_set_layout(context.owner, 1) == VK_NULL_HANDLE);
+        CHECK(context.shader(context.owner, "fake.comp.spv").size() == 3);
+        CHECK(context.shader(context.owner, "missing.comp.spv").empty());
+    }
+
+    // ---- what a pass is given at CREATE time: a device, the six samplers, and two lookups - and nothing that
+    //      allocates or runs a frame ----
     {
         std::array<frame_pass*, 1> passes = {&probe};
         stage const st = {.name = "scene", .passes = passes};
         state.log.clear();
         state.created_with_device = VK_NULL_HANDLE;
         state.created_with_sampler = VK_NULL_HANDLE;
-        run_report const built = create_stage(st, host);
+        run_report const built = create_stage(st, make_context());
         CHECK(built.created == 1);
         CHECK(state.created_with_device == fake_device);
         CHECK(state.created_with_sampler == fake_probe_sampler); // chosen by hint, never named by the pass

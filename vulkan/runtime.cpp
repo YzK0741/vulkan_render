@@ -3768,11 +3768,37 @@ namespace vulkan {
         // declaration and its own shader, so this is also where a pass that could not build itself says so -
         // and a pass that says so stays INACTIVE (its feature predicate is false), which is what makes a
         // startup failure here a log line rather than a broken frame.
+        //
+        // IT IS HANDED A CONTEXT, NOT A HOST: building a pass needs a device and the shared lookups, and it
+        // needs no frame. ANY owner can fill this struct - that is what makes a pass usable outside this
+        // renderer - and this runtime is one such owner, filling the device from the core it owns.
+        pass::pass_context const build = {
+            .device = this->vulkan_core.device,
+            .samplers = this->shared_samplers(),
+            .shared_set_layout = [](void* owner, uint32_t const set) {
+                // The scene set is the only shared set a pass's OWN pipeline layout ever needs today: it is
+                // set 0, and it is what every compute pass's tracing/shading reads. A pass asking for any
+                // other set gets "none", which makes it build nothing and say so.
+                return set == 0u ? static_cast<runtime*>(owner)->vulkan_core.scene_descriptor_set_layout : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
+            .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
+            .owner = this,
+        };
         pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
-        pass::run_report const created = pass::create_stage(probe_stage, this->make_pass_host());
+        pass::run_report const created = pass::create_stage(probe_stage, build);
         if (!created.rejected.empty()) {
             utility::log("pass '{}': its declaration was refused by the validator, so it does not run", created.rejected);
         }
+    }
+
+    render_resource::shared::sampler_set runtime::shared_samplers() const noexcept {
+        // The six samplers a declaration chooses between, as handles. One place, so that two passes cannot end
+        // up with two different ideas of "the post sampler".
+        return {.gbuffer = *this->gbuffer_sampler,
+                .probe_grid = *this->gi_probe_sampler,
+                .taa = *this->taa_sampler,
+                .post = *this->post_sampler,
+                .nearest = *this->post_nearest_sampler,
+                .shadow = *this->shadow_sampler};
     }
 
     std::span<unsigned char const> runtime::registered_shader(std::string_view const name) const noexcept {
@@ -3799,29 +3825,12 @@ namespace vulkan {
     // ---- the pass host: the runner's callbacks, answered by the renderer ---------------------------------
     //
     // It is rebuilt per call because it is a struct of function pointers (it holds no state of its own); the
-    // context is this runtime, which is what each callback casts back to. A pass never sees this: it is
-    // handed `resolved_io`, so it cannot reach a resource its declaration did not name.
+    // context is this runtime, which is what each callback casts back to. This is the RUNNER's half of the
+    // interface and a pass never sees it: at create time a pass is given a `pass_context`, and while recording
+    // it is handed `resolved_io`, so it cannot reach a resource its declaration did not name.
     pass::pass_host runtime::make_pass_host() noexcept {
         return pass::pass_host{
             .context = this,
-            .device = this->vulkan_core.device,
-            // the six samplers a declaration chooses between, as handles: a pass writes a declared sampler
-            // binding through one and never names a VkSampler of its own
-            .samplers = {.gbuffer = *this->gbuffer_sampler,
-                         .probe_grid = *this->gi_probe_sampler,
-                         .taa = *this->taa_sampler,
-                         .post = *this->post_sampler,
-                         .nearest = *this->post_nearest_sampler,
-                         .shadow = *this->shadow_sampler},
-            // the two create-time questions a pass asks while building what it owns: its shader's bytes (the
-            // app registered them, see register_shader) and the layout of a shared set its pipeline layout
-            // must be built against. Both answer "I do not have it" rather than guessing.
-            .shader = [](void* context, std::string_view const name) { return static_cast<runtime*>(context)->registered_shader(name); },
-            .shared_set_layout = [](void* context, uint32_t const set) {
-                // The scene set is the only shared set a pass's OWN pipeline layout ever needs today: it is
-                // set 0, and it is what every compute pass's tracing/shading reads. A pass asking for any
-                // other set gets "none", which makes it build nothing and say so.
-                return set == 0u ? static_cast<runtime*>(context)->vulkan_core.scene_descriptor_set_layout : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
             .frame = [](void* context) { return static_cast<runtime*>(context)->pass_frame(); },
             .feature_active = [](void* context, std::string_view const feature) { return static_cast<runtime*>(context)->feature_active(feature); },
             .resolve = [](void* context, pass::frame_pass const& pass, pass::resolved_io& out) { return static_cast<runtime*>(context)->resolve_pass(pass, out); },

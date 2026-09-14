@@ -1,4 +1,4 @@
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/gi_probe.cppm
@@ -102,7 +102,7 @@ export namespace vulkan::pass {
         // in the same scope).
         [[nodiscard]] vulkan::pass::behaviour const& behaviour() const noexcept override;
         [[nodiscard]] std::string_view feature() const noexcept override;
-        void create(pass_host const& host) override;
+        void create(pass_context const& context) override;
         void on_swapchain_recreated(pass_host const& host) override;
         void record(resolved_io const& io) override;
 

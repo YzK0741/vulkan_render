@@ -203,12 +203,22 @@ was open in the first draft of this document:
   with. That was the rule applied to the convenient half of its range: a handle ONLY that pass names and ONLY
   that pass needs is that pass's to build and to destroy, and leaving it behind meant the pass owned its
   family but not the pipeline that family's sets are bound through. So a pass now builds its own pipeline from
-  its own declaration, which needed exactly two create-time facts added to `pass_host`: its shader's SPIR-V
-  (the app loads shaders and registers them; a pass asks for its own by file name) and the layout of the
-  shared set its pipeline layout must be built against (asked by SET INDEX, the same vocabulary the
-  declaration already uses). The runner still binds the pipeline before the pass records - ownership and
-  binding are different questions - and `resolved_io::pipelines`/`pipeline_layout` stay the channel it does it
-  through, filled from the pass's own handles when the pass owns them.
+  its own declaration, which needed exactly two create-time facts added: its shader's SPIR-V (the app loads
+  shaders and registers them; a pass asks for its own by file name) and the layout of the shared set its
+  pipeline layout must be built against (asked by SET INDEX, the same vocabulary the declaration already uses).
+  The runner still binds the pipeline before the pass records - ownership and binding are different questions -
+  and `resolved_io::pipelines`/`pipeline_layout` stay the channel it does it through, filled from the pass's own
+  handles when the pass owns them.
+* **CREATE AND RECORD ARE TWO STRUCTS, because they have two owners.** Once a pass builds its own objects, what
+  it needs at create time (a device, the six samplers, a shared-set-layout lookup, its shader bytes) and what a
+  frame loop needs to run one (the frame, the feature registry, the resolver, the behaviour step, the marks)
+  stopped being the same list. Merging them had produced one struct that grew with every pass - the context
+  object this layer exists to avoid - and it conflated "who may create a pass" with "who may run a frame",
+  which is false: an editor, a tool or a test can fill a `pass_context` and own a pass, and a runtime is only
+  one such owner. So `frame_pass::create(pass_context const&)` and `create_stage(stage, context)` take the
+  context ALONE, `pass_host` stays the runner's, and the framework's create path still needs no device of its
+  own (the ctest fills a fake context, which the design's `core_filter` could not have allowed: that class
+  holds a `core*` and cannot be faked).
 
 STILL OPEN, stated rather than implied: parallel recording (`main_segments` + the task pool) is not expressible
 in `stage` yet.
@@ -230,15 +240,16 @@ one thing this layer exists to prevent.
                                                         the pool counts, and one real declaration (the probe
                                                         cache); pure CPU, so ctest covers its invariants
     framework module (vulkan.pass)                DONE: behaviour vocabulary, resolved_io, the base class,
-                                                        pass_host, stage, and the three runner functions.
-                                                        The first consumer then ADDED what only a real pass
-                                                        can discover: a create-time interface on the host (a
-                                                        device and the six samplers, and nothing that
-                                                        allocates), the generation's image count in
-                                                        frame_identity, the pipeline layout and the
-                                                        host-composed push bytes in resolved_io, and a
-                                                        non-const record - because a pass that owns a
-                                                        descriptor family has to ensure it
+                                                        the two interfaces (above), stage, and the three
+                                                        runner functions. What only a real pass could
+                                                        discover, added in two rounds: the generation's
+                                                        image count in frame_identity, the pipeline layout
+                                                        and the host-composed push bytes in resolved_io, a
+                                                        non-const record (a pass that owns a descriptor
+                                                        family has to ensure it), an image handle next to
+                                                        the view, and finally the CREATE/RECORD split - so
+                                                        what a pass builds itself from is fillable by any
+                                                        owner and not only by a frame loop
     shared handles (vulkan.render_resource.shared) DONE for the samplers, which is the first tenant: the probe
                                                         cache's writes now CHOOSE one through its declaration
                                                         (`sampler_hint`) instead of naming a `VkSampler`, and
