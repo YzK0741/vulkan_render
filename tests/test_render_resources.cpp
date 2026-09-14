@@ -210,6 +210,20 @@ int main() {
         rr::pass_io const io = {.name = "taa", .own_set = 1, .bindings = {}, .targets = target, .push = std::nullopt};
         CHECK(!rr::validate(io).has_value()); // the same image twice
     }
+    {
+        // a DEPTH target: the scene pass declares one, and an instance has exactly one
+        rr::render_target const depth_target = {.resource = rr::resource_id::gbuffer_depth, .element = 0, .kind = rr::target_kind::depth};
+        std::array<rr::render_target, 2> const one_depth = {hdr_target, depth_target};
+        rr::pass_io const io = {.name = "scene", .own_set = 1, .bindings = {}, .targets = one_depth, .push = std::nullopt};
+        CHECK(rr::validate(io).has_value()); // one colour plus one depth is what a scene instance is
+    }
+    {
+        rr::render_target const depth_a = {.resource = rr::resource_id::gbuffer_depth, .element = 0, .kind = rr::target_kind::depth};
+        rr::render_target const depth_b = {.resource = rr::resource_id::shadow_map, .element = 0, .kind = rr::target_kind::depth};
+        std::array<rr::render_target, 2> const two_depths = {depth_a, depth_b};
+        rr::pass_io const io = {.name = "scene", .own_set = 1, .bindings = {}, .targets = two_depths, .push = std::nullopt};
+        CHECK(!rr::validate(io).has_value()); // two depth attachments cannot be recorded
+    }
 
     // ---- the SECOND declaration: the TAA resolve, whose bindings are FRAGMENT and whose own set is 0 with no
     //      shared set beside it, and which is the first one to declare a render TARGET ----

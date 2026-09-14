@@ -3823,16 +3823,11 @@ namespace vulkan {
         // (which is what replaces the hand-kept pipeline list in update_pass_geometry - a pass cannot drop
         // itself from a list it does not maintain).
         //
-        // What is deliberately NOT here: the rendering instance. A fullscreen pass declares the image it
-        // renders into and opens the instance over it, because the load op and the clear value are the PASS's
-        // knowledge, not the runner's.
+        // What is deliberately NOT here: the rendering instance. EVERY graphics pass opens its own, over the
+        // targets it declared, because the load op and the clear value are the PASS's knowledge. That is why
+        // this function no longer has a "not a compute pass" branch: the three graphics kinds differ in how
+        // many draws they issue, and only the pass knows that.
         pass::behaviour const& behaviour = pass.behaviour();
-        if (behaviour.kind == pass::behaviour_kind::graphics || behaviour.kind == pass::behaviour_kind::instanced) {
-            // These two draw into a rendering instance the STAGE opened, and nothing in this framework opens
-            // one yet: the first such pass to move here brings that shape with it.
-            utility::log("pass runner: pass '{}' draws into a stage-opened rendering instance, which this framework does not drive yet", pass.io().name);
-            return;
-        }
         if (behaviour.resync_viewport) {
             // io.extent is the extent the declaration's rule produced (the frame's, half of it, or a
             // resource's), so a fullscreen pass gets a viewport that matches the target it declared.

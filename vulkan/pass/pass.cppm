@@ -1,4 +1,4 @@
-// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/pass.cppm
@@ -64,12 +64,15 @@ export namespace vulkan::pass {
     /// @brief the shape of the work: what the runner must do AROUND the pass, not what the pass computes
     enum class behaviour_kind : uint8_t {
         compute,    // a dispatch: the pass records it, the extent and the workgroup size are declared
-        fullscreen, // one fullscreen triangle per target. The PASS opens its own rendering instance over the
-                    // target it declared (it is the one that knows the load op), and the runner binds the
-                    // pipeline and sets the viewport/scissor before record() - which is what makes the resync
-                    // unforgettable
-        graphics,   // a draw into a rendering instance the STAGE opened; NOT driven yet (nothing opens one)
-        instanced,  // one draw per instance - the shadow cascades' shape; NOT driven yet
+        fullscreen, // one fullscreen triangle per target
+        graphics,   // a draw per piece of scene content (a leaf, a light, a caster)
+        instanced,  // one draw per instance - the shadow cascades' shape
+        // THE THREE GRAPHICS KINDS ALL MEAN THE SAME THING TO THE RUNNER, and that is the point this layer
+        // reached: the PASS opens the rendering instance over the targets it declared (the load op and the
+        // clear value are its knowledge, not the runner's), and the runner's half is the part a pass cannot
+        // forget - binding the pipeline and, for a pass that asked, setting the viewport and scissor from the
+        // extent its declaration produced. What differs between the three is how many draws the pass issues
+        // and from where its draw list comes, which is the pass's business and no other layer's.
     };
 
     /**

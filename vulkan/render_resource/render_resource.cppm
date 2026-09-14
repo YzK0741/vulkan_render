@@ -1,4 +1,4 @@
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/render_resource/render_resource.cppm
@@ -395,6 +395,12 @@ export namespace vulkan::render_resource {
         stage_flag stages = stage_flag::compute;
     };
 
+    /// @brief which slot of a rendering instance a declared target fills
+    enum class target_kind : uint8_t {
+        color, // a colour attachment (one of the G-buffer's targets, the HDR image a resolve writes)
+        depth, // THE depth attachment, of which a rendering instance has exactly one
+    };
+
     /**
      * @brief an image a pass RENDERS INTO, which is a use that cannot be a descriptor
      *
@@ -405,13 +411,14 @@ export namespace vulkan::render_resource {
      * that list, and a colour attachment has no `VkDescriptorType` at all.
      *
      * The LOAD OP and the clear value are deliberately NOT declared: the pass that renders into the image is
-     * the one that opens the rendering instance (see `behaviour_kind::fullscreen`), so it is the one that says
-     * whether the old contents matter. What is declared is only what the layer has to know: which resource,
-     * and which image of its family.
+     * the one that opens the rendering instance (see `behaviour_kind::fullscreen` and `graphics`), so it is the
+     * one that says whether the old contents matter. What is declared is only what the layer has to know: which
+     * resource, which image of its family, and whether it fills the colour or the DEPTH slot.
      */
     struct render_target {
         resource_id resource = resource_id::none;
         uint16_t element = 0; // which image of the resource's family (per-swapchain-image resources: the index)
+        target_kind kind = target_kind::color;
     };
 
     /**
@@ -525,6 +532,7 @@ export namespace vulkan::render_resource {
         }
         std::string const who{io.name};
         std::size_t own_count = 0;
+        std::size_t depth_targets = 0;
         for (render_target const& t : io.targets) {
             std::string const where = who + ": target " + std::to_string(t.element);
             resource_info const* const info = find(t.resource);
@@ -537,6 +545,10 @@ export namespace vulkan::render_resource {
             if (t.element >= info->count) {
                 return std::unexpected(where + " names element " + std::to_string(t.element) + " of " + std::string(info->name) + ", which holds " +
                                        std::to_string(info->count));
+            }
+            if (t.kind == target_kind::depth && ++depth_targets > 1u) {
+                // a rendering instance has exactly one depth attachment, so a second one cannot be recorded
+                return std::unexpected(who + ": more than one DEPTH target is declared, and an instance has one");
             }
             for (render_target const& other : io.targets) {
                 if (&other != &t && other.resource == t.resource && other.element == t.element) {
