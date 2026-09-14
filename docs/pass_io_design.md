@@ -61,9 +61,10 @@ mirrors the module's suffix (`namespace vulkan::bindings`), types are `snake_cas
 | `binding_access` | `enum class : uint8_t` | `read` / `write` / `read_write` | the access is NOT derivable from the descriptor type (the spatial filter only READS its `gi_input` storage image), and it is what a later barrier stage keys on |
 | `sampler_hint` | `enum class : uint8_t` | `gbuffer` / `probe_grid` / `taa` / `post` / `nearest` / `shadow` | this renderer creates SIX samplers today (`gbuffer_sampler`, `gi_probe_sampler`, `taa_sampler`, `post_sampler`, `post_nearest_sampler`, `shadow_sampler`) and which one a binding gets is currently a ternary; naming the choices makes it a field |
 | `pass_binding` | `struct` | `{ uint32_t set; uint32_t binding; binding_kind kind; resource_id resource; uint16_t element; uint16_t descriptor_count; binding_access access; sampler_hint sampler; image_layout layout; VkShaderStageFlags stages; }` | **the heart**: one binding, one use. `binding` alone would collide with the `vulkan.bindings` module, hence the `pass_` prefix |
-| `image_layout` | `enum class : uint8_t` | `sampled` (SHADER_READ_ONLY_OPTIMAL) / `general` | ADDED AFTER THE FIRST CONVERSION, because the layout is NOT derivable from the kind: the probe cache keeps all nine of its own bindings in GENERAL (both ping-pong sides and the per-geometry, so the propagation's barriers stay same-layout ones), and a descriptor claiming SHADER_READ for a sampled one of those would be a lie validation rejects. The validator now requires a storage image to declare GENERAL |
+| `image_layout` | `enum class : uint8_t` | `sampled` (SHADER_READ_ONLY_OPTIMAL) / `general` / `color_attachment` (COLOR_ATTACHMENT_OPTIMAL) | ADDED AFTER THE FIRST CONVERSION, because the layout is NOT derivable from the kind: the probe cache keeps all nine of its own bindings in GENERAL (both ping-pong sides and the per-geometry, so the propagation's barriers stay same-layout ones), and a descriptor claiming SHADER_READ for a sampled one of those would be a lie validation rejects. The validator now requires a storage image to declare GENERAL. `color_attachment` came with the render targets: no descriptor declares it, but a pass that renders into an image leaves it there, so the one enum keeps one mapping |
+| `render_target` | `struct` | `{ resource_id resource; uint16_t element; }` | an image a pass RENDERS INTO. Not a binding, and the distinction is not cosmetic: a binding is a descriptor, the layout generator walks that list, and a colour attachment has no `VkDescriptorType` at all - it is bound by `vkCmdBeginRendering`. The load op and clear value are deliberately NOT declared: the pass that renders into the image is the one that opens the rendering instance, so it is the one that says whether the old contents matter |
 | `push_block` | `struct` | `{ uint32_t offset; uint32_t size; VkShaderStageFlags stages; }` | the second push range already exists in this codebase (`scene_cascade_push_offset/size`), so the shape is not hypothetical |
-| `pass_io` | `struct` | `{ std::string_view name; uint32_t own_set; std::span<pass_binding const> bindings; std::optional<push_block> push; }` | the declaration. `name` is for the error messages the validator produces, not for dispatch |
+| `pass_io` | `struct` | `{ std::string_view name; uint32_t own_set; std::span<pass_binding const> bindings; std::span<render_target const> targets; std::optional<push_block> push; }` | the declaration. `name` is for the error messages the validator produces, not for dispatch |
 | `make_set_layout` | function | `expected<VkDescriptorSetLayout, std::string> make_set_layout(VkDevice, pass_io const&, uint32_t set)` | a straight replacement for the hand-written binding loops in `pipelines.cppm`. It takes the DEVICE rather than the core, as the generators and the descriptor families now all do: they need nothing else, and that is what lets a PASS build its own layout and write its own sets out of what its host hands it |
 | `set_pool_requirements` | function | per-`VkDescriptorType` counts for one set | the number that had to equal the layout by hand and did not once |
 | `write_set` | function | `expected<void, std::string> write_set(VkDevice, pass_io const&, uint32_t set, VkDescriptorSet, span<VkImageView const>, span<VkBuffer const>, sampler_set const&)` | replaces the parallel arrays and ternaries in `ensure_*_descriptors` |
@@ -250,6 +251,19 @@ one thing this layer exists to prevent.
                                                         the view, and finally the CREATE/RECORD split - so
                                                         what a pass builds itself from is fillable by any
                                                         owner and not only by a frame loop
+    the graphics half: render targets +            DONE as a framework step: a pass declares the images it renders
+    the fullscreen behaviour                            into (`render_target`, apart from the bindings because an
+                                                        attachment is not a descriptor), `resolved_io::targets`
+                                                        carries their views and images, and the runner binds a
+                                                        graphics pipeline and sets the viewport/scissor for a pass
+                                                        that asked (which is what replaces the hand-kept pipeline
+                                                        list in `update_pass_geometry`). The rendering INSTANCE
+                                                        stays the pass's: it knows the load op. No consumer yet, so
+                                                        the frame is unchanged by construction - the first one is
+                                                        TAA, which is also why nothing declares a depth target yet.
+                                                        `behaviour_kind::graphics`/`instanced` (a draw into a
+                                                        stage-opened instance) still say out loud that they are not
+                                                        driven
     shared handles (vulkan.render_resource.shared) DONE for the samplers, which is the first tenant: the probe
                                                         cache's writes now CHOOSE one through its declaration
                                                         (`sampler_hint`) instead of naming a `VkSampler`, and

@@ -3919,25 +3919,32 @@ namespace vulkan {
 
     void runtime::apply_pass_behaviour(pass::frame_pass const& pass, pass::resolved_io const& io) {
         // The mechanical part of "how this pass is called", done by the runner so that a pass cannot forget
-        // it. Two of the three things it owes a pass are not implemented yet, and they say so out loud rather
-        // than doing nothing - a silent skip is the one thing this step must not do:
+        // it: the pipeline is bound HERE, and the viewport/scissor are set HERE for a pass that asked for them
+        // (which is what replaces the hand-kept pipeline list in update_pass_geometry - a pass cannot drop
+        // itself from a list it does not maintain).
+        //
+        // What is deliberately NOT here: the rendering instance. A fullscreen pass declares the image it
+        // renders into and opens the instance over it, because the load op and the clear value are the PASS's
+        // knowledge, not the runner's.
         pass::behaviour const& behaviour = pass.behaviour();
-        if (behaviour.kind != pass::behaviour_kind::compute) {
-            // A graphics/fullscreen/instanced pass draws inside a rendering instance the STAGE opened, and
-            // nothing in this framework opens one yet: the first such pass to move here brings that shape,
-            // and with it the viewport resync below.
-            utility::log("pass runner: pass '{}' is not a compute pass, which this framework does not drive yet", pass.io().name);
+        if (behaviour.kind == pass::behaviour_kind::graphics || behaviour.kind == pass::behaviour_kind::instanced) {
+            // These two draw into a rendering instance the STAGE opened, and nothing in this framework opens
+            // one yet: the first such pass to move here brings that shape with it.
+            utility::log("pass runner: pass '{}' draws into a stage-opened rendering instance, which this framework does not drive yet", pass.io().name);
             return;
         }
         if (behaviour.resync_viewport) {
-            // The renderer's resync is not a command-buffer call: it re-stores the viewport on every cached
-            // pipeline (see update_pass_geometry), because begin_pipeline re-emits it. Guessing that here
-            // would be inventing behaviour no consumer can verify.
-            utility::log("pass runner: pass '{}' asked for a viewport resync, which this framework cannot do yet", pass.io().name);
+            // io.extent is the extent the declaration's rule produced (the frame's, half of it, or a
+            // resource's), so a fullscreen pass gets a viewport that matches the target it declared.
+            VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(io.extent.width), static_cast<float>(io.extent.height), 0.0f, 1.0f};
+            VkRect2D const scissor = {{0, 0}, io.extent};
+            vkCmdSetViewport(io.cmd, 0, 1, &viewport);
+            vkCmdSetScissor(io.cmd, 0, 1, &scissor);
         }
+        VkPipelineBindPoint const bind_point = behaviour.kind == pass::behaviour_kind::compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
         for (VkPipeline const pipeline : io.pipelines) {
             if (pipeline != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(io.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+                vkCmdBindPipeline(io.cmd, bind_point, pipeline);
             }
         }
     }

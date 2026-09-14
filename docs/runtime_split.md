@@ -128,7 +128,11 @@ pipeline, its barriers, its clear and its push; `vulkan.runtime` keeps the switc
 is composed from (they are the renderer's). `record_gi_probe_pass`, `ensure_gi_probe_descriptors` and
 `make_gi_probe_pipeline` are gone, and `gi_probe_valid`/`gi_probe_light_dir_valid` are the pass's state now. The
 app's two calls are `register_shader` (it owns the file) and `create_passes` (the pass owns the pipeline). The
-remaining entries in the order above are unchanged, and TAA is next.
+remaining entries in the order above are unchanged, and TAA is next - but it needed one thing this map did not
+anticipate, because the map counted lines rather than shape: TAA is a FULLSCREEN GRAPHICS pass, and the framework
+only drove compute. Its half of the framework (declared render targets, a graphics bind point, the
+viewport/scissor a pass cannot forget) landed first and separately; the extraction order below is unchanged, only
+the cost of entry 2 is now two steps instead of one.
 
 ## 6. Step 1 - the file-level split of `runtime.cpp`, and its honest value
 

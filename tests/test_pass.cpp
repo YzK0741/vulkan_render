@@ -26,11 +26,12 @@ namespace {
     namespace rr = vulkan::render_resource;
 
     /// the declaration every fake pass carries, renamed to the pass it belongs to
-    rr::pass_io named_io(std::string_view const name) {
+    rr::pass_io named_io(std::string_view const name, std::span<rr::render_target const> const targets = {}) {
         return rr::pass_io{
             .name = name,
             .own_set = 1,
             .bindings = rr::gi_probe_bindings, // a declaration the schema accepts, reused rather than invented
+            .targets = targets,
             .push = std::nullopt,
         };
     }
@@ -85,6 +86,12 @@ namespace {
         out.pipelines = std::span<VkPipeline const>(fake_pipelines.data(), behaviour.pipelines.size());
         out.pipeline_layout = fake_layout;
         out.push = fake_push;
+        // the declared render targets, resolved the way an own binding is: the view for the instance, the
+        // image for a barrier
+        for (std::size_t t = 0; t < pass.io().targets.size() && t < out.target_storage.size(); ++t) {
+            out.target_storage[t] = {.view = reinterpret_cast<VkImageView>(0x70 + t), .buffer = VK_NULL_HANDLE, .image = reinterpret_cast<VkImage>(0x80 + t)};
+        }
+        out.targets = std::span<vp::resolved_binding const>(out.target_storage.data(), pass.io().targets.size());
         out.extent = behaviour.extent == vp::extent_rule::half ? VkExtent2D{state.frame.extent.width / 2u, state.frame.extent.height / 2u} : state.frame.extent;
         return true;
     }
@@ -195,6 +202,9 @@ namespace {
             last_image_index = io.frame.image_index;
             last_slot = io.frame.slot;
             last_image_count = io.frame.image_count;
+            last_targets = io.targets.size();
+            last_target_view = io.targets.empty() ? VK_NULL_HANDLE : io.targets[0].view;
+            last_target_image = io.targets.empty() ? VK_NULL_HANDLE : io.targets[0].image;
         }
 
         VkCommandBuffer last_cmd = VK_NULL_HANDLE;
@@ -207,6 +217,9 @@ namespace {
         uint32_t last_image_index = 0;
         uint32_t last_slot = 0;
         uint32_t last_image_count = 0;
+        std::size_t last_targets = 0;
+        VkImageView last_target_view = VK_NULL_HANDLE;
+        VkImage last_target_image = VK_NULL_HANDLE;
 
     private:
         rr::pass_io io_;
@@ -218,6 +231,10 @@ namespace {
     // the names are `vulkan.runtime`'s own pipeline keys, which is what makes this cost nothing new
     constexpr std::array<std::string_view, 1> compute_pipeline_names = {"gi_probe"};
     constexpr std::array<std::string_view, 2> fullscreen_pipeline_names = {"post_composite", "fxaa"};
+    /// the fullscreen fake pass also declares one render TARGET: an attachment is a use that cannot be a
+    /// descriptor, so it is declared in its own list (see vulkan.render_resource::render_target)
+    constexpr rr::render_target fullscreen_target = {.resource = rr::resource_id::hdr, .element = 0};
+    constexpr std::array<rr::render_target, 1> fullscreen_targets = {fullscreen_target};
     constexpr vp::behaviour compute_behaviour = {.kind = vp::behaviour_kind::compute, .group_size_x = 4, .group_size_y = 4, .group_size_z = 4, .extent = vp::extent_rule::resource, .pipelines = compute_pipeline_names};
     constexpr vp::behaviour fullscreen_behaviour = {.kind = vp::behaviour_kind::fullscreen, .extent = vp::extent_rule::half, .pipelines = fullscreen_pipeline_names, .resync_viewport = true};
 } // namespace
@@ -229,7 +246,7 @@ int main() {
     pass_host const host = make_host(state);
 
     fake_pass probe{named_io("probe"), compute_behaviour, "gi", state};
-    fake_pass tail{named_io("tail"), fullscreen_behaviour, "gi", state};
+    fake_pass tail{named_io("tail", fullscreen_targets), fullscreen_behaviour, "gi", state};
     fake_pass gated{named_io("gated"), compute_behaviour, "off", state};
     fake_pass bad{bad_io(), compute_behaviour, "gi", state};
 
@@ -300,6 +317,13 @@ int main() {
         CHECK(probe.last_pipeline_layout == fake_layout);
         CHECK(probe.last_push_size == fake_push.size());
         CHECK(probe.last_image_count == 3);
+        // ... and the images it RENDERS INTO, declared apart from the bindings because an attachment is bound
+        // by a rendering instance and not by a set: a compute pass declares none, the fullscreen one gets its
+        // view and its image resolved
+        CHECK(probe.last_targets == 0);
+        CHECK(tail.last_targets == 1);
+        CHECK(tail.last_target_view == reinterpret_cast<VkImageView>(0x70));
+        CHECK(tail.last_target_image == reinterpret_cast<VkImage>(0x80));
     }
 
     // ---- the create-time context on its own: a pass is built from THIS and nothing else ----
@@ -397,6 +421,9 @@ int main() {
         // the layout mapping, and the sampler CHOICE a declaration makes instead of a handle
         CHECK(image_layout_of(rr::image_layout::sampled) == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         CHECK(image_layout_of(rr::image_layout::general) == VK_IMAGE_LAYOUT_GENERAL);
+        // a render TARGET's layout: no descriptor declares it, but the pass that renders into it leaves the
+        // image there, so the one enum has one mapping
+        CHECK(image_layout_of(rr::image_layout::color_attachment) == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         rr::shared::sampler_set const samplers = {.gbuffer = reinterpret_cast<VkSampler>(0x11), .probe_grid = reinterpret_cast<VkSampler>(0x22)};
         CHECK(samplers.of(rr::sampler_hint::probe_grid) == reinterpret_cast<VkSampler>(0x22));
         CHECK(samplers.of(rr::sampler_hint::gbuffer) == reinterpret_cast<VkSampler>(0x11));

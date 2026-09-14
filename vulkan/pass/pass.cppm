@@ -1,4 +1,4 @@
-// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/pass.cppm
@@ -64,9 +64,12 @@ export namespace vulkan::pass {
     /// @brief the shape of the work: what the runner must do AROUND the pass, not what the pass computes
     enum class behaviour_kind : uint8_t {
         compute,    // a dispatch: the pass records it, the extent and the workgroup size are declared
-        fullscreen, // one fullscreen triangle per target; the viewport MUST be resynced (see `resync_viewport`)
-        graphics,   // a draw into a rendering instance the stage opened
-        instanced,  // one draw per instance - the shadow cascades' shape
+        fullscreen, // one fullscreen triangle per target. The PASS opens its own rendering instance over the
+                    // target it declared (it is the one that knows the load op), and the runner binds the
+                    // pipeline and sets the viewport/scissor before record() - which is what makes the resync
+                    // unforgettable
+        graphics,   // a draw into a rendering instance the STAGE opened; NOT driven yet (nothing opens one)
+        instanced,  // one draw per instance - the shadow cascades' shape; NOT driven yet
     };
 
     /**
@@ -95,7 +98,7 @@ export namespace vulkan::pass {
          */
         std::span<std::string_view const> pipelines = {};
         /**
-         * Whether the runner must resynchronise the viewport and scissor before this pass.
+         * Whether the runner must set the viewport and scissor from `resolved_io::extent` before this pass.
          *
          * THIS FIELD EXISTS BECAUSE OF A MEASURED HAZARD: the viewport resync is a hand-maintained list of
          * pipelines in `update_pass_geometry` today, and dropping a pipeline from it makes a post pass set a
@@ -150,6 +153,8 @@ export namespace vulkan::pass {
     inline constexpr uint32_t max_own_bindings = 16;
     /// @brief how many pipelines one pass may name (the post chain's five are the most today)
     inline constexpr uint32_t max_pass_pipelines = 8;
+    /// @brief how many images one pass may render into (one fullscreen pass has one; the deferred scene has five)
+    inline constexpr uint32_t max_render_targets = 8;
     /// @brief the largest push block a pass may declare: the 128 bytes Vulkan guarantees
     inline constexpr uint32_t max_push_bytes = 128;
 
@@ -176,6 +181,18 @@ export namespace vulkan::pass {
         std::span<resolved_binding const> own = {};
         VkDescriptorSet own_set = VK_NULL_HANDLE;
         shared_sets shared = {};
+        /**
+         * The storage `targets` views: the images this pass RENDERS INTO, in the order its declaration names
+         * them, each with the view a rendering instance takes and the image a barrier takes.
+         *
+         * A pass declares a target because an attachment is a use that cannot be a descriptor (see
+         * `render_target`): it is bound by `vkCmdBeginRendering`, not by a set. The pass that renders into it
+         * OPENS the rendering instance - the load op and the clear value are its business, since only it knows
+         * whether the old contents matter - and the runner's job is to have the pipeline bound and the
+         * viewport set before it does.
+         */
+        std::array<resolved_binding, max_render_targets> target_storage = {};
+        std::span<resolved_binding const> targets = {};
         /// the storage `pipelines` views
         std::array<VkPipeline, max_pass_pipelines> pipeline_storage = {};
         /// in the order `behaviour::pipelines` names them, one entry per name

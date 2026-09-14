@@ -1,4 +1,4 @@
-// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/bindings/bindings.cppm
@@ -148,6 +148,10 @@ namespace vulkan::bindings {
             return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         case render_resource::image_layout::general:
             return VK_IMAGE_LAYOUT_GENERAL;
+        case render_resource::image_layout::color_attachment:
+            // a RENDER TARGET's layout, which no descriptor ever declares but a pass's target does (the
+            // fullscreen resolve writes it): mapped here so the one enum has one mapping
+            return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         }
         return VK_IMAGE_LAYOUT_UNDEFINED;
     }

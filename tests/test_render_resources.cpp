@@ -180,5 +180,36 @@ int main() {
         CHECK(!rr::validate(io).has_value()); // not a whole number of 4-byte lanes
     }
 
+    // ---- the render TARGETS: an attachment is a use that cannot be a descriptor, so it is declared here ----
+    rr::render_target const hdr_target = {.resource = rr::resource_id::hdr, .element = 0};
+    rr::render_target const no_target = {.resource = rr::resource_id::none, .element = 0};
+    rr::render_target const past_the_family = {.resource = rr::resource_id::hdr, .element = 4};
+    rr::render_target const not_an_image = {.resource = rr::resource_id::light_ubo, .element = 0};
+    {
+        std::array<rr::render_target, 1> const target = {hdr_target};
+        rr::pass_io const io = {.name = "taa", .own_set = 1, .bindings = {}, .targets = target, .push = std::nullopt};
+        CHECK(rr::validate(io).has_value()); // the frame's HDR target, written by a fullscreen resolve
+    }
+    {
+        std::array<rr::render_target, 1> const target = {no_target};
+        rr::pass_io const io = {.name = "taa", .own_set = 1, .bindings = {}, .targets = target, .push = std::nullopt};
+        CHECK(!rr::validate(io).has_value()); // an unset resource, exactly as for a binding
+    }
+    {
+        std::array<rr::render_target, 1> const target = {past_the_family};
+        rr::pass_io const io = {.name = "taa", .own_set = 1, .bindings = {}, .targets = target, .push = std::nullopt};
+        CHECK(!rr::validate(io).has_value()); // element 4 of a per-swapchain-image family that holds one
+    }
+    {
+        std::array<rr::render_target, 1> const target = {not_an_image};
+        rr::pass_io const io = {.name = "taa", .own_set = 1, .bindings = {}, .targets = target, .push = std::nullopt};
+        CHECK(!rr::validate(io).has_value()); // a buffer is not an image a pass can render into
+    }
+    {
+        std::array<rr::render_target, 2> const target = {hdr_target, hdr_target};
+        rr::pass_io const io = {.name = "taa", .own_set = 1, .bindings = {}, .targets = target, .push = std::nullopt};
+        CHECK(!rr::validate(io).has_value()); // the same image twice
+    }
+
     return vk_test::finish("test_render_resources");
 }

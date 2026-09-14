@@ -1,4 +1,4 @@
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/render_resource/render_resource.cppm
@@ -282,9 +282,10 @@ export namespace vulkan::render_resource {
      * that pass on the first try.
      */
     enum class image_layout : uint8_t {
-        sampled, // SHADER_READ_ONLY_OPTIMAL: a sampled image that is only ever read in that layout
-        general, // GENERAL: a resource whose owner keeps it there for its whole life (a storage image, or a
-                 // grid a propagation ping-pongs in place)
+        sampled,          // SHADER_READ_ONLY_OPTIMAL: a sampled image that is only ever read in that layout
+        general,          // GENERAL: a resource whose owner keeps it there for its whole life (a storage image,
+                          // or a grid a propagation ping-pongs in place)
+        color_attachment, // COLOR_ATTACHMENT_OPTIMAL: what a pass that RENDERS INTO this image leaves it in
     };
 
     /**
@@ -395,6 +396,25 @@ export namespace vulkan::render_resource {
     };
 
     /**
+     * @brief an image a pass RENDERS INTO, which is a use that cannot be a descriptor
+     *
+     * A fullscreen pass's colour attachment is not in any set: it is bound by `vkCmdBeginRendering`, so the
+     * declaration has to name it somewhere else - and it has to name it SOMEWHERE, because otherwise a pass
+     * could render into an image it never declared, which is the one property this layer enforces. Keeping it
+     * in `bindings` would be worse than a second list: a binding is a descriptor, the layout generator walks
+     * that list, and a colour attachment has no `VkDescriptorType` at all.
+     *
+     * The LOAD OP and the clear value are deliberately NOT declared: the pass that renders into the image is
+     * the one that opens the rendering instance (see `behaviour_kind::fullscreen`), so it is the one that says
+     * whether the old contents matter. What is declared is only what the layer has to know: which resource,
+     * and which image of its family.
+     */
+    struct render_target {
+        resource_id resource = resource_id::none;
+        uint16_t element = 0; // which image of the resource's family (per-swapchain-image resources: the index)
+    };
+
+    /**
      * @brief one pass's declared I/O
      *
      * `own_set` is the set index of the `set_owner::own` bindings; the validator requires every `own` binding
@@ -406,6 +426,8 @@ export namespace vulkan::render_resource {
         std::string_view name = {};
         uint32_t own_set = 1;
         std::span<pass_binding const> bindings = {};
+        /// the images this pass renders into, in the order it uses them (a fullscreen pass has one)
+        std::span<render_target const> targets = {};
         std::optional<push_block> push = std::nullopt;
     };
 
@@ -491,7 +513,10 @@ export namespace vulkan::render_resource {
      * structure is not a buffer); the access fits the kind (a sampled image cannot be written); `element` is
      * inside the family; `descriptor_count` is at least one; a sampled image names a sampler and nothing else
      * does; no two bindings share a (set, binding) pair, which would silently lose one of them in the layout;
-     * and the pass's OWN bindings are exactly the set `own_set`, numbered contiguously from zero.
+     * and the pass's OWN bindings are exactly the set `own_set`, numbered contiguously from zero. A render
+     * TARGET gets the same two checks a binding gets - the schema declares the resource, and the element is
+     * inside its family - plus uniqueness, because two targets naming one image would be a pass rendering into
+     * itself twice.
      * @ingroup vulkan_render_resource
      */
     [[nodiscard]] inline std::expected<void, std::string> validate(pass_io const& io) {
@@ -500,6 +525,25 @@ export namespace vulkan::render_resource {
         }
         std::string const who{io.name};
         std::size_t own_count = 0;
+        for (render_target const& t : io.targets) {
+            std::string const where = who + ": target " + std::to_string(t.element);
+            resource_info const* const info = find(t.resource);
+            if (info == nullptr) {
+                return std::unexpected(where + " names a resource the schema does not declare");
+            }
+            if (info->kind != resource_kind::image2d && info->kind != resource_kind::image3d && info->kind != resource_kind::image_cube) {
+                return std::unexpected(where + " names " + std::string(info->name) + ", which is not an image a pass can render into");
+            }
+            if (t.element >= info->count) {
+                return std::unexpected(where + " names element " + std::to_string(t.element) + " of " + std::string(info->name) + ", which holds " +
+                                       std::to_string(info->count));
+            }
+            for (render_target const& other : io.targets) {
+                if (&other != &t && other.resource == t.resource && other.element == t.element) {
+                    return std::unexpected(where + " is declared twice");
+                }
+            }
+        }
         for (pass_binding const& b : io.bindings) {
             std::string const where = who + ": set " + std::to_string(b.set) + " binding " + std::to_string(b.binding);
             resource_info const* const info = find(b.resource);
