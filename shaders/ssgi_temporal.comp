@@ -1,0 +1,212 @@
+#version 450
+
+/**
+ * @file shaders/ssgi_temporal.comp
+ * @brief Temporal accumulation for the screen-space GI trace: the denoiser's first half.
+ * @ingroup shaders
+ *
+ * The tracer answers with 2 rays per pixel, which is nowhere near enough - a raw trace is a field of
+ * white noise with the right average. Accumulating it over frames is what turns that into an image:
+ * with a 0.9 history weight roughly ten frames of differently-seeded rays are averaged per pixel, and
+ * because the tracer re-seeds its ray sequence from a frame counter every sample it averages is an
+ * INDEPENDENT estimate rather than the same mistake repeated.
+ *
+ * It is a separate pass from the trace, at the GI resolution, for the same reason TAA is separate
+ * from rendering: the history has to be read and written in different images, and the resolve needs
+ * inputs (motion vectors, depth) that the tracer does not.
+ *
+ * The three things that make it accumulate rather than smear, the same three TAA needs:
+ *  1. REPROJECTION: the history is sampled at `uv - motion`, using the G-buffer's motion vector, so
+ *     the sample comes from the pixel that actually showed this surface last frame. That vector now
+ *     covers rigid object motion as well as the camera (see pbr.vert / binding 13).
+ *  2. DEPTH GUARD: a history sample whose reprojected depth disagrees with this frame's belongs to a
+ *     different surface - the classic disocclusion - and is dropped entirely. Reprojection alone
+ *     cannot know that: the previous frame's surface there was simply something else.
+ *  3. SPATIAL CLAMP: the history is clamped into a box around the current frame's 3x3 neighbourhood.
+ *     A history value outside the range of what this neighbourhood currently looks like is stale (a
+ *     lighting change, a moving shadow) and is pulled back instead of blended in as a ghost.
+ *
+ * The clamp box is deliberately taken from the RAW trace, which is noisy, so the box is wide and
+ * rejects little - which is what lets the accumulation do its work. Clamping against a filtered
+ * version of the current frame would tighten the box and cap how much history can be averaged; that
+ * is the classic way a temporal filter ends up not denoising. A spatial filter running AFTER this one
+ * is the safe place to do the tightening - shaders/ssgi_spatial.comp is exactly that, and its output is
+ * what the composite samples.
+ *
+ * Residual limitations: a deforming mesh (skinned or morphed) has no motion vector - see gbuffer.frag
+ * - so its GI still trails; and a pixel that was off screen or occluded last frame starts over.
+ */
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D gi_trace;   // this frame's raw trace, GI resolution
+layout(set = 0, binding = 1) uniform sampler2D gi_history; // last frame's TEMPORAL result, same resolution
+layout(set = 0, binding = 2) uniform sampler2D velocity;   // full-resolution motion vectors (UV space)
+layout(set = 0, binding = 3) uniform sampler2D depth;      // full-resolution G-buffer depth
+layout(set = 0, binding = 4, rgba16f) uniform image2D gi_resolved;
+// The G-buffer's normal target, sampled for ONE channel: .a is the material's roughness, which the
+// reflection's accumulation cap below needs (it is what says which pixels carry a sharp reflection). The
+// image is full resolution, like the motion vectors and the depth above, and it is read at this pass's
+// own uv for the same reason: the cap is a per-surface property, not a per-texel one.
+layout(set = 0, binding = 5) uniform sampler2D gbuffer_normal; // RGBA16F: world normal.xyz + roughness
+// Mode 1's reprojection, published by the glossy lobe (shaders/ssgi_spec.comp, G-buffer set binding 14):
+// xy = where the point the reflection FOUND was on screen last frame, z = that point's view depth,
+// w = whether any ray found anything shaded at all. Read only in mode 1 (see `glossy` in main).
+layout(set = 0, binding = 6) uniform sampler2D reproject;
+
+layout(push_constant) uniform GiTemporalPush {
+    float history_valid; // 0 = there is no history for this image yet (first frame, or a resize)
+    float blend_static;  // history weight for a still pixel
+    float blend_min;     // history weight floor under motion
+    float depth_scale;   // projection[2][2]: the view-depth linearization pair, as in the tracer
+    float depth_offset;  // projection[3][2]
+    float mode;          // 1.0 = resolve the REFLECTION, 0.0 = the diffuse bounce (see main)
+    float unused1;
+    float unused2;
+    vec4 gi_size; // xy = GI extent in texels, zw = the full-resolution extent
+} pc;
+
+/**
+ * @brief view-space distance of a depth-buffer value
+ * @param z_ndc the stored depth in [0,1]
+ * @return a positive view-space distance
+ * @note the same inversion the tracer and the G-buffer debug view use
+ */
+float view_depth(float z_ndc) {
+    return pc.depth_offset / (z_ndc + pc.depth_scale);
+}
+
+void main() {
+    const ivec2 gi_extent = ivec2(pc.gi_size.xy);
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= gi_extent.x || pixel.y >= gi_extent.y) {
+        return; // the dispatch is rounded up to the workgroup size
+    }
+    const vec2 uv = (vec2(pixel) + 0.5) / vec2(gi_extent);
+    const vec3 current = texture(gi_trace, uv).rgb;
+
+    // WHICH SIGNAL THIS DISPATCH RESOLVES. 0 is the diffuse bounce, reprojected by the SURFACE's motion and
+    // disoccluded by comparing surface depths. 1 is the glossy reflection, and neither of those works for
+    // it: a reflection slides across a surface that is usually standing still, so its history has to be
+    // fetched from where the point it FOUND was on screen last frame (the lobe publishes that in
+    // `reproject`), and its disocclusion test has to compare THAT point's depth, because a moving camera
+    // changes the surface's depth and the reflected point's depth differently. This is the reference
+    // implementation's mechanism 1, and it needs an accumulation of its own - which is the whole reason
+    // this shader has a mode: mixing a reflection into the diffuse accumulation, which is what it did
+    // before, can only ever shorten the wrong history.
+    const bool glossy = pc.mode > 0.5;
+    const vec4 hit = glossy ? texture(reproject, uv) : vec4(0.0);
+    const bool hit_valid = glossy && hit.w > 0.5;
+    // What this pass leaves in its own alpha: the depth of the point the reflection found, which is what
+    // next frame's disocclusion test compares against. The diffuse signal never reads the channel and
+    // writes the 1.0 it always has.
+    const float out_depth = glossy ? (hit_valid ? hit.z : -1.0) : 1.0;
+
+    if (pc.history_valid < 0.5) {
+        imageStore(gi_resolved, pixel, vec4(current, out_depth)); // nothing to blend with yet
+        return;
+    }
+
+    const float depth_here = texture(depth, uv).r;
+    if (depth_here >= 1.0) {
+        // Background: the tracer wrote 0 here anyway. This test comes BEFORE the reprojection is read on
+        // purpose - the lobe skips background pixels entirely, so what `reproject` holds there is not a
+        // value at all (its first-use transition discards the image's contents).
+        imageStore(gi_resolved, pixel, vec4(0.0, 0.0, 0.0, out_depth));
+        return;
+    }
+
+    vec2 previous_uv;
+    float speed;
+    if (glossy) {
+        if (!hit_valid) {
+            imageStore(gi_resolved, pixel, vec4(current, out_depth)); // no ray found anything: no history
+            return;
+        }
+        previous_uv = hit.xy;
+        // The REFLECTION's own screen speed rather than the surface's: how far the reflected image slid is
+        // the quantity that decides how much of a moving average it can keep.
+        speed = clamp(length(uv - previous_uv) * float(gi_extent.x) / 8.0, 0.0, 1.0);
+    } else {
+        const vec2 motion = texture(velocity, uv).rg;
+        previous_uv = uv - motion;
+        // Motion-aware blend, the same shape the TAA resolve uses: a pixel that moved a long way trusts the
+        // current frame more, because a long history for a surface that just appeared is mostly stale data.
+        // Speed is measured in GI texels so the threshold means the same at any resolution.
+        speed = clamp(length(motion) * float(gi_extent.x) / 8.0, 0.0, 1.0);
+    }
+    if (previous_uv.x < 0.0 || previous_uv.x > 1.0 || previous_uv.y < 0.0 || previous_uv.y > 1.0) {
+        imageStore(gi_resolved, pixel, vec4(current, out_depth)); // the history for this pixel is off screen
+        return;
+    }
+
+    if (glossy) {
+        // Disocclusion for a REFLECTION: the history has to be the same point of the scene. A stored depth
+        // that is not positive means the previous frame's reflection found nothing at this location, which
+        // is not a value to average with.
+        const float previous_hit_depth = texture(gi_history, previous_uv).a;
+        if (previous_hit_depth <= 0.0 || abs(previous_hit_depth - hit.z) > 0.05 * hit.z) {
+            imageStore(gi_resolved, pixel, vec4(current, out_depth));
+            return;
+        }
+    } else {
+        // Disocclusion: the depth the history would come from has to agree with this pixel's, or the
+        // previous frame's surface there was a different one and its GI has nothing to do with this one.
+        // The tolerance is relative because the same absolute depth error means far less at 5 units than
+        // at 50 - and a relative test needs a view distance, hence the linearization.
+        const float view_here = view_depth(depth_here);
+        const float depth_previous = texture(depth, previous_uv).r;
+        if (depth_previous >= 1.0 || abs(view_depth(depth_previous) - view_here) > 0.05 * view_here) {
+            imageStore(gi_resolved, pixel, vec4(current, out_depth));
+            return;
+        }
+    }
+
+    // Neighbourhood clamp over the RAW trace: wide, because the trace is noisy, which is the point -
+    // a tight box would cap how much history this pixel can average (see the file docs).
+    vec3 box_min = current;
+    vec3 box_max = current;
+    const vec2 gi_texel = 1.0 / vec2(gi_extent);
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            const vec3 sample_value = texture(gi_trace, uv + vec2(float(x), float(y)) * gi_texel).rgb;
+            box_min = min(box_min, sample_value);
+            box_max = max(box_max, sample_value);
+        }
+    }
+    const vec3 history = clamp(texture(gi_history, previous_uv).rgb, box_min, box_max);
+
+    float weight = mix(pc.blend_static, pc.blend_min, speed);
+
+    // THE REFLECTION'S OWN ACCUMULATION POLICY, and it binds in mode 1 ONLY. Now that the reflection has an
+    // accumulation of its own, the cap can sit where it belongs and the diffuse signal - which IS reprojected
+    // correctly by the surface's motion, and has no reason to keep only two frames of history - is free of
+    // it. Before this split the cap sat on the shared resolve, where it measurably shortened the DIFFUSE
+    // signal on smooth pixels too (docs/gi_hit_shading.md's L2.3 table: introducing it moved the lobe-off
+    // arms from 0.6131 to 0.5742), and moving it is half of what this step is for.
+    //
+    // The policy is Lumen's (MaxFramesAccumulated = lerp(2, Max, saturate(Roughness / 0.05)),
+    // LumenReflectionDenoiserTemporal.usf:413; docs/reference/lumen_reflection_denoiser.md's mechanism 2): a
+    // mirror gets about two frames and the clamp stops binding as roughness rises, because a sharp reflection
+    // cannot be reconstructed from a history that has moved. The existing still-pixel weight IS the frame
+    // count (w = 1 - 1/N for N frames of history at 1/N each), so the cap needs no knob of its own: convert
+    // the weight to a count, interpolate the count by roughness, convert back.
+    if (glossy) {
+        const float SMOOTH_FRAMES = 2.0;   // UE's floor: a mirror cannot use more than a couple of frames
+        const float ROUGHNESS_KNEE = 0.05; // UE's threshold, above which the cap stops binding
+        const float roughness = texture(gbuffer_normal, uv).a;
+        if (roughness < ROUGHNESS_KNEE) {
+            // The branch is not an optimisation, it is what makes the cap EXACTLY the identity above the
+            // knee: the count conversion returns `pc.blend_static` only to within an ulp, and rgba16f does
+            // not always absorb that ulp - the unguarded form moved ONE pixel of 1036800 by one 8-bit step
+            // on Sponza, whose roughness channel averages 217/255. (Measured with scripts/measure/diff.py,
+            // which reports that as "0 pixels differing" and is wrong: the decoded arrays differ in one blue
+            // texel. Its docstring says so now.)
+            const float frames_uncapped = 1.0 / max(1.0 - pc.blend_static, 1e-4);
+            const float max_frames = mix(SMOOTH_FRAMES, frames_uncapped, roughness / ROUGHNESS_KNEE);
+            weight = min(weight, 1.0 - 1.0 / max_frames);
+        }
+    }
+
+    imageStore(gi_resolved, pixel, vec4(mix(current, history, weight), out_depth));
+}

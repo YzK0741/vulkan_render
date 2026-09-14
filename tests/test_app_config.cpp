@@ -22,7 +22,29 @@ namespace {
         CHECK(settings.render.ssao_radius > 1.49f && settings.render.ssao_radius < 1.51f);
         CHECK(settings.render.ssao_intensity > 0.49f && settings.render.ssao_intensity < 0.51f);
         CHECK(settings.render.ssao_samples == 4);
-        CHECK(settings.render.unlit); // fixture: the flat render mode
+        CHECK(settings.render.ssgi); // fixture turns screen-space GI on
+        CHECK(settings.render.ssgi_intensity > 1.24f && settings.render.ssgi_intensity < 1.26f);
+        CHECK(settings.render.ssgi_radius > 0.24f && settings.render.ssgi_radius < 0.26f);
+        CHECK(settings.render.ssgi_rays == 4);
+        CHECK(settings.render.ssgi_steps == 10);
+        CHECK(settings.render.ssgi_spatial_sigma > 3.49f && settings.render.ssgi_spatial_sigma < 3.51f);
+        CHECK(!settings.render.ssgi_upsample);                                                   // fixture: the bilinear fetch (the measurement setting)
+        CHECK(settings.render.rt_shadows);                                                       // fixture: the ray-traced sun shadows
+        CHECK(!settings.render.rt_mask_bake);                                                    // fixture: the bake off (the A/B)
+        CHECK(settings.render.rt_skin_bake);                                                     // fixture: the per-frame skin refit on
+        CHECK(settings.render.animation_time > 0.74f && settings.render.animation_time < 0.76f); // fixture: a pinned pose
+        CHECK(settings.render.ssgi_ray_tracing);                                                 // fixture: traced GI rays
+        CHECK(settings.render.ssgi_bounce > 0.59f && settings.render.ssgi_bounce < 0.61f);       // fixture: multi-bounce on
+        CHECK(settings.render.ssgi_probes);                                                      // fixture: the world-space probe cache
+        CHECK(settings.render.ssgi_probe_rate > 0.14f && settings.render.ssgi_probe_rate < 0.16f);
+        CHECK(settings.render.ssgi_probe_rounds == 3);
+        CHECK(settings.render.ssgi_probe_gain > 0.49f && settings.render.ssgi_probe_gain < 0.51f);
+        CHECK(settings.render.ssgi_hit_shading); // fixture: hits shaded from geometry
+        CHECK(settings.render.ssgi_specular);    // fixture: the glossy lobe traced
+        CHECK(settings.render.ssgi_specular_rays == 4);
+        CHECK(settings.render.ssgi_specular_radius > 0.74f && settings.render.ssgi_specular_radius < 0.76f);
+        CHECK(settings.render.furnace); // fixture: the analytic verification mode
+        CHECK(settings.render.unlit);   // fixture: the flat render mode
         CHECK(settings.render.fxaa);
         CHECK(!settings.render.gpu_timings);
         CHECK(settings.render.gbuffer_debug);
@@ -51,6 +73,16 @@ namespace {
         CHECK(settings.lighting.demo_lights == 0);
         CHECK(settings.render.ssao); // default: screen-space AO runs
         CHECK(settings.render.ssao_samples == 8);
+        CHECK(settings.render.ssgi);                                                             // default: ON - the traced chain is the shipped configuration
+        CHECK(settings.render.ssgi_intensity > 0.99f && settings.render.ssgi_intensity < 1.01f); // ... at the value that means "use the traced estimate"
+        CHECK(settings.render.ssgi_rays == 2);
+        CHECK(settings.render.ssgi_steps == 6);
+        CHECK(settings.render.ssgi_spatial_sigma > 1.99f && settings.render.ssgi_spatial_sigma < 2.01f);
+        CHECK(settings.render.ssgi_upsample);           // default: the joint-bilateral upsample
+        CHECK(!settings.render.rt_shadows);             // default: the cascaded shadow maps, not traced rays
+        CHECK(!settings.render.rt_mask_bake);           // default: OFF - the per-triangle rule measured worse than the raster path
+        CHECK(!settings.render.rt_skin_bake);           // default: OFF - the bind-pose shadow is what the L2.2b baseline measures
+        CHECK(settings.render.animation_time < 0.0f);   // default: animations play (no pose pinned)
         CHECK(settings.render.shadow_map_size == 2048); // default: 2048^2 per cascade layer
         CHECK(settings.gui.show);
     }
@@ -70,6 +102,9 @@ namespace {
         CHECK(settings.render.ssao);
         CHECK(settings.render.ssao_samples == 8);
         CHECK(!settings.render.taa);
+        CHECK(settings.render.ssgi_specular);           // the example ships the glossy lobe ON (L2.3 closed its blocker)
+        CHECK(settings.render.ssgi_specular_rays == 1); // ... at the one ray the feature is defined by
+        CHECK(settings.render.ssgi_specular_radius > 0.49f && settings.render.ssgi_specular_radius < 0.51f);
         CHECK(settings.lighting.demo_lights == 0);
         CHECK(settings.lighting.env_size == 256);
         CHECK(settings.gui.show);
@@ -104,19 +139,24 @@ namespace {
         CHECK(settings.render.window_width == 1080);
         CHECK(settings.render.window_height == 960);
         CHECK(settings.render.window_title == "vulkan_render");
-        CHECK(!settings.render.vsync); // generator default: Mailbox (uncapped)
-        CHECK(settings.render.max_fps == 240);
+        CHECK(!settings.render.vsync);       // generator default: Mailbox (uncapped)
+        CHECK(settings.render.max_fps == 0); // generator default: 0 = uncapped, and the compiled default too
+        CHECK(settings.render.camera_fit == "exterior");
         CHECK(!settings.render.unlit);
         // [render] shadow mapping
         CHECK(settings.render.shadow);
         CHECK(settings.render.shadow_cascades == 3);
         CHECK(settings.render.shadow_map_size == 2048);
         CHECK(settings.render.shadow_cascade_blend > 0.09f && settings.render.shadow_cascade_blend < 0.11f);
-        // [render] shading + post-processing: the eleven keys the generator used to omit
-        CHECK(settings.render.taa);
+        // [render] shading + post-processing: the eleven keys the generator used to omit. TWO OF THESE
+        // ARE BOOLEANS WHOSE GENERATOR DEFAULT IS false, which is the compiled default as well - so
+        // `CHECK(!taa)` proves the key is ACCEPTED, not that the parser read it (a parser that ignored
+        // `taa` altogether would read false too). `config_full.toml` is the fixture that proves the
+        // read-back, with every one of these keys at a non-default value.
+        CHECK(!settings.render.taa);
         CHECK(settings.render.taa_blend_static > 0.89f && settings.render.taa_blend_static < 0.91f);
         CHECK(settings.render.taa_blend_min > 0.49f && settings.render.taa_blend_min < 0.51f);
-        CHECK(settings.render.fxaa);
+        CHECK(!settings.render.fxaa);
         CHECK(!settings.render.gbuffer_debug);
         CHECK(settings.render.gbuffer_channel == 1);
         CHECK(settings.render.gpu_timings);
@@ -126,6 +166,28 @@ namespace {
         CHECK(settings.render.ssao_radius > 0.49f && settings.render.ssao_radius < 0.51f);
         CHECK(settings.render.ssao_intensity > 0.99f && settings.render.ssao_intensity < 1.01f);
         CHECK(settings.render.ssao_samples == 8);
+        // [render] screen-space GI: the generator writes these seven, so the fixture has to carry them
+        CHECK(settings.render.ssgi);
+        CHECK(settings.render.ssgi_intensity > 0.99f && settings.render.ssgi_intensity < 1.01f);
+        CHECK(settings.render.ssgi_rays == 2);
+        CHECK(settings.render.ssgi_spatial_sigma > 1.99f && settings.render.ssgi_spatial_sigma < 2.01f);
+        CHECK(settings.render.ssgi_upsample);
+        // [render] ray tracing: written by the generator like every other switch, so it round-trips
+        CHECK(!settings.render.rt_shadows);
+        CHECK(!settings.render.rt_mask_bake);                                               // default: the mask bake is off (see the generated-defaults fixture)
+        CHECK(!settings.render.rt_skin_bake);                                               // default: the per-frame skin refit is off (same fixture)
+        CHECK(settings.render.animation_time < 0.0f);                                       // default: -1, i.e. play (the generator writes it out)
+        CHECK(settings.render.ssgi_ray_tracing);                                            // default: traced where the device allows it, marched otherwise
+        CHECK(settings.render.ssgi_bounce > -0.01f && settings.render.ssgi_bounce < 0.01f); // default: single bounce
+        CHECK(!settings.render.ssgi_probes);                                                // default: the screen-space chain alone
+        CHECK(settings.render.ssgi_probe_rate > 0.07f && settings.render.ssgi_probe_rate < 0.09f);
+        CHECK(settings.render.ssgi_probe_rounds == 2);
+        CHECK(settings.render.ssgi_probe_gain > 0.99f && settings.render.ssgi_probe_gain < 1.01f);
+        CHECK(settings.render.ssgi_hit_shading);                                                             // default: hits are shaded from their own geometry (the shipped configuration)
+        CHECK(settings.render.ssgi_specular);                                                                // default: a glossy ray replaces the environment's specular
+        CHECK(settings.render.ssgi_specular_rays == 1);                                                      // default: one glossy ray per pixel
+        CHECK(settings.render.ssgi_specular_radius > 0.49f && settings.render.ssgi_specular_radius < 0.51f); // default: the reach's measured knee
+        CHECK(!settings.render.furnace);                                                                     // default: a normal frame, not the verification mode
         // [render] validation
         CHECK(settings.render.validation_layers);
         // [gui]

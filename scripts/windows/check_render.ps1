@@ -23,6 +23,11 @@
 # Check mode runs every scenario TWICE and requires the two runs to agree before comparing against the
 # reference, so "flaky" is reported as flaky instead of as a regression.
 #
+#  3. WHICH BUILD IT RUNS: the Release build, and only the Release build. Pointed at a Debug or an
+#     ASan+UBSan build, two runs of one binary DIFFER - measured on `sponza_gi` AND on `deferred_ssao_off`,
+#     a scenario that runs none of the GI chain - so the flakiness is a property of those builds and not of
+#     any pass. The references are Release captures, and "0 changed" is only meaningful against them.
+#
 # Usage:
 #   pwsh -File scripts/windows/check_render.ps1                 # compare against the references
 #   pwsh -File scripts/windows/check_render.ps1 -Update         # accept the current output as reference
@@ -51,6 +56,15 @@ if (-not $BuildDir) { $BuildDir = Join-Path $repo "build-release-clang64" }
 $exe = Join-Path $BuildDir "vulkan_render.exe"
 if (-not (Test-Path $exe)) { Write-Error "no executable at $exe - build first (-BuildDir to point elsewhere)"; exit 1 }
 
+# CANONICALIZE THE BUILD DIR, and this is a measured defect rather than tidiness: the scenario config carries
+# `screenshot_dir = <BuildDir>\render-check` and the app is then launched with that directory as its WORKING
+# directory, so a RELATIVE -BuildDir writes a relative path into the config and the two bases no longer agree
+# about where the screenshot lands. The symptom is a FALSE FLAKY: with `-BuildDir build-release-clang64`,
+# `default_gi` reported 1D72F82B946F0338 against 54B854F69AEAA620, neither of them the reference, while the
+# same binary with an absolute -BuildDir returned the reference BF180E98ADB29E7E twice. Resolving here makes
+# both spellings mean the same run.
+$BuildDir = (Resolve-Path $BuildDir).Path
+
 $baseDir = if ($env:VR_RENDER_BASELINE_DIR) { $env:VR_RENDER_BASELINE_DIR } else { Join-Path $env:LOCALAPPDATA "vulkan_render\baseline" }
 $workDir = Join-Path $BuildDir "render-check"
 
@@ -62,16 +76,35 @@ $workDir = Join-Path $BuildDir "render-check"
 # shadow-cascade count and the transparent pass, because those are the paths whose wiring has broken.
 # ---------------------------------------------------------------------------------------------
 $scenarios = @(
-    @{ name = "deferred";          desc = "deferred G-buffer + lighting, no AA stage";  extra = @{} }
-    @{ name = "deferred_taa_fxaa"; desc = "deferred + TAA + FXAA (the AA path)";        extra = @{ taa = "true"; fxaa = "true" } }
-    @{ name = "deferred_ssao_off"; desc = "deferred with SSAO disabled";               extra = @{ ssao = "false" } }
-    @{ name = "shadow_single";     desc = "one cascade, i.e. the historic shadow path"; extra = @{ shadow_cascades = "1" } }
+    # GI IS ON BY DEFAULT NOW, and every scenario below predates that. Each one that is not ABOUT global
+    # illumination therefore pins `ssgi = "false"`, so its reference frame stays exactly what it has
+    # always been: a reference is a claim about the path the scenario names, and letting the GI chain
+    # into the deferred / shadow / transparent frames would invalidate all of them at once for a reason
+    # none of them is about. Where the SHIPPED default is checked is the `default_gi` scenario, which is
+    # `deferred`'s twin - same model, same camera, same frame count, one key apart.
+    @{ name = "deferred";          desc = "deferred G-buffer + lighting, no AA stage";  extra = @{ ssgi = "false" } }
+    @{ name = "deferred_taa_fxaa"; desc = "deferred + TAA + FXAA (the AA path)";        extra = @{ taa = "true"; fxaa = "true"; ssgi = "false" } }
+    @{ name = "deferred_ssao_off"; desc = "deferred with SSAO disabled";               extra = @{ ssao = "false"; ssgi = "false" } }
+    @{ name = "shadow_single";     desc = "one cascade, i.e. the historic shadow path"; extra = @{ shadow_cascades = "1"; ssgi = "false" } }
+    # `unlit` is deliberately NOT given the ssgi pin, and that asymmetry is a test: `runtime::ssgi_active()`
+    # excludes the flat render mode, because that mode's lighting stage returns the stored albedo - so the
+    # image the tracer would average is not radiance and the GI it would add is a product of two albedos
+    # rather than a transport term. With `ssgi` now defaulting to true this became reachable, so the
+    # scenario's UNCHANGED reference is what verifies the exclusion. If someone removes that gate, this
+    # frame is where it shows up.
     @{ name = "unlit";             desc = "flat base colour, no shading";              extra = @{ unlit = "true" } }
+    # THE SHIPPED CONFIGURATION: not one [render] key of its own, so this frame is what a stock
+    # `config.toml` renders - traced GI, shaded hits, SSAO, IBL, the cascaded shadows. It is here because
+    # the default flip needs a reference of its own: until this existed, every scenario either pinned GI
+    # off or spelled out the traced keys, so nothing rendered the configuration a user actually gets, and
+    # "the default is unreachable" or "the default changed" would both have passed unnoticed. `deferred`
+    # is its A/B (GI off, everything else equal), which makes "what does GI do to this frame" one number.
+    @{ name = "default_gi";        desc = "the compiled defaults: traced GI + hit shading, nothing overridden"; extra = @{} }
     # The one scenario that uses a different model, and it has to: alphaMode BLEND geometry is drawn
     # by a pass of its own, so no model without a BLEND material can exercise it - DamagedHelmet has
     # only OPAQUE/MASK. AlphaBlendModeTest carries one of each alphaMode (OPAQUE / MASK at two cutoffs
     # / BLEND) plus a decal, so this also covers the G-buffer's MASK discard path.
-    @{ name = "transparent_blend"; desc = "deferred + an alphaMode BLEND material";    extra = @{}
+    @{ name = "transparent_blend"; desc = "deferred + an alphaMode BLEND material";    extra = @{ ssgi = "false" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\AlphaBlendModeTest\glTF\AlphaBlendModeTest.gltf"
        camera = "0,5,12.4,0,-4.511,0" }
     # The scene the global-illumination work is measured against, and the only asset here whose
@@ -83,9 +116,77 @@ $scenarios = @(
     # and amplifies a small difference into a different trail, which is the one kind of noise a GI
     # comparison cannot have (measured the hard way while adding object motion vectors). Sponza is a
     # heavy load - 69 textures, ~150k triangles - so this is the slow scenario.
-    @{ name = "sponza";            desc = "Sponza interior, the GI reference scene";    extra = @{ taa = "false" }
+    @{ name = "sponza";            desc = "Sponza interior, the GI reference scene";    extra = @{ taa = "false"; ssgi = "false" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\Sponza\glTF\Sponza.gltf"
        camera = "90,0,6.41,0,-18.548,0" }
+    # THE GI CHAIN WITH ITS PROBE CACHE, which nothing above covers: `default_gi` renders the shipped
+    # chain, but with `ssgi_probes` at its default of false, so the cache - ray-traced cells, SH-2 storage,
+    # the six-neighbour gated blend - is exercised HERE and nowhere else. This one turns
+    # on the traced path, its temporal and spatial denoisers, the composite's joint-bilateral
+    # upsample, and the world-space probe cache that answers the hits the screen cannot. It is here because
+    # that whole subsystem once had NO regression coverage: the directional-probe change touched eight 3D
+    # images, four bindings in the G-buffer set and a nine-binding set of its own, and nothing in this file
+    # would have noticed a break in any of it. Same scene and camera as `sponza`, so the two are
+    # comparable; taa off for the same reason the other GI comparison keeps it off.
+    # `ssgi` / `ssgi_intensity` / `ssgi_ray_tracing` are no longer listed: they are the compiled defaults
+    # now, so writing them here would be a scenario claiming a difference it does not have - and the
+    # duplicate-key discipline in Write-ScenarioConfig is the wrong place to enforce that (it only knows
+    # the harness's own pins). `ssgi_hit_shading = false` IS pinned, and for reference stability rather
+    # than for the path: this frame was captured with the old default (off), and the traced chain's own
+    # wiring is what the scenario is about - re-seeding it with hit shading on would fold two changes into
+    # one reference. The shaded-hit configuration is `default_gi`'s job, and the shaded path itself has its
+    # own measurement record in docs/gi_hit_shading.md.
+    @{ name = "sponza_gi";         desc = "Sponza interior + traced GI chain + probe cache";
+       extra = @{ taa = "false"; ssgi_probes = "true"; ssgi_hit_shading = "false" }
+       model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\Sponza\glTF\Sponza.gltf"
+       camera = "90,0,6.41,0,-18.548,0" }
+    # The MARCHED GI path, which `sponza_gi` above does NOT cover: it leaves ssgi_ray_tracing at its
+    # default (true), so without this scenario the depth-march oracle
+    # and the marched chain's own semantics would be exercised by nothing. Those semantics DIFFER from the
+    # traced path's in a way a regression would silently change: a marched ray dies at the screen edge, so
+    # the environment probe stays the off-screen half and the result is ADDED to it, while the traced path
+    # falls back to the probe inside the ray and REPLACES the lighting stage's ambient instead. The pair
+    # that says so is these two references against `sponza` (GI off, same scene, camera and 40 frames):
+    # `sponza_march` is 1.42 of mean green BRIGHTER and moves 43% of the pixels, `sponza_gi` is 0.47
+    # DARKER and moves 83% - and the traced path's sign is the feature, because its hits are occluded.
+    # (Both numbers were re-measured when the L2.4 default flip landed; the values this comment used to
+    # carry, +2.30 and -5.74, were stale - the arms they came from are not the arms that exist now.)
+    # It is also the path a device without ray queries gets. The intensity is the one thing here that is
+    # NOT the default and must not be: the marched path is an ADDITION to the probe, so it needs that path's own reconciling value
+    # (0.7) rather than the traced path's 1.0 - which is exactly why the two keys have to be read
+    # together (see the [render] ssgi note in config.example.toml).
+    @{ name = "sponza_march";      desc = "Sponza interior + MARCHED GI (no ray queries needed)";
+       extra = @{ taa = "false"; ssgi_ray_tracing = "false"; ssgi_intensity = "0.7" }
+       model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\Sponza\glTF\Sponza.gltf"
+       camera = "90,0,6.41,0,-18.548,0" }
+    # The GLOSSY lobe (`[render] ssgi_specular`), which no other scenario can exercise: Sponza is roughened
+    # stone everywhere (its roughness channel reads 217/255 on average), so replacing the environment's
+    # specular with a traced reflection moves its interior by ~2% and shows nothing recognisable. The
+    # metal/roughness sweep is the asset this feature is ABOUT - a grid from smooth metal (a mirror) to
+    # rough dielectric - and the measurement's shape is a material response, not a scene average: the effect
+    # is +10.6 on the smooth-metal spheres, +7.9 on the rough-metal ones, +1.1 on smooth dielectric and
+    # +0.08 on rough dielectric (see docs/gi_hit_shading.md's L2.3 section). The traced path and hit
+    # shading are the compiled defaults now, so this scenario only spells out what it ADDS to them: the
+    # lobe itself, its single ray, and the diffuse reach the compact sweep wants (`ssgi_radius = 0.5` - the
+    # shared radius is a fraction of the SCENE radius, 6.99 here, so the default 0.12 would reach 0.84 of
+    # this model). The probe cache is off by default, i.e. the scenario isolates the lobe.
+    # `camera = ""` is deliberate: this scenario lets the scene frame itself (see Invoke-Scenario).
+    @{ name = "metal_rough_glossy"; desc = "the material sweep + traced GI + the glossy lobe";
+       extra = @{ taa = "false"; ssgi_radius = "0.5"; camera_fit = "'exterior'" }
+       model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\MetalRoughSpheres\glTF\MetalRoughSpheres.gltf"
+       camera = "" }
+    # THE ONLY SCENARIO WHOSE CAMERA MOVES, and it is here because everything else was still: with a fixed
+    # camera every reprojection in the renderer is exercised in the trivial case, so TAA's history, the GI
+    # temporal accumulation, the reflection's history and the motion-vector target could all be broken
+    # without the harness noticing. The sweep is 0.5 degrees of yaw per frame, which over the scenario's 40
+    # frames is a 20-degree orbit - enough that a history fetched from the wrong place shows up, and slow
+    # enough that the motion-vector path is in its normal range rather than its clamp. Same scene as
+    # `metal_rough_glossy` on purpose, so the moving and still frames of one scene can be compared.
+    @{ name = "glossy_motion"; desc = "the material sweep + traced GI + glossy lobe, CAMERA MOVING";
+       extra = @{ taa = "false"; ssgi_radius = "0.5"; camera_fit = "'exterior'" }
+       model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\MetalRoughSpheres\glTF\MetalRoughSpheres.gltf"
+       camera = ""
+       sweep = "0.5" }
 )
 
 if ($List) {
@@ -115,8 +216,13 @@ function Write-ScenarioConfig {
         "validation_layers" = "true"
     }
     $scenarioModel = if ($Scenario.ContainsKey('model')) { $Scenario.model } else { $Model }
+    # A TOML BASIC string (double quotes) with the backslashes escaped, which is the form make_config.py
+    # writes and the form the escape belongs to. The single-quoted literal this used to write kept the
+    # doubled backslashes as two literal characters, so every scenario's config said `C:\\Users\\...` and
+    # the path only resolved because Win32 collapses a repeated separator (a UNC path would not have).
+    $modelLine = "model = `"$($scenarioModel.Replace('\', '\\').Replace('"', '\"'))`""
     $lines = @(
-        "model = '$($scenarioModel.Replace('\','\\'))'",
+        $modelLine,
         "grid_side = 0",
         "",
         "[paths]",
@@ -155,8 +261,22 @@ function Invoke-Scenario {
 
     # NOT $args: that is PowerShell's automatic argument array, and assigning to it is the kind of
     # thing that works until it does not.
+    #
+    # An EMPTY scenario camera means "let the scene frame itself" (camera_fit), and the flag is then
+    # omitted rather than passed empty: `--capture-camera=` with no numbers is not a valid pose, and one
+    # scenario needs the scene's own framing - the metal/roughness sweep, whose grid a pinned pose would
+    # have to be reverse-engineered for. camera_fit is deterministic for a static scene (the metadata
+    # rule, not the clock), which is the same reason a scenario may pin one.
     $scenarioCamera = if ($Scenario.ContainsKey('camera')) { $Scenario.camera } else { $Camera }
-    $launch = @("--config", $cfg, "--capture-frames", "$Frames", "--capture-camera=$scenarioCamera")
+    $launch = @("--config", $cfg, "--capture-frames", "$Frames")
+    if ($scenarioCamera) { $launch += "--capture-camera=$scenarioCamera" }
+    # A scenario may SWEEP the camera (`sweep` = degrees of yaw per presented frame). Every other scenario
+    # holds it still, and a still camera exercises every reprojection path in the renderer - TAA's history,
+    # the GI temporal accumulation, the reflection's history, the velocity target itself - only in the
+    # trivial case where a motion vector is zero and the history comes from the pixel it left. A break in
+    # any of them passed this harness. The sweep is frame-indexed rather than clock-driven, so a sweeping
+    # scenario is as reproducible as a still one (the two-run determinism check below is what proves it).
+    if ($Scenario.ContainsKey('sweep')) { $launch += "--capture-sweep=$($Scenario.sweep)" }
     $p = Start-Process -FilePath $exe -ArgumentList $launch -WorkingDirectory $workDir -PassThru -WindowStyle Hidden
     # the capture exits on its own; the timeout is a safety net, not the expected path
     if (-not $p.WaitForExit(180000)) { $p.Kill(); return @{ ok = $false; why = "timed out" } }
@@ -175,9 +295,17 @@ function Invoke-Scenario {
 
     # the run has to have been VALIDATION clean: a difference in validation output is a finding on its
     # own, and a scenario that silently stopped being validation-clean should not be accepted as a
-    # baseline either
+    # baseline either.
+    #
+    # [WARNING] is part of the pattern DELIBERATELY, and it was added after this hole hid a real defect:
+    # the descriptor pool was missing the storage-image and acceleration-structure types its own set
+    # layouts declared, so the layer named them on every single run - and every run was reported clean,
+    # because the pattern only looked for errors and VUIDs. A warning from the layer is the layer saying
+    # the application did something the specification does not allow; a driver that enforces it returns
+    # VK_ERROR_OUT_OF_POOL_MEMORY instead of a frame. If a benign warning ever needs to be tolerated, it
+    # belongs here as an explicit exception with its reason, not as a silent gap.
     if (Test-Path $log) {
-        $bad = Select-String -Path $log -Pattern "VUID-|Validation Error|\[ERROR\]|panic|recorded out of order"
+        $bad = Select-String -Path $log -Pattern "VUID-|Validation Error|\[ERROR\]|\[WARNING\]|panic|recorded out of order"
         if ($bad) { return @{ ok = $false; why = "validation/log problems: $($bad[0].Line.Trim())" } }
     }
     return @{ ok = $true; path = $shot.FullName; hash = (Get-FileHash $shot.FullName -Algorithm SHA256).Hash }

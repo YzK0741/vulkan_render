@@ -254,6 +254,22 @@ namespace vulkan {
             creation_info.extensions.push_back(fifo_latest_ready_extension);
         }
 
+        // Ray tracing is optional and opt-in per feature, not per build: the extensions are enabled
+        // when the device has them, and the two feature structs are already in the pNext chain from
+        // the capabilities query - query() leaves them out when either feature is missing, so
+        // "enabled" and "available" cannot disagree. A device without them runs the raster paths
+        // exactly as before, with ray_query_available false and the RT features refusing to turn on.
+        constexpr std::array<char const*, 3> ray_tracing_extensions = {
+            VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+            VK_KHR_RAY_QUERY_EXTENSION_NAME,
+            VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME, // required by the AS extension itself
+        };
+        if (capabilities.ray_query_available) {
+            for (char const* extension : ray_tracing_extensions) {
+                creation_info.extensions.push_back(extension);
+            }
+        }
+
         if (!check_device_extension_support(physical_device, creation_info.extensions)) {
             utility::panic("Required device extensions not supported");
         }
@@ -268,6 +284,11 @@ namespace vulkan {
         this->present_queue = present_queue;
         this->graphics_family_index = graphics_family_index;
         this->present_family_index = present_family_index;
+
+        // What the device ended up with, for the passes that need it (see the members: the ray-traced
+        // paths are skipped rather than broken on a device without them).
+        this->ray_query_available = capabilities.ray_query_available;
+        this->acceleration_structure_properties = capabilities.acceleration_structure_properties;
 
         utility::log("device and queue init succeeded");
 
@@ -608,6 +629,221 @@ namespace vulkan {
             taa_history_image_views[i] = create_image_view(taa_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
         }
 
+        // The GI image (half resolution, one per swapchain image): STORAGE for the tracer's
+        // imageStore and SAMPLED for the composite's fetch. No TRANSFER_* - nothing copies it.
+        uint32_t const gi_width = std::max(1u, swap_chain_extent.width / 2u);
+        uint32_t const gi_height = std::max(1u, swap_chain_extent.height / 2u);
+        gi_images.resize(swap_chain_image_views.size());
+        gi_image_memories.resize(swap_chain_image_views.size());
+        gi_image_views.resize(swap_chain_image_views.size());
+        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_images[i],
+                gi_image_memories[i]);
+
+            gi_image_views[i] = create_image_view(gi_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+        }
+
+        // The denoiser's resolve target (same use as the trace target: STORAGE for the compute pass
+        // that writes it, SAMPLED for the composite) and the history it accumulates into (written by
+        // a copy and read next frame, so TRANSFER_DST | SAMPLED and nothing else).
+        gi_resolve_images.resize(swap_chain_image_views.size());
+        gi_resolve_image_memories.resize(swap_chain_image_views.size());
+        gi_resolve_image_views.resize(swap_chain_image_views.size());
+        gi_history_images.resize(swap_chain_image_views.size());
+        gi_history_image_memories.resize(swap_chain_image_views.size());
+        gi_history_image_views.resize(swap_chain_image_views.size());
+        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_resolve_images[i],
+                gi_resolve_image_memories[i]);
+            gi_resolve_image_views[i] = create_image_view(gi_resolve_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_history_images[i],
+                gi_history_image_memories[i]);
+            gi_history_image_views[i] = create_image_view(gi_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+        }
+
+        // The spatial filter's output: written as a storage image like the trace target, and sampled
+        // by the composite. No TRANSFER_SRC - nothing copies out of it. The history is copied from the
+        // temporal resolve instead, which keeps the spatial filter out of the accumulation path: its
+        // result is a fresh function of this frame's accumulated image, never of last frame's filtered
+        // one, so filtering cannot compound over frames.
+        gi_spatial_images.resize(swap_chain_image_views.size());
+        gi_spatial_image_memories.resize(swap_chain_image_views.size());
+        gi_spatial_image_views.resize(swap_chain_image_views.size());
+        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_spatial_images[i],
+                gi_spatial_image_memories[i]);
+            gi_spatial_image_views[i] = create_image_view(gi_spatial_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+        }
+
+        // The glossy lobe's own two outputs: same extent, same format and the same usage pair as the trace
+        // target above (a compute pass writes each as a storage image, the resolve samples each back, and
+        // nothing copies out of either). They exist so that a reflection can be accumulated with a
+        // reprojection of its own instead of the diffuse signal's - see core.cppm's note beside these
+        // members and docs/gi_hit_shading.md's L2.3 motion section.
+        gi_spec_images.resize(swap_chain_image_views.size());
+        gi_spec_image_memories.resize(swap_chain_image_views.size());
+        gi_spec_image_views.resize(swap_chain_image_views.size());
+        gi_spec_reproject_images.resize(swap_chain_image_views.size());
+        gi_spec_reproject_image_memories.resize(swap_chain_image_views.size());
+        gi_spec_reproject_image_views.resize(swap_chain_image_views.size());
+        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_spec_images[i],
+                gi_spec_image_memories[i]);
+            gi_spec_image_views[i] = create_image_view(gi_spec_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_spec_reproject_images[i],
+                gi_spec_reproject_image_memories[i]);
+            gi_spec_reproject_image_views[i] = create_image_view(gi_spec_reproject_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+        }
+
+        // The reflection's own accumulation and its history: the same pair the diffuse signal has, with the
+        // same usages and for the same reasons (see core.cppm's note beside these members).
+        gi_spec_resolve_images.resize(swap_chain_image_views.size());
+        gi_spec_resolve_image_memories.resize(swap_chain_image_views.size());
+        gi_spec_resolve_image_views.resize(swap_chain_image_views.size());
+        gi_spec_history_images.resize(swap_chain_image_views.size());
+        gi_spec_history_image_memories.resize(swap_chain_image_views.size());
+        gi_spec_history_image_views.resize(swap_chain_image_views.size());
+        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_spec_resolve_images[i],
+                gi_spec_resolve_image_memories[i]);
+            gi_spec_resolve_image_views[i] = create_image_view(gi_spec_resolve_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_spec_history_images[i],
+                gi_spec_history_image_memories[i]);
+            gi_spec_history_image_views[i] = create_image_view(gi_spec_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+        }
+
+        // The world-space probe cache: EIGHT 3D images - four SH-2 coefficients per channel times the two
+        // sides of the ping-pong - one set of copies for the whole device rather than one per swapchain
+        // image (the grid is anchored to the world, so view independence is the point of it - see the
+        // member's comment). A 3D VIEW, because a sampler3D binding needs one: the same image looked at with
+        // a 2D view is a validation error the moment the tracer samples it.
+        gi_probe_images.assign(8, VK_NULL_HANDLE);
+        gi_probe_image_memories.assign(8, VK_NULL_HANDLE);
+        gi_probe_image_views.assign(8, VK_NULL_HANDLE);
+        for (size_t i = 0; i < gi_probe_images.size(); i++) {
+            create_target_image_3d(
+                gi_probe_grid_extent,
+                gi_probe_grid_extent,
+                gi_probe_grid_extent,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                gi_probe_images[i],
+                gi_probe_image_memories[i]);
+            gi_probe_image_views[i] = create_image_view(gi_probe_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device, VK_IMAGE_VIEW_TYPE_3D);
+        }
+
+        // The per-cell surface offset (one image: the ping-pong only applies to radiance, and this is
+        // geometry the injection OWNS rather than something propagation rewrites).
+        gi_probe_surface_images.assign(1, VK_NULL_HANDLE);
+        gi_probe_surface_image_memories.assign(1, VK_NULL_HANDLE);
+        gi_probe_surface_image_views.assign(1, VK_NULL_HANDLE);
+        create_target_image_3d(
+            gi_probe_grid_extent,
+            gi_probe_grid_extent,
+            gi_probe_grid_extent,
+            hdr_format,
+            VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            gi_probe_surface_images[0],
+            gi_probe_surface_image_memories[0]);
+        gi_probe_surface_image_views[0] = create_image_view(gi_probe_surface_images[0], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device, VK_IMAGE_VIEW_TYPE_3D);
+        // The furnace verification mode's constant environment (see the member comment): TRANSFER_DST because
+        // a clear is what gives it contents, SAMPLED because the IBL bindings will point at it.
+        furnace_cube_images.assign(1, VK_NULL_HANDLE);
+        furnace_cube_memories.assign(1, VK_NULL_HANDLE);
+        furnace_cube_views.assign(1, VK_NULL_HANDLE);
+        create_target_image_cube(
+            1,
+            hdr_format,
+            VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            furnace_cube_images[0],
+            furnace_cube_memories[0]);
+        furnace_cube_views[0] = create_image_view(furnace_cube_images[0], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device, VK_IMAGE_VIEW_TYPE_CUBE, 6);
+        // The ray-traced sun visibility: FULL resolution (one ray per screen pixel) and one per FRAME
+        // SLOT - see the member's comment for why the slot, not the swapchain image, is the right
+        // lifetime. R16F rather than RGBA16F: the pass writes a single visibility factor, and the
+        // deferred lighting stage multiplies the sun term by it. STORAGE for the compute pass that
+        // writes it, SAMPLED for the lighting stage that reads it.
+        rt_shadow_images.assign(vulkan::core::MAX_FRAMES_IN_FLIGHT, VK_NULL_HANDLE);
+        rt_shadow_image_memories.assign(vulkan::core::MAX_FRAMES_IN_FLIGHT, VK_NULL_HANDLE);
+        rt_shadow_image_views.assign(vulkan::core::MAX_FRAMES_IN_FLIGHT, VK_NULL_HANDLE);
+        for (uint32_t slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            create_target_image(
+                swap_chain_extent.width,
+                swap_chain_extent.height,
+                VK_FORMAT_R16_SFLOAT,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                rt_shadow_images[slot],
+                rt_shadow_image_memories[slot]);
+            rt_shadow_image_views[slot] = create_image_view(rt_shadow_images[slot], VK_FORMAT_R16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, device);
+        }
+
         gbuffer_depth_images.resize(swap_chain_image_views.size());
         gbuffer_depth_image_memories.resize(swap_chain_image_views.size());
         gbuffer_depth_image_views.resize(swap_chain_image_views.size());
@@ -744,6 +980,18 @@ namespace vulkan {
             destroy_images(velocity_images, velocity_image_memories, velocity_image_views);
             destroy_images(scene_color_images, scene_color_image_memories, scene_color_image_views);
             destroy_images(taa_history_images, taa_history_image_memories, taa_history_image_views);
+            destroy_images(gi_images, gi_image_memories, gi_image_views);
+            destroy_images(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
+            destroy_images(gi_history_images, gi_history_image_memories, gi_history_image_views);
+            destroy_images(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
+            destroy_images(gi_spec_images, gi_spec_image_memories, gi_spec_image_views);
+            destroy_images(gi_spec_reproject_images, gi_spec_reproject_image_memories, gi_spec_reproject_image_views);
+            destroy_images(gi_spec_resolve_images, gi_spec_resolve_image_memories, gi_spec_resolve_image_views);
+            destroy_images(gi_spec_history_images, gi_spec_history_image_memories, gi_spec_history_image_views);
+            destroy_images(gi_probe_images, gi_probe_image_memories, gi_probe_image_views);
+            destroy_images(gi_probe_surface_images, gi_probe_surface_image_memories, gi_probe_surface_image_views);
+            destroy_images(furnace_cube_images, furnace_cube_memories, furnace_cube_views);
+            destroy_images(rt_shadow_images, rt_shadow_image_memories, rt_shadow_image_views);
             for (auto const& level_views : bloom_image_views) {
                 for (auto const& view : level_views) {
                     vkDestroyImageView(device, view, nullptr);
@@ -825,6 +1073,99 @@ namespace vulkan {
         vkBindImageMemory(device, image, image_memory, 0);
     }
 
+    void core::create_target_image_3d(
+        uint32_t width,
+        uint32_t height,
+        uint32_t depth,
+        VkFormat format,
+        VkImageTiling tiling,
+        VkImageUsageFlags usage,
+        VkMemoryPropertyFlags properties,
+        VkImage& image,
+        VkDeviceMemory& image_memory) const noexcept {
+        VkImageCreateInfo image_info = {};
+        image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image_info.imageType = VK_IMAGE_TYPE_3D; // the only field that differs from the 2D path
+        image_info.extent.width = width;
+        image_info.extent.height = height;
+        image_info.extent.depth = depth;
+        image_info.mipLevels = 1;
+        image_info.arrayLayers = 1;
+        image_info.format = format;
+        image_info.tiling = tiling;
+        image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        image_info.usage = usage;
+        image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+        image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateImage(device, &image_info, nullptr, &image) != VK_SUCCESS) {
+            utility::panic("can't create 3D target image");
+        }
+
+        VkMemoryRequirements mem_requirements;
+        vkGetImageMemoryRequirements(device, image, &mem_requirements);
+
+        VkMemoryAllocateInfo alloc_info = {};
+        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc_info.allocationSize = mem_requirements.size;
+        alloc_info.memoryTypeIndex = find_memory_type(
+            mem_requirements.memoryTypeBits,
+            properties,
+            physical_device);
+
+        if (vkAllocateMemory(device, &alloc_info, nullptr, &image_memory) != VK_SUCCESS) {
+            utility::panic("can't allocate 3D target image memory");
+        }
+
+        vkBindImageMemory(device, image, image_memory, 0);
+    }
+
+    void core::create_target_image_cube(
+        uint32_t size,
+        VkFormat format,
+        VkImageTiling tiling,
+        VkImageUsageFlags usage,
+        VkMemoryPropertyFlags properties,
+        VkImage& image,
+        VkDeviceMemory& image_memory) const noexcept {
+        VkImageCreateInfo image_info = {};
+        image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image_info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT; // what makes a six-layer array a cube
+        image_info.imageType = VK_IMAGE_TYPE_2D;
+        image_info.extent.width = size;
+        image_info.extent.height = size;
+        image_info.extent.depth = 1;
+        image_info.mipLevels = 1;
+        image_info.arrayLayers = 6;
+        image_info.format = format;
+        image_info.tiling = tiling;
+        image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        image_info.usage = usage;
+        image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+        image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateImage(device, &image_info, nullptr, &image) != VK_SUCCESS) {
+            utility::panic("can't create cube target image");
+        }
+
+        VkMemoryRequirements mem_requirements;
+        vkGetImageMemoryRequirements(device, image, &mem_requirements);
+
+        VkMemoryAllocateInfo alloc_info = {};
+        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc_info.allocationSize = mem_requirements.size;
+        alloc_info.memoryTypeIndex = find_memory_type(
+            mem_requirements.memoryTypeBits,
+            properties,
+            physical_device);
+
+        if (vkAllocateMemory(device, &alloc_info, nullptr, &image_memory) != VK_SUCCESS) {
+            utility::panic("can't allocate cube target image memory");
+        }
+
+        vkBindImageMemory(device, image, image_memory, 0);
+    }
+
     void core::create_descriptor_pool() noexcept {
         std::vector<VkDescriptorPoolSize> pool_sizes;
         // Uniform buffers: one camera UBO + one light UBO binding per scene set
@@ -834,6 +1175,27 @@ namespace vulkan {
         pool_sizes.push_back({VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 * scene_texture_capacity});
         // Material table + instance transform storage buffers: two per scene set
         pool_sizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128});
+        // Storage images: the scene set's binding 15 (the storage view of the ray-traced visibility
+        // image binding 14 samples, written by shaders/rt_shadow.comp) and the G-buffer set's bindings 6
+        // and 8 (the raw GI trace a compute pass writes, and the filtered GI the composite reads - see
+        // the write_sets lambda in runtime.cpp). Acceleration structures: the scene set's binding 16, the
+        // top level structure every traced pass queries, declared only on a device with ray queries.
+        //
+        // BOTH types have to be declared HERE even though every one of those bindings is
+        // unconditionally written: a pool hands out only the types it was created with, and the
+        // validation layer names them on EVERY run - first "binding 15 was created with
+        // VK_DESCRIPTOR_TYPE_STORAGE_IMAGE but VkDescriptorPool ... was not created with any
+        // VkDescriptorPoolSize::type with VK_DESCRIPTOR_TYPE_STORAGE_IMAGE", then, once that one was
+        // satisfied, the same for binding 16 and VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR. It never
+        // failed here because the driver tolerates it, but the spec does not, and an implementation that
+        // returned VK_ERROR_OUT_OF_POOL_MEMORY for it would fail the ALLOCATION rather than the frame. It
+        // also went unnoticed because the render-check harness greps the log for VUID-/[ERROR] and not
+        // [WARNING]; that pattern includes [WARNING] now (see scripts/windows/check_render.ps1).
+        //
+        // Over-provisioned like the entries above rather than computed: maxSets bounds the real total,
+        // and running out is a hard failure rather than a frame that renders slightly wrong.
+        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 128});
+        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 128});
 
         VkDescriptorPoolCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -857,14 +1219,19 @@ namespace vulkan {
 
     void core::init_scene_layouts() noexcept {
         // ---- 1. Fixed flat descriptor set layout (see the convention docs in core.cppm) ----
-        std::array<VkDescriptorSetLayoutBinding, 14> bindings = {};
+        std::array<VkDescriptorSetLayoutBinding, 17> bindings = {};
         bindings[0] = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        bindings[1] = {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = scene_texture_capacity, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
-        bindings[2] = {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
-        bindings[3] = {.binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
-        bindings[4] = {.binding = 4, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
+        // 1, 2, 4 and 5 carry COMPUTE as well as FRAGMENT: the traced GI pass needs the bindless texture
+        // array, the prefiltered environment and the BRDF LUT (its IBL) and the material table (the
+        // material of the surface a ray hit) once it shades a hit itself instead of sampling the screen.
+        bindings[1] = {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = scene_texture_capacity, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+        bindings[2] = {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+        // COMPUTE as well as FRAGMENT: the traced GI pass samples the irradiance map directly (its off-screen
+        // fallback), and a binding a shader statically uses has to name that shader's stage here.
+        bindings[3] = {.binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+        bindings[4] = {.binding = 4, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
         // material table: per-material texture indices + factors (see material_record in vulkan/scene_tree/scene_tree.cppm)
-        bindings[5] = {.binding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
+        bindings[5] = {.binding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
         // per-instance world transforms for instanced draws (mat4 per instance, read in pbr.vert)
         bindings[6] = {.binding = 6, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
         // light UBO: directional sun (light-space view-proj + direction) + BRDF model ids +
@@ -875,8 +1242,12 @@ namespace vulkan {
         // footprint - the hardware does the comparison (shading.glsl averages a 3x3 grid of taps)
         bindings[8] = {.binding = 8, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
         // per-joint skin matrices (mat4 per joint; indices 0-3 are the identity block for
-        // unskinned draws; read in pbr.vert / shadow.vert, filled per frame by set_skin_matrices)
-        bindings[9] = {.binding = 9, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
+        // unskinned draws; read in pbr.vert / shadow.vert, filled per frame by set_skin_matrices).
+        // COMPUTE as well as VERTEX: the compute skinning pass (shaders/compute_skin.comp) reads the same
+        // table to deform the vertices the acceleration structure is refitted against - it declares this
+        // binding itself rather than including surface.glsl, but the binding and the layout are one and
+        // the same, because a shader can only use a binding from a stage its layout names.
+        bindings[9] = {.binding = 9, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
         // morph data (floats): per-morphable-primitive delta + weight blocks; written by the
         // caller through the runtime's morph scratch memory (set once + per frame for weights)
         bindings[10] = {.binding = 10, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
@@ -889,15 +1260,36 @@ namespace vulkan {
         // stage reads its own entry to hand the fragment stage a previous world position, which is
         // what gives a moving OBJECT a motion vector. Vertex-only - nothing else reads it.
         bindings[13] = {.binding = 13, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
+        // Ray-traced sun visibility (see shaders/rt_shadow.comp): 14 is the image the deferred lighting
+        // stage samples, 15 the SAME image as the storage view the compute pass writes, and 16 the top
+        // level structure the ray is traced against.
+        //
+        // 14/15 are unconditionally legal (a sampler and a storage image need no extension) and are
+        // always written: the images exist on every device, and a frame with ray-traced shadows off just
+        // leaves them in the layout the descriptors declare (see the off path in record_scene_tail) -
+        // wrapping the layout in "does this device have ray tracing" would put the branch in every
+        // consumer of the scene set to save two bindings.
+        //
+        // 16 is an ACCELERATION STRUCTURE binding, which requires the extension to be ENABLED: it is
+        // declared only when the device has it, because a layout that declares it is invalid otherwise.
+        // Nothing that does not trace rays declares the binding, so a shorter layout is invisible to
+        // them.
+        bindings[14] = {.binding = 14, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+        bindings[15] = {.binding = 15, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+        uint32_t binding_count = 16;
+        if (this->ray_query_available) {
+            bindings[16] = {.binding = 16, .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+            binding_count = 17;
+        }
 
-        std::array<VkDescriptorBindingFlags, 14> binding_flags = {};
+        std::array<VkDescriptorBindingFlags, 17> binding_flags = {};
         // texture array: only written entries are valid, appended before the render loop starts;
         // non-uniform indexing itself is a device feature, not a layout flag
         binding_flags[1] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
 
         VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info = {};
         flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-        flags_info.bindingCount = static_cast<uint32_t>(binding_flags.size());
+        flags_info.bindingCount = binding_count; // must match the layout: a device without ray tracing has no binding 16
         flags_info.pBindingFlags = binding_flags.data();
 
         VkDescriptorSetLayoutCreateInfo layout_info = {};
@@ -906,7 +1298,7 @@ namespace vulkan {
         // does not require the update-after-bind pool flag. The layout flag only means anything
         // together with the pool flag - a set layout created with UPDATE_AFTER_BIND_POOL has to be
         // allocated from a pool created with UPDATE_AFTER_BIND - and neither is needed here.
-        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
+        layout_info.bindingCount = binding_count;
         layout_info.pBindings = bindings.data();
         layout_info.pNext = &flags_info;
         if (vkCreateDescriptorSetLayout(this->device, &layout_info, nullptr, &this->scene_descriptor_set_layout) != VK_SUCCESS) {
@@ -1313,6 +1705,18 @@ namespace vulkan {
         destroy_target_set(velocity_images, velocity_image_memories, velocity_image_views);
         destroy_target_set(scene_color_images, scene_color_image_memories, scene_color_image_views);
         destroy_target_set(taa_history_images, taa_history_image_memories, taa_history_image_views);
+        destroy_target_set(gi_images, gi_image_memories, gi_image_views);
+        destroy_target_set(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
+        destroy_target_set(gi_history_images, gi_history_image_memories, gi_history_image_views);
+        destroy_target_set(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
+        destroy_target_set(gi_spec_images, gi_spec_image_memories, gi_spec_image_views);
+        destroy_target_set(gi_spec_reproject_images, gi_spec_reproject_image_memories, gi_spec_reproject_image_views);
+        destroy_target_set(gi_spec_resolve_images, gi_spec_resolve_image_memories, gi_spec_resolve_image_views);
+        destroy_target_set(gi_spec_history_images, gi_spec_history_image_memories, gi_spec_history_image_views);
+        destroy_target_set(gi_probe_images, gi_probe_image_memories, gi_probe_image_views);
+        destroy_target_set(gi_probe_surface_images, gi_probe_surface_image_memories, gi_probe_surface_image_views);
+        destroy_target_set(furnace_cube_images, furnace_cube_memories, furnace_cube_views);
+        destroy_target_set(rt_shadow_images, rt_shadow_image_memories, rt_shadow_image_views);
 
         // 2d. Destroy the bloom targets (all levels)
         for (auto const& level_views : bloom_image_views) {

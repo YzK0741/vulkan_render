@@ -9,9 +9,13 @@
  *   fetch into a half-resolution target lands exactly between four source texels, so the LINEAR
  *   sampler returns their 2x2 average and the soft threshold is applied to that average.
  * - @b mode 1 - downsample: binding 0 (level k) -> the current target (level k+1), 4-tap box.
- * - @b mode 2 - composite: HDR + weighted bloom levels -> exposure -> ACES -> display.
+ * - @b mode 2 - composite: HDR + weighted bloom levels + screen-space GI -> exposure -> ACES ->
+ *   display. The GI is the one input at a different resolution, so it is upsampled here - with a
+ *   joint-bilateral gather rather than a bilinear fetch, so that a silhouette does not mix two
+ *   surfaces or a surface with the background (see upsample_gi).
  *
- * Every mode reads binding 0; only the composite samples bindings 1..4 (the four bloom levels).
+ * Every mode reads binding 0; only the composite samples bindings 1..4 (the four bloom levels) and
+ * 6..8 (the half-resolution GI and the two G-buffer images its upsample needs).
  * Display encoding is NOT done here unless the target is a non-sRGB format (pc.encode_gamma): the
  * swapchain is normally an sRGB attachment and the hardware encodes on write, so applying gamma in
  * the shader as well would encode twice. With FXAA enabled the composite instead renders the
@@ -29,6 +33,13 @@ layout(set = 0, binding = 1) uniform sampler2D bloom_l0;     // composite only
 layout(set = 0, binding = 2) uniform sampler2D bloom_l1;
 layout(set = 0, binding = 3) uniform sampler2D bloom_l2;
 layout(set = 0, binding = 4) uniform sampler2D bloom_l3;
+// composite only: the screen-space GI at HALF resolution, plus the two G-buffer images its upsample
+// needs to decide which half-res texel belongs to this pixel's surface. All three are read with a
+// NEAREST sampler (see runtime::post_nearest_sampler): interpolating depth would invent a surface
+// between two real ones, which is precisely what the edge test below must not see.
+layout(set = 0, binding = 6) uniform sampler2D gi_indirect;
+layout(set = 0, binding = 7) uniform sampler2D gbuffer_depth;
+layout(set = 0, binding = 8) uniform sampler2D gbuffer_normal;
 
 layout(push_constant) uniform PostPush {
     float exposure;        // linear exposure scale (runtime::set_exposure)
@@ -37,7 +48,99 @@ layout(push_constant) uniform PostPush {
     float mode;            // 0 prefilter / 1 downsample / 2 composite
     float encode_gamma;    // composite only: 1 = encode to sRGB by hand (non-sRGB swapchain), 0 = the
                            // attachment is an sRGB format and the hardware encodes on write
+    float gi_intensity;    // composite only: weight on gi_indirect. 0 when GI is off, which makes the
+                           // added term exactly zero - that is what keeps a GI-off frame unchanged
+    // composite only: the GI upsample's edge criterion, the same one the spatial filter uses (see
+    // shaders/ssgi_spatial.comp). The two projection terms turn a depth-buffer value into a view
+    // distance, which a RELATIVE tolerance needs.
+    float gi_depth_scale;   // projection[2][2]
+    float gi_depth_offset;  // projection[3][2]
+    float gi_depth_sigma;   // relative view-depth tolerance for a tap to count
+    float gi_normal_power;  // exponent on the normal agreement term
+    float gi_upsample;      // 1 = the bilateral gather, 0 = the plain bilinear fetch (measurement)
+    // NOTE: fxaa.frag's two lanes follow this slot in the shared block. A stage may declare FEWER
+    // members than the CPU writes but not a different layout up to the ones it uses, so anything
+    // inserted here has to be inserted in fxaa.frag's block too - at the same position.
 } pc;
+
+/**
+ * @brief view-space distance of a depth-buffer value, for the upsample's relative depth test
+ * @param z_ndc the stored depth in [0,1]
+ * @return a positive view-space distance
+ * @note the same inversion the tracer, the temporal resolve and the spatial filter use
+ */
+float gi_view_depth(float z_ndc) {
+    return pc.gi_depth_offset / (z_ndc + pc.gi_depth_scale);
+}
+
+/**
+ * @brief joint-bilateral upsample of the half-resolution GI image
+ * @param uv the full-resolution pixel centre, in [0,1]
+ * @return the GI radiance for this pixel's surface, or 0 where there is none
+ *
+ * A plain bilinear fetch of a half-resolution image mixes the four nearest texels by position alone,
+ * and at a silhouette two of those texels belong to a different surface - or to the background, whose
+ * GI is 0. The result is a dark rim on the geometry side and a bright one on the background side, both
+ * a full-resolution pixel wide. This gathers the same four texels but weights each by whether it
+ * AGREES with this pixel: a relative view-depth test (the same one the temporal resolve and the spatial
+ * filter make) and a normal agreement term. Taps that disagree are dropped, and the remaining ones are
+ * renormalized, so a surface keeps its own GI instead of an average of its neighbours'.
+ *
+ * The background is handled by rule rather than by weight: a pixel with no geometry gets no
+ * screen-space GI at all. That is the honest answer - the indirect light of a pixel that has no surface
+ * is not a screen-space quantity - and it is what keeps the sky from picking up a halo from whatever
+ * lit surface happens to be next to it in the half-resolution grid. Off-screen light is the IBL probe's
+ * job on the surface that receives it, not this pass's.
+ */
+vec3 upsample_gi(vec2 uv) {
+    // The measurement path comes FIRST, and deliberately so: it has to be the plain bilinear fetch the
+    // chain did before this function existed, for every pixel including the background ones, or the
+    // A/B would be comparing this change against something that is not the previous revision. With it
+    // here, ssgi_upsample = 0 reproduces those captures byte for byte.
+    if (pc.gi_upsample < 0.5) {
+        return texture(gi_indirect, uv).rgb;
+    }
+
+    const vec2 gi_extent = vec2(textureSize(gi_indirect, 0));
+    const float z_here = texture(gbuffer_depth, uv).r;
+    if (z_here >= 1.0) {
+        return vec3(0.0); // background: this pass has nothing to say about it
+    }
+
+    const vec3 normal_here = texture(gbuffer_normal, uv).xyz;
+    const float view_here = gi_view_depth(z_here);
+    const float depth_tolerance = max(pc.gi_depth_sigma * view_here, 1e-5);
+
+    // The four nearest half-resolution texel centres. base is in GI texel space; floor() gives the
+    // corner, and the two loops walk the 2x2 block. Sampling AT the centres is why the sampler is
+    // nearest: these are exact fetches, not a filtered read.
+    const vec2 texel = 1.0 / gi_extent;
+    const vec2 base = floor(uv * gi_extent - 0.5);
+    vec3 sum = vec3(0.0);
+    float weight_sum = 0.0;
+    for (int y = 0; y <= 1; ++y) {
+        for (int x = 0; x <= 1; ++x) {
+            const vec2 tap_texel = clamp(base + vec2(float(x), float(y)), vec2(0.0), gi_extent - 1.0);
+            const vec2 tap_uv = (tap_texel + 0.5) * texel;
+            const float tap_depth = texture(gbuffer_depth, tap_uv).r;
+            if (tap_depth >= 1.0) {
+                continue; // a background tap holds no GI and has no view depth to compare
+            }
+            const float depth_weight = exp(-abs(gi_view_depth(tap_depth) - view_here) / depth_tolerance);
+            const vec3 tap_normal = texture(gbuffer_normal, tap_uv).xyz;
+            const float normal_weight = pow(max(dot(normal_here, tap_normal), 0.0), pc.gi_normal_power);
+            const float weight = depth_weight * normal_weight;
+            sum += texture(gi_indirect, tap_uv).rgb * weight;
+            weight_sum += weight;
+        }
+    }
+    // Unlike the spatial filter, the centre tap is NOT guaranteed a weight here (the 2x2 block can
+    // consist entirely of other surfaces, e.g. this pixel is a sliver of one), so the degenerate case
+    // needs an answer. Falling back to the filtered fetch is the safe one: it is the value the previous
+    // revision used, and being wrong by a bilinear mix at a sub-texel sliver is a smaller error than a
+    // black pixel would be.
+    return weight_sum > 1e-5 ? sum / weight_sum : texture(gi_indirect, uv).rgb;
+}
 
 /**
  * @brief ACES filmic tonemapping (Narkowicz fit)
@@ -182,6 +285,13 @@ void main() {
     bloom += sample_tent(bloom_l3, v_uv) * 0.12;
 
     vec3 color = texture(source_color, v_uv).rgb;
+    // Screen-space GI, added to the DIRECT radiance the scene target holds. The tracer's output is half
+    // resolution, so this needs an upsample - see upsample_gi, which is joint-bilateral rather than a
+    // plain bilinear fetch so that a silhouette does not mix two surfaces (or a surface with the
+    // background). It is added BEFORE the exposure so it goes through the same tonemapping as
+    // everything else, but AFTER the bloom chain - a bloom pass reads the scene target directly, so
+    // indirect light does not feed the glow yet.
+    color += upsample_gi(v_uv) * pc.gi_intensity;
     color += bloom * pc.bloom_intensity;
     color *= pc.exposure;
     color = aces_tone_mapping(color);

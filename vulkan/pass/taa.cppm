@@ -2,19 +2,14 @@
 
 /**
  * @file vulkan/pass/taa.cppm
- * @brief The THIRD pass on this branch, and the first one that OWNS its own GPU objects: the temporal
- *        anti-aliasing resolve.
+ * @brief The SECOND real pass, and the first GRAPHICS one: the temporal anti-aliasing resolve.
  * @defgroup vulkan_pass_taa Temporal Anti-Aliasing Pass
  *
- * WHAT MAKES THIS ONE DIFFERENT FROM `scene` AND `transparent`: those two own no device objects at all. Their
- * leaves name their pipelines, everything they bind is the shared scene set, and their create step is empty -
- * so the framework's CREATE half (`pass_context`) was never exercised by them. This pass exercises it: it
- * builds its own set layout FROM ITS DECLARATION (`bindings::make_set_layout`), its own pipeline layout and
- * its own pipeline (`pipelines::build_taa`), and it allocates and rewrites its own per-image descriptor family.
- * It is also the first GRAPHICS pass here that declares a render TARGET: an attachment is not a descriptor (it
- * is declared as a `render_target` and bound by a rendering instance), so this pass opens that instance itself
- * - the load op is its knowledge, not the runner's - and the two things it must not be able to forget, the
- * pipeline being bound and the viewport being set, are done FOR it by the runner before `record`.
+ * WHY THIS PASS IS THE INTERESTING ONE: the probe cache proved the shape for a compute pass, and this one
+ * proves it for the other half of the frame. A fullscreen pass owns a render TARGET (an attachment is not a
+ * descriptor: it is declared as a `render_target` and bound by a rendering instance), it opens that instance
+ * itself (the load op is its knowledge, not the runner's), and the two things it must not be able to forget -
+ * the pipeline being bound and the viewport being set - are done FOR it by the runner before `record`.
  *
  * WHAT IT OWNS: its set layout and the four per-swapchain-image inputs it names (this frame's colour, the
  * reprojected history, the motion vectors, the depth the disocclusion guard reads), its pipeline layout, its
@@ -22,14 +17,13 @@
  * its history holds: whether each image has one, and which views identified the target generation its family
  * was built against.
  *
- * WHAT IT DELIBERATELY DOES NOT OWN, and this is the real discovery this extraction produced: ONE LINE OF ITS
- * OWN SEQUENCE BELONGS TO ANOTHER PASS. The resolve samples the G-buffer depth, and that image is transitioned
- * out of its attachment layout by `runtime::ensure_gbuffer_depth_sampled`, whose per-image "was it written this
- * frame" flag is the G-buffer pass's. It is shared per-image bookkeeping, it is the barrier/order stage's job in
- * the long run, and it is not expressible here while a pass can only declare its OWN bindings - so it stays with
- * the host, which is the one that knows the flag. The order the host has to preserve is recorded at the call
- * site. (On `master` there is a second such line - the motion-vector flag the GI chain reads - which this branch
- * does not have, because it has no GI chain yet.)
+ * WHAT IT DELIBERATELY DOES NOT OWN, and this is the second discovery this extraction produced: TWO LINES OF
+ * ITS OWN SEQUENCE BELONG TO OTHER PASSES. The resolve transitions the G-buffer depth (a transition the
+ * G-buffer pass's per-image flag decides) and clears the flag that says the motion vectors have been handed
+ * to a fragment sampler (which stops the GI chain from transitioning them again). Both are shared per-image
+ * bookkeeping, both are the barrier/order stage's job in the long run, and neither is expressible here while a
+ * pass can only declare its OWN bindings - so they stay with the host, which is the one that knows the flags.
+ * The order the host has to preserve is recorded at the call site.
  *
  * THE GENERATION FINGERPRINT is the one piece of this pass that is not a straight move. A per-image descriptor
  * family fingerprints "the thing my sets point at", and for a per-image resource the CURRENT image's view is

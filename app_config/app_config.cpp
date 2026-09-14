@@ -105,6 +105,116 @@ namespace app_config {
                     }
                 }
             }
+            if (toml::node const* node = render->get("ssgi")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.ssgi = *value;
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_intensity")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.ssgi_intensity = static_cast<float>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_radius")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.ssgi_radius = static_cast<float>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_rays")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.render.ssgi_rays = static_cast<int>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_steps")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.render.ssgi_steps = static_cast<int>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_spatial_sigma")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.ssgi_spatial_sigma = static_cast<float>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_upsample")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.ssgi_upsample = *value;
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_ray_tracing")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.ssgi_ray_tracing = *value;
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_bounce")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.ssgi_bounce = static_cast<float>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_probes")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.ssgi_probes = *value;
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_probe_rate")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.ssgi_probe_rate = static_cast<float>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_probe_rounds")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.render.ssgi_probe_rounds = static_cast<int>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_probe_gain")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.ssgi_probe_gain = static_cast<float>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_hit_shading")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.ssgi_hit_shading = *value;
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_specular")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.ssgi_specular = *value;
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_specular_rays")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.render.ssgi_specular_rays = static_cast<int>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("ssgi_specular_radius")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.ssgi_specular_radius = static_cast<float>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("furnace")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.furnace = *value;
+                }
+            }
+            if (toml::node const* node = render->get("rt_shadows")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.rt_shadows = *value;
+                }
+            }
+            if (toml::node const* node = render->get("rt_mask_bake")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.rt_mask_bake = *value;
+                }
+            }
+            if (toml::node const* node = render->get("rt_skin_bake")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.rt_skin_bake = *value;
+                }
+            }
+            if (toml::node const* node = render->get("animation_time")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.animation_time = static_cast<float>(*value);
+                }
+            }
             if (toml::node const* node = render->get("camera_fit")) {
                 if (std::optional<std::string> const value = node->value<std::string>()) {
                     settings.render.camera_fit = *value;
@@ -301,6 +411,11 @@ namespace app_config {
             utility::log("app_config: invalid demo_lights {} (use 0..{}), clamping", settings.lighting.demo_lights, max_demo_lights);
             settings.lighting.demo_lights = std::clamp(settings.lighting.demo_lights, 0, static_cast<int>(max_demo_lights));
         }
+        settings.render.ssgi_intensity = std::clamp(settings.render.ssgi_intensity, 0.0f, 4.0f);
+        settings.render.ssgi_radius = std::clamp(settings.render.ssgi_radius, 0.0f, 2.0f);
+        settings.render.ssgi_rays = std::clamp(settings.render.ssgi_rays, 0, 16);
+        settings.render.ssgi_steps = std::clamp(settings.render.ssgi_steps, 0, 64);
+        settings.render.ssgi_spatial_sigma = std::clamp(settings.render.ssgi_spatial_sigma, 0.0f, 8.0f);
         if (settings.render.camera_fit != "exterior" && settings.render.camera_fit != "interior") {
             utility::log("app_config: invalid camera_fit '{}' (use exterior/interior), falling back to exterior", settings.render.camera_fit);
             settings.render.camera_fit = "exterior";

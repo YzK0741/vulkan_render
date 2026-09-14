@@ -30,6 +30,17 @@ namespace {
         int frames = 0;                                            // 0 = normal interactive run
         std::optional<std::array<float, 3>> camera = std::nullopt; // yaw(deg), pitch(deg), distance
         std::optional<glm::vec3> target = std::nullopt;            // orbit target override (optional)
+        // Degrees of YAW added per presented frame (`--capture-sweep`). 0 - the default - is a fixed
+        // camera, which is what every other capture in this repository is.
+        //
+        // WHY IT EXISTS: with the camera still, every reprojection path in the renderer is exercised only
+        // in its trivial case - a motion vector of zero, a history fetched from the pixel it came from.
+        // TAA's resolve, the GI temporal accumulation, the reflection's history and the velocity target
+        // itself are all "correct" under a static camera no matter how they are written, so a break in
+        // any of them passed the capture harness. This makes a capture move the camera by a fixed amount
+        // per FRAME INDEX (not per wall-clock second), so a sweep capture is as reproducible as a still
+        // one - the gate compares two runs of it like any other scenario.
+        float sweep_yaw_deg_per_frame = 0.0f;
     };
 
     // strtof with a full-string check (no exceptions: std::stof would abort under -fno-exceptions)
@@ -99,10 +110,22 @@ namespace {
                 }
                 continue;
             }
+            if (std::optional<std::string_view> const value = take_value(i, arg, "--capture-sweep")) {
+                // degrees of yaw per presented frame - see capture_options::sweep_yaw_deg_per_frame
+                if (std::optional<float> const number = parse_number(*value)) {
+                    options.sweep_yaw_deg_per_frame = *number;
+                } else {
+                    utility::log("capture: ignoring '--capture-sweep {}' (expected degrees of yaw per frame)", *value);
+                }
+                continue;
+            }
             filtered.push_back(argv[i]);
         }
         if (options.frames > 0) {
             utility::log("capture mode: {} frames, then screenshot + quit", options.frames);
+            if (options.sweep_yaw_deg_per_frame != 0.0f) {
+                utility::log("capture camera sweep: {:.3f} deg of yaw per frame, from whatever pose the scene settled on", options.sweep_yaw_deg_per_frame);
+            }
         }
         return options;
     }
@@ -173,6 +196,64 @@ int main(int argc, char** argv) {
     //    imported scene) and the directional shadow pass. The legacy
     //    triangle demo pipeline is no longer created - nothing draws it.
     chores::setup_pipeline(runtime, shaders_dir);
+    // Screen-space GI has to be told AFTER the pipelines exist: its compute pipeline and its temporal
+    // resolve are created by setup_pipeline above, and set_ssgi() warns when either is missing.
+    // Startup-only knobs - the intensity and the ray budget are read here rather than per frame, so
+    // changing the config value needs a restart (there is no overlay control for them).
+    runtime.set_ssgi(settings.render.ssgi,
+                     settings.render.ssgi_intensity,
+                     settings.render.ssgi_radius,
+                     static_cast<uint32_t>(settings.render.ssgi_rays),
+                     static_cast<uint32_t>(settings.render.ssgi_steps));
+    runtime.set_ssgi_spatial(settings.render.ssgi_spatial_sigma);
+    runtime.set_ssgi_upsample(settings.render.ssgi_upsample);
+    // Same bargain as the ray-traced shadows: a request the runtime grants only on a device with ray
+    // queries and a built top level structure - otherwise the GI rays keep marching the depth buffer.
+    runtime.set_ssgi_ray_tracing(settings.render.ssgi_ray_tracing);
+    // The multi-bounce gain: how much of the previous frame's accumulated indirect a GI hit re-emits.
+    // 0 (the default) keeps the estimator single-bounce, and the runtime clamps the knob to [0, 1]
+    // because above one the diffuse loop it closes is not guaranteed to converge.
+    runtime.set_ssgi_bounce(settings.render.ssgi_bounce);
+    // Shade the surface a GI ray hits from the geometry it landed on. A request: the runtime publishes the
+    // acceleration structures' instance table to the tracer only when they exist, and a frame without it
+    // samples the screen exactly as before.
+    runtime.set_ssgi_hit_shading(settings.render.ssgi_hit_shading);
+    // The furnace verification mode: an analytic reference rather than another estimator of ours.
+    runtime.set_furnace(settings.render.furnace);
+    // The world-space probe cache: where the screen-space chain cannot answer - a ray that leaves the
+    // frame or hits something hidden - the tracer reads a grid anchored to the scene instead of the
+    // far-field environment probe. Optional at every level (no pipeline, no chain, or off: the tracer
+    // keeps its fallback), and its gain is what makes the difference measurable.
+    runtime.set_ssgi_probes(settings.render.ssgi_probes,
+                            settings.render.ssgi_probe_rate,
+                            static_cast<uint32_t>(settings.render.ssgi_probe_rounds),
+                            settings.render.ssgi_probe_gain);
+    // The glossy lobe: a traced reflection REPLACING the lighting stage's split-sum specular ambient, so a
+    // metal panel inside a room stops reflecting the sky. It needs the traced GI path and hit shading, and
+    // it does nothing where either is missing (the runtime says so in the log).
+    runtime.set_ssgi_specular(settings.render.ssgi_specular, static_cast<uint32_t>(settings.render.ssgi_specular_rays), settings.render.ssgi_specular_radius);
+    // Ray-traced sun shadows: a request, not a guarantee - the runtime grants it only on a device with
+    // ray queries, and the acceleration structures are built by the first frame that records with it on
+    // (the caster set they are built from is only complete once the scene is loaded and culled).
+    runtime.set_rt_shadows(settings.render.rt_shadows);
+    // ... and the alphaMode MASK bake, which is what keeps a masked surface from being SOLID to those rays:
+    // a compute pass collapses the triangles the material's alpha cuts out, before the structures are built.
+    runtime.set_rt_mask_bake(settings.render.rt_mask_bake);
+    // ... and the per-frame skinning pass, which is what keeps an ANIMATED caster's traced shadow where the
+    // caster actually is: the structures are built from the bind pose, so without it the ray sees the mesh
+    // at rest (the baseline table in docs/gi_hit_shading.md's L2.2b section is that error, measured).
+    runtime.set_rt_skin_bake(settings.render.rt_skin_bake);
+    if (settings.render.ssgi) {
+        // The ORACLE and the hit shading are named and not just the ray counts: the shipped configuration
+        // is the traced path with shaded hits (see the [render] ssgi note in config.example.toml), and this
+        // line is what a reader uses to tell which of the two chains is about to run. It says "as
+        // configured" because the DEVICE decides in the end - the runtime logs a pipeline it could not
+        // create, and a device without ray queries silently keeps the marched path.
+        utility::log("ssgi: GI on as configured - {}, {} (intensity {:.2f}, radius {:.2f} scene radii, {} rays x {} steps at half res)",
+                     settings.render.ssgi_ray_tracing ? "traced rays" : "marched depth",
+                     settings.render.ssgi_hit_shading ? "hits shaded from their own geometry" : "hits read from the screen",
+                     settings.render.ssgi_intensity, settings.render.ssgi_radius, settings.render.ssgi_rays, settings.render.ssgi_steps);
+    }
 
     // 7. Collect the async startup results
     auto scenes = load_future.get();
@@ -336,6 +417,14 @@ int main(int argc, char** argv) {
     // the controller drives the runtime through an injected surface (chores wires the scene,
     // per-slot buffers and task pool), so it never depends on vulkan::runtime itself
     animation.init(*scenes, chores::make_animation_backend(runtime), scene_import_shift);
+    // [render] animation_time >= 0 PINS the pose: playback is wall-clock driven, so two captures of an
+    // animated scene differ unless the time is fixed - and this is also what makes such a scene usable in
+    // a measurement or a regression scenario at all. scrub() is the overlay's time slider, so the pose is a
+    // function of the value alone; a negative value (the default) plays as always.
+    if (settings.render.animation_time >= 0.0f) {
+        animation.set_time(settings.render.animation_time);
+        utility::log("animation: pinned at {:.2f}s by [render] animation_time (playback is wall-clock driven, so captures of an animated scene are only reproducible this way)", settings.render.animation_time);
+    }
     // Live gui widget state (chores::gui_bindings) is declared after the authored-camera
     // seeding below, right before chores::setup_gui() builds the overlay.
 
@@ -537,6 +626,10 @@ int main(int argc, char** argv) {
                      (*capture.camera)[0], (*capture.camera)[1], (*capture.camera)[2],
                      runtime.camera.target.x, runtime.camera.target.y, runtime.camera.target.z);
     }
+    // The sweep's BASE pose is whatever the camera ended up as - the scene's own `camera_fit`, an authored
+    // glTF camera, or the pinned `--capture-camera` above - so a sweep composes with all three instead of
+    // demanding a pinned pose it would have to be told twice.
+    float const sweep_base_yaw = runtime.camera.yaw;
     int captured_frames = 0; // presented frames so far (scripted capture; see --capture-frames)
     while (true) {
         // Phase 1: poll window events (ESC / native close -> closed, minimized -> skipped)
@@ -552,6 +645,14 @@ int main(int argc, char** argv) {
             continue;
         }
         runtime.recreate_if_minimized();
+
+        // Scripted capture: the camera sweep, advanced by the number of PRESENTED frames - a frame index,
+        // not a clock reading, so two runs of one sweep are byte-identical (the harness's determinism run
+        // is what verifies it). It has to happen before pace_and_acquire(), which is the phase that writes
+        // the camera UBO.
+        if (capture.sweep_yaw_deg_per_frame != 0.0f) {
+            runtime.camera.yaw = sweep_base_yaw + glm::radians(capture.sweep_yaw_deg_per_frame) * static_cast<float>(captured_frames);
+        }
 
         // Phase 2: pace + acquire the next frame slot. After pace_and_acquire() returns
         // proceed, this slot's previous submission has completed, so the per-frame host writes

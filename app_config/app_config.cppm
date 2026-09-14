@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.14.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.27.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -50,6 +50,22 @@ import utility;
  * gpu_timings = true  # measure + report per-pass GPU milliseconds (timestamp queries)
  * gbuffer_debug = false  # draw the G-buffer + one of its channels instead of the shaded scene
  * taa = false            # temporal anti-aliasing (jitter + resolved history)
+ * ssgi = true           # one bounce of diffuse indirect: traced rays, the shipped configuration
+ * ssgi_intensity = 1.0  # weight on the traced indirect (on the traced path it REPLACES the ambient)
+ * ssgi_radius = 0.12    # ray length as a fraction of the scene radius
+ * ssgi_rays = 2         # rays per pixel per frame (1..16)
+ * ssgi_steps = 6        # depth samples per ray (1..64)
+ * ssgi_spatial_sigma = 2.0  # GI spatial filter width in GI texels; 0 = off (a pass-through)
+ * ssgi_upsample = true  # joint-bilateral upsample of the half-res GI in the composite; false = bilinear
+ * rt_shadows = false    # ray-traced sun shadows (needs a device with ray queries; else ignored)
+ * rt_mask_bake = false  # bake alphaMode MASK into the acceleration structures (off: the rule measured worse)
+ * ssgi_ray_tracing = true # trace the GI rays instead of marching the depth buffer (same conditions)
+ * ssgi_bounce = 0.0     # re-emit this fraction of the previous frame's indirect at a hit (multi-bounce)
+ * ssgi_probes = false   # world-space probe cache: answers for hits the screen cannot resolve
+ * ssgi_hit_shading = true # shade the surface a ray hit from its geometry, not from the screen
+ * furnace = false       # verification mode: sun off, environment a constant, so the answer is analytic
+ * animation_time = -1.0 # pin a keyframe animation at N seconds (-1 = play it; playback is wall-clock)
+ * ssgi_probe_rate = 0.08 # how much of a cell one frame's observation replaces
  * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id,
  *                        # 6 depth, 7 flags, 8 motion (the motion vector, amplified - see the shader)
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
@@ -126,6 +142,140 @@ namespace app_config {
         // shadow_map_size^2 x 4 layers x 4 bytes per cascade set, per frame slot). Applied before the
         // scene import; the runtime clamps it to 256..8192 and rounds to a power of two.
         int shadow_map_size = 2048;
+        // Global illumination ([render] ssgi*): one bounce of diffuse indirect, traced at half resolution
+        // and composited by the post pass. Which ORACLE the rays use decides what the relation to the IBL
+        // probe is, and that is what fixes the intensity below: marching the depth buffer can only see what
+        // is on screen, so the marched chain is an ADDITION to the probe (which already claims some of this
+        // light, so the two over-brighten unless it is dialled back), while a traced ray falls back to the
+        // probe inside the ray and the traced chain therefore REPLACES the lighting stage's ambient.
+        // `ssgi_radius` is a
+        // fraction of the scene radius, `ssgi_rays` x `ssgi_steps` is the cost per half-res pixel.
+        // `ssgi_spatial_sigma` is the last pass's filter width: the temporal resolve averages frames,
+        // this removes the spatially-fixed grain it cannot, and 0 turns it off (a pass-through), which
+        // is what its effect is measured against.
+        // ON BY DEFAULT, and the chain below assumes it: the traced path, hit shading and an intensity of
+        // 1.0 are the shipped configuration. A device without ray queries falls back to marching the depth
+        // buffer on its own - the same estimator with a worse oracle - so the switch is safe to leave on
+        // there too; `ssgi_radius` stays at the marched path's compromise for the same reason (its
+        // resolution is radius / ssgi_steps, so a reach that suits the traced path would make the fallback
+        // step over the detail between two samples). The flat render mode ([render] unlit) has no GI at all:
+        // its shading stage outputs the stored albedo, so the image the tracer would average is not
+        // radiance.
+        bool ssgi = true;
+        // 1.0, NOT the 0.7 a MARCHED chain wants: the traced path estimates the WHOLE diffuse indirect (its
+        // rays fall back to the probe inside the ray) and the spatial filter subtracts the ambient the
+        // lighting stage added, so this intensity multiplies the ambient itself and 1.0 is the value that
+        // means "use the traced estimate". At 0.7 the subtracted term would be 30% larger than the estimate
+        // replacing it - a systematic darkening - which is why this default moved WITH `ssgi_ray_tracing`
+        // rather than after it. A machine that ends up marching should set ~0.7, where the chain ADDS to the
+        // probe and the two overlap.
+        float ssgi_intensity = 1.0f;
+        float ssgi_radius = 0.12f;
+        int ssgi_rays = 2;
+        int ssgi_steps = 6;
+        float ssgi_spatial_sigma = 2.0f;
+        // Whether the composite upsamples that half-resolution result with a joint-bilateral gather
+        // (true) or a plain bilinear fetch (false). Not a quality knob: bilinear is what the chain did
+        // before the upsample existed, and keeping it reachable is what makes its effect measurable.
+        bool ssgi_upsample = true;
+        // Ray-traced sun shadows ([render] rt_shadows): one ray per pixel against the scene's
+        // acceleration structures instead of a sample of the cascaded shadow maps. Off by default, and
+        // granted only on a device with ray queries - a device without them keeps running the cascaded
+        // maps, which is what makes the key safe to leave in a shared config file.
+        bool rt_shadows = false;
+        // Bake alphaMode MASK into the acceleration structures ([render] rt_mask_bake): a compute pass
+        // collapses the triangles a material's alpha covers nowhere, so a ray-traced shadow can agree with
+        // the raster one instead of treating the surface as solid. OFF BY DEFAULT, because the measurement
+        // says the per-triangle rule is not good enough to be on: on a MASK-heavy sample asset it removes
+        // triangles the raster path's own filtered sampling keeps, and the frame comes out 1.29 of mean
+        // brightness BRIGHTER than the raster shadow it should match (docs/gi_hit_shading.md's L2.2
+        // section has the numbers and the verified plumbing). It stays as an instrument: a knob is the only
+        // way to measure the next attempt at the same mechanism.
+        bool rt_mask_bake = false;
+        // Re-skin animated casters and refit their acceleration structures every frame ([render]
+        // rt_skin_bake). The structures are built from the bind pose, so without this a ray-traced shadow of
+        // an animated mesh is cast by the mesh where it is not. OFF BY DEFAULT: it is the A/B whose effect
+        // the L2.2b measurement is about, and leaving it off keeps the traced shadow path byte-identical to
+        // the frames every earlier measurement was taken with.
+        bool rt_skin_bake = false;
+        // Trace the screen-space GI rays against the acceleration structures instead of marching the depth
+        // buffer ([render] ssgi_ray_tracing). Same estimator, better hit oracle; ignored unless the device
+        // has ray queries and ssgi itself is on - which is exactly why it can default ON: the fallback on a
+        // device without ray queries is the marched chain, and the only knob that differs between them is
+        // the intensity (see it above).
+        bool ssgi_ray_tracing = true;
+        // Re-emit a fraction of the previous frame's accumulated indirect at every GI hit ([render]
+        // ssgi_bounce): the multi-bounce approximation, so that a ray also carries the light that
+        // already bounced once at the surface it hit. 0 - the default - is the single-bounce estimator
+        // every earlier measurement was taken with. The image being fed back already carries
+        // ssgi_intensity, so the loop's effective gain is this value times that one.
+        float ssgi_bounce = 0.0f;
+        // The world-space probe cache ([render] ssgi_probes): a persistent grid of SH-2 cells over the
+        // scene's bounds - four coefficients per channel, so a cell answers for a DIRECTION - each filled by
+        // tracing its OWN rays and sampled by the tracer for a hit the screen cannot resolve. The pass
+        // declares no camera at all, which is what makes a cell a fact about the scene rather than about the
+        // frame. Off by default, and a no-op when off - the tracer's fallback for those hits is
+        // then exactly what it was. `ssgi_probe_rate` is how much of a cell one frame's observation
+        // replaces (its own loop gain), `ssgi_probe_rounds` how far a frame spreads what it deposited
+        // (0 = injection only, which is how the propagation is measured), and `ssgi_probe_gain` how much
+        // of the cache's answer is added on top of the environment probe (0 = the cache runs, and is
+        // still not sampled: that is the A/B that measures what it adds). The gain's SIGN is a second A/B:
+        // negative means the same gain with the cell looked up along the opposite direction of the ray,
+        // which differs from the positive one only through the cache - so the two captures were identical
+        // until a cell carried a direction (measured: same SHA256), and differ on 22.7% of pixels now.
+        bool ssgi_probes = false;
+        // Shade the surface a GI ray hit from the geometry it landed on, instead of sampling the screen's
+        // direct-radiance image there ([render] ssgi_hit_shading). ON BY DEFAULT, because it is what makes
+        // the indirect light a fact about the scene rather than about the frame the camera happened to
+        // show: a hit the camera cannot see (off screen, or hidden) can be answered at all, and a surface's
+        // indirect light stops moving when the view does. It needs the traced path (the marched one never
+        // leaves the frame) and the acceleration structures, and it costs the vertex, index and texture
+        // fetches a shaded hit makes plus a shadow ray per hit. Measured on Sponza at 1080x960 (180 frames,
+        // the harness's interior pose, GPU pass intervals): this key's own interval goes 0.64 -> 0.86 ms,
+        // and the whole shipped chain costs +0.81 ms on a 1.81 ms frame against the same frame with GI off.
+        // The tables, the arms and the two defects the flip exposed are in docs/gi_hit_shading.md (L2.4).
+        bool ssgi_hit_shading = true;
+        // Trace a glossy reflection ray per pixel and use what it finds as the surface's specular ambient
+        // ([render] ssgi_specular), instead of the lighting stage's split-sum lookup of the prefiltered
+        // environment - which knows nothing but the sky, so a metal panel inside a room reflects the sky.
+        // It is a REPLACEMENT, not an addition: the estimate falls back to exactly the lighting stage's own
+        // term wherever a ray finds no geometry, so the frame only changes where the reflection has
+        // something local to show - which is what makes it safe to ship ON, and it IS on by default since
+        // the reflection got an accumulation of its own (L2.3's motion work closed the last objection to
+        // it). It needs the traced GI path, hit shading and the acceleration structures, and it is not
+        // recorded at all where those are missing - so a config that turns GI off is bit-identical to the
+        // frame before the lobe existed.
+        bool ssgi_specular = true;
+        // ... and how far its rays reach ([render] ssgi_specular_radius, a fraction of the scene radius).
+        // A REACH OF ITS OWN, because the shared `ssgi_radius` is pinned by the MARCHED path: that path's
+        // resolution is radius / ssgi_steps, so a radius large enough for a reflection (0.5, i.e. 9 world
+        // units on Sponza) would give a 6-step march 1.55-unit steps and miss the detail between them.
+        // Measured on the reference scene, the glossy effect against its reach: -0.907 at 0.12, -2.126 at
+        // 0.5 and -2.350 at 2.0 - so the default realizes 39% of the signal available, half of it recovers
+        // 2.3x, and beyond 0.5 the curve is flat (both in effect and in cost, since a ray that reaches the
+        // geometry it can reach stops traversing). 0.5 is that knee.
+        float ssgi_specular_radius = 0.5f;
+        // ... and how many rays per pixel ([render] ssgi_specular_rays, clamped to [1, 8]). One is the
+        // feature's definition and what its cost was measured at; the hit is a POINT sample of a cone whose
+        // width is the material's roughness, so this is the knob that buys a wide lobe's noise down - the
+        // denoiser problem this feature brings with it.
+        int ssgi_specular_rays = 1;
+        // The furnace verification mode ([render] furnace): the sun is turned off and the environment becomes
+        // a constant level, so the correct frame is computable by hand - a diffuse surface's outgoing
+        // radiance is exactly albedo * L, and a GI chain that adds anything on top of it is double counting.
+        // It is the one reference in this project that no estimator of its own can flatter, because it is not
+        // an estimator. Off by default, and off is byte-exact.
+        bool furnace = false;
+        // Pin the keyframe animation at a time in seconds ([render] animation_time), or -1 to play it: a
+        // NEGATIVE value is the default and plays as always. Playback is driven by the wall clock
+        // (frame_clock::delta_seconds), so a capture of an animated scene is NOT reproducible - two runs of
+        // one config differ, measured - and anything that has to compare two captures of one pose (the
+        // skinned-mesh ray-tracing work is the first) needs this. It scrubs and pauses, which is what the
+        // debug overlay's time slider does, so the pose is a function of the value alone.
+        float animation_time = -1.0f;
+        float ssgi_probe_rate = 0.08f;
+        int ssgi_probe_rounds = 2;
+        float ssgi_probe_gain = 1.0f;
         bool ssao = true;
         float ssao_radius = 0.5f;
         float ssao_intensity = 1.0f;

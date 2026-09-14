@@ -120,17 +120,19 @@ target_sources(vulkancorekit
         vulkan/math/math.cppm
         vulkan/constant_init/constant_init.cppm
         vulkan/runtime.cppm
+        vulkan/bindings/bindings.cppm
+        vulkan/pipelines/pipelines.cppm
         vulkan/render_resource/render_resource.cppm
         vulkan/render_resource/shared.cppm
         vulkan/pass/pass.cppm
-        vulkan/pass/scene.cppm
+        vulkan/pass/gi_probe.cppm
         vulkan/pass/taa.cppm
+        vulkan/pass/scene.cppm
         vulkan/pass/transparent.cppm
-        vulkan/bindings/bindings.cppm
-        vulkan/pipelines/pipelines.cppm
         vulkan/profiling/profiling.cppm
         vulkan/shadow_fit/shadow_fit.cppm
         vulkan/readback/readback.cppm
+        vulkan/acceleration_structure/acceleration_structure.cppm
         vulkan/core/pipeline/spirv_parser.cppm
         vulkan/scene_tree/scene_tree.cppm
         vulkan/primitive/primitive.cppm
@@ -147,11 +149,13 @@ target_sources(vulkancorekit
         vulkan/math/math.cpp
         vulkan/core/pipeline/spirv_parser.cpp
         vulkan/runtime.cpp
-        vulkan/pass/scene.cpp
+        vulkan/pass/gi_probe.cpp
         vulkan/pass/taa.cpp
+        vulkan/pass/scene.cpp
         vulkan/pass/transparent.cpp
         vulkan/shadow_fit/shadow_fit.cpp
         vulkan/readback/readback.cpp
+        vulkan/acceleration_structure/acceleration_structure.cpp
         vulkan/scene_tree/scene_tree.cpp
         vulkan/primitive/primitive.cpp
         vulkan/gui/gui.cpp
@@ -402,7 +406,7 @@ option(VR_BUILD_TESTS "Build the headless unit tests" ON)
 if(VR_BUILD_TESTS)
     enable_testing()
 
-    set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit test_render_resources)
+    set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit test_render_resources test_pass)
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-run")
 
     foreach(test_target IN ITEMS ${VR_TEST_TARGETS})
@@ -433,6 +437,20 @@ if(VR_BUILD_TESTS)
             vulkancorekit
             vstd_lib
     )
+    # vulkan.render_resource is pure CPU on purpose (its own enums, no Vulkan type): the invariants it exists
+    # for - usage is a subset of the schema, kind and access fit, a pass's own bindings are contiguous, a pool
+    # count is derivable - are checkable WITHOUT a device, which is the only way they can be checked in CI.
+    target_link_libraries(test_render_resources
+            vulkancorekit
+            vstd_lib
+    )
+    # vulkan.pass is the framework: its base class and behaviour kinds name Vulkan handle types but never call
+    # Vulkan, so its contract - resolve, apply the behaviour, record, mark, recreate - is testable with a fake
+    # host and no device at all.
+    target_link_libraries(test_pass
+            vulkancorekit
+            vstd_lib
+    )
     # vulkan.animation is format-neutral / runtime-agnostic; the sampling tests only touch the
     # pure functions, so nothing Vulkan is pulled in.
     target_link_libraries(test_animation
@@ -452,13 +470,6 @@ if(VR_BUILD_TESTS)
     # use. This is the first test of the shadow system, which had none: the fit had no device
     # dependency, it just lived where nothing could reach it.
     target_link_libraries(test_shadow_fit
-            vulkancorekit
-            glm::glm
-            vstd_lib
-    )
-    # vulkan.render_resource + vulkan.pass live in vulkancorekit for the same reason: the description layer is
-    # pure CPU (no device is created by the test), it just lives where nothing could reach it.
-    target_link_libraries(test_render_resources
             vulkancorekit
             glm::glm
             vstd_lib
@@ -612,18 +623,43 @@ set(VR_SHADER_INCLUDES
     "${VR_SHADER_SRC_DIR}/surface.glsl"
     "${VR_SHADER_SRC_DIR}/shading.glsl"
     "${VR_SHADER_SRC_DIR}/sky.glsl"
+    # hit_shading.glsl was MISSING here since it was added: the two passes that include it (ssgi.comp and
+    # gi_probe.comp) did not list it as a dependency, so editing it alone left the SPIR-V stale - the exact
+    # trap the comment above describes, from the other side. Found while adding probe_sh.glsl next to it.
+    "${VR_SHADER_SRC_DIR}/hit_shading.glsl"
+    "${VR_SHADER_SRC_DIR}/probe_sh.glsl"
+    # ibl_specular.glsl is included by four shaders now (shading.glsl, hit_shading.glsl and the two GI
+    # passes that compute the specular ambient's removal), so it belongs here for the same reason the two
+    # above do: editing it alone must not leave stale SPIR-V behind.
+    "${VR_SHADER_SRC_DIR}/ibl_specular.glsl"
 )
 set(VR_SHADER_SOURCES
     pbr.vert pbr.frag unlit.frag gbuffer.frag gbuffer_debug.frag deferred.frag taa.frag
     light_cluster.comp
+    ssgi.comp
+    ssgi_spec.comp
+    ssgi_temporal.comp
+    ssgi_spatial.comp
+    gi_probe.comp
+    rt_shadow.comp
+    mask_bake.comp
+    compute_skin.comp
     shadow.vert shadow.frag post.vert post.frag fxaa.frag
 )
 set(VR_SHADER_OUTPUTS "")
+# --target-env=vulkan1.3 on EVERY shader, not just the ray-traced one. glslc defaults to vulkan1.0, and
+# under that target GL_EXT_ray_query is not a known extension at all ("undeclared identifier rayQueryEXT",
+# which is what this shader reported before the flag). The engine is Vulkan 1.3-only anyway - dynamic
+# rendering is core 1.3 and every pass records through vkCmdBeginRendering - so declaring the real target
+# is the honest setting rather than a per-file workaround. The 1.3 target changes the SPIR-V header
+# version and nothing else these shaders do: the seven capture scenarios hash identically after the
+# change (checked, because a codegen difference hidden under a flag change is exactly what a byte-exact
+# reference is for).
 foreach(shader IN LISTS VR_SHADER_SOURCES)
     add_custom_command(
         OUTPUT "${VR_SHADER_OUT_DIR}/${shader}.spv"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${VR_SHADER_OUT_DIR}"
-        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -I "${VR_SHADER_SRC_DIR}" "${VR_SHADER_SRC_DIR}/${shader}"
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -I "${VR_SHADER_SRC_DIR}" --target-env=vulkan1.3 "${VR_SHADER_SRC_DIR}/${shader}"
                 -o "${VR_SHADER_OUT_DIR}/${shader}.spv"
         DEPENDS "${VR_SHADER_SRC_DIR}/${shader}" ${VR_SHADER_INCLUDES}
         COMMENT "glslc ${shader} -> ${shader}.spv"

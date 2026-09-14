@@ -61,19 +61,69 @@ bool check_device_extension_support(
 }
 
 void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t const api_version) noexcept {
-    // ---- Feature pNext chain: features_2 -> 1_1 -> 1_2 -> 1_3 -> 1_4 (truncated by api_version).
-    //      sType of every struct is fixed at construction (see the member initializers) ----
+    // ---- Ray tracing first, because it decides whether two structs join the chains below: the
+    //      feature structs of an extension that is not enabled must not be in the vkCreateDevice
+    //      chain, and the device may support the extensions without the features (or vice versa). ----
+    uint32_t extension_count = 0;
+    vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count, nullptr);
+    std::vector<VkExtensionProperties> available_extensions(extension_count);
+    vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count, available_extensions.data());
+    auto const has_extension = [&available_extensions](char const* name) {
+        return std::any_of(available_extensions.begin(), available_extensions.end(), [name](VkExtensionProperties const& entry) {
+            return std::string_view(entry.extensionName) == name;
+        });
+    };
+    bool const ray_tracing_extensions = has_extension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) && has_extension(VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+                                        has_extension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+
+    // ---- Feature pNext chain: features_2 -> 1_1 -> 1_2 -> 1_3 -> 1_4 (truncated by api_version),
+    //      then the extension features when the device has them. The TAIL is tracked rather than
+    //      assumed, and that is not defensive style: the engine queries at API 1.3, so features_1_4 is
+    //      not in the chain at all - a struct hung off it is never reached, and an unreached feature
+    //      struct reads back as zeros. That is exactly how "this device has ray queries" turned into
+    //      "not available" the first time this was written. ----
     features_2.pNext = api_version >= VK_API_VERSION_1_1 ? &features_1_1 : nullptr;
     features_1_1.pNext = api_version >= VK_API_VERSION_1_2 ? &features_1_2 : nullptr;
     features_1_2.pNext = api_version >= VK_API_VERSION_1_3 ? &features_1_3 : nullptr;
     features_1_3.pNext = api_version >= VK_API_VERSION_1_4 ? &features_1_4 : nullptr;
+    features_1_4.pNext = nullptr;
+    void* feature_tail = &features_2;
+    if (api_version >= VK_API_VERSION_1_1) {
+        feature_tail = &features_1_1;
+    }
+    if (api_version >= VK_API_VERSION_1_2) {
+        feature_tail = &features_1_2;
+    }
+    if (api_version >= VK_API_VERSION_1_3) {
+        feature_tail = &features_1_3;
+    }
+    if (api_version >= VK_API_VERSION_1_4) {
+        feature_tail = &features_1_4;
+    }
+    // (the cast is what the newer headers need: a concrete feature struct's pNext is void*, while
+    // VkBaseOutStructure's own pNext is typed - and the tail is reached through the base type)
+    static_cast<VkBaseOutStructure*>(feature_tail)->pNext = ray_tracing_extensions ? reinterpret_cast<VkBaseOutStructure*>(&acceleration_structure_features) : nullptr;
+    acceleration_structure_features.pNext = ray_tracing_extensions ? &ray_query_features : nullptr;
+    ray_query_features.pNext = nullptr;
     vkGetPhysicalDeviceFeatures2(physical_device, &features_2);
 
-    // ---- Property pNext chain: properties_2 -> driver -> subgroup -> descriptor indexing -> maintenance4 ----
+    // Both feature bits have to be true for the two structs to be worth keeping in the chain: the
+    // extensions can be advertised by a device that does not actually support ray queries. Unlinking
+    // here is what keeps "enabled at device creation" and "available to the renderer" the same thing.
+    ray_query_available = ray_tracing_extensions && acceleration_structure_features.accelerationStructure == VK_TRUE && ray_query_features.rayQuery == VK_TRUE;
+    if (!ray_query_available) {
+        static_cast<VkBaseOutStructure*>(feature_tail)->pNext = nullptr;
+        acceleration_structure_features.pNext = nullptr;
+    }
+
+    // ---- Property pNext chain: properties_2 -> driver -> subgroup -> descriptor indexing -> maintenance4
+    //      -> acceleration structure (only when available) ----
     properties_2.pNext = &driver_properties;
     driver_properties.pNext = &subgroup_properties;
     subgroup_properties.pNext = &descriptor_indexing_properties;
     descriptor_indexing_properties.pNext = &maintenance4_properties;
+    maintenance4_properties.pNext = ray_query_available ? &acceleration_structure_properties : nullptr;
+    acceleration_structure_properties.pNext = nullptr;
     vkGetPhysicalDeviceProperties2(physical_device, &properties_2);
 
     // ---- Feature policy: pass through driver support except explicitly disabled ones (take most features except ray tracing) ----
@@ -253,6 +303,17 @@ void print_device_capabilities(device_capabilities const& capabilities) {
                                                                                              });
     utility::log(" vulkan 1.3 features ({})", count_1_3);
     print_wrapped(enabled_1_3, 100, "   ");
+
+    // ---- Ray tracing: whether the optional extension features joined the chain (see query) ----
+    if (capabilities.ray_query_available) {
+        utility::log(" ray tracing   : ray query available (VK_KHR_acceleration_structure + VK_KHR_ray_query)");
+        utility::log("   limits      : {} instances, {} geometries, scratch alignment {}",
+                     capabilities.acceleration_structure_properties.maxInstanceCount,
+                     capabilities.acceleration_structure_properties.maxGeometryCount,
+                     capabilities.acceleration_structure_properties.minAccelerationStructureScratchOffsetAlignment);
+    } else {
+        utility::log(" ray tracing   : not available (ray-traced shadows and GI stay off)");
+    }
 
     utility::log("{}", box_line);
 }
@@ -598,8 +659,25 @@ VkFormat find_depth_format(VkPhysicalDevice physical_device) noexcept {
 }
 
 VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device) noexcept {
-    // 2D view, identity swizzle, one mip + one layer (see vulkan::make_image_view_info)
-    VkImageViewCreateInfo const view_info = vulkan::make_image_view_info(image, format, VK_IMAGE_VIEW_TYPE_2D, aspect_flags, 1, 1);
+    return create_image_view(image, format, aspect_flags, device, VK_IMAGE_VIEW_TYPE_2D);
+}
+
+VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device, VkImageViewType view_type) noexcept {
+    // identity swizzle, one mip + one layer (see vulkan::make_image_view_info); only the
+    // dimensionality differs between callers
+    VkImageViewCreateInfo const view_info = vulkan::make_image_view_info(image, format, view_type, aspect_flags, 1, 1);
+
+    VkImageView image_view;
+    if (vkCreateImageView(device, &view_info, nullptr, &image_view) != VK_SUCCESS) {
+        utility::panic("failed to create image view!");
+    }
+
+    return image_view;
+}
+VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device, VkImageViewType view_type, uint32_t layer_count) noexcept {
+    // identity swizzle, one mip, and the caller''s layer count: the sixth parameter is the whole reason this
+    // overload exists (a cube view covers six layers, and the other two overloads fix it at one)
+    VkImageViewCreateInfo const view_info = vulkan::make_image_view_info(image, format, view_type, aspect_flags, 1, layer_count);
 
     VkImageView image_view;
     if (vkCreateImageView(device, &view_info, nullptr, &image_view) != VK_SUCCESS) {

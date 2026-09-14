@@ -85,8 +85,18 @@ export namespace vulkan::render_resource {
         velocity,
         scene_color,
         taa_history,
+        // ---- the GI chain (one per swapchain image) ----
+        gi_trace,
+        gi_resolve,
+        gi_history,
+        gi_spatial,
+        gi_spec_trace,
+        gi_spec_reproject,
+        gi_spec_resolve,
+        gi_spec_history,
         // ---- one per frame slot ----
         shadow_map,
+        rt_shadow_visibility,
         camera_ubo,
         light_ubo,
         material_table,
@@ -97,11 +107,16 @@ export namespace vulkan::render_resource {
         cluster_counts,
         cluster_indices,
         // ---- device wide ----
+        probe_grid, // 8: four SH-2 coefficients per channel, two ping-pong sides, side*4+coefficient
+        probe_surface,
+        furnace_cube,
         scene_textures,
         white_texture,
         ibl_env,
         ibl_irradiance,
         brdf_lut,
+        // ---- what every traced pass needs ----
+        top_level_structure,
         /// the number of enumerators, so the schema's completeness can be checked by ITERATING rather than
         /// against a hand-kept list: `validate_schema()` requires exactly one entry per id in [1, count_)
         count_,
@@ -128,7 +143,7 @@ export namespace vulkan::render_resource {
     enum class resource_scope : uint8_t {
         per_frame_slot,      // shadow maps, the light/camera/material/instance buffers, the scene sets
         per_swapchain_image, // every GI image, the TAA history, the G-buffer, the HDR chain
-        device_wide,         // the IBL cubes, the bindless texture array and the material table
+        device_wide,         // the probe grid and its geometry, the furnace cube, the IBL cubes
     };
 
     /** @brief how long a resource lives: what decides whether a first-use transition or a clear exists */
@@ -157,8 +172,8 @@ export namespace vulkan::render_resource {
      * EACH ENTRY'S PROVENANCE, so the table can be re-derived rather than trusted: the HDR chain, the
      * G-buffer, the velocity and scene-colour targets and the TAA history are created in
      * `core::create_render_targets` (`core.cpp:506-693`); the GI chain's images at `636-749`; the probe grid
-     * and the material table are `vulkan.runtime`'s; the scene buffers and the IBL textures are
-     * `vulkan.runtime`'s as well. The shadow map is the one family `vulkan.runtime`
+     * and its geometry at `798-811`; the furnace cube at `814-825`; the ray-traced shadow visibility at
+     * `831-844`, one per FRAME SLOT rather than per image; the shadow map is the one family `vulkan.runtime`
      * creates itself (`runtime.cpp:495-560`, layered, one image per slot); the scene buffers and the IBL
      * textures are `vulkan.runtime`'s (`runtime.cpp:148-231`, `163-166`); the top level structure belongs to
      * `vulkan.acceleration_structure` and reaches shaders through the scene set.
@@ -168,7 +183,7 @@ export namespace vulkan::render_resource {
      * `core.cpp` would be a second copy of a fact - the thing this file's header warns about.
      * @ingroup vulkan_render_resource
      */
-    inline constexpr std::array<resource_info, 24> resource_schema = {{
+    inline constexpr std::array<resource_info, 37> resource_schema = {{
         {.id = resource_id::swapchain_image, .name = "swapchain_image", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::imported},
         {.id = resource_id::hdr, .name = "hdr", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::bloom, .name = "bloom", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
@@ -178,7 +193,16 @@ export namespace vulkan::render_resource {
         {.id = resource_id::velocity, .name = "velocity", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::scene_color, .name = "scene_color", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::taa_history, .name = "taa_history", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::persistent},
+        {.id = resource_id::gi_trace, .name = "gi_trace", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
+        {.id = resource_id::gi_resolve, .name = "gi_resolve", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
+        {.id = resource_id::gi_history, .name = "gi_history", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::persistent},
+        {.id = resource_id::gi_spatial, .name = "gi_spatial", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
+        {.id = resource_id::gi_spec_trace, .name = "gi_spec_trace", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
+        {.id = resource_id::gi_spec_reproject, .name = "gi_spec_reproject", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
+        {.id = resource_id::gi_spec_resolve, .name = "gi_spec_resolve", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
+        {.id = resource_id::gi_spec_history, .name = "gi_spec_history", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::persistent},
         {.id = resource_id::shadow_map, .name = "shadow_map", .kind = resource_kind::image2d, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::per_frame},
+        {.id = resource_id::rt_shadow_visibility, .name = "rt_shadow_visibility", .kind = resource_kind::image2d, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::camera_ubo, .name = "camera_ubo", .kind = resource_kind::buffer, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::light_ubo, .name = "light_ubo", .kind = resource_kind::buffer, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::material_table, .name = "material_table", .kind = resource_kind::buffer, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::persistent},
@@ -188,11 +212,15 @@ export namespace vulkan::render_resource {
         {.id = resource_id::morph_targets, .name = "morph_targets", .kind = resource_kind::buffer, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::persistent},
         {.id = resource_id::cluster_counts, .name = "cluster_counts", .kind = resource_kind::buffer, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::cluster_indices, .name = "cluster_indices", .kind = resource_kind::buffer, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::per_frame},
+        {.id = resource_id::probe_grid, .name = "probe_grid", .kind = resource_kind::image3d, .scope = resource_scope::device_wide, .lifetime = resource_lifetime::persistent, .count = 8},
+        {.id = resource_id::probe_surface, .name = "probe_surface", .kind = resource_kind::image3d, .scope = resource_scope::device_wide, .lifetime = resource_lifetime::persistent},
+        {.id = resource_id::furnace_cube, .name = "furnace_cube", .kind = resource_kind::image_cube, .scope = resource_scope::device_wide, .lifetime = resource_lifetime::persistent},
         {.id = resource_id::scene_textures, .name = "scene_textures", .kind = resource_kind::image2d, .scope = resource_scope::device_wide, .lifetime = resource_lifetime::persistent},
         {.id = resource_id::white_texture, .name = "white_texture", .kind = resource_kind::image2d, .scope = resource_scope::device_wide, .lifetime = resource_lifetime::persistent},
         {.id = resource_id::ibl_env, .name = "ibl_env", .kind = resource_kind::image_cube, .scope = resource_scope::device_wide, .lifetime = resource_lifetime::persistent},
         {.id = resource_id::ibl_irradiance, .name = "ibl_irradiance", .kind = resource_kind::image_cube, .scope = resource_scope::device_wide, .lifetime = resource_lifetime::persistent},
         {.id = resource_id::brdf_lut, .name = "brdf_lut", .kind = resource_kind::image2d, .scope = resource_scope::device_wide, .lifetime = resource_lifetime::persistent},
+        {.id = resource_id::top_level_structure, .name = "top_level_structure", .kind = resource_kind::accel_struct, .scope = resource_scope::device_wide, .lifetime = resource_lifetime::per_frame},
     }};
 
     /// @brief the schema entry for @p id, or nullptr when nothing declares it
@@ -660,6 +688,60 @@ export namespace vulkan::render_resource {
     }
 
     // =============================================================================================
+    // 4. THE FIRST DECLARATION - the probe cache, read off shaders/gi_probe.comp
+    // =============================================================================================
+
+    /**
+     * @brief the world-space probe cache's I/O, as its shader actually declares it
+     *
+     * Set 1 is the pass's own: bindings 0..3 are the ping-pong side being READ and 4..7 the side being
+     * WRITTEN, both in coefficient order - which is exactly the `side*4+coefficient` indexing the schema's
+     * `probe_grid` counts, and the reason a binding names an ELEMENT of a resource rather than a resource.
+     * Binding 8 is the per-cell surface geometry the propagation tests visibility with.
+     *
+     * Set 0 is the SHARED scene set: a cell's own ray needs the top level structure to trace, and the shared
+     * hit shading needs the material table, the texture array, the light UBO and the environment cubes to
+     * shade what it finds. Those bindings reference the SAME schema the pass's own do - which is the point of
+     * keeping the schema in one place and the usage with the pass.
+     */
+    inline constexpr std::array<pass_binding, 16> gi_probe_bindings = {{
+        // ALL NINE OF THE PASS'S OWN BINDINGS DECLARE `GENERAL`, and that is not tidiness: the two ping-pong
+        // sides stay in GENERAL for the whole update (which is what makes the propagation's barriers
+        // same-layout ones), and the per-cell geometry is written by the injection and read by the propagation
+        // in the same dispatch sequence. A descriptor claiming SHADER_READ for a sampled one of them would be a
+        // lie validation rejects at submit.
+        {.set = 1, .binding = 0, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 0, .access = binding_access::read, .sampler = sampler_hint::probe_grid, .layout = image_layout::general},
+        {.set = 1, .binding = 1, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 1, .access = binding_access::read, .sampler = sampler_hint::probe_grid, .layout = image_layout::general},
+        {.set = 1, .binding = 2, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 2, .access = binding_access::read, .sampler = sampler_hint::probe_grid, .layout = image_layout::general},
+        {.set = 1, .binding = 3, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 3, .access = binding_access::read, .sampler = sampler_hint::probe_grid, .layout = image_layout::general},
+        {.set = 1, .binding = 4, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 4, .access = binding_access::write, .layout = image_layout::general},
+        {.set = 1, .binding = 5, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 5, .access = binding_access::write, .layout = image_layout::general},
+        {.set = 1, .binding = 6, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 6, .access = binding_access::write, .layout = image_layout::general},
+        {.set = 1, .binding = 7, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 7, .access = binding_access::write, .layout = image_layout::general},
+        {.set = 1, .binding = 8, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_surface, .element = 0, .access = binding_access::write, .layout = image_layout::general},
+        {.set = 0, .binding = 1, .owner = set_owner::scene, .kind = binding_kind::sampled_image, .resource = resource_id::scene_textures, .access = binding_access::read, .sampler = sampler_hint::post},
+        {.set = 0, .binding = 2, .owner = set_owner::scene, .kind = binding_kind::sampled_image, .resource = resource_id::ibl_env, .access = binding_access::read, .sampler = sampler_hint::post},
+        {.set = 0, .binding = 3, .owner = set_owner::scene, .kind = binding_kind::sampled_image, .resource = resource_id::ibl_irradiance, .access = binding_access::read, .sampler = sampler_hint::post},
+        {.set = 0, .binding = 4, .owner = set_owner::scene, .kind = binding_kind::sampled_image, .resource = resource_id::brdf_lut, .access = binding_access::read, .sampler = sampler_hint::post},
+        {.set = 0, .binding = 5, .owner = set_owner::scene, .kind = binding_kind::storage_buffer, .resource = resource_id::material_table, .access = binding_access::read},
+        {.set = 0, .binding = 7, .owner = set_owner::scene, .kind = binding_kind::uniform_buffer, .resource = resource_id::light_ubo, .access = binding_access::read},
+        {.set = 0, .binding = 16, .owner = set_owner::scene, .kind = binding_kind::acceleration_structure, .resource = resource_id::top_level_structure, .access = binding_access::read},
+    }};
+
+    /// @brief the probe cache's declaration
+    /// @ingroup vulkan_render_resource
+    inline constexpr pass_io gi_probe_io = {
+        .name = "gi_probe",
+        .own_set = 1,
+        .bindings = gi_probe_bindings,
+        // The pass's push block, DECLARED here because it is the range its pipeline layout is built with and
+        // the size its host must compose. It is the pass's own struct
+        // (`vulkan.pass.gi_probe::gi_probe_pass::push_constants`), and `vulkan.pass.gi_probe` carries the
+        // `static_assert` that ties this number to that struct - a fact in two units that the compiler keeps
+        // in agreement is the next best thing to a fact in one.
+        .push = push_block{.offset = 0, .size = 56, .stages = stage_flag::compute},
+    };
+
     // =============================================================================================
     // 5. THE SECOND DECLARATION - the TAA resolve, read off shaders/taa.frag
     // =============================================================================================

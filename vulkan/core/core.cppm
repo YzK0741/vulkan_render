@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.21.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -147,6 +147,21 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_core
+     * @brief edge length, in cells, of one side of the world-space radiance probe grid (see
+     *        shaders/gi_probe.comp)
+     *
+     * A CUBE, so the grid has this many cells on every axis, and FIXED rather than a setting: the grid
+     * is anchored to the scene's bounds and its cell size therefore scales with the scene (a 1.6-unit
+     * model and Sponza's 18.5 get the same number of cells over a volume each of them fills), which is
+     * the same reasoning the shadow fit's cascades and `ssgi_radius` follow. 32^3 cells at RGBA16F is
+     * 256 KiB per grid, and the cache needs two of them (it ping-pongs) - small enough that fixing the
+     * resolution costs nothing worth a knob, and a fixed extent means the images can be created once,
+     * with the swapchain, instead of following a config value into the render-target code.
+     */
+    export constexpr uint32_t gi_probe_grid_extent = 32;
+
+    /**
+     * @ingroup vulkan_core
      * @brief GPU durations of one completed frame, in mark order (see core::mark_gpu_timing)
      * @note entry i is the time between mark i and mark i + 1, so a frame that wrote
      *       @p mark_count marks yields mark_count - 1 durations
@@ -197,6 +212,14 @@ namespace vulkan {
         // Filled in init_device_and_queue() from the capabilities query it already runs - no
         // second vkGetPhysicalDeviceProperties round trip.
         VkPhysicalDeviceProperties device_properties = {};
+        // Ray tracing is optional and comes from the device, not from a build option: when this is
+        // false the extensions were not enabled (see device_capabilities) and every ray-traced path
+        // skips itself. The properties carry the two limits the AS builder needs - the scratch
+        // buffer's required address alignment and the per-level instance/geometry caps - and are a
+        // plain data holder like device_properties above (assigned from the query, never passed to
+        // Vulkan), so they are zero-initialized rather than carrying a fixed sType.
+        bool ray_query_available = false;
+        VkPhysicalDeviceAccelerationStructurePropertiesKHR acceleration_structure_properties = {};
         uint32_t graphics_family_index = 0;
         uint32_t present_family_index = 0;
         VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
@@ -285,6 +308,99 @@ namespace vulkan {
         std::vector<VkDeviceMemory> velocity_image_memories = {};
         std::vector<VkImageView> velocity_image_views = {};
 
+        // ---- screen-space global illumination (see shaders/ssgi.comp) ----
+        // HALF resolution, one per swapchain image: the tracer writes it as a storage image and the
+        // denoiser's resolve samples it back as the RAW trace. Half res because the signal is
+        // low-frequency and this is the pass whose cost scales with sample count; the composite's
+        // bilinear fetch is the upsample. STORAGE because a compute pass writes a storage image, not
+        // an attachment.
+        std::vector<VkImage> gi_images = {};
+        std::vector<VkDeviceMemory> gi_image_memories = {};
+        std::vector<VkImageView> gi_image_views = {};
+        // The denoiser's two, also half resolution: the RESOLVED result (the temporal accumulation,
+        // and what becomes the next frame's history) and the history itself, which is written only
+        // by a copy - hence TRANSFER_DST plus SAMPLED, and nothing else.
+        std::vector<VkImage> gi_resolve_images = {};
+        std::vector<VkDeviceMemory> gi_resolve_image_memories = {};
+        std::vector<VkImageView> gi_resolve_image_views = {};
+        std::vector<VkImage> gi_history_images = {};
+        std::vector<VkDeviceMemory> gi_history_image_memories = {};
+        std::vector<VkImageView> gi_history_image_views = {};
+        // ... and the spatial filter's output, which is the image the composite actually samples:
+        // STORAGE because that filter writes it as a storage image, SAMPLED for the composite.
+        std::vector<VkImage> gi_spatial_images = {};
+        std::vector<VkDeviceMemory> gi_spatial_image_memories = {};
+        std::vector<VkImageView> gi_spatial_image_views = {};
+        // ... and the GLOSSY pass's own two outputs, which exist so that a reflection can be accumulated
+        // the way a reflection has to be rather than the way a diffuse bounce is (see the L2.3 motion
+        // section of docs/gi_hit_shading.md). `gi_spec_images` is the lobe's correction for this frame -
+        // a radiance plus a bookkeeping term, exactly like the diffuse trace - and
+        // `gi_spec_reproject_images` carries, per pixel, where the surface the reflection FOUND was on
+        // screen last frame plus that point's view depth. That is the reprojection a reflection needs: the
+        // reflecting surface's own motion describes nothing about it (it is usually static while the
+        // reflection slides across it), while the point the ray landed on moves across the screen with the
+        // camera at its own parallax. STORAGE for both (a compute pass writes them), SAMPLED for both (the
+        // resolve reads them back); half resolution like the rest of the chain, and never sampled by the
+        // composite.
+        std::vector<VkImage> gi_spec_images = {};
+        std::vector<VkDeviceMemory> gi_spec_image_memories = {};
+        std::vector<VkImageView> gi_spec_image_views = {};
+        std::vector<VkImage> gi_spec_reproject_images = {};
+        std::vector<VkDeviceMemory> gi_spec_reproject_image_memories = {};
+        std::vector<VkImageView> gi_spec_reproject_image_views = {};
+        // ... and the two the reflection's OWN accumulation needs. A separate pair from the trace outputs
+        // above, for exactly the reason the diffuse signal has one: the resolve writes the accumulation
+        // (STORAGE, read back by the spatial filter that sums the two signals together, and TRANSFER_SRC for
+        // the history copy), and a per-frame copy of it is next frame's history (TRANSFER_DST + SAMPLED and
+        // nothing else - the same two usages as the diffuse history).
+        std::vector<VkImage> gi_spec_resolve_images = {};
+        std::vector<VkDeviceMemory> gi_spec_resolve_image_memories = {};
+        std::vector<VkImageView> gi_spec_resolve_image_views = {};
+        std::vector<VkImage> gi_spec_history_images = {};
+        std::vector<VkDeviceMemory> gi_spec_history_image_memories = {};
+        std::vector<VkImageView> gi_spec_history_image_views = {};
+
+        // ---- the world-space radiance probe cache (see shaders/gi_probe.comp) ----
+        // EIGHT 3D images of gi_probe_grid_extent^3 RGBA16F cells: four SH-2 coefficients per channel times
+        // the two sides of the propagation's ping-pong, at index side * 4 + coefficient. Cell (x, y, z)
+        // covers a cube of the scene's bounds. NOT per swapchain image: the cache is anchored to the world,
+        // not to a view, so one copy serves every frame slot - which is the whole point of it. Side 0 is the
+        // cache (it is also what the tracer samples: the ping-pong is arranged so that a frame's last
+        // propagation lands back in it) and side 1 is its scratch. Coefficient 0's alpha is the cell's
+        // TRUST; the other three alphas are unused (shaders/probe_sh.glsl says what a coefficient is).
+        std::vector<VkImage> gi_probe_images = {};
+        std::vector<VkDeviceMemory> gi_probe_image_memories = {};
+        std::vector<VkImageView> gi_probe_image_views = {};
+        // ... and the geometry the propagation needs in order to test whether two cells can see each other:
+        // one vector per cell, from its centre to the NEAREST surface its own rays found, plus a validity
+        // flag (RGBA16F: xyz = the offset in world units, w = the flag). A probe's DEPTH MAP - per direction
+        // - is what the reference implementation stores and what makes a full bidirectional occlusion test
+        // possible; this renderer's cells each report the one surface closest to them, which is what a
+        // segment-versus-point test between two cells needs (see docs/gi_hit_shading.md, step A). One image,
+        // not a pair: the ping-pong applies to radiance, and this is geometry the INJECTION owns rather than
+        // something propagation rewrites.
+        std::vector<VkImage> gi_probe_surface_images = {};
+        std::vector<VkDeviceMemory> gi_probe_surface_image_memories = {};
+        std::vector<VkImageView> gi_probe_surface_image_views = {};
+        // The furnace verification mode's constant environment: one texel per face, all six faces at the
+        // mode's level. One element vectors rather than a scalar handle so the teardown paths that already
+        // know how to destroy a target set can be reused unchanged. Its CONTENTS come from a clear, which
+        // together with the binding that points the IBL at it is the next slice; until then nothing samples
+        // it, which is what keeps this addition invisible.
+        std::vector<VkImage> furnace_cube_images = {};
+        std::vector<VkDeviceMemory> furnace_cube_memories = {};
+        std::vector<VkImageView> furnace_cube_views = {};
+
+        // ---- ray-traced sun visibility (see shaders/rt_shadow.comp) ----
+        // FULL resolution, one per FRAME SLOT rather than per swapchain image: it is written and read
+        // within one frame, and BOTH ends are bound in the scene set, which is the per-slot set. A
+        // per-image image would have to be paired in that set with a per-slot top level structure, and
+        // the same image can be recorded on either slot - so the two are different lifetimes and mixing
+        // them would be wrong on exactly the frames where they disagree.
+        std::vector<VkImage> rt_shadow_images = {};
+        std::vector<VkDeviceMemory> rt_shadow_image_memories = {};
+        std::vector<VkImageView> rt_shadow_image_views = {};
+
         // ---- temporal anti-aliasing (see runtime::set_taa) ----
         // The scene color TAA resolves FROM, one per swapchain image: when TAA is on, the geometry
         // and lighting stages write this image instead of the HDR target, and the TAA resolve blends
@@ -316,6 +432,43 @@ namespace vulkan {
         void create_target_image(
             uint32_t width,
             uint32_t height,
+            VkFormat format,
+            VkImageTiling tiling,
+            VkImageUsageFlags usage,
+            VkMemoryPropertyFlags properties,
+            VkImage& image,
+            VkDeviceMemory& image_memory) const noexcept;
+
+        /**
+         * @ingroup vulkan_core
+         * @brief create a single-sampled 3D target image (the same allocation path as the 2D one)
+         * @param width / @p height / @p depth the three extents, in texels
+         * @note its own entry point rather than a defaulted fourth parameter on create_target_image:
+         *       the two differ in exactly one field of VkImageCreateInfo (imageType), and a caller that
+         *       reads `create_target_image_3d(w, h, d, ...)` cannot pass a depth of 1 by accident and
+         *       then sample the result as a volume.
+         */
+        /**
+         * @ingroup vulkan_core
+         * @brief create a single-sampled CUBE target: a six-layer 2D array with CUBE_COMPATIBLE set
+         * @param size the edge length of one face, in texels (all six faces are the same size)
+         * @note its own entry point rather than a generalised array helper, for the same reason
+         *       create_target_image_3d has one: a cube is six layers AND the compatibility flag, and a caller
+         *       that got one of those wrong would have an image the sampler refuses.
+         */
+        void create_target_image_cube(
+            uint32_t size,
+            VkFormat format,
+            VkImageTiling tiling,
+            VkImageUsageFlags usage,
+            VkMemoryPropertyFlags properties,
+            VkImage& image,
+            VkDeviceMemory& image_memory) const noexcept;
+
+        void create_target_image_3d(
+            uint32_t width,
+            uint32_t height,
+            uint32_t depth,
             VkFormat format,
             VkImageTiling tiling,
             VkImageUsageFlags usage,

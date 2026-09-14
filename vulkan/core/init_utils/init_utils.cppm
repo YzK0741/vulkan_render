@@ -76,6 +76,27 @@ export struct device_capabilities {
     VkPhysicalDeviceVulkan13Features features_1_3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkPhysicalDeviceVulkan14Features features_1_4 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES};
 
+    // ---- Ray tracing (VK_KHR_acceleration_structure + VK_KHR_ray_query). These are EXTENSION
+    //      features, so they cannot live in the core 1.x structs above: they are chained after them,
+    //      and ONLY when the device advertises every extension they need. A struct whose extension is
+    //      not enabled must not appear in the vkCreateDevice chain at all, so "is it linked" IS the
+    //      availability flag - see ray_query_available below, which query() sets.
+    //
+    //      VK_KHR_deferred_host_operations is in the list because the acceleration-structure extension
+    //      requires it (the build commands are specified in terms of it), not because this engine
+    //      builds asynchronously - it builds on the frame thread and waits. ----
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+    VkPhysicalDeviceRayQueryFeaturesKHR ray_query_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+    // The two limits the builder needs are in here, next to the features that gate them:
+    // minAccelerationStructureScratchOffsetAlignment (a scratch buffer's device address must be a
+    // multiple of it) and maxInstanceCount/maxGeometryCount (what fits in one level).
+    VkPhysicalDeviceAccelerationStructurePropertiesKHR acceleration_structure_properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+    /**
+     * @brief whether the device has the acceleration-structure and ray-query extensions AND both
+     *        features, i.e. whether the two structs above are in the query/device chains
+     */
+    bool ray_query_available = false;
+
     // ---- Property chain (query only, for renderer decisions/diagnostics) ----
     VkPhysicalDeviceProperties2 properties_2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     VkPhysicalDeviceDriverProperties driver_properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
@@ -251,3 +272,36 @@ export VkFormat find_depth_format(VkPhysicalDevice physical_device) noexcept;
  * @return the created image view
  */
 export VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device) noexcept;
+
+/**
+ * @ingroup vulkan_init_utils
+ * @brief create an image view of a chosen dimensionality for the given image
+ * @param image the source image
+ * @param format the image format
+ * @param aspect_flags the image aspect mask
+ * @param device the logical device
+ * @param view_type the view's dimensionality (VK_IMAGE_VIEW_TYPE_2D for everything the engine drew
+ *        before the probe grid existed, VK_IMAGE_VIEW_TYPE_3D for the world-space probe cache)
+ * @return the created image view
+ * @note a view's type has to agree with the image's: a 2D view of a 3D image is a validation error the
+ *       moment it is used, and a sampler3D binding needs the 3D one. One mip and one layer, like the
+ *       2D overload - neither the grid nor any target here is mipped or layered.
+ */
+export VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device, VkImageViewType view_type) noexcept;
+
+/**
+ * @ingroup vulkan_init_utils
+ * @brief create an image view of a chosen dimensionality AND layer count
+ * @param image the source image
+ * @param format the image format
+ * @param aspect_flags the image aspect mask
+ * @param device the logical device
+ * @param view_type the view''s dimensionality (VK_IMAGE_VIEW_TYPE_CUBE for the constant environment below)
+ * @param layer_count how many array layers the view covers (six for a cube, one for everything else)
+ * @return the created image view
+ * @note a layer count is what the other two overloads cannot express: they fix it at one, which is right for
+ *       every target this engine drew before the verification mode needed a cube. A CUBE view of a
+ *       six-layer image is the only user, and it needs all six layers in one view or the sampler sees one
+ *       face.
+ */
+export VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device, VkImageViewType view_type, uint32_t layer_count) noexcept;

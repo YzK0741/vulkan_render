@@ -198,6 +198,16 @@ namespace {
             info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
             break;
         }
+        case vulkan::buffer_type::acceleration_structure_storage:
+            [[fallthrough]];
+        case vulkan::buffer_type::acceleration_structure_scratch:
+            [[fallthrough]];
+        case vulkan::buffer_type::storage_gpu_only: {
+            // All three are device-local and host-untouched: an AS, its scratch and a compute-written
+            // storage buffer are filled by GPU work and never mapped, so there is nothing to keep coherent.
+            info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+            break;
+        }
         case vulkan::buffer_type::uniform_coherent: {
             info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
             // per-frame uniforms written straight into the persistent mapping with no flush: the
@@ -264,6 +274,21 @@ namespace {
         }
         case vulkan::buffer_type::readback_coherent: {
             info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            break;
+        }
+        case vulkan::buffer_type::acceleration_structure_storage: {
+            info.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+            break;
+        }
+        case vulkan::buffer_type::acceleration_structure_scratch: {
+            info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+            break;
+        }
+        case vulkan::buffer_type::storage_gpu_only: {
+            info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
             break;
         }
         }
@@ -386,7 +411,18 @@ namespace vulkan {
         vma_allocator_create_info.instance = instance;
         vma_allocator_create_info.device = device;
         vma_allocator_create_info.physicalDevice = physical_device;
-        vma_allocator_create_info.flags = 0;
+        // BUFFER_DEVICE_ADDRESS is what lets a buffer carry VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+        // at all: without it VMA refuses the combination (a debug assert that disappears in a release
+        // build, leaving a plain -3 from vmaCreateBuffer) because it would have to add
+        // VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT to the allocation and was not told it may. The
+        // acceleration-structure build reads the scene's vertex and index buffers through exactly those
+        // addresses, so this is a requirement of ray tracing, not an optimization.
+        //
+        // Unconditional, because it is not an optional feature: VMA only adds the memory flag for a
+        // buffer that asks for the usage bit, and the engine enables the core 1.2 bufferDeviceAddress
+        // feature by policy (all supported 1.2 features are passed through to vkCreateDevice). A device
+        // without it could not run the 1.3 paths this engine requires anyway.
+        vma_allocator_create_info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 
         vmaCreateAllocator(&vma_allocator_create_info, &this->allocator);
 
@@ -762,7 +798,7 @@ namespace vulkan {
         return true;
     }
 
-    vk_buffer vma_allocator::create_buffer(unsigned char const* data, uint64_t const size_byte, buffer_type const type) {
+    vk_buffer vma_allocator::create_buffer(unsigned char const* data, uint64_t const size_byte, buffer_type const type, VkBufferUsageFlags const extra_usage) {
         // the returned owner carries lambdas that call back into this allocator; they are
         // created here (a member function), so they may call the private free/retain below
         auto const make_owner = [this](uint64_t const handle) {
@@ -782,6 +818,9 @@ namespace vulkan {
         auto const allocation_create_info = get_allocation_info_from_type(type);
         auto buffer_create_info = get_create_info_from_type(type);
         buffer_create_info.size = size_byte;
+        // The caller's optional bits (see the header: they exist for usage that needs an optional
+        // extension, so they are added here rather than baked into the type's own usage).
+        buffer_create_info.usage |= extra_usage;
 
         VmaAllocation allocation = VK_NULL_HANDLE;
         VkBuffer buffer = VK_NULL_HANDLE;
@@ -818,6 +857,15 @@ namespace vulkan {
         case buffer_type::uniform_gpu_only:
             // Use a staging buffer
             upload_success = staging_upload(buffer, data, size_byte);
+            break;
+
+        case buffer_type::acceleration_structure_storage:
+        case buffer_type::acceleration_structure_scratch:
+        case buffer_type::storage_gpu_only:
+            // Allocate only, and REFUSE to take contents: these are filled by GPU work (a build command, or
+            // a compute pass for the mask bake), so a data pointer here is a caller that meant a different
+            // buffer type - and staging_upload() would memcpy from it rather than say so.
+            upload_success = data == nullptr;
             break;
         }
 

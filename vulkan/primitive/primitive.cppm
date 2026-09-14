@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene set; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -154,9 +154,12 @@ namespace vulkan {
         // last 10%): a hard switch would show the resolution/offset step as a visible line.
         float cascade_blend = 0.1f;
         float cascade_count = 1.0f; // active cascades (1 = the single-map path)
-        float _pad0 = 0.0f;         // keeps light_count on its 16-byte boundary (std140)
-        float _pad1 = 0.0f;
-        float _pad2 = 0.0f;
+        float rt_shadows = 0.0f;    // 1.0 = the sun's shadow comes from the ray-traced visibility image
+                                    // (runtime::set_rt_shadows + the device having ray queries), 0.0 = sample
+                                    // the cascaded shadow maps. Rides the std140 padding that keeps
+                                    // light_count on its 16-byte boundary.
+        float sun_intensity = 1.0f; // 1.0 normally; 0.0 in the furnace mode, which turns the sun off
+        float furnace_level = 0.0f; // 0.0 normally; the constant environment level in the furnace mode
         glm::vec4 light_count = {}; // x = active punctual light count (GLSL: uint), y = exposure, z = toon shading steps (0 = PBR), w = toon band softness
         std::array<point_light, max_punctual_lights> punctual_lights = {};
         // Clustered light culling (M5), APPENDED after the light array so the array's offset (352)
@@ -509,6 +512,10 @@ namespace vulkan {
         VkIndexType index_type = VK_INDEX_TYPE_UINT32;
         uint32_t index_count = 0;
         uint32_t vertex_count = 0;
+        // Bytes per vertex of the interleaved layout (position first). Only the acceleration-structure
+        // build reads it: the raster pipelines get the stride from their vertex input state, so this is
+        // the one consumer that has to be told (see vulkan.acceleration_structure).
+        uint32_t vertex_stride = 0;
 
         // Pipeline the primitive draws with. Empty = DEFAULT semantics: the primitive does not
         // care which pipeline records it, it asks the draw-time render_environment to bind that

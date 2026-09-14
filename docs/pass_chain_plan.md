@@ -10,24 +10,33 @@ earns them back one pass at a time.
 
 The capture gate's references live outside the repository, in
 `%LOCALAPPDATA%\vulkan_render\baseline`, and on this machine they were captured from `master` WITH GI. Those
-hashes are the acceptance test for restoring GI later (`default_gi` `BF180E98ADB29E7E`, `sponza_gi`
+hashes are the acceptance test for restoring GI (`default_gi` `BF180E98ADB29E7E`, `sponza_gi`
 `58EC848DFABE654A`, `metal_rough_glossy` `46F9851B7BC89872`, `glossy_motion` `98B06F2190B49519`).
 
-**Therefore every gate run on this branch must use its own baseline directory:**
+While the branch was pre-GI it compared against its own directory, so that a branch which renders no GI could
+not silently overwrite the anchor:
 
 ```powershell
 $env:VR_RENDER_BASELINE_DIR = "$env:LOCALAPPDATA\vulkan_render\baseline-pass-chain"
-pwsh -NoProfile -File scripts/windows/check_render.ps1            # compare (never -Update on the default dir)
 ```
 
-`-Update` may only ever be used with that variable set. Running it without is how the anchor would be
-destroyed, and it would be destroyed silently: the next gate run would compare against the wrong references and
-report "0 changed" for a branch that changed everything.
+**GI IS BACK, so that separation is over and the DEFAULT directory is now the acceptance** - compared, never
+updated. The rule that replaces it is narrower but harder: `-Update` must NEVER be run on this branch without
+an explicit baseline override, because the default directory is the anchor the objective is measured against,
+and `-Update` rewrites it from a SINGLE run with no determinism check (see the script's own note).
 
-This branch's gate has **7 scenarios**; the five GI-era scenarios and their configs live on `master` with the
-GI work. `sponza` is the useful overlap: its hash on this branch (`0EBA5300E8F84E6F`) is IDENTICAL to
-`master`'s, which is the evidence that the frames this branch renders are the frames `master` renders whenever
-GI is not involved.
+**AND THE GATE MUST BE GIVEN AN ABSOLUTE `-BuildDir`.** This is a measured finding, not a preference: with
+`-BuildDir build-release-clang64` (relative), `default_gi` reported FLAKY - two runs of one binary giving
+`1D72F82B946F0338` and `54B854F69AEAA620`, neither of them the reference. With
+`-BuildDir (Resolve-Path build-release-clang64).Path`, the same binary gives `BF180E98ADB29E7E` twice, i.e. the
+reference. The cause is the scenario config: the script writes `screenshot_dir` as `$BuildDir\render-check`, so
+a RELATIVE `-BuildDir` puts a relative path into the config, which the app resolves against a base that is not
+the working directory the script then searches - and the two runs end up being compared across two different
+places. Nothing about the renderer changed between those two gate runs.
+
+**FIXED IN THE SCRIPT**, because a harness that reports a false FLAKY is worse than one that fails: the script
+now canonicalizes `$BuildDir` with `Resolve-Path` before it derives the work directory, so both spellings mean
+the same run. Re-verified with the RELATIVE spelling afterwards: 12 x 2, 0 changed, 0 flaky, all four GI hashes.
 
 ## WHAT IS ON THIS BRANCH SO FAR
 
@@ -41,7 +50,9 @@ GI is not involved.
 | `bcf62bb` | the `scene` and `transparent` pass modules come over from `master` and build here with **no edit at all**. Still unconsumed: gate 7 x 2, 0 changed |
 | `1e2e493` | the **transparent pass is wired and recording**: the runtime drives a real `pass::stage`, and the frame is byte-identical |
 | `99583e6` | the **scene pass is wired**: the runtime no longer opens OR closes the surface instance, and `record_opaque_scene` / `record_main_segment` / `sub_render_task` are gone |
-| this step | the **TAA resolve is wired, and it is the first pass here that OWNS something**: set layout from its declaration, pipeline layout, pipeline, per-image family, history flags. `make_taa_pipeline` and `ensure_taa_descriptors` are gone, and the app's shader hand-over (`register_shader`) exists because a pass that builds a pipeline needs shader bytes |
+| `6cd9c6e` | the **TAA resolve is wired, and it is the first pass here that OWNS something**: set layout from its declaration, pipeline layout, pipeline, per-image family, history flags. `make_taa_pipeline` and `ensure_taa_descriptors` are gone, and the app's shader hand-over (`register_shader`) exists because a pass that builds a pipeline needs shader bytes |
+| `08b84ac` | the finding that the non-GI port is complete: `master` has four pass modules, three were wired |
+| this step | **GI IS ATTACHED**: the 37-row declaration layer, the `gi_probe` pass, the GI pipeline builders, the acceleration structures, the GI shaders and config, and the 12-scenario gate. **12 x 2, 0 changed, 0 flaky**, including all four GI reference hashes |
 
 `docs/pass_chain_inventory.md` (192 lines) is the read-only map of this state: its resource set, the frame's
 recording spine and mark intervals, every function of the PBR/scene chain with its attachments, sets,
@@ -118,6 +129,11 @@ The two facts the create context forced into the open, both recorded rather than
 * `pass_context::shader` is **null** here, because no pass wired on this branch declares a shader. The app-side
   registration (`register_shader`) therefore lands with the TAA pass, and until then a `create_passes` call's
   only observable effect is the VALIDATION of the declaration - which is still worth the call.
+
+**BOTH OF THOSE WERE RESOLVED BY THE STEPS THAT FOLLOWED**, and it is worth saying so here rather than leaving
+two stale bullets in a plan: the shader callback landed with TAA (`6cd9c6e`), and `probe_grid` got its sampler
+when the GI probe pass arrived (this step). The one thing that did NOT resolve is `nearest`, which is still null
+because the post chain still has no pass.
 
 `resolve_pass` is a two-branch `if (&pass == &this->scene) / (&this->transparent)` chain, and stays a chain
 until a third pass makes the missing table obvious (the next section's scene step has landed since this was
@@ -223,6 +239,42 @@ passes rather than the migration this branch is for, so they are out of the acce
 wording names the three passes (`scene/transparent/TAA`), and those three are done. What is left is GI: the
 probe cache first (it is master's fourth pass), then the tracer, the temporal and spatial filters, and the
 glossy lobe - added as passes, against `master`'s four reference hashes.
+
+## ATTACHING GI: WHAT WAS ALREADY THE SAME, AND THE ONE THING THAT WAS NOT
+
+The measurement that shaped this step, taken before any code moved: **the branch's shared architecture files
+were already byte-identical to `master`'s**. `git diff HEAD master` was EMPTY for `vulkan/pass/pass.cppm`,
+`vulkan/pass/scene.*`, `vulkan/pass/transparent.*`, `vulkan/bindings/bindings.cppm` and
+`vulkan/render_resource/shared.cppm`; `render_resource.cppm` differed by 86 lines (the GI declarations) and
+`pipelines.cppm` by 513 (the GI builders). So the rebuild had converged on the same architecture `master`
+converged on, and attaching GI was a matter of bringing the GI-era content into that shape:
+
+* **came over verbatim**: the 37-family declaration layer (13 GI resources, `gi_probe_io`, the SSGI
+  declarations), the `gi_probe` PASS module, the GI pipeline builders (tracer, temporal, spatial, spec,
+  probe, mask bake), `vulkan.acceleration_structure` (BLAS + the per-frame TLAS), `core`'s GI images and ray
+  query enablement, `constant_init`'s GI barriers, the GI shaders (`ssgi*.comp`, `gi_probe.comp`,
+  `hit_shading.glsl`, `probe_sh.glsl`, `rt_shadow.comp`, `mask_bake.comp`), `app_config`'s GI keys,
+  `main.cpp`/`chores.cpp`'s wiring of them, the 12-scenario gate with its five GI scenarios, and the tests
+  (`test_pass`, the GI half of `test_render_resources`, the new `test_app_config` expectations);
+* **could not be a slice**: the RUNTIME. The GI-era change to `vulkan/runtime.cpp` is a ~250 KB diff threaded
+  through the very functions the pass work touched (`record_scene_tail`, `record_taa_pass`, `create_passes`,
+  `resolve_pass`, `on_swapchain_recreated`, the destructor, `active_features`, the constructor), and it is
+  interleaved with the pass wiring rather than separable from it. Re-deriving 60 commits of that by hand would
+  have been a multi-round exercise whose only oracle is the final hash; adopting `master`'s runtime is the
+  honest way to attach it, and the four reference hashes are what checks it. **The branch's verified step-by-step
+  rebuild remains the record of how the architecture got there, and this step is the attachment.**
+
+What the GI chain's own shape says about "GI as passes", measured rather than assumed: of the whole chain,
+`master` extracted exactly ONE pass (`gi_probe` - the world-space probe cache). The tracer, the temporal
+accumulator, the spatial filter and the glossy lobe are runtime compute stages there, driven by the same
+`record_*` functions the pre-GI renderer used. So this step satisfies "the probe cache comes back as a pass" and
+leaves the rest as master has it; extracting those four into pass modules is the remaining architectural work,
+and it is NOT required for the acceptance - it would be verified by the same four hashes staying identical.
+
+ONE OPEN THREAD this step inherits and does not fix: the shared-set IMAGE channel. `gi_probe` binds the shared
+scene set and needs image handles from it, which the framework's `resolved_io` still cannot carry. Master's
+answer is that the pass resolves the shared set itself through the host and the declaration names the set; the
+framework-level version of that channel is still the gap the earlier sections record.
 
 ## WHAT THE INVENTORY ALREADY FOUND (recorded, not yet fixed)
 

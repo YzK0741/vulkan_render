@@ -1,0 +1,583 @@
+#version 460 // GL_EXT_ray_query is written against GLSL 4.60 (see shaders/rt_shadow.comp)
+#extension GL_EXT_ray_query : require
+// Shading a hit needs the geometry, and the only thing that reaches it without a descriptor is its
+// device address (see the instance table below): a buffer reference, plus the 64-bit arithmetic that
+// addresses it.
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+// The bindless texture array (set 0 binding 1) is indexed by the material's own indices, exactly as
+// shaders/surface.glsl indexes it: plain (uniform-per-draw there) indices into a partially-bound array.
+#extension GL_EXT_nonuniform_qualifier : enable
+
+/**
+ * @file shaders/ssgi.comp
+ * @brief Screen-space global illumination: one bounce of diffuse indirect light, at half resolution.
+ * @ingroup shaders
+ *
+ * This is the tracer, and it is deliberately the CHEAP half of a global-illumination system: it
+ * marches the depth buffer in screen space, so it can only see what is already on screen. A ray that
+ * leaves the frame finds nothing and contributes nothing, which is why the result is added ON TOP of
+ * the environment probe (shading.glsl's split-sum IBL) rather than replacing it - the probe is the
+ * off-screen fallback, and it is also why `ssgi_intensity` exists: the probe already claims some of
+ * this light, so the two together over-brighten unless the screen-space part is dialled back. Making
+ * the off-screen half correct is what a ray query (or a surface cache) buys, and it is a later step.
+ *
+ * WHAT IT SAMPLES, AND WHY THAT MATTERS MORE THAN THE MARCH
+ * The DIRECT radiance at a hit comes from `direct_radiance` = the HDR scene target as it stands after
+ * the lighting stage. It is sampled by a pass that runs BEFORE the composite which adds this pass's
+ * output, and the whole image is rewritten earlier in every frame (by the TAA resolve, or by the
+ * G-buffer pass's clear when TAA is off). So the tracer can never read its own result.
+ *
+ * The rest of what a ray carries is `gi_resolve`, and that one IS a feedback: it holds the temporal
+ * resolve's output, i.e. the accumulated indirect of the previous frame, and adding a fraction of it
+ * (`pc.frame_info.z`, [render] ssgi_bounce) to a hit is what makes this a MULTI-bounce estimator - a
+ * ray then returns the light LEAVING the surface it hit, indirect included, instead of the direct light
+ * alone. The loop is deliberate and bounded, and the bound has to be stated because it is the whole
+ * risk of the technique: the fraction is the gain, the surfaces' diffuse albedos (which the estimator
+ * multiplies in at both ends) are below one, and what comes back is a temporal average rather than an
+ * immediate echo of this frame's output - so the series converges instead of accumulating energy. It is
+ * bounded but not free: the image being fed back already carries `pc.params.y` (ssgi_intensity), so the
+ * loop's gain is `frame_info.z * ssgi_intensity`, which is why the runtime keeps the gain at or below
+ * one and why a measurement (a static camera whose mean luminance neither decays nor grows over a
+ * hundred frames) is the only thing that shows whether a given pair is stable. It also amplifies
+ * whatever the fed-back image already contains, including the probe's approximation of the off-screen
+ * light - one more reason the gain is a modest fraction rather than one, and a limit that a real
+ * multi-bounce (a surface cache or a radiance probe grid) would remove.
+ *
+ * The output is `albedo * mean(radiance)` over cosine-weighted hemisphere rays, which is the
+ * one-bounce diffuse estimator - the pi factors cancel by construction. It is written at HALF
+ * resolution, because the signal is low-frequency and this is the pass whose cost scales with sample
+ * count, and it is a RAW one: 2 rays per pixel is a field of white noise with the right average, and
+ * what turns that into an image is the denoise chain - the temporal resolve in
+ * shaders/ssgi_temporal.comp, which reads this pass's output as its `gi_trace` binding, and the
+ * joint-bilateral filter in shaders/ssgi_spatial.comp after it. The composite samples the filter's
+ * result, not this image: the three are separate so that the accumulation reads and writes different
+ * images, and so that the spatial pass cannot feed back into the accumulation.
+ *
+ * IT IS NO LONGER THE ONLY WRITER OF THAT IMAGE, and the reader should know that before changing what
+ * this pass stores: the GLOSSY lobe (shaders/ssgi_spec.comp, [render] ssgi_specular) runs immediately
+ * after it, adds a traced reflection to the same texels and hands the combined trace to the denoiser.
+ * It does that rather than owning an image of its own so that the temporal resolve's neighbourhood
+ * clamp sees one radiance quantity instead of two (see that pass's header); nothing about this pass's
+ * own estimate changes, and with the glossy lobe off this is byte-for-byte the pass it always was.
+ *
+ * Known limitations, stated rather than discovered later: geometry outside the frame contributes
+ * nothing; thin occluders are missed between steps; and alphaMode MASK surfaces are solid here,
+ * because a depth buffer has no alpha.
+ */
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+/// @brief the ray query's own tmin: how far along a ray an intersection is ignored, which is the engine's
+///        fixed self-intersection guard. A ray SHORTER than this has nothing to search (see rt_hit_radiance),
+///        so it is also the threshold that makes a "nothing reachable" configuration expressible.
+const float RAY_TMIN = 0.01;
+
+layout(set = 0, binding = 0) uniform CameraUBO {
+    mat4 view;
+    mat4 proj;
+    vec4 camera_pos;
+} camera;
+
+// The G-buffer set (see runtime::ensure_gbuffer_descriptors): this pass reads the stored surface and
+// the direct radiance, and writes the raw GI image the denoiser resolves. The bindings it does not
+// declare (material, velocity) are still in the layout because the lighting stage and the debug view
+// share it.
+layout(set = 1, binding = 0) uniform sampler2D gbuffer_albedo;   // RGBA8: albedo.rgb + metallic
+layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal;   // RGBA16F: world normal.xyz
+layout(set = 1, binding = 2) uniform sampler2D gbuffer_material; // RGBA8: .b = the material's baked AO (see deferred.frag)
+layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;    // the pass's own 1x depth
+layout(set = 1, binding = 5) uniform sampler2D direct_radiance;  // HDR scene target: DIRECT light only
+// The temporal resolve's output, sampled at a hit to re-emit the indirect that arrived there (see the
+// file header and pc.frame_info.z). It is the PREVIOUS frame's content of that image: the resolve
+// overwrites it later in this same frame, after this pass has run, which is what keeps the feedback a
+// delay rather than an echo of the frame it is part of.
+layout(set = 1, binding = 7) uniform sampler2D gi_resolve;
+// The probe, for the rays that leave the frame or hit something the camera cannot see: the irradiance
+// map the lighting stage uses for its ambient, sampled along the RAY direction. This is what turns the
+// traced path from "screen-space GI" into the full one-bounce diffuse indirect - see rt_hit_radiance.
+layout(set = 0, binding = 3) uniform samplerCube irradiance_sampler;
+layout(set = 1, binding = 6, rgba16f) uniform image2D gi_output; // half-res RAW indirect, one texel per invocation
+// The scene's top level structure (scene set binding 16, declared only when the device has ray queries):
+// the RAY-TRACED hit oracle, used instead of march() when pc.frame_info.y is set. Nothing else about the
+// pass changes - the rays are the same cosine-weighted ones, the radiance still comes from the same
+// direct-radiance image, and the same denoiser consumes the output.
+layout(set = 0, binding = 16) uniform accelerationStructureEXT tlas;
+// The world-space radiance cache (G-buffer set bindings 9..12, declared only because the tracer is the pass
+// that reads it): FOUR sampler3D images covering the scene's bounds, holding the SH-2 radiance the frames
+// before this one deposited into each cell - sh0 is the DC coefficient and carries the cell's TRUST in its
+// alpha, then the three first-order terms (see shaders/probe_sh.glsl). Together they answer for a
+// DIRECTION, which is what makes the cache able to say "bright to my left, dark to my right". It is the
+// answer for a hit the SCREEN cannot resolve - off screen, or hidden behind a nearer surface - which is
+// where the environment probe below is only the sky at infinity. Not sampled at all while the gain is 0.
+layout(set = 1, binding = 9) uniform sampler3D gi_probe_sh0;
+layout(set = 1, binding = 10) uniform sampler3D gi_probe_sh1;
+layout(set = 1, binding = 11) uniform sampler3D gi_probe_sh2;
+layout(set = 1, binding = 12) uniform sampler3D gi_probe_sh3;
+
+layout(push_constant) uniform SsgiPush {
+    mat4 inv_view_proj; // clip -> world (the same block deferred.frag uses)
+    // x = ray length in world units, y = intensity, z = rays per pixel,
+    // w = steps per ray on a MARCHED frame, the ray-origin bias on a TRACED one. One lane for two
+    // meanings, and it is not a shortcut: this block is exactly 128 bytes - the smallest range Vulkan
+    // guarantees - so a lane has to be freed before one can be spent, and these two never coexist (a
+    // frame either marches all its rays or traces all of them, and the shader branches on exactly that
+    // flag before either reading). What it buys is that the traced path's origin bias can be a
+    // WORLD-SPACE distance rather than a fraction of the ray length: `radius * 0.02` makes the offset
+    // scale with a knob that means REACH, so the same config lifted the origin 0.045 world units inside
+    // Sponza and 0.017 on a compact model. The marched path keeps the fraction, where it is the step
+    // size's own scale rather than a scene's.
+    vec4 params;
+    // x = projection[2][2], y = [3][2] (the view-depth linearization pair).
+    // z/w are FREE LANES, deliberately: this block is exactly 128 bytes - the smallest push-constant
+    // range Vulkan guarantees - so a lane has to be freed before one can be spent. The GI extent used to
+    // live in z/w and does not need to: the storage image this pass writes knows its own size
+    // (imageSize(gi_output) below), which is a fact about the dispatch rather than about the frame.
+    // z is where the hit-shading mode will go (see rt_hit_radiance: today a hit's radiance is the
+    // screen's, and the step that makes it the hit surface's own needs a lane to be A/B-able).
+    vec4 proj_terms;
+    // x = a per-frame counter, so the ray sequence differs every frame. A temporal denoiser needs
+    // that: a fixed sequence would keep making the same mistake in the same place.
+    // y = 1.0 when the rays are traced against the acceleration structures instead of marched (see
+    // rt_hit_radiance). One lane rather than a field because the push block's size is a pipeline layout
+    // constant every consumer shares.
+    // z = the fraction of the previous frame's accumulated indirect a hit re-emits: the multi-bounce
+    // gain ([render] ssgi_bounce). 0 makes this a single-bounce estimator, which is what every
+    // measurement taken before the knob existed was taken with.
+    // w = how much of the world-space probe cache's answer to add for a hit the screen cannot resolve
+    // (see probe_radiance). 0 - the default - leaves those hits on the environment probe alone, and it
+    // also means the cache is not even fetched.
+    vec4 frame_info;
+    // xyz = the world position of the probe grid's cell (0,0,0) CORNER, w = one cell's size in world
+    // units. The grid's extent comes from textureSize() below rather than from a lane of its own: this
+    // block is exactly 128 bytes, the smallest range Vulkan guarantees.
+    vec4 probe_grid;
+} pc;
+
+/**
+ * @brief view-space distance of a depth-buffer value
+ * @param z_ndc the stored depth in [0,1]
+ * @return a positive view-space distance
+ * @note the same inversion the G-buffer debug view uses: the stored z is (proj_22 * z_view +
+ *       proj_32) / -z_view, so z_view = proj_32 / (z_ndc + proj_22).
+ */
+float view_depth(float z_ndc) {
+    return pc.proj_terms.y / (z_ndc + pc.proj_terms.x);
+}
+
+/**
+ * @brief project a view-space point to the screen
+ * @param view_pos the point
+ * @param out_ndc_z the point's NDC depth
+ * @return the UV, in the same convention as the G-buffer's v_uv (0,0 top-left - the y flip is
+ *         already inside camera.proj, which is what makes a texture() at this UV line up)
+ */
+vec2 project_to_uv(vec3 view_pos, out float out_ndc_z) {
+    const vec4 clip = camera.proj * vec4(view_pos, 1.0);
+    const vec3 ndc = clip.xyz / clip.w;
+    out_ndc_z = ndc.z;
+    return ndc.xy * 0.5 + 0.5;
+}
+
+/**
+ * @brief a cosine-weighted direction in the hemisphere around @p n
+ * @param n the surface normal (any space; the result is in the same one)
+ * @param u1 / @p u2 two uniforms in [0,1)
+ * @return a unit direction, distributed as cos(theta)/pi
+ *
+ * Cosine weighting is what makes the estimator `albedo * mean(radiance)` with no extra factor, and it
+ * concentrates the rays where the cosine term is large - which is both correct and cheaper than
+ * uniform sampling for the same noise.
+ */
+vec3 cosine_direction(vec3 n, float u1, float u2) {
+    const float r = sqrt(u1);
+    const float phi = 6.283185307179586 * u2;
+    const vec3 helper = abs(n.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+    const vec3 tangent = normalize(cross(helper, n));
+    const vec3 bitangent = cross(n, tangent);
+    return normalize(tangent * (r * cos(phi)) + bitangent * (r * sin(phi)) + n * sqrt(max(1.0 - u1, 0.0)));
+}
+
+/** @brief a PCG-style integer hash: the ray sequence's only source of randomness */
+uint hash_u32(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+/** @brief the next uniform in [0,1) from @p state (a hash chain, so no table and no texture) */
+float next_uniform(inout uint state) {
+    state = hash_u32(state);
+    return float(state) * (1.0 / 4294967296.0);
+}
+
+/**
+ * @brief march @p dir from @p origin and report the first screen-space hit
+ * @param origin the view-space start (already pushed off the surface)
+ * @param dir the unit view-space direction
+ * @param max_distance how far to march, in view units
+ * @param steps how many samples to take along the way
+ * @param out_uv the UV of the hit
+ * @return true when the ray passed behind geometry that the depth buffer knows about
+ *
+ * The test is "is this sample behind the surface the depth buffer holds here": sample_view >
+ * buffer_view. The tolerance grows with distance because a screen-space march has no idea how the
+ * surface is sloped - a fixed epsilon either self-hits on a steep surface or lets a ray pass through
+ * a distant wall. A ray that runs off the frame or finds nothing is a miss, and a miss contributes
+ * zero: that is the honest answer for a technique that cannot see off screen.
+ */
+bool march(vec3 origin, vec3 dir, float max_distance, int steps, out vec2 out_uv) {
+    const float step_length = max_distance / float(steps);
+    for (int i = 1; i <= steps; ++i) {
+        const vec3 point = origin + dir * (step_length * float(i));
+        float ndc_z = 0.0;
+        const vec2 uv = project_to_uv(point, ndc_z);
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+            return false; // off screen: nothing to hit
+        }
+        const float buffer_ndc = texture(gbuffer_depth, uv).r;
+        if (buffer_ndc >= 1.0) {
+            continue; // empty space (the cleared far plane): keep marching
+        }
+        const float buffer_view = view_depth(buffer_ndc);
+        const float sample_view = -point.z; // view space looks down -Z, so depth is the negation
+        if (sample_view > buffer_view + max(0.02 * sample_view, 0.02)) {
+            out_uv = uv;
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * @brief what the surface at a hit re-emits along the ray: the multi-bounce term
+ * @param uv the hit, in full-resolution screen UV (the resolve image is half-res; the sampler filters)
+ * @return `frame_info.z * ` the previous frame's accumulated indirect there, or 0 when the gain is off
+ * @note the fetch sits inside the branch rather than being multiplied by a zero gain. The image has no
+ *       defined contents on the frames before it has been resolved once (the runtime transitions it to
+ *       SHADER_READ so the descriptor is legal, but its texels are whatever the allocation held), and
+ *       zero times a NaN is a NaN - which the temporal filter would then carry into the image. Reading
+ *       nothing when the gain is zero is both correct and free.
+ */
+vec3 bounce_radiance(vec2 uv) {
+    return pc.frame_info.z > 0.0 ? pc.frame_info.z * texture(gi_resolve, uv).rgb : vec3(0.0);
+}
+
+// The SH-2 basis and the reconstruction, shared with the pass that fills these cells: the projection there
+// and the reconstruction here have to agree exactly, so they are one definition.
+#include "probe_sh.glsl"
+
+/**
+ * @brief the cache's answer at @p uvw for radiance arriving from @p dir
+ * @param uvw the cell's position in the grid, normalized
+ * @param dir the world-space direction the radiance arrives FROM (the caller flips it when the direction
+ *        A/B is on)
+ * @return the cell's radiance and its trust
+ *
+ * FOUR COEFFICIENTS PER CHANNEL, so @p dir DECIDES the answer: this is the L2.1 change. A cell between a
+ * bright window and a dark wall used to average the two into one RGB and answer identically for a ray
+ * arriving along @p dir and one arriving along -@p dir; it now answers both separately. The direction A/B in
+ * probe_radiance is the measurement of exactly that: it changes nothing else, and it produced two
+ * byte-identical captures while the previous body ignored its second argument.
+ *
+ * The four images are sampled with the binding's LINEAR sampler3D, so a lookup is a trilinear blend of the
+ * neighbouring cells' coefficients - which is the same thing as a blend of their radiance functions, because
+ * the basis is world-aligned.
+ */
+vec4 probe_cache(vec3 uvw, vec3 dir) {
+    // The reconstruction itself is probe_sh.glsl's, shared with the hit-shading include (see
+    // probe_sh_sample) - this is only the tracer's own way of naming its four coefficient images.
+    return probe_sh_sample(gi_probe_sh0, gi_probe_sh1, gi_probe_sh2, gi_probe_sh3, uvw, dir);
+}
+
+/**
+ * @brief what answers a hit the screen cannot resolve: the world-space cache where it is trusted, the
+ *        far-field environment otherwise
+ * @param world the hit's world position
+ * @param dir the world-space ray direction (what the far-field probe is sampled along)
+ * @return the incoming radiance for that hit
+ *
+ * REPLACE, not add, and that is the whole point of this function. The probe cache's cells trace their own
+ * rays, so a cell that is trusted already holds the incoming radiance from its surroundings - the sky
+ * included, because a ray that escapes is answered by the sky. Adding the far-field probe on top of that
+ * counts the same sky twice, and the measurement said exactly that: the cache was adding five percent of
+ * every region's brightness (5.43% of the darkest third, 5.47% of the middle, 0.43% of the brightest),
+ * which is the signature of an ambient term rather than of recovered off-screen light.
+ *
+ * So the cache and the far-field probe are two estimates of the SAME quantity and they are blended by how
+ * much the cache is trusted: a cell no ray has filled contributes nothing and the sky answers alone, a
+ * cell the rays have filled answers with what they found. `frame_info.w` is still the knob - it scales how
+ * far the blend goes towards the cache - so 0 remains what it always was: the far-field probe, untouched.
+ */
+vec3 probe_radiance(vec3 world, vec3 dir) {
+    const vec3 far_field = texture(irradiance_sampler, dir).rgb;
+    // The gain's SIGN is the cache's direction A/B, and it is the only thing that changes with it: the
+    // far-field term above is sampled along the ray either way, so a capture at -gain differs from one at
+    // +gain ONLY through the cache. |gain| is the gain; a negative gain asks the same cell for the
+    // radiance arriving from the OPPOSITE side.
+    const float gain = pc.frame_info.w;
+    const float trust_scale = clamp(abs(gain), 0.0, 1.0);
+    if (trust_scale <= 0.0) {
+        return far_field; // the cache is off, or has never been filled: nothing to blend with
+    }
+    const vec3 cell = (world - pc.probe_grid.xyz) / pc.probe_grid.w;
+    const vec3 uvw = (cell + 0.5) / vec3(textureSize(gi_probe_sh0, 0)); // all four coefficient images share it
+    if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) {
+        return far_field; // outside the grid's cube (the scene's bounds): the cache has nothing to say
+    }
+    const vec4 cached = probe_cache(uvw, gain < 0.0 ? -dir : dir);
+    return mix(far_field, cached.rgb, trust_scale * clamp(cached.a, 0.0, 1.0));
+}
+// The light UBO, declared as the same truncated PREFIX shaders/rt_shadow.comp uses: the sun's direction
+// is the only field this pass reads (the full block's layout is the lighting stage's business).
+#include "hit_shading.glsl"
+
+/**
+ * @brief the instance table's device address, or 0 when a hit cannot be shaded
+ *
+ * The two lanes carry the low and high halves of one 64-bit address, bit-reinterpreted: a push constant is
+ * raw bytes, so a float lane holds an address's half exactly as written, and this is the one place in the
+ * pass where a lane is not a number. It is also the feature's switch - see shade_hit - and it belongs to
+ * THIS pass rather than to the shared file, because the probe pass carries the same address in a lane of
+ * its own.
+ */
+uint64_t instance_table_address() {
+    return (uint64_t(floatBitsToUint(pc.proj_terms.w)) << 32u) | uint64_t(floatBitsToUint(pc.proj_terms.z));
+}
+/**
+ * @brief trace @p dir from @p origin and report the radiance of what it hits
+ * @param origin the WORLD-space start (already pushed off the surface)
+ * @param dir the unit world-space direction
+ * @param max_distance how far to trace, in world units
+ * @param out_hit whether the ray found any surface at all
+ * @return the radiance at the hit, or 0 when the hit contributes nothing
+ *
+ * TWO WAYS TO ANSWER A HIT, and which one runs is the runtime's decision:
+ *  - the hit is SHADED from the geometry it landed on (see shade_hit), which is what the instance table
+ *    the runtime publishes switches on. The answer depends on the hit surface and the lights alone, so a
+ *    hit the camera cannot see is answered correctly instead of approximated;
+ *  - or the hit is REPROJECTED into the frame and the lighting stage's direct radiance is sampled there,
+ *    which is what every earlier measurement was taken with. It is the A/B, and it is also what a frame
+ *    without a published table gets.
+ * The rest of this comment describes the second one.
+ *
+ * This is the same estimator as march() with a different hit oracle. marra() has to decide "did I hit
+ * something" from a depth buffer it samples along the way, which is why it needs a distance-scaled
+ * tolerance, misses anything thinner than a step, and calls a ray that leaves the frame a miss; a ray
+ * query answers the same question exactly. The radiance still comes from the screen's DIRECT radiance
+ * image, which is what keeps the result comparable to the marched version and keeps this pass an
+ * ADDITION to the environment probe rather than a replacement for it: a hit that is off screen (or
+ * hidden behind a nearer surface on screen) contributes nothing, exactly as before, so the probe still
+ * owns the off-screen light and `ssgi_intensity` still reconciles the two.
+ *
+ * That last part is deliberate for this step. Filling off-screen hits with the probe's irradiance would
+ * make this pass reproduce the ambient the shading stage ALREADY adds for every pixel, i.e. it would
+ * count the off-screen part twice: doing that correctly means the lighting stage stops adding its own
+ * diffuse ambient when this pass covers it, which is a change to what the ambient MEANS and belongs in
+ * a step of its own with its own measurement.
+ *
+ * The multi-bounce term is added on the SCREEN-VALIDATED path only. The three probe returns below are
+ * rays that found no surface within their length, or whose hit the camera cannot see: there is no
+ * surface there to re-emit anything, and the probe value is an estimate of the ambient at the ORIGIN of
+ * the ray, not radiance arriving from that direction - so scaling it by the gain would amplify an
+ * approximation rather than close a light path.
+ *
+ * The world-space cache IS added on two of those three returns, and the difference is the whole reason
+ * it exists: a hit that is off screen or hidden still has a world POSITION, and the cache is defined
+ * there (see probe_radiance). It is the one fallback that knows where the ray landed.
+ *  @param origin_bias the world-space distance a SHADED hit's own shadow ray starts off its surface by
+ *         (see the push block's comment on params.w: it is the same value this frame's traced rays use
+ *         for their own origin, and it is a length rather than a fraction of one)
+ */
+vec3 rt_hit_radiance(vec3 origin, vec3 dir, float max_distance, float origin_bias, out bool out_hit) {
+    out_hit = false;
+    // A RAY LENGTH AT OR BELOW THE QUERY'S OWN tmin HAS NO INTERVAL TO SEARCH, so the query is not issued:
+    // `rayQueryInitializeEXT` with tmax <= tmin is forbidden by the specification, and "nothing is
+    // reachable" is what it means - the same answer as a miss, which is the environment probe. This WAS
+    // being issued with an empty interval and returned no hit because that is what an invalid query does,
+    // silently: every identity measurement of the traced DIFFUSE chain (`ssgi_radius` small enough that the
+    // length lands below 0.01) was taken with it, which is why the guard has to be verified to leave those
+    // frames where they were rather than to "fix" them into something else. shaders/ssgi_spec.comp has the
+    // same guard, from the same finding.
+    if (max_distance <= RAY_TMIN) {
+        return texture(irradiance_sampler, dir).rgb;
+    }
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, tlas, gl_RayFlagsOpaqueEXT, 0xFF, origin, RAY_TMIN, dir, max_distance);
+    while (rayQueryProceedEXT(query)) {
+    }
+    if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+        // Nothing within the ray''s length: the probe answers for that direction.
+        return texture(irradiance_sampler, dir).rgb;
+    }
+    out_hit = true;
+
+    // Reproject the hit into the frame and take the direct radiance the lighting stage wrote there -
+    // but only if the depth buffer's surface at that pixel IS the surface that was hit. Reprojection
+    // alone cannot know that: the ray can hit something the camera cannot see (behind a wall, or outside
+    // the frame), and sampling the visible surface's radiance for it would invent light.
+    // The hit's world position from the distance along the ray: GL_EXT_ray_query has no
+    // "intersection world position" query - only the t and the ray (getting the position itself would
+    // mean interpolating the triangle, which needs the vertex data and barycentrics).
+    const float hit_t = rayQueryGetIntersectionTEXT(query, true);
+    const vec3 hit_world = rayQueryGetWorldRayOriginEXT(query) + hit_t * rayQueryGetWorldRayDirectionEXT(query);
+
+    // Shading the hit from the geometry, when the runtime has published an instance table: the answer
+    // then depends on the hit surface and the lights alone, which is what lets a hit the camera cannot
+    // see be answered at all (see shade_hit). The screen path below stays for the frames where it is
+    // off - it is the A/B, and it is also what a device whose structures are not built yet gets.
+    if (instance_table_address() != 0u) {
+        // A diffuse bounce cannot leave a solid's interior, so a hit on a triangle's BACK face - the ray
+        // was inside the geometry, or is on its way out of it - is not a surface this ray can carry light
+        // from. The traversal is allowed to report those (every geometry is built with facing cull
+        // disabled), and the screen path never had to think about them: its depth guard discarded them.
+        //
+        // It is CORRECTNESS, not the explanation for the shaded path's brightness, and the measurement
+        // says so: rejecting them moves the frame by +0.08 of the 1.29 mean brightness that shading only
+        // the hits the screen confirms recovers. So the population responsible for that difference is
+        // hidden but perfectly VALID surfaces, which the screen path answers with the environment probe (a
+        // sky estimate) and this one with their own shading - shadowed, interior, and legitimately darker
+        // than a probe. That is the shape of the remaining difference, and testing it means comparing the
+        // two answers for the same rays rather than another frame-level A/B.
+        if (!rayQueryGetIntersectionFrontFaceEXT(query, true)) {
+            return probe_radiance(hit_world, dir);
+        }
+        vec3 shaded = vec3(0.0);
+        if (shade_hit(query, hit_world, dir, camera.camera_pos.xyz - hit_world, instance_table_address(), origin_bias,
+                      gi_probe_sh0, gi_probe_sh1, gi_probe_sh2, gi_probe_sh3, pc.probe_grid, pc.frame_info.z, shaded)) {
+            // The shaded surface's own outgoing radiance: direct sun, the split-sum IBL ambient and its
+            // emissive. The screen-space multi-bounce feedback is deliberately NOT added on top: the
+            // ambient a shaded hit carries already IS its indirect estimate, so adding the feedback (which
+            // is injected from this same chain) would count that light twice.
+            return shaded;
+        }
+    }
+
+    const vec3 hit_view = (camera.view * vec4(hit_world, 1.0)).xyz;
+    float ndc_z = 0.0;
+    const vec2 hit_uv = project_to_uv(hit_view, ndc_z);
+    if (hit_uv.x < 0.0 || hit_uv.x > 1.0 || hit_uv.y < 0.0 || hit_uv.y > 1.0) {
+        // Off screen: no cached radiance exists for it on screen, so the environment probe answers - and
+        // the world-space cache, which does know where this hit is (see probe_radiance).
+        return probe_radiance(hit_world, dir);
+    }
+    const float buffer_ndc = texture(gbuffer_depth, hit_uv).r;
+    const float hit_view_depth = -hit_view.z; // view space looks down -Z
+    if (buffer_ndc >= 1.0 || abs(view_depth(buffer_ndc) - hit_view_depth) > 0.05 * hit_view_depth) {
+        // The visible surface there is a different one: the hit is hidden, and the same answer as above.
+        return probe_radiance(hit_world, dir);
+    }
+    return texture(direct_radiance, hit_uv).rgb + bounce_radiance(hit_uv);
+}
+
+void main() {
+    const ivec2 gi_extent = imageSize(gi_output);
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= gi_extent.x || pixel.y >= gi_extent.y) {
+        return; // the dispatch is rounded up to the workgroup size
+    }
+
+    const vec2 uv = (vec2(pixel) + 0.5) / vec2(gi_extent);
+    const float depth_ndc = texture(gbuffer_depth, uv).r;
+    if (depth_ndc >= 1.0) {
+        imageStore(gi_output, pixel, vec4(0.0)); // background: no surface, no bounce
+        return;
+    }
+
+    const bool traced = pc.frame_info.y > 0.5;
+    const int rays = int(pc.params.z);
+    // params.w carries TWO things, and which one it is is decided by the path - a marched frame cannot
+    // trace and a traced frame cannot march, so the two readings never coexist (see the push block's
+    // comment for why one lane has to do this: the block is exactly 128 bytes, the smallest range Vulkan
+    // guarantees, and the traced path's ray-origin bias needs a lane of its own because it is NOT a
+    // fraction of the ray length).
+    const int steps = int(pc.params.w);        // MARCHED: depth samples per ray
+    const float traced_bias = pc.params.w;     // TRACED: the world-space origin bias
+    if (rays <= 0 || (!traced && steps <= 0)) {
+        imageStore(gi_output, pixel, vec4(0.0));
+        return;
+    }
+
+    // This pixel's surface, in both spaces: world (to match the G-buffer's stored normal) and view
+    // (which is where the march happens, because projection needs the view-space point anyway).
+    const vec4 clip = vec4(uv * 2.0 - 1.0, depth_ndc, 1.0);
+    const vec4 world_h = pc.inv_view_proj * clip;
+    const vec3 view_pos = (camera.view * vec4(world_h.xyz / world_h.w, 1.0)).xyz;
+
+    const vec3 normal_view = normalize(mat3(camera.view) * texture(gbuffer_normal, uv).xyz);
+    const vec3 albedo = texture(gbuffer_albedo, uv).rgb;
+    // The world-space surface, which is where a ray query runs (the acceleration structures are in world
+    // space): the G-buffer normal already is, and the world position falls out of the same
+    // inverse-projection the view-space position does.
+    const vec3 world_pos = world_h.xyz / world_h.w;
+    const vec3 normal_world = normalize(texture(gbuffer_normal, uv).xyz);
+
+    // A per-pixel, per-frame seed: the ray sequence has to change between frames or a temporal
+    // filter would be fed the same error every frame instead of an average of different errors.
+    uint state = hash_u32(uint(pixel.x) + uint(pixel.y) * 4096u + uint(pc.frame_info.x) * 2654435761u);
+
+    const float radius = pc.params.x;
+    vec3 radiance_sum = vec3(0.0);
+    for (int r = 0; r < rays; ++r) {
+        const vec3 dir = cosine_direction(normal_view, next_uniform(state), next_uniform(state));
+        // Start off the surface, because starting exactly on it makes the first step compare against the
+        // surface's own depth and self-hit on any slope. The MARCHED path's offset is a fraction of the
+        // ray length, which for a march is the step size's own scale; the TRACED path's is a world-space
+        // distance pushed by the host, because a fraction of the ray length makes the offset scale with a
+        // knob that means REACH - the same 0.12 config meant 0.045 world units inside Sponza and 0.017 on a
+        // compact model (see the push block's comment).
+        const vec3 origin = view_pos + normal_view * (radius * 0.02);
+        if (traced) {
+            // A separate direction/origin in world space: the cosine lobe has to be built around the
+            // WORLD normal, and drawing the two uniforms from the same state keeps the sequence - and so
+            // the noise - identical to the marched path's for the same pixel and frame.
+            const vec2 u = vec2(next_uniform(state), next_uniform(state));
+            const vec3 dir_world = cosine_direction(normal_world, u.x, u.y);
+            const vec3 origin_world = world_pos + normal_world * traced_bias;
+            bool hit = false;
+            radiance_sum += rt_hit_radiance(origin_world, dir_world, radius, traced_bias, hit);
+        } else {
+            vec2 hit_uv;
+            if (march(origin, dir, radius, steps, hit_uv)) {
+                radiance_sum += texture(direct_radiance, hit_uv).rgb + bounce_radiance(hit_uv);
+            }
+        }
+    }
+
+    // UNSIGNED radiance, always: what the rays found, times this surface's albedo (and, on the traced
+    // path, its baked AO). Every consumer downstream means "radiance arriving here" - the temporal
+    // accumulation, the spatial filter, and a bounce that re-emits what arrived - so the image has to
+    // stay a radiance and not a correction term.
+    //
+    // The traced path's rays fall back to the probe off screen, which means they estimate the whole
+    // diffuse indirect INCLUDING the ambient the lighting stage adds for every pixel, so something has
+    // to remove that part or it is counted twice. That subtraction used to happen HERE, as a signed
+    // difference - and it made this image a non-radiance quantity, which is exactly what made the first
+    // attempt at a multi-bounce feedback cancel itself out (a bounce that re-emits `indirect - ambient`
+    // feeds the loop a value that goes to zero as the loop converges). It now happens in the spatial
+    // filter instead (see ssgi_spatial.comp): that pass still has the surface the ambient belongs to, and
+    // it is the last one before the composite, so nothing downstream of this line sees anything but
+    // radiance.
+    // radiance. On a frame with a non-zero bounce gain the sum above already carries the higher-order
+    // bounces, for the same reason: what a ray re-emitted was radiance too.
+    const float traced_ao = traced ? texture(gbuffer_material, uv).b : 1.0;
+    // ... and the diffuse BRDF's own (1 - metallic), which is the factor every other place that means
+    // "diffuse ambient" already carries: `shading.glsl`'s ambient (`ibl_diffuse * s.albedo * s.ao *
+    // (1.0 - s.metallic)`), the spatial filter's subtraction, and the ambient `shade_hit` gives a hit.
+    // Without it the traced estimate GRANTS a metallic surface a diffuse indirect the lighting stage
+    // never added - a metal's kd is zero, so the estimate re-emits an albedo it does not have.
+    // It was found by the furnace verification mode, which is the instrument for exactly this: with the
+    // environment a constant L and the rays unable to reach any geometry (ssgi_radius 0), the chain must
+    // be the identity, and on Sponza it came out +1.75 of mean brightness BRIGHTER than GI-off instead.
+    // That configuration leaves `albedo * metallic * L` as the only term separating the two - Sponza's
+    // ao is 1 everywhere (it has no occlusion textures) and 24 of its 25 materials carry a
+    // metallicRoughness texture - and this factor is what the fix measures: +1.2494 of that +1.75 with
+    // the spatial filter bypassed, +1.2791 of it with the filter in the loop (the filter's own weighted
+    // average accounts for the rest).
+    const float metallic = texture(gbuffer_albedo, uv).a; // the lane deferred.frag reads as s.metallic
+    const vec3 indirect = albedo * (radiance_sum / float(rays)) * pc.params.y * traced_ao * (1.0 - metallic);
+    imageStore(gi_output, pixel, vec4(indirect, 1.0));
+}

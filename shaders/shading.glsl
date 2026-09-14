@@ -45,6 +45,9 @@ layout(set = 0, binding = 0) uniform CameraUBO {
 layout(set = 0, binding = 2) uniform samplerCube env_sampler;        // prefiltered environment (roughness mip chain)
 layout(set = 0, binding = 3) uniform samplerCube irradiance_sampler; // irradiance map (diffuse IBL)
 layout(set = 0, binding = 4) uniform sampler2D brdf_lut_sampler;     // BRDF integration LUT
+// ... and the specular half of the split sum, which now lives in a file of its own because the GI chain
+// subtracts exactly this term and has to compute it from the same expressions (see that file's header).
+#include "ibl_specular.glsl"
 
 // Light UBO (scene set binding 7): the orthographic light view-proj (world -> shadow map) and the
 // light direction, followed by the active punctual lights. The direction is filled by the CPU
@@ -83,9 +86,11 @@ layout(set = 0, binding = 7) uniform LightUBO {
     float diffuse_model;
     float cascade_blend; // fraction of a cascade's range blended into the next one (0.1 = last 10%)
     float cascade_count; // active cascades (1 = the single-map path)
-    float _pad0;
-    float _pad1;
-    float _pad2;
+    float rt_shadows; // 1.0 = the sun's shadow is the ray-traced visibility image (binding 14),
+                      // 0.0 = the cascaded shadow maps. Rides the std140 padding that keeps
+                      // light_count on its 16-byte boundary; see the CPU's light_ubo.
+    float sun_intensity;
+    float furnace_level;
     uint light_count;
     float exposure; // y lane of the CPU's light_count vec4: linear exposure scale (pre-tonemap)
     float toon_steps;   // cel-shading quantization steps (LightUBO.light_count.z; 0 = PBR)
@@ -422,38 +427,10 @@ vec3 get_diffuse_light(vec3 n) {
     return texture(irradiance_sampler, n).rgb;
 }
 
-/// Specular ambient: prefiltered environment sampled at the roughness-derived mip level
-vec3 get_specular_sample(vec3 reflection, float lod) {
-    return textureLod(env_sampler, reflection, lod).rgb;
-}
-
-/// @brief Single-scatter plus multi-scatter-compensated Fresnel weights from the BRDF LUT
-///        (Fdez-Aguera); @p specular_weight is the material's monochrome specular amount
-vec3 get_ibl_ggx_fresnel(vec3 n, vec3 v, float roughness, vec3 f0, float specular_weight) {
-    float ndotv = clamp(dot(n, v), 0.0, 1.0);
-    vec2 brdf_sample_point = clamp(vec2(ndotv, roughness), vec2(0.0), vec2(1.0));
-    vec2 f_ab = texture(brdf_lut_sampler, brdf_sample_point).rg;
-    vec3 fr = max(vec3(1.0 - roughness), f0) - f0;
-    vec3 k_s = f0 + fr * pow(1.0 - ndotv, 5.0);
-    vec3 fssess = specular_weight * (k_s * f_ab.x + f_ab.y);
-
-    float ems = 1.0 - (f_ab.x + f_ab.y);
-    vec3 f_avg = specular_weight * (f0 + (1.0 - f0) / 21.0);
-    vec3 fmsems = ems * fssess * f_avg / (1.0 - f_avg * ems);
-
-    return fssess + fmsems;
-}
-
-/// @brief Prefiltered GGX environment radiance for a reflection ray, at the mip that matches
-///        @p roughness; the level count is queried from the sampler so it always matches whatever
-///        env_mip_count the CPU baked (no hardcoded constant)
-vec3 get_ibl_radiance_ggx(vec3 n, vec3 v, float roughness) {
-    // roughness -> lod across the prefiltered chain; the level count is queried from the
-    // sampler so it always matches whatever env_mip_count the CPU baked (no hardcoded constant)
-    const float lod = roughness * float(max(textureQueryLevels(env_sampler) - 1, 0));
-    vec3 reflection = normalize(reflect(-v, n));
-    return get_specular_sample(reflection, lod);
-}
+// The specular half - get_specular_sample / get_ibl_ggx_fresnel / get_ibl_radiance_ggx - is
+// shaders/ibl_specular.glsl's, included above. It moved there when the GI chain needed the same
+// expressions for a subtraction rather than as a third copy; see that file's header for what was
+// verified. The three below are the call sites' names for it.
 
 /**
  * @brief depth slice a view-space depth falls into (exponential slicing between the cluster range)
@@ -528,6 +505,11 @@ struct shade_input {
     float metallic; // 0 = dielectric, 1 = metal
     float roughness; // perceptual roughness
     float ao;       // ambient occlusion: scales the IBL ambient only, never the direct light
+    // < 0 = no override: the shadow comes from calc_shadow() as it always did. >= 0 = use this factor
+    // instead, which is how the deferred path hands in the RAY-TRACED visibility (it is a screen-space
+    // lookup, so it cannot be recomputed from world_pos inside the shared lighting code). The forward
+    // path and every other caller leave it negative, so their behaviour is unchanged by construction.
+    float shadow_override;
 };
 
 /**
@@ -550,8 +532,14 @@ vec3 shade_surface(shade_input s) {
     vec3 direct = vec3(0.0);
     // directional sun: shadow factor attenuates only this light; IBL ambient stays unshadowed
     {
-        float shadow = (light.shadow_enabled > 0.5) ? calc_shadow(s.world_pos, s.normal) : 1.0;
-        direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light.light_dir.xyz, vec3(7.5) * shadow);
+        // A ray-traced override wins over both: it IS the shadow, already resolved per pixel.
+        float shadow = 1.0;
+        if (s.shadow_override >= 0.0) {
+            shadow = s.shadow_override;
+        } else if (light.shadow_enabled > 0.5) {
+            shadow = calc_shadow(s.world_pos, s.normal);
+        }
+        direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light.light_dir.xyz, vec3(7.5 * light.sun_intensity) * shadow);
     }
     // punctual lights (point/spot, no shadow casting in this version): inverse-square falloff
     // (well-behaved at zero distance) with an optional smooth range cutoff; spots add a soft
@@ -596,8 +584,8 @@ vec3 shade_surface(shade_input s) {
 
     // ---- IBL (split-sum): diffuse irradiance + prefiltered specular ----
     vec3 ibl_diffuse = get_diffuse_light(s.normal);
-    vec3 ibl_specular = get_ibl_radiance_ggx(s.normal, v, s.roughness);
-    vec3 fresnel_ibl = get_ibl_ggx_fresnel(s.normal, v, s.roughness, f0, 1.0);
+    vec3 ibl_specular = ibl_specular_radiance(s.normal, v, s.roughness);
+    vec3 fresnel_ibl = ibl_specular_fresnel(s.normal, v, s.roughness, f0, 1.0);
 
     // Metals have no diffuse term: diffuse ambient is scaled by (1 - metallic),
     // metal color comes entirely from specular environment (matches the official mix(dielectric, metal, metallic))

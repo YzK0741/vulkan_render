@@ -3,6 +3,7 @@ module;
 #include <GLFW/glfw3.h>
 #include <bit> // std::bit_cast for the caster world-matrix hash
 #include <chrono>
+#include <cstring> // std::memcpy, for composing a pass's push block
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <thread> // std::this_thread::yield in the frame limiter
@@ -13,8 +14,8 @@ module vulkan.runtime;
 import vulkan.profiling;
 import vulkan.pipelines;
 import vulkan.bindings;
-import vulkan.render_resource;        // a pass's declaration vocabulary (the framework's interface uses it)
-import vulkan.render_resource.shared; // the sampler_set a pass_context carries
+import vulkan.render_resource;
+import vulkan.render_resource.shared;
 
 import utility;
 import vulkan.constant_init;
@@ -200,6 +201,23 @@ namespace vulkan {
         // starts clear, which is what a freshly created depth image is in (UNDEFINED);
         // on_swapchain_recreated() re-sizes them for every later generation.
         this->gbuffer_depth_written.assign(this->vulkan_core.gbuffer_depth_images.size(), false);
+        this->velocity_written.assign(this->vulkan_core.velocity_images.size(), false);
+        this->gbuffer_targets_written.assign(this->vulkan_core.gbuffer_images[0].size(), false);
+        // The GI accumulation starts empty for the same reason (see gi_history_valid): the first
+        // frame of a generation has nothing to blend with, and sized HERE rather than only on the
+        // off -> on edge in set_ssgi, because a run that starts with GI enabled never sees that edge
+        // (an empty vector reads as "no history" for every frame, which silently turns the temporal
+        // resolve into a pass-through of the raw trace).
+        this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
+        this->gi_spec_seen.assign(this->vulkan_core.gi_spec_images.size(), false); // new targets: the lobe's outputs need their first-use transition again
+
+        // The probe cache's remaining flag starts where the images do: nothing has transitioned the grid out
+        // of UNDEFINED, so the tracer's gain is 0 until the TRACE pass - the frame's first reader of the grid
+        // - has taken its first-use transition once. (What the grid HOLDS is the pass's own state now:
+        // gi_probe_pass::cache_valid, which starts false with the pass.)
+        this->gi_probe_grid_seen = false;
+        // ... and the furnace cube is a new image too, so its level has to be written again.
+        this->furnace_cube_ready = false;
         // NOTE: the shadow resources (map layers + light UBO buffers) are created LAZILY, by
         // ensure_shadow_resources() from ensure_scene_set(). The shadow map is a layered 2D array
         // whose layer count is [render] shadow_cascades, and the app config that carries it is applied
@@ -251,9 +269,52 @@ namespace vulkan {
             vkDestroyPipelineLayout(this->vulkan_core.device, this->deferred_pipeline_layout, nullptr);
             this->deferred_pipeline_layout = VK_NULL_HANDLE;
         }
-        // ... and the TAA resolve is NOT here any more: its set layout, pipeline layout, pipeline and
-        // per-image family are the PASS's (see vulkan.pass.taa::release_owned and its destructor), which is
-        // what the create/record split is for.
+        // ... and the GI tracer's (same two sets, which is why it needs a layout of its own)
+        if (this->ssgi_pipeline_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(this->vulkan_core.device, this->ssgi_pipeline_layout, nullptr);
+            this->ssgi_pipeline_layout = VK_NULL_HANDLE;
+        }
+        if (this->ssgi_temporal_set_layout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->ssgi_temporal_set_layout, nullptr);
+            this->ssgi_temporal_set_layout = VK_NULL_HANDLE;
+        }
+        if (this->ssgi_temporal_pipeline_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(this->vulkan_core.device, this->ssgi_temporal_pipeline_layout, nullptr);
+            this->ssgi_temporal_pipeline_layout = VK_NULL_HANDLE;
+        }
+        if (this->rt_shadow_pipeline_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(this->vulkan_core.device, this->rt_shadow_pipeline_layout, nullptr);
+            this->rt_shadow_pipeline_layout = VK_NULL_HANDLE;
+        }
+        if (this->mask_bake_pipeline_layout != VK_NULL_HANDLE) {
+            // It owns no set layout either (it is created from the scene one), so only the layout. Its
+            // descriptor set is a vk_descriptor_set member, which frees itself with the pool still alive.
+            vkDestroyPipelineLayout(this->vulkan_core.device, this->mask_bake_pipeline_layout, nullptr);
+            this->mask_bake_pipeline_layout = VK_NULL_HANDLE;
+        }
+        if (this->compute_skin_pipeline_layout != VK_NULL_HANDLE) {
+            // The same shape as the mask bake's: it is created from the scene set layout and owns none of
+            // its own, so only the VkPipelineLayout is ours to destroy. Found the same way, too - as a
+            // "[ERROR] vkDestroyDevice(): ... has 1 leaked objects" on the FIRST capture of the L2.2b A/B,
+            // which is why the off arm of that measurement was taken again afterwards.
+            vkDestroyPipelineLayout(this->vulkan_core.device, this->compute_skin_pipeline_layout, nullptr);
+            this->compute_skin_pipeline_layout = VK_NULL_HANDLE;
+        }
+        if (this->ssgi_spatial_pipeline_layout != VK_NULL_HANDLE) {
+            // it owns no set layout (it binds the shared scene and G-buffer sets), so only the layout
+            vkDestroyPipelineLayout(this->vulkan_core.device, this->ssgi_spatial_pipeline_layout, nullptr);
+            this->ssgi_spatial_pipeline_layout = VK_NULL_HANDLE;
+        }
+        if (this->ssgi_spec_pipeline_layout != VK_NULL_HANDLE) {
+            // the same shape as the spatial filter's: the shared two sets, so only the layout is ours
+            vkDestroyPipelineLayout(this->vulkan_core.device, this->ssgi_spec_pipeline_layout, nullptr);
+            this->ssgi_spec_pipeline_layout = VK_NULL_HANDLE;
+        }
+        // The probe cache's pipeline and its layout are NOT destroyed here any more: they are the pass's
+        // (vulkan.pass.gi_probe builds and destroys them), which is the whole point of the extraction - a
+        // handle only that pass names is that pass's to release. The TAA resolve's set layout, pipeline
+        // layout, pipeline AND descriptor family left the same way (vulkan.pass.taa), so nothing about it is
+        // torn down here either.
 
         // Shared scene resources: views/sets/samplers/buffers/images are RAII and free
         // themselves as this runtime's members destruct (after this body; vulkan_core, which
@@ -610,6 +671,51 @@ namespace vulkan {
                 utility::panic("failed to get cluster index buffer detail");
             }
             write_buffer_binding(set, 12, cluster_index_detail->buffer, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * vulkan::cluster_light_capacity * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+
+            // bindings 14/15: THIS slot's ray-traced sun visibility, as the sampler the lighting stage
+            // reads and as the storage image the compute pass writes. Two descriptors for one image on
+            // purpose: the layouts differ (SHADER_READ for the reader, GENERAL for the writer), and each
+            // is only ever used while the image really is in that layout (see record_scene_tail). Both
+            // are written unconditionally - the images exist on every device - so a device without ray
+            // tracing never has to know these bindings exist.
+            {
+                std::array<VkDescriptorImageInfo, 2> visibility_infos = {};
+                // LINEAR clamp, and deliberately NOT the shadow sampler: that one has compareEnable set
+                // (it is a sampler2DShadow sampler), and a compare sampler paired with a plain
+                // sampler2D read is not what the descriptor declares. post_sampler exists by the time any
+                // primitive is created (main.cpp loads the scene after setup_pipeline), which is what
+                // every caller of this function is.
+                visibility_infos[0].sampler = *this->post_sampler;
+                visibility_infos[0].imageView = this->vulkan_core.rt_shadow_image_views[static_cast<std::size_t>(slot)];
+                visibility_infos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                visibility_infos[1].sampler = VK_NULL_HANDLE; // a storage image has no sampler
+                visibility_infos[1].imageView = this->vulkan_core.rt_shadow_image_views[static_cast<std::size_t>(slot)];
+                visibility_infos[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+                std::array<VkWriteDescriptorSet, 2> visibility_writes = {};
+                visibility_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                visibility_writes[0].dstSet = set;
+                visibility_writes[0].dstBinding = 14;
+                visibility_writes[0].descriptorCount = 1;
+                visibility_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                visibility_writes[0].pImageInfo = &visibility_infos[0];
+                visibility_writes[1] = visibility_writes[0];
+                visibility_writes[1].dstBinding = 15;
+                visibility_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                visibility_writes[1].pImageInfo = &visibility_infos[1];
+                vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(visibility_writes.size()), visibility_writes.data(), 0, nullptr);
+            }
+            // binding 16: THIS slot's top level structure, but ONLY once one exists. A null
+            // acceleration-structure descriptor is not legal without the nullDescriptor feature
+            // (VUID-VkWriteDescriptorSetAccelerationStructureKHR-pAccelerations-03580), and the structure
+            // is created by the first frame that asks for ray-traced shadows - so the write happens there
+            // (record_top_level_structure) for the slot that just got one. Nothing reads the binding
+            // before that: the pass that uses it is gated on the same handle.
+            if (this->vulkan_core.ray_query_available && this->rt_top_levels.has_value()) {
+                VkAccelerationStructureKHR const tlas = this->rt_top_levels->handle(static_cast<uint32_t>(slot));
+                if (tlas != VK_NULL_HANDLE) {
+                    this->write_rt_structure_binding(set, tlas);
+                }
+            }
         }
 
         // binding 7 (light UBO, per-slot) + binding 8 (per-slot shadow map) and bindings 2-4 (IBL):
@@ -618,6 +724,20 @@ namespace vulkan {
         this->write_ibl_bindings();
     }
 
+    void runtime::write_rt_structure_binding(VkDescriptorSet const set, VkAccelerationStructureKHR const tlas) {
+        VkWriteDescriptorSetAccelerationStructureKHR structure_info = {};
+        structure_info.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+        structure_info.accelerationStructureCount = 1;
+        structure_info.pAccelerationStructures = &tlas;
+        VkWriteDescriptorSet write = {};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.pNext = &structure_info;
+        write.dstSet = set;
+        write.dstBinding = 16;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        vkUpdateDescriptorSets(this->vulkan_core.device, 1, &write, 0, nullptr);
+    }
     void runtime::update_all_scene_sets(VkWriteDescriptorSet const* const writes, uint32_t const write_count) {
         // the sets, the per-slot dstSet substitution and the "not created yet" case belong to the
         // bindings, because a material registered before setup finished has nothing to write to
@@ -688,6 +808,15 @@ namespace vulkan {
             for (std::size_t i = 0; i < views.size(); ++i) {
                 views[i] = *this->ibl_views[i]; // the wrappers unwrap to the raw VkImageView here
             }
+        }
+        // The furnace verification mode: slots 0 and 1 - the prefiltered environment and the irradiance cube
+        // - point at the CONSTANT cube instead of the real environment, while slot 2 keeps its own BRDF LUT.
+        // The two are not interchangeable: the cube slots are samplerCube, and the 2D white placeholder this
+        // function falls back to for an unloaded IBL cannot be bound there at all - doing so is a viewType/Dim
+        // validation error, which is how this was found rather than assumed.
+        if (this->furnace && !this->vulkan_core.furnace_cube_views.empty() && this->vulkan_core.furnace_cube_views[0] != VK_NULL_HANDLE) {
+            views[0] = this->vulkan_core.furnace_cube_views[0];
+            views[1] = this->vulkan_core.furnace_cube_views[0];
         }
         std::span<VkImageView const> const view_span = have_ibl_views ? std::span<VkImageView const>(views) : std::span<VkImageView const>{};
         this->scene_sets.write_ibl(this->vulkan_core, this->ibl_ready, view_span, *this->env_sampler, *this->owned_texture_views[0], *this->texture_sampler);
@@ -1073,21 +1202,47 @@ namespace vulkan {
         // The post chain's family forgets its sets and retires its pool (five sets per image, so the
         // largest of the three); the next frame allocates fresh ones from a fresh pool.
         this->post_family.retire_all();
-        // The TAA resolve's family, its history flags and its cached generation fingerprint are the PASS's,
-        // so the runner tells it instead of the runtime remembering: `recreate_stage` is the contract that
-        // replaced this hand-kept list, and a pass added to a stage is covered by it (see vulkan.pass.taa).
+        // The TAA resolve's family is NOT retired here any more: the pass owns it, and the call below tells
+        // the pass (vulkan.pass.taa::on_swapchain_recreated retires its own family and forgets the
+        // generation it fingerprinted).
+        // ... and the GI denoiser's, which binds five per-image views (trace, history, motion, depth,
+        // resolve) and is therefore the one family here with the most stale pointers in it.
+        this->ssgi_temporal_family.retire_all();
+        // AND THE PASSES ARE TOLD, by the runner rather than by this list. That is the hazard this layer was
+        // built to remove: the retires above are a hand-kept list and it covered four of the six families -
+        // the probe cache's and the reflection denoiser's survived only because `ensure` re-detects changed
+        // views. A pass that owns a family now cannot be missed here, because it is not this function that
+        // remembers: `recreate_stage` calls every pass in the stage, and a pass added to it is covered.
         {
+            pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
+            [[maybe_unused]] pass::run_report const probe_recreated = pass::recreate_stage(probe_stage, this->make_pass_host());
             pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
             [[maybe_unused]] pass::run_report const taa_recreated = pass::recreate_stage(taa_stage, this->make_pass_host());
         }
         // Every swapchain image's history died with the old generation (and its size may have
         // changed): forget the matrices, so the next frame for each image starts a new accumulation
-        // instead of blending in a misaligned one.
+        // instead of blending in a misaligned one. (WHETHER a history holds anything is the TAA pass's own
+        // state, and the call above is what cleared it.)
         std::size_t const image_count = this->vulkan_core.taa_history_images.size();
         this->image_view_proj.assign(image_count, this->current_ubo.view_proj_unjittered);
-        // The G-buffer depth images died with the generation too, and a brand new image is in
-        // UNDEFINED until this frame's G-buffer instance renders into it: clear the layout flag so
-        // the first frame of the new generation always takes the attachment -> sampled transition.
+        // The GI accumulation is per image for the same reason (see gi_history_valid): a new
+        // generation has no history to blend with, and the resolve would otherwise reproject into an
+        // image that holds a different resolution's data.
+        this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
+        this->gi_spec_seen.assign(this->vulkan_core.gi_spec_images.size(), false); // new targets: the lobe's outputs need their first-use transition again
+        // The probe cache's generation flag, for the same reason (see gi_probe_grid_seen). Whether the grid
+        // HOLDS anything is the pass's own state, and the pass was told above (recreate_stage).
+        this->gi_probe_grid_seen = false;
+        // ... and the furnace cube is a new image too, so its level has to be written again.
+        this->furnace_cube_ready = false;
+        // The motion-vector images died with the generation as well, and a brand new one is in
+        // UNDEFINED until this frame's G-buffer instance renders into it: clear the layout flag so the
+        // first frame of the new generation takes the attachment -> sampled transition (see
+        // ensure_velocity_sampled).
+        this->velocity_written.assign(this->vulkan_core.velocity_images.size(), false);
+        this->gbuffer_targets_written.assign(this->vulkan_core.gbuffer_images[0].size(), false);
+        // The G-buffer depth images died with the generation too: the same flag, the same reason
+        // (see ensure_gbuffer_depth_sampled).
         this->gbuffer_depth_written.assign(this->vulkan_core.gbuffer_depth_images.size(), false);
     }
 
@@ -1283,6 +1438,14 @@ namespace vulkan {
             this->light_state.light_count.y = this->exposure_scale;
             this->light_state.light_count.z = this->toon_steps;
             this->light_state.light_count.w = this->toon_softness;
+            // Ray-traced sun shadows: composed HERE rather than in set_rt_shadows, because the light UBO
+            // is rebuilt from light_state every frame and a later enable_shadows() (main.cpp calls it
+            // after the settings are applied, which is where this flag was first lost) resets fields of
+            // this struct. Recomposing it makes the flag authoritative - the lighting stage reads exactly
+            // what the passes below will do this frame.
+            this->light_state.rt_shadows = (this->rt_shadows && this->rt_shadow_pipeline.has_value() && this->vulkan_core.ray_query_available) ? 1.0f : 0.0f;
+            this->light_state.sun_intensity = this->furnace ? 0.0f : 1.0f;
+            this->light_state.furnace_level = this->furnace ? 1.0f : 0.0f;
 
             // ---- clustered light culling (M5): this frame's grid + the view-depth range its
             //      exponential slices span, and the host-side clear of the per-cluster counters.
@@ -1381,6 +1544,32 @@ namespace vulkan {
         // command buffer exists.
         vk.begin_gpu_timing(*command_buffer, static_cast<uint32_t>(vk.current_frame));
         this->gpu_mark(*command_buffer, gpu_mark_id::frame_begin, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+
+        // The furnace verification mode's constant environment, written here and ONCE per target generation:
+        // this is the frame's first command buffer, and the environment is sampled by the SKYBOX - which runs
+        // long before the lighting stage and the GI chain - so any later point would leave the background of
+        // every frame reading the previous contents. The level is the same 1.0 the light UBO's furnace lane
+        // carries, so the analytic answer and the environment agree by construction; the IBL bindings point
+        // at this cube only while the mode is on.
+        if (this->furnace && !this->furnace_cube_ready && !vk.furnace_cube_images.empty() && vk.furnace_cube_images[0] != VK_NULL_HANDLE) {
+            VkImageMemoryBarrier2 to_transfer = vulkan::undefined_to_transfer_dst_transition;
+            to_transfer.image = vk.furnace_cube_images[0];
+            to_transfer.subresourceRange.layerCount = 6; // all six faces, not the one the constant defaults to
+            VkDependencyInfo const to_transfer_dependency = make_image_dependency_info(1, &to_transfer);
+            vkCmdPipelineBarrier2(*command_buffer, &to_transfer_dependency);
+
+            VkClearColorValue const level = {{1.0f, 1.0f, 1.0f, 1.0f}};
+            VkImageSubresourceRange const faces = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+            vkCmdClearColorImage(*command_buffer, vk.furnace_cube_images[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &level, 1, &faces);
+
+            VkImageMemoryBarrier2 to_sampling = vulkan::transfer_dst_to_sampling_transition;
+            to_sampling.image = vk.furnace_cube_images[0];
+            to_sampling.subresourceRange.layerCount = 6;
+            VkDependencyInfo const to_sampling_dependency = make_image_dependency_info(1, &to_sampling);
+            vkCmdPipelineBarrier2(*command_buffer, &to_sampling_dependency);
+
+            this->furnace_cube_ready = true;
+        }
         // Debug overlay: begin a fresh ImGui frame once per rendered frame (after the acquire,
         // before any UI content is built; the actual draw is recorded at the end of
         // record_main_drawcalls() while the main rendering instance is still open).
@@ -1613,6 +1802,26 @@ namespace vulkan {
             this->record_cluster_pass(*command_buffer);
         }
 
+        // ---- Ray-traced shadows: build the acceleration structures once, before the passes that will
+        //      trace against them. It happens HERE (inside the frame's command buffer, before any
+        //      rendering instance opens) because a build is a transfer/compute-class command that must
+        //      not be recorded inside vkCmdBeginRendering, and because the caster set is only complete
+        //      now that the scene is loaded and culled. Nothing reads the structures yet, so a frame
+        //      with the flag on renders exactly like one with it off - what this records is the input
+        //      the ray-traced pass will need, not a change to the image.
+        this->record_acceleration_structures(*command_buffer);
+        // ... and the top level structure, which is rebuilt EVERY frame: the instance set is culled per
+        // frame and a caster's world matrix can change (animation, a moved node), so the instance list
+        // is frame data like any other. On the frame that builds the bottom levels it is a no-op for
+        // the reasons above (nothing to trace yet); from the next frame on it is the structure a shadow
+        // ray will traverse.
+        this->record_top_level_structure(*command_buffer);
+        // GPU timing: the structures' builds end here. Written UNCONDITIONALLY, like every other mark -
+        // a frame that skips a pass still writes its mark next to the previous one (0 ms interval), and
+        // the report's labels are positional: leaving a gap here relabeled the whole frame ("marks
+        // recorded out of order", which the harness caught on all seven scenarios at once).
+        this->gpu_mark(*command_buffer, gpu_mark_id::rt_build_end, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
+
         // ---- Shadow pass: render the scene's depth from the light into this slot's shadow map.
         //      Drawn before the main pass; the depth-only pipeline shares the flat scene layout
         //      and the primitive draw() path (same vertex buffers / push constants), so the shadow
@@ -1770,9 +1979,8 @@ namespace vulkan {
         this->record_scene_attachments(command_buffer);
         this->update_pass_geometry();
         // THE SCENE PASS records the surface write: the instance over its six declared targets, the segmented
-        // draw of the visible leaves, and CLOSING the instance - all inside one function now (see
-        // vulkan.pass.scene for why that is the point of this extraction: the instance used to be opened here
-        // and closed by record_scene_tail, three subsystems later).
+        // draw of the visible leaves, and closing the instance - all inside one function now (see
+        // vulkan.pass.scene for why that is the point of this extraction).
         if (this->gbuffer_pass_active()) {
             this->scene.set_frame(this->make_scene_frame());
             pass::stage const scene_stage = {.name = "scene", .passes = this->scene_stage, .marks = false};
@@ -1781,78 +1989,11 @@ namespace vulkan {
         }
         // THE DEGENERATE CASE, which is all the old begin_rendering() is still needed for: no surface pipeline,
         // so there is no pass to run. An EMPTY instance is opened and closed anyway, so the frame keeps a
-        // matching pair and the scene target ends in a layout the post chain can sample.
+        // matching pair and the scene target ends in a layout the post chain can sample. (The old code also
+        // recorded the scene segments here - with a pipeline that does not exist, which validation would have
+        // refused; drawing nothing is both shorter and true.)
         this->begin_rendering(command_buffer, this->current_image_index, 0);
         vkCmdEndRendering(command_buffer);
-    }
-
-    /// the scene pass's per-frame input: the leaves, the segments, and the four things only the renderer can
-    /// answer (see scene_frame). Built here rather than stored, because every field is this frame's.
-    pass::scene_frame runtime::make_scene_frame() noexcept {
-        core const& vk = this->vulkan_core;
-        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
-        // the pass's view of the per-slot secondary buffers (members, so the span it holds outlives the stage)
-        auto const& segments = this->main_segments[static_cast<std::size_t>(frame_slot)];
-        this->scene_segment_view.clear();
-        this->scene_segment_view.reserve(segments.size());
-        for (auto const& [pool, buffer] : segments) {
-            this->scene_segment_view.push_back(pass::segment_buffer{.pool = pool, .buffer = *buffer});
-        }
-        // the secondaries inherit the instance's attachments: the three surface targets in order, the velocity
-        // target, and the scene colour - the same order the pass's declaration lists them in
-        this->scene_color_formats = {vulkan::gbuffer_formats[0], vulkan::gbuffer_formats[1], vulkan::gbuffer_formats[2], vulkan::gbuffer_velocity_format, vulkan::hdr_format};
-        return pass::scene_frame{
-            .leaves = this->frame_visible,
-            .segments = this->scene_segment_view,
-            .make_environment = &runtime::make_scene_environment,
-            .run_tasks = &runtime::run_scene_tasks,
-            .owner = this,
-            .color_formats = this->scene_color_formats,
-            .depth_format = vk.depth_format,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .gbuffer = true,
-            .extent = vk.swap_chain_extent,
-        };
-    }
-
-    /// the renderer's scheduler, handed to the pass so the segment fan-out stays the frame loop's policy
-    void runtime::run_scene_tasks(void* owner, std::span<std::function<void()>> const tasks) {
-        static_cast<runtime*>(owner)->run_tasks(tasks, vulkan::task_priority::recording);
-    }
-
-    bool runtime::resolve_scene_pass(pass::resolved_io& out) {
-        core const& vk = this->vulkan_core;
-        std::size_t const index = this->current_image_index;
-        std::size_t const image_count = vk.gbuffer_image_views.empty() ? 0 : vk.gbuffer_image_views[0].size();
-        if (!this->gbuffer_pass_active() || image_count == 0 || index >= image_count || vk.velocity_image_views.size() != image_count ||
-            vk.gbuffer_depth_image_views.size() != image_count) {
-            return false; // no surface pipeline, or no target generation to draw into
-        }
-        out.frame = this->pass_frame();
-        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
-        out.own = {};
-        out.own_set = VK_NULL_HANDLE;
-        // the shared scene set (the pass's declaration names the SET, not its bindings: its owner decides
-        // them). A family that was never created answers VK_NULL_HANDLE, and the pass then binds nothing -
-        // which is what the old `if (scene_sets.created())` guard did.
-        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
-        // the six declared targets, in declaration order: the three stored surface targets, the motion-vector
-        // target, the scene colour target (an ALIAS - see scene_io: the TAA input while the resolve runs, the
-        // HDR target otherwise) and the surface depth
-        out.target_storage[0] = {.view = vk.gbuffer_image_views[0][index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_images[0][index]};
-        out.target_storage[1] = {.view = vk.gbuffer_image_views[1][index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_images[1][index]};
-        out.target_storage[2] = {.view = vk.gbuffer_image_views[2][index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_images[2][index]};
-        out.target_storage[3] = {.view = vk.velocity_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.velocity_images[index]};
-        out.target_storage[4] = {.view = this->scene_target_view(index), .buffer = VK_NULL_HANDLE, .image = this->scene_target_image(index)};
-        out.target_storage[5] = {.view = vk.gbuffer_depth_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_depth_images[index]};
-        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), 6);
-        // NO pipelines: a leaf names the pipeline it wants and the renderer's registry resolves it through the
-        // environment the pass is handed (see scene_frame::make_environment)
-        out.pipelines = {};
-        out.pipeline_layout = VK_NULL_HANDLE;
-        out.push = {};
-        out.extent = vk.swap_chain_extent;
-        return true;
     }
 
     // Move the scene pass's attachments into their render layouts; see the declaration for why this
@@ -1895,6 +2036,19 @@ namespace vulkan {
             // not exist (and on_swapchain_recreated re-sizes it on every generation change).
             if (this->current_image_index < this->gbuffer_depth_written.size()) {
                 this->gbuffer_depth_written[this->current_image_index] = true;
+            }
+            // ... and the motion-vector target it just wrote as a color attachment. Two stages sample
+            // it (TAA's resolve and, since the GI denoiser, a compute resolve), so the "has this been
+            // handed to a sampler yet" question is asked through a flag rather than assumed - see
+            // ensure_velocity_sampled.
+            if (this->current_image_index < this->velocity_written.size()) {
+                this->velocity_written[this->current_image_index] = true;
+            }
+            // ... and the three stored surface targets, written as color attachments by the same
+            // instance: the ray-traced shadow pass samples them before the lighting stage does, so which
+            // stage publishes them is a question for a flag too (see ensure_gbuffer_targets_sampled).
+            if (this->current_image_index < this->gbuffer_targets_written.size()) {
+                this->gbuffer_targets_written[this->current_image_index] = true;
             }
         }
 
@@ -1960,10 +2114,10 @@ namespace vulkan {
             this->deferred_pipeline->viewport = full_viewport;
             this->deferred_pipeline->scissor = full_scissor;
         }
-        // NO TAA LINE HERE ANY MORE, and its absence is the framework working: the resolve's
-        // `behaviour::resync_viewport` is true, so the RUNNER sets its viewport and scissor from the extent
-        // the declaration produced, every frame - the hazard this hand-kept list used to carry (dropping a
-        // pipeline from it sets a zero-width viewport) cannot happen to a pass.
+        // The TAA resolve's pipeline and viewport are NOT resynced here: the runner sets a fullscreen pass's
+        // viewport and scissor from the extent its declaration produced, which is what `resync_viewport`
+        // means once a pass states it (see vulkan.pass's behaviour). The hazard this list used to guard - a
+        // fullscreen pass setting a zero-width viewport because it was left out - is gone by construction.
     }
 
     // Depth-only shadow-pass content: bind the shared scene set (the light UBO binding 7) +
@@ -2037,6 +2191,17 @@ namespace vulkan {
         core& vk = this->vulkan_core;
         // sampler for the HDR scene target (linear, clamp) - the descriptor sets use it
         this->post_sampler = vk.make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
+        // ... and the nearest one the composite's GI upsample needs (see post_nearest_sampler)
+        {
+            VkSamplerCreateInfo nearest_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
+            nearest_info.magFilter = VK_FILTER_NEAREST;
+            nearest_info.minFilter = VK_FILTER_NEAREST;
+            VkSampler nearest = VK_NULL_HANDLE;
+            if (vkCreateSampler(vk.device, &nearest_info, nullptr, &nearest) != VK_SUCCESS) {
+                return std::unexpected(std::string("post: nearest sampler creation failed"));
+            }
+            this->post_nearest_sampler = vk_sampler(nearest, vk.device);
+        }
 
         // the layout and both composites come from vulkan.pipelines; the push constant block stays here
         // (it must match post.frag, so it lives next to the code that fills it)
@@ -2071,25 +2236,39 @@ namespace vulkan {
             return;
         }
         std::size_t const image_count = vk.hdr_image_views.size();
-        if (image_count == 0 || vk.bloom_image_views[0].size() != image_count || vk.ldr_image_views.size() != image_count) {
+        if (image_count == 0 || vk.bloom_image_views[0].size() != image_count || vk.ldr_image_views.size() != image_count ||
+            vk.gi_spatial_image_views.size() != image_count || vk.gbuffer_depth_image_views.size() != image_count ||
+            vk.gbuffer_image_views[1].size() != image_count) {
             return;
         }
         // The family owns the rebinding rule, the pool sizing (five sets per image, six descriptors
         // each) and the retirement (see vulkan.bindings); what stays here is what is specific to the
-        // post chain: three fingerprints - HDR, bloom and LDR views - and how one image's five sets
-        // are written.
-        std::array<std::span<VkImageView const>, 3> const fingerprints = {vk.hdr_image_views, vk.bloom_image_views[0], vk.ldr_image_views};
+        // post chain: six fingerprints - HDR, bloom, LDR, GI, depth and normal views - and how one
+        // image's five sets are written.
+        std::array<std::span<VkImageView const>, 6> const fingerprints = {
+            vk.hdr_image_views, vk.bloom_image_views[0], vk.ldr_image_views, vk.gi_spatial_image_views, vk.gbuffer_depth_image_views, vk.gbuffer_image_views[1]};
         auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            // every set gets all six bindings; the unused ones point at the same view as binding 0
-            // (binding 5 is the LDR image, which only the FXAA pass reads)
-            auto const write_set = [this](VkDescriptorSet const set, std::array<VkImageView, 6> const& views) {
-                std::array<VkDescriptorImageInfo, 6> image_infos = {};
+            // every set gets all nine bindings; the unused ones point at the same view as binding 0
+            // (binding 5 is the LDR image, which only the FXAA pass reads, and 7/8 are the G-buffer
+            // depth and normal, which only the composite's GI upsample reads)
+            auto const write_set = [this](VkDescriptorSet const set, std::array<VkImageView, 9> const& views) {
+                std::array<VkDescriptorImageInfo, 9> image_infos = {};
                 for (uint32_t b = 0; b < image_infos.size(); ++b) {
-                    image_infos[b].sampler = *this->post_sampler;
+                    // The composite's GI upsample taps the depth and the normal AT texel centres, and
+                    // for those two an interpolated value is not a rounding error but a different
+                    // surface - so they get the nearest sampler and the edge test sees the stored
+                    // values. The GI image itself keeps the LINEAR one, for a reason that is about
+                    // measurement rather than quality: its texels are still read at centres (a centre
+                    // fetch of a linear sampler returns that texel), but the upsample's off switch is
+                    // the plain bilinear fetch, and that has to be the same fetch the chain used before
+                    // the upsample existed - with a nearest sampler it would be a much blurrier
+                    // comparison and the A/B would be measuring two differences at once.
+                    bool const nearest = b == 7u || b == 8u;
+                    image_infos[b].sampler = nearest ? *this->post_nearest_sampler : *this->post_sampler;
                     image_infos[b].imageView = views[b];
                     image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 }
-                std::array<VkWriteDescriptorSet, 6> writes = {};
+                std::array<VkWriteDescriptorSet, 9> writes = {};
                 for (uint32_t b = 0; b < writes.size(); ++b) {
                     writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                     writes[b].dstSet = set;
@@ -2103,19 +2282,33 @@ namespace vulkan {
 
             VkImageView const hdr = this->vulkan_core.hdr_image_views[image_index];
             VkImageView const ldr = this->vulkan_core.ldr_image_views[image_index];
-            std::array<VkImageView, 6> const hdr_set = {hdr, hdr, hdr, hdr, hdr, ldr};
+            // The FILTERED GI (the last pass of the GI chain), not the raw trace or the temporal
+            // accumulation: the composite is the consumer of the denoiser's output, and the earlier
+            // images are bound in the G-buffer set or in the denoiser's own set instead.
+            VkImageView const gi = this->vulkan_core.gi_spatial_image_views[image_index];
+            VkImageView const depth = this->vulkan_core.gbuffer_depth_image_views[image_index];
+            VkImageView const normal = this->vulkan_core.gbuffer_image_views[1][image_index];
+            std::array<VkImageView, 9> const hdr_set = {hdr, hdr, hdr, hdr, hdr, ldr, gi, depth, normal};
             write_set(sets[0], hdr_set);
 
             for (std::size_t level = 0; level < 3; ++level) {
                 VkImageView const input = this->vulkan_core.bloom_image_views[level][image_index];
-                std::array<VkImageView, 6> const level_set = {input, input, input, input, input, ldr};
+                std::array<VkImageView, 9> const level_set = {input, input, input, input, input, ldr, gi, depth, normal};
                 write_set(sets[1 + level], level_set);
             }
 
-            std::array<VkImageView, 6> const composite_set = {hdr, this->vulkan_core.bloom_image_views[0][image_index], this->vulkan_core.bloom_image_views[1][image_index], this->vulkan_core.bloom_image_views[2][image_index], this->vulkan_core.bloom_image_views[3][image_index], ldr};
+            std::array<VkImageView, 9> const composite_set = {hdr,
+                                                              this->vulkan_core.bloom_image_views[0][image_index],
+                                                              this->vulkan_core.bloom_image_views[1][image_index],
+                                                              this->vulkan_core.bloom_image_views[2][image_index],
+                                                              this->vulkan_core.bloom_image_views[3][image_index],
+                                                              ldr,
+                                                              gi,
+                                                              depth,
+                                                              normal};
             write_set(sets[4], composite_set);
         };
-        if (!this->post_family.ensure_all(vk.device, this->post_set_layout, static_cast<uint32_t>(image_count), 5u, 6u, fingerprints, write_sets)) {
+        if (!this->post_family.ensure_all(vk.device, this->post_set_layout, static_cast<uint32_t>(image_count), 5u, 9u, fingerprints, write_sets)) {
             utility::log("runtime: post descriptor sets unavailable - post pass skipped");
         }
     }
@@ -2175,6 +2368,17 @@ namespace vulkan {
             return std::unexpected(std::string("gbuffer debug: sampler creation failed"));
         }
         this->gbuffer_sampler = vk_sampler(sampler, vk.device);
+
+        // ... and the probe cache's, which is the same thing with LINEAR filtering: the grid is sampled
+        // to interpolate between cells (see the member's comment). Created HERE rather than with the
+        // probe pipeline because the tracer's descriptor set writes it whether or not that optional
+        // pipeline exists - a null sampler in a set is a validation error, not a skipped fetch.
+        VkSamplerCreateInfo probe_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
+        VkSampler probe_sampler = VK_NULL_HANDLE;
+        if (vkCreateSampler(vk.device, &probe_info, nullptr, &probe_sampler) != VK_SUCCESS) {
+            return std::unexpected(std::string("gbuffer debug: probe sampler creation failed"));
+        }
+        this->gi_probe_sampler = vk_sampler(probe_sampler, vk.device);
         return {};
     }
 
@@ -2205,15 +2409,15 @@ namespace vulkan {
         // The image comes from scene_target_image(), the same accessor the attachment below uses, so
         // the barrier always names the image this instance actually LOADs.
         VkImage const scene_target = this->scene_target_image(static_cast<uint32_t>(index));
-        std::array<VkImageMemoryBarrier2, 4> barriers = {};
-        for (uint32_t target = 0; target < vulkan::gbuffer_target_count; ++target) {
-            barriers[target] = vulkan::hdr_sampling_transition; // COLOR_ATTACHMENT -> SHADER_READ
-            barriers[target].image = vk.gbuffer_images[target][index];
-        }
-        barriers[3] = vulkan::color_attachment_dependency; // G-buffer store -> this instance's LOAD
-        barriers[3].image = scene_target;
+        std::array<VkImageMemoryBarrier2, 1> barriers = {};
+        barriers[0] = vulkan::color_attachment_dependency; // G-buffer store -> this instance's LOAD
+        barriers[0].image = scene_target;
         VkDependencyInfo const dependency = make_image_dependency_info(static_cast<uint32_t>(barriers.size()), barriers.data());
         vkCmdPipelineBarrier2(command_buffer, &dependency);
+        // The three stored targets become samples HERE, but only if an earlier stage (the ray-traced
+        // shadow pass, which runs between the G-buffer instance and this one) has not already published
+        // them - the flag is what keeps the second transition from claiming a layout they are not in.
+        this->ensure_gbuffer_targets_sampled(command_buffer, static_cast<uint32_t>(index));
         this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(index));
 
         this->ensure_gbuffer_descriptors();
@@ -2261,6 +2465,11 @@ namespace vulkan {
                               this->ssao_bias),
             // render mode: the flat "unlit" default pipeline becomes "write the stored albedo" here
             .unlit = this->unlit_active ? 1.0f : 0.0f,
+            // ... and whether the traced chain is replacing the ambient this frame, which the lighting stage
+            // needs so it does not scale a term that is about to be taken back out (see the field's comment).
+            // The SAME predicate the spatial filter's subtraction uses, so the two cannot disagree about
+            // whether the ambient the chain replaces is the occluded one or the plain one.
+            .gi_replaces_ambient = this->ssgi_traced_active() ? 1.0f : 0.0f,
         };
         vkCmdPushConstants(command_buffer, this->deferred_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
@@ -2278,234 +2487,11 @@ namespace vulkan {
         static_cast<void>(command_buffer); // the pass records into the frame's command buffer it is resolved with
         // THE TRANSPARENT PASS records the blended geometry: the two hand-off barriers, the LOAD instance over
         // its two declared targets, one secondary and the depth hand-back - all in one function now (see
-        // vulkan.pass.transparent). IT IS SKIPPED WITHOUT RESOLVING ANYTHING on a frame whose culling left
-        // nothing blended, which is what keeps a frame with no blended leaves byte-exact: the early return that
-        // used to open this function moved into resolve_transparent_pass, where the runner asks for it.
+        // vulkan.pass.transparent). Like the scene pass it is SKIPPED without resolving anything on a frame
+        // whose culling left nothing blended, which is what keeps a frame with no blended leaves byte-exact.
         this->transparent.set_frame(this->make_transparent_frame());
         pass::stage const transparent_stage = {.name = "transparent", .passes = this->transparent_stage, .marks = false};
         [[maybe_unused]] pass::run_report const transparent_report = pass::record_stage(transparent_stage, this->make_pass_host());
-    }
-
-    // ---- the pass framework's half: what the runner asks the renderer for ---------------------------------
-    //
-    // The pass layer (`vulkan.pass`) owns HOW a pass is called; this section owns what the ANSWER is, because
-    // every one of these answers is this renderer's business: where its images live, which pipeline name is
-    // the frame's default, how many swapchain images this generation has. Nothing here is visible to a pass -
-    // a pass is given a `pass_context` at create time and a `resolved_io` while recording, and reaches
-    // nothing else. That is the property the framework is worth having for, so the temptation to fold these
-    // callbacks into one context object is exactly what it exists to resist.
-    void runtime::create_passes() {
-        // The runner's create step for every stage this runtime wires. A pass builds what it owns from its own
-        // declaration and its own shader, so this is also where a pass that could not build itself says so -
-        // and a pass that says so stays INACTIVE, which is what makes a startup failure here a log line rather
-        // than a broken frame.
-        //
-        // IT IS HANDED A CONTEXT, NOT A HOST: building a pass needs a device and the shared lookups, and it
-        // needs no frame. ANY owner can fill this struct - that is what makes a pass usable outside this
-        // renderer - and this runtime is one such owner, filling the device from the core it owns.
-        //
-        // ON THIS BRANCH THERE ARE TWO STAGES AND TWO PASSES, and neither owns anything yet: the scene pass has
-        // no set layout and no pipeline (its leaves name theirs, and everything it binds is the shared scene
-        // set), and neither has the transparent pass. So this call's observable effect today is the VALIDATION
-        // of the declarations - which is the point of doing it here rather than not at all: they are checked
-        // against the schema by `vulkan.render_resource::validate` on every machine, at startup, with no
-        // device work.
-        // The SHARED samplers must exist before the context is filled, because a pass caches the ones it may
-        // choose between at create time (a declaration picks one by hint, and a null sampler in a set is a
-        // validation error rather than a skipped fetch). The TAA resolve's is made here because the pass that
-        // declares it is what needs it now - it used to be made inside the pipeline builder that first wanted
-        // it, which is the naming accident docs/runtime_split.md records.
-        this->ensure_taa_sampler();
-        pass::pass_context const build = {
-            .device = this->vulkan_core.device,
-            .samplers = this->shared_samplers(),
-            .shared_set_layout = [](void* owner, uint32_t const set) {
-                // The scene set is the only shared set a pass's OWN pipeline layout ever needs today: it is
-                // set 0, and it is what every compute pass's tracing/shading reads. A pass asking for any
-                // other set gets "none", which makes it build nothing and say so.
-                return set == 0u ? static_cast<runtime*>(owner)->vulkan_core.scene_descriptor_set_layout : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
-            .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
-            .owner = this,
-        };
-        pass::stage const scene_stage = {.name = "scene", .passes = this->scene_stage, .marks = false};
-        pass::run_report const scene_created = pass::create_stage(scene_stage, build);
-        if (!scene_created.rejected.empty()) {
-            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", scene_created.rejected);
-        }
-        pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
-        pass::run_report const taa_created = pass::create_stage(taa_stage, build);
-        if (!taa_created.rejected.empty()) {
-            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", taa_created.rejected);
-        }
-        pass::stage const transparent_stage = {.name = "transparent", .passes = this->transparent_stage, .marks = false};
-        pass::run_report const created = pass::create_stage(transparent_stage, build);
-        if (!created.rejected.empty()) {
-            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", created.rejected);
-        }
-    }
-
-    render_resource::shared::sampler_set runtime::shared_samplers() const noexcept {
-        // The six samplers a declaration chooses between, as handles: ONE place, so that two passes cannot end
-        // up with two different ideas of "the post sampler". TWO SLOTS ARE DELIBERATELY LEFT NULL on this
-        // branch, and they are named rather than silently defaulted: `probe_grid` (the sampler the GI probe
-        // grid's declaration picks exists only with that pass, which this branch does not have) and `nearest`
-        // (it belongs to the post chain's pass, which this branch does not have either). A declaration that
-        // asked for one of the two would get a null sampler in its set, which is a validation error rather
-        // than a silent fetch - and no pass wired here asks for either.
-        return {.gbuffer = *this->gbuffer_sampler, .taa = *this->taa_sampler, .post = *this->post_sampler, .shadow = *this->shadow_sampler};
-    }
-
-    /// build ONE segment's draw state; a fresh one per segment, because the pipeline-dedup state is per
-    /// recording session (see scene_frame::make_environment). Moved from record_main_segment's body, which is
-    /// why its comments still speak of "the main pass": the pass that draws the transparent leaves uses the
-    /// SAME environment (one colour attachment instead of the G-buffer's five, which is the pass's business).
-    render_environment runtime::make_scene_environment(void* owner, VkCommandBuffer const command_buffer, bool const gbuffer) {
-        runtime& self = *static_cast<runtime*>(owner);
-        render_environment env;
-        env.command_buffer = command_buffer;
-        // The G-buffer pass binds its own pipeline as the pass default (see gbuffer_pipeline_name): same
-        // leaves, same draw path, but the fragment stage writes the surface instead of shading.
-        {
-            std::shared_lock const lock(self.access_mutex);
-            env.default_name = gbuffer ? gbuffer_pipeline_name : self.default_pipeline_name;
-        }
-        env.bind = [&self, gbuffer](VkCommandBuffer const cb, std::string_view const name) {
-            if (gbuffer) {
-                if (name == gbuffer_pipeline_name) {
-                    self.gbuffer_pipeline->begin_pipeline(cb);
-                    return;
-                }
-                // a leaf with explicit pipeline semantics cannot draw in the G-buffer instance (the named
-                // pipelines declare the single HDR attachment): say so once per leaf instead of issuing a draw
-                // that would be a validation error
-                utility::log("runtime: leaf requests pipeline '{}' during the G-buffer pass - draw skipped (only default-semantics leaves write the G-buffer)", name);
-                return;
-            }
-            if (auto const it = self.pipelines.find(name); it != self.pipelines.end()) {
-                it->second.begin_pipeline(cb);
-            } else {
-                utility::log("runtime: main pass references unknown pipeline '{}' - draw skipped", name);
-            }
-        };
-        // transparent leaves toggle depth writes off via this (core dynamic state, 1.3)
-        env.set_depth_write_fn = [](VkCommandBuffer const cb, VkBool32 const enabled) { vkCmdSetDepthWriteEnable(cb, enabled); };
-        // single-sided materials keep back-face culling here (the shadow pass overrides it with env.two_sided;
-        // the main pass must not, or double-sided handling would cost fill rate)
-        env.set_cull_mode_fn = [](VkCommandBuffer const cb, VkCullModeFlags const mode) { vkCmdSetCullMode(cb, mode); };
-        env.layout = self.vulkan_core.scene_pipeline_layout;
-        return env;
-    }
-
-    pass::transparent_frame runtime::make_transparent_frame() noexcept {
-        core const& vk = this->vulkan_core;
-        auto const& secondaries = this->secondary_command_buffers[static_cast<std::size_t>(vk.current_frame)];
-        return pass::transparent_frame{
-            .leaves = this->frame_transparent,
-            .secondary = *secondaries[static_cast<std::size_t>(secondary_pass::transparent)],
-            .make_environment = &runtime::make_scene_environment,
-            .owner = this,
-            .color_format = vulkan::hdr_format,
-            .depth_format = vk.depth_format,
-            .extent = vk.swap_chain_extent,
-        };
-    }
-
-    bool runtime::resolve_transparent_pass(pass::resolved_io& out) {
-        core const& vk = this->vulkan_core;
-        std::size_t const index = this->current_image_index;
-        std::size_t const image_count = vk.scene_color_image_views.size();
-        if (this->frame_transparent.empty() || image_count == 0 || index >= image_count || vk.gbuffer_depth_image_views.size() != image_count) {
-            return false; // nothing blended this frame: no instance and no barriers to pay for
-        }
-        out.frame = this->pass_frame();
-        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
-        out.own = {};
-        out.own_set = VK_NULL_HANDLE;
-        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
-        // the two declared targets, in declaration order: the scene colour it composites over (an ALIAS - the
-        // same image the scene pass writes) and the surface depth it depth-tests against
-        out.target_storage[0] = {.view = this->scene_target_view(index), .buffer = VK_NULL_HANDLE, .image = this->scene_target_image(index)};
-        out.target_storage[1] = {.view = vk.gbuffer_depth_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_depth_images[index]};
-        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), 2);
-        out.pipelines = {}; // a leaf names its pipeline; see the scene pass
-        out.pipeline_layout = VK_NULL_HANDLE;
-        out.push = {};
-        out.extent = vk.swap_chain_extent;
-        return true;
-    }
-
-    pass::frame_identity runtime::pass_frame() const noexcept {
-        core const& vk = this->vulkan_core;
-        return pass::frame_identity{
-            .image_index = this->current_image_index,
-            .slot = static_cast<uint32_t>(vk.current_frame),
-            // the generation's image count, which is what a pass that owns a per-image family sizes it from -
-            // and NOT the same number as the image index above
-            .image_count = static_cast<uint32_t>(vk.scene_color_image_views.size()),
-            .extent = vk.swap_chain_extent,
-        };
-    }
-
-    pass::pass_host runtime::make_pass_host() noexcept {
-        // It is rebuilt per call because it is a struct of function pointers (it holds no state of its own);
-        // the context is this runtime, which is what each callback casts back to. This is the RUNNER's half of
-        // the interface and a pass never sees it: at create time a pass is given a `pass_context`, and while
-        // recording it is handed `resolved_io`, so it cannot reach a resource its declaration did not name.
-        //
-        // The two mark callbacks are null, and deliberately: the frame's timing intervals are still written by
-        // the recording spine (gpu_mark_id's positional contract), and giving a stage its own pair here would
-        // insert marks into a capture that is verified byte-for-byte. A stage CAN mark - the framework asks
-        // for it - this runtime simply has no reason to yet.
-        return pass::pass_host{
-            .context = this,
-            .frame = [](void* context) { return static_cast<runtime*>(context)->pass_frame(); },
-            .feature_active = [](void* context, std::string_view const feature) { return static_cast<runtime*>(context)->feature_active(feature); },
-            .resolve = [](void* context, pass::frame_pass const& pass, pass::resolved_io& out) { return static_cast<runtime*>(context)->resolve_pass(pass, out); },
-            .apply_behaviour = [](void* context, pass::frame_pass const& pass, pass::resolved_io const& io) { static_cast<runtime*>(context)->apply_pass_behaviour(pass, io); },
-            .mark_begin = nullptr,
-            .mark_end = nullptr,
-        };
-    }
-
-    bool runtime::resolve_pass(pass::frame_pass const& pass, pass::resolved_io& out) {
-        if (&pass == static_cast<pass::frame_pass const*>(&this->scene)) {
-            return this->resolve_scene_pass(out);
-        }
-        if (&pass == static_cast<pass::frame_pass const*>(&this->taa_resolve)) {
-            return this->resolve_taa_pass(out);
-        }
-        if (&pass == static_cast<pass::frame_pass const*>(&this->transparent)) {
-            return this->resolve_transparent_pass(out);
-        }
-        // No other pass is wired into a stage yet, so "this frame cannot run it" is the honest answer: a pass
-        // the runtime does not know is not resolved, and the runner skips it rather than recording it with
-        // null handles.
-        return false;
-    }
-
-    void runtime::apply_pass_behaviour(pass::frame_pass const& pass, pass::resolved_io const& io) {
-        // The mechanical part of "how this pass is called", done by the runner so that a pass cannot forget
-        // it: the pipeline is bound HERE, and the viewport/scissor are set HERE for a pass that asked for them
-        // (which is what replaces the hand-kept pipeline list in update_pass_geometry - a pass cannot drop
-        // itself from a list it does not maintain).
-        //
-        // What is deliberately NOT here: the rendering instance. EVERY graphics pass opens its own, over the
-        // targets it declared, because the load op and the clear value are the PASS's knowledge.
-        pass::behaviour const& behaviour = pass.behaviour();
-        if (behaviour.resync_viewport) {
-            // io.extent is the extent the declaration's rule produced (the frame's, half of it, or a
-            // resource's), so a fullscreen pass gets a viewport that matches the target it declared.
-            VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(io.extent.width), static_cast<float>(io.extent.height), 0.0f, 1.0f};
-            VkRect2D const scissor = {{0, 0}, io.extent};
-            vkCmdSetViewport(io.cmd, 0, 1, &viewport);
-            vkCmdSetScissor(io.cmd, 0, 1, &scissor);
-        }
-        VkPipelineBindPoint const bind_point = behaviour.kind == pass::behaviour_kind::compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
-        for (VkPipeline const pipeline : io.pipelines) {
-            if (pipeline != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(io.cmd, bind_point, pipeline);
-            }
-        }
     }
 
     // ---- temporal anti-aliasing (M3) ----
@@ -2561,19 +2547,858 @@ namespace vulkan {
             // into the runtime every frame (see main.cpp), so resetting unconditionally here would
             // invalidate the history on every frame: the resolve would fall back to the current
             // (jittered, aliased) frame forever, which looks like TAA running while doing nothing.
-            this->taa_resolve.reset_history(); // the pass owns whether each image's history holds anything
             std::size_t const image_count = this->vulkan_core.taa_history_images.size();
+            this->taa_resolve.reset_history(); // the pass owns whether each image's history holds anything
             this->image_view_proj.assign(image_count, this->current_ubo.view_proj_unjittered);
             this->taa_jitter_index = 0;
         }
     }
 
+    // The TAA resolve's factory is gone: `vulkan.pass.taa` builds its own set layout, pipeline layout and
+    // pipeline in its create step, from its own declaration and its own shaders (the app registers those).
+
+    bool runtime::ensure_gbuffer_depth_sampled(VkCommandBuffer const command_buffer, uint32_t const image_index) {
+        // Nothing to do when no G-buffer instance ran for this image: the depth is already in the
+        // layout the sampling descriptors declare (it keeps whatever the last frame for this image
+        // left it in), so re-transitioning would only claim a layout the image is not in.
+        if (image_index >= this->gbuffer_depth_written.size() || !this->gbuffer_depth_written[image_index]) {
+            return false;
+        }
+        // The G-buffer pass left it in DEPTH_STENCIL_ATTACHMENT_OPTIMAL: publish the attachment
+        // write and flip it to the layout the sampling descriptors declare. One barrier per frame,
+        // whichever of the three sampling stages gets here first.
+        VkImageMemoryBarrier2 barrier = vulkan::shadow_map_sampling_transition;
+        barrier.image = this->vulkan_core.gbuffer_depth_images[image_index];
+        VkDependencyInfo const dependency = make_image_dependency_info(1, &barrier);
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
+        this->gbuffer_depth_written[image_index] = false;
+        return true;
+    }
+
+    bool runtime::ensure_gbuffer_targets_sampled(VkCommandBuffer const command_buffer, uint32_t const image_index) {
+        // Nothing to do when no G-buffer instance ran for this image, or when an earlier stage already
+        // took the transition (the ray-traced shadow pass runs first when it runs): re-transitioning
+        // would claim a COLOR_ATTACHMENT old layout the image is not in.
+        if (image_index >= this->gbuffer_targets_written.size() || !this->gbuffer_targets_written[image_index]) {
+            return false;
+        }
+        std::array<VkImageMemoryBarrier2, vulkan::gbuffer_target_count> barriers = {};
+        for (uint32_t target = 0; target < vulkan::gbuffer_target_count; ++target) {
+            barriers[target] = vulkan::hdr_sampling_transition; // COLOR_ATTACHMENT -> SHADER_READ
+            barriers[target].image = this->vulkan_core.gbuffer_images[target][image_index];
+        }
+        VkDependencyInfo const dependency = make_image_dependency_info(static_cast<uint32_t>(barriers.size()), barriers.data());
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
+        this->gbuffer_targets_written[image_index] = false;
+        return true;
+    }
+    bool runtime::ensure_velocity_sampled(VkCommandBuffer const command_buffer, uint32_t const image_index) {
+        // Nothing to do when no G-buffer instance ran for this image, or when an earlier sampler
+        // already took the transition (the TAA resolve, which runs before the GI denoiser in the same
+        // frame): re-transitioning would claim a COLOR_ATTACHMENT old layout the image is not in.
+        if (image_index >= this->velocity_written.size() || !this->velocity_written[image_index]) {
+            return false;
+        }
+        VkImageMemoryBarrier2 barrier = vulkan::hdr_sampling_transition; // COLOR_ATTACHMENT -> SHADER_READ
+        barrier.image = this->vulkan_core.velocity_images[image_index];
+        VkDependencyInfo const dependency = make_image_dependency_info(1, &barrier);
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
+        this->velocity_written[image_index] = false;
+        return true;
+    }
+
+    bool runtime::gbuffer_pass_active() const noexcept {
+        if (!this->gbuffer_pipeline.has_value()) {
+            return false;
+        }
+        if (this->gbuffer_debug) {
+            return this->gbuffer_debug_pipeline.has_value();
+        }
+        return this->deferred_pipeline.has_value();
+    }
+
+    bool runtime::deferred_lit_active() const noexcept {
+        // the debug view wins when both are available: looking at the stored data is an inspection,
+        // not a render mode (and the two write the HDR target in incompatible ways)
+        return this->gbuffer_pass_active() && !this->gbuffer_debug;
+    }
+
+    void runtime::set_gbuffer_channel(int const channel) noexcept {
+        this->gbuffer_channel_index = std::clamp(channel, 0, gbuffer_channel_count - 1);
+    }
+
+    void runtime::ensure_gbuffer_descriptors() {
+        core& vk = this->vulkan_core;
+        if (this->gbuffer_debug_pipeline == std::nullopt || this->gbuffer_set_layout == VK_NULL_HANDLE) {
+            return;
+        }
+        std::size_t const image_count = vk.gbuffer_image_views[0].size();
+        if (image_count == 0 || vk.gbuffer_depth_image_views.size() != image_count || vk.hdr_image_views.size() != image_count || vk.gi_image_views.size() != image_count ||
+            vk.gi_spec_image_views.size() != image_count || vk.gi_spec_reproject_image_views.size() != image_count ||
+            vk.gi_spec_resolve_image_views.size() != image_count ||
+            vk.gi_probe_image_views.empty() || this->gi_probe_sampler.get() == VK_NULL_HANDLE) {
+            return;
+        }
+        // The family owns the rebinding rule now (see vulkan.bindings): the sets stay allocated, their
+        // contents are rewritten only when the targets below change, and a pool replaced by a later
+        // generation is retired rather than destroyed, because recorded frame command buffers still
+        // name its sets. on_swapchain_recreated() retires the family, which is what forces the rewrite.
+        // The signature is ALSO this family's descriptors-per-set (it sizes the pool - see vulkan.bindings),
+        // so it has to list every binding the layout declares, not just the ones that can move together.
+        std::array<VkImageView, 16> const signature = {
+            vk.gbuffer_image_views[0][0],
+            vk.gbuffer_image_views[1][0],
+            vk.gbuffer_image_views[2][0],
+            vk.gbuffer_depth_image_views[0],
+            vk.velocity_image_views[0],
+            vk.hdr_image_views[0],
+            vk.gi_image_views[0],
+            vk.gi_resolve_image_views[0],
+            vk.gi_spatial_image_views[0],
+            // Bindings 9..12 are the world-space probe cache's four SH-2 coefficients: ONE set of images for
+            // the whole device (the cache is anchored to the world, not to a swapchain image), so every set
+            // fingerprints the same views - and a recreated grid still invalidates them all, which is what
+            // these entries are for.
+            vk.gi_probe_image_views[0],
+            vk.gi_probe_image_views[1],
+            vk.gi_probe_image_views[2],
+            vk.gi_probe_image_views[3],
+            // 13 and 14 are the glossy lobe's own outputs. Per swapchain image, like the trace they shadow:
+            // a reflection's correction and its reprojection belong to the frame that produced them.
+            vk.gi_spec_image_views[0],
+            vk.gi_spec_reproject_image_views[0],
+            vk.gi_spec_resolve_image_views[0]};
+        // One set per image with one descriptor per binding: the three stored targets, the depth, the
+        // motion-vector target, the direct-radiance image the tracer samples at a hit, the raw trace it
+        // writes, the accumulated image the spatial filter reads, the filtered image it writes, the four
+        // probe coefficients it reads for a hit the screen cannot answer, and the glossy lobe's two outputs -
+        // the same fifteen the signature above fingerprints.
+        // image_count is the generation's, signature is only the fingerprint of image 0 above - the two
+        // are different things and the family needs both (see vulkan.bindings).
+        auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
+            std::array<VkDescriptorImageInfo, 16> image_infos = {};
+            std::array<VkImageView, 16> const views = {
+                this->vulkan_core.gbuffer_image_views[0][image_index],
+                this->vulkan_core.gbuffer_image_views[1][image_index],
+                this->vulkan_core.gbuffer_image_views[2][image_index],
+                this->vulkan_core.gbuffer_depth_image_views[image_index],
+                this->vulkan_core.velocity_image_views[image_index],
+                this->vulkan_core.hdr_image_views[image_index],        // 5: direct radiance, what a hit returns
+                this->vulkan_core.gi_image_views[image_index],         // 6: the RAW trace the tracer writes
+                this->vulkan_core.gi_resolve_image_views[image_index], // 7: the accumulation the filter reads
+                this->vulkan_core.gi_spatial_image_views[image_index], // 8: the filtered GI the composite reads
+                // 9..12: the world-space probe cache's four SH-2 coefficients (one copy for the whole
+                // device, so index 0 rather than this image's - see the ping-pong in vulkan.pass.gi_probe:
+                // the cache side is always the one the tracer reads).
+                this->vulkan_core.gi_probe_image_views[0],
+                this->vulkan_core.gi_probe_image_views[1],
+                this->vulkan_core.gi_probe_image_views[2],
+                this->vulkan_core.gi_probe_image_views[3],
+                // 13 and 14: the glossy lobe's own two outputs (see core.cppm's gi_spec_*).
+                this->vulkan_core.gi_spec_image_views[image_index],
+                this->vulkan_core.gi_spec_reproject_image_views[image_index],
+                // 15: the reflection's own accumulation, which the spatial filter samples and sums the
+                // diffuse one into (see shaders/ssgi_spatial.comp and ssgi_temporal.comp's mode 1).
+                this->vulkan_core.gi_spec_resolve_image_views[image_index]};
+            std::array<VkWriteDescriptorSet, 16> writes = {};
+            for (uint32_t b = 0; b < views.size(); ++b) {
+                // 6, 8, 13 and 14 are STORAGE images (a compute pass writes each) and therefore have no
+                // sampler and live in GENERAL; the twelve sampler bindings are all SHADER_READ, including 15,
+                // which the spatial filter reads rather than writes.
+                bool const storage = b == 6u || b == 8u || b == 13u || b == 14u;
+                // The probe cache is a 3D texture read with LINEAR filtering: the whole point of sampling
+                // it is interpolating between cells, so it cannot borrow the G-buffer's NEAREST sampler.
+                image_infos[b].sampler = storage ? VK_NULL_HANDLE : (b >= 9u && b <= 12u ? *this->gi_probe_sampler : *this->gbuffer_sampler);
+                image_infos[b].imageView = views[b];
+                image_infos[b].imageLayout = storage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[b].dstSet = sets[0];
+                writes[b].dstBinding = b;
+                writes[b].descriptorCount = 1;
+                writes[b].descriptorType = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[b].pImageInfo = &image_infos[b];
+            }
+            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        };
+        if (!this->gbuffer_family.ensure(vk.device, this->gbuffer_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
+            utility::log("runtime: gbuffer debug descriptor sets unavailable - debug view skipped");
+        }
+    }
+
+    bool runtime::ssgi_active() const noexcept {
+        // The tracer reads the direct radiance the lighting stage produced and the G-buffer depth it
+        // wrote, so that stage has to have run. The debug view replaces it, so there is no GI there.
+        // The FLAT render mode is excluded for the same reason and it is not a style choice: in that
+        // mode the lighting stage returns the stored albedo, so the image the tracer averages is not
+        // radiance, and the GI it would add is a product of two albedos rather than a transport term.
+        // It became reachable when `ssgi` defaulted to true, which is why the `unlit` reference frame is
+        // the check for it: with this exclusion in place that frame comes out byte-identical to what it
+        // was before the default moved.
+        // The whole denoise chain is required as well, and not merely as a quality step: what the
+        // composite samples is the SPATIAL filter's output, so a build with any one of the three
+        // passes missing has nothing to composite. Treating that as "GI off" keeps the composite's
+        // weight at 0 - the alternative is a full-resolution frame of whatever the last image happens
+        // to contain.
+        return this->ssgi_on && this->ssgi_pipeline.has_value() && this->ssgi_temporal_pipeline.has_value() &&
+               this->ssgi_spatial_pipeline.has_value() && this->deferred_lit_active() && !this->unlit_active;
+    }
+
+    std::expected<void, std::string> runtime::make_ssgi_pipeline(std::span<unsigned char const> const compute_shader_code) {
+        using fail = std::unexpected<std::string>;
+        if (!this->deferred_pipeline.has_value()) {
+            return fail(std::string("ssgi: create the deferred lighting pipeline first (it owns the G-buffer set layout)"));
+        }
+        auto built = pipelines::build_ssgi(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, this->gbuffer_set_layout, sizeof(ssgi_push_constants), compute_shader_code);
+        if (!built) {
+            return fail(built.error());
+        }
+        this->ssgi_pipeline_layout = built->pipeline_layout;
+        this->ssgi_pipeline = std::move(built->trace);
+        return {};
+    }
+
+    void runtime::set_ssgi(bool const enabled, float const intensity, float const radius, uint32_t const rays, uint32_t const steps) noexcept {
+        bool const was_on = this->ssgi_on;
+        this->ssgi_on = enabled;
+        this->ssgi_intensity = intensity;
+        this->ssgi_radius = radius;
+        this->ssgi_rays = std::clamp(rays, 0u, 16u);
+        this->ssgi_steps = std::clamp(steps, 0u, 64u);
+        if (enabled && !this->ssgi_pipeline.has_value()) {
+            this->warn_missing_feature("ssgi", "screen-space GI has no effect: its compute pipeline was not created (see the startup log)");
+        } else if (enabled && !this->ssgi_temporal_pipeline.has_value()) {
+            this->warn_missing_feature("ssgi", "screen-space GI has no effect: its temporal resolve was not created (see the startup log)");
+        } else if (enabled && !this->ssgi_spatial_pipeline.has_value()) {
+            this->warn_missing_feature("ssgi", "screen-space GI has no effect: its spatial filter was not created (see the startup log)");
+        }
+        if (enabled && !was_on) {
+            // A fresh accumulation, on the off -> on EDGE only. Today the one caller is startup
+            // (main.cpp applies the config once), so this is mostly a guard for the shape of the
+            // setter: it mirrors set_taa, and a future overlay control that calls it every frame must
+            // not have the history thrown away on each of those calls - the resolve would show the raw
+            // trace forever, which looks like a denoiser running while doing nothing.
+            this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
+            this->gi_spec_seen.assign(this->vulkan_core.gi_spec_images.size(), false); // new targets: the lobe's outputs need their first-use transition again
+        }
+    }
+
+    void runtime::record_ssgi_pass(VkCommandBuffer const command_buffer) {
+        core& vk = this->vulkan_core;
+        std::size_t const index = this->current_image_index;
+        if (index >= vk.gi_images.size() || vk.gi_images[index] == VK_NULL_HANDLE) {
+            return;
+        }
+        this->ensure_gbuffer_descriptors();
+        VkDescriptorSet const gbuffer_set = this->gbuffer_family.set(static_cast<uint32_t>(index), 0);
+        if (gbuffer_set == VK_NULL_HANDLE) {
+            return;
+        }
+
+        // The G-buffer depth, albedo and normal are already SHADER_READ (the lighting stage put them
+        // there) and so is the HDR scene target (record_post_process transitioned it just before this
+        // runs). Only the GI image needs anything: it is written as a storage image, so UNDEFINED ->
+        // GENERAL here and GENERAL -> SHADER_READ below, for the composite that samples it.
+        //
+        // The resolve image needs one transition too, and only on its FIRST use for this image: the
+        // traced path samples the PREVIOUS frame's resolve at a hit (the multi-bounce feedback), which
+        // is a read of a storage image the temporal pass has not rewritten yet this frame. Every later
+        // frame finds it in SHADER_READ (the denoise pass's hand-back leaves it there) and needs no
+        // barrier at all - and must not get one claiming UNDEFINED, which would discard the very image
+        // the feedback reads. The same per-image first-use flag the history image uses, for the same
+        // reason (see record_ssgi_denoise_pass and gi_history_valid).
+        bool const history_valid = index < this->gi_history_valid.size() && this->gi_history_valid[index];
+        // The probe cache needs the same treatment for the same class of reason, and it is needed even
+        // when the cache is OFF: the tracer declares the sampler3D unconditionally (the descriptor is
+        // always written with a real view, because a null one is illegal), so the image behind it has to
+        // be in a legal layout on every frame the tracer dispatches. UNDEFINED is the honest old layout
+        // ONCE per target generation; after that the update pass's hand-back leaves the cache in
+        // SHADER_READ (which is what the tracer wants) and the scratch in GENERAL (which is all it ever
+        // is).
+        bool const probe_first_use = !this->gi_probe_grid_seen && vk.gi_probe_images.size() == 8;
+        std::array<VkImageMemoryBarrier2, 12> start_barriers = {};
+        start_barriers[0] = vulkan::undefined_to_general_transition;
+        start_barriers[0].image = vk.gi_images[index];
+        uint32_t start_count = 1;
+        if (!history_valid && index < vk.gi_spec_resolve_images.size()) {
+            // The REFLECTION's own accumulation needs the same treatment, one step further out: the G-buffer
+            // set names it at binding 15, so it has to be in the layout THAT set declares before the first
+            // pass that binds the set - which is this one, not the pass that writes it. Leaving it undefined
+            // until its own resolve ran is the validation error this line was written for: "expects VkImage
+            // ... to be in layout SHADER_READ_ONLY_OPTIMAL--instead, current layout is VK_IMAGE_LAYOUT_UNDEFINED".
+            start_barriers[start_count] = vulkan::undefined_to_sampling_transition;
+            start_barriers[start_count].image = vk.gi_spec_resolve_images[index];
+            ++start_count;
+        }
+        if (!history_valid && index < vk.gi_resolve_images.size()) {
+            // SHADER_READ, not GENERAL, even though this frame's temporal pass will WRITE it: it is read
+            // here FIRST (the tracer's bounce feedback samples it), so the layout its descriptor declares is
+            // the one it has to start in - the temporal pass transitions it to GENERAL itself before writing
+            // and back afterwards. A first-use transition is for the layout the frame's first READER needs,
+            // not the writer. Getting this wrong is what the validation layer caught here: "Cannot use
+            // VkImage ... with specific layout SHADER_READ_ONLY_OPTIMAL ... that doesn't match the previous
+            // known layout VK_IMAGE_LAYOUT_GENERAL".
+            start_barriers[start_count] = vulkan::undefined_to_sampling_transition;
+            start_barriers[start_count].image = vk.gi_resolve_images[index];
+            ++start_count;
+        }
+        if (probe_first_use) {
+            // The cache's FOUR coefficients are sampled by this dispatch, so they start in SHADER_READ; the
+            // scratch's four are only ever written by the propagation; and the per-cell geometry is written
+            // by the injection. Nine images, which is why the array above is sized 12 (with the GI trace, the
+            // diffuse resolve on its first use, and the reflection's accumulation on its first use).
+            for (uint32_t c = 0; c < 4; ++c) {
+                start_barriers[start_count] = vulkan::undefined_to_sampling_transition;
+                start_barriers[start_count].image = vk.gi_probe_images[c];
+                ++start_count;
+            }
+            for (uint32_t c = 0; c < 4; ++c) {
+                start_barriers[start_count] = vulkan::undefined_to_general_transition;
+                start_barriers[start_count].image = vk.gi_probe_images[4 + c];
+                ++start_count;
+            }
+            start_barriers[start_count] = vulkan::undefined_to_general_transition; // the per-cell geometry: written by the injection
+            start_barriers[start_count].image = vk.gi_probe_surface_images[0];
+            ++start_count;
+            this->gi_probe_grid_seen = true;
+        }
+        VkDependencyInfo const general_dependency = make_image_dependency_info(start_count, start_barriers.data());
+        vkCmdPipelineBarrier2(command_buffer, &general_dependency);
+
+        // Same half-resolution rule as the images themselves (create_render_targets).
+        uint32_t const gi_width = std::max(1u, vk.swap_chain_extent.width / 2u);
+        uint32_t const gi_height = std::max(1u, vk.swap_chain_extent.height / 2u);
+
+        std::array<VkDescriptorSet, 2> const sets = {this->scene_sets.set(static_cast<uint32_t>(vk.current_frame)), gbuffer_set};
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_pipeline->get_pipeline());
+
+        // ssgi_radius is a FRACTION of the scene radius, so one value means the same thing on a 1.6
+        // unit model and on Sponza's 18.5 (the same reason shadow_fit works in scene units).
+        //
+        // The probe cache's two numbers are the same scene-relative ones: its cube is the scene's bounds
+        // (what the shadow fit uses) and its cell size falls out of that cube and the fixed extent.
+        bool const probe_ready = this->gi_probe_active() && this->gi_probe.cache_valid();
+        float const probe_cell_size = (2.0f * this->scene_radius) / static_cast<float>(vulkan::gi_probe_grid_extent);
+        // The instance table's device address, split across the two free lanes (see the shader): it is how
+        // a hit learns which triangle it landed on, and it is also the switch - 0 keeps the screen-sampling
+        // path, which is the A/B and is what a frame whose structures are not built yet gets.
+        uint64_t instance_table = 0;
+        if (this->ssgi_hit_shading && this->rt_top_levels.has_value()) {
+            VkBuffer const table = this->rt_top_levels->instance_table(static_cast<uint32_t>(vk.current_frame));
+            if (table != VK_NULL_HANDLE) {
+                VkBufferDeviceAddressInfo const table_info = {
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};
+                instance_table = vkGetBufferDeviceAddress(vk.device, &table_info);
+            }
+        }
+        float const table_low = std::bit_cast<float>(static_cast<uint32_t>(instance_table & 0xFFFFFFFFu));
+        float const table_high = std::bit_cast<float>(static_cast<uint32_t>(instance_table >> 32u));
+        // Which of the two oracles this frame uses, evaluated ONCE and pushed in one lane
+        // (frame_info.y): it also decides what params.w means, and two readings of the same predicate in
+        // the same push would be two places to drift apart.
+        bool const traced = this->ssgi_ray_tracing && this->vulkan_core.ray_query_available && this->rt_top_levels.has_value();
+        ssgi_push_constants const push = {
+            .inv_view_proj = this->current_inv_view_proj,
+            // w is steps on a marched frame and the ray-origin bias on a traced one (see the shader's
+            // push comment). The bias is a WORLD distance - a fraction of the scene radius, the same
+            // meaning on a 1.6-unit model and on Sponza's 87.8 - rather than a fraction of the ray length,
+            // which would make it scale with the reach knob: at the default settings that put every
+            // traced ray's origin 0.21 world units above the surface inside Sponza.
+            .params = glm::vec4(this->ssgi_radius * this->scene_radius,
+                                this->ssgi_intensity,
+                                static_cast<float>(this->ssgi_rays),
+                                traced ? this->scene_radius * 0.0002f : static_cast<float>(this->ssgi_steps)),
+            // The GI extent is NOT pushed: the shader asks the image it writes for its own size
+            // (imageSize), which is the same number and one less lane to keep in sync. z/w carry the
+            // instance table's address instead: a push constant is raw bytes, so a float lane holds an
+            // address's half exactly as written and the shader reinterprets it (see the shader).
+            .proj_terms = glm::vec4(this->current_ubo.proj[2][2], this->current_ubo.proj[3][2], table_low, table_high),
+            .frame_info = glm::vec4(static_cast<float>(this->ssgi_frame),
+                                    // ... and y = 1.0 only when the rays are actually traced: the device has ray queries,
+                                    // the tracer ran and the structures exist. Resolved HERE rather than in the shader so
+                                    // the shader never has to know why it is marching instead.
+                                    traced ? 1.0f : 0.0f,
+                                    // ... and z = the multi-bounce gain. Pushed on BOTH paths (a marched hit is
+                                    // confirmed against the depth buffer too, so it has an indirect to re-emit), and
+                                    // pushed every frame so that turning the knob off is a byte-exact no-op. Zero on
+                                    // the frames before this image has a resolve: there is no previous frame to
+                                    // re-emit, and the image the feedback would read is not defined yet.
+                                    history_valid ? this->ssgi_bounce : 0.0f,
+                                    // ... and w = the probe cache's gain. Zero unless the cache is active
+                                    // AND has been written at least once: a grid nothing has deposited
+                                    // into holds undefined texels (the first-use transition below makes
+                                    // its layout legal, not its contents), and the shader branches on this
+                                    // rather than multiplying by it, so a zero gain reads nothing at all.
+                                    probe_ready ? this->gi_probe_gain : 0.0f),
+            .probe_grid = glm::vec4(this->shadow_scene_center - glm::vec3(this->scene_radius), probe_cell_size)};
+        vkCmdPushConstants(command_buffer, this->ssgi_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+
+        constexpr uint32_t group_size = 8; // shaders/ssgi.comp's local_size_x/y
+        vkCmdDispatch(command_buffer, (gi_width + group_size - 1) / group_size, (gi_height + group_size - 1) / group_size, 1);
+
+        // A compute SHADER_WRITE is not visible to a later read without this. Both possible readers
+        // are covered: the denoiser's resolve (a COMPUTE dispatch, next) and nothing else until the
+        // image is rewritten - the composite samples the RESOLVED image, not this one.
+        //
+        // ... UNLESS the glossy pass runs next, in which case this barrier would be wrong twice over: it
+        // would hand the image to a stage whose descriptor says SHADER_READ while that pass both reads and
+        // writes it (a validation error, and a dependency the resolve does not need yet). So the hand-off
+        // moves to the END of that pass, after the LAST writer of the raw trace. The predicate is the same
+        // pure function record_ssgi_spec_pass decides on, so the two cannot disagree about which of them
+        // owes the resolve its barrier.
+        if (this->ssgi_specular_active()) {
+            return;
+        }
+        VkImageMemoryBarrier2 to_sampling = vulkan::general_to_sampling_transition;
+        to_sampling.image = vk.gi_images[index];
+        VkDependencyInfo const sampling_dependency = make_image_dependency_info(1, &to_sampling);
+        vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
+    }
+
+    std::expected<void, std::string> runtime::make_ssgi_temporal_pipeline(std::span<unsigned char const> const compute_shader_code) {
+        using fail = std::unexpected<std::string>;
+        auto built = pipelines::build_ssgi_temporal(this->vulkan_core, sizeof(ssgi_temporal_push_constants), compute_shader_code);
+        if (!built) {
+            return fail(built.error());
+        }
+        this->ssgi_temporal_set_layout = built->set_layout;
+        this->ssgi_temporal_pipeline_layout = built->pipeline_layout;
+        this->ssgi_temporal_pipeline = std::move(built->resolve);
+        return {};
+    }
+
+    void runtime::ensure_ssgi_denoise_descriptors() {
+        core& vk = this->vulkan_core;
+        if (this->ssgi_temporal_pipeline == std::nullopt || this->ssgi_temporal_set_layout == VK_NULL_HANDLE) {
+            return;
+        }
+        std::size_t const image_count = vk.gi_images.size();
+        if (image_count == 0 || vk.gi_history_image_views.size() != image_count || vk.gi_resolve_image_views.size() != image_count ||
+            vk.velocity_image_views.size() != image_count || vk.gbuffer_depth_image_views.size() != image_count ||
+            vk.gbuffer_image_views[1].size() != image_count ||
+            vk.gi_spec_image_views.size() != image_count || vk.gi_spec_reproject_image_views.size() != image_count ||
+            vk.gi_spec_history_image_views.size() != image_count || vk.gi_spec_resolve_image_views.size() != image_count) {
+            return;
+        }
+        // Six fingerprints, because six images feed one set - and the count has to match the LAYOUT,
+        // not only the images that change independently, because it is also what sizes this family's
+        // descriptor pool (see vulkan.bindings). This array held four, omitting the resolve image that
+        // binding 4 points at, so the pool was built for four descriptors per set while the allocation
+        // asked for five. The validation layer reported it - "Trying to allocate 15 of
+        // VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER descriptors from VkDescriptorPool ..., but this pool
+        // only has a total of 12 descriptors for this type" (3 images x 5 against 3 x 4) - and the
+        // message is right that a stricter driver answers VK_ERROR_OUT_OF_POOL_MEMORY, which this
+        // function's own failure path would turn into "this session has no GI" rather than a frame that
+        // is merely missing a descriptor.
+        std::array<VkImageView, 7> const signature = {vk.gi_image_views[0], vk.gi_history_image_views[0], vk.velocity_image_views[0],
+                                                      vk.gbuffer_depth_image_views[0], vk.gi_resolve_image_views[0], vk.gbuffer_image_views[1][0],
+                                                      vk.gbuffer_depth_image_views[0]};
+        auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
+            std::array<VkDescriptorImageInfo, 7> image_infos = {};
+            std::array<VkImageView, 7> const views = {
+                this->vulkan_core.gi_image_views[image_index],
+                this->vulkan_core.gi_history_image_views[image_index],
+                this->vulkan_core.velocity_image_views[image_index],
+                this->vulkan_core.gbuffer_depth_image_views[image_index],
+                this->vulkan_core.gi_resolve_image_views[image_index],
+                this->vulkan_core.gbuffer_image_views[1][image_index],
+                // Binding 6 is the REFLECTION's reprojection, which only mode 1 reads. The diffuse dispatch
+                // still has to name a valid view there (a shader that samples it in a branch leaves the
+                // access in the SPIR-V, so validation checks the descriptor whether or not the branch is
+                // taken), and binding the lobe's image would make the diffuse resolve require a layout that
+                // only the lobe maintains - which fails on exactly the frames the lobe is OFF. The depth
+                // target is always readable on a frame that resolves anything, and mode 0 ignores the value.
+                this->vulkan_core.gbuffer_depth_image_views[image_index]};
+            std::array<VkWriteDescriptorSet, 7> writes = {};
+            for (uint32_t b = 0; b < views.size(); ++b) {
+                // 4 is the STORAGE image the resolve writes: no sampler, and GENERAL rather than
+                // SHADER_READ (a compute stage writes it, it does not sample it).
+                bool const storage = b == 4u;
+                image_infos[b].sampler = storage ? VK_NULL_HANDLE : *this->gbuffer_sampler;
+                image_infos[b].imageView = views[b];
+                image_infos[b].imageLayout = storage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[b].dstSet = sets[0];
+                writes[b].dstBinding = b;
+                writes[b].descriptorCount = 1;
+                writes[b].descriptorType = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[b].pImageInfo = &image_infos[b];
+            }
+            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        };
+        if (!this->ssgi_temporal_family.ensure(vk.device, this->ssgi_temporal_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
+            utility::log("runtime: GI denoiser descriptor sets unavailable - this frame has no GI (its weight stays 0)");
+        }
+        // ... and the reflection's own resolve: the SAME layout with a different list of images, which is what
+        // makes it a second family. Bindings 2 and 3 (the surface's motion vectors and depth) are unused in
+        // mode 1 - its reprojection carries its own depth - but every binding of the layout has to name a real
+        // view, so they are filled with the same ones the diffuse set uses. Binding 6 is the lobe's
+        // reprojection, which is what mode 1 actually reprojects by.
+        std::array<VkImageView, 7> const spec_signature = {vk.gi_spec_image_views[0], vk.gi_spec_history_image_views[0], vk.velocity_image_views[0],
+                                                           vk.gbuffer_depth_image_views[0], vk.gi_spec_resolve_image_views[0], vk.gbuffer_image_views[1][0],
+                                                           vk.gi_spec_reproject_image_views[0]};
+        auto const write_spec_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
+            std::array<VkDescriptorImageInfo, 7> image_infos = {};
+            std::array<VkImageView, 7> const views = {
+                this->vulkan_core.gi_spec_image_views[image_index],
+                this->vulkan_core.gi_spec_history_image_views[image_index],
+                this->vulkan_core.velocity_image_views[image_index],
+                this->vulkan_core.gbuffer_depth_image_views[image_index],
+                this->vulkan_core.gi_spec_resolve_image_views[image_index],
+                this->vulkan_core.gbuffer_image_views[1][image_index],
+                this->vulkan_core.gi_spec_reproject_image_views[image_index]};
+            std::array<VkWriteDescriptorSet, 7> writes = {};
+            for (uint32_t b = 0; b < views.size(); ++b) {
+                bool const storage = b == 4u;
+                image_infos[b].sampler = storage ? VK_NULL_HANDLE : *this->gbuffer_sampler;
+                image_infos[b].imageView = views[b];
+                image_infos[b].imageLayout = storage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[b].dstSet = sets[0];
+                writes[b].dstBinding = b;
+                writes[b].descriptorCount = 1;
+                writes[b].descriptorType = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[b].pImageInfo = &image_infos[b];
+            }
+            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        };
+        if (!this->ssgi_spec_temporal_family.ensure(vk.device, this->ssgi_temporal_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(spec_signature.size()), spec_signature, write_spec_sets)) {
+            utility::log("runtime: GI reflection descriptor sets unavailable - this frame's reflection is not resolved");
+        }
+    }
+
+    bool runtime::record_ssgi_denoise_pass(VkCommandBuffer const command_buffer) {
+        core& vk = this->vulkan_core;
+        std::size_t const index = this->current_image_index;
+        if (index >= vk.gi_resolve_images.size() || vk.gi_history_images.size() != vk.gi_resolve_images.size()) {
+            return false;
+        }
+        this->ensure_ssgi_denoise_descriptors();
+        VkDescriptorSet const set = this->ssgi_temporal_family.set(static_cast<uint32_t>(index), 0);
+        if (set == VK_NULL_HANDLE) {
+            return false; // no set: the composite's GI weight stays 0 for this frame (see gi_resolved)
+        }
+        // The history-validity flag is read ONCE and set ONCE, around both dispatches: the two accumulations
+        // share it, and a flag read after the first dispatch would tell the reflection its history exists on
+        // the very frame that created it - which is the one frame it must not blend with.
+        bool const history_valid = index < this->gi_history_valid.size() && this->gi_history_valid[index];
+        bool const resolved = this->record_ssgi_resolve_pass(command_buffer, set, vk.gi_resolve_images[index], vk.gi_history_images[index], history_valid, 0.0f);
+        // ... and the reflection's own accumulation, when this frame's lobe produced one. Its reprojection
+        // is the one the lobe published, its history is its own, and the spatial filter's spec_weight lane is
+        // what keeps a stale accumulation out of a frame whose lobe did not run.
+        bool spec_resolved = false;
+        if (this->ssgi_specular_active() && index < vk.gi_spec_resolve_images.size() &&
+            vk.gi_spec_history_images.size() == vk.gi_spec_resolve_images.size()) {
+            VkDescriptorSet const spec_set = this->ssgi_spec_temporal_family.set(static_cast<uint32_t>(index), 0);
+            if (spec_set != VK_NULL_HANDLE) {
+                spec_resolved = this->record_ssgi_resolve_pass(command_buffer, spec_set, vk.gi_spec_resolve_images[index], vk.gi_spec_history_images[index], history_valid, 1.0f);
+            }
+        }
+        this->gi_spec_resolved = spec_resolved;
+        if (resolved && this->gi_history_valid.size() > index) {
+            this->gi_history_valid[index] = true;
+        }
+        return resolved;
+    }
+
+    bool runtime::record_ssgi_resolve_pass(VkCommandBuffer const command_buffer, VkDescriptorSet const set, VkImage const resolve_image, VkImage const history_image,
+                                           bool const history_valid, float const mode) {
+        core& vk = this->vulkan_core;
+        std::size_t const index = this->current_image_index;
+        bool const reflection = mode > 0.5f;
+
+        uint32_t const gi_width = std::max(1u, vk.swap_chain_extent.width / 2u);
+        uint32_t const gi_height = std::max(1u, vk.swap_chain_extent.height / 2u);
+
+        // Layouts, all before the dispatch (a compute pass may barrier anywhere, but keeping them
+        // together is what makes the set of states one image passes through readable):
+        //   resolve -> GENERAL (storage write). The old layout is SHADER_READ once the image has been
+        //   resolved before, and UNDEFINED on its first frame: the resolve is READ across frames (the
+        //   tracer samples the previous frame's copy at a hit, the multi-bounce feedback), so this write
+        //   has to keep its contents - claiming UNDEFINED every frame would discard exactly what the
+        //   feedback reads, which is why record_ssgi_pass's first-use barrier leaves it in SHADER_READ.
+        //   history -> SHADER_READ, and only on its FIRST use for this image: the previous frame's
+        //   copy left it readable (see the hand-back below), so a later frame needs no barrier at all
+        //   - claiming TRANSFER_DST as the old layout would be a layout the image is not in. Exactly
+        //   the TAA resolve's arrangement, for exactly the same reason.
+        //   The raw trace needs no barrier either: record_ssgi_pass handed it to SHADER_READ with a
+        //   barrier that names COMPUTE as well as FRAGMENT (see general_to_sampling_transition),
+        //   which is the read this dispatch does.
+        std::array<VkImageMemoryBarrier2, 2> barriers = {};
+        uint32_t barrier_count = 0;
+        barriers[barrier_count] = history_valid ? vulkan::sampling_to_general_transition : vulkan::undefined_to_general_transition;
+        barriers[barrier_count].image = resolve_image;
+        ++barrier_count;
+        if (!history_valid) {
+            barriers[barrier_count] = vulkan::undefined_to_sampling_transition;
+            barriers[barrier_count].image = history_image;
+            ++barrier_count;
+        }
+        VkDependencyInfo const dependency = make_image_dependency_info(barrier_count, barriers.data());
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
+
+        // The depth guard samples the G-buffer depth: its own barrier, written only if the G-buffer
+        // pass actually rendered this frame (the lighting stage normally got here first). The
+        // motion-vector target the reprojection reads is the same story, through its own accessor:
+        // the G-buffer instance wrote it as a color attachment and the TAA resolve - the only other
+        // sampler of it - runs before this pass, so whether it still needs the transition depends on
+        // which of the two stages is the frame's first sampler.
+        if (!reflection) {
+            // Both are mode 0's inputs only: the reflection's own reprojection carries the depth its guard
+            // needs, so mode 1 samples neither of these. The diffuse dispatch runs first in every frame that
+            // resolves both, which is what leaves them readable here.
+            this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(index));
+            this->ensure_velocity_sampled(command_buffer, static_cast<uint32_t>(index));
+        }
+
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_temporal_pipeline_layout, 0, 1, &set, 0, nullptr);
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_temporal_pipeline->get_pipeline());
+
+        ssgi_temporal_push_constants const push = {
+            .history_valid = history_valid ? 1.0f : 0.0f,
+            .blend_static = this->gi_blend_static,
+            .blend_min = this->gi_blend_min,
+            .depth_scale = this->current_ubo.proj[2][2],
+            .depth_offset = this->current_ubo.proj[3][2],
+            // Which signal this dispatch resolves: 0.0 = the diffuse bounce, 1.0 = the reflection (see the
+            // shader's `glossy`). One pipeline serves both, each with a set and a history of its own.
+            .mode = mode,
+            .unused1 = 0.0f,
+            .unused2 = 0.0f,
+            .gi_size = glm::vec4(static_cast<float>(gi_width), static_cast<float>(gi_height),
+                                 static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height))};
+        vkCmdPushConstants(command_buffer, this->ssgi_temporal_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+
+        constexpr uint32_t group_size = 8; // shaders/ssgi_temporal.comp's local_size_x/y
+        vkCmdDispatch(command_buffer, (gi_width + group_size - 1) / group_size, (gi_height + group_size - 1) / group_size, 1);
+
+        // ---- the resolved image becomes the next frame's history ----
+        // A copy rather than a ping-pong, exactly like the TAA resolve: the resolve writes the image
+        // the composite reads, so the history has to be separate, and copying into it keeps every
+        // descriptor set in the frame stable. The resolve is a storage image (GENERAL), so it goes out
+        // through TRANSFER_SRC and comes back as a sample - the post chain still finds it in
+        // SHADER_READ, exactly where it expects it.
+        std::array<VkImageMemoryBarrier2, 2> copy_barriers = {};
+        copy_barriers[0] = vulkan::general_to_transfer_src_transition; // resolve: GENERAL -> TRANSFER_SRC
+        copy_barriers[0].image = resolve_image;
+        copy_barriers[1] = vulkan::sampling_to_transfer_dst_transition;
+        copy_barriers[1].image = history_image;
+        VkDependencyInfo const copy_dependency = make_image_dependency_info(static_cast<uint32_t>(copy_barriers.size()), copy_barriers.data());
+        vkCmdPipelineBarrier2(command_buffer, &copy_dependency);
+
+        VkImageCopy const region = {
+            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .srcOffset = {0, 0, 0},
+            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .dstOffset = {0, 0, 0},
+            .extent = {gi_width, gi_height, 1},
+        };
+        vkCmdCopyImage(command_buffer, resolve_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, history_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        // Hand both on: the resolve to the composite, the history copy to the next frame's resolve
+        // (which will find it in TRANSFER_DST and transition it from there). The raw trace has been
+        // readable since record_ssgi_pass left it that way and nothing here touches it.
+        std::array<VkImageMemoryBarrier2, 2> hand_back = {};
+        hand_back[0] = vulkan::transfer_src_to_sampling_transition; // resolve -> SHADER_READ
+        hand_back[0].image = resolve_image;
+        hand_back[1] = vulkan::transfer_dst_to_sampling_transition; // history -> SHADER_READ
+        hand_back[1].image = history_image;
+        VkDependencyInfo const hand_back_dependency = make_image_dependency_info(static_cast<uint32_t>(hand_back.size()), hand_back.data());
+        vkCmdPipelineBarrier2(command_buffer, &hand_back_dependency);
+
+        // gi_history_valid is NOT touched here: record_ssgi_denoise_pass owns it, because it has to be set
+        // once for both signals (see the note there).
+        return true;
+    }
+
+    std::expected<void, std::string> runtime::make_ssgi_spatial_pipeline(std::span<unsigned char const> const compute_shader_code) {
+        using fail = std::unexpected<std::string>;
+        if (!this->deferred_pipeline.has_value()) {
+            return fail(std::string("ssgi spatial: create the deferred lighting pipeline first (it owns the G-buffer set layout)"));
+        }
+        auto built = pipelines::build_ssgi_spatial(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, this->gbuffer_set_layout, sizeof(ssgi_spatial_push_constants), compute_shader_code);
+        if (!built) {
+            return fail(built.error());
+        }
+        this->ssgi_spatial_pipeline_layout = built->pipeline_layout;
+        this->ssgi_spatial_pipeline = std::move(built->trace);
+        return {};
+    }
+
+    bool runtime::ssgi_traced_active() const noexcept {
+        return this->ssgi_active() && this->ssgi_ray_tracing && this->vulkan_core.ray_query_available && this->rt_top_levels.has_value();
+    }
+
+    std::expected<void, std::string> runtime::make_ssgi_spec_pipeline(std::span<unsigned char const> const compute_shader_code) {
+        using fail = std::unexpected<std::string>;
+        if (!this->deferred_pipeline.has_value()) {
+            return fail(std::string("ssgi spec: create the deferred lighting pipeline first (it owns the G-buffer set layout)"));
+        }
+        auto built = pipelines::build_ssgi_spec(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, this->gbuffer_set_layout, sizeof(ssgi_spec_push_constants), compute_shader_code);
+        if (!built) {
+            return fail(built.error());
+        }
+        this->ssgi_spec_pipeline_layout = built->pipeline_layout;
+        this->ssgi_spec_pipeline = std::move(built->trace);
+        return {};
+    }
+
+    bool runtime::ssgi_specular_active() const noexcept {
+        // Hit shading is part of the predicate, and not as a quality preference: without the instance
+        // table a glossy ray that LANDS on geometry cannot be shaded, so the pass would have nothing to
+        // add for the only samples that make it more than the lighting stage's own term. The table is the
+        // same switch the tracer uses (record_ssgi_pass publishes it), so the two agree by construction.
+        return this->ssgi_specular && this->ssgi_hit_shading && this->ssgi_traced_active() && this->ssgi_spec_pipeline.has_value();
+    }
+
+    void runtime::set_ssgi_specular(bool const enabled, uint32_t const rays, float const radius) noexcept {
+        this->ssgi_specular = enabled;
+        // One is the feature's definition and the low end of the noise/cost trade; the upper bound is a
+        // cost guard, not a quality claim - the pass shades every hit it finds, which is the expensive
+        // part of this chain.
+        this->ssgi_specular_rays = std::clamp(rays, 1u, 8u);
+        // A reach, not a quality knob: below it the reflection falls back to the sky, and past the knee the
+        // curve is flat in BOTH effect and cost (measured: -0.907 / -2.126 / -2.350 at 0.12 / 0.5 / 2.0, and
+        // the `gi` interval 1.28 / 2.22 / 2.21 ms). The FLOOR is deliberately low enough to be useless: a
+        // reach whose ray length lands at or below the ray query's own tmin (a fixed 0.01 world units) makes
+        // every sample answer with the environment - the identity configuration the L2.3 acceptance is read
+        // in - and a floor above that would not be expressible on a small scene (0.01 scene radii of the
+        // helmet's 1.64 is 0.0164 units, i.e. just past tmin, which is why the floor is 0.001 and not 0.01).
+        this->ssgi_specular_radius = std::clamp(radius, 0.001f, 8.0f);
+        if (enabled && !this->ssgi_hit_shading) {
+            this->warn_missing_feature("ssgi", "glossy reflections have no effect: without hit shading a reflection ray cannot be shaded where it lands");
+        } else if (enabled && !this->ssgi_ray_tracing) {
+            this->warn_missing_feature("ssgi", "glossy reflections have no effect: they need the traced GI path, not the marched one");
+        }
+    }
+
+    void runtime::set_ssgi_ray_tracing(bool const enabled) noexcept {
+        this->ssgi_ray_tracing = enabled;
+        if (enabled && !this->vulkan_core.ray_query_available) {
+            this->warn_missing_feature("ssgi", "GI rays are marched, not traced: this device has no ray queries");
+        } else if (enabled && !this->rt_shadow_pipeline.has_value()) {
+            this->warn_missing_feature("ssgi", "GI rays are marched, not traced: the ray-traced pipelines were not created");
+        }
+    }
+
+    void runtime::set_ssgi_bounce(float const gain) noexcept {
+        // The knob stops at one: above it the geometric series a diffuse loop forms is not guaranteed to
+        // converge (the surfaces' albedos approach one), and the failure mode is a frame that gets
+        // brighter every frame rather than a visibly wrong one.
+        this->ssgi_bounce = std::clamp(gain, 0.0f, 1.0f);
+    }
+
+    void runtime::set_furnace(bool const enabled) noexcept {
+        this->furnace = enabled;
+    }
+
+    void runtime::set_ssgi_hit_shading(bool const enabled) noexcept {
+        this->ssgi_hit_shading = enabled;
+        if (enabled && !this->vulkan_core.ray_query_available) {
+            this->warn_missing_feature("ssgi", "hits are read from the screen, not shaded: this device has no ray queries");
+        } else if (enabled && !this->ssgi_ray_tracing) {
+            this->warn_missing_feature("ssgi", "hit shading has no effect: only the traced GI path lands on a surface to shade");
+        }
+    }
+
+    void runtime::set_ssgi_spatial(float const sigma) noexcept {
+        this->gi_spatial_sigma = std::clamp(sigma, 0.0f, 8.0f);
+    }
+
+    void runtime::set_ssgi_upsample(bool const enabled) noexcept {
+        this->gi_upsample = enabled;
+    }
+
+    // ---- the world-space probe cache (see shaders/gi_probe.comp) ----
+    void runtime::set_ssgi_probes(bool const enabled, float const rate, uint32_t const rounds, float const gain) noexcept {
+        this->gi_probe_enabled = enabled;
+        // The rate is the loop gain of the grid's own cycle (tracer -> resolve -> grid -> tracer): a rate
+        // of 1 would make the grid an immediate echo of the frame that read it, so it stops below that.
+        this->gi_probe_rate = std::clamp(rate, 0.0f, 0.5f);
+        this->gi_probe_rounds = std::clamp(rounds, 0u, 4u);
+        // The dispatch count is the pass's: it owns the update sequence, so the renderer hands it the one
+        // number of that sequence that is configuration rather than structure.
+        this->gi_probe.set_rounds(this->gi_probe_rounds);
+        // The sign is the cache's DIRECTION A/B rather than a mistake: |gain| is the gain, and a negative
+        // value looks the cache up along the opposite direction of the ray - the same cell, the other side.
+        // It is clamped rather than rejected because it is a documented measurement setting.
+        this->gi_probe_gain = std::clamp(gain, -4.0f, 4.0f);
+        if (enabled && !this->ssgi_on) {
+            this->warn_missing_feature("ssgi", "the probe cache has no effect: it is injected from the screen-space GI chain, which is off");
+        } else if (enabled && !this->gi_probe.pipeline_ready()) {
+            this->warn_missing_feature("ssgi", "the probe cache has no effect: it has not built its pipeline (see the startup log)");
+        }
+    }
+
+    bool runtime::gi_probe_active() const noexcept {
+        // The cache is deposited from the screen-space chain's resolved image and lives on the deferred
+        // path's G-buffer, so it needs both of those, plus the pass having built what it records with: a
+        // build without the cache keeps the tracer's environment-probe fallback and changes nothing else.
+        return this->gi_probe_enabled && this->gi_probe.pipeline_ready() && this->ssgi_active();
+    }
+
+    void runtime::register_shader(std::string_view const name, std::span<unsigned char const> const bytecode) {
+        // The app loads shaders (it knows the directory and the file names) and hands them over here; a pass
+        // asks for its own by name at create time. A COPY, because the caller's buffer is a startup local.
+        for (auto& [registered_name, registered_bytes] : this->registered_shaders) {
+            if (registered_name == name) {
+                registered_bytes.assign(bytecode.begin(), bytecode.end());
+                return;
+            }
+        }
+        this->registered_shaders.emplace_back(std::string(name), std::vector<unsigned char>(bytecode.begin(), bytecode.end()));
+    }
+
+    void runtime::create_passes() {
+        // The runner's create step for every stage this runtime wires. A pass builds what it owns from its own
+        // declaration and its own shader, so this is also where a pass that could not build itself says so -
+        // and a pass that says so stays INACTIVE (its feature predicate is false), which is what makes a
+        // startup failure here a log line rather than a broken frame.
+        //
+        // IT IS HANDED A CONTEXT, NOT A HOST: building a pass needs a device and the shared lookups, and it
+        // needs no frame. ANY owner can fill this struct - that is what makes a pass usable outside this
+        // renderer - and this runtime is one such owner, filling the device from the core it owns.
+        //
+        // The SHARED samplers must exist before the context is filled, because a pass caches the six it may
+        // choose between at create time (a declaration picks one by hint, and a null sampler in a set is a
+        // validation error rather than a skipped fetch). Two of the six are still created inside the pipeline
+        // builders that first needed them - `make_gbuffer_debug_pipeline` makes the G-buffer pair's and the
+        // probe grid's - which is the naming accident `docs/runtime_split.md` records; the TAA resolve's is
+        // made here because the pass that declares it is what needs it now.
+        this->ensure_taa_sampler();
+        pass::pass_context const build = {
+            .device = this->vulkan_core.device,
+            .samplers = this->shared_samplers(),
+            .shared_set_layout = [](void* owner, uint32_t const set) {
+                // The scene set is the only shared set a pass's OWN pipeline layout ever needs today: it is
+                // set 0, and it is what every compute pass's tracing/shading reads. A pass asking for any
+                // other set gets "none", which makes it build nothing and say so.
+                return set == 0u ? static_cast<runtime*>(owner)->vulkan_core.scene_descriptor_set_layout : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
+            .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
+            .owner = this,
+        };
+        pass::stage const scene_stage = {.name = "scene", .passes = this->scene_stage, .marks = false};
+        pass::run_report const scene_created = pass::create_stage(scene_stage, build);
+        if (!scene_created.rejected.empty()) {
+            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", scene_created.rejected);
+        }
+        pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
+        pass::run_report const created = pass::create_stage(probe_stage, build);
+        if (!created.rejected.empty()) {
+            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", created.rejected);
+        }
+        pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
+        pass::run_report const taa_created = pass::create_stage(taa_stage, build);
+        if (!taa_created.rejected.empty()) {
+            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", taa_created.rejected);
+        }
+    }
+
     void runtime::ensure_taa_sampler() {
         // The resolve upsamples the scene colour but must not average neighbouring history texels: linear
-        // magnification, nearest minification. It was created inside `make_taa_pipeline` before the pass owned
-        // that pipeline; the sampler is a SHARED handle (a declaration chooses it by `sampler_hint::taa`) so it
-        // stays the renderer's, and it has to exist before `create_passes` fills the context - a declaration
-        // that picks a sampler which is not there is a null descriptor rather than a skipped fetch.
+        // magnification, nearest minification. It was created inside `make_taa_pipeline` before this pass owned
+        // that pipeline; the sampler is a SHARED handle (a declaration chooses it by hint) so it stays the
+        // renderer's, and it has to exist before the pass caches the six it may choose between.
         if (this->taa_sampler.get() != VK_NULL_HANDLE) {
             return;
         }
@@ -2588,31 +3413,284 @@ namespace vulkan {
         this->taa_sampler = vk_sampler(sampler, this->vulkan_core.device);
     }
 
-    void runtime::record_taa_pass(VkCommandBuffer const command_buffer) {
-        // TAA resolve: blend the scene colour with the reprojected history into the HDR target the post chain
-        // reads, then copy the result into the history image for the next frame that renders this swapchain
-        // image. THE PASS owns all of that (vulkan.pass.taa); the two lines below are the part it cannot own:
-        //
-        //  * the G-buffer depth's transition to a sampled layout, whose "was it written this frame" flag
-        //    belongs to the G-buffer pass (see ensure_gbuffer_depth_sampled);
-        //  * recording the stage at all, which the runner does.
-        //
-        // The depth transition is gated on THE SAME predicate the runner gates the stage on, so the host never
-        // touches the flag on a frame the pass does not run.
-        if (this->active_features().taa) {
-            static_cast<void>(this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(this->current_image_index)));
+    render_resource::shared::sampler_set runtime::shared_samplers() const noexcept {
+        // The six samplers a declaration chooses between, as handles. One place, so that two passes cannot end
+        // up with two different ideas of "the post sampler".
+        return {.gbuffer = *this->gbuffer_sampler,
+                .probe_grid = *this->gi_probe_sampler,
+                .taa = *this->taa_sampler,
+                .post = *this->post_sampler,
+                .nearest = *this->post_nearest_sampler,
+                .shadow = *this->shadow_sampler};
+    }
+
+    std::span<unsigned char const> runtime::registered_shader(std::string_view const name) const noexcept {
+        for (auto const& [registered_name, registered_bytes] : this->registered_shaders) {
+            if (registered_name == name) {
+                return registered_bytes;
+            }
         }
+        return {}; // a pass whose shader was never registered builds nothing and says so
+    }
+
+    /// the scene pass's per-frame input: the leaves, the segments, and the three things only the renderer can
+    /// answer (see scene_frame). Built here rather than stored, because every field is this frame's.
+    pass::scene_frame runtime::make_scene_frame() noexcept {
+        core const& vk = this->vulkan_core;
+        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
+        // the pass's view of the per-slot secondary buffers (members, so the span it holds outlives the stage)
+        auto const& segments = this->main_segments[static_cast<std::size_t>(frame_slot)];
+        this->scene_segment_view.clear();
+        this->scene_segment_view.reserve(segments.size());
+        for (auto const& [pool, buffer] : segments) {
+            this->scene_segment_view.push_back(pass::segment_buffer{.pool = pool, .buffer = *buffer});
+        }
+        // the secondaries inherit the instance's attachments: the three surface targets in order, the velocity
+        // target, and the scene colour - the same order the pass's declaration lists them in
+        this->scene_color_formats = {vulkan::gbuffer_formats[0], vulkan::gbuffer_formats[1], vulkan::gbuffer_formats[2], vulkan::gbuffer_velocity_format, vulkan::hdr_format};
+        return pass::scene_frame{
+            .leaves = this->frame_visible,
+            .segments = this->scene_segment_view,
+            .make_environment = &runtime::make_scene_environment,
+            .run_tasks = &runtime::run_scene_tasks,
+            .owner = this,
+            .color_formats = this->scene_color_formats,
+            .depth_format = vk.depth_format,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .gbuffer = true,
+            .extent = vk.swap_chain_extent,
+        };
+    }
+
+    /// build ONE segment's draw state; a fresh one per segment, because the pipeline-dedup state is per
+    /// recording session (see scene_frame::make_environment)
+    render_environment runtime::make_scene_environment(void* owner, VkCommandBuffer const command_buffer, bool const gbuffer) {
+        runtime& self = *static_cast<runtime*>(owner);
+        render_environment env;
+        env.command_buffer = command_buffer;
+        // The G-buffer pass binds its own pipeline as the pass default (see gbuffer_pipeline_name): same
+        // leaves, same draw path, but the fragment stage writes the surface instead of shading.
         {
-            pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
-            [[maybe_unused]] pass::run_report const taa_report = pass::record_stage(taa_stage, this->make_pass_host());
+            std::shared_lock const lock(self.access_mutex);
+            env.default_name = gbuffer ? gbuffer_pipeline_name : self.default_pipeline_name;
         }
-        // The matrix the NEXT frame's motion vectors are computed against is this frame's, and it is only
-        // recorded when the resolve actually wrote a history: a resolve that bailed out (no descriptor set)
-        // must not claim one. `image_view_proj` stays the renderer's because the camera UBO - not TAA - reads
-        // it as `prev_view_proj`.
-        if (this->taa_resolve.wrote_history() && this->current_image_index < this->image_view_proj.size()) {
-            this->image_view_proj[this->current_image_index] = this->current_ubo.view_proj_unjittered;
+        env.bind = [&self, gbuffer](VkCommandBuffer const cb, std::string_view const name) {
+            if (gbuffer) {
+                if (name == gbuffer_pipeline_name) {
+                    self.gbuffer_pipeline->begin_pipeline(cb);
+                    return;
+                }
+                // a leaf with explicit pipeline semantics cannot draw in the G-buffer instance (the named
+                // pipelines declare the single HDR attachment): say so once per leaf instead of issuing a draw
+                // that would be a validation error
+                utility::log("runtime: leaf requests pipeline '{}' during the G-buffer pass - draw skipped (only default-semantics leaves write the G-buffer)", name);
+                return;
+            }
+            if (auto const it = self.pipelines.find(name); it != self.pipelines.end()) {
+                it->second.begin_pipeline(cb);
+            } else {
+                utility::log("runtime: main pass references unknown pipeline '{}' - draw skipped", name);
+            }
+        };
+        // transparent leaves toggle depth writes off via this (core dynamic state, 1.3)
+        env.set_depth_write_fn = [](VkCommandBuffer const cb, VkBool32 const enabled) { vkCmdSetDepthWriteEnable(cb, enabled); };
+        // single-sided materials keep back-face culling here (the shadow pass overrides it with env.two_sided;
+        // the main pass must not, or double-sided handling would cost fill rate)
+        env.set_cull_mode_fn = [](VkCommandBuffer const cb, VkCullModeFlags const mode) { vkCmdSetCullMode(cb, mode); };
+        env.layout = self.vulkan_core.scene_pipeline_layout;
+        return env;
+    }
+
+    /// the renderer's scheduler, handed to the pass so the segment fan-out stays the frame loop's policy
+    void runtime::run_scene_tasks(void* owner, std::span<std::function<void()>> const tasks) {
+        static_cast<runtime*>(owner)->run_tasks(tasks, vulkan::task_priority::recording);
+    }
+
+    bool runtime::resolve_scene_pass(pass::resolved_io& out) {
+        core const& vk = this->vulkan_core;
+        std::size_t const index = this->current_image_index;
+        std::size_t const image_count = vk.gbuffer_image_views.empty() ? 0 : vk.gbuffer_image_views[0].size();
+        if (!this->gbuffer_pass_active() || image_count == 0 || index >= image_count || vk.velocity_image_views.size() != image_count ||
+            vk.gbuffer_depth_image_views.size() != image_count) {
+            return false; // no surface pipeline, or no target generation to draw into
         }
+        out.frame = this->pass_frame();
+        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
+        out.own = {};
+        out.own_set = VK_NULL_HANDLE;
+        // the shared scene set (the pass's declaration names the SET, not its bindings: its owner decides them)
+        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
+        // the six declared targets, in declaration order: the three stored surface targets, the motion-vector
+        // target, the scene colour target (an ALIAS - see scene_io: the TAA input while the resolve runs, the
+        // HDR target otherwise) and the surface depth
+        out.target_storage[0] = {.view = vk.gbuffer_image_views[0][index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_images[0][index]};
+        out.target_storage[1] = {.view = vk.gbuffer_image_views[1][index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_images[1][index]};
+        out.target_storage[2] = {.view = vk.gbuffer_image_views[2][index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_images[2][index]};
+        out.target_storage[3] = {.view = vk.velocity_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.velocity_images[index]};
+        out.target_storage[4] = {.view = this->scene_target_view(index), .buffer = VK_NULL_HANDLE, .image = this->scene_target_image(index)};
+        out.target_storage[5] = {.view = vk.gbuffer_depth_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_depth_images[index]};
+        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), 6);
+        // NO pipelines: a leaf names the pipeline it wants and the renderer's registry resolves it through the
+        // environment the pass is handed (see scene_frame::make_environment)
+        out.pipelines = {};
+        out.pipeline_layout = VK_NULL_HANDLE;
+        out.push = {};
+        out.extent = vk.swap_chain_extent;
+        return true;
+    }
+
+    pass::transparent_frame runtime::make_transparent_frame() noexcept {
+        core const& vk = this->vulkan_core;
+        auto const& secondaries = this->secondary_command_buffers[static_cast<std::size_t>(vk.current_frame)];
+        return pass::transparent_frame{
+            .leaves = this->frame_transparent,
+            .secondary = *secondaries[static_cast<std::size_t>(secondary_pass::transparent)],
+            .make_environment = &runtime::make_scene_environment,
+            .owner = this,
+            .color_format = vulkan::hdr_format,
+            .depth_format = vk.depth_format,
+            .extent = vk.swap_chain_extent,
+        };
+    }
+
+    bool runtime::resolve_transparent_pass(pass::resolved_io& out) {
+        core const& vk = this->vulkan_core;
+        std::size_t const index = this->current_image_index;
+        std::size_t const image_count = vk.scene_color_image_views.size();
+        if (this->frame_transparent.empty() || image_count == 0 || index >= image_count || vk.gbuffer_depth_image_views.size() != image_count) {
+            return false; // nothing blended this frame: no instance and no barriers to pay for
+        }
+        out.frame = this->pass_frame();
+        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
+        out.own = {};
+        out.own_set = VK_NULL_HANDLE;
+        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
+        // the two declared targets, in declaration order: the scene colour it composites over (an ALIAS - the
+        // same image the scene pass writes) and the surface depth it depth-tests against
+        out.target_storage[0] = {.view = this->scene_target_view(index), .buffer = VK_NULL_HANDLE, .image = this->scene_target_image(index)};
+        out.target_storage[1] = {.view = vk.gbuffer_depth_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_depth_images[index]};
+        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), 2);
+        out.pipelines = {}; // a leaf names its pipeline; see the scene pass
+        out.pipeline_layout = VK_NULL_HANDLE;
+        out.push = {};
+        out.extent = vk.swap_chain_extent;
+        return true;
+    }
+
+    pass::frame_identity runtime::pass_frame() const noexcept {
+        core const& vk = this->vulkan_core;
+        return pass::frame_identity{
+            .image_index = this->current_image_index,
+            .slot = static_cast<uint32_t>(vk.current_frame),
+            // the generation's image count, which is what a pass that owns a per-image family sizes it from -
+            // and NOT the same number as the image index above
+            .image_count = static_cast<uint32_t>(vk.gi_resolve_images.size()),
+            .extent = vk.swap_chain_extent,
+        };
+    }
+
+    // ---- the pass host: the runner's callbacks, answered by the renderer ---------------------------------
+    //
+    // It is rebuilt per call because it is a struct of function pointers (it holds no state of its own); the
+    // context is this runtime, which is what each callback casts back to. This is the RUNNER's half of the
+    // interface and a pass never sees it: at create time a pass is given a `pass_context`, and while recording
+    // it is handed `resolved_io`, so it cannot reach a resource its declaration did not name.
+    pass::pass_host runtime::make_pass_host() noexcept {
+        return pass::pass_host{
+            .context = this,
+            .frame = [](void* context) { return static_cast<runtime*>(context)->pass_frame(); },
+            .feature_active = [](void* context, std::string_view const feature) { return static_cast<runtime*>(context)->feature_active(feature); },
+            .resolve = [](void* context, pass::frame_pass const& pass, pass::resolved_io& out) { return static_cast<runtime*>(context)->resolve_pass(pass, out); },
+            .apply_behaviour = [](void* context, pass::frame_pass const& pass, pass::resolved_io const& io) { static_cast<runtime*>(context)->apply_pass_behaviour(pass, io); },
+            // No mark pair for the probe's stage yet, and deliberately: the frame has an END mark for the
+            // cache and no begin mark (its interval is measured from the GI chain's end), so adding a query
+            // pair here would change the timing report for a pass whose cost is ~0. The runtime keeps writing
+            // the end mark itself, right after the stage.
+            .mark_begin = nullptr,
+            .mark_end = nullptr,
+        };
+    }
+
+    bool runtime::resolve_pass(pass::frame_pass const& pass, pass::resolved_io& out) {
+        core const& vk = this->vulkan_core;
+        if (&pass == static_cast<pass::frame_pass const*>(&this->transparent)) {
+            return this->resolve_transparent_pass(out);
+        }
+        if (&pass == static_cast<pass::frame_pass const*>(&this->scene)) {
+            return this->resolve_scene_pass(out);
+        }
+        if (&pass == static_cast<pass::frame_pass const*>(&this->taa_resolve)) {
+            return this->resolve_taa_pass(out);
+        }
+        if (&pass != static_cast<pass::frame_pass const*>(&this->gi_probe)) {
+            return false; // no other pass is wired into a stage yet
+        }
+        // A frame whose grid images are not there cannot run this pass at all: the images are created and
+        // destroyed with the target generation (see core::create_render_targets).
+        if (vk.gi_probe_image_views.size() != 8 || vk.gi_probe_images.size() != 8 || vk.gi_probe_surface_image_views.empty() || vk.gi_probe_surface_images.empty() ||
+            !this->gi_probe.pipeline_ready()) {
+            return false;
+        }
+        out.frame = this->pass_frame();
+        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
+        // The nine own bindings, resolved BY DECLARATION ELEMENT: the declaration says binding k is element k
+        // of `probe_grid` (0..7) and binding 8 element 0 of `probe_surface`, and mapping an element onto the
+        // renderer's image is exactly what a resolver is for. Which half of the ping-pong each of the pass's
+        // two sets binds is the PASS's fact, not this function's, so nothing here decides it.
+        for (uint32_t k = 0; k < 8; ++k) {
+            out.own_storage[k] = {.view = vk.gi_probe_image_views[k], .buffer = VK_NULL_HANDLE, .image = vk.gi_probe_images[k]};
+        }
+        out.own_storage[8] = {.view = vk.gi_probe_surface_image_views[0], .buffer = VK_NULL_HANDLE, .image = vk.gi_probe_surface_images[0]};
+        out.own = std::span<pass::resolved_binding const>(out.own_storage.data(), 9);
+        // The pass owns its family, so it resolves its own sets; what the host resolves is the SHARED set the
+        // declaration uses (a cell's ray needs the top level structure, the material table, the light UBO).
+        out.own_set = VK_NULL_HANDLE;
+        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
+        // The pipeline and its layout are the PASS's objects now (it built them in its create step), and the
+        // host relays them to the runner the same way it would relay its own: the runner's guarantee - bind
+        // before record, through the layout the pass pushes and binds with - does not depend on who owns them.
+        out.pipeline_storage[0] = this->gi_probe.pipeline();
+        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
+        out.pipeline_layout = this->gi_probe.pipeline_layout();
+        // The push block, composed HERE because its values are the renderer's: the grid is anchored to the
+        // scene's bounds (the same cube the shadow fit uses, so one set of numbers means the same thing on a
+        // 1.6-unit model and on Sponza's 18.5), the rate is the config's, the table address is the tracing
+        // structures', and the light direction is what the cache's own invalidation compares against.
+        pass::gi_probe_pass::push_constants push = {};
+        float const cell_size = (2.0f * this->scene_radius) / static_cast<float>(vulkan::gi_probe_grid_extent);
+        push.grid_min_cell = glm::vec4(this->shadow_scene_center - glm::vec3(this->scene_radius), cell_size);
+        push.params = glm::vec4(this->gi_probe_rate, 0.0f, 0.0f, 0.0f);
+        uint64_t probe_table = 0;
+        if (this->rt_top_levels.has_value()) {
+            VkBuffer const table = this->rt_top_levels->instance_table(static_cast<uint32_t>(vk.current_frame));
+            if (table != VK_NULL_HANDLE) {
+                VkBufferDeviceAddressInfo const table_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};
+                probe_table = vkGetBufferDeviceAddress(vk.device, &table_info);
+            }
+        }
+        push.instance_table = glm::uvec2(static_cast<uint32_t>(probe_table & 0xFFFFFFFFu), static_cast<uint32_t>(probe_table >> 32u));
+        push.light_dir = glm::vec4(glm::normalize(glm::vec3(this->light_state.light_dir)), 0.0f);
+        static_assert(sizeof(push) <= pass::max_push_bytes, "the probe cache's push block must fit the guaranteed minimum");
+        std::memcpy(out.push_storage.data(), &push, sizeof(push));
+        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
+        // The extent, from the declaration's rule: `resource` and the probe grid is 32 cells on a side. The
+        // rule is applied HERE because it is a mapping from the declaration to a number the renderer owns.
+        VkExtent2D extent = {};
+        switch (pass.behaviour().extent) {
+        case pass::extent_rule::full:
+            extent = vk.swap_chain_extent;
+            break;
+        case pass::extent_rule::half:
+            extent = VkExtent2D{std::max(1u, vk.swap_chain_extent.width / 2u), std::max(1u, vk.swap_chain_extent.height / 2u)};
+            break;
+        case pass::extent_rule::resource:
+            if (pass.behaviour().extent_of == pass::resource_id::probe_grid) {
+                extent = VkExtent2D{vulkan::gi_probe_grid_extent, vulkan::gi_probe_grid_extent};
+            }
+            break;
+        }
+        out.extent = extent;
+        return true;
     }
 
     bool runtime::resolve_taa_pass(pass::resolved_io& out) {
@@ -2662,113 +3740,440 @@ namespace vulkan {
         return true;
     }
 
-    void runtime::register_shader(std::string_view const name, std::span<unsigned char const> const bytecode) {
-        // The app loads shaders (it knows the directory and the file names) and hands them over here; a pass
-        // asks for its own by name at create time. A COPY, because the caller's buffer is a startup local.
-        for (auto& [registered_name, registered_bytes] : this->registered_shaders) {
-            if (registered_name == name) {
-                registered_bytes.assign(bytecode.begin(), bytecode.end());
-                return;
+    void runtime::apply_pass_behaviour(pass::frame_pass const& pass, pass::resolved_io const& io) {
+        // The mechanical part of "how this pass is called", done by the runner so that a pass cannot forget
+        // it: the pipeline is bound HERE, and the viewport/scissor are set HERE for a pass that asked for them
+        // (which is what replaces the hand-kept pipeline list in update_pass_geometry - a pass cannot drop
+        // itself from a list it does not maintain).
+        //
+        // What is deliberately NOT here: the rendering instance. EVERY graphics pass opens its own, over the
+        // targets it declared, because the load op and the clear value are the PASS's knowledge. That is why
+        // this function no longer has a "not a compute pass" branch: the three graphics kinds differ in how
+        // many draws they issue, and only the pass knows that.
+        pass::behaviour const& behaviour = pass.behaviour();
+        if (behaviour.resync_viewport) {
+            // io.extent is the extent the declaration's rule produced (the frame's, half of it, or a
+            // resource's), so a fullscreen pass gets a viewport that matches the target it declared.
+            VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(io.extent.width), static_cast<float>(io.extent.height), 0.0f, 1.0f};
+            VkRect2D const scissor = {{0, 0}, io.extent};
+            vkCmdSetViewport(io.cmd, 0, 1, &viewport);
+            vkCmdSetScissor(io.cmd, 0, 1, &scissor);
+        }
+        VkPipelineBindPoint const bind_point = behaviour.kind == pass::behaviour_kind::compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
+        for (VkPipeline const pipeline : io.pipelines) {
+            if (pipeline != VK_NULL_HANDLE) {
+                vkCmdBindPipeline(io.cmd, bind_point, pipeline);
             }
         }
-        this->registered_shaders.emplace_back(std::string(name), std::vector<unsigned char>(bytecode.begin(), bytecode.end()));
     }
 
-    std::span<unsigned char const> runtime::registered_shader(std::string_view const name) const noexcept {
-        for (auto const& [registered_name, registered_bytes] : this->registered_shaders) {
-            if (registered_name == name) {
-                return registered_bytes;
-            }
+    std::expected<void, std::string> runtime::make_mask_bake_pipeline(std::span<unsigned char const> const compute_shader_code) {
+        if (!this->vulkan_core.ray_query_available) {
+            return std::unexpected(std::string("mask bake: this device has no ray queries (VK_KHR_acceleration_structure + VK_KHR_ray_query)"));
         }
-        return {}; // a pass whose shader was never registered builds nothing and says so
+        // The scene set ALONE, because everything the bake reads is in it: the material table (the alpha
+        // texture's index, the base colour factor's alpha, the cutoff) and the bindless texture array.
+        auto built = pipelines::build_mask_bake(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, sizeof(mask_bake_push_constants), compute_shader_code);
+        if (!built) {
+            return std::unexpected(std::move(built.error()));
+        }
+        this->mask_bake_pipeline_layout = built->pipeline_layout;
+        this->mask_bake_pipeline = std::move(built->trace);
+
+        // The bake's own set (see the member's comment for why it is not the scene set): the layout is the
+        // scene one, so binding 1 is the bindless texture array and binding 5 the material table, exactly as
+        // the raster path declares them. Written once, here, when both already exist.
+        auto const* const material_detail = this->vulkan_core.vma.get_buffer_detail(this->material_buffer.handle());
+        if (material_detail == nullptr || this->owned_texture_views.empty() || this->texture_sampler.get() == VK_NULL_HANDLE) {
+            return std::unexpected(std::string("mask bake: the material table or the texture array is not ready"));
+        }
+        this->mask_bake_set = this->vulkan_core.make_descriptor_set(this->vulkan_core.scene_descriptor_set_layout);
+        if (this->mask_bake_set.get() == VK_NULL_HANDLE) {
+            return std::unexpected(std::string("mask bake: descriptor set allocation failed"));
+        }
+        VkDescriptorImageInfo const textures_info = {
+            .sampler = *this->texture_sampler, .imageView = *this->owned_texture_views[0], .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorBufferInfo const materials_info = {.buffer = material_detail->buffer, .offset = 0, .range = VK_WHOLE_SIZE};
+        std::array<VkWriteDescriptorSet, 2> writes = {};
+        for (uint32_t b = 0; b < writes.size(); ++b) {
+            writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[b].dstSet = this->mask_bake_set.get();
+            writes[b].dstBinding = b == 0u ? 1u : 5u; // the texture array, then the material table
+            writes[b].dstArrayElement = 0;
+            writes[b].descriptorCount = 1;
+            writes[b].descriptorType = b == 0u ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[b].pImageInfo = b == 0u ? &textures_info : nullptr;
+            writes[b].pBufferInfo = b == 0u ? nullptr : &materials_info;
+        }
+        vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        return {};
     }
 
-    bool runtime::ensure_gbuffer_depth_sampled(VkCommandBuffer const command_buffer, uint32_t const image_index) {
-        // Nothing to do when no G-buffer instance ran for this image: the depth is already in the
-        // layout the sampling descriptors declare (it keeps whatever the last frame for this image
-        // left it in), so re-transitioning would only claim a layout the image is not in.
-        if (image_index >= this->gbuffer_depth_written.size() || !this->gbuffer_depth_written[image_index]) {
+    std::expected<void, std::string> runtime::make_compute_skin_pipeline(std::span<unsigned char const> const compute_shader_code) {
+        if (!this->vulkan_core.ray_query_available) {
+            return std::unexpected(std::string("compute skin: this device has no ray queries (VK_KHR_acceleration_structure + VK_KHR_ray_query)"));
+        }
+        // The scene set alone, because the pass reads exactly one thing from it: the per-joint matrices at
+        // binding 9. The vertices come through push-constant device addresses, like every other traced pass.
+        auto built = pipelines::build_compute_skin(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, sizeof(compute_skin_push_constants), compute_shader_code);
+        if (!built) {
+            return std::unexpected(std::move(built.error()));
+        }
+        this->compute_skin_pipeline_layout = built->pipeline_layout;
+        this->compute_skin_pipeline = std::move(built->trace);
+
+        // One set per frame slot, from the SCENE layout, with only binding 9 written: the slot's OWN
+        // per-joint matrices. The animation rewrites that BUFFER every frame, not the descriptor, so the
+        // sets are written once here and stay valid - which matters twice over, because a set updated while
+        // a recording command buffer holds it invalidates that buffer (the trap the mask bake's own set
+        // documents) and one set would point at the wrong slot's matrices for half the frames.
+        if (this->skin_buffers.size() != this->compute_skin_sets.size()) {
+            return std::unexpected(std::string("compute skin: the per-slot skin matrix buffers are not created"));
+        }
+        for (std::size_t slot = 0; slot < this->compute_skin_sets.size(); ++slot) {
+            auto const* const detail = this->vulkan_core.vma.get_buffer_detail(this->skin_buffers[slot].handle());
+            if (detail == nullptr) {
+                return std::unexpected(std::string("compute skin: a skin matrix buffer has no VMA detail"));
+            }
+            this->compute_skin_sets[slot] = this->vulkan_core.make_descriptor_set(this->vulkan_core.scene_descriptor_set_layout);
+            if (this->compute_skin_sets[slot].get() == VK_NULL_HANDLE) {
+                return std::unexpected(std::string("compute skin: descriptor set allocation failed"));
+            }
+            VkDescriptorBufferInfo const skins_info = {.buffer = detail->buffer, .offset = 0, .range = VK_WHOLE_SIZE};
+            VkWriteDescriptorSet write = {};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = this->compute_skin_sets[slot].get();
+            write.dstBinding = 9; // SkinMatrices, the same binding shaders/pbr.vert reads
+            write.dstArrayElement = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write.pBufferInfo = &skins_info;
+            vkUpdateDescriptorSets(this->vulkan_core.device, 1, &write, 0, nullptr);
+        }
+        return {};
+    }
+
+    bool runtime::record_compute_skin_pass(VkCommandBuffer const command_buffer) {
+        if (!this->rt_skin_bake || !this->compute_skin_pipeline.has_value() || this->rt_skin_levels.empty()) {
             return false;
         }
-        // The G-buffer pass left it in DEPTH_STENCIL_ATTACHMENT_OPTIMAL: publish the attachment
-        // write and flip it to the layout the sampling descriptors declare. One barrier per frame,
-        // whichever of the three sampling stages gets here first.
-        VkImageMemoryBarrier2 barrier = vulkan::shadow_map_sampling_transition;
-        barrier.image = this->vulkan_core.gbuffer_depth_images[image_index];
-        VkDependencyInfo const dependency = make_image_dependency_info(1, &barrier);
-        vkCmdPipelineBarrier2(command_buffer, &dependency);
-        this->gbuffer_depth_written[image_index] = false;
+        uint32_t const slot = static_cast<uint32_t>(this->vulkan_core.current_frame);
+        if (slot >= this->compute_skin_sets.size() || this->compute_skin_sets[slot].get() == VK_NULL_HANDLE) {
+            return false;
+        }
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->compute_skin_pipeline->get_pipeline());
+        VkDescriptorSet const set = this->compute_skin_sets[slot].get();
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->compute_skin_pipeline_layout, 0, 1, &set, 0, nullptr);
+
+        auto const halves = [](VkDeviceAddress const address) {
+            return glm::uvec2(static_cast<uint32_t>(address & 0xFFFFFFFFu), static_cast<uint32_t>(address >> 32u));
+        };
+        constexpr uint32_t group_size = 64; // shaders/compute_skin.comp's local_size_x
+        bool recorded = false;
+        for (auto const& built : this->rt_caster_levels) {
+            if (built.skin_destination_address == 0) {
+                continue; // not a skinned caster: its geometry is what the build read, unchanged
+            }
+            compute_skin_push_constants push = {};
+            push.source_vertices = halves(built.skin_source_address);
+            push.destination = halves(built.skin_destination_address);
+            push.source_stride = built.skin_source_stride;
+            push.destination_stride = built.skin_destination_stride;
+            push.vertex_count = built.skin_vertex_count;
+            push.skin_base = built.skin_base;
+            vkCmdPushConstants(command_buffer, this->compute_skin_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+            vkCmdDispatch(command_buffer, (push.vertex_count + group_size - 1u) / group_size, 1, 1);
+            recorded = true;
+        }
+        if (!recorded) {
+            return false;
+        }
+
+        // What follows reads what this dispatch wrote: the BUILD on the frame the structures are created, and
+        // the REFIT on every frame after. A compute write is not visible to the acceleration structure build
+        // stage without this barrier, and the symptom would be a structure built or refitted against the
+        // previous frame's vertices - a shadow one frame behind, which reads as animation lag.
+        VkMemoryBarrier2 skin_order = {};
+        skin_order.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        skin_order.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        skin_order.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+        skin_order.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        skin_order.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+        VkDependencyInfo const skin_dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                                  .pNext = nullptr,
+                                                  .dependencyFlags = 0,
+                                                  .memoryBarrierCount = 1,
+                                                  .pMemoryBarriers = &skin_order,
+                                                  .bufferMemoryBarrierCount = 0,
+                                                  .pBufferMemoryBarriers = nullptr,
+                                                  .imageMemoryBarrierCount = 0,
+                                                  .pImageMemoryBarriers = nullptr};
+        vkCmdPipelineBarrier2(command_buffer, &skin_dependency);
         return true;
     }
 
-    bool runtime::gbuffer_pass_active() const noexcept {
-        if (!this->gbuffer_pipeline.has_value()) {
+    std::expected<void, std::string> runtime::make_rt_shadow_pipeline(std::span<unsigned char const> const compute_shader_code) {
+        using fail = std::unexpected<std::string>;
+        if (!this->vulkan_core.ray_query_available) {
+            return fail(std::string("rt shadow: this device has no ray queries (VK_KHR_acceleration_structure + VK_KHR_ray_query)"));
+        }
+        if (!this->deferred_pipeline.has_value()) {
+            return fail(std::string("rt shadow: create the deferred lighting pipeline first (it owns the G-buffer set layout)"));
+        }
+        auto built = pipelines::build_rt_shadow(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, this->gbuffer_set_layout, sizeof(rt_shadow_push_constants), compute_shader_code);
+        if (!built) {
+            return fail(built.error());
+        }
+        this->rt_shadow_pipeline_layout = built->pipeline_layout;
+        this->rt_shadow_pipeline = std::move(built->trace);
+        return {};
+    }
+
+    void runtime::record_rt_shadow_pass(VkCommandBuffer const command_buffer) {
+        core& vk = this->vulkan_core;
+        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
+        auto const& visibility_images = vk.rt_shadow_images;
+        if (frame_slot >= visibility_images.size() || visibility_images[frame_slot] == VK_NULL_HANDLE) {
+            return;
+        }
+        // Nothing to trace against, or this slot's structure is not built yet: the caller's off path
+        // leaves the image readable and the light UBO's flag is 0, so the frame shades from the cascaded
+        // maps. Gating on the SAME handle the binding-16 write is gated on is what keeps a dispatch from
+        // ever reading an unwritten descriptor.
+        if (!this->rt_top_levels.has_value() || this->rt_top_levels->handle(frame_slot) == VK_NULL_HANDLE) {
+            return;
+        }
+        // The G-buffer set is written by the accessor the GI passes and the debug view share; this pass
+        // can be the first to need it on a frame where none of them ran.
+        this->ensure_gbuffer_descriptors();
+        // ... and this pass is the FIRST sampler of the stored surface when it runs, so it is the one
+        // that has to publish the G-buffer instance's attachment writes (the lighting stage's identical
+        // call then finds the flags clear).
+        this->ensure_gbuffer_targets_sampled(command_buffer, static_cast<uint32_t>(this->current_image_index));
+        this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(this->current_image_index));
+
+        // The image is written as a storage image (GENERAL) and read by the lighting stage as a sampler
+        // (SHADER_READ). Both transitions happen here, around the dispatch, because this is the only
+        // place that knows the image is being rewritten - the lighting stage's descriptor declares
+        // SHADER_READ whether or not this pass ran (see the off path at the caller).
+        VkImageMemoryBarrier2 to_general = vulkan::undefined_to_general_transition;
+        to_general.image = visibility_images[frame_slot];
+        VkDependencyInfo const general_dependency = make_image_dependency_info(1, &to_general);
+        vkCmdPipelineBarrier2(command_buffer, &general_dependency);
+
+        std::array<VkDescriptorSet, 2> const sets = {this->scene_sets.set(frame_slot), this->gbuffer_family.set(this->current_image_index, 0)};
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->rt_shadow_pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->rt_shadow_pipeline->get_pipeline());
+
+        rt_shadow_push_constants const push = {
+            .inv_view_proj = this->current_inv_view_proj,
+            .params = glm::vec4(0.01f, 0.002f, 0.0015f, 0.0f),
+        };
+        vkCmdPushConstants(command_buffer, this->rt_shadow_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+
+        constexpr uint32_t group_size = 8; // shaders/rt_shadow.comp's local_size_x/y
+        vkCmdDispatch(command_buffer, (vk.swap_chain_extent.width + group_size - 1) / group_size, (vk.swap_chain_extent.height + group_size - 1) / group_size, 1);
+
+        VkImageMemoryBarrier2 to_sampling = vulkan::general_to_sampling_transition;
+        to_sampling.image = visibility_images[frame_slot];
+        VkDependencyInfo const sampling_dependency = make_image_dependency_info(1, &to_sampling);
+        vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
+
+        if (!this->rt_shadow_logged) {
+            this->rt_shadow_logged = true;
+            utility::log("ray-traced shadows: tracing {}x{} rays per frame (one per pixel, terminated on the first hit)",
+                         vk.swap_chain_extent.width,
+                         vk.swap_chain_extent.height);
+        }
+    }
+
+    bool runtime::record_ssgi_spatial_pass(VkCommandBuffer const command_buffer) {
+        core& vk = this->vulkan_core;
+        std::size_t const index = this->current_image_index;
+        if (index >= vk.gi_spatial_images.size() || vk.gi_resolve_images.size() != vk.gi_spatial_images.size()) {
             return false;
         }
-        if (this->gbuffer_debug) {
-            return this->gbuffer_debug_pipeline.has_value();
+        if (this->ssgi_spatial_pipeline == std::nullopt) {
+            return false;
         }
-        return this->deferred_pipeline.has_value();
+        // The G-buffer set carries every binding this pass uses (the normal, the depth, the image it
+        // reads and the one it writes), so it is written by the same accessor the tracer uses.
+        this->ensure_gbuffer_descriptors();
+        VkDescriptorSet const gbuffer_set = this->gbuffer_family.set(static_cast<uint32_t>(index), 0);
+        if (gbuffer_set == VK_NULL_HANDLE) {
+            return false; // no set: the composite's GI weight stays 0 for this frame (see gi_resolved)
+        }
+
+        uint32_t const gi_width = std::max(1u, vk.swap_chain_extent.width / 2u);
+        uint32_t const gi_height = std::max(1u, vk.swap_chain_extent.height / 2u);
+
+        // The output is a storage image: UNDEFINED -> GENERAL here (its contents are fully overwritten)
+        // and GENERAL -> SHADER_READ below, for the composite. The input needs no barrier: the temporal
+        // resolve handed it to SHADER_READ through a transition that names COMPUTE as well as FRAGMENT.
+        VkImageMemoryBarrier2 to_general = vulkan::undefined_to_general_transition;
+        to_general.image = vk.gi_spatial_images[index];
+        VkDependencyInfo const general_dependency = make_image_dependency_info(1, &to_general);
+        vkCmdPipelineBarrier2(command_buffer, &general_dependency);
+
+        std::array<VkDescriptorSet, 2> const sets = {this->scene_sets.set(static_cast<uint32_t>(vk.current_frame)), gbuffer_set};
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_spatial_pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_spatial_pipeline->get_pipeline());
+
+        ssgi_spatial_push_constants const push = {
+            .depth_scale = this->current_ubo.proj[2][2],
+            .depth_offset = this->current_ubo.proj[3][2],
+            .sigma_spatial = this->gi_spatial_sigma,
+            .sigma_depth = this->gi_spatial_depth_sigma,
+            .normal_power = this->gi_spatial_normal_power,
+            // The subtraction belongs to the TRACED path only: the marched one is an ADDITION to the probe
+            // ambient, so it must not remove anything. Same predicate the tracer's push uses, evaluated in
+            // the same frame, so the two cannot disagree about which path ran.
+            .subtract_ambient = this->ssgi_traced_active() ? 1.0f : 0.0f,
+            // ... and the REFLECTION's own accumulation is summed in by the filter at binding 15. The
+            // SPECULAR AMBIENT is still not subtracted here: the glossy pass removes the lighting stage's
+            // specular term at its own texel, which is exact where a subtraction in this filter could only
+            // approximate (see shaders/ssgi_spatial.comp's binding comment and docs/gi_hit_shading.md's L2.3
+            // section for the measurement that chose it). This lane is only about how much of the
+            // reflection's own accumulation to include, and zero is what keeps a stale one out of a frame
+            // whose lobe did not run. The predicate is whether the reflection was actually RESOLVED this
+            // frame rather than whether the lobe is enabled: if its descriptor set could not be had, the
+            // accumulation holds an older frame and must not be summed in. The denoise pass runs before this
+            // one, so the flag is this frame's.
+            .spec_weight = this->gi_spec_resolved ? 1.0f : 0.0f,
+            .unused2 = 0.0f,
+            .gi_size = glm::vec4(static_cast<float>(gi_width), static_cast<float>(gi_height),
+                                 static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height))};
+        vkCmdPushConstants(command_buffer, this->ssgi_spatial_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+
+        constexpr uint32_t group_size = 8; // shaders/ssgi_spatial.comp's local_size_x/y
+        vkCmdDispatch(command_buffer, (gi_width + group_size - 1) / group_size, (gi_height + group_size - 1) / group_size, 1);
+
+        // Hand the filtered image to the composite. This is also where the frame's GI becomes usable:
+        // gi_resolved is what the composite's weight is read from, and only this pass writes the image
+        // that weight applies to.
+        VkImageMemoryBarrier2 to_sampling = vulkan::general_to_sampling_transition;
+        to_sampling.image = vk.gi_spatial_images[index];
+        VkDependencyInfo const sampling_dependency = make_image_dependency_info(1, &to_sampling);
+        vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
+
+        this->gi_resolved = true;
+        return true;
     }
 
-    bool runtime::deferred_lit_active() const noexcept {
-        // the debug view wins when both are available: looking at the stored data is an inspection,
-        // not a render mode (and the two write the HDR target in incompatible ways)
-        return this->gbuffer_pass_active() && !this->gbuffer_debug;
-    }
-
-    void runtime::set_gbuffer_channel(int const channel) noexcept {
-        this->gbuffer_channel_index = std::clamp(channel, 0, gbuffer_channel_count - 1);
-    }
-
-    void runtime::ensure_gbuffer_descriptors() {
+    bool runtime::record_ssgi_spec_pass(VkCommandBuffer const command_buffer) {
         core& vk = this->vulkan_core;
-        if (this->gbuffer_debug_pipeline == std::nullopt || this->gbuffer_set_layout == VK_NULL_HANDLE) {
-            return;
+        std::size_t const index = this->current_image_index;
+        if (!this->ssgi_specular_active() || index >= vk.gi_images.size() || vk.gi_images[index] == VK_NULL_HANDLE) {
+            return false;
         }
-        std::size_t const image_count = vk.gbuffer_image_views[0].size();
-        if (image_count == 0 || vk.gbuffer_depth_image_views.size() != image_count) {
-            return;
+        // The tracer's own sets, unchanged: set 0 is the shared scene set (the camera, the environment, the
+        // BRDF LUT, the material table and the top level structure) and set 1 is the G-buffer set, whose
+        // binding 6 is the raw trace this pass reads, adds to and writes back. No descriptor work at all -
+        // the image was already written as a read-write storage image in GENERAL for the tracer.
+        this->ensure_gbuffer_descriptors();
+        VkDescriptorSet const gbuffer_set = this->gbuffer_family.set(static_cast<uint32_t>(index), 0);
+        if (gbuffer_set == VK_NULL_HANDLE) {
+            return false;
         }
-        // The family owns the rebinding rule now (see vulkan.bindings): the sets stay allocated, their
-        // contents are rewritten only when the targets below change, and a pool replaced by a later
-        // generation is retired rather than destroyed, because recorded frame command buffers still
-        // name its sets. on_swapchain_recreated() retires the family, which is what forces the rewrite.
-        std::array<VkImageView, 5> const signature = {
-            vk.gbuffer_image_views[0][0],
-            vk.gbuffer_image_views[1][0],
-            vk.gbuffer_image_views[2][0],
-            vk.gbuffer_depth_image_views[0],
-            vk.velocity_image_views[0]};
-        // One set per image with one descriptor per binding: the three stored targets, the depth and
-        // the motion-vector target - the same five the signature above fingerprints.
-        // image_count is the generation's, signature is only the fingerprint of image 0 above - the two
-        // are different things and the family needs both (see vulkan.bindings).
-        auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            std::array<VkDescriptorImageInfo, 5> image_infos = {};
-            std::array<VkImageView, 5> const views = {
-                this->vulkan_core.gbuffer_image_views[0][image_index],
-                this->vulkan_core.gbuffer_image_views[1][image_index],
-                this->vulkan_core.gbuffer_image_views[2][image_index],
-                this->vulkan_core.gbuffer_depth_image_views[image_index],
-                this->vulkan_core.velocity_image_views[image_index]};
-            std::array<VkWriteDescriptorSet, 5> writes = {};
-            for (uint32_t b = 0; b < views.size(); ++b) {
-                image_infos[b].sampler = *this->gbuffer_sampler;
-                image_infos[b].imageView = views[b];
-                image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[b].dstSet = sets[0];
-                writes[b].dstBinding = b;
-                writes[b].descriptorCount = 1;
-                writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                writes[b].pImageInfo = &image_infos[b];
+
+        // The instance table's address, exactly as the tracer's push carries it, and the switch with it: a
+        // zero would leave the pass with nothing to shade a hit from, which ssgi_specular_active() already
+        // refused above - so a table that turns out to be missing here is a frame whose structures went away
+        // between the two calls, and doing nothing is the right answer rather than replacing the lighting
+        // stage's specular ambient with the environment alone (which would be a no-op anyway).
+        uint64_t instance_table = 0;
+        if (this->ssgi_hit_shading && this->rt_top_levels.has_value()) {
+            VkBuffer const table = this->rt_top_levels->instance_table(static_cast<uint32_t>(vk.current_frame));
+            if (table != VK_NULL_HANDLE) {
+                VkBufferDeviceAddressInfo const table_info = {
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};
+                instance_table = vkGetBufferDeviceAddress(vk.device, &table_info);
             }
-            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-        };
-        if (!this->gbuffer_family.ensure(vk.device, this->gbuffer_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
-            utility::log("runtime: gbuffer debug descriptor sets unavailable - debug view skipped");
         }
+        if (instance_table == 0) {
+            return false;
+        }
+
+        // The raw trace is about to be READ as well as written, by a dispatch that is not the one that
+        // wrote it: consecutive dispatches in one command buffer have no memory dependency between them, so
+        // without this the glossy pass can read a texel the tracer has not finished writing. Same layout on
+        // both sides (GENERAL), which is why this is the compute-storage barrier rather than a transition -
+        // and why record_ssgi_pass left the image in GENERAL instead of handing it to the denoiser itself.
+        //
+        // The lobe's own two outputs are written by the same dispatch, so they need whatever layout a
+        // storage image must be in before its FIRST write: UNDEFINED -> GENERAL, once per target generation
+        // (see runtime::gi_spec_seen). After that they are already in GENERAL - this dispatch is their only
+        // writer, so no later frame needs a barrier for them - and claiming UNDEFINED again would discard
+        // the image for no reason. A missing first-use transition is the trap this project has paid for
+        // twice already; a new image is not in a legal layout because its neighbours are.
+        std::array<VkImageMemoryBarrier2, 3> lobe_barriers = {};
+        lobe_barriers[0] = vulkan::compute_storage_transition;
+        lobe_barriers[0].image = vk.gi_images[index];
+        uint32_t lobe_barrier_count = 1;
+        if (index < vk.gi_spec_images.size() && index < vk.gi_spec_reproject_images.size()) {
+            // EVERY frame, not only the first: this pass is the storage writer of both images and the resolve
+            // reads them back as samplers, so the frame's LAST transition of each is to SHADER_READ (see the
+            // hand-back at the end of this function). The first frame of a target generation comes from
+            // UNDEFINED, and later ones from that readable state. Claiming UNDEFINED every frame would also
+            // work - the pass rewrites every non-background texel - but it would throw the images away for no
+            // reason; claiming a layout an image is not in is the thing that is actually illegal.
+            VkImageMemoryBarrier2 const from = this->gi_spec_seen[index] ? vulkan::sampling_to_general_transition : vulkan::undefined_to_general_transition;
+            lobe_barriers[lobe_barrier_count] = from;
+            lobe_barriers[lobe_barrier_count].image = vk.gi_spec_images[index];
+            ++lobe_barrier_count;
+            lobe_barriers[lobe_barrier_count] = from;
+            lobe_barriers[lobe_barrier_count].image = vk.gi_spec_reproject_images[index];
+            ++lobe_barrier_count;
+            this->gi_spec_seen[index] = true;
+        }
+        VkDependencyInfo const order_dependency = make_image_dependency_info(lobe_barrier_count, lobe_barriers.data());
+        vkCmdPipelineBarrier2(command_buffer, &order_dependency);
+
+        uint32_t const gi_width = std::max(1u, vk.swap_chain_extent.width / 2u);
+        uint32_t const gi_height = std::max(1u, vk.swap_chain_extent.height / 2u);
+        std::array<VkDescriptorSet, 2> const sets = {this->scene_sets.set(static_cast<uint32_t>(vk.current_frame)), gbuffer_set};
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_spec_pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_spec_pipeline->get_pipeline());
+
+        // The two halves of the instance table's address, bit-cast into float lanes - a push constant is raw
+        // bytes, so half an address survives the trip exactly (the same trick the tracer's proj_terms uses).
+        float const table_low = std::bit_cast<float>(static_cast<uint32_t>(instance_table & 0xFFFFFFFFu));
+        float const table_high = std::bit_cast<float>(static_cast<uint32_t>(instance_table >> 32u));
+        ssgi_spec_push_constants const push = {
+            .inv_view_proj = this->current_inv_view_proj,
+            // The ray length is the lobe's OWN reach (`ssgi_specular_radius`), not the diffuse bounce's
+            // `ssgi_radius` - see the setter for why the two are different questions and what the curve
+            // between them costs (measured: 39% of the available signal at the marched path's 0.12, 90% at
+            // 0.5, flat past it). z is the self-intersection bias as an explicit WORLD length rather than a
+            // fraction of x - so that raising the reach does not also lift every ray's origin further off its
+            // surface (see the shader's push comment).
+            .params = glm::vec4(this->ssgi_specular_radius * this->scene_radius,
+                                static_cast<float>(this->ssgi_specular_rays),
+                                this->scene_radius * 0.0002f,
+                                static_cast<float>(this->ssgi_frame)),
+            .table = glm::vec4(0.0f, 0.0f, table_low, table_high)};
+        vkCmdPushConstants(command_buffer, this->ssgi_spec_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+
+        constexpr uint32_t group_size = 8; // shaders/ssgi_spec.comp's local_size_x/y
+        vkCmdDispatch(command_buffer, (gi_width + group_size - 1) / group_size, (gi_height + group_size - 1) / group_size, 1);
+
+        // ... and hand the completed raw trace to the denoiser. This is the transition record_ssgi_pass
+        // would have written when this pass does not run, moved here because the image has a second writer
+        // now: the barrier has to come after the LAST one, or the resolve could sample a half-written trace.
+        //
+        // The lobe's own two outputs come along: they were written as storage images by the same dispatch and
+        // the reflection's resolve reads BOTH as samplers (its trace, and the reprojection it reprojects by),
+        // so this is where they become readable. Their descriptors in the G-buffer set declare GENERAL, which
+        // is what they were written in; the temporal set declares SHADER_READ, which is what this leaves them
+        // in - the two sets describe the same image at different points of the frame's pass order.
+        VkImageMemoryBarrier2 const to_sampling = vulkan::general_to_sampling_transition;
+        std::array<VkImageMemoryBarrier2, 3> to_sampling_barriers = {to_sampling, to_sampling, to_sampling};
+        to_sampling_barriers[0].image = vk.gi_images[index];
+        to_sampling_barriers[1].image = index < vk.gi_spec_images.size() ? vk.gi_spec_images[index] : vk.gi_images[index];
+        to_sampling_barriers[2].image = index < vk.gi_spec_reproject_images.size() ? vk.gi_spec_reproject_images[index] : vk.gi_images[index];
+        VkDependencyInfo const sampling_dependency = make_image_dependency_info(static_cast<uint32_t>(to_sampling_barriers.size()), to_sampling_barriers.data());
+        vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
+        return true;
     }
 
     void runtime::record_gbuffer_debug_pass(VkCommandBuffer const command_buffer) {
@@ -2807,6 +4212,11 @@ namespace vulkan {
         barriers[4].image = vk.velocity_images[index];
         VkDependencyInfo const dependency = make_image_dependency_info(static_cast<uint32_t>(barriers.size()), barriers.data());
         vkCmdPipelineBarrier2(command_buffer, &dependency);
+        // the debug view ran instead of the lighting stage, so it is the stage that hands the
+        // motion-vector target to a sampler this frame (see ensure_velocity_sampled)
+        if (index < this->velocity_written.size()) {
+            this->velocity_written[index] = false;
+        }
         this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(index));
 
         this->ensure_gbuffer_descriptors();
@@ -2846,21 +4256,77 @@ namespace vulkan {
         // three functions away - the coupling this extraction removed.
         // GPU timing: the geometry instance ended where the scene pass closed it (the surface write).
         this->gpu_mark(command_buffer, gpu_mark_id::scene_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        core const& vk = this->vulkan_core;
 
         // Deferred mode: the surface is in the G-buffer and the sky + emissive are in the scene color
         // target; this stage shades every pixel from the G-buffer and adds the result on top, and the
         // alpha-blended leaves then composite over the shaded image (their own instance - see
         // record_transparent_pass).
         if (this->deferred_lit_active()) {
+            // Ray-traced sun shadows run HERE: after the G-buffer pass (whose depth and normal the rays
+            // start from) and before the lighting stage (which multiplies the sun term by the result).
+            // Running it before the G-buffer pass would mean starting rays from the PREVIOUS frame's
+            // surface, so the position is not a detail - it is the ordering constraint.
+            if (this->rt_shadow_pipeline.has_value() && this->rt_shadows_active()) {
+                this->record_rt_shadow_pass(command_buffer);
+            } else if (static_cast<std::size_t>(vk.current_frame) < vk.rt_shadow_images.size() && vk.rt_shadow_images[vk.current_frame] != VK_NULL_HANDLE) {
+                // The pass did not run, but the lighting stage's descriptor still declares the image as
+                // a shader input: its shader samples the binding only under a flag, and Vulkan requires
+                // a statically-used binding's image to be in the layout the descriptor declares whether
+                // or not the value is used. UNDEFINED as the old layout asserts nothing - the same
+                // answer the GI image's off path gives.
+                VkImageMemoryBarrier2 to_sampling = vulkan::undefined_to_sampling_transition;
+                to_sampling.image = vk.rt_shadow_images[vk.current_frame];
+                VkDependencyInfo const sampling_dependency = make_image_dependency_info(1, &to_sampling);
+                vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
+            }
+            // GPU timing: the ray-traced shadow pass ends here (before the lighting stage reads its
+            // output). It gets its own interval because it sits between the G-buffer pass and the
+            // lighting stage - without it the traversals were reported as lighting time, which made the
+            // lighting interval look four times more expensive with rays on (measured 0.32 -> 1.18 ms
+            // while the rays themselves were ~0.85 of that).
+            this->gpu_mark(command_buffer, gpu_mark_id::rt_shadow_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
             this->record_lighting_pass(command_buffer);
             this->record_transparent_pass(command_buffer);
+        } else {
+            // The pass does not run (the debug view replaces the lighting stage, and the forward path has
+            // no G-buffer to start rays from), but every mark is written in order on every frame - the
+            // report's labels are positional. Written next to scene_end, so the interval is 0 ms.
+            this->gpu_mark(command_buffer, gpu_mark_id::rt_shadow_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         }
         this->gpu_mark(command_buffer, gpu_mark_id::lighting_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         // TAA resolve: blend the scene color with the reprojected history into the HDR target the post
         // chain reads, then copy the result into the history image for the next frame that renders this
-        // swapchain image (see record_taa_pass).
-        this->record_taa_pass(command_buffer);
+        // swapchain image. The PASS owns all of that now (vulkan.pass.taa), and the two lines below are the
+        // part it cannot own yet:
+        //
+        //  * the G-buffer depth's transition to a sampled layout, whose "was it written this frame" flag
+        //    belongs to the G-buffer pass, and
+        //  * clearing the motion-vector flag, which is what stops the GI chain (later in the same frame) from
+        //    transitioning the velocity image a second time.
+        //
+        // Both are shared per-image bookkeeping - the barrier/order stage's job in the long run - and both are
+        // gated on THE SAME predicate the runner gates the stage on, so the host never touches them on a frame
+        // the pass does not run (clearing the velocity flag for a frame with no resolve would make the GI
+        // tracer sample an image still in ATTACHMENT layout).
+        if (this->active_features().taa) {
+            if (this->current_image_index < this->velocity_written.size()) {
+                this->velocity_written[this->current_image_index] = false;
+            }
+            static_cast<void>(this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(this->current_image_index)));
+        }
+        {
+            pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
+            [[maybe_unused]] pass::run_report const taa_report = pass::record_stage(taa_stage, this->make_pass_host());
+        }
+        // The matrix the NEXT frame's motion vectors are computed against is this frame's, and it is only
+        // recorded when the resolve actually wrote a history: a resolve that bailed out (no descriptor set)
+        // must not claim one. `image_view_proj` stays the renderer's because the camera UBO - not TAA - reads
+        // it as `prev_view_proj`.
+        if (this->taa_resolve.wrote_history() && this->current_image_index < this->image_view_proj.size()) {
+            this->image_view_proj[this->current_image_index] = this->current_ubo.view_proj_unjittered;
+        }
         this->gpu_mark(command_buffer, gpu_mark_id::taa_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         // G-buffer debug mode (an inspection of the stored data, never combined with the lighting
@@ -2999,6 +4465,16 @@ namespace vulkan {
             .bloom_threshold = this->bloom_threshold,
             .mode = 2.0f,
             .encode_gamma = composite_encode_gamma,
+            // 0 unless THIS frame's GI resolve ran, which makes the composite's added term exactly
+            // zero on every frame that has no GI to add (see gi_resolved)
+            .gi_intensity = this->gi_resolved ? 1.0f : 0.0f,
+            .gi_depth_scale = this->current_ubo.proj[2][2],
+            .gi_depth_offset = this->current_ubo.proj[3][2],
+            // The SAME edge criterion the spatial filter uses: one silhouette test for the whole chain,
+            // so what survives the filter is not undone by the upsample.
+            .gi_depth_sigma = this->gi_spatial_depth_sigma,
+            .gi_normal_power = this->gi_spatial_normal_power,
+            .gi_upsample = this->gi_upsample ? 1.0f : 0.0f,
             .fxaa_subpixel = this->fxaa_subpixel,
             .fxaa_edge_threshold = this->fxaa_edge_threshold};
         this->record_fullscreen_triangle(command_buffer, composite_pipeline, composite_view, full_extent, this->post_family.set(image_index, 4), composite_push, /*overlay_after=*/!fxaa);
@@ -3047,6 +4523,80 @@ namespace vulkan {
         // HDR scene target -> fragment-shader read (the prefilter and the composite both read it)
         this->barrier_image_to_sampling(command_buffer, vk.hdr_images[index]);
 
+        // The composite's GI upsample also samples the G-buffer depth and normal, and the stage that
+        // normally publishes those two is the deferred lighting stage (or the debug view) - both part
+        // of the G-buffer path. A frame that never ran it (the deferred pipeline missing, so
+        // gbuffer_pass_active() is false and nothing wrote the targets) still reaches the composite,
+        // whose descriptor declares SHADER_READ for both bindings either way. UNDEFINED as the old
+        // layout is honest here - there is no content to preserve - and the GI weight is 0 on such a
+        // frame, so the taps' values cannot influence the image.
+        if (!this->gbuffer_pass_active()) {
+            std::array<VkImageMemoryBarrier2, 2> gbuffer_barriers = {};
+            gbuffer_barriers[0] = vulkan::undefined_to_depth_sampling_transition; // DEPTH aspect
+            gbuffer_barriers[0].image = vk.gbuffer_depth_images[index];
+            gbuffer_barriers[1] = vulkan::undefined_to_sampling_transition;
+            gbuffer_barriers[1].image = vk.gbuffer_images[1][index]; // the world normal
+            VkDependencyInfo const gbuffer_dependency = make_image_dependency_info(static_cast<uint32_t>(gbuffer_barriers.size()), gbuffer_barriers.data());
+            vkCmdPipelineBarrier2(command_buffer, &gbuffer_dependency);
+        }
+
+        // Screen-space GI runs HERE, and the position is the whole reason it cannot feed back: `hdr`
+        // was rewritten earlier in this frame (by the TAA resolve, or by the G-buffer pass's clear
+        // when TAA is off) and the composite that ADDS this pass's output is downstream, so what the
+        // tracer samples at a hit is direct radiance and never its own previous result. Sampling an
+        // image that already contained GI would make the loop gain > 1 and accumulate energy.
+        //
+        // gi_resolved says whether the composite may actually use this frame's GI, and it is the LAST
+        // pass of the chain - the spatial filter - that sets it: the composite samples that filter's
+        // output, so a frame whose filter did not run (no descriptor set, no images) has nothing to add
+        // and must weigh 0 rather than show whatever that image happens to hold. The filter in turn
+        // only runs when the temporal resolve ran, because filtering a stale accumulation would just
+        // make the staleness smoother.
+        this->gi_resolved = false;
+        if (this->ssgi_active()) {
+            this->record_ssgi_pass(command_buffer);
+            // The glossy lobe, between the tracer and the denoiser: it adds to the tracer's own image (see
+            // shaders/ssgi_spec.comp), so it has to run BEFORE the temporal resolve reads that image, and
+            // the tracer skipped its hand-off barrier for exactly this case.
+            this->record_ssgi_spec_pass(command_buffer);
+            if (this->record_ssgi_denoise_pass(command_buffer)) {
+                this->record_ssgi_spatial_pass(command_buffer);
+            }
+            ++this->ssgi_frame; // the next frame's ray sequence must differ (see ssgi_frame)
+        }
+        if (!this->gi_resolved && index < vk.gi_spatial_images.size() && vk.gi_spatial_images[index] != VK_NULL_HANDLE) {
+            // Nothing wrote the GI image this frame, but the composite's descriptor set still declares
+            // it as a shader input - its shader uses that binding and multiplies it by the 0 pushed
+            // above, and Vulkan requires a statically-used binding's descriptor to be in the layout the
+            // write declared, whether or not the value ends up mattering. Nothing else touches the
+            // image in this case, so it would sit in UNDEFINED and every frame would be a layout error.
+            // This is the same situation the shadow map's spare layers are in, and the same answer: an
+            // UNDEFINED old layout asserts nothing (it discards the contents rather than claiming a
+            // layout), so the transition is valid whether the image is untouched or already readable.
+            VkImageMemoryBarrier2 to_sampling = vulkan::undefined_to_sampling_transition;
+            to_sampling.image = vk.gi_spatial_images[index];
+            VkDependencyInfo const sampling_dependency = make_image_dependency_info(1, &to_sampling);
+            vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
+        }
+
+        // GPU timing: the GI chain ends here (trace, temporal resolve, spatial filter; the composite's
+        // bilateral upsample is part of the composite). Written unconditionally like every mark, so a
+        // frame with GI off reports 0 ms and the positional labels stay aligned.
+        this->gpu_mark(command_buffer, gpu_mark_id::gi_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+
+        // The world-space probe cache, last in the GI stretch: it deposits THIS frame's resolved GI into
+        // the cells the frame can see, so it has to run after the spatial filter (the image it reads is
+        // this frame's) and before the composite (nothing about it is needed for this frame's image -
+        // what it produces is read by the NEXT frame's tracer, which is what a cache costs). The RUNNER
+        // decides whether it runs at all: the pass declares the feature `ssgi_probes`, and an inactive
+        // feature is skipped WITHOUT being resolved - which is what keeps a cache that is off bit for bit
+        // what the frame was before it existed. Its stage writes no mark pair (the interval is measured
+        // from the GI chain's end), so `marks = false` and the end mark below is the runtime's.
+        {
+            pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
+            [[maybe_unused]] pass::run_report const probe_report = pass::record_stage(probe_stage, this->make_pass_host());
+        }
+        this->gpu_mark(command_buffer, gpu_mark_id::gi_probe_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         // The G-buffer debug view forces the bloom weight to 0: bloom is a display effect, and a glow
         // smeared over the channel being inspected is the opposite of a debug view (it would also
         // invent colors that are not in the G-buffer at all). The deferred LIT image is a real image,
@@ -3287,6 +4837,10 @@ namespace vulkan {
         render_features f;
         f.unlit = this->unlit_active;
         f.gbuffer_debug = this->gbuffer_debug && this->gbuffer_pipeline.has_value() && this->gbuffer_debug_pipeline.has_value();
+        f.ssgi = this->ssgi_active();
+        // The probe cache is a pass of its own, so its activity is a feature of its own: the tracer asks
+        // whether the cache is READY (probe_ready below), and the runner asks whether the pass RUNS.
+        f.ssgi_probes = this->gi_probe_active();
         // The G-buffer pass and its lighting stage are the engine's only scene path, so there is no
         // flag for them: taa/ssao below ask this instead, and the debug view stands in for the
         // lighting stage rather than running alongside it (the two write the HDR target differently).
@@ -3312,6 +4866,12 @@ namespace vulkan {
         render_features const f = this->active_features();
         if (name == "gbuffer-debug") {
             return f.gbuffer_debug;
+        }
+        if (name == "ssgi") {
+            return f.ssgi;
+        }
+        if (name == "ssgi_probes") {
+            return f.ssgi_probes;
         }
         if (name == "taa") {
             return f.taa;
@@ -3383,6 +4943,9 @@ namespace vulkan {
         if (name == "clustered") {
             return this->cluster_pipeline.has_value();
         }
+        if (name == "ssgi") {
+            return this->ssgi_pipeline.has_value();
+        }
         return false;
     }
 
@@ -3390,8 +4953,9 @@ namespace vulkan {
         // One line naming every optional feature, so "why does this switch do nothing?" is answerable
         // from the log alone. `on` means the pipeline exists and the feature CAN run; whether it is
         // currently switched on is the overlay's and the config's business.
-        utility::log("features: gbuffer-debug={} taa={} fxaa={} shadow={} clustered-lights={}",
+        utility::log("features: gbuffer-debug={} ssgi={} taa={} fxaa={} shadow={} clustered-lights={}",
                      this->feature_available("gbuffer-debug") ? "on" : "UNAVAILABLE",
+                     this->feature_available("ssgi") ? "on" : "UNAVAILABLE",
                      this->feature_available("taa") ? "on" : "UNAVAILABLE",
                      this->feature_available("fxaa") ? "on" : "UNAVAILABLE",
                      this->feature_available("shadow") ? "on" : "UNAVAILABLE",
@@ -3711,6 +5275,436 @@ namespace vulkan {
                      scene_center.x, scene_center.y, scene_center.z, scene_radius);
     }
 
+    void runtime::set_rt_shadows(bool const enabled) noexcept {
+        this->rt_shadows = enabled;
+        // The lighting stage reads this from the light UBO, so the flag has to be settled before the
+        // next frame's paced write - which is why it is set here rather than recomputed per frame. The
+        // device check and the pipeline check are folded in: a request that cannot be honoured leaves the
+        // cascaded shadow maps running, and the shader never even looks at the visibility image.
+        this->light_state.rt_shadows = (enabled && this->rt_shadow_pipeline.has_value() && this->vulkan_core.ray_query_available) ? 1.0f : 0.0f;
+    }
+
+    void runtime::set_rt_mask_bake(bool const enabled) noexcept {
+        // Read once, when the structures are built (see record_acceleration_structures): the bake is startup
+        // work and the structures are built once, so this can only be settled before the first traced frame.
+        this->rt_mask_bake = enabled;
+    }
+
+    void runtime::set_rt_skin_bake(bool const enabled) noexcept {
+        // Unlike the mask bake this is read EVERY frame (the pass runs per frame), so it can be toggled at
+        // any time: turning it off leaves the structures holding the last pose the pass wrote, which is the
+        // A/B's whole point - the traced shadow either follows the animation or it does not.
+        this->rt_skin_bake = enabled;
+    }
+
+    bool runtime::rt_structures_wanted() const noexcept {
+        // `ssgi_on` rather than `ssgi_on && ssgi_ray_tracing`: the GI tracer is ONE shader that declares
+        // the top level structure as a binding whether or not its traced branch runs, and a shader that
+        // statically uses a binding needs it written - so a GI frame has to have structures even when it
+        // marches. The cost of that is one build (Sponza: 17.8 MiB, ~2 ms) plus a per-frame rebuild
+        // (~0.1 ms) for a GI scene that never traces; the alternative is a second shader variant or the
+        // nullDescriptor feature (VK_EXT_robustness2), and both are larger changes than this one.
+        return this->vulkan_core.ray_query_available && (this->rt_shadows || this->ssgi_on);
+    }
+
+    bool runtime::rt_shadows_active() const noexcept {
+        return this->rt_shadows && this->vulkan_core.ray_query_available;
+    }
+
+    void runtime::record_acceleration_structures(VkCommandBuffer const command_buffer) {
+        core& vk = this->vulkan_core;
+        if (!this->rt_structures_wanted() || this->rt_structures_attempted) {
+            return; // off, unsupported, or already built (see rt_structures_attempted)
+        }
+        this->rt_structures_attempted = true;
+
+        auto const start = std::chrono::steady_clock::now();
+        this->rt_bottom_levels.emplace(vk);
+        // The top level structure is per FRAME SLOT (see its class docs): with frames in flight one
+        // buffer would be rewritten by the frame being recorded while the previous one still reads it.
+        this->rt_top_levels.emplace(vk, vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        auto& structures = *this->rt_bottom_levels;
+
+        // One structure per SHADOW CASTER, which is the set the shadow pass itself draws (and the
+        // reason it is the right set: a caster can sit off screen and still throw a shadow into the
+        // view, so the visible set would be wrong). The geometry is the renderer's own: the build
+        // reads the vertex and index buffers through their DEVICE ADDRESSES, so nothing is copied and
+        // the structures follow whatever those buffers hold.
+        uint32_t skipped_no_address = 0;
+        uint32_t skipped_no_stride = 0;
+        // The mask bake: how many casters had an alphaMode MASK baked into their geometry, and how many
+        // could not be (an allocation failure falls back to the documented solid behaviour rather than
+        // failing the whole build).
+        uint32_t mask_baked = 0;
+        uint32_t skipped_mask_buffers = 0;
+        bool mask_bakes_recorded = false;
+        // ... and the same two counters for the skinned casters (see the SKINNED branch below).
+        uint32_t skinned_baked = 0;
+        uint32_t skipped_skin_buffers = 0;
+        for (primitive const* caster : this->shadow_casters) {
+            if (caster == nullptr) {
+                continue;
+            }
+            VkBufferDeviceAddressInfo vertex_address_info = {};
+            vertex_address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+            VkBufferDeviceAddressInfo index_address_info = vertex_address_info;
+
+            auto const* const vertex_detail = caster->vertex_detail;
+            auto const* const index_detail = caster->index_detail;
+            if (vertex_detail == nullptr || index_detail == nullptr || vertex_detail->buffer == VK_NULL_HANDLE || index_detail->buffer == VK_NULL_HANDLE) {
+                ++skipped_no_address;
+                continue;
+            }
+            // A buffer only has a device address when it was created with SHADER_DEVICE_ADDRESS_BIT,
+            // which the primitive uploads add when this device has the extensions - so this is a check
+            // on a device that has ray queries but whose buffers were uploaded before the flag... which
+            // cannot happen: the buffers are uploaded with the bits whenever the device supports them,
+            // regardless of the config. Kept as a guard because the alternative is a validation error
+            // per frame instead of one line in the log.
+            if (caster->vertex_stride == 0) {
+                ++skipped_no_stride;
+                continue;
+            }
+            vertex_address_info.buffer = vertex_detail->buffer;
+            index_address_info.buffer = index_detail->buffer;
+            VkDeviceAddress const source_vertex_address = vkGetBufferDeviceAddress(vk.device, &vertex_address_info);
+            VkDeviceAddress const source_index_address = vkGetBufferDeviceAddress(vk.device, &index_address_info);
+
+            // alphaMode MASK: bake the material's holes into an EXPANDED copy of this caster's vertices and
+            // build the structure from that. An inline ray query has no any-hit stage, so a traversal cannot
+            // run the material's discard - this pass is where the mask is applied instead, and it is startup
+            // work because the structures are built once and a MASK material is a property of the file (see
+            // shaders/mask_bake.comp for the rule and for what the mechanism cannot represent).
+            VkDeviceAddress mask_address = 0;
+            uint32_t mask_stride = 0;
+            if (this->rt_mask_bake && this->mask_bake_pipeline.has_value() && this->material_mapped != nullptr) {
+                // material_record::flags bit 4 is alphaMode MASK (see vulkan/primitive.cppm; the bits are
+                // literals in register_material, so they are literals here too).
+                uint32_t const material_index = caster->push.material_index.value;
+                material_record const* const material =
+                    material_index < this->material_count
+                        ? reinterpret_cast<material_record const*>(static_cast<unsigned char const*>(this->material_mapped) + static_cast<std::size_t>(material_index) * sizeof(material_record))
+                        : nullptr;
+                if (material != nullptr && (material->flags & 16u) != 0u && caster->index_count >= 3u) {
+                    // Three vertices per triangle, 32 bytes each: position(3) + normal(3) + uv(2), which is
+                    // what the hit shading reads (offsets 0, 3 and 6). GPU-only and never mapped - the bake
+                    // fills it and the build reads it.
+                    constexpr uint32_t mask_vertex_stride = 32u;
+                    uint64_t const expanded_bytes = static_cast<uint64_t>(caster->index_count) * mask_vertex_stride;
+                    vk_buffer expanded = vk.vma.create_buffer(nullptr, expanded_bytes, buffer_type::storage_gpu_only, acceleration_structure::build_input_usage);
+                    auto const* const expanded_detail = expanded.valid() ? vk.vma.get_buffer_detail(expanded.handle()) : nullptr;
+                    if (expanded_detail != nullptr) {
+                        VkBufferDeviceAddressInfo const expanded_info = {
+                            .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = expanded_detail->buffer};
+                        mask_address = vkGetBufferDeviceAddress(vk.device, &expanded_info);
+                        mask_stride = mask_vertex_stride;
+
+                        mask_bake_push_constants bake = {};
+                        auto const halves = [](VkDeviceAddress const address) {
+                            return glm::uvec2(static_cast<uint32_t>(address & 0xFFFFFFFFu), static_cast<uint32_t>(address >> 32u));
+                        };
+                        bake.source_vertices = halves(source_vertex_address);
+                        bake.source_indices = halves(source_index_address);
+                        bake.destination = halves(mask_address);
+                        bake.source_stride = caster->vertex_stride;
+                        bake.destination_stride = mask_vertex_stride;
+                        bake.index_type = static_cast<uint32_t>(caster->index_type);
+                        bake.triangle_count = caster->index_count / 3u;
+                        bake.material_index = material_index;
+                        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->mask_bake_pipeline->get_pipeline());
+                        // The bake's own set - NOT the frame's scene set, which this same command buffer
+                        // will have updated by the end of the frame (binding 16). See the member's comment.
+                        VkDescriptorSet const bake_set = this->mask_bake_set.get();
+                        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->mask_bake_pipeline_layout, 0, 1, &bake_set, 0, nullptr);
+                        vkCmdPushConstants(command_buffer, this->mask_bake_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(bake), &bake);
+                        constexpr uint32_t mask_bake_group = 64; // shaders/mask_bake.comp's local_size_x
+                        vkCmdDispatch(command_buffer, (bake.triangle_count + mask_bake_group - 1u) / mask_bake_group, 1, 1);
+                        mask_bakes_recorded = true;
+                        ++mask_baked;
+                        // The buffer outlives this loop: the build below reads it, and a hit's shading reads
+                        // its vertices through the instance table for as long as the structures live.
+                        this->rt_mask_buffers.push_back(std::move(expanded));
+                    } else {
+                        ++skipped_mask_buffers;
+                    }
+                }
+            }
+
+            // SKINNED: the pass (below, once every caster is known) writes this caster's deformed vertices
+            // into a buffer of its own, the structure is built from that buffer, and every frame after it is
+            // REFITTED - which is legal because the vertex order, the index buffer and the triangle count are
+            // all the primitive's own: only the bytes change. `skin_base != 0` is the test for "skinned",
+            // because index 0 is the identity block every unskinned draw uses (see set_skin_matrices). The
+            // stride test is the shader's precondition, not a heuristic: shaders/compute_skin.comp reads the
+            // joints at byte 32 and the weights at byte 48 of the engine's 64-byte interleaved vertex, so a
+            // caster whose vertices are packed differently is REFUSED (it keeps its bind pose and is counted
+            // in the log) rather than skinned with the wrong words.
+            constexpr uint32_t skin_source_stride_expected = 64u;
+            VkDeviceAddress skin_address = 0;
+            uint32_t skin_stride = 0;
+            uint32_t skin_source_stride = 0;
+            uint32_t skin_vertex_count = 0;
+            uint32_t skin_base = 0;
+            if (mask_address == 0 && this->rt_skin_bake && this->compute_skin_pipeline.has_value() && caster->push.skin_base != 0 && caster->vertex_count != 0 &&
+                caster->vertex_stride == skin_source_stride_expected) {
+                constexpr uint32_t skin_vertex_stride = 32u; // position, normal, uv - what hit shading reads
+                uint64_t const skinned_bytes = static_cast<uint64_t>(caster->vertex_count) * skin_vertex_stride;
+                vk_buffer skinned_vertices = vk.vma.create_buffer(nullptr, skinned_bytes, buffer_type::storage_gpu_only, acceleration_structure::build_input_usage);
+                auto const* const skinned_detail = skinned_vertices.valid() ? vk.vma.get_buffer_detail(skinned_vertices.handle()) : nullptr;
+                if (skinned_detail != nullptr) {
+                    VkBufferDeviceAddressInfo const skinned_info = {
+                        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = skinned_detail->buffer};
+                    skin_address = vkGetBufferDeviceAddress(vk.device, &skinned_info);
+                    skin_stride = skin_vertex_stride;
+                    skin_source_stride = caster->vertex_stride;
+                    skin_vertex_count = caster->vertex_count;
+                    skin_base = caster->push.skin_base;
+                    this->rt_skin_buffers.push_back(std::move(skinned_vertices));
+                    ++skinned_baked;
+                } else {
+                    ++skipped_skin_buffers;
+                }
+            }
+
+            acceleration_structure::geometry_source const source =
+                mask_address != 0
+                    ? acceleration_structure::geometry_source{.vertex_address = mask_address,
+                                                              .vertex_stride = mask_stride,
+                                                              .vertex_count = caster->index_count,
+                                                              .index_address = 0,
+                                                              .index_type = caster->index_type,
+                                                              .index_count = caster->index_count}
+                : skin_address != 0
+                    ? acceleration_structure::geometry_source{.vertex_address = skin_address,
+                                                              .vertex_stride = skin_stride,
+                                                              .vertex_count = caster->vertex_count,
+                                                              .index_address = source_index_address,
+                                                              .index_type = caster->index_type,
+                                                              .index_count = caster->index_count}
+                    : acceleration_structure::geometry_source{.vertex_address = source_vertex_address,
+                                                              .vertex_stride = caster->vertex_stride,
+                                                              .vertex_count = caster->vertex_count,
+                                                              .index_address = source_index_address,
+                                                              .index_type = caster->index_type,
+                                                              .index_count = caster->index_count};
+            // A skinned structure is built ALLOW_UPDATE so the per-frame refit is legal; everything else is
+            // built once and never touched again.
+            auto const added = structures.add(source, skin_address != 0);
+            if (!added) {
+                utility::log("ray-traced shadows disabled: {}", added.error());
+                this->rt_bottom_levels.reset();
+                this->rt_top_levels.reset();
+                // The expansion buffers and the caster mapping go with the structures they belong to: a
+                // stale mapping would have the instance list read geometry no structure was built from.
+                this->rt_mask_buffers.clear();
+                this->rt_skin_buffers.clear();
+                this->rt_skin_levels.clear();
+                this->rt_caster_levels.clear();
+                return;
+            }
+            // Remember which caster got which index: the per-frame instance list walks THIS, so a
+            // caster that was skipped above is skipped there too and the two walks cannot disagree. The
+            // mask and skin addresses ride along, because that list is what a hit's shading reads the
+            // geometry through - a baked or skinned caster must be read from the copy it was built from.
+            this->rt_caster_levels.emplace_back(rt_caster_level{.caster = caster,
+                                                                .blas_index = added.value(),
+                                                                .mask_stride = mask_stride,
+                                                                .mask_vertex_address = mask_address,
+                                                                .skin_source_address = source_vertex_address,
+                                                                .skin_destination_address = skin_address,
+                                                                .skin_source_stride = skin_source_stride,
+                                                                .skin_destination_stride = skin_stride,
+                                                                .skin_vertex_count = skin_vertex_count,
+                                                                .skin_base = skin_base});
+        }
+
+        // The skinned casters' first skinning pass, recorded here because the BUILD below has to read skinned
+        // vertices - and every frame after this one re-skins and REFITS in record_top_level_structure. The
+        // refit is not recorded here: this is the frame the structures are created, and a refit against a
+        // structure that does not exist yet is illegal.
+        if (skinned_baked != 0) {
+            for (auto const& built : this->rt_caster_levels) {
+                if (built.skin_destination_address != 0) {
+                    this->rt_skin_levels.push_back(built.blas_index);
+                }
+            }
+            this->record_compute_skin_pass(command_buffer);
+        }
+
+        // Every bake wrote a buffer the build below reads: one barrier covers them all, because every
+        // dispatch is recorded before the first build (add() only sizes and allocates; record_build()
+        // records). A compute WRITE is not visible to an acceleration structure build without it, and the
+        // symptom would be a structure built from an empty buffer - i.e. geometry that stops casting.
+        if (mask_bakes_recorded) {
+            VkMemoryBarrier2 bake_order = {};
+            bake_order.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+            bake_order.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            bake_order.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+            bake_order.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+            bake_order.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            VkDependencyInfo const bake_dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                                      .pNext = nullptr,
+                                                      .dependencyFlags = 0,
+                                                      .memoryBarrierCount = 1,
+                                                      .pMemoryBarriers = &bake_order,
+                                                      .bufferMemoryBarrierCount = 0,
+                                                      .pBufferMemoryBarriers = nullptr,
+                                                      .imageMemoryBarrierCount = 0,
+                                                      .pImageMemoryBarriers = nullptr};
+            vkCmdPipelineBarrier2(command_buffer, &bake_dependency);
+        }
+
+        if (auto const built = structures.record_build(command_buffer); !built) {
+            utility::log("ray-traced shadows disabled: {}", built.error());
+            this->rt_bottom_levels.reset();
+            this->rt_top_levels.reset();
+            return;
+        }
+
+        acceleration_structure::build_stats const& stats = structures.last_stats();
+        double const host_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        utility::log("ray-traced shadows: built {} bottom level structures ({} triangles, {:.1f} MiB + {:.1f} MiB scratch) in {:.1f} ms",
+                     stats.geometry_count,
+                     stats.triangle_count,
+                     static_cast<double>(stats.structure_bytes) / (1024.0 * 1024.0),
+                     static_cast<double>(stats.scratch_bytes) / (1024.0 * 1024.0),
+                     host_ms);
+        if (skipped_no_stride != 0) {
+            utility::log("  {} casters skipped (no vertex stride recorded - a primitive not created by make_primitive)", skipped_no_stride);
+        }
+        if (skipped_no_address != 0) {
+            utility::log("  {} casters skipped (no vertex/index buffer)", skipped_no_address);
+        }
+        if (mask_baked != 0 || skipped_mask_buffers != 0) {
+            // The measurement this feature is read with: how much geometry the mask actually removed is a
+            // property of the asset (a two-quad MASK plane whose pattern is in the middle keeps every
+            // triangle; a vase of flowers loses 40% of them - see docs/gi_hit_shading.md).
+            utility::log("ray-traced shadows: {} MASK casters baked into their structures ({} could not be - those stay solid to a ray)", mask_baked, skipped_mask_buffers);
+        }
+        if (skinned_baked != 0 || skipped_skin_buffers != 0) {
+            // The skinned casters are re-skinned and REFITTED every frame (see record_top_level_structure),
+            // so this count is also the number of structures a frame's refit touches.
+            utility::log("ray-traced shadows: {} skinned casters re-skinned and REFITTED from their deformed vertices every frame ({} could not be - those keep their bind pose)", skinned_baked, skipped_skin_buffers);
+        }
+    }
+
+    void runtime::record_top_level_structure(VkCommandBuffer const command_buffer) {
+        core& vk = this->vulkan_core;
+        if (!this->rt_structures_wanted() || !this->rt_bottom_levels.has_value() || !this->rt_top_levels.has_value()) {
+            return;
+        }
+        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
+        auto& levels = *this->rt_bottom_levels;
+        auto& top = *this->rt_top_levels;
+
+        // The skinned casters are deformed and their structures REFITTED here, before the instance list is
+        // walked (the addresses do not change, so the order does not matter to correctness - but the refit
+        // has to be recorded before this frame writes the scene set's binding 16, the ordering the mask
+        // bake's own-set comment explains). The pass itself returns false when there is nothing skinned.
+        if (this->record_compute_skin_pass(command_buffer)) {
+            if (auto const updated = this->rt_bottom_levels->record_update(command_buffer, this->rt_skin_levels); !updated) {
+                // Once, and off: a failure here would otherwise log every frame, and a refit is not
+                // something to keep attempting against structures the device refused.
+                utility::log("runtime: skinned shadow refit disabled: {}", updated.error());
+                this->rt_skin_bake = false;
+            }
+        }
+
+        if (auto const begun = top.begin(frame_slot); !begun) {
+            utility::log("runtime: {}", begun.error());
+            return;
+        }
+        // The instance list is the caster set the shadow pass draws, with the world matrix the raster
+        // passes use for each caster - the same matrix shadow_geometry_signature() hashes, which is why
+        // an animated or moved caster is reflected here for free.
+        for (auto const& built : this->rt_caster_levels) {
+            primitive const* const caster = built.caster;
+            // The addresses a hit-shading path reads the hit triangle from: the same buffers, and the
+            // same vkGetBufferDeviceAddress calls, the bottom level build above already used for this
+            // caster - so the triangle a shader fetches with them IS the triangle the ray hit. They are
+            // the buffers' base addresses (the build applies no offset), which is also what makes them
+            // legal as a buffer reference: a buffer's address is aligned, an offset into one need not be.
+            //
+            // A baked or skinned caster is read from the copy its structure was built from: the mask bake's
+            // expanded, non-indexed one (zero index address = a flat vertex list), or the skinned one, which
+            // keeps the primitive's own index buffer because its vertex ORDER is unchanged.
+            VkDeviceAddress vertex_address = built.mask_vertex_address != 0 ? built.mask_vertex_address : built.skin_destination_address;
+            VkDeviceAddress index_address = 0;
+            uint32_t vertex_stride = built.mask_vertex_address != 0 ? built.mask_stride : built.skin_destination_stride;
+            if (vertex_address == 0) {
+                VkBufferDeviceAddressInfo const vertex_address_info = {
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = caster->vertex_detail->buffer};
+                VkBufferDeviceAddressInfo const index_address_info = {
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = caster->index_detail->buffer};
+                vertex_address = vkGetBufferDeviceAddress(vk.device, &vertex_address_info);
+                index_address = vkGetBufferDeviceAddress(vk.device, &index_address_info);
+                vertex_stride = caster->vertex_stride;
+            } else if (built.skin_destination_address != 0) {
+                VkBufferDeviceAddressInfo const index_address_info = {
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = caster->index_detail->buffer};
+                index_address = vkGetBufferDeviceAddress(vk.device, &index_address_info);
+            }
+            acceleration_structure::instance_source const instance = {
+                .transform = caster->push.model,
+                .blas_index = built.blas_index,
+                .record = {.vertex_address = vertex_address,
+                           .index_address = index_address,
+                           .model = caster->push.model,
+                           .vertex_stride = vertex_stride,
+                           .index_type = static_cast<uint32_t>(caster->index_type),
+                           .material_index = caster->push.material_index.value,
+                           .primitive_index = built.blas_index},
+            };
+            if (auto const added = top.add(levels, instance); !added) {
+                utility::log("runtime: {}", added.error());
+                return;
+            }
+        }
+
+        // The top level reads the BOTTOM levels, and on the frame that creates them the two builds are
+        // in the same command buffer with nothing between them: without this barrier the driver is free
+        // to run the second build's reads against writes the first one has not published. It costs a
+        // no-op on every later frame (nothing wrote a bottom level in this buffer), which is cheaper
+        // than a flag that would have to track "which frame built them".
+        VkMemoryBarrier2 build_order = {};
+        build_order.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        build_order.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        build_order.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        build_order.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        build_order.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        VkDependencyInfo const build_order_info = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                                   .pNext = nullptr,
+                                                   .dependencyFlags = 0,
+                                                   .memoryBarrierCount = 1,
+                                                   .pMemoryBarriers = &build_order,
+                                                   .bufferMemoryBarrierCount = 0,
+                                                   .pBufferMemoryBarriers = nullptr,
+                                                   .imageMemoryBarrierCount = 0,
+                                                   .pImageMemoryBarriers = nullptr};
+        vkCmdPipelineBarrier2(command_buffer, &build_order_info);
+
+        if (auto const built = top.record_build(command_buffer); !built) {
+            utility::log("runtime: {}", built.error());
+            return;
+        }
+
+        // Point this slot's binding 16 at the structure that was just built. The scene sets were written
+        // before any structure existed (a null acceleration-structure descriptor is not legal without
+        // nullDescriptor), so this is where the binding first becomes valid - and the pass that reads it
+        // is gated on the same handle.
+        if (this->scene_sets.created()) {
+            this->write_rt_structure_binding(this->scene_sets.set(frame_slot), top.handle(frame_slot));
+        }
+        if (!this->rt_top_level_logged) {
+            this->rt_top_level_logged = true;
+            // The class measured the host cost of the build itself (see build_stats); reporting that
+            // rather than a second timer around it keeps one definition of "what the build costs".
+            utility::log("ray-traced shadows: {} instances in the top level structure, one instance table entry each ({:.3f} ms host per frame)",
+                         top.instance_count(frame_slot),
+                         top.last_stats().build_ms);
+        }
+    }
+
     void runtime::set_shadow_enabled(bool const enabled) {
         if (this->shadow_enabled == enabled) {
             return;
@@ -3965,7 +5959,14 @@ namespace vulkan {
         auto result = std::make_unique<normal_draw_primitive>();
 
         // ---- geometry buffers ----
-        result->vertex_buffer = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex);
+        // The vertex and index buffers carry the acceleration-structure build-input usage when the
+        // device has ray tracing, so a later build can read them through their device addresses
+        // instead of a second copy of the geometry. The flag is the DEVICE's, not the config's: the
+        // usage bit needs the extension enabled, and a buffer uploaded without it can never be built
+        // from - so it is decided where the upload happens, once, and not per frame by whoever wants
+        // to trace.
+        VkBufferUsageFlags const rt_input_usage = this->vulkan_core.ray_query_available ? acceleration_structure::build_input_usage : 0u;
+        result->vertex_buffer = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex, rt_input_usage);
         if (!result->vertex_buffer.valid()) {
             utility::panic("failed to create vertex buffer");
         }
@@ -3974,7 +5975,7 @@ namespace vulkan {
             utility::panic("failed to get vertex buffer detail");
         }
 
-        result->index_buffer = this->vulkan_core.vma.create_buffer(info.index_data.data(), info.index_data.size_bytes(), vulkan::buffer_type::index);
+        result->index_buffer = this->vulkan_core.vma.create_buffer(info.index_data.data(), info.index_data.size_bytes(), vulkan::buffer_type::index, rt_input_usage);
         if (!result->index_buffer.valid()) {
             utility::panic("failed to create index buffer");
         }
@@ -3986,6 +5987,10 @@ namespace vulkan {
         result->index_type = info.index_type;
         result->index_count = info.index_count;
         result->vertex_count = info.vertex_count;
+        // Kept for the acceleration-structure build, which reads the vertex buffer directly and has to
+        // be told the stride the interleaved layout uses (nothing else needs it after the upload: the
+        // raster pipelines take it from the vertex input state).
+        result->vertex_stride = info.vertex_stride;
 
         // ---- local-space AABB for frustum culling: the interleaved vertex layout starts every
         //      vertex with a vec3 position (see the loader's vertex struct / pbr.vert), so scan
@@ -4107,7 +6112,9 @@ namespace vulkan {
         auto result = std::make_unique<static_draw_primitive>();
 
         // ---- merged geometry buffers (owned by this primitive) ----
-        result->vertex_buffer = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex);
+        // Same build-input usage as create_primitive's, for the same reason (see there).
+        VkBufferUsageFlags const rt_input_usage = this->vulkan_core.ray_query_available ? acceleration_structure::build_input_usage : 0u;
+        result->vertex_buffer = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex, rt_input_usage);
         if (!result->vertex_buffer.valid()) {
             utility::panic("failed to create static vertex buffer");
         }
@@ -4115,7 +6122,7 @@ namespace vulkan {
         if (result->vertex_detail == nullptr) {
             utility::panic("failed to get static vertex buffer detail");
         }
-        result->index_buffer = this->vulkan_core.vma.create_buffer(info.index_data.data(), info.index_data.size_bytes(), vulkan::buffer_type::index);
+        result->index_buffer = this->vulkan_core.vma.create_buffer(info.index_data.data(), info.index_data.size_bytes(), vulkan::buffer_type::index, rt_input_usage);
         if (!result->index_buffer.valid()) {
             utility::panic("failed to create static index buffer");
         }
@@ -4126,6 +6133,7 @@ namespace vulkan {
         result->index_type = info.index_type;
         result->index_count = info.index_count;
         result->vertex_count = info.vertex_count;
+        result->vertex_stride = info.vertex_stride; // see create_primitive: the AS build reads the buffer
 
         // ---- local AABB over the whole merged geometry (batch-level culling) ----
         if (info.vertex_count > 0 && info.vertex_stride >= sizeof(glm::vec3) && !info.vertex_data.empty()) {

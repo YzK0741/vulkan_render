@@ -39,9 +39,15 @@
  *  post.vert + gbuffer_debug.frag  (debug alternative, never together with the lighting stage) show
  *                                one stored channel instead of lighting it
  *        |
+ *  ssgi.comp                     compute: one bounce of screen-space diffuse indirect, half res
+ *  ssgi_temporal.comp            compute: the temporal resolve that accumulates the trace
+ *  ssgi_spatial.comp             compute: the joint-bilateral filter over that accumulation
+ *        |
  *  post.vert + post.frag         mode 0 bright-pass prefilter (HDR -> bloom L0)
  *                                mode 1 downsample x3 (L0 -> L1 -> L2 -> L3)
- *                                mode 2 composite (HDR + bloom -> exposure -> ACES -> display)
+ *                                mode 2 composite (HDR + bloom + the upsampled GI -> exposure -> ACES
+ *                                -> display; the GI arrives half resolution and is upsampled by a
+ *                                joint-bilateral gather, see the SSGI section)
  *        |
  *  post.vert + fxaa.frag         optional FXAA over the display-referred LDR image
  *        |
@@ -115,6 +121,17 @@
  * and the deferred path's `deferred.frag` (the pixels whose G-buffer depth is still the far plane).
  * Two backgrounds from one function means the two paths cannot disagree about the sky.
  *
+ * @section shader_probe_sh The probe cache's SH-2 basis (probe_sh.glsl)
+ *
+ * `probe_sh.glsl` is the one place the world-space probe cache's basis is defined, because the pass that
+ * PROJECTS into a cell (`gi_probe.comp`, four basis values per traced ray) and the tracer that RECONSTRUCTS
+ * from it (`ssgi.comp`'s `probe_cache`, a dot product with the direction the ray already has) have to agree
+ * exactly - two copies of the constants would be two chances to disagree, and the result would look like a
+ * slightly wrong image rather than like a bug. The projection carries the 4*pi that makes a uniform radiance
+ * field reconstruct as itself, which is the identity the furnace verification mode checks, so that constant
+ * is load-bearing. The basis is WORLD-aligned on purpose: it makes a blend of two cells' coefficients the
+ * coefficients of the blend of their radiance functions, with no rotation between neighbours.
+ *
  * @section shader_clusters Clustered light culling (M5)
  *
  * `shaders/light_cluster.comp` runs once per frame on the graphics queue, one invocation per
@@ -144,6 +161,84 @@
  * (the 4x4 inverse view-projection plus the `vec4 ssao`), so nothing new is bound. It is deliberately
  * hemisphere SSAO rather than horizon-based GTAO, and being screen-space it cannot see occluders off
  * screen - the usual set of approximations.
+ *
+ * @section shader_ssgi Screen-space global illumination
+ *
+ * `ssgi.comp` is one bounce of diffuse indirect light. Each invocation takes its pixel's stored
+ * normal and albedo, shoots `ssgi_rays` cosine-weighted rays, marches the G-buffer depth in screen
+ * space and averages the direct radiance it finds at the hits - `albedo * mean(radiance)`, where the
+ * pi factors cancel by construction. It runs at HALF resolution because the signal is low-frequency
+ * and its cost scales with the sample count, and it samples the HDR scene target as it stands after
+ * the lighting stage. That pass POSITION is what keeps it stable: the image is rewritten earlier in
+ * every frame, so a hit can never return the tracer's own previous output - a screen-space GI that
+ * samples an image containing its own result has a loop gain above 1 and accumulates energy.
+ *
+ * Two rays per pixel is white noise with the right average, so the raw trace is not what the
+ * composite sees. `ssgi_temporal.comp` is a second compute pass at the same resolution that turns it
+ * into an image: it reprojects the previous frame's resolved result with the motion-vector target,
+ * drops the history on a view-depth mismatch (the classic disocclusion), clamps it into the 3x3
+ * neighbourhood of the RAW trace and blends it in. The clamp box is deliberately wide - it is taken
+ * from the noisy current frame, so it rejects little, which is exactly what lets the accumulation
+ * average ten frames of differently-seeded rays per pixel. A tighter box against a filtered current
+ * frame is the classic way a temporal filter ends up not denoising; tightening belongs in the spatial
+ * filter, which is the next pass. The weights are the GI pass's own (`gi_blend_static` /
+ * `gi_blend_min`) rather than TAA's, because the signal is far noisier than shading aliasing, and a
+ * copy of the TEMPORAL result becomes the next frame's history - the same copy-not-ping-pong
+ * arrangement the TAA resolve uses, which is what keeps every descriptor set in the frame stable.
+ * The history deliberately holds the accumulation and not the spatially filtered image: the filter is
+ * then a fresh function of this frame's accumulation every frame, so filtering cannot compound.
+ *
+ * `ssgi_spatial.comp` is the third and last pass: a joint-bilateral filter over the accumulated image,
+ * 25 taps in a 5x5 window, where a tap only counts if it agrees on view depth (relative to the
+ * centre's own distance, the same comparison the temporal guard makes) AND on surface normal (raised
+ * to a power), in addition to the ordinary spatial Gaussian. That is what removes the grain the
+ * temporal resolve cannot - the part that does not move, so averaging frames never touches it - and it
+ * is why the tightening the temporal clamp refuses to do belongs here rather than there. It is ONE
+ * pass on purpose: the a-trous variant widens the stride per iteration to reach a large radius cheaply,
+ * but the temporal resolve has already done the heavy lifting, so a single pass over a half-resolution
+ * image buys what this signal needs without a ping-pong target or extra barriers. Its output is what
+ * the composite samples, and `[render] ssgi_spatial_sigma` sets the spatial width (0 = the pass is a
+ * pass-through, which is how its effect is measured); the depth/normal edge-stopping strengths are
+ * runtime members rather than config keys, because getting them wrong shows up as bleeding across a
+ * silhouette rather than as a noisier image.
+ *
+ * The result is an ADDITION to the environment probe, not a replacement: a ray that leaves the frame
+ * hits nothing and contributes nothing, so the probe is the off-screen fallback and
+ * `[render] ssgi_intensity` is what reconciles the two (they overlap). `ssgi_radius` is a fraction of
+ * the scene radius, so one value means the same thing on a 1.6-unit model and on Sponza's 18.5.
+ *
+ * The last step is not a pass but a change to the composite's read: the half-resolution result is
+ * upsampled by `post.frag`'s `upsample_gi()`, which gathers the four nearest GI texels and weights each
+ * by whether it AGREES with this pixel (the same relative view-depth and normal test the spatial filter
+ * makes). A plain bilinear fetch mixes those four by position alone, so at a silhouette it averages two
+ * different surfaces - or a surface and the background, whose GI is 0 - which shows up as a dark rim on
+ * the geometry side and a halo on the sky. A pixel with no geometry gets no screen-space GI at all,
+ * which is a rule rather than a weight: the indirect light of a pixel that has no surface is not a
+ * screen-space quantity. `[render] ssgi_upsample = false` restores the bilinear fetch, which is exactly
+ * what the chain did before this existed (verified byte for byte against the previous revision's
+ * captures), so the change can be measured on its own.
+ *
+ * Bindings, because these passes are the only ones that bind the G-buffer set as COMPUTE: the tracer
+ * uses set 0 (the shared scene set above, for the camera block) plus set 1 = the G-buffer set's albedo
+ * (0), normal (1), depth (3), `direct_radiance` (5, the HDR target) and `gi_output` (6, a STORAGE
+ * image - it writes the raw trace rather than sampling it). The spatial filter binds the same two sets,
+ * reading the normal (1), the depth (3) and the accumulated image (7) and writing the filtered image
+ * (8, also STORAGE). The temporal resolve has a set of its own: the raw trace (0), the history (1), the
+ * motion-vector target (2), the G-buffer depth (3) and the accumulated image (4, also STORAGE). Every
+ * binding of the G-buffer set layout therefore names FRAGMENT and COMPUTE both, and every layout
+ * transition that publishes one of those images to a sampler names both stages too. The composite's GI
+ * upsample reads the filtered image (post set binding 6, the LINEAR sampler - a texel-centre fetch of a
+ * linear sampler is that texel, and the bilinear measurement path has to be a real bilinear fetch) and
+ * the G-buffer depth and normal (bindings 7 and 8, the NEAREST sampler: for those two an interpolated
+ * value is not a rounding error but a different surface).
+ *
+ * Known limitations, stated rather than discovered later: geometry outside the frame and thin
+ * occluders between two march steps contribute nothing; alphaMode MASK surfaces are solid, because a
+ * depth buffer has no alpha (which is also what an inline ray query sees without any-hit shaders); a
+ * deforming mesh has no motion vector, so its GI trails; and two surfaces that agree on depth and
+ * normal but carry very different indirect light (a red wall touching a white one) still mix in both
+ * the filter and the upsample. There are no GUI controls: `set_ssgi`, `set_ssgi_spatial` and
+ * `set_ssgi_upsample` are applied once at startup from the config, so changing them needs a restart.
  *
  * @section shader_bindings The shared scene descriptor set (set 0)
  *

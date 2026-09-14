@@ -1,9 +1,7 @@
 // The TAA resolve's implementation: the barriers, the fullscreen draw into the HDR target, and the copy that
 // becomes the next frame's history. Moved out of `vulkan.runtime` unchanged in behaviour - the same barrier
-// batches in the same order, the same attachment, the same copy - so the capture gate can decide the move on
-// `deferred_taa_fxaa`, the scenario that runs with TAA on. What did NOT move, and why, is in the header: the
-// G-buffer depth's transition stays with the host, because the flag that says whether it needs one belongs to
-// the G-buffer pass.
+// batches in the same order, the same attachment, the same copy and the same two flags - so the capture gate
+// can decide the move on `deferred_taa_fxaa`, the scenario that runs with TAA on.
 
 module;
 
@@ -189,7 +187,7 @@ namespace vulkan::pass {
         vkCmdPipelineBarrier2(io.cmd, &dependency);
 
         // NOTE: the G-buffer depth the disocclusion guard samples is transitioned by the HOST, just before
-        // this stage (see runtime::record_taa_pass): it is a shared per-image transition whose flag belongs
+        // this stage (see runtime::record_scene_tail): it is a shared per-image transition whose flag belongs
         // to the G-buffer pass, and a pass can only declare its own bindings. The order the host has to
         // preserve is "after this batch, before the draw" only in the sense that the barrier must precede the
         // draw - the barrier commands are independent of this batch, so the host places them first.

@@ -240,26 +240,123 @@ namespace chores {
                     } else {
                         // TAA resolve (deferred-only). IT IS A PASS: the app registers the two shaders and
                         // the pass builds its own set layout, pipeline layout and pipeline (see
-                        // vulkan.pass.taa) - the create_passes() call below is what runs that step, for every
-                        // pass at once. The vertex stage is post.vert's synthetic triangle, the same one the
-                        // debug view and the post chain use.
+                        // vulkan.pass.taa) - the create_passes() call below is what runs that step, for
+                        // every pass at once. The vertex stage is post.vert's synthetic triangle, the same
+                        // one the debug view and the post chain use.
                         load_shader(shaders_dir, "post.vert.spv", vertex_code);
                         load_shader(shaders_dir, "taa.frag.spv", fragment_code);
                         runtime.register_shader("post.vert.spv", vertex_code);
                         runtime.register_shader("taa.frag.spv", fragment_code);
-                        utility::log("SUCCESS: gbuffer + deferred pipelines created (surface write, debug view, deferred lighting); TAA's shaders registered");
+                        utility::log("SUCCESS: gbuffer + deferred pipelines created (surface write, debug view, deferred lighting)");
                     }
                 }
             }
         }
 
-        // Every pass's CREATE step, once, now that the shared samplers, the shared set layouts and the shaders
-        // the passes declare exist: a pass builds what it OWNS (its set layout, its descriptor family, its
-        // pipeline) from a `pass_context` the runtime fills, and a pass that cannot build itself says so and
-        // stays inactive rather than taking the frame down. The scene and transparent passes own nothing (their
-        // leaves name their pipelines); the TAA resolve owns all three, which is why this call is where its
-        // pipeline comes into existence.
-        runtime.create_passes();
+        {
+            // Screen-space global illumination tracer: one bounce of diffuse indirect, marched against
+            // the depth buffer. Optional - without it set_ssgi(true) does nothing, and the frame is
+            // exactly what it was before GI existed (the composite's GI weight is 0).
+            std::vector<unsigned char> compute_code;
+            load_shader(shaders_dir, "ssgi.comp.spv", compute_code);
+            auto const ssgi_result = runtime.make_ssgi_pipeline(compute_code);
+            if (!ssgi_result) {
+                utility::log("screen-space GI disabled: {}", ssgi_result.error());
+            } else {
+                utility::log("SUCCESS: ssgi compute pipeline created (screen-space global illumination)");
+            }
+            // The denoiser's temporal resolve, next to the tracer it denoises. Required, not optional:
+            // the composite samples the FILTERED image, so GI with any pass of the chain missing has
+            // nothing to show and runtime::ssgi_active() stays false.
+            std::vector<unsigned char> temporal_code;
+            load_shader(shaders_dir, "ssgi_temporal.comp.spv", temporal_code);
+            auto const temporal_result = runtime.make_ssgi_temporal_pipeline(temporal_code);
+            if (!temporal_result) {
+                utility::log("GI temporal denoiser disabled (screen-space GI will stay off): {}", temporal_result.error());
+            } else {
+                utility::log("SUCCESS: GI temporal denoiser created (history accumulation)");
+            }
+            // ... and the spatial half: the joint-bilateral filter that removes the grain the temporal
+            // clamp leaves behind, which is the last GI pass (its output is what the composite reads).
+            std::vector<unsigned char> spatial_code;
+            load_shader(shaders_dir, "ssgi_spatial.comp.spv", spatial_code);
+            auto const spatial_result = runtime.make_ssgi_spatial_pipeline(spatial_code);
+            if (!spatial_result) {
+                utility::log("GI spatial filter disabled (screen-space GI will stay off): {}", spatial_result.error());
+            } else {
+                utility::log("SUCCESS: GI spatial filter created (joint-bilateral, depth + normal edge stops)");
+            }
+            // The glossy lobe (shaders/ssgi_spec.comp). OPTIONAL, like the probe cache and for the same
+            // reason: without it the lighting stage's split-sum specular ambient stands, which is what
+            // every frame before this feature existed looked like - and runtime::ssgi_specular_active()
+            // then keeps the frame from even recording the pass, so the knob-off frame is byte-identical
+            // by construction.
+            std::vector<unsigned char> spec_code;
+            load_shader(shaders_dir, "ssgi_spec.comp.spv", spec_code);
+            auto const spec_result = runtime.make_ssgi_spec_pipeline(spec_code);
+            if (!spec_result) {
+                utility::log("glossy GI disabled (reflections stay the environment's): {}", spec_result.error());
+            } else {
+                utility::log("SUCCESS: glossy GI pipeline created (a traced reflection, one GGX lobe per ray)");
+            }
+            // The world-space probe cache. OPTIONAL, unlike the three above: it is what answers for a hit
+            // the screen cannot resolve (off screen or hidden), where the tracer otherwise falls back to
+            // the far-field environment probe - so a build without it renders exactly as it did before it
+            // existed, and runtime::gi_probe_active() keeps the tracer from sampling a grid that is not
+            // there.
+            //
+            // IT IS A PASS, so there is no make_* here any more: the app loads the shader and hands the bytes
+            // over, then asks the runtime to run the passes' create step - and the pass builds its own set
+            // layout, pipeline layout and pipeline, and logs its own outcome. The app's job is the file (it
+            // knows the shader directory); the pass's job is the pipeline.
+            std::vector<unsigned char> probe_code;
+            load_shader(shaders_dir, "gi_probe.comp.spv", probe_code);
+            runtime.register_shader("gi_probe.comp.spv", probe_code);
+
+            // ... and now that every pass's shaders are registered, run the passes' create steps. This is the
+            // ONE call that builds what the passes own (their set layouts, pipeline layouts and pipelines),
+            // and it happens here rather than inside each block above because a pass must be created AFTER
+            // its shaders exist and the shared set layouts do.
+            runtime.create_passes();
+
+            // Ray-traced sun shadows: one ray per pixel against the scene's acceleration structures.
+            // Created only on a device with ray queries (the builder says so as an error otherwise), and
+            // optional even there: without it the cascaded shadow maps keep running.
+            std::vector<unsigned char> rt_shadow_code;
+            load_shader(shaders_dir, "rt_shadow.comp.spv", rt_shadow_code);
+            auto const rt_shadow_result = runtime.make_rt_shadow_pipeline(rt_shadow_code);
+            if (!rt_shadow_result) {
+                utility::log("ray-traced shadows unavailable: {}", rt_shadow_result.error());
+            } else {
+                utility::log("SUCCESS: ray-traced sun shadow pipeline created (one ray per pixel, terminated on first hit)");
+            }
+
+            // The alphaMode MASK bake (shaders/mask_bake.comp), created here for the same reason and with
+            // the same optionality: without it a MASK surface is solid to a ray. It runs once, inside the
+            // command buffer that builds the bottom level structures, and the structures of masked casters
+            // are built from the expanded, mask-baked copy of their vertices instead of the original ones.
+            std::vector<unsigned char> mask_bake_code;
+            load_shader(shaders_dir, "mask_bake.comp.spv", mask_bake_code);
+            auto const mask_bake_result = runtime.make_mask_bake_pipeline(mask_bake_code);
+            if (!mask_bake_result) {
+                utility::log("alphaMode MASK bake unavailable: {} (masked geometry stays solid to a ray)", mask_bake_result.error());
+            } else {
+                utility::log("SUCCESS: alphaMode MASK bake pipeline created (the mask is collapsed into the structures)");
+            }
+
+            // The compute skinning pass (shaders/compute_skin.comp), created here and optional the same
+            // way: without it a skinned caster's traced shadow is cast by its BIND POSE. The pass does not
+            // run until [render] rt_skin_bake says so (set_rt_skin_bake), which is what makes the two arms
+            // of the L2.2b measurement the same binary and the same scene.
+            std::vector<unsigned char> compute_skin_code;
+            load_shader(shaders_dir, "compute_skin.comp.spv", compute_skin_code);
+            auto const compute_skin_result = runtime.make_compute_skin_pipeline(compute_skin_code);
+            if (!compute_skin_result) {
+                utility::log("skinned shadow refit unavailable: {} (a traced shadow keeps the bind pose)", compute_skin_result.error());
+            } else {
+                utility::log("SUCCESS: compute skinning pipeline created (skinned casters can be refitted per frame)");
+            }
+        }
     }
 
     // Optional instancing stress: grid_side > 1 (config or argv) draws the first imported

@@ -1,0 +1,363 @@
+#version 460 // GL_EXT_ray_query is written against GLSL 4.60 (see shaders/rt_shadow.comp)
+#extension GL_EXT_ray_query : require
+
+/**
+ * @file shaders/gi_probe.comp
+ * @brief The world-space radiance probe cache: one dispatch deposits the frame's screen-space GI into
+ *        the grid cells it can see, and the rest spread it into the neighbouring cells.
+ * @ingroup shaders
+ *
+ * WHY A WORLD-SPACE GRID, WHEN THERE IS ALREADY A SCREEN-SPACE CHAIN
+ * The GI chain up to here (ssgi.comp -> ssgi_temporal.comp -> ssgi_spatial.comp) lives in screen space,
+ * and that has two consequences the chain cannot fix from the inside. First, a ray that leaves the frame
+ * or hits something hidden behind a nearer surface has no cached radiance to read, so it falls back to
+ * the far-field environment probe - which is the SKY at infinity, not the light in the next room, and it
+ * is the same value for a surface in the middle of the scene as for one on the roof. Second, everything
+ * the chain knows is lost the moment the surface leaves the frame: turning the camera away throws away
+ * its indirect light, and turning back re-discovers it over the next twenty frames.
+ *
+ * A grid of cells in WORLD space has neither problem. It is anchored to the scene rather than to the
+ * view, so it survives the camera; and a ray that misses the screen can still be answered from wherever
+ * it hit, because the grid is defined there. What it costs is resolution - a cell is a cell, and a
+ * surface's radiance is smeared over the volume it occupies - which is why it is a CACHE that answers
+ * for the places the screen cannot, and not a replacement for the screen-space estimate where there is
+ * one. The tracer makes exactly that split (see rt_hit_radiance in shaders/ssgi.comp).
+ *
+ * HOW A CELL GETS ITS VALUE, AND WHY IT IS DONE THIS WAY
+ * INJECTION (mode 0) makes each cell TRACE ITS OWN RAYS. Four directions uniformly over the sphere (a
+ * cell in empty space has no normal to build a lobe around), starting one cell diagonal away so a probe
+ * cannot hit its own cell; a hit is shaded from its own geometry, material and lights through the shared
+ * hit shading, and a ray that finds nothing is answered by the sky. That is what makes this cache
+ * VIEW-INDEPENDENT: the pass declares no camera, carries none in its push block, reads neither the
+ * frame's depth nor the screen-space chain, and a cell therefore holds a fact about the scene rather
+ * than about the frame the camera happened to show. It replaced an injection that projected a cell's
+ * centre into the frame and took that pixel's radiance, which left every cell the camera had not looked
+ * at empty.
+ *
+ * A cell is filled at the grid's own slow rate (pc.params.x): four rays are an estimate, and this is the
+ * cache that has to survive the camera turning away, so one frame's rays move a cell a little rather
+ * than replacing it. The same dispatch records, per cell, the offset to the NEAREST surface those rays
+ * found - the geometry the propagation tests visibility with.
+ *
+ * PROPAGATION (mode 1) blends a cell with the six axis neighbours it can SEE, run as a ping-pong between
+ * two grid images so that no dispatch reads what it writes. Each neighbour is gated by a BIDIRECTIONAL
+ * segment-versus-surface test - does the surface recorded HERE lie between the two centres, and does the
+ * surface recorded THERE - because one direction alone misses a thin wall. A pair that fails DROPS OUT of
+ * both the sum and the weight rather than being redistributed over the survivors: a normalised unoccluded
+ * blur has unity DC gain, so it adds the same FRACTION of whatever every region already holds, which is
+ * exactly what the version this replaced was measured doing (0.81% of the frame's darkest third, 0.75% of
+ * the middle, 0.06% of the brightest). The centre always contributes at weight 1, so a cell whose
+ * neighbours are all occluded keeps its own value instead of decaying towards the average of nothing.
+ *
+ * The fourth channel is TRUST, in [0, 1], raised by the injection while a cell is filled and NOT decayed
+ * by propagation any more. It says whether a cell was ever filled, which is what decides whether the
+ * tracer mixes the cache in at all and whether a neighbour may lend its light; it no longer stands in for
+ * occlusion, because the visibility test does that now.
+ *
+ * LIMITATIONS, STATED: the propagation's visibility test is one surface offset per cell, so a thin wall
+ * that neither cell recorded can still leak; a cell that straddles two surfaces mixes them; and a moving
+ * object's light stays behind in the grid after it has moved, because the grid is not reprojected - it
+ * decays at the injection rate instead.
+ */
+
+// One invocation per cell, in three dimensions. 4x4x4 = 64 threads per workgroup, so a 32^3 grid is
+// 512 workgroups.
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+// Rays per cell per frame. Four is the first version's number, and the reasoning is recorded rather than
+// tuned: 32768 cells at four rays is 131k rays, about half the screen-space tracer's 259k, which costs
+// 0.58-0.9 ms in this project's own measurements. If that comes back acceptable the reference
+// implementation's staleness-budgeted slice machinery is complexity this renderer does not need.
+#define PROBE_RAYS 4
+
+// The pass binds TWO sets: its own (set 1) and the shared scene set (set 0), which is where the top level
+// structure, the material records and the texture array live - the things a cell's OWN ray needs in order
+// to resolve a hit and shade it. Set 1 is only the grid: what it reads, what it writes, and the per-cell
+// geometry the propagation tests visibility with. Two bindings this set used to carry (this frame's
+// resolved screen-space GI and the G-buffer depth) went with the screen projection that used them.
+// FOUR coefficient images per side (see shaders/probe_sh.glsl for what a cell holds). Bindings 0..3 are the
+// side being READ - the other half of the ping-pong - and 4..7 the side being WRITTEN, both in coefficient
+// order: sh0 is the DC term and its alpha carries the cell's TRUST, then the three first-order terms.
+// Binding 8 is the geometry the propagation tests visibility with: per cell, the vector from its centre to
+// the surface the injection found, with a validity flag in w. The surface is NOT ping-ponged - the
+// injection owns it, and a propagation round rewrites radiance only.
+layout(set = 1, binding = 0) uniform sampler3D grid_src_sh0;
+layout(set = 1, binding = 1) uniform sampler3D grid_src_sh1;
+layout(set = 1, binding = 2) uniform sampler3D grid_src_sh2;
+layout(set = 1, binding = 3) uniform sampler3D grid_src_sh3;
+layout(set = 1, binding = 4, rgba16f) uniform image3D grid_dst_sh0;
+layout(set = 1, binding = 5, rgba16f) uniform image3D grid_dst_sh1;
+layout(set = 1, binding = 6, rgba16f) uniform image3D grid_dst_sh2;
+layout(set = 1, binding = 7, rgba16f) uniform image3D grid_dst_sh3;
+layout(set = 1, binding = 8, rgba16f) uniform image3D grid_surface;
+
+// The scene set's top level structure: the geometry the cells trace against, so a cell is filled from what
+// its own rays find. A pass whose layout does not name this binding cannot be created at all, which is one
+// more reason this pass stays optional: a missing pipeline disables the cache and the tracer keeps its
+// environment fallback.
+layout(set = 0, binding = 16) uniform accelerationStructureEXT tlas;
+// What the shared hit shading expects its INCLUDER to declare, because each pass reaches these through its
+// own stage: the irradiance cube (a probe ray that hits nothing is answered by the sky, exactly as the
+// tracer answers one). NOT the camera: the probe asks on behalf of its own ray, so the shared code is told
+// the direction towards the asker and this pass never mentions the camera - which is exactly the property
+// the cache is supposed to have.
+layout(set = 0, binding = 3) uniform samplerCube irradiance_sampler;
+
+#include "hit_shading.glsl"
+// The SH-2 basis, shared with the tracer that reads these cells back: the projection here and the
+// reconstruction there have to agree exactly, so they are one definition (see shaders/probe_sh.glsl).
+#include "probe_sh.glsl"
+// FORTY bytes, and deliberately not one lane of camera in it: the grid's own placement, the injection's
+// rate and mode, and the instance table's address. Everything else a cell needs it gets from the scene
+// itself. The block used to carry a world-to-clip matrix and the camera's position for an injection that
+// projected a cell into the frame; that injection is gone, and leaving the lanes behind would have left
+// the pass looking as if it could depend on the view.
+layout(push_constant) uniform GiProbePush {
+    // xyz = the world position of cell (0,0,0)'s corner, w = one cell's size in world units. The grid
+    // covers the scene's bounds, so the cell size falls out of the bounds and the resolution.
+    vec4 grid_min_cell;
+    // x = the injection's rate (the grid's own blend over frames), w = the mode: 0 = inject, 1 = propagate.
+    // y and z are free; the grid's extent needs no lane because the image knows its own size (imageSize).
+    vec4 params;
+    // The acceleration structures' instance table, as the low and high halves of one device address - the
+    // same shape the tracer's push carries, reinterpreted in the shader. Zero means there is no table, so a
+    // cell has nothing to resolve a hit against and keeps what it holds.
+    uvec2 instance_table;
+} pc;
+
+/** @brief whether @p cell is inside the grid (the dispatch is rounded up to the workgroup size) */
+bool inside(ivec3 cell, ivec3 extent) {
+    return all(greaterThanEqual(cell, ivec3(0))) && all(lessThan(cell, extent));
+}
+
+/** @brief a hash for a cell's ray sequence (the tracer's own hash chain, seeded per cell) */
+uint hash_cell(ivec3 cell) {
+    uint x = uint(cell.x) * 73856093u ^ uint(cell.y) * 19349663u ^ uint(cell.z) * 83492791u;
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+/** @brief the next uniform in [0,1) from @p state (the tracer's chain, so no table and no texture) */
+float next_uniform(inout uint state) {
+    state ^= state >> 16;
+    state *= 0x7feb352du;
+    state ^= state >> 15;
+    state *= 0x846ca68bu;
+    state ^= state >> 16;
+    return float(state) * (1.0 / 4294967296.0);
+}
+
+/**
+ * @brief a uniformly distributed direction on the sphere
+ * @param u1 / @p u2 two uniforms in [0,1)
+ * @note uniform rather than cosine-weighted, and that is a decision rather than an omission: a cache cell
+ *       in empty space has NO surface normal, so there is no hemisphere to weight a cosine lobe towards.
+ *       The sphere average is what a probe means, and it is why the reference implementation's probe traces
+ *       are a 32x32 octahedral map of directions rather than a lobe.
+ */
+vec3 sphere_direction(float u1, float u2) {
+    const float z = 1.0 - 2.0 * u1;
+    const float r = sqrt(max(1.0 - z * z, 0.0));
+    const float phi = 6.283185307179586 * u2;
+    return vec3(r * cos(phi), r * sin(phi), z);
+}
+
+/**
+ * @brief fill this cell from what its OWN rays find, instead of from the pixel it projects to
+ * @param cell the cell to write
+ *
+ * This is the change that makes the cache view-independent. Until now a cell took the radiance of whatever
+ * the frame happened to show at its screen position, so a cell the camera had never looked at held nothing
+ * - and a whole class of approximations existed to paper over that (an unoccluded blur to spread light into
+ * it, which is the leak step A removed). A cell now traces its own rays, shades what they hit with the
+ * shared hit shading, and takes the sky when they hit nothing; what it holds is a fact about the scene.
+ *
+ * Rays start one cell diagonal away so a probe cannot hit its own cell, and directions are uniform over the
+ * sphere because a cell in empty space has no normal to build a lobe around.
+ */
+void inject(ivec3 cell) {
+    const vec4 stored0 = imageLoad(grid_dst_sh0, cell);
+    const vec4 stored1 = imageLoad(grid_dst_sh1, cell);
+    const vec4 stored2 = imageLoad(grid_dst_sh2, cell);
+    const vec4 stored3 = imageLoad(grid_dst_sh3, cell);
+    const float rate = pc.params.x;
+    if (rate <= 0.0) {
+        return; // a rate of 0 is the off switch: the grid keeps whatever it has
+    }
+    const uint64_t table = (uint64_t(pc.instance_table.y) << 32u) | uint64_t(pc.instance_table.x);
+    if (table == 0u) {
+        return; // no structures to trace against this frame: the cell keeps what it has
+    }
+    const vec3 world = pc.grid_min_cell.xyz + (vec3(cell) + 0.5) * pc.grid_min_cell.w;
+    const float start = pc.grid_min_cell.w * 1.7320508; // one cell diagonal
+
+    // The SH-2 projection of what the rays find: coefficient i accumulates `radiance * Y_i(dir)`, and the
+    // 4*pi factor below turns the MEAN into a coefficient (see shaders/probe_sh.glsl - it is what makes a
+    // uniform field reconstruct as itself). The directional terms are the part a single RGB could not hold.
+    vec3 sh_sum[4] = vec3[4](vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0));
+    float nearest = 1e30;
+    vec3 nearest_offset = vec3(0.0);
+    uint state = hash_cell(cell);
+    for (int i = 0; i < PROBE_RAYS; ++i) {
+        const vec3 dir = sphere_direction(next_uniform(state), next_uniform(state));
+        rayQueryEXT query;
+        rayQueryInitializeEXT(query, tlas, gl_RayFlagsOpaqueEXT, 0xFF, world + dir * start, 0.01, dir, 1e30);
+        while (rayQueryProceedEXT(query)) {
+        }
+        vec3 radiance = vec3(0.0);
+        if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+            radiance = texture(irradiance_sampler, dir).rgb; // nothing there: the sky answers
+        } else {
+            const float t = rayQueryGetIntersectionTEXT(query, true);
+            const vec3 hit_world = rayQueryGetWorldRayOriginEXT(query) + t * rayQueryGetWorldRayDirectionEXT(query);
+            vec3 shaded = vec3(0.0);
+            // A CELL'S HITS ARE SHADED FROM THE SKY, deliberately, and the cache parameters passed here are
+            // the read half of this pass's OWN ping-pong with a gain of 0.0: a cell never reads the grid it
+            // is filling, which is the same independence its camera-free declaration gives this pass. A cache
+            // that fed itself would be a feedback loop with nothing to bound it.
+            if (shade_hit(query, hit_world, dir, -dir, table, pc.grid_min_cell.w * 2.0,
+                          grid_src_sh0, grid_src_sh1, grid_src_sh2, grid_src_sh3, pc.grid_min_cell, 0.0, shaded)) {
+                radiance = shaded;
+                const float distance = length(hit_world - world);
+                if (distance < nearest) {
+                    nearest = distance;
+                    nearest_offset = hit_world - world;
+                }
+            } else {
+                radiance = texture(irradiance_sampler, dir).rgb;
+            }
+        }
+        const vec4 basis = probe_sh_basis(dir);
+        sh_sum[0] += radiance * basis.x;
+        sh_sum[1] += radiance * basis.y;
+        sh_sum[2] += radiance * basis.z;
+        sh_sum[3] += radiance * basis.w;
+    }
+
+    // The blend is still the grid's own slow one: this cache is the part that has to survive the camera
+    // turning away, so one frame's rays do not replace what it holds, they move it a little. It is applied
+    // per coefficient, which is what a coefficient mean is: the projection is linear.
+    const float projection = PROBE_SH_FOUR_PI / float(PROBE_RAYS);
+    const float trust = min(1.0, stored0.a + rate);
+    imageStore(grid_dst_sh0, cell, vec4(mix(stored0.rgb, sh_sum[0] * projection, rate), trust));
+    imageStore(grid_dst_sh1, cell, vec4(mix(stored1.rgb, sh_sum[1] * projection, rate), 0.0));
+    imageStore(grid_dst_sh2, cell, vec4(mix(stored2.rgb, sh_sum[2] * projection, rate), 0.0));
+    imageStore(grid_dst_sh3, cell, vec4(mix(stored3.rgb, sh_sum[3] * projection, rate), 0.0));
+
+    // The geometry the filter tests visibility with: the offset to the NEAREST surface a ray found, which
+    // is the one that would block a segment from this cell. A cell whose rays all escaped holds nothing, and
+    // then no segment through it is blocked - which is the honest answer for empty space.
+    imageStore(grid_surface, cell, vec4(nearest_offset, nearest < 1e29 ? 1.0 : 0.0));
+}
+/**
+ * @brief whether the segment @p from -> @p to stays in front of the surface recorded at @p from
+ * @param surface_at_from the offset from @p from to the surface its injection found (w = validity)
+ * @param radius how close to the segment a surface has to be to be in the way
+ * @return false when that surface blocks the segment
+ * @note a surface blocks only when it lies BETWEEN the two points and close to the segment: a surface the
+ *       segment never comes near is not an occluder, however far along it happens to sit.
+ */
+bool segment_clear(vec3 from, vec3 to, vec4 surface_at_from, float radius) {
+    if (surface_at_from.w < 0.5) {
+        return true; // nothing recorded here, so there is nothing to be occluded by
+    }
+    const vec3 segment = to - from;
+    const float segment_length = length(segment);
+    if (segment_length < 1e-6) {
+        return true;
+    }
+    const vec3 direction = segment / segment_length;
+    const float along = dot(surface_at_from.xyz, direction);
+    if (along <= 0.0 || along >= segment_length) {
+        return true; // the surface is not between the two cells
+    }
+    return length(surface_at_from.xyz - direction * along) > radius;
+}
+
+/**
+ * @brief blend this cell with the neighbours it can SEE, and only with those
+ * @param cell the cell to write
+ *
+ * Six axis neighbours rather than a 3x3x3 kernel, and each neighbour's weight is GATED by a visibility
+ * test instead of scaled by a trust:
+ *
+ *  - the test is BIDIRECTIONAL: it asks whether the surface recorded at this cell lies between the two
+ *    centres, and whether the surface recorded at the NEIGHBOUR does too. One direction alone misses a
+ *    thin wall, and with a single surface offset per cell that is all this representation can offer;
+ *  - a pair that fails DROPS OUT of both the sum and the weight, so the result is not a renormalised
+ *    average. That is the entire point: a normalised unoccluded blur has unity DC gain, so it adds the
+ *    same FRACTION of whatever every region already holds - which is exactly what this cache was measured
+ *    doing (0.81% of the frame's darkest third, 0.75% of the middle, and only 0.06% of the brightest).
+ *    Letting a rejected neighbour lower the total weight is what lets the outcome depend on the light;
+ *  - the centre always contributes at weight 1, so a cell whose neighbours are all occluded keeps its own
+ *    value instead of decaying towards the average of nothing;
+ *  - the trust is no longer decayed per step. It describes whether a cell was ever filled, which the
+ *    injection raises while it sees the cell, and visibility - not a decay - is what decides whether a
+ *    neighbour may lend its light. The consequence is stated rather than hidden: cells the frame never
+ *    saw now stay empty instead of being filled by an unoccluded spread, which is the leak this replaces;
+ *    filling them honestly is what tracing from the cells will do.
+ */
+
+void propagate(ivec3 cell, ivec3 extent) {
+    const vec4 center0 = texelFetch(grid_src_sh0, cell, 0);
+    const vec4 center1 = texelFetch(grid_src_sh1, cell, 0);
+    const vec4 center2 = texelFetch(grid_src_sh2, cell, 0);
+    const vec4 center3 = texelFetch(grid_src_sh3, cell, 0);
+    const vec4 center_surface = imageLoad(grid_surface, cell);
+    const vec3 center_position = pc.grid_min_cell.xyz + (vec3(cell) + 0.5) * pc.grid_min_cell.w;
+    const float radius = 0.5 * pc.grid_min_cell.w;
+
+    // Every coefficient is averaged, and that is legitimate rather than convenient: the SH basis is
+    // WORLD-aligned, so a blend of two cells' coefficients is the coefficients of the blend of their
+    // radiance functions. A per-cell basis (a local frame, say) would need a rotation between neighbours.
+    vec3 sum0 = center0.rgb; // the centre, at weight 1, always
+    vec3 sum1 = center1.rgb;
+    vec3 sum2 = center2.rgb;
+    vec3 sum3 = center3.rgb;
+    float weight_sum = 1.0;
+
+    const ivec3 offsets[6] = ivec3[6](
+        ivec3(1, 0, 0), ivec3(-1, 0, 0), ivec3(0, 1, 0), ivec3(0, -1, 0), ivec3(0, 0, 1), ivec3(0, 0, -1));
+    for (int i = 0; i < 6; ++i) {
+        const ivec3 at = cell + offsets[i];
+        if (!inside(at, extent)) {
+            continue;
+        }
+        const vec4 tap0 = texelFetch(grid_src_sh0, at, 0);
+        if (tap0.a <= 0.0) {
+            continue; // never filled: there is nothing to lend. Trust lives in the DC coefficient's alpha.
+        }
+        const vec3 neighbour_position = pc.grid_min_cell.xyz + (vec3(at) + 0.5) * pc.grid_min_cell.w;
+        const vec4 neighbour_surface = imageLoad(grid_surface, at);
+        if (!segment_clear(center_position, neighbour_position, center_surface, radius) ||
+            !segment_clear(neighbour_position, center_position, neighbour_surface, radius)) {
+            continue; // occluded in at least one direction: this neighbour's light does not reach us
+        }
+        sum0 += tap0.rgb;
+        sum1 += texelFetch(grid_src_sh1, at, 0).rgb;
+        sum2 += texelFetch(grid_src_sh2, at, 0).rgb;
+        sum3 += texelFetch(grid_src_sh3, at, 0).rgb;
+        weight_sum += 1.0;
+    }
+    imageStore(grid_dst_sh0, cell, vec4(sum0 / weight_sum, center0.a));
+    imageStore(grid_dst_sh1, cell, vec4(sum1 / weight_sum, 0.0));
+    imageStore(grid_dst_sh2, cell, vec4(sum2 / weight_sum, 0.0));
+    imageStore(grid_dst_sh3, cell, vec4(sum3 / weight_sum, 0.0));
+}
+
+void main() {
+    const ivec3 extent = imageSize(grid_dst_sh0); // all five images share the grid's extent
+    const ivec3 cell = ivec3(gl_GlobalInvocationID.xyz);
+    if (!inside(cell, extent)) {
+        return; // the dispatch is rounded up to the workgroup size
+    }
+    if (pc.params.w < 0.5) {
+        inject(cell);
+    } else {
+        propagate(cell, extent);
+    }
+}

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.28.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.61.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -27,12 +27,14 @@ export module vulkan.runtime;
 import vulkan.profiling;
 import vulkan.bindings;               // the per-image descriptor-set families (the G-buffer debug view's for now)
 import vulkan.pass;                   // the pass framework: the host the runner talks to, and the stage runner
-import vulkan.pass.scene;             // the second pass this branch drives: the surface write
-import vulkan.pass.taa;               // the third, and the first that OWNS a set layout, a pipeline and a family
-import vulkan.pass.transparent;       // the first pass this branch drives: the blended geometry
+import vulkan.pass.gi_probe;          // the first real pass (its member is declared below, so the class must be complete)
+import vulkan.pass.taa;               // the second, and the first GRAPHICS one
+import vulkan.pass.scene;             // the third: the scene itself, whose work is DATA rather than a declaration
+import vulkan.pass.transparent;       // the fourth: the blended geometry, over the shaded frame
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
+import vulkan.acceleration_structure; // the ray-tracing bottom level structures (built once, lazily)
 export import vstd;
 export import vulkan.core;
 export import vulkan.core.filter;
@@ -242,14 +244,28 @@ namespace vulkan {
         // which is why the label table is one entry shorter than the mark list.
         enum class gpu_mark_id : uint32_t {
             frame_begin = 0, // first command of the frame (TOP_OF_PIPE)
+            rt_build_end,    // after the acceleration-structure builds (the bottom levels on the frame
+                             // that creates them, the top level every frame after it)
             shadow_end,      // after the shadow pass + its sampling barrier
             scene_end,       // after the geometry instance: forward main (opaque + transparent), or
                              // the background + G-buffer pass in the deferred path
+            rt_shadow_end,   // after the ray-traced sun shadow pass (~0 when it does not run). Its own
+                             // mark because it sits BETWEEN the G-buffer pass and the lighting stage:
+                             // without it the traversals were reported as lighting time, which made the
+                             // lighting interval look four times more expensive with rays on
             lighting_end,    // after the deferred path's shading work: the lighting stage and, in the
                              // same interval, the transparent pass that composites over it (~0 in the
                              // forward path, where both of those happen inside the scene instance)
             taa_end,         // after the TAA resolve + its history copy (~0 when TAA is off)
             main_end,        // after the last scene-side work of the frame (the debug view, when it runs)
+            gi_end,          // after the screen-space GI chain (~0 when GI is off). Its own mark because
+                             // those passes are the only compute work in the post chain: without it their
+                             // cost was reported as bloom time, which is where a traced GI's price was
+                             // invisible in the one report a user reads
+            gi_probe_end,    // after the world-space probe cache's dispatches (~0 when it is off). Its
+                             // own mark for the same reason gi_end has one: it is compute work in the
+                             // same stretch of the frame, and folding it into "gi" would hide which of
+                             // the two the GI budget is going to
             bloom_end,       // after the bloom prefilter/downsample chain
             composite_end,   // after the composite (exposure + ACES + display encode)
             fxaa_end,        // after the FXAA pass (and the overlay, when FXAA draws it)
@@ -271,11 +287,15 @@ namespace vulkan {
             bool new_line; // begin a new line in the overlay report
         };
         static constexpr std::array<gpu_timing_label, gpu_mark_count - 1> gpu_timing_labels = {{
+            {"rt", false},
             {"shadow", false},
             {"scene", false},
+            {"rt shadow", false},
             {"lighting", false},
             {"taa", false},
             {"debug", true},
+            {"gi", false},
+            {"gi probe", false},
             {"bloom", false},
             {"composite", false},
             {"fxaa", false},
@@ -322,6 +342,11 @@ namespace vulkan {
         // which channel the debug view shows (see gbuffer_debug.frag / set_gbuffer_channel)
         int gbuffer_channel_index = 1;
         vk_sampler gbuffer_sampler = {};
+        // The world-space probe cache's sampler (G-buffer set binding 9): LINEAR rather than the
+        // G-buffer sampler's NEAREST, because a 3D fetch's whole purpose here is interpolating between
+        // cells - a nearest fetch would turn the cache into 32^3 blocks - and CLAMP_TO_EDGE, because the
+        // grid's edge IS the scene's bounds and there is nothing beyond them to repeat or mirror.
+        vk_sampler gi_probe_sampler = {};
         VkDescriptorSetLayout gbuffer_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout gbuffer_pipeline_layout = VK_NULL_HANDLE;
         // the deferred lighting stage needs BOTH sets: set 0 = the shared scene set (camera, IBL,
@@ -346,6 +371,94 @@ namespace vulkan {
             // itself across resolutions instead of being a magic number per window size.
             float motion_gain = 1.0f;
         };
+        // ---- screen-space global illumination (see shaders/ssgi.comp) ----
+        std::optional<vk_pipeline> ssgi_pipeline = std::nullopt;
+        VkPipelineLayout ssgi_pipeline_layout = VK_NULL_HANDLE;
+        bool ssgi_on = false;
+        float ssgi_intensity = 0.7f; // scales the traced indirect against the IBL probe it overlaps
+        float ssgi_radius = 3.0f;    // ray length, view units
+        uint32_t ssgi_rays = 2;      // rays per pixel, per frame
+        uint32_t ssgi_steps = 6;     // depth samples per ray
+        // The tracer's ray sequence has to change every frame: a fixed one would feed a temporal
+        // denoiser the same error in the same place every frame instead of an average.
+        uint32_t ssgi_frame = 0;
+        // Trace the GI rays against the scene's acceleration structures instead of marching the depth
+        // buffer ([render] ssgi_ray_tracing). Only meaningful with the tracer enabled and a device that
+        // has ray queries AND a built top level structure - the push block's frame_info.y carries the
+        // resolved answer, so the shader never has to know why it is marching instead.
+        bool ssgi_ray_tracing = false;
+        // How much of the previous frame's accumulated indirect a GI ray re-emits at a hit: the loop
+        // gain of the multi-bounce approximation ([render] ssgi_bounce, see shaders/ssgi.comp's header).
+        // 0 (the default) leaves the estimator single-bounce, which is what every earlier measurement was
+        // taken with. The image that is fed back already carries ssgi_intensity, so the loop's gain is
+        // this value times that one, and the runtime refuses a gain above one for exactly that reason.
+        float ssgi_bounce = 0.0f;
+        // Shade the surface a GI ray lands on from the geometry it hit, instead of sampling the screen's
+        // direct-radiance image there ([render] ssgi_hit_shading). Off by default: on, a hit's answer
+        // stops depending on what the frame happens to show - which is what lets a hit the camera cannot
+        // see (off screen, or hidden) be answered correctly rather than approximated - at the price of the
+        // material and vertex fetches a shaded hit costs. The runtime publishes the acceleration
+        // structures' instance table into the tracer's push block to switch it on (see record_ssgi_pass):
+        // a zero address means "sample the screen", so the knob is also the A/B.
+        bool ssgi_hit_shading = false;
+        // The glossy lobe ([render] ssgi_specular): a GGX-sampled reflection ray per pixel whose hit is
+        // shaded from its geometry, so a reflection shows the room instead of the sky. It is a REPLACEMENT
+        // for the specular ambient the lighting stage adds - the estimate falls back to exactly that term
+        // when a ray finds nothing - which is what the spatial filter's second subtraction takes back out
+        // (see shaders/ssgi_spec.comp and shaders/ssgi_spatial.comp's ambient_removed_at). ON by default:
+        // the objection that kept it off was its denoiser item, and the reflection now has an accumulation
+        // of its own, reprojected from the point it found (see the L2.3 motion sections).
+        bool ssgi_specular = true;
+        // ... and how far those rays reach ([render] ssgi_specular_radius), as a fraction of the scene
+        // radius. Its own reach rather than the shared `ssgi_radius`, which the MARCHED path pins low: that
+        // path's resolution is radius / ssgi_steps, so a reflection's reach would make its steps too coarse
+        // to find anything between them. Measured on Sponza, the lobe's effect is 39% of its potential at
+        // the marched path's 0.12 and 90% at 0.5, with the curve flat past it.
+        float ssgi_specular_radius = 0.5f;
+        // ... and how many of those rays per pixel ([render] ssgi_specular_rays). One is the feature's
+        // definition ("a glossy ray per pixel") and is what the cost was measured at; more is what buys a
+        // wide lobe's variance down, which is the denoiser problem this feature brings with it.
+        uint32_t ssgi_specular_rays = 1;
+        // The furnace verification mode ([render] furnace, not wired to the config yet): the sun is turned
+        // off and the environment becomes a constant level, so the correct frame is computable by hand.
+        bool furnace = false;
+        // Whether this target generation's furnace cube has had its level written yet. It is cleared ONCE
+        // per generation (see begin_recording): the level never changes, so re-clearing it every frame would
+        // be a barrier pair bought for nothing, and the flag is reset with the images it describes.
+        bool furnace_cube_ready = false;
+        struct ssgi_push_constants {
+            glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world (the block deferred.frag uses)
+            // x = ray length in world units, y = intensity, z = rays per pixel,
+            // w = steps per ray on a MARCHED frame and the ray-origin bias on a TRACED one. The lane does
+            // double duty because the block is exactly 128 bytes (the smallest range Vulkan guarantees)
+            // and the two readings cannot coexist - a frame either marches all its rays or traces all of
+            // them - which is also what lets the traced path's bias be a world distance rather than a
+            // fraction of the ray length (see shaders/ssgi.comp's push comment).
+            glm::vec4 params = glm::vec4(0.0f);
+            glm::vec4 proj_terms = glm::vec4(0.0f); // x proj[2][2], y [3][2]; z/w the instance table's halves (see the shader)
+            glm::vec4 frame_info = glm::vec4(0.0f); // x = frame counter (see ssgi_frame), y = traced, z = bounce gain, w = probe gain
+            // xyz = the world position of the probe grid's cell (0,0,0) corner, w = one cell's size in
+            // world units. The grid's EXTENT comes from textureSize() in the shader rather than a lane
+            // of its own: this block is exactly 128 bytes, which is the smallest push-constant range
+            // Vulkan guarantees, and a fifth vector would overflow it.
+            glm::vec4 probe_grid = glm::vec4(0.0f);
+        };
+
+        // The glossy lobe's own block (shaders/ssgi_spec.comp). It is a separate pass, so it is not bound
+        // by the tracer's 128 bytes - which is the second reason it is a pass of its own: the first is
+        // that a pass that is not recorded cannot perturb the frame at all (see ssgi_specular_active).
+        struct ssgi_spec_push_constants {
+            glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world, as the tracer's
+            // x = ray length in world units (the tracer's scene-relative radius), y = glossy rays per
+            // pixel, z = the self-intersection bias scale a shaded hit's shadow ray uses, w = the frame
+            // counter the ray sequence is seeded from.
+            glm::vec4 params = glm::vec4(0.0f);
+            // z/w = the instance table's device address in two 32-bit halves, the shape the tracer carries
+            // it in proj_terms. 0 means "no table", i.e. a hit cannot be shaded, and the pass then does
+            // nothing at all rather than replacing the environment's answer with a worse one.
+            glm::vec4 table = glm::vec4(0.0f);
+        };
+
         struct deferred_push_constants {
             glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip (xy from the pixel, z = depth, w = 1) -> world
             // screen-space ambient occlusion (M6): x = radius, y = intensity (0 = off), z = samples,
@@ -356,6 +469,15 @@ namespace vulkan {
             // then writes the G-buffer's albedo instead of shading it, so the render-mode switch
             // means the same thing on both paths (a flat surface has no lighting to defer).
             float unlit = 0.0f;
+            // 1.0 = the traced GI chain is replacing BOTH ambient terms this frame (the diffuse one always,
+            // the specular one when the glossy lobe runs), so SSAO must not scale them: the chain's
+            // subtraction takes back the UN-occluded ambient, and an SSAO-darkened one left an
+            // `ambient * (ssao - 1)` term behind. Measured on the reference scene: -1.90 of mean green with
+            // 37.6% of pixels differing and 13.7% off by more than 4/255, on a frame where SSAO is supposed
+            // to do NOTHING because the rays ARE the occlusion (see shaders/deferred.frag and
+            // shaders/ssgi_spatial.comp). 0.0 everywhere else, which is what keeps the marched and the
+            // GI-off frames byte-identical.
+            float gi_replaces_ambient = 0.0f;
         };
         // SSAO state (runtime::set_ssao / [render] ssao*): the deferred lighting stage computes the
         // occlusion from the G-buffer depth + normal and folds it into the shade_input's ao, which
@@ -386,52 +508,268 @@ namespace vulkan {
         // core::scene_color and the resolve writes the HDR target, so the whole post chain keeps
         // reading exactly what it read before TAA existed. A copy of the resolved frame becomes the
         // next frame's history (no ping-pong, hence no per-frame descriptor rewrites).
-        /// THE TAA RESOLVE (vulkan.pass.taa): it owns its set layout, its pipeline layout, its pipeline, its
-        /// per-image family and its history flags - which is why none of those are members here any more. This
-        /// runtime keeps only what is NOT the pass's: the sampler (a shared handle its declaration picks by
-        /// hint), the two blend weights (config), the jitter counter, and the per-image matrix the NEXT
-        /// frame's motion vectors are computed against.
-        pass::taa_pass taa_resolve;
-        std::array<pass::frame_pass*, 1> taa_stage = {&this->taa_resolve};
+        // The TAA resolve is a PASS (vulkan.pass.taa): it owns its set layout, pipeline layout, pipeline and
+        // descriptor family, so all that is left here is the pass member and the stage the runner is handed.
         vk_sampler taa_sampler = {};
-        bool taa_on = false;           // [render] taa
-        float taa_blend_static = 0.9f; // history weight for a static pixel
-        float taa_blend_min = 0.5f;    // history weight floor under motion
-        uint32_t taa_jitter_index = 0; // position in the Halton sequence
-        // The view-projection each swapchain image's history was rendered with. Remembered PER IMAGE
-        // on purpose: with several swapchain images in rotation, "the previous frame's camera" is not
-        // what that image's history was rendered with, and reprojecting against the wrong matrix is
-        // exactly what makes a TAA history smear. (Whether that history HOLDS anything is the pass's
-        // now - see taa_pass::reset_history.)
-        std::vector<glm::mat4> image_view_proj = {};
-        /// THE SCENE PASS (vulkan.pass.scene): it owns the surface instance, the segment strategy and the
-        /// draw loop; the renderer hands it the leaves through a typed frame (see make_scene_frame) and keeps
-        /// the pipeline registry, the secondary buffers and the scheduler.
+        // ---- the GI denoiser's temporal resolve (see shaders/ssgi_temporal.comp) ----
+        std::optional<vk_pipeline> ssgi_temporal_pipeline = std::nullopt;
+        VkDescriptorSetLayout ssgi_temporal_set_layout = VK_NULL_HANDLE;
+        VkPipelineLayout ssgi_temporal_pipeline_layout = VK_NULL_HANDLE;
+        bindings::image_set_family ssgi_temporal_family;
+        // ... and the reflection's own resolve, which is the same pipeline with a set of its own: the same
+        // layout, the lobe's images instead of the diffuse ones (see the two write lambdas in
+        // ensure_ssgi_denoise_descriptors). A second family rather than two sets in one, because the
+        // fingerprint that decides when to rewrite them is a different list of images.
+        bindings::image_set_family ssgi_spec_temporal_family;
+        // Whether THIS frame's reflection was resolved, i.e. whether the spatial filter may sum the
+        // reflection's accumulation in. It is false whenever the lobe did not run, and the filter scales the
+        // accumulation out rather than reading a stale one.
+        bool gi_spec_resolved = false;
+        // Per swapchain image: whether that image has a GI history yet. First frame after startup or
+        // after a resize there is none, and the resolve then uses the current trace alone.
+        std::vector<bool> gi_history_valid = {};
+        // The GI history is accumulated with its OWN weights rather than TAA's: the signal is far
+        // noisier than shading aliasing, so it wants a longer memory, and it must not be tuned by
+        // whatever the AA sliders are set to.
+        float gi_blend_static = 0.9f;
+        float gi_blend_min = 0.6f;
+        // The spatial filter's knobs (see shaders/ssgi_spatial.comp). sigma_spatial is in GI texels and
+        // 0 makes the pass a pass-through, which is how its effect is measured; sigma_depth is a
+        // FRACTION of the view distance, so one value means the same thing near and far.
+        float gi_spatial_sigma = 2.0f;
+        float gi_spatial_depth_sigma = 0.02f;
+        float gi_spatial_normal_power = 16.0f;
+        // The GI spatial filter: a joint-bilateral pass over the temporal resolve's output, which is
+        // what the composite samples. Same two set layouts as the tracer, so no set of its own.
+        std::optional<vk_pipeline> ssgi_spatial_pipeline = std::nullopt;
+        VkPipelineLayout ssgi_spatial_pipeline_layout = VK_NULL_HANDLE;
+        // The glossy lobe (see shaders/ssgi_spec.comp): same two set layouts as the tracer again, because
+        // it binds the tracer's own sets - the scene set and the G-buffer set, whose binding 6 is the raw
+        // trace it reads, adds to and writes back.
+        std::optional<vk_pipeline> ssgi_spec_pipeline = std::nullopt;
+        VkPipelineLayout ssgi_spec_pipeline_layout = VK_NULL_HANDLE;
+        struct ssgi_spatial_push_constants {
+            float depth_scale = 0.0f;   // proj[2][2]
+            float depth_offset = 0.0f;  // proj[3][2]
+            float sigma_spatial = 2.0f; // in GI texels; 0 = pass-through
+            float sigma_depth = 0.02f;  // relative view-depth tolerance
+            float normal_power = 16.0f; // exponent on the normal agreement term
+            // 1.0 = remove the probe's ambient from the filtered result before writing it (see the
+            // subtraction in shaders/ssgi_spatial.comp). The traced GI estimates the whole diffuse indirect
+            // - its rays fall back to the probe off screen - while the lighting stage adds that same
+            // ambient for every pixel, so exactly one of the two has to go. It happens in the filter
+            // because that is the last pass that still knows which surface the ambient belongs to, which is
+            // also what lets the images upstream stay pure RADIANCE (a bounce has to re-emit them).
+            float subtract_ambient = 0.0f;
+            // The SPECULAR ambient is deliberately NOT here: the glossy pass takes the lighting stage's
+            // specular term off at the texel it adds its own, before this filter sees either, which is
+            // exact where a subtraction here could only approximate (see that shader's header and
+            // docs/gi_hit_shading.md's L2.3 section, where both were measured against each other).
+            // 1.0 while this frame's glossy lobe produced a reflection, 0.0 otherwise. The reflection's own
+            // accumulation is summed in by the filter (binding 15) and this lane is what scales it out on a
+            // frame that has none - scaling rather than clearing, so a stale accumulation cannot leak
+            // through, and so no extra image usage or barrier is needed to keep it clean.
+            float spec_weight = 1.0f;
+            float unused2 = 0.0f;
+            glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent
+        };
+        // Whether THIS frame's GI chain ran far enough to produce the image the composite samples:
+        // cleared once per frame before the GI passes and set by the SPATIAL FILTER, which is the last
+        // of them. The composite can then push a weight of exactly 0 whenever there is no GI to add -
+        // GI off, but also GI on with a missing descriptor set or a filter that declined to run, which
+        // are frames whose sampled image holds something else (or nothing at all).
+        bool gi_resolved = false;
+
+        // ---- the world-space radiance probe cache (see shaders/gi_probe.comp) ----
+        // Where the screen-space chain cannot answer: a ray that leaves the frame or hits something the
+        // camera cannot see gets its radiance from a persistent 3D grid anchored to the SCENE instead of
+        // from the far-field environment probe, which is the sky at infinity rather than the light in
+        // the next room. Off by default - with it off the tracer's fallback is exactly what it was - and
+        // the whole feature costs nothing but its own dispatches, because it is not sampled at all while
+        // its gain is 0 (the tracer branches on the gain rather than multiplying by it).
+        // THE FIRST REAL PASS. It owns everything exclusive to it: the set layout it generated from its
+        // declaration, the two-set ping-pong descriptor family, the dispatch sequence with its barriers, the
+        // two pieces of state that say what the grid currently holds (its validity, and the light it was
+        // filled under), and - since the second half of the extraction - its pipeline layout and its
+        // pipeline, which it builds in its own create step. What stays here is what the RENDERER owns: the
+        // switch, and the VALUES the pass's push block needs (which are the renderer's, so it composes them).
+        pass::gi_probe_pass gi_probe;
+        // ... and the stage the runner is handed. One entry, and the pass is declared before this initialiser
+        // so it refers to a constructed object; a pass list is pointers in DECLARATION ORDER, never a
+        // container whose iteration order is an accident (the capture gate compares frames byte for byte).
+        std::array<pass::frame_pass*, 1> gi_probe_stage = {&this->gi_probe};
+        // The storage `resolved_io::push` points into for the frame. It is the pass's own block type, so the
+        // two sides of the boundary cannot disagree about the layout; the host fills it, the pass reads it.
+        std::array<std::byte, sizeof(pass::gi_probe_pass::push_constants)> gi_probe_push = {};
+        // The shaders the app has loaded, by file name, for the passes that build their own pipelines. The APP
+        // is the loader (it knows the shader directory); the runtime is only the place a pass asks. A copy
+        // rather than a view, because the caller's buffer is a local in a startup scope.
+        std::vector<std::pair<std::string, std::vector<unsigned char>>> registered_shaders = {};
+        bool gi_probe_enabled = false;
+        // The grid's own blend rate ([render] ssgi_probe_rate): how much of a cell's stored value one
+        // frame's observation replaces. Small on purpose - this is the cache that is meant to survive
+        // the camera turning away, so it has to be slow, and it is also the loop gain of the
+        // tracer -> resolve -> grid -> tracer cycle (the grid feeds the tracer, which feeds the
+        // resolve, which is injected into the grid), so it is the number that decides whether that
+        // cycle settles.
+        float gi_probe_rate = 0.08f;
+        // How many times the grid is propagated per frame ([render] ssgi_probe_rounds): each round is
+        // two ping-pong dispatches, so a round spreads trust one cell further and the trust halves each
+        // time (see the shader). 0 = injection only, which is what makes the propagation measurable.
+        uint32_t gi_probe_rounds = 2;
+        // How much of the grid's answer the tracer adds on top of the environment probe for a hit it
+        // cannot resolve on screen ([render] ssgi_probe_gain). 0 turns the contribution off while
+        // leaving the cache running, which is the A/B that measures what the grid actually adds.
+        //
+        // The SIGN is a second A/B, and it exists to answer one question: is this cache DIRECTIONAL? A
+        // negative value means the same gain with the cache looked up along the OPPOSITE direction of the
+        // ray - the same cell, the other side - and nothing else changes, because the far-field term is
+        // still sampled along the ray itself. So the two captures differ only through the cache, and a
+        // cell that holds a single RGB makes them byte-identical BY CONSTRUCTION. That is the L2.1
+        // acceptance test: it has to fail before the SH-2 change and pass after (see
+        // shaders/ssgi.comp's probe_radiance and docs/gi_hit_shading.md).
+        float gi_probe_gain = 1.0f;
+        // Whether the grid holds anything at all, and the light it holds it for, are the PASS's own state now
+        // (see gi_probe_pass::cache_valid): it is the pass's cache, so its invalidation is the pass's - and
+        // the pass owns the light-change trigger, which is why the current direction rides in the push block.
+        // What stays here is the first-use transition's flag below, because that transition belongs to the
+        // TRACER (the trace pass is the frame's first reader of the grid, not its writer).
+        //
+        // Whether this target generation's grid images have been transitioned out of UNDEFINED yet
+        // (they are created with the swapchain and destroyed with it - see core::create_render_targets).
+        bool gi_probe_grid_seen = false;
+        // The glossy lobe's own two output images (core.cppm's gi_spec_*), which need the same first-use
+        // layout transition the GI trace does. PER SWAPCHAIN IMAGE, not one flag for all of them: a single
+        // bool is set by the first slot's frame and then tells the other slots their images are already in
+        // GENERAL, so they never get a first-use transition at all - which is invisible until something
+        // READS one of them, and then it is a validation error on whichever slot ran second. (This project's
+        // per-image-lifetime trap, third occurrence.)
+        std::vector<bool> gi_spec_seen = {};
+        // The alphaMode MASK bake (shaders/mask_bake.comp): device addresses as two 32-bit halves, the same
+        // shape every pass here pushes them in. Three uvec2s then five uints, so the block is 48 bytes on
+        // the CPU and 44 in the shader - the offsets agree and the range covers both (see the note in
+        // vulkan.pass.gi_probe's push_constants for why a MIDDLE uvec2 would be the dangerous case).
+        struct mask_bake_push_constants {
+            glm::uvec2 source_vertices = glm::uvec2(0u); // the source vertex buffer, low and high halves
+            glm::uvec2 source_indices = glm::uvec2(0u);  // ... its index buffer (zero = not indexed)
+            glm::uvec2 destination = glm::uvec2(0u);     // ... the expanded buffer this pass fills
+            uint32_t source_stride = 0;
+            uint32_t destination_stride = 0; // 32: position(3) + normal(3) + uv(2), what hit shading reads
+            uint32_t index_type = 1;         // VkIndexType: 0 = uint16, 1 = uint32 (ignored when unindexed)
+            uint32_t triangle_count = 0;
+            uint32_t material_index = 0; // the material whose alpha texture and cutoff decide the mask
+        };
+        struct ssgi_temporal_push_constants {
+            float history_valid = 0.0f;
+            float blend_static = 0.9f;
+            float blend_min = 0.6f;
+            float depth_scale = 0.0f;  // proj[2][2]
+            float depth_offset = 0.0f; // proj[3][2]
+            // 1.0 = this dispatch resolves the REFLECTION (a history of its own, reprojected from the point
+            // the reflection found), 0.0 = the diffuse bounce (the surface's motion, as it has always been).
+            // See shaders/ssgi_temporal.comp's `glossy`.
+            float mode = 0.0f;
+            float unused1 = 0.0f;
+            float unused2 = 0.0f;
+            glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent
+        };
+
+        pass::taa_pass taa_resolve;
+        // THE SCENE PASS (vulkan.pass.scene): it owns the surface instance, the segment strategy and the draw
+        // loop; the renderer hands it the leaves through a typed frame (see make_scene_frame) and keeps the
+        // pipeline registry, the secondary buffers and the scheduler.
         pass::scene_pass scene;
         std::array<pass::frame_pass*, 1> scene_stage = {&this->scene};
+        /// THE TRANSPARENT PASS (vulkan.pass.transparent): the same scene, its own LOAD instance, after lighting
+        pass::transparent_pass transparent;
+        std::array<pass::frame_pass*, 1> transparent_stage = {&this->transparent};
         /// the scene frame's view of the per-slot segments (a member, so the span it hands the pass outlives it)
         std::vector<pass::segment_buffer> scene_segment_view = {};
         /// the colour formats the scene pass's secondaries inherit, in attachment order
         std::array<VkFormat, vulkan::gbuffer_pass_attachment_count> scene_color_formats = {};
-        /// THE TRANSPARENT PASS (vulkan.pass.transparent): the blended geometry, over the shaded frame
-        pass::transparent_pass transparent;
-        std::array<pass::frame_pass*, 1> transparent_stage = {&this->transparent};
+        std::array<pass::frame_pass*, 1> taa_stage = {&this->taa_resolve};
+        bool taa_on = false;           // [render] taa
+        float taa_blend_static = 0.9f; // history weight for a static pixel
+        float taa_blend_min = 0.5f;    // history weight floor under motion
+        uint32_t taa_jitter_index = 0; // position in the Halton sequence
+        // The view-projection each swapchain image's history was rendered with. Remembered PER IMAGE on
+        // purpose: with several swapchain images in rotation, "the previous frame's camera" is not what that
+        // image's history was rendered with, and reprojecting against the wrong matrix is exactly what makes a
+        // TAA history smear. It stays HERE rather than in the pass because the camera UBO is what reads it -
+        // as `prev_view_proj`, which is where the motion vectors come from - while the pass is what writes it
+        // (through `taa_pass::wrote_history`, the renderer updates it only for a frame that really resolved).
+        std::vector<glm::mat4> image_view_proj = {};
         /**
-         * The shaders the app has loaded, by file name, for the passes that build their own pipelines. The APP
-         * is the loader (it knows the shader directory); the runtime is only the place a pass asks. A copy
-         * rather than a view, because the caller's buffer is a local in a startup scope - and a vector of pairs
-         * rather than a map, because the lookup happens once per pass per device generation and a container
-         * whose iteration order is an accident would be a poor place to keep anything.
+         * @ingroup vulkan_runtime
+         * @brief record the GI temporal resolve and the history copy into @p command_buffer
+         * @return whether the resolve ran, i.e. whether the spatial filter has anything to filter
+         * @note runs right after record_ssgi_pass(), at the GI resolution, and turns the frame's raw
+         *       trace into the accumulated image the spatial filter reads - see shaders/ssgi_temporal.comp
+         *       for the reprojection / depth-guard / clamp trio it needs to accumulate rather than smear
          */
-        std::vector<std::pair<std::string, std::vector<unsigned char>>> registered_shaders = {};
+        bool record_ssgi_denoise_pass(VkCommandBuffer command_buffer);
         /**
-         * @brief create the TAA resolve's shared sampler if it does not exist (see create_passes for why it is
-         *        made here rather than inside the pipeline builder that used to make it)
-         * @note the sampler is a SHARED handle - a declaration chooses it by `sampler_hint::taa` - so it stays
-         *       the renderer's even though the only pass that picks it is the resolve's
+         * @brief run one signal's temporal accumulation: barriers, one dispatch, the history copy, hand-back
+         * @param command_buffer the frame's command buffer
+         * @param set the descriptor set for this signal (its trace, history, resolve and inputs)
+         * @param resolve_image the image the resolve writes and the history is copied from
+         * @param history_image the image this frame's copy lands in
+         * @param history_valid whether that history holds a previous frame at all
+         * @param mode 0 = the diffuse bounce (surface-motion reprojection), 1 = the reflection (the hit's)
+         * @return false when a descriptor or an image was missing, which skips the frame's GI
+         * @note called twice per frame - once per signal - and it does NOT touch gi_history_valid, because
+         *       the two accumulations share that flag and it may only be set after BOTH have resolved
          */
+        bool record_ssgi_resolve_pass(VkCommandBuffer command_buffer, VkDescriptorSet set, VkImage resolve_image, VkImage history_image, bool history_valid, float mode);
+        /** @brief allocate or rewrite the denoiser's per-image descriptor sets (see vulkan.bindings) */
+        void ensure_ssgi_denoise_descriptors();
+        /**
+         * @brief the host the pass runner talks to: the callbacks a stage needs, and the create-time facts
+         * @note rebuilt per call (it is a struct of function pointers), so it holds no state of its own; the
+         *       context is this runtime, which is what the callbacks cast back to
+         */
+        [[nodiscard]] pass::pass_host make_pass_host() noexcept;
+        /**
+         * @brief the frame a pass is being recorded in: both counters, the generation's image count, the extent
+         * @note `image_count` is the swapchain generation's count and NOT the image index - a pass that owns a
+         *       per-image descriptor family sizes it from the first and indexes with the second
+         */
+        [[nodiscard]] pass::frame_identity pass_frame() const noexcept;
+        /// the bytes of a shader the app registered, by file name (empty when it did not)
+        [[nodiscard]] std::span<unsigned char const> registered_shader(std::string_view name) const noexcept;
+        /// the six samplers a declaration chooses between, in one place (see pass_context::samplers)
+        [[nodiscard]] render_resource::shared::sampler_set shared_samplers() const noexcept;
+        /// create the TAA resolve's shared sampler if it does not exist (see create_passes for why it is
+        /// made here rather than in a pipeline builder)
         void ensure_taa_sampler();
-        void record_taa_pass(VkCommandBuffer command_buffer);
+        /**
+         * @brief resolve a pass's declaration into this frame's handles (the runner's `resolve` callback)
+         * @return false when this frame cannot run the pass, which skips it WITHOUT recording anything
+         * @note the mapping is the HOST's job and not the pass's (the pass must not be able to reach a
+         *       resource it did not declare): an element of `resource_id::probe_grid` becomes that element's
+         *       image and view, an element of `probe_surface` becomes the per-cell geometry, the shared scene
+         *       set comes from the frame's slot, and the pipeline handles come from the name the pass's
+         *       behaviour declares. The EXTENT is applied here too, from the declaration's rule.
+         */
+        [[nodiscard]] bool resolve_pass(pass::frame_pass const& pass, pass::resolved_io& out);
+        /** @brief the behaviour's mechanical part, before the pass records: bind the pipeline(s), resync the
+         *         viewport. A pass cannot forget these because it does not do them */
+        void apply_pass_behaviour(pass::frame_pass const& pass, pass::resolved_io const& io);
+        /**
+         * @ingroup vulkan_runtime
+         * @brief record the GI spatial filter into @p command_buffer
+         * @return whether the filter ran, i.e. whether the composite may use this frame's GI
+         * @note runs right after record_ssgi_denoise_pass(), at the GI resolution. It reads the
+         *       temporal resolve's output and writes the image the composite samples - see
+         *       shaders/ssgi_spatial.comp for the depth/normal edge stops it needs to blur the grain
+         *       without blurring across silhouettes
+         */
+        bool record_ssgi_spatial_pass(VkCommandBuffer command_buffer);
+        /** @brief record the glossy lobe (shaders/ssgi_spec.comp), which adds to the raw trace in place
+         *  @return true when a dispatch was recorded, i.e. when the frame's specular ambient is now the
+         *          traced estimate rather than the lighting stage's - the spatial filter's second
+         *          subtraction is gated on the same predicate (see ssgi_specular_active) */
+        bool record_ssgi_spec_pass(VkCommandBuffer command_buffer);
         /** @brief whether the TAA resolve runs this frame (enabled + deferred lighting + pipeline) */
         [[nodiscard]] bool taa_active() const noexcept;
         /** @brief the image the scene-side passes write into (the TAA input, or the HDR target) */
@@ -474,6 +812,40 @@ namespace vulkan {
         // in until that image comes around again.
         std::vector<bool> gbuffer_depth_written = {};
 
+        /**
+         * @ingroup vulkan_runtime
+         * @brief publish the stored surface targets' attachment writes and make them samples
+         * @return whether a transition was recorded (false = they were already readable)
+         * @note the SAME "whose write is it" question ensure_gbuffer_depth_sampled() answers, for the
+         *       three stored surface targets: the G-buffer instance writes them as COLOR attachments and
+         *       TWO stages sample them - the ray-traced sun shadow (which runs first when it runs at all)
+         *       and the deferred lighting stage. Whoever gets here first does the transition and the other
+         *       finds the flag clear; without it the second one claims a COLOR_ATTACHMENT old layout the
+         *       image is not in, which is a validation error and, on a driver that believes it, a
+         *       discarded surface.
+         * @note must be called outside a rendering instance (it records a pipeline barrier)
+         */
+        bool ensure_gbuffer_targets_sampled(VkCommandBuffer command_buffer, uint32_t image_index);
+        // Per-swapchain-image flag: set by the G-buffer instance, cleared by the accessor above.
+        std::vector<bool> gbuffer_targets_written = {};
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief publish the G-buffer motion-vector target's attachment write and make it a sample
+         * @return whether a transition was recorded (false = the image was already readable)
+         * @note the same "whose write is it" question ensure_gbuffer_depth_sampled() answers, for the
+         *       motion-vector target: the G-buffer instance writes it as a COLOR attachment, and the
+         *       two stages that sample it are the TAA resolve (a FRAGMENT stage, which transitions it
+         *       itself as part of its own barrier batch) and the GI denoiser's resolve (a COMPUTE
+         *       stage, which is why this exists - a second unconditional COLOR_ATTACHMENT old layout
+         *       would be a lie on every frame where TAA already moved the image).
+         * @note must be called outside a rendering instance (it records a pipeline barrier)
+         */
+        bool ensure_velocity_sampled(VkCommandBuffer command_buffer, uint32_t image_index);
+        // Per-swapchain-image flag: set by the G-buffer instance, cleared by whichever stage first
+        // hands the motion-vector target to a sampler (see ensure_velocity_sampled).
+        std::vector<bool> velocity_written = {};
+
         /** @brief the swapchain was rebuilt: drop everything that pointed at the old generation
          *         (the debug overlay's backend + the G-buffer descriptor sets, whose views are gone) */
         void on_swapchain_recreated();
@@ -492,6 +864,26 @@ namespace vulkan {
             // (UNORM attachment) gamma. The FXAA pass also forces it to 1: it renders into the R16F
             // LDR image, which must hold gamma-encoded values for FXAA's luma thresholds.
             float encode_gamma = 0.0f;
+            // composite only: the weight on the screen-space GI image (1 = GI is on and full strength,
+            // 0 = the added term is exactly zero, which is what keeps GI-off frames byte-identical).
+            // The tracer scales the signal itself; this is the on/off switch folded into the push block
+            // rather than a shader branch on a feature flag it cannot see.
+            float gi_intensity = 0.0f;
+            // composite only: the joint-bilateral UPSAMPLE of the half-resolution GI (see post.frag).
+            // A plain bilinear fetch of a half-resolution image mixes in the neighbouring texels across
+            // a silhouette, which darkens the geometry side and spills light onto the background side;
+            // these four terms are the same edge criterion the spatial filter uses, so a silhouette
+            // that survives one pass is not re-blurred by the next. The two projection terms linearize
+            // depth (a relative tolerance needs a view distance), sigma_depth is that tolerance as a
+            // fraction of it, and normal_power is the exponent on the normal agreement term.
+            float gi_depth_scale = 0.0f;  // projection[2][2]
+            float gi_depth_offset = 0.0f; // projection[3][2]
+            float gi_depth_sigma = 0.02f;
+            float gi_normal_power = 16.0f;
+            // 1 = the bilateral gather, 0 = the plain bilinear fetch. The off switch exists to make the
+            // upsample measurable (the same reason ssgi_spatial_sigma can be 0); it is not a quality
+            // knob, and 0 is not a state to ship.
+            float gi_upsample = 1.0f;
             // FXAA lanes (fxaa.frag): the sub-pixel term strength (0 = pure directional blend) and
             // the relative luma contrast below which a pixel counts as flat.
             float fxaa_subpixel = 0.75f;
@@ -515,6 +907,14 @@ namespace vulkan {
         float fxaa_subpixel = 0.75f;
         float fxaa_edge_threshold = 0.166f;
         vk_sampler post_sampler = {};
+        // A second sampler for the composite's GI upsample: the GI image, the G-buffer depth and the
+        // G-buffer normal are all read AT exact texel centres and must not be interpolated (averaging
+        // two depths invents a surface between them, which is exactly what an edge-aware test must not
+        // see). Everything else in the post chain wants the linear one above.
+        vk_sampler post_nearest_sampler = {};
+        // Whether the composite upsamples the GI bilaterally or with the plain bilinear fetch (see
+        // post_push_constants::gi_upsample). On by default; false exists for measurement.
+        bool gi_upsample = true;
         VkDescriptorSetLayout post_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout post_pipeline_layout = VK_NULL_HANDLE;
         // The post chain's sets: five per swapchain image (prefilter, three downsample inputs and the
@@ -824,6 +1224,118 @@ namespace vulkan {
         // how far up-light of the camera frustum a caster still matters (its shadow can still
         // reach the view). Scene-scale heuristic: max(1, scene_radius / 8); see enable_shadows.
         float shadow_caster_extent = 1.0f;
+
+        // ---- ray-traced shadows (see [render] rt_shadows / set_rt_shadows) ----
+        // The flag is the CONFIG's wish; whether anything can be built from it also depends on the
+        // device (core::ray_query_available), and the two are kept apart on purpose: a device without
+        // ray queries must run the cascaded maps exactly as before, silently, rather than fail or log
+        // once per frame.
+        bool rt_shadows = false;
+        // The scene's bottom level structures, built once - lazily, on the first frame the flag is on.
+        // Lazy rather than at load time because the caster set is what they are built from, and that
+        // is only known once the scene has been culled; once because a rebuild would be a second
+        // command against structures whose scratch has already been sized and freed.
+        std::optional<acceleration_structure::bottom_level_structures> rt_bottom_levels = {};
+        bool rt_structures_attempted = false; // built once, success or failure: no retry, no log spam
+        // The top level structure and the mapping from the bottom level indices back to the casters
+        // they were built from: the instance list walks THAT, not the caster set again, because a caster
+        // whose geometry could not be built (no buffer, no stride) has no bottom level and must not get
+        // an instance either - and the two walks have to agree about which index is which.
+        std::optional<acceleration_structure::top_level_structure> rt_top_levels = {};
+        // One built caster: its structure, and - when its material's alphaMode is MASK - the EXPANDED,
+        // non-indexed copy of its vertices the mask bake filled. The instance list uses that copy instead of
+        // the original buffers for such a caster, and its zero index address is what tells the hit shading
+        // the geometry is not indexed (see shaders/hit_shading.glsl). A caster that was skipped during the
+        // build has no entry here at all, which is what keeps the two walks in agreement.
+        struct rt_caster_level {
+            primitive const* caster = nullptr;
+            uint32_t blas_index = 0;
+            uint32_t mask_stride = 0;                // 0 = the original, indexed geometry is what was built
+            VkDeviceAddress mask_vertex_address = 0; // the expanded copy's base address, for the table
+            // ... and when the caster is SKINNED, what the per-frame pass needs to re-skin it into the
+            // buffer its structure was built from. skin_destination_address == 0 means "not skinned".
+            VkDeviceAddress skin_source_address = 0;
+            VkDeviceAddress skin_destination_address = 0;
+            uint32_t skin_source_stride = 0;
+            uint32_t skin_destination_stride = 0; // 32 (position, normal, uv)
+            uint32_t skin_vertex_count = 0;
+            uint32_t skin_base = 0;
+        };
+        std::vector<rt_caster_level> rt_caster_levels = {};
+        // The expanded buffers themselves, owned here for as long as the structures are: a build reads one,
+        // and the hit shading reads its vertices through the instance table's address.
+        std::vector<vk_buffer> rt_mask_buffers = {};
+        // The alphaMode MASK bake (see shaders/mask_bake.comp): runs once, inside the same command buffer as
+        // the bottom level builds it feeds. Absent on a device without ray queries - and then masked geometry
+        // is silently solid to a ray, which is the documented behaviour of every traced effect here.
+        std::optional<vk_pipeline> mask_bake_pipeline = std::nullopt;
+        VkPipelineLayout mask_bake_pipeline_layout = VK_NULL_HANDLE;
+        // The bake's OWN descriptor set, created from the SCENE layout so its two bindings have the shapes
+        // the scene set gives them, and written ONCE - never the per-slot scene set. That is not tidiness:
+        // the bake runs before any pass of the frame, and the frame WRITES the scene set's binding 16 (the
+        // top level structure) later in the same command buffer, so a set updated while a recording command
+        // buffer holds it invalidates that buffer. Measured before this was split out: 62 validation errors
+        // per run, every command after the update reported against a command buffer "now in an invalid
+        // state". Only the two bindings the bake reads are written; the rest of the layout stays unwritten,
+        // which is legal because this pass's shader does not statically use them.
+        vk_descriptor_set mask_bake_set = {};
+        // Whether that bake runs at all ([render] rt_mask_bake). Off by default: the per-triangle rule
+        // measured WORSE than the raster path (see the member comment above and docs/gi_hit_shading.md).
+        bool rt_mask_bake = false;
+
+        // ---- skinned meshes (see shaders/compute_skin.comp) ----
+        // This engine skins in the VERTEX shader, so the deformed positions never reach memory a build can
+        // read, and a skinned mesh's traced shadow is its BIND POSE (measured: the traced shadow's pose
+        // dependence is zero where the raster one's is up to 3.8 per tile - docs/gi_hit_shading.md's L2.2b
+        // section). The pass below writes the same vertices the vertex shader computes into the buffer the
+        // structure is built from, once per frame, and the structure is REFITTED rather than rebuilt
+        // because only the bytes change.
+        std::optional<vk_pipeline> compute_skin_pipeline = std::nullopt;
+        VkPipelineLayout compute_skin_pipeline_layout = VK_NULL_HANDLE;
+        // ONE set per frame slot: binding 9 is the SLOT's own per-joint matrix buffer, and the animation
+        // writes the slot it paced. Each is written once and never updated, for the reason the mask bake's
+        // set documents - a set updated while a recording command buffer holds it invalidates that buffer,
+        // and this pass runs before the frame writes the scene set's binding 16.
+        std::array<vk_descriptor_set, vulkan::core::MAX_FRAMES_IN_FLIGHT> compute_skin_sets = {};
+        // The skinned vertex buffers (one per skinned caster, owned here for as long as the structures are)
+        // and the geometry indices that have to be refitted every frame.
+        std::vector<vk_buffer> rt_skin_buffers = {};
+        std::vector<uint32_t> rt_skin_levels = {};
+        // Whether the skinning pass runs ([render] rt_skin_bake): a knob because it is the A/B that measures
+        // whether a traced shadow now follows the pose, and because a device without ray queries has no
+        // structures for it to feed.
+        bool rt_skin_bake = false;
+        struct compute_skin_push_constants {
+            glm::uvec2 source_vertices = glm::uvec2(0u); // the primitive's bind-pose vertices, low and high
+            glm::uvec2 destination = glm::uvec2(0u);     // the skinned buffer this pass fills
+            uint32_t source_stride = 0;                  // 64: the engine's interleaved vertex
+            uint32_t destination_stride = 0;             // 32: position, normal, uv
+            uint32_t vertex_count = 0;
+            uint32_t skin_base = 0; // this primitive's joint block in skins.matrices
+        };
+        bool rt_top_level_logged = false;
+        // The ray-traced sun shadow pass (see shaders/rt_shadow.comp): one ray per pixel against the top
+        // level structure, writing the visibility image the deferred lighting stage multiplies its sun
+        // term by. It runs between the G-buffer pass (whose depth and normal it starts the rays from) and
+        // the lighting stage (which reads its output), and it binds the same two set layouts the GI tracer
+        // does - so it needs no descriptor family of its own.
+        std::optional<vk_pipeline> rt_shadow_pipeline = std::nullopt;
+        VkPipelineLayout rt_shadow_pipeline_layout = VK_NULL_HANDLE;
+        struct rt_shadow_push_constants {
+            glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world, the block the lighting stage uses
+            // x = ray tmin, y = absolute normal-offset floor, z = relative offset scale (per unit of
+            // distance from the camera), w = unused
+            glm::vec4 params = glm::vec4(0.01f, 0.002f, 0.0015f, 0.0f);
+        };
+        bool rt_shadow_logged = false;
+        /** @brief record the one-time acceleration-structure build into the frame's command buffer */
+        void record_acceleration_structures(VkCommandBuffer command_buffer);
+        /** @brief record this frame's top level structure (the culled instance list) */
+        void record_top_level_structure(VkCommandBuffer command_buffer);
+        /** @brief point a scene set's binding 16 at @p tlas (see the null-descriptor rule it avoids) */
+        void write_rt_structure_binding(VkDescriptorSet set, VkAccelerationStructureKHR tlas);
+        /** @brief record the ray-traced sun shadow pass */
+        void record_rt_shadow_pass(VkCommandBuffer command_buffer);
         // scene center handed to enable_shadows. The fit falls back to center +- scene_radius when a
         // shadow caster has no world AABB of its own AND is not an instanced draw whose instance
         // matrices we can read (see instanced_world_aabb).
@@ -1195,11 +1707,6 @@ namespace vulkan {
          * compose over the SHADED image - a G-buffer cannot hold a surface that does not exist yet.
          * record_scene_tail() turns the G-buffer into the frame afterwards through
          * record_lighting_pass().
-         * @note THE SCENE PASS RECORDS THE LEAVES NOW: the rendering instance over the six declared targets,
-         *       the segment strategy and the draw loop live in `vulkan.pass.scene` (the renderer hands it the
-         *       leaves through `make_scene_frame`) - which is also why the instance no longer has to be closed
-         *       by record_scene_tail(). What stays here is the part the pass cannot own: the attachment
-         *       barriers, the per-frame geometry resync, and the degenerate frame with no surface pipeline.
          */
         void record_scene(VkCommandBuffer command_buffer);
 
@@ -1220,84 +1727,8 @@ namespace vulkan {
          * @note these leaves carry no motion vectors, so TAA reprojects them with whatever the opaque
          *       surface behind them reported - good enough while the camera is the only thing moving,
          *       and the thing to revisit when object motion vectors land.
-         * @note THE BODY IS THE PASS'S NOW: the barriers, the LOAD instance, the secondary and the depth
-         *       hand-back moved to `vulkan.pass.transparent` unchanged, and this function is the frame
-         *       loop's one-line driver (build the frame, record the stage). @p command_buffer is
-         *       consequently UNUSED - a pass records into the command buffer the resolver hands it.
          */
         void record_transparent_pass(VkCommandBuffer command_buffer);
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief hand the runtime a loaded shader, by file name, for the passes that build their own pipelines
-         * @param name the file name a pass asks for at create time (a pass's own constant)
-         * @param bytecode raw SPIR-V; copied, because the caller's buffer is a local in a startup scope
-         * @note THE APP IS THE SHADER LOADER and this is the hand-over: the runtime knows a shader DIRECTORY
-         *       and a file format nowhere, and a pass knows neither - it asks for its own by name. Register
-         *       before calling create_passes(); a pass whose shader is missing says so and does not run.
-         */
-        void register_shader(std::string_view name, std::span<unsigned char const> bytecode);
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief run the create step of every pass in every stage this runtime wires, once per device
-         * @note the app calls this AFTER the shared samplers, the shared set layouts and the shaders a
-         *       pass declares exist (see chores.cpp): a pass builds what it owns from a `pass_context`,
-         *       so a pass that needs something the context cannot supply builds nothing and says so
-         *       instead of taking the frame down
-         */
-        void create_passes();
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief the shared samplers a declaration chooses between, as handles
-         * @note ONE place, so two passes cannot end up with two ideas of "the post sampler". The
-         *       `sampler_set` carries six slots; TWO of them have no backing sampler on this branch -
-         *       `probe_grid` (there is no GI probe pass here yet) and `nearest` (the post chain has no
-         *       pass here yet) - and they are left null rather than borrowed, because a pass that asked
-         *       for a hint this renderer cannot answer must be able to tell.
-         */
-        [[nodiscard]] render_resource::shared::sampler_set shared_samplers() const noexcept;
-
-        /**
-         * @brief resolve a pass's declaration into this frame's handles (the runner's `resolve` callback)
-         * @return false when this frame cannot run the pass, which skips it WITHOUT recording anything
-         * @note the mapping is the HOST's job and not the pass's, so a pass cannot reach a resource it
-         *       did not declare. On this branch one pass is wired, so this is a one-branch chain; the
-         *       table that replaces it is recorded in `docs/pass_chain_plan.md`.
-         */
-        [[nodiscard]] bool resolve_pass(pass::frame_pass const& pass, pass::resolved_io& out);
-        /** @brief the behaviour's mechanical part, before the pass records: bind the pipeline(s), resync the
-         *         viewport. A pass cannot forget these because it does not do them */
-        void apply_pass_behaviour(pass::frame_pass const& pass, pass::resolved_io const& io);
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief the host the pass runner talks to: the frame, the feature registry, the resolver and the marks
-         * @note it is rebuilt per call (a struct of function pointers), and the context is this runtime, which
-         *       is what each callback casts back to. A pass never sees it: at create time a pass is given a
-         *       `pass_context`, and while recording it is handed `resolved_io`.
-         */
-        [[nodiscard]] pass::pass_host make_pass_host() noexcept;
-        /// @brief the frame a pass is being recorded in: both counters, the generation's image count, the extent
-        [[nodiscard]] pass::frame_identity pass_frame() const noexcept;
-        /// @brief the bytes of a shader the app registered, by file name (empty when it did not)
-        [[nodiscard]] std::span<unsigned char const> registered_shader(std::string_view name) const noexcept;
-        /// @brief this frame's blended geometry, as the transparent pass needs it (see its scene_frame header)
-        [[nodiscard]] pass::transparent_frame make_transparent_frame() noexcept;
-        /**
-         * @brief resolve the transparent pass: the shaded colour target and the surface depth it blends over
-         * @return false on a frame whose culling left nothing blended, which skips the pass WITHOUT recording
-         *         anything - the property that keeps such a frame byte-identical to one before this pass existed
-         */
-        [[nodiscard]] bool resolve_transparent_pass(pass::resolved_io& out);
-        /**
-         * @brief build ONE segment's draw state for the scene-family passes
-         * @note the pipeline REGISTRY is the runtime's: a leaf names the pipeline it wants, so the renderer is
-         *       the side that builds the environment (and a fresh one per segment - the dedup state is per
-         *       recording session)
-         */
-        static render_environment make_scene_environment(void* owner, VkCommandBuffer command_buffer, bool gbuffer);
 
         /**
          * @ingroup vulkan_runtime
@@ -1323,38 +1754,36 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief the scene pass's per-frame input: the visible leaves, the per-slot segments, and the four
-         *        things only the renderer can answer (see `pass::scene_frame`)
-         * @note built per frame rather than stored, because every field is this frame's; the one member it
-         *       writes through - `scene_segment_view` - is the pass's VIEW of the per-slot secondary buffers,
-         *       and it has to outlive the stage, which is why it is not a local
-         * @note the colour formats are the secondaries' inheritance order, which is the DECLARATION's order:
-         *       three surface targets, the velocity target, the scene colour
+         * @brief record the opaque scene into @p command_buffer: one secondary per task-pool worker
+         *        segment (or a single one for a small frame), each inheriting the instance's color +
+         *        depth attachments, plus the transparent secondary when @p draw_transparent - the
+         *        primary executes them in order inside the rendering instance
+         * @param command_buffer the frame's primary command buffer
+         * @param gbuffer_pass true when the leaves bind the G-buffer pipelines (deferred path)
+         * @param draw_transparent record and execute the alpha-blended leaves inside THIS instance
+         *        (the forward path, which shades as it draws and therefore already has an image to
+         *        blend over). The deferred path passes false and records them in an instance of its
+         *        own after the lighting stage - see record_transparent_pass()
+         *
+         * Shared by both scene paths on purpose - the segmentation, the per-segment secondary
+         * lifetime and the execute order are the same work in either; only the pipelines the leaves
+         * bind (chosen in record_main_segment() from @p gbuffer_pass) and the two optional extras
+         * differ.
          */
-        [[nodiscard]] pass::scene_frame make_scene_frame() noexcept;
-        /**
-         * @brief hand a segment batch to the task pool (the pass's `run_tasks` callback)
-         * @note the scheduler - the pool, its priorities and its wait - stays the frame loop's policy; the
-         *       pass only says WHAT the segments are. When the framework learns to schedule segments itself,
-         *       this callback is what disappears
-         */
-        static void run_scene_tasks(void* owner, std::span<std::function<void()>> tasks);
-        /**
-         * @brief resolve the scene pass: the five colour targets and the surface depth, in declaration order
-         * @return false on a frame with no surface pipeline or no target generation to write into, which skips
-         *         the pass WITHOUT recording anything
-         */
-        [[nodiscard]] bool resolve_scene_pass(pass::resolved_io& out);
-        /**
-         * @brief resolve the TAA resolve: its four per-image inputs, the HDR target it writes and copies out
-         *        of, its pipeline and the push block the renderer composes
-         * @return false when the target generation or the pass's own pipeline is not there, which skips the
-         *         pass WITHOUT recording anything - and the frame is then shown unresolved rather than broken
-         * @note the ONE lane the host does not compose is `history_valid`: whether an image's history holds a
-         *       resolved frame is the PASS's state, so it writes that lane itself after the memcpy
-         */
-        [[nodiscard]] bool resolve_taa_pass(pass::resolved_io& out);
+        void record_opaque_scene(VkCommandBuffer command_buffer);
 
+        /**
+         * @ingroup vulkan_runtime
+         * @brief record one contiguous slice of the main-pass leaves into @p command_buffer:
+         *        bind the shared scene set, then draw the leaves of @p leaves (a sub-range of
+         *        frame_visible). When @p draw_skybox the skybox background is drawn first so
+         *        the background stays ordered before the scene (segment 0 only); later
+         *        segments are pure scene.
+         * @note stage 3 of parallel recording: each task-pool worker records one segment into
+         *       its own secondary command buffer (see sub_render_task), the primary executes
+         *       them in order. Only bind/push/draw commands - caller owns barriers + the
+         *       rendering instance.
+         */
         /** @brief close the scene rendering instance and record the post-process pass (HDR ->
          *         exposure/tonemap -> swapchain) plus the debug overlay on the final image
          *  @return true when a fullscreen pass actually wrote the SWAPCHAIN image (so it is in
@@ -1371,12 +1800,9 @@ namespace vulkan {
         /** @brief (re)bind the post descriptor sets to the current per-image HDR targets */
         void ensure_post_descriptors();
         /**
-         * @brief record the scene-side stages that follow the geometry instance (deferred lighting, the TAA
-         *        resolve, the G-buffer debug view), each with its own GPU timing mark
-         * @note it no longer CLOSES the geometry instance: the scene pass owns the instance and ends it at the
-         *       end of its own record (see vulkan.pass.scene). This function used to open with a
-         *       `vkCmdEndRendering` whose matching begin was three functions away - the coupling the scene
-         *       pass removed by existing
+         * @brief close the geometry instance and record the scene-side stages that follow it
+         *        (deferred lighting, the TAA resolve, the G-buffer debug view), each with its own
+         *        GPU timing mark
          * @note the marks are unconditional even when a stage does not run this frame: the
          *       label-to-interval mapping is positional, so a skipped stage writes its mark
          *       immediately after the previous one and its interval reads 0
@@ -1441,6 +1867,48 @@ namespace vulkan {
          *       (screenshot_staging_mapped / screenshot_readback_extent) that the later read needs
          */
         void record_screenshot_copy(VkCommandBuffer command_buffer);
+        /**
+         * @brief record one segment of the main pass (see the doc block above record_opaque_scene)
+         * @param gbuffer_pass true = the leaves bind the G-buffer pipeline (the opaque instance of
+         *        the deferred path); false = they bind their own forward pipelines. Passed in rather
+         *        than re-derived from gbuffer_pass_active(), because the deferred path also has
+         *        forward-style segments: its transparent pass runs while the G-buffer pass is the
+         *        active mode, and still shades while it draws.
+         */
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief one recording job of the parallel main pass (stage 3): records @p leaves (a
+         *        contiguous slice of the frame's visible leaves) into @p command_buffer, a
+         *        per-slot SECONDARY command buffer. operator() begins the secondary (inheriting
+         *        the main instance's color+depth attachments via dynamic rendering 1.3
+         *        inheritance info), records the slice and ends it, so a batch of these can be
+         *        posted straight to the shared task pool and the recording group waited on.
+         * @note value type (span + handle + formats; no owning pointers), safe to copy into
+         *       std::function for the pool; the begin-info is assembled fresh inside operator()
+         *       so copies never share dangling pNext chains.
+         */
+        struct sub_render_task {
+            VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+            std::span<primitive const* const> leaves = {};
+            // Color attachment formats of the instance this secondary is recorded into, in
+            // attachment order: one entry (the HDR target) for the forward pass, the G-buffer set
+            // when the opaque pass writes the G-buffer. Held by value because the task outlives the
+            // call that builds it (it is moved into the task pool).
+            std::array<VkFormat, vulkan::gbuffer_pass_attachment_count> color_formats = {};
+            uint32_t color_count = 0;                    // formats in use (1 forward, 4 G-buffer: surface targets + HDR)
+            VkFormat depth_format = VK_FORMAT_UNDEFINED; // main depth attachment format
+            VkSampleCountFlagBits rasterization_samples = VK_SAMPLE_COUNT_1_BIT;
+            bool gbuffer_pass = false;      // leaves bind the G-buffer pipeline (not the forward ones)
+            runtime const* owner = nullptr; // recording context (scene set / pipeline caches)
+            // set to true by operator() when the secondary was actually recorded (begin + end
+            // succeeded). Points into a per-frame array owned by the caller of the task batch;
+            // the caller waits the recording group before reading it, so no extra sync is
+            // needed. The primary must NOT execute a segment whose begin failed.
+            std::atomic<bool>* recorded = nullptr;
+
+            void operator()() const; // defined in runtime.cpp (module-private)
+        };
 
         /** @brief the command buffer currently being recorded (between begin_recording() and
          *         end_recording()); internal use for the runtime's own recording */
@@ -1606,6 +2074,56 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief ask for ray-traced sun shadows ([render] rt_shadows)
+         * @param enabled true = shadows are traced against the scene's acceleration structures
+         * @note the request is granted only on a device with ray queries (core::ray_query_available);
+         *       everywhere else, and while the flag is false, the cascaded shadow maps are what the
+         *       shading stages sample and nothing about the frame changes
+         * @note the structures themselves are built by the first frame that records with the flag on,
+         *       because the caster set they are built from is only complete once the scene is loaded
+         */
+        void set_rt_shadows(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether the alphaMode MASK bake runs when the structures are built ([render] rt_mask_bake)
+         * @param enabled false = masked geometry is built OPAQUE, i.e. solid to every ray
+         * @note a no-op without ray-traced shadows or the probe cache (no structures, no bake), so a frame
+         *       with them off is byte-identical either way. It exists as a knob because the bake is an
+         *       approximation - a triangle is either in the structure or not, while the raster path discards
+         *       per fragment - and the size of that difference is what its measurement compares (see
+         *       docs/gi_hit_shading.md).
+         */
+        void set_rt_mask_bake(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether skinned casters are re-skinned and their structures refitted every frame
+         *        ([render] rt_skin_bake)
+         * @param enabled false = the structures keep whatever pose they were last built or refitted in
+         * @note the structures are built from the model-space bind pose (see acceleration_structure::add), so
+         *       without this pass a traced shadow of an animated mesh is cast by the mesh where it is NOT -
+         *       which is exactly what the L2.2b baseline table in docs/gi_hit_shading.md measures. Off by
+         *       default, and unlike set_rt_mask_bake it is read every frame: the pass runs per frame, so the
+         *       flag can be flipped at any time and the next frame's traced shadows follow.
+         */
+        void set_rt_skin_bake(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether ANY ray-traced feature is asking for the acceleration structures
+         * @note the structures serve both ray-traced features, so they are built when either wants them -
+         *       and they must be, because both pipelines declare the top level structure as a descriptor:
+         *       a shader that statically uses a binding needs it to have been written, whether or not the
+         *       branch that reads it runs.
+         */
+        [[nodiscard]] bool rt_structures_wanted() const noexcept;
+
+        /** @brief whether ray-traced shadows are actually on (asked for AND the device can do it) */
+        [[nodiscard]] bool rt_shadows_active() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief select the specular BRDF model preset (pbr.frag, gui "brdf model" combo):
          *        0 = GGX + joint Smith (default), 1 = GGX + height-correlated Smith,
          *        2 = Beckmann + Smith, 3 = Blinn-Phong + Smith
@@ -1734,6 +2252,277 @@ namespace vulkan {
          */
         [[nodiscard]] std::string gpu_timing_summary() const;
 
+        /**
+         * @ingroup vulkan_runtime
+         * @brief create the screen-space GI compute pipeline from shaders/ssgi.comp
+         * @param compute_shader_code raw SPIR-V of the tracer
+         * @return success, or an error message on failure
+         * @note optional, and required for set_ssgi(true) to do anything. It reuses the shared
+         *       scene set and the G-buffer set (which carries the direct-radiance sampler and the
+         *       half-resolution image the tracer writes), so it owns only its pipeline layout -
+         *       which is why the deferred lighting pipeline has to exist first.
+         */
+        std::expected<void, std::string> make_ssgi_pipeline(std::span<unsigned char const> compute_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief enable screen-space GI and set its cost/quality knobs
+         * @param enabled trace one bounce of diffuse indirect from the G-buffer and add it
+         * @param intensity weight on the traced indirect. It exists because the IBL probe already
+         *        supplies some of this light and a screen-space trace only sees what is on screen:
+         *        the two overlap, and this is the reconciliation - not a taste knob
+         * @param radius ray length as a FRACTION of the scene radius, so one value means the same
+         *        thing on a 1.6-unit model and on Sponza's 18.5
+         * @param rays rays per pixel per frame (0..16); @param steps depth samples per ray (0..64)
+         * @note cost is the product of the two, at half resolution; GI is added by the post
+         *       composite, so it does not feed the bloom chain yet
+         */
+        void set_ssgi(bool enabled, float intensity, float radius, uint32_t rays, uint32_t steps) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief trace the GI rays against the acceleration structures instead of marching the depth buffer
+         * @param enabled true = ray query, false = the screen-space march (the default)
+         * @note granted only when the device has ray queries, the tracer exists and the top level
+         *       structure has been built - otherwise the march keeps running and nothing changes. The
+         *       estimator is the same either way: only the hit oracle differs, so a hit that is off screen
+         *       or hidden contributes nothing in both and the IBL probe still owns the off-screen light.
+         */
+        void set_ssgi_ray_tracing(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief how much of the previous frame's accumulated indirect a GI ray re-emits at a hit
+         * @param gain the loop gain, clamped to [0, 1]
+         * @note the multi-bounce approximation: with a gain above zero a ray returns the light LEAVING
+         *       the surface it hit (indirect included) instead of the direct light alone, so the
+         *       estimator picks up the second, third, ... bounce. 0 - the default - is single-bounce.
+         *       The image being fed back already carries ssgi_intensity, so the effective loop gain is
+         *       this times that; 1.0 is where the geometric series stops being guaranteed to converge
+         *       (a diffuse albedo approaches one), which is why the knob stops there.
+         */
+        void set_ssgi_bounce(float gain) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief shade the surface a GI ray hits, instead of sampling the screen where it landed
+         * @param enabled [render] ssgi_hit_shading
+         * @note the traced GI path's two structural limits both come from reading the screen at a hit: it
+         *       cannot answer for a hit the frame does not show (those fall back to a probe, an
+         *       approximation of the light where the RAY STARTED rather than radiance arriving from where
+         *       it landed), and every sample moves with the camera. Shading the hit from the geometry and
+         *       the material removes both. It costs the vertex, index and texture fetches a shaded hit
+         *       needs, and it needs the acceleration structures (the instance table is what tells the
+         *       shader which triangle it hit) - so it is granted only where they exist, and it does
+         *       nothing to the marched path, whose hits are the depth buffer's own surface.
+         */
+        void set_ssgi_hit_shading(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief trace a glossy reflection ray per pixel, so a reflection shows the scene and not the sky
+         * @param enabled [render] ssgi_specular
+         * @param rays per-pixel glossy ray count ([render] ssgi_specular_rays), clamped to [1, 8]
+         * @note a REPLACEMENT for the specular ambient the lighting stage adds, not an addition: the
+         *       estimate falls back to exactly `ibl_specular * F * ao` (the lighting stage's own term, from
+         *       the same expressions) wherever a ray finds no geometry, and the spatial filter removes that
+         *       term again. So the frame is unchanged wherever the reflection has nothing local to show, and
+         *       what changes is the light the reflection actually carries.
+         * @note it needs the TRACED path, hit shading and a built instance table - a marched hit is the
+         *       depth buffer's own surface and cannot be shaded from its geometry - so it is granted only
+         *       where all three hold, and the pass is not even recorded otherwise (which is what makes the
+         *       knob-off frame byte-identical by construction rather than by arithmetic).
+         * @param radius how far the rays reach as a fraction of the scene radius
+         *        ([render] ssgi_specular_radius), clamped to [0.01, 8]. It is NOT the shared
+         *        `ssgi_radius`, and the difference matters: that one is pinned low by the MARCHED path,
+         *        whose resolution is radius / ssgi_steps, so a reflection's reach would make its steps too
+         *        coarse to find anything between them. Measured on Sponza, the lobe's effect is -0.907 at
+         *        0.12 (the marched default, i.e. 39% of what is available), -2.126 at 0.5 and -2.350 at
+         *        2.0, the cost rising +0.94 ms from the first to the second and not at all after it.
+         */
+        void set_ssgi_specular(bool enabled, uint32_t rays, float radius) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether THIS frame records the glossy lobe (shaders/ssgi_spec.comp)
+         * @note the predicate the frame's record order and the spatial filter's second subtraction are BOTH
+         *       composed from, for the same reason ssgi_traced_active() exists: an addition and a
+         *       subtraction that disagree about whether the pass ran leave the frame wrong by the whole
+         *       term, and the two are evaluated in different functions.
+         */
+        [[nodiscard]] bool ssgi_specular_active() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the furnace verification mode ([render] furnace)
+         * @param enabled true = the sun is off; the constant-environment half is not implemented yet
+         * @note the intent is an analytic reference: with the sun off and the environment a constant level L,
+         *       a diffuse surface's outgoing radiance is exactly albedo * L and a bounce has nothing to add,
+         *       so the frame must not change when the GI chain is switched on. What is wired today is the
+         *       sun lane; forcing the environment needs the constant cube bound to the IBL bindings, which
+         *       is the next slice. Until then this mode is a DIAGNOSTIC, not the acceptance test.
+         */
+        void set_furnace(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the world-space probe cache: what the tracer answers with where the screen cannot
+         * @param enabled master switch ([render] ssgi_probes); false is a byte-exact no-op
+         * @param rate how much of a cell one frame's observation replaces, clamped to [0, 1]
+         * @param rounds propagation rounds per frame, clamped to [0, 4]
+         * @param gain how much of the grid's answer is added on top of the environment probe, clamped
+         *        to [0, 4]
+         * @note a CACHE, not a lighting model: it exists so that a ray which leaves the frame, or hits
+         *       something hidden behind a nearer surface, can be answered from a grid anchored to the
+         *       scene - the environment probe it replaces there is the sky at infinity, and it is the
+         *       same value in the middle of a room as on the roof. It requires the screen-space chain
+         *       (it is injected from that chain's result) and the deferred path, and it is a no-op on a
+         *       device where either is missing: with the gain at 0 the tracer never samples it.
+         */
+        void set_ssgi_probes(bool enabled, float rate, uint32_t rounds, float gain) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether this frame's tracer will sample the world-space probe cache
+         * @note the predicate the tracer's push block composes the grid's gain from. False until the
+         *       grid has been written once: the images exist from startup, but a grid nothing has
+         *       deposited into holds undefined texels, and the pass that would fill it runs AFTER the
+         *       tracer in the frame it is first enabled on.
+         */
+        [[nodiscard]] bool gi_probe_active() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief hand the runtime a loaded shader, by file name, for the passes that build their own pipelines
+         * @param name the file name a pass asks for at create time (a pass's own constant)
+         * @param bytecode raw SPIR-V; copied, because the caller's buffer is a local in a startup scope
+         * @note THE APP IS THE SHADER LOADER and this is the hand-over: the runtime knows a shader DIRECTORY
+         *       and a file format nowhere, and a pass knows neither - it asks for its own by name. Register
+         *       before calling create_passes(); a pass whose shader is missing says so and does not run.
+         */
+        void register_shader(std::string_view name, std::span<unsigned char const> bytecode);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief run every wired pass's CREATE step: what a pass owns, built from its own declaration
+         * @return nothing; a pass that cannot build what it records with logs why and stays inactive
+         * @note Idempotent (a pass is created once per device generation), and it must run after the shared
+         *       set layouts exist, because a pass's pipeline layout is built against them. Until it runs, the
+         *       passes that own a pipeline are inactive and the frame records exactly what it did before they
+         *       existed - which is why a startup failure here is a log line and not a broken frame.
+         */
+        void create_passes();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether this frame's GI pass will actually TRACE its rays
+         * @note the predicate both the tracer's push block and the light UBO's gi_full_indirect are
+         *       composed from, because the second one is a PREDICTION: it tells the lighting stage to
+         *       drop its own diffuse ambient, and predicting wrong darkens the frame (which is what
+         *       happened when it was composed from the config alone: the tracer pipeline was missing, so
+         *       the ambient was removed and nothing replaced it).
+         */
+        [[nodiscard]] bool ssgi_traced_active() const noexcept;
+
+        /**
+         * @brief create the GI denoiser's temporal resolve pipeline from shaders/ssgi_temporal.comp
+         * @param compute_shader_code raw SPIR-V of the resolve
+         * @return success, or an error message on failure
+         * @note required, not optional: the composite samples the image the resolve's successor
+         *       writes, so a build without this pass has no GI to show at all (ssgi_active() stays
+         *       false and the composite's weight is 0)
+         */
+        std::expected<void, std::string> make_ssgi_temporal_pipeline(std::span<unsigned char const> compute_shader_code);
+
+        /**
+         * @brief create the GI spatial filter pipeline from shaders/ssgi_spatial.comp
+         * @param compute_shader_code raw SPIR-V of the filter
+         * @return success, or an error message on failure
+         * @note required for the same reason as the temporal resolve, and the last pass of the GI
+         *       chain: what the composite samples is this filter's output
+         */
+        std::expected<void, std::string> make_ssgi_spatial_pipeline(std::span<unsigned char const> compute_shader_code);
+
+        /**
+         * @brief create the glossy lobe's pipeline from shaders/ssgi_spec.comp
+         * @param compute_shader_code raw SPIR-V of the pass
+         * @return success, or an error message on failure
+         * @note optional, and it is not part of ssgi_active(): unlike the three passes of the chain, a
+         *       build without it renders exactly as it did before the feature existed - the tracer's
+         *       estimate stands and the spatial filter's second subtraction is never armed
+         */
+        std::expected<void, std::string> make_ssgi_spec_pipeline(std::span<unsigned char const> compute_shader_code);
+
+        /**
+         * @brief create the ray-traced sun shadow pipeline from shaders/rt_shadow.comp
+         * @param compute_shader_code raw SPIR-V of the pass
+         * @return success, or an error message on failure
+         * @note optional in the same sense every ray-traced path is: it is only created when the DEVICE
+         *       has ray queries, and when it is missing the cascaded shadow maps keep running (the
+         *       lighting stage's override stays off)
+         */
+        std::expected<void, std::string> make_rt_shadow_pipeline(std::span<unsigned char const> compute_shader_code);
+        /**
+         * @brief create the alphaMode MASK bake pipeline from shaders/mask_bake.comp
+         * @param compute_shader_code the compiled SPIR-V
+         * @return an error string when the device has no ray queries or the pipeline could not be created
+         * @note optional like the rest of the traced features: without it a caster's geometry is built
+         *       OPAQUE and a MASK surface is solid to a ray, exactly as it is today. It runs once, on the
+         *       frame the bottom level structures are built, and writes the expanded vertex buffer each
+         *       masked caster's structure is then built from.
+         */
+        std::expected<void, std::string> make_mask_bake_pipeline(std::span<unsigned char const> compute_shader_code);
+        /**
+         * @brief create the compute skinning pipeline and its per-slot descriptor sets
+         * @param compute_shader_code the compiled SPIR-V
+         * @return an error string when the device has no ray queries or something could not be created
+         * @note optional like the rest of the traced features: without it a skinned mesh's structure holds
+         *       its bind pose, which is what every traced effect here did before this pass existed.
+         */
+        std::expected<void, std::string> make_compute_skin_pipeline(std::span<unsigned char const> compute_shader_code);
+        /**
+         * @brief re-skin every skinned caster and REFIT its structure, for this frame
+         * @param command_buffer where to record (the frame's structure phase, before the top level build)
+         * @return whether anything was recorded
+         * @note the pass writes the vertices the VERTEX shader would compute, into the buffer the structure
+         *       was built from, and the refit then makes traversal see them. It has to run AFTER the
+         *       animation uploaded this slot's per-joint matrices and BEFORE the frame writes the scene
+         *       set's binding 16 - the ordering the mask bake's own-set comment explains.
+         */
+        bool record_compute_skin_pass(VkCommandBuffer command_buffer);
+
+        /**
+         * @brief set the spatial filter's strength
+         * @param sigma spatial Gaussian sigma in GI texels; 0 makes the filter a pass-through, which
+         *        is what its effect is measured against (same idea as the temporal blend weights)
+         * @note the depth and normal edge-stop strengths are runtime members rather than config keys:
+         *       they decide WHERE the filter stops, not how strong it is, and getting them wrong shows
+         *       up as bleeding across a silhouette rather than as a noisier image
+         */
+        void set_ssgi_spatial(float sigma) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief whether the composite upsamples the GI bilaterally (see post.frag)
+         * @param enabled true = joint-bilateral gather, false = the plain bilinear fetch
+         * @note a MEASUREMENT switch, not a quality knob: the bilinear fetch is what the chain used
+         *       before the upsample existed, and keeping it reachable is what makes the upsample's
+         *       effect separable from everything else in the frame
+         */
+        void set_ssgi_upsample(bool enabled) noexcept;
+
+        /** @brief whether the tracer runs this frame (see set_ssgi) */
+        [[nodiscard]] bool ssgi_active() const noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief record the screen-space GI dispatch into @p command_buffer
+         * @note called from record_post_process() right after the HDR target becomes a shader input
+         *       and before the composite that adds its output - the two facts that together keep the
+         *       tracer from sampling an image containing its own result (see the call site)
+         */
+        void record_ssgi_pass(VkCommandBuffer command_buffer);
+
         /** @brief how many channels the G-buffer debug view offers (see set_gbuffer_channel) */
         static constexpr int gbuffer_channel_count = 9;
 
@@ -1795,14 +2584,45 @@ namespace vulkan {
         static constexpr uint32_t taa_jitter_count = 8;
 
         /**
+         * @brief resolve the TAA pass's declaration into this frame's handles (the runner's `resolve` callback)
+         * @return false when this frame cannot run it (no target generation, or the pass has no pipeline)
+         * @note the four per-swapchain-image inputs are the pass's own bindings and the HDR image it renders
+         *       into is a declared TARGET - resolved the same way, so the pass reaches nothing it did not name
+         */
+        bool resolve_taa_pass(pass::resolved_io& out);
+
+        /**
+         * @brief this frame's SCENE, as the scene pass needs it (see vulkan.pass.scene::scene_frame)
+         * @note the leaves, the per-slot secondary buffers and the three callbacks the pass cannot answer for
+         *       itself: a fresh draw state per segment, the scheduler, and the attachment formats
+         */
+        [[nodiscard]] pass::scene_frame make_scene_frame() noexcept;
+        /** @brief build ONE segment's draw state (the renderer owns the pipeline registry and the mode) */
+        static render_environment make_scene_environment(void* owner, VkCommandBuffer command_buffer, bool gbuffer);
+        /** @brief the renderer's scheduler, handed to the pass so the segment fan-out stays the frame loop's */
+        static void run_scene_tasks(void* owner, std::span<std::function<void()>> tasks);
+        /**
+         * @brief resolve the scene pass's declaration: its six targets and the shared scene set
+         * @return false when there is no surface pipeline or no target generation (see record_scene)
+         */
+        [[nodiscard]] bool resolve_scene_pass(pass::resolved_io& out);
+        /** @brief this frame's blended geometry, as the transparent pass needs it */
+        [[nodiscard]] pass::transparent_frame make_transparent_frame() noexcept;
+        /**
+         * @brief resolve the transparent pass: the shaded target and the surface depth it blends over
+         * @return false on a frame whose culling left nothing blended (the pass then does not run at all)
+         */
+        [[nodiscard]] bool resolve_transparent_pass(pass::resolved_io& out);
+
+        /**
          * @ingroup vulkan_runtime
          * @brief enable/disable temporal anti-aliasing and set its two blend weights
          * @param enabled when true (and the deferred path is the active render mode) the projection is
          *        jittered every frame, the G-buffer's motion vectors are resolved against a reprojected
          *        history, and the result is what the post chain processes. This is the deferred path's
          *        anti-aliasing: it resolves sub-pixel detail no edge filter can, AND the
-         *        shimmer in motion that no edge filter can remove. Requires the TAA pass to have built its
-         *        pipeline (a shader the app registered, see register_shader); without it the flag has no effect.
+         *        shimmer in motion that no edge filter can remove. The pass builds its own pipeline
+         *        (vulkan.pass.taa); without it the flag has no effect.
          * @param blend_static history weight for a pixel that did not move (0.9 = 10% of the current
          *        frame per frame; higher converges smoother but reacts slower to lighting changes)
          * @param blend_min history weight floor once a pixel moves a pixel or more per frame (lower =
@@ -1935,6 +2755,8 @@ namespace vulkan {
         struct render_features {
             bool unlit = false;         // the flat render mode (no lighting anywhere)
             bool gbuffer_debug = false; // the opaque pass stores the G-buffer for the debug view
+            bool ssgi = false;          // trace one bounce of screen-space diffuse indirect
+            bool ssgi_probes = false;   // update the world-space probe cache (the pass, not the tracer's fallback)
             bool shadow = false;        // record the directional shadow pass
             bool clustered = false;     // record the cluster compute pass
             bool taa = false;           // resolve TAA
@@ -1966,7 +2788,8 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief whether a feature is available AND switched on right now (name-keyed)
          * @param name "gbuffer-debug", "taa", "fxaa", "shadow", "clustered",
-         *        "ssao", "bloom", "unlit", "transparent" - the same vocabulary as feature_available()
+         *        "ssao", "bloom", "unlit", "transparent", "ssgi" - the same vocabulary as
+         *        feature_available()
          *
          * This is what the overlay gates its controls on (`vulkan::gui::widget::visible_when`): a
          * control is offered exactly when switching it could change the frame. feature_available()

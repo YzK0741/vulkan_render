@@ -39,7 +39,7 @@ namespace {
         .binding = 0,
         .owner = rr::set_owner::own,
         .kind = rr::binding_kind::sampled_image,
-        .resource = rr::resource_id::taa_history,
+        .resource = rr::resource_id::gi_history,
         .element = 0,
         .descriptor_count = 1,
         .access = rr::binding_access::read,
@@ -52,17 +52,39 @@ int main() {
     // ---- the schema describes itself, completely ----
     auto const schema = rr::validate_schema();
     CHECK_MSG(schema.has_value(), schema.has_value() ? "" : schema.error().c_str());
-    CHECK(rr::resource_schema.size() == 24);                     // this state has no GI chain, no probe cache and no acceleration structures
-    CHECK(static_cast<uint32_t>(rr::resource_id::count_) == 25); // 24 families plus `none`
+    CHECK(rr::resource_schema.size() == 37);
+    CHECK(static_cast<uint32_t>(rr::resource_id::count_) == 38); // 37 families plus `none`
     CHECK(rr::find(rr::resource_id::none) == nullptr);
-    CHECK(rr::find(rr::resource_id::gbuffer_targets) != nullptr);
-    CHECK(rr::find(rr::resource_id::gbuffer_targets)->count == 3);               // albedo, normal+roughness, material+AO
-    CHECK(rr::find(rr::resource_id::bloom)->kind == rr::resource_kind::image2d); // four levels, one resource
+    CHECK(rr::find(rr::resource_id::probe_grid) != nullptr);
+    CHECK(rr::find(rr::resource_id::probe_grid)->count == 8);      // side*4+coefficient, as core indexes it
+    CHECK(rr::find(rr::resource_id::gbuffer_targets)->count == 3); // albedo, normal+roughness, material+AO
+    CHECK(rr::find(rr::resource_id::top_level_structure)->kind == rr::resource_kind::accel_struct);
     CHECK(rr::find(rr::resource_id::swapchain_image)->lifetime == rr::resource_lifetime::imported);
     // the two scopes this project has been bitten by, asserted where they live
     CHECK(rr::find(rr::resource_id::shadow_map)->scope == rr::resource_scope::per_frame_slot);
-    CHECK(rr::find(rr::resource_id::taa_history)->scope == rr::resource_scope::per_swapchain_image);
-    CHECK(rr::find(rr::resource_id::ibl_env)->scope == rr::resource_scope::device_wide);
+    CHECK(rr::find(rr::resource_id::gi_history)->scope == rr::resource_scope::per_swapchain_image);
+    CHECK(rr::find(rr::resource_id::probe_grid)->scope == rr::resource_scope::device_wide);
+
+    // ---- the probe cache's declaration, read off shaders/gi_probe.comp ----
+    auto const probe = rr::validate(rr::gi_probe_io);
+    CHECK_MSG(probe.has_value(), probe.has_value() ? "" : probe.error().c_str());
+    CHECK(rr::gi_probe_io.bindings.size() == 16); // 9 own (set 1) + 7 shared (set 0)
+    // the own set is 4 sampled read + 5 storage write = the nine bindings the shader declares
+    rr::descriptor_counts const own = rr::descriptor_counts_for(rr::gi_probe_io, 1);
+    CHECK(own.sampled_image == 4);
+    CHECK(own.storage_image == 5);
+    CHECK(own.total() == 9);
+    // ... and the shared scene set is what the shader uses of it, not what it owns
+    rr::descriptor_counts const scene = rr::descriptor_counts_for(rr::gi_probe_io, 0);
+    CHECK(scene.sampled_image == 4);
+    CHECK(scene.storage_buffer == 1);
+    CHECK(scene.uniform_buffer == 1);
+    CHECK(scene.acceleration_structure == 1);
+    CHECK(scene.total() == 7);
+    // the ping-pong halves are ELEMENTS of one resource, which is how core indexes the family
+    CHECK(rr::gi_probe_io.bindings[0].element == 0);
+    CHECK(rr::gi_probe_io.bindings[4].element == 4);
+    CHECK(rr::gi_probe_io.bindings[8].resource == rr::resource_id::probe_surface);
 
     // ---- the well-formed binding, so the failures below mean something ----
     CHECK(validate_one(good_binding).has_value());
@@ -94,8 +116,8 @@ int main() {
     }
     {
         rr::pass_binding b = good_binding;
-        b.resource = rr::resource_id::gbuffer_targets;
-        b.element = 3; // the family holds 0..2
+        b.resource = rr::resource_id::probe_grid;
+        b.element = 8; // the family holds 0..7
         CHECK(!validate_one(b).has_value());
     }
     {
@@ -106,14 +128,14 @@ int main() {
     {
         rr::pass_binding b = good_binding;
         b.kind = rr::binding_kind::storage_image;
-        b.resource = rr::resource_id::taa_history;
+        b.resource = rr::resource_id::gi_history;
         b.access = rr::binding_access::write;
         CHECK(!validate_one(b).has_value()); // ... and a storage image must not
     }
     {
         rr::pass_binding b = good_binding;
         b.kind = rr::binding_kind::storage_image;
-        b.resource = rr::resource_id::taa_history;
+        b.resource = rr::resource_id::gi_history;
         b.access = rr::binding_access::write;
         b.sampler = rr::sampler_hint::none;
         // ... and the LAYOUT is not free either: a storage image's descriptor must declare GENERAL, and a
@@ -122,7 +144,7 @@ int main() {
     }
     {
         rr::pass_binding b = good_binding;
-        b.layout = rr::image_layout::general; // a SAMPLED image may declare GENERAL, which no rule derives
+        b.layout = rr::image_layout::general; // a SAMPLED image may declare GENERAL (the probe grid does)
         CHECK(validate_one(b).has_value());
     }
     {
@@ -257,8 +279,8 @@ int main() {
     }
     {
         // a set cannot be both the pass's own and one it only binds
-        std::array<uint32_t, 1> const conflicting = {0}; // the TAA bindings live in set 0, so declaring it shared too is the conflict
-        rr::pass_io const io = {.name = "scene", .own_set = 0, .bindings = rr::taa_io.bindings, .shared_sets = conflicting, .targets = {}, .push = std::nullopt};
+        std::array<uint32_t, 1> const conflicting = {1};
+        rr::pass_io const io = {.name = "scene", .own_set = 1, .bindings = rr::gi_probe_bindings, .shared_sets = conflicting, .targets = {}, .push = std::nullopt};
         CHECK(!rr::validate(io).has_value());
     }
     {
