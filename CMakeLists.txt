@@ -123,6 +123,7 @@ target_sources(vulkancorekit
         vulkan/bindings/bindings.cppm
         vulkan/pipelines/pipelines.cppm
         vulkan/render_resource/render_resource.cppm
+        vulkan/pass/pass.cppm
         vulkan/profiling/profiling.cppm
         vulkan/shadow_fit/shadow_fit.cppm
         vulkan/readback/readback.cppm
@@ -396,7 +397,7 @@ option(VR_BUILD_TESTS "Build the headless unit tests" ON)
 if(VR_BUILD_TESTS)
     enable_testing()
 
-    set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit test_render_resources)
+    set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit test_render_resources test_pass)
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-run")
 
     foreach(test_target IN ITEMS ${VR_TEST_TARGETS})
@@ -431,6 +432,13 @@ if(VR_BUILD_TESTS)
     # for - usage is a subset of the schema, kind and access fit, a pass's own bindings are contiguous, a pool
     # count is derivable - are checkable WITHOUT a device, which is the only way they can be checked in CI.
     target_link_libraries(test_render_resources
+            vulkancorekit
+            vstd_lib
+    )
+    # vulkan.pass is the framework: its base class and behaviour kinds name Vulkan handle types but never call
+    # Vulkan, so its contract - resolve, apply the behaviour, record, mark, recreate - is testable with a fake
+    # host and no device at all.
+    target_link_libraries(test_pass
             vulkancorekit
             vstd_lib
     )
