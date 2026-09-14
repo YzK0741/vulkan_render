@@ -257,14 +257,13 @@ namespace chores {
             // Screen-space global illumination tracer: one bounce of diffuse indirect, marched against
             // the depth buffer. Optional - without it set_ssgi(true) does nothing, and the frame is
             // exactly what it was before GI existed (the composite's GI weight is 0).
+            //
+            // IT IS A PASS: the app registers the shader and the pass builds its own pipeline layout and
+            // compute pipeline from it (see vulkan.pass.ssgi_trace) - the create_passes() call at the end of
+            // this function is what runs that step, for every pass at once.
             std::vector<unsigned char> compute_code;
             load_shader(shaders_dir, "ssgi.comp.spv", compute_code);
-            auto const ssgi_result = runtime.make_ssgi_pipeline(compute_code);
-            if (!ssgi_result) {
-                utility::log("screen-space GI disabled: {}", ssgi_result.error());
-            } else {
-                utility::log("SUCCESS: ssgi compute pipeline created (screen-space global illumination)");
-            }
+            runtime.register_shader("ssgi.comp.spv", compute_code);
             // The denoiser's temporal resolve, next to the tracer it denoises. Required, not optional:
             // the composite samples the FILTERED image, so GI with any pass of the chain missing has
             // nothing to show and runtime::ssgi_active() stays false.

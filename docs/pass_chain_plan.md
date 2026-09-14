@@ -53,6 +53,7 @@ the same run. Re-verified with the RELATIVE spelling afterwards: 12 x 2, 0 chang
 | `6cd9c6e` | the **TAA resolve is wired, and it is the first pass here that OWNS something**: set layout from its declaration, pipeline layout, pipeline, per-image family, history flags. `make_taa_pipeline` and `ensure_taa_descriptors` are gone, and the app's shader hand-over (`register_shader`) exists because a pass that builds a pipeline needs shader bytes |
 | `08b84ac` | the finding that the non-GI port is complete: `master` has four pass modules, three were wired |
 | this step | **GI IS ATTACHED**: the 37-row declaration layer, the `gi_probe` pass, the GI pipeline builders, the acceleration structures, the GI shaders and config, and the 12-scenario gate. **12 x 2, 0 changed, 0 flaky**, including all four GI reference hashes |
+| this step | the **SSGI tracer is extracted** (`vulkan.pass.ssgi_trace`), which closed the framework gap the plan named: `pass_io::barrier_images` + `resolved_io::barrier_images` let a pass transition images that live in a SHARED set and own no descriptor. Gate 12 x 2, 0 changed, 0 flaky |
 
 `docs/pass_chain_inventory.md` (192 lines) is the read-only map of this state: its resource set, the frame's
 recording spine and mark intervals, every function of the PBR/scene chain with its attachments, sets,
@@ -275,6 +276,63 @@ ONE OPEN THREAD this step inherits and does not fix: the shared-set IMAGE channe
 scene set and needs image handles from it, which the framework's `resolved_io` still cannot carry. Master's
 answer is that the pass resolves the shared set itself through the host and the declaration names the set; the
 framework-level version of that channel is still the gap the earlier sections record.
+
+## THE GI CHAIN'S FIRST STAGE: THE TRACER, AND THE FRAMEWORK GAP IT CLOSED
+
+The plan recorded one blocker for the whole GI phase: *no channel for shared-set image handles*. The tracer is
+the pass that made it concrete, and closing it is what this step did.
+
+WHY A PASS THAT BINDS NOTHING STILL NEEDED A NEW DECLARATION LIST. `ssgi.comp` binds the shared scene set and
+the shared G-buffer set and owns no descriptor at all - and yet it is the frame's first writer of `gi_trace`,
+its first reader of last frame's `gi_resolve`, and the pass responsible for the probe grid's first-use layouts.
+Every one of those images lives in the G-buffer set, whose contents its OWNER writes, so the pass could neither
+bind them nor describe them: the same argument that made `render_target` a separate list from `bindings` applies
+to a layout transition, which names an IMAGE and no descriptor at all. So:
+
+* `render_resource::barrier_image` (resource + element) and `pass_io::barrier_images` say which images a pass
+  must move between layouts, in the order its own `record()` indexes them;
+* the validator checks them like targets: the resource must exist in the schema, must be an image, and may not
+  be declared twice (a pass indexes them by POSITION);
+* `resolved_io::barrier_images` carries the handles, filled by the host from the frame - the per-swapchain-image
+  families take the frame's image, the probe grid takes the element the declaration names;
+* `max_barrier_images = 16` is the new cap (the tracer's twelve are the most).
+
+WHAT THE TRACER PASS OWNS, and what it deliberately does not:
+
+* OWNS its pipeline layout and compute pipeline (from `ssgi.comp`, handed over with `register_shader`), the
+  dispatch, the whole first-use barrier batch, the hand-off barrier, and the one piece of per-generation state
+  that batch needs (`probe_grid_seen_`, reset by `on_swapchain_recreated` - the TAA generation-fingerprint
+  pattern again);
+* DOES NOT OWN whether the previous accumulation may be trusted (that is the DENOISER's state, so the host
+  reads it off and hands it over), whether the glossy lobe runs next (which decides who owes the hand-off), or
+  any value in the push block. Those three are a `ssgi_trace_frame` and `resolved_io::push`.
+
+THE CREATE CONTEXT GREW ITS FIRST SECOND-SET ANSWER: `pass_context::shared_set_layout` used to answer set 0 (the
+scene set) and nothing else; the tracer's pipeline layout needs the G-buffer set layout too, so the renderer now
+answers set 1 as well and a pass asking for anything else still gets "none".
+
+ONE HONEST DIFFERENCE FROM THE MOVED CODE, recorded rather than glossed: the resolver skips the whole pass when
+ANY declared barrier image is missing, where the moved body skipped only that one barrier and still dispatched
+(it tested `index < vk.gi_spec_resolve_images.size()` per image). The case cannot arise - those images are
+created and destroyed together with the target generation - and skipping is the stricter of the two answers.
+`build_ssgi` also changed signature here, from `(core&, ...)` to `(VkDevice, ...)`, because a pass's create step
+has a device and no core: the same change `build_taa` needed.
+
+Verified: gate 12 x 2, **0 changed, 0 flaky**, all four GI hashes (`default_gi` `BF180E98ADB29E7E`, `sponza_gi`
+`58EC848DFABE654A`, `metal_rough_glossy` `46F9851B7BC89872`, `glossy_motion` `98B06F2190B49519`) plus
+`sponza_march` and the seven pre-GI scenarios - which is the evidence that moving 170 lines of dispatch and
+barriers out of the runtime changed no pixel. `sponza_gi` is the scenario that exercises the probe grid's
+first-use batch (it is the only one with `ssgi_probes = true`).
+
+ONE HARNESS OBSERVATION, kept because it cost a round: a full-gate run once reported `deferred` FLAKY - one run
+`2DD1D13857322C0F` (the reference) and one `CEDD831932C76340` - while every other scenario passed. `deferred`
+alone then passed three times in a row (six renders), and the next full run was 12 x 2 clean. Nothing about the
+renderer changed between those runs, so this is recorded as INTERMITTENT machine-level flakiness on the FIRST
+scenario of a batch (the one that runs while the driver is still warming up), not as a regression: the frame is
+right when it is right, and the partner run proved it byte-for-byte.
+
+WHAT IS LEFT OF THE GI CHAIN: the temporal resolve, the spatial filter and the glossy lobe, in that order, each
+extractable the same way now that the image channel exists. The probe cache was already a pass.
 
 ## WHAT THE INVENTORY ALREADY FOUND (recorded, not yet fixed)
 

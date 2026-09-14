@@ -1,4 +1,4 @@
-// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/render_resource/render_resource.cppm
@@ -422,6 +422,30 @@ export namespace vulkan::render_resource {
     };
 
     /**
+     * @brief an image a pass must TRANSITION but does not bind as a descriptor
+     *
+     * WHY THIS IS A THIRD LIST, and it is the GI chain that forced it rather than a wish for symmetry: the SSGI
+     * tracer writes `gi_trace` as a storage image, reads last frame's `gi_resolve` as a bounce feedback and
+     * samples the probe grid - and NONE of those descriptors is in its own set. They live in the G-buffer set,
+     * which its owner writes (see `pass_io::shared_sets`), so the pass cannot describe them without copying a
+     * fact that is not its own. What it CAN say is which images it is responsible for moving between layouts,
+     * because a layout transition names an IMAGE and no descriptor at all - the same argument that made
+     * `render_target` a separate list from `bindings`.
+     *
+     * The LAYOUTS are deliberately not declared: which pair of layouts a transition uses is the pass's
+     * knowledge (its own barriers, its own order), and a declaration that named them would have to be a
+     * barrier generator rather than a description of what the pass touches. What is declared is only what the
+     * layer must know to hand the pass a handle: which resource, and which image of its family.
+     */
+    struct barrier_image {
+        resource_id resource = resource_id::none;
+        /// which image of the resource's family: the FRAME's image index for a per-swapchain-image resource
+        /// (resolved by the host from the frame, exactly as `render_target` does), or the element for a family
+        /// a pass reaches by position (the probe grid's eight)
+        uint16_t element = 0;
+    };
+
+    /**
      * @brief one pass's declared I/O
      *
      * `own_set` is the set index of the `set_owner::own` bindings; the validator requires every `own` binding
@@ -451,6 +475,11 @@ export namespace vulkan::render_resource {
         std::span<uint32_t const> shared_sets = {};
         /// the images this pass renders into, in the order it uses them (a fullscreen pass has one)
         std::span<render_target const> targets = {};
+        /**
+         * The images this pass TRANSITIONS but never binds (see `barrier_image`), in the order the pass's own
+         * record() indexes them. Empty for every pass whose resources are all its own or all descriptors.
+         */
+        std::span<barrier_image const> barrier_images = {};
         std::optional<push_block> push = std::nullopt;
     };
 
@@ -569,6 +598,27 @@ export namespace vulkan::render_resource {
             for (render_target const& other : io.targets) {
                 if (&other != &t && other.resource == t.resource && other.element == t.element) {
                     return std::unexpected(where + " is declared twice");
+                }
+            }
+        }
+        // THE BARRIER IMAGES, checked like a target: an image the pass will move between layouts has to exist
+        // in the schema and has to BE an image (a transition names no descriptor, but it does name a resource).
+        for (barrier_image const& t : io.barrier_images) {
+            std::string const where = who + ": barrier image " + std::to_string(t.element);
+            resource_info const* const info = find(t.resource);
+            if (info == nullptr) {
+                return std::unexpected(where + " names a resource the schema does not declare");
+            }
+            if (info->kind != resource_kind::image2d && info->kind != resource_kind::image3d && info->kind != resource_kind::image_cube) {
+                return std::unexpected(where + " names " + std::string(info->name) + ", which is not an image");
+            }
+            if (t.element >= info->count) {
+                return std::unexpected(where + " names element " + std::to_string(t.element) + " of " + std::string(info->name) + ", which holds " +
+                                       std::to_string(info->count));
+            }
+            for (barrier_image const& other : io.barrier_images) {
+                if (&other != &t && other.resource == t.resource && other.element == t.element) {
+                    return std::unexpected(where + " is declared twice, and a pass indexes these by position");
                 }
             }
         }
@@ -854,6 +904,64 @@ export namespace vulkan::render_resource {
         .shared_sets = scene_shared_sets,
         .targets = transparent_targets,
         .push = std::nullopt,
+    };
+
+    // =============================================================================================
+    // 6. THE GI CHAIN'S DECLARATIONS - the passes that reach their images without binding them
+    // =============================================================================================
+
+    /**
+     * @brief the images the SSGI tracer transitions, in the order its record() indexes them
+     *
+     * EVERY ONE OF THESE IS IN THE G-BUFFER SET, not in the tracer's own: the tracer binds the shared scene set
+     * (0) and the shared G-buffer set (1) and owns no descriptor at all - so before this list existed it could
+     * not name a single image it is responsible for moving between layouts, and those barriers had to live in
+     * the renderer. See `barrier_image` for why a transition is a use that needs no descriptor.
+     *
+     * THE ORDER IS THE INTERFACE. The pass indexes this list by position (a compile-time constant per slot, not
+     * a search), because the layout pair each entry needs is the pass's own knowledge and the declaration
+     * deliberately does not carry it:
+     *
+     *   0: `gi_trace`          this frame's raw trace, written as a storage image
+     *   1: `gi_spec_resolve`   the reflection's accumulation, sampled by the G-buffer set at binding 15
+     *   2: `gi_resolve`        last frame's diffuse accumulation (the bounce feedback the tracer samples)
+     *   3-6: `probe_grid` 0-3  the cache's four SH-2 coefficient volumes, sampled by the tracer
+     *   7-10: `probe_grid` 4-7 the cache's four scratch volumes, written by the propagation
+     *   11: `probe_surface`    the per-cell geometry, written by the injection
+     */
+    inline constexpr std::array<barrier_image, 12> ssgi_trace_barriers = {{
+        {.resource = resource_id::gi_trace, .element = 0},
+        {.resource = resource_id::gi_spec_resolve, .element = 0},
+        {.resource = resource_id::gi_resolve, .element = 0},
+        {.resource = resource_id::probe_grid, .element = 0},
+        {.resource = resource_id::probe_grid, .element = 1},
+        {.resource = resource_id::probe_grid, .element = 2},
+        {.resource = resource_id::probe_grid, .element = 3},
+        {.resource = resource_id::probe_grid, .element = 4},
+        {.resource = resource_id::probe_grid, .element = 5},
+        {.resource = resource_id::probe_grid, .element = 6},
+        {.resource = resource_id::probe_grid, .element = 7},
+        {.resource = resource_id::probe_surface, .element = 0},
+    }};
+
+    /// @brief set 0 is the shared scene set and set 1 the shared G-buffer set: the tracer binds both
+    inline constexpr std::array<uint32_t, 2> ssgi_trace_shared_sets = {0, 1};
+
+    /**
+     * @brief the SSGI tracer's declaration: a half-resolution compute dispatch over two shared sets
+     *
+     * The first pass on this branch that binds TWO shared sets, and the first with no own binding whose
+     * resources still have to be named - which is what `barrier_images` was added for. Its push block is the
+     * full 128 bytes the specification guarantees, which the shader's comments explain lane by lane.
+     */
+    inline constexpr pass_io ssgi_trace_io = {
+        .name = "ssgi_trace",
+        .own_set = 2, // unused: the tracer has no own bindings (its images come from the shared sets)
+        .bindings = {},
+        .shared_sets = ssgi_trace_shared_sets,
+        .targets = {},
+        .barrier_images = ssgi_trace_barriers,
+        .push = push_block{.offset = 0, .size = 128, .stages = stage_flag::compute},
     };
 
 } // namespace vulkan::render_resource

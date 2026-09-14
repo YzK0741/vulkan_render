@@ -289,5 +289,42 @@ int main() {
         CHECK(!rr::validate(io).has_value()); // the same shared set twice
     }
 
+    // ---- the FOURTH declaration: the SSGI tracer, which binds TWO shared sets and no own binding, and the
+    //      first one whose IMAGES have to be named without being descriptors (see pass_io::barrier_images) ----
+    {
+        CHECK(rr::validate(rr::ssgi_trace_io).has_value());
+        CHECK(rr::ssgi_trace_io.own_set != 0 && rr::ssgi_trace_io.own_set != 1); // it owns nothing anywhere
+        CHECK(rr::ssgi_trace_io.bindings.empty());
+        CHECK(rr::descriptor_counts_for(rr::ssgi_trace_io, rr::ssgi_trace_io.own_set).total() == 0); // nothing generated
+        CHECK(rr::ssgi_trace_io.shared_sets.size() == 2);
+        CHECK(rr::ssgi_trace_io.shared_sets[0] == 0); // the scene set
+        CHECK(rr::ssgi_trace_io.shared_sets[1] == 1); // the G-buffer set: the second shared set any pass declares
+        CHECK(rr::ssgi_trace_io.targets.empty());     // it dispatches; it renders into nothing
+        CHECK(rr::ssgi_trace_io.push.has_value());
+        CHECK(rr::ssgi_trace_io.push->size == 128); // the full guaranteed range, five vectors
+        CHECK(rr::ssgi_trace_io.push->stages == rr::stage_flag::compute);
+        // THE BARRIER IMAGES, in the order the pass indexes them (its record() documents what each slot is for)
+        CHECK(rr::ssgi_trace_io.barrier_images.size() == 12);
+        CHECK(rr::ssgi_trace_io.barrier_images[0].resource == rr::resource_id::gi_trace);
+        CHECK(rr::ssgi_trace_io.barrier_images[1].resource == rr::resource_id::gi_spec_resolve);
+        CHECK(rr::ssgi_trace_io.barrier_images[2].resource == rr::resource_id::gi_resolve);
+        for (std::size_t i = 3; i < 11; ++i) {
+            CHECK(rr::ssgi_trace_io.barrier_images[i].resource == rr::resource_id::probe_grid);
+            CHECK(rr::ssgi_trace_io.barrier_images[i].element == i - 3);
+        }
+        CHECK(rr::ssgi_trace_io.barrier_images[11].resource == rr::resource_id::probe_surface);
+    }
+    {
+        // the barrier-image rule the validator enforces: they must be images the schema declares, and a pass
+        // indexes them by POSITION, so the same one twice is a declaration that cannot be read
+        std::array<rr::barrier_image, 1> const not_an_image = {rr::barrier_image{.resource = rr::resource_id::camera_ubo, .element = 0}};
+        rr::pass_io const io = {.name = "ssgi_trace", .own_set = 2, .bindings = {}, .shared_sets = {}, .targets = {}, .barrier_images = not_an_image, .push = std::nullopt};
+        CHECK(!rr::validate(io).has_value());
+        std::array<rr::barrier_image, 2> const twice = {rr::barrier_image{.resource = rr::resource_id::gi_trace, .element = 0},
+                                                        rr::barrier_image{.resource = rr::resource_id::gi_trace, .element = 0}};
+        rr::pass_io const dup = {.name = "ssgi_trace", .own_set = 2, .bindings = {}, .shared_sets = {}, .targets = {}, .barrier_images = twice, .push = std::nullopt};
+        CHECK(!rr::validate(dup).has_value());
+    }
+
     return vk_test::finish("test_render_resources");
 }

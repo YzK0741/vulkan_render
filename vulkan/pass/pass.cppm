@@ -1,4 +1,4 @@
-// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/pass.cppm
@@ -158,6 +158,8 @@ export namespace vulkan::pass {
     inline constexpr uint32_t max_pass_pipelines = 8;
     /// @brief how many images one pass may render into (one fullscreen pass has one; the deferred scene has five)
     inline constexpr uint32_t max_render_targets = 8;
+    /// @brief how many images one pass may declare for its own transitions (the SSGI tracer's twelve are the most)
+    inline constexpr uint32_t max_barrier_images = 16;
     /// @brief the largest push block a pass may declare: the 128 bytes Vulkan guarantees
     inline constexpr uint32_t max_push_bytes = 128;
 
@@ -196,6 +198,18 @@ export namespace vulkan::pass {
          */
         std::array<resolved_binding, max_render_targets> target_storage = {};
         std::span<resolved_binding const> targets = {};
+        /**
+         * The images this pass declared as BARRIER IMAGES (`pass_io::barrier_images`), in the declaration's
+         * order - the handles it may move between layouts but never bind as a descriptor.
+         *
+         * This is a THIRD channel rather than a corner of `own`, and the distinction is the point: `own` is
+         * indexed by the pass's own binding numbers and its sets are generated from it, while these resources
+         * live in sets its OWNER writes (the G-buffer set) and the pass only needs their IMAGES. A pass that
+         * wants one of these as a descriptor says so with a `shared` binding; a pass that only needs to
+         * transition it declares it here.
+         */
+        std::array<resolved_binding, max_barrier_images> barrier_storage = {};
+        std::span<resolved_binding const> barrier_images = {};
         /// the storage `pipelines` views
         std::array<VkPipeline, max_pass_pipelines> pipeline_storage = {};
         /// in the order `behaviour::pipelines` names them, one entry per name

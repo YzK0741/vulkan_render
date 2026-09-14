@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.61.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.62.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -31,6 +31,7 @@ import vulkan.pass.gi_probe;          // the first real pass (its member is decl
 import vulkan.pass.taa;               // the second, and the first GRAPHICS one
 import vulkan.pass.scene;             // the third: the scene itself, whose work is DATA rather than a declaration
 import vulkan.pass.transparent;       // the fourth: the blended geometry, over the shaded frame
+import vulkan.pass.ssgi_trace;        // the fifth, and the GI chain's first stage: the half-resolution tracer
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
@@ -372,8 +373,12 @@ namespace vulkan {
             float motion_gain = 1.0f;
         };
         // ---- screen-space global illumination (see shaders/ssgi.comp) ----
-        std::optional<vk_pipeline> ssgi_pipeline = std::nullopt;
-        VkPipelineLayout ssgi_pipeline_layout = VK_NULL_HANDLE;
+        /// THE SSGI TRACER (vulkan.pass.ssgi_trace): it owns its pipeline layout, its compute pipeline and the
+        /// first-use barrier batch, so neither of those is a member here any more. What stays is what is the
+        /// RENDERER's: the knobs, the frame counter, the push block's VALUES, and the state the pass cannot
+        /// know (whether the denoiser's accumulation is trustworthy, and whether the lobe runs next).
+        pass::ssgi_trace_pass ssgi_trace;
+        std::array<pass::frame_pass*, 1> ssgi_trace_stage = {&this->ssgi_trace};
         bool ssgi_on = false;
         float ssgi_intensity = 0.7f; // scales the traced indirect against the IBL probe it overlaps
         float ssgi_radius = 3.0f;    // ray length, view units
@@ -426,23 +431,6 @@ namespace vulkan {
         // per generation (see begin_recording): the level never changes, so re-clearing it every frame would
         // be a barrier pair bought for nothing, and the flag is reset with the images it describes.
         bool furnace_cube_ready = false;
-        struct ssgi_push_constants {
-            glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world (the block deferred.frag uses)
-            // x = ray length in world units, y = intensity, z = rays per pixel,
-            // w = steps per ray on a MARCHED frame and the ray-origin bias on a TRACED one. The lane does
-            // double duty because the block is exactly 128 bytes (the smallest range Vulkan guarantees)
-            // and the two readings cannot coexist - a frame either marches all its rays or traces all of
-            // them - which is also what lets the traced path's bias be a world distance rather than a
-            // fraction of the ray length (see shaders/ssgi.comp's push comment).
-            glm::vec4 params = glm::vec4(0.0f);
-            glm::vec4 proj_terms = glm::vec4(0.0f); // x proj[2][2], y [3][2]; z/w the instance table's halves (see the shader)
-            glm::vec4 frame_info = glm::vec4(0.0f); // x = frame counter (see ssgi_frame), y = traced, z = bounce gain, w = probe gain
-            // xyz = the world position of the probe grid's cell (0,0,0) corner, w = one cell's size in
-            // world units. The grid's EXTENT comes from textureSize() in the shader rather than a lane
-            // of its own: this block is exactly 128 bytes, which is the smallest push-constant range
-            // Vulkan guarantees, and a fifth vector would overflow it.
-            glm::vec4 probe_grid = glm::vec4(0.0f);
-        };
 
         // The glossy lobe's own block (shaders/ssgi_spec.comp). It is a separate pass, so it is not bound
         // by the tracer's 128 bytes - which is the second reason it is a pass of its own: the first is
@@ -2254,15 +2242,20 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief create the screen-space GI compute pipeline from shaders/ssgi.comp
-         * @param compute_shader_code raw SPIR-V of the tracer
-         * @return success, or an error message on failure
-         * @note optional, and required for set_ssgi(true) to do anything. It reuses the shared
-         *       scene set and the G-buffer set (which carries the direct-radiance sampler and the
-         *       half-resolution image the tracer writes), so it owns only its pipeline layout -
-         *       which is why the deferred lighting pipeline has to exist first.
+         * @brief this frame's input for the SSGI tracer: the three facts the pass cannot derive
+         * @note `history_valid` is the DENOISER's per-image state, read off the runtime's flag because the
+         *       temporal resolve still lives there; `specular_next` is the same predicate the lobe's own pass
+         *       decides on, evaluated once so the two passes cannot disagree about who owes the hand-off
+         *       barrier; `probe_grid_first_use` is the per-generation flag the tracer's own barrier batch needs
          */
-        std::expected<void, std::string> make_ssgi_pipeline(std::span<unsigned char const> compute_shader_code);
+        [[nodiscard]] pass::ssgi_trace_frame make_ssgi_trace_frame() const noexcept;
+        /**
+         * @brief resolve the SSGI tracer: its twelve declared barrier images, the two shared sets, its pipeline
+         *        and the push block the renderer composes
+         * @return false when the frame has no GI target, which skips the pass WITHOUT recording anything - the
+         *         early return this function's body used to make for itself
+         */
+        [[nodiscard]] bool resolve_ssgi_trace(pass::resolved_io& out);
 
         /**
          * @ingroup vulkan_runtime
