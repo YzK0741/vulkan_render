@@ -415,6 +415,44 @@ ONE HARNESS NOTE, the same intermittent one recorded earlier: this step's FIRST 
 scenario FLAKY (`changed: 0` in every run, and the tail I captured did not name it); the immediate re-run was
 12 x 2 clean with all twelve hashes matching. Nothing about the renderer changed between the two runs.
 
+## THE GI DENOISER: MEASURED TWICE, AND WHAT IT ACTUALLY NEEDS
+
+Two attempts at extracting the temporal resolve failed, both with a validation error that names the missing
+piece precisely, and the second one is the finding worth keeping. Neither attempt was landed (the tree was
+reverted to `f117f29` rather than left half-done).
+
+**Attempt 1: a single pass with two families.** The denoiser resolves two signals (the diffuse bounce and the
+reflection) with one pipeline and one layout, and each signal has its own images in the SAME seven slots. A
+declaration can describe one set's contents, so it would be right for one family and wrong for the other; a
+second list would need the schema to say "these are the same slots"; and `resolved_io` carries exactly ONE
+own-set handle while the pass needs two. Recorded last round as a design question, and it still is.
+
+**Attempt 2: split the signals into two passes** (the shape that needs no framework change at all - each pass
+then has one honest declaration, which is why `ssgi_temporal_io` was trimmed to the diffuse signal's two barrier
+images). The diffuse pass got as far as building, dispatching and producing byte-identical frames, and then
+failed on its own descriptor family, twice, in a way that is not about the two signals at all:
+
+1. with the family's signature taken from the CURRENT frame's views -
+   `VUID-vkUpdateDescriptorSets-None-03047`, i.e. rewriting a set a pending frame names. That one is understood
+   and solved (the TAA resolve's generation fingerprint: cache one frame's views, drop them on
+   `on_swapchain_recreated`);
+2. with that fingerprint in place - `vkQueueSubmit(): ... expects VkImage 0x64 ... to be in layout
+   VK_IMAGE_LAYOUT_GENERAL--instead, current layout is VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL`. The sets point
+   at the WRONG IMAGE: a per-image family needs each image's OWN views in that image's set, and the write
+   callback `image_set_family::ensure` invokes is handed only an `image_index`, not that image's views. The
+   renderer's own lambda solved this by reaching into `core` (`vulkan_core.gi_image_views[image_index]`); a pass
+   cannot, because `resolved_io::own` is the CURRENT image's handles.
+
+**SO THE MISSING CHANNEL IS PER-IMAGE VIEWS, and this also exposes a defect in the TAA pass that the gate cannot
+see.** `taa_pass::record` ignores the `image_index` its write callback is given and writes `io.own` (the current
+frame's four views) into EVERY set: with more than one swapchain image, every set points at one image's history,
+velocity and depth. The gate reports no finding because the reference was captured from the same code - and
+because the pages this branch compares are pages `master` renders with the same defect. The honest fix is one
+channel serving both: a pass that owns a per-image family should be handed the view lists *per image* (either as
+`std::span<std::span<VkImageView const> const>` in `resolved_io`, or by having `ensure` hand the callback the
+image's own views). That is a framework decision like the first one, it fixes the TAA pass's latent bug as a
+side effect, and it is what the temporal (and then spatial) extraction should be built on.
+
 ## WHAT THE INVENTORY ALREADY FOUND (recorded, not yet fixed)
 
 * The named scene pipelines are built with `swap_chain_image_format` (`B8G8R8A8_SRGB`) while the transparent
