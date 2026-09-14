@@ -1,4 +1,4 @@
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/pass.cppm
@@ -32,6 +32,7 @@
 
 module;
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string_view>
@@ -40,6 +41,7 @@ module;
 export module vulkan.pass;
 
 import vulkan.render_resource;
+import vulkan.render_resource.shared;
 
 export namespace vulkan::pass {
 
@@ -107,6 +109,10 @@ export namespace vulkan::pass {
     struct frame_identity {
         uint32_t image_index = 0; // per-swapchain-image resources (GI, TAA, the G-buffer)
         uint32_t slot = 0;        // per-frame-slot resources (shadow maps, the light/camera buffers)
+        /// how many swapchain images THIS generation has, which is not the same number as `image_index` and
+        /// is what a pass that owns a per-image descriptor family sizes it from. The probe cache needs it,
+        /// and it is the kind of fact that used to be reachable only from inside `vulkan.runtime`
+        uint32_t image_count = 0;
         VkExtent2D extent = {0, 0};
     };
 
@@ -149,6 +155,27 @@ export namespace vulkan::pass {
         shared_sets shared = {};
         /// in the order `behaviour::pipelines` names them, one entry per name
         std::span<VkPipeline const> pipelines = {};
+        /**
+         * The layout of the pipelines this pass names - ONE, not one per pipeline, because that is what this
+         * renderer's passes have: a pass builds one `VkPipelineLayout` and every pipeline it records with
+         * (post's five, TAA's two, the probe cache's one) is created from it.
+         *
+         * WHY A PASS NEEDS IT AT ALL, which the first real pass made unavoidable: a pass that records its own
+         * dispatches pushes its own constants and binds its own sets, and both calls take the layout. The
+         * alternative - the host pushing on the pass's behalf - would mean the host knowing every pass's push
+         * block, which is the same fact in two places.
+         */
+        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+        /**
+         * The push block the HOST composed for this pass this frame, as raw bytes.
+         *
+         * Raw, because the framework has no pass's type and will not learn one: the declaration's `push`
+         * block is the size contract, and the pass reads the bytes as the struct it declared. The host
+         * composes it because the values in it - the scene's bounds, an instance table's device address, the
+         * global light direction - are the renderer's, not the pass's; what the pass owns is the block's
+         * SHAPE and the fields it changes per dispatch (the probe cache's mode lane).
+         */
+        std::span<std::byte const> push = {};
         /// the extent THIS pass works at: the frame's, half of it, or a resource's, per `behaviour::extent`
         VkExtent2D extent = {0, 0};
     };
@@ -168,6 +195,18 @@ export namespace vulkan::pass {
      */
     struct pass_host {
         void* context = nullptr;
+        /**
+         * The device a pass builds its own objects on, and the renderer's six samplers.
+         *
+         * THIS IS THE CREATE-TIME INTERFACE, and it is deliberately this narrow: a pass may create a
+         * `VkDescriptorSetLayout` from its own declaration and descriptor sets from it, and it never names a
+         * `VkSampler` (a declaration CHOOSES one by `sampler_hint`, and the six exist for six reasons). What
+         * is absent is the point: no instance, no physical device, no allocator, no queue, no command pool -
+         * `vulkan.core` remains the only thing that creates an image, and a pass that wanted to would be
+         * taking over an image family, which is a resource-layer change and has to be argued as one.
+         */
+        VkDevice device = VK_NULL_HANDLE;
+        render_resource::shared::sampler_set samplers = {};
         /// the frame being recorded
         frame_identity (*frame)(void* context) = nullptr;
         /// whether a pass's feature is active this frame (`feature()`; empty means always)
@@ -211,12 +250,23 @@ export namespace vulkan::pass {
         [[nodiscard]] virtual behaviour const& behaviour() const noexcept = 0;
         /// @brief the feature that gates it ([render] keys); empty means "always"
         [[nodiscard]] virtual std::string_view feature() const noexcept = 0;
-        /// @brief build what this pass owns (pipelines, layouts) through the host; once per device generation
+        /// @brief build what this pass owns (its set layout, its descriptor family) through the host; once
+        ///        per device generation
         virtual void create(pass_host const& host) = 0;
         /// @brief the swapchain was rebuilt, so every per-image resource this pass held is stale
         virtual void on_swapchain_recreated(pass_host const& host) = 0;
-        /// @brief record into the frame, with the resources the declaration asked for already resolved
-        virtual void record(resolved_io const& io) const = 0;
+        /**
+         * @brief record into the frame, with the resources the declaration asked for already resolved
+         *
+         * NOT const, and this is a correction the first real pass forced rather than a convenience: a pass
+         * that owns a descriptor family must be able to ensure it, and ensuring is what re-points the family
+         * when the swapchain's views changed. The guarantee that layer actually needs is the one this keeps:
+         * a pass holds no device state BETWEEN frames and is handed everything it needs to record - the
+         * command buffer, its own sets, the shared ones, the pipelines, the extent and the push block. What
+         * it must not do is reach for anything the run did not resolve, and that is enforced by what
+         * `resolved_io` carries.
+         */
+        virtual void record(resolved_io const& io) = 0;
     };
 
     // =============================================================================================
@@ -236,8 +286,9 @@ export namespace vulkan::pass {
      */
     struct stage {
         std::string_view name = {};
-        /// MUTABLE pointers: `create` and `on_swapchain_recreated` store what the pass owns into it, while
-        /// `record` is const because it mutates nothing - it is handed everything it needs.
+        /// MUTABLE pointers: a pass stores what it owns into itself through `create` and
+        /// `on_swapchain_recreated`, and `record` is non-const because a pass that owns a descriptor family
+        /// ensures it there (see `frame_pass::record`).
         std::span<frame_pass*> passes = {};
         bool marks = true; // a stage nested inside another's instance may not want its own pair
     };

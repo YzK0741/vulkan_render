@@ -199,11 +199,19 @@ was open in the first draft of this document:
   consumer writes a shared set through a declaration, because that consumer is what says which keys the table
   needs.
 
-STILL OPEN, stated rather than implied: push constants are the one input that is neither a resource nor a
-behaviour, and they are composed by the runtime today (camera matrices, radii, the frame counter, the instance
-table's device address) while the shader that consumes them belongs to the pass - so either the pass pushes them
-itself (needing the pipeline layout in `resolved_io`) or the host pushes on its behalf (needing to know each
-pass's push layout). And parallel recording (`main_segments` + the task pool) is not expressible in `stage` yet.
+STILL OPEN, stated rather than implied: parallel recording (`main_segments` + the task pool) is not expressible
+in `stage` yet.
+
+THE PUSH CONSTANTS ARE SETTLED, and the first consumer is what settled them. They were the one input that is
+neither a resource nor a behaviour: the values in them (scene bounds, an instance table's device address, the
+global light direction) are the RENDERER's, while the block's shape and its per-dispatch lanes belong to the
+PASS that declared the shader. So the split follows the values: the HOST composes the block and `resolved_io`
+carries it as raw bytes (`std::span<std::byte const> push`, whose size the declaration's `push` block
+contracts), and the PASS reads it as the struct it declared, changes the lanes it owns and pushes it through
+`resolved_io::pipeline_layout` - a layout, one per pass, which is what this renderer's passes have (post's five
+pipelines and TAA's two are each built from a single layout). The alternative - the host pushing on the pass's
+behalf - would have meant the host knowing every pass's push block: the same fact in two places, which is the
+one thing this layer exists to prevent.
 
 ## 9. Status
 
@@ -211,8 +219,15 @@ pass's push layout). And parallel recording (`main_segments` + the task pool) is
                                                         the pool counts, and one real declaration (the probe
                                                         cache); pure CPU, so ctest covers its invariants
     framework module (vulkan.pass)                DONE: behaviour vocabulary, resolved_io, the base class,
-                                                        pass_host, stage, and the three runner functions;
-                                                        no consumer yet
+                                                        pass_host, stage, and the three runner functions.
+                                                        The first consumer then ADDED what only a real pass
+                                                        can discover: a create-time interface on the host (a
+                                                        device and the six samplers, and nothing that
+                                                        allocates), the generation's image count in
+                                                        frame_identity, the pipeline layout and the
+                                                        host-composed push bytes in resolved_io, and a
+                                                        non-const record - because a pass that owns a
+                                                        descriptor family has to ensure it
     shared handles (vulkan.render_resource.shared) DONE for the samplers, which is the first tenant: the probe
                                                         cache's writes now CHOOSE one through its declaration
                                                         (`sampler_hint`) instead of naming a `VkSampler`, and

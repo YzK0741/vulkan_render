@@ -40,16 +40,24 @@ namespace {
     VkCommandBuffer const fake_cmd = reinterpret_cast<VkCommandBuffer>(0xC0);
     VkDescriptorSet const fake_own_set = reinterpret_cast<VkDescriptorSet>(0x0F);
     VkDescriptorSet const fake_scene = reinterpret_cast<VkDescriptorSet>(0x5E);
+    VkDevice const fake_device = reinterpret_cast<VkDevice>(0xDD);
+    VkPipelineLayout const fake_layout = reinterpret_cast<VkPipelineLayout>(0x1A);
+    VkSampler const fake_probe_sampler = reinterpret_cast<VkSampler>(0x22);
     std::array<VkPipeline, 4> const fake_pipelines = {
         reinterpret_cast<VkPipeline>(0x1), reinterpret_cast<VkPipeline>(0x2), reinterpret_cast<VkPipeline>(0x3), reinterpret_cast<VkPipeline>(0x4)};
+    /// the push block the fake host composes: raw bytes, as a real host does (the framework has no pass's type)
+    std::array<std::byte, 4> const fake_push = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
 
     /// the host's own state: the log every callback writes, plus what the fake host answers
     struct host_state {
         std::vector<std::string> log;
-        vp::frame_identity frame = {.image_index = 3, .slot = 1, .extent = {640, 480}};
+        vp::frame_identity frame = {.image_index = 3, .slot = 1, .image_count = 3, .extent = {640, 480}};
         std::vector<std::string_view> active_features = {"gi"};
         std::string_view failing_pass = {}; // resolve returns false for this pass's name
         std::array<vp::resolved_binding, 9> own = {};
+        /// what a pass was handed at create time, recorded so the create interface can be asserted
+        VkDevice created_with_device = VK_NULL_HANDLE;
+        VkSampler created_with_sampler = VK_NULL_HANDLE;
     };
 
     vp::frame_identity host_frame(void* ctx) {
@@ -75,6 +83,8 @@ namespace {
         out.own_set = fake_own_set;
         out.shared.scene = fake_scene;
         out.pipelines = std::span<VkPipeline const>(fake_pipelines.data(), behaviour.pipelines.size());
+        out.pipeline_layout = fake_layout;
+        out.push = fake_push;
         out.extent = behaviour.extent == vp::extent_rule::half ? VkExtent2D{state.frame.extent.width / 2u, state.frame.extent.height / 2u} : state.frame.extent;
         return true;
     }
@@ -96,6 +106,8 @@ namespace {
     vp::pass_host make_host(host_state& state) {
         return vp::pass_host{
             .context = &state,
+            .device = fake_device,
+            .samplers = {.probe_grid = fake_probe_sampler},
             .frame = host_frame,
             .feature_active = host_feature_active,
             .resolve = host_resolve,
@@ -143,30 +155,38 @@ namespace {
         [[nodiscard]] std::string_view feature() const noexcept override {
             return feature_;
         }
-        void create(vp::pass_host const&) override {
+        void create(vp::pass_host const& host) override {
             state_->log.emplace_back(std::string("create:") + std::string(io_.name));
+            state_->created_with_device = host.device;
+            state_->created_with_sampler = host.samplers.of(rr::sampler_hint::probe_grid);
         }
         void on_swapchain_recreated(vp::pass_host const&) override {
             state_->log.emplace_back(std::string("recreate:") + std::string(io_.name));
         }
-        void record(vp::resolved_io const& io) const override {
+        void record(vp::resolved_io const& io) override {
             state_->log.emplace_back(std::string("record:") + std::string(io_.name));
             last_cmd = io.cmd;
             last_own_set = io.own_set;
             last_scene_set = io.shared.scene;
             last_pipelines = io.pipelines.size();
+            last_pipeline_layout = io.pipeline_layout;
+            last_push_size = io.push.size();
             last_extent = io.extent;
             last_image_index = io.frame.image_index;
             last_slot = io.frame.slot;
+            last_image_count = io.frame.image_count;
         }
 
-        mutable VkCommandBuffer last_cmd = VK_NULL_HANDLE;
-        mutable VkDescriptorSet last_own_set = VK_NULL_HANDLE;
-        mutable VkDescriptorSet last_scene_set = VK_NULL_HANDLE;
-        mutable std::size_t last_pipelines = 0;
-        mutable VkExtent2D last_extent = {0, 0};
-        mutable uint32_t last_image_index = 0;
-        mutable uint32_t last_slot = 0;
+        VkCommandBuffer last_cmd = VK_NULL_HANDLE;
+        VkDescriptorSet last_own_set = VK_NULL_HANDLE;
+        VkDescriptorSet last_scene_set = VK_NULL_HANDLE;
+        std::size_t last_pipelines = 0;
+        VkPipelineLayout last_pipeline_layout = VK_NULL_HANDLE;
+        std::size_t last_push_size = 0;
+        VkExtent2D last_extent = {0, 0};
+        uint32_t last_image_index = 0;
+        uint32_t last_slot = 0;
+        uint32_t last_image_count = 0;
 
     private:
         rr::pass_io io_;
@@ -254,6 +274,25 @@ int main() {
         CHECK(tail.last_pipelines == 2);       // two names -> two, in the declared order
         CHECK(probe.last_extent.width == 640); // extent_rule::resource, with a fake host that hands the frame's
         CHECK(tail.last_extent.width == 320);  // extent_rule::half is half of it, applied by the resolver
+        // ... the layout those pipelines were built from (a pass that records its own dispatches pushes and
+        // binds through it), the host-composed push block as raw bytes, and the GENERATION's image count -
+        // which is what a pass sizes a per-image descriptor family from, and is not the image index
+        CHECK(probe.last_pipeline_layout == fake_layout);
+        CHECK(probe.last_push_size == fake_push.size());
+        CHECK(probe.last_image_count == 3);
+    }
+
+    // ---- what a pass is given at CREATE time: a device and the six samplers, and nothing that allocates ----
+    {
+        std::array<frame_pass*, 1> passes = {&probe};
+        stage const st = {.name = "scene", .passes = passes};
+        state.log.clear();
+        state.created_with_device = VK_NULL_HANDLE;
+        state.created_with_sampler = VK_NULL_HANDLE;
+        run_report const built = create_stage(st, host);
+        CHECK(built.created == 1);
+        CHECK(state.created_with_device == fake_device);
+        CHECK(state.created_with_sampler == fake_probe_sampler); // chosen by hint, never named by the pass
     }
 
     // ---- an inactive feature is skipped WITHOUT being resolved: what makes an off feature byte-exact ----
