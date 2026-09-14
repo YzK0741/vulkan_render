@@ -2185,88 +2185,6 @@ namespace vulkan {
         }
     }
 
-    // One slice of the main-pass leaves (see the declaration); when draw_skybox the skybox is
-    // drawn first so the background always precedes the scene (segment 0 only). Every segment
-    // binds the scene set itself (a secondary does not inherit state from the primary), then
-    // walks ONLY the given leaves, drawing each through its render_environment: default-semantics
-    // leaves request the runtime's default pipeline (bind_default, deduplicated), custom leaves
-    // request theirs by name - so leaves of several pipelines mix freely in one segment and
-    // each pipeline is bound only when the current one differs.
-    void runtime::record_main_segment(VkCommandBuffer const command_buffer, std::span<primitive const* const> const leaves, bool const gbuffer_arg) const {
-        core const& vk = this->vulkan_core;
-        // Bind this frame slot's scene descriptor set once: every pipeline shares the scene
-        // layout, so the set stays valid across pipeline binds and only models vary per draw.
-        // Each slot's set always points at that slot's own camera/shadow/skin/morph resources.
-        if (this->scene_sets.created()) {
-            VkDescriptorSet const scene_set_handle = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
-            vkCmdBindDescriptorSets(command_buffer,
-                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    vk.scene_pipeline_layout,
-                                    0,
-                                    1,
-                                    &scene_set_handle,
-                                    0,
-                                    nullptr);
-        }
-
-        // Main pass: one render_environment per segment (per recording thread - never shared
-        // across the parallel workers). Its binder looks the requested pipeline up in the
-        // runtime cache and binds it; default-semantics leaves ask for the runtime default.
-        //
-        // Concurrency contract: make_pipeline() / set_default_pipeline() may be called from any
-        // thread, but only OUTSIDE the frame loop (setup or while idle - same timing rule as
-        // make_primitive: mid-frame creation would race the recording workers). During
-        // recording the registry is therefore read-only, so the per-bind lookup below needs no
-        // lock: the pipelines map is a node container (inserts never invalidate existing
-        // entries), so the binder can search it directly. The default-name view below is still
-        // snapshotted under a shared lock so a concurrent setup-time set_default_pipeline
-        // cannot tear the std::string it points into.
-        render_environment env;
-        env.command_buffer = command_buffer;
-        // The G-buffer pass binds its own pipeline as the pass default (see gbuffer_pipeline_name):
-        // same leaves, same draw path, but the fragment stage writes the surface into three 1x
-        // targets instead of shading into the HDR one. The flag arrives from the caller rather than
-        // being read back from gbuffer_pass_active(): the deferred path also records forward-style
-        // segments (the transparent pass), and those must bind the forward pipelines even though the
-        // G-buffer pass is the active mode.
-        bool const gbuffer_pass = gbuffer_arg;
-        {
-            std::shared_lock const lock(this->access_mutex);
-            env.default_name = gbuffer_pass ? gbuffer_pipeline_name : this->default_pipeline_name;
-        }
-        env.bind = [this, gbuffer_pass](VkCommandBuffer const cb, std::string_view const name) {
-            if (gbuffer_pass) {
-                if (name == gbuffer_pipeline_name) {
-                    this->gbuffer_pipeline->begin_pipeline(cb);
-                    return;
-                }
-                // a leaf with explicit pipeline semantics cannot draw in the G-buffer instance (the
-                // named pipelines declare the single HDR attachment): say so once per leaf instead
-                // of issuing a draw that would be a validation error
-                utility::log("runtime: leaf requests pipeline '{}' during the G-buffer pass - draw skipped (only default-semantics leaves write the G-buffer)", name);
-                return;
-            }
-            if (auto const it = this->pipelines.find(name); it != this->pipelines.end()) {
-                it->second.begin_pipeline(cb);
-            } else {
-                utility::log("runtime: main pass references unknown pipeline '{}' - draw skipped", name);
-            }
-        };
-        // transparent leaves toggle depth writes off via this (core dynamic state, 1.3)
-        env.set_depth_write_fn = [](VkCommandBuffer const cb, VkBool32 const enabled) {
-            vkCmdSetDepthWriteEnable(cb, enabled);
-        };
-        // single-sided materials keep back-face culling here (the shadow pass overrides it with
-        // env.two_sided; the main pass must not, or double-sided handling would cost fill rate)
-        env.set_cull_mode_fn = [](VkCommandBuffer const cb, VkCullModeFlags const mode) {
-            vkCmdSetCullMode(cb, mode);
-        };
-        env.layout = vk.scene_pipeline_layout;
-        for (primitive const* const m : leaves) {
-            m->draw(env); // polymorphic: normal / instanced / static / custom
-        }
-    }
-
     // ---- post-processing: HDR scene target -> exposure + ACES + gamma -> swapchain ----
     // The bloom chain lands here next; the push constants already reserve its parameters.
     std::expected<void, std::string> runtime::make_post_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
@@ -2566,67 +2484,14 @@ namespace vulkan {
     //    one instance;
     //  - before the TAA resolve, so the resolve sees the composited frame.
     void runtime::record_transparent_pass(VkCommandBuffer const command_buffer) {
-        if (this->frame_transparent.empty()) {
-            return; // nothing blended this frame: no instance and no barriers to pay for
-        }
-        core& vk = this->vulkan_core;
-        uint32_t const image_index = this->current_image_index;
-        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
-        auto const& secondaries = this->secondary_command_buffers[static_cast<std::size_t>(frame_slot)];
-        VkCommandBuffer const transparent_secondary = *secondaries[static_cast<std::size_t>(secondary_pass::transparent)];
-
-        // The lighting stage sampled the G-buffer depth, so ensure_gbuffer_depth_sampled() left it in
-        // SHADER_READ_ONLY_OPTIMAL: hand it back to attachment layout for the depth test. The scene
-        // target is already in COLOR_ATTACHMENT_OPTIMAL (the lighting instance ended as an attachment
-        // write), but dynamic rendering inserts no dependency between two instances, so that store
-        // still has to be published before this instance LOADs the same image.
-        std::array<VkImageMemoryBarrier2, 2> barriers = {};
-        barriers[0] = vulkan::sampling_to_depth_attachment_transition;
-        barriers[0].image = vk.gbuffer_depth_images[image_index];
-        barriers[1] = vulkan::color_attachment_dependency;
-        barriers[1].image = this->scene_target_image(image_index);
-        VkDependencyInfo const dependency = make_image_dependency_info(static_cast<uint32_t>(barriers.size()), barriers.data());
-        vkCmdPipelineBarrier2(command_buffer, &dependency);
-
-        // Record the leaves into the per-slot transparent secondary, with inheritance matching the
-        // instance below: ONE color attachment (the HDR scene target) at 1x. Deliberately not the
-        // forward path's sample count - there is no multisampled image in a frame.
-        std::array<VkFormat, 1> const color_formats = {vulkan::hdr_format};
-        VkCommandBufferInheritanceRenderingInfo const inheritance = make_inheritance_rendering_info(color_formats.data(), 1, vk.depth_format, VK_SAMPLE_COUNT_1_BIT);
-        VkCommandBufferInheritanceInfo const secondary_inherit = make_inheritance_info(&inheritance);
-        VkCommandBufferBeginInfo const secondary_begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &secondary_inherit);
-        bool recorded = false;
-        if (vkBeginCommandBuffer(transparent_secondary, &secondary_begin) == VK_SUCCESS) {
-            this->record_main_segment(transparent_secondary, this->frame_transparent, /*gbuffer_pass=*/false);
-            vkEndCommandBuffer(transparent_secondary);
-            recorded = true;
-        } else {
-            utility::log("runtime: deferred transparent secondary begin failed - transparent leaves skipped this frame");
-        }
-
-        // loadOp LOAD on both attachments: the scene target holds the shaded frame and the G-buffer
-        // depth holds the opaque surface, and neither may be cleared. The leaves are sorted far -> near
-        // by the cull, which is the order alpha blending needs.
-        VkRenderingAttachmentInfo const color_attachment = make_load_color_attachment_info(this->scene_target_view(image_index));
-        VkRenderingAttachmentInfo const depth_attachment = make_load_depth_attachment_info(vk.gbuffer_depth_image_views[image_index]);
-        VkRenderingInfo const rendering_info = make_rendering_info(VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT, {{0, 0}, vk.swap_chain_extent}, &color_attachment, 1, &depth_attachment);
-        vkCmdBeginRendering(command_buffer, &rendering_info);
-        if (recorded) {
-            vkCmdExecuteCommands(command_buffer, 1, &transparent_secondary);
-        }
-        vkCmdEndRendering(command_buffer);
-
-        // Hand the depth back to the layout everything downstream samples it in. This pass took it out
-        // of SHADER_READ_ONLY_OPTIMAL to depth-test against it, and TWO later stages read the same
-        // image: the TAA resolve (its disocclusion guard) and the composite (the GI upsample's edge
-        // test). Nothing else would move it - ensure_gbuffer_depth_sampled() is flag-driven and the
-        // lighting stage already cleared the flag when it sampled the depth - so a frame with blended
-        // geometry would leave the image as an attachment and every read after it would be a layout
-        // error, which is exactly what validation reported the first time the composite sampled it.
-        VkImageMemoryBarrier2 to_sampling = vulkan::shadow_map_sampling_transition; // attachment -> SHADER_READ
-        to_sampling.image = vk.gbuffer_depth_images[image_index];
-        VkDependencyInfo const sampling_dependency = make_image_dependency_info(1, &to_sampling);
-        vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
+        static_cast<void>(command_buffer); // the pass records into the frame's command buffer it is resolved with
+        // THE TRANSPARENT PASS records the blended geometry: the two hand-off barriers, the LOAD instance over
+        // its two declared targets, one secondary and the depth hand-back - all in one function now (see
+        // vulkan.pass.transparent). Like the scene pass it is SKIPPED without resolving anything on a frame
+        // whose culling left nothing blended, which is what keeps a frame with no blended leaves byte-exact.
+        this->transparent.set_frame(this->make_transparent_frame());
+        pass::stage const transparent_stage = {.name = "transparent", .passes = this->transparent_stage, .marks = false};
+        [[maybe_unused]] pass::run_report const transparent_report = pass::record_stage(transparent_stage, this->make_pass_host());
     }
 
     // ---- temporal anti-aliasing (M3) ----
@@ -3674,6 +3539,44 @@ namespace vulkan {
         return true;
     }
 
+    pass::transparent_frame runtime::make_transparent_frame() noexcept {
+        core const& vk = this->vulkan_core;
+        auto const& secondaries = this->secondary_command_buffers[static_cast<std::size_t>(vk.current_frame)];
+        return pass::transparent_frame{
+            .leaves = this->frame_transparent,
+            .secondary = *secondaries[static_cast<std::size_t>(secondary_pass::transparent)],
+            .make_environment = &runtime::make_scene_environment,
+            .owner = this,
+            .color_format = vulkan::hdr_format,
+            .depth_format = vk.depth_format,
+            .extent = vk.swap_chain_extent,
+        };
+    }
+
+    bool runtime::resolve_transparent_pass(pass::resolved_io& out) {
+        core const& vk = this->vulkan_core;
+        std::size_t const index = this->current_image_index;
+        std::size_t const image_count = vk.scene_color_image_views.size();
+        if (this->frame_transparent.empty() || image_count == 0 || index >= image_count || vk.gbuffer_depth_image_views.size() != image_count) {
+            return false; // nothing blended this frame: no instance and no barriers to pay for
+        }
+        out.frame = this->pass_frame();
+        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
+        out.own = {};
+        out.own_set = VK_NULL_HANDLE;
+        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
+        // the two declared targets, in declaration order: the scene colour it composites over (an ALIAS - the
+        // same image the scene pass writes) and the surface depth it depth-tests against
+        out.target_storage[0] = {.view = this->scene_target_view(index), .buffer = VK_NULL_HANDLE, .image = this->scene_target_image(index)};
+        out.target_storage[1] = {.view = vk.gbuffer_depth_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_depth_images[index]};
+        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), 2);
+        out.pipelines = {}; // a leaf names its pipeline; see the scene pass
+        out.pipeline_layout = VK_NULL_HANDLE;
+        out.push = {};
+        out.extent = vk.swap_chain_extent;
+        return true;
+    }
+
     pass::frame_identity runtime::pass_frame() const noexcept {
         core const& vk = this->vulkan_core;
         return pass::frame_identity{
@@ -3710,6 +3613,9 @@ namespace vulkan {
 
     bool runtime::resolve_pass(pass::frame_pass const& pass, pass::resolved_io& out) {
         core const& vk = this->vulkan_core;
+        if (&pass == static_cast<pass::frame_pass const*>(&this->transparent)) {
+            return this->resolve_transparent_pass(out);
+        }
         if (&pass == static_cast<pass::frame_pass const*>(&this->scene)) {
             return this->resolve_scene_pass(out);
         }

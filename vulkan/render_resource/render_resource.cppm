@@ -1,4 +1,4 @@
-// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/render_resource/render_resource.cppm
@@ -826,6 +826,33 @@ export namespace vulkan::render_resource {
         .bindings = {},
         .shared_sets = scene_shared_sets,
         .targets = scene_targets,
+        .push = std::nullopt,
+    };
+
+    /**
+     * @brief the transparent pass's declaration: the same surface, entered with LOAD
+     *
+     * TWO TARGETS, not six: the alpha-blended leaves composite over the shaded frame, so the pass draws into
+     * the scene colour target and depth-tests against the surface depth - and it LOADs both, because what it
+     * composites over must survive. That decision is the pass's (it opens the instance), which is why the
+     * declaration names the images and not the load ops (see render_target).
+     *
+     * It binds the shared scene set like the scene pass does - a blended surface reads the same materials, the
+     * same camera and the same shadow map - so it declares the set by index and owns nothing.
+     */
+    inline constexpr std::array<render_target, 2> transparent_targets = {{
+        {.resource = resource_id::scene_color, .element = 0},
+        {.resource = resource_id::gbuffer_depth, .element = 0, .kind = target_kind::depth},
+    }};
+
+    /// @brief the transparent pass's declaration
+    /// @ingroup vulkan_render_resource
+    inline constexpr pass_io transparent_io = {
+        .name = "transparent",
+        .own_set = 1, // unused: this pass has no own bindings either
+        .bindings = {},
+        .shared_sets = scene_shared_sets,
+        .targets = transparent_targets,
         .push = std::nullopt,
     };
 

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.60.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.61.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -30,6 +30,7 @@ import vulkan.pass;                   // the pass framework: the host the runner
 import vulkan.pass.gi_probe;          // the first real pass (its member is declared below, so the class must be complete)
 import vulkan.pass.taa;               // the second, and the first GRAPHICS one
 import vulkan.pass.scene;             // the third: the scene itself, whose work is DATA rather than a declaration
+import vulkan.pass.transparent;       // the fourth: the blended geometry, over the shaded frame
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
@@ -679,6 +680,9 @@ namespace vulkan {
         // pipeline registry, the secondary buffers and the scheduler.
         pass::scene_pass scene;
         std::array<pass::frame_pass*, 1> scene_stage = {&this->scene};
+        /// THE TRANSPARENT PASS (vulkan.pass.transparent): the same scene, its own LOAD instance, after lighting
+        pass::transparent_pass transparent;
+        std::array<pass::frame_pass*, 1> transparent_stage = {&this->transparent};
         /// the scene frame's view of the per-slot segments (a member, so the span it hands the pass outlives it)
         std::vector<pass::segment_buffer> scene_segment_view = {};
         /// the colour formats the scene pass's secondaries inherit, in attachment order
@@ -1871,7 +1875,6 @@ namespace vulkan {
          *        forward-style segments: its transparent pass runs while the G-buffer pass is the
          *        active mode, and still shades while it draws.
          */
-        void record_main_segment(VkCommandBuffer command_buffer, std::span<primitive const* const> leaves, bool gbuffer_pass) const;
 
         /**
          * @ingroup vulkan_runtime
@@ -2603,6 +2606,13 @@ namespace vulkan {
          * @return false when there is no surface pipeline or no target generation (see record_scene)
          */
         [[nodiscard]] bool resolve_scene_pass(pass::resolved_io& out);
+        /** @brief this frame's blended geometry, as the transparent pass needs it */
+        [[nodiscard]] pass::transparent_frame make_transparent_frame() noexcept;
+        /**
+         * @brief resolve the transparent pass: the shaded target and the surface depth it blends over
+         * @return false on a frame whose culling left nothing blended (the pass then does not run at all)
+         */
+        [[nodiscard]] bool resolve_transparent_pass(pass::resolved_io& out);
 
         /**
          * @ingroup vulkan_runtime

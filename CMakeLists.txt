@@ -128,6 +128,7 @@ target_sources(vulkancorekit
         vulkan/pass/gi_probe.cppm
         vulkan/pass/taa.cppm
         vulkan/pass/scene.cppm
+        vulkan/pass/transparent.cppm
         vulkan/profiling/profiling.cppm
         vulkan/shadow_fit/shadow_fit.cppm
         vulkan/readback/readback.cppm
@@ -151,6 +152,7 @@ target_sources(vulkancorekit
         vulkan/pass/gi_probe.cpp
         vulkan/pass/taa.cpp
         vulkan/pass/scene.cpp
+        vulkan/pass/transparent.cpp
         vulkan/shadow_fit/shadow_fit.cpp
         vulkan/readback/readback.cpp
         vulkan/acceleration_structure/acceleration_structure.cpp
