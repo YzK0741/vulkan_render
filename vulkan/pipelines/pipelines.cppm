@@ -76,7 +76,8 @@ namespace vulkan::pipelines {
     /// the spatial half of the same denoiser: same two set layouts, same shape, its own push block
     export std::expected<ssgi_owned, std::string> build_ssgi_spatial(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
     /// the glossy lobe (see shaders/ssgi_spec.comp) - the tracer's set layouts and its own push block
-    export std::expected<ssgi_owned, std::string> build_ssgi_spec(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    export std::expected<ssgi_owned, std::string> build_ssgi_spec(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size,
+                                                                  std::span<unsigned char const> compute_shader_code);
     /// the ray-traced sun shadow: the same two set layouts as the GI tracer (the scene set carries the
     /// camera, the light UBO and - when the device has ray tracing - the top level structure; the
     /// G-buffer set carries the surface the ray starts from)
@@ -552,7 +553,7 @@ namespace vulkan::pipelines {
     // block is exactly 128 bytes (the smallest range Vulkan guarantees) and has no lane left for a ray
     // count, and a pass that is not recorded cannot perturb the frame at all, which is a stronger statement
     // than "a branch that arithmetically cancels".
-    std::expected<ssgi_owned, std::string> build_ssgi_spec(core& vk, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    std::expected<ssgi_owned, std::string> build_ssgi_spec(VkDevice const device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         ssgi_owned out;
 
@@ -568,11 +569,11 @@ namespace vulkan::pipelines {
         pipeline_layout_info.pSetLayouts = set_layouts.data();
         pipeline_layout_info.pushConstantRangeCount = 1;
         pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
             return fail("ssgi spec: pipeline layout creation failed");
         }
 
-        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, vk.device);
+        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
         if (!module.has_value()) {
             return fail("ssgi spec: compute shader module creation failed");
         }
@@ -588,10 +589,10 @@ namespace vulkan::pipelines {
         pipeline_info.layout = out.pipeline_layout;
 
         VkPipeline pipeline = VK_NULL_HANDLE;
-        if (vkCreateComputePipelines(vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+        if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("ssgi spec: vkCreateComputePipelines failed");
         }
-        out.trace = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
+        out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
         return out;
     }
 

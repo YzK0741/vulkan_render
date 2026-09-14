@@ -54,6 +54,7 @@ the same run. Re-verified with the RELATIVE spelling afterwards: 12 x 2, 0 chang
 | `08b84ac` | the finding that the non-GI port is complete: `master` has four pass modules, three were wired |
 | this step | **GI IS ATTACHED**: the 37-row declaration layer, the `gi_probe` pass, the GI pipeline builders, the acceleration structures, the GI shaders and config, and the 12-scenario gate. **12 x 2, 0 changed, 0 flaky**, including all four GI reference hashes |
 | this step | the **SSGI tracer is extracted** (`vulkan.pass.ssgi_trace`), which closed the framework gap the plan named: `pass_io::barrier_images` + `resolved_io::barrier_images` let a pass transition images that live in a SHARED set and own no descriptor. Gate 12 x 2, 0 changed, 0 flaky |
+| this step | the **glossy lobe is extracted** (`vulkan.pass.ssgi_spec`) on the same channel, and doing it found a defect in the tracer: nothing told the pass its generation had changed (`recreate_stage` now does). Gate 12 x 2, 0 changed, 0 flaky |
 
 `docs/pass_chain_inventory.md` (192 lines) is the read-only map of this state: its resource set, the frame's
 recording spine and mark intervals, every function of the PBR/scene chain with its attachments, sets,
@@ -333,6 +334,49 @@ right when it is right, and the partner run proved it byte-for-byte.
 
 WHAT IS LEFT OF THE GI CHAIN: the temporal resolve, the spatial filter and the glossy lobe, in that order, each
 extractable the same way now that the image channel exists. The probe cache was already a pass.
+
+## THE GI CHAIN'S SECOND STAGE: THE GLOSSY LOBE, AND A DEFECT IT FOUND IN THE FIRST
+
+The lobe (`vulkan.pass.ssgi_spec`) is the same shape as the tracer - two shared sets, no own binding, its images
+reached through `pass_io::barrier_images` - which is the point: **that channel is per-pass, not a special case
+for one pass**. It exists because the lobe writes the SAME image the tracer wrote (it adds a traced reflection to
+the raw diffuse trace), and because it has two storage outputs of its own whose descriptors live in the G-buffer
+set.
+
+Its frame position is why it is a pass rather than part of the tracer, and it is a correctness argument rather
+than a tidiness one:
+
+* AFTER the tracer, because it READS the trace it corrects. Two consecutive dispatches have no memory dependency
+  between them, so the first thing the lobe records is the compute-storage barrier that makes the
+  read-after-write legal;
+* BEFORE the denoiser, because the temporal resolve consumes the SUM. The tracer therefore skips its own
+  hand-off barrier when the lobe will run (`specular_next`), and the lobe owes the transition after the LAST
+  writer - which is why `feature_active("ssgi_specular")` had to become the same predicate the tracer reads
+  (`ssgi_specular_active()`), one answer in one place. That is the framework's feature registry doing exactly
+  what it is for: the pass names a feature, the renderer answers it, and the answer is the chain's ordering
+  constraint.
+
+THE DEFECT THIS STEP FOUND IN THE PREVIOUS ONE, because it is the kind of thing that only a question finds: the
+tracer's `probe_grid_seen_` describes a GENERATION, and nothing told the pass when the generation changed. It
+did not show up in any gate run - a capture never resizes - but after a swapchain recreation the pass would have
+skipped the probe grid's first-use batch while the host asked for it, leaving the grid in UNDEFINED the moment
+the tracer sampled it. The fix is the call `recreate_stage` was built for: `on_swapchain_recreated` now tells
+the tracer's stage and the lobe's stage, exactly as it tells the probe cache's and the TAA resolve's. The
+hand-kept list in that function is now the list of *stages*, and a pass added to a stage is covered.
+
+The lobe's own state is per IMAGE rather than per generation (`seen_`, one flag per swapchain image, sized from
+`ssgi_spec_frame::image_count`), for the reason the tracer's is not: it has one output per image and each needs
+its first-use transition once. The host asks for the reset in the two moments it knows and the pass cannot - a
+new generation (`on_swapchain_recreated`, via the runner) and the chain being switched on
+(`ssgi_spec.reset_first_use()`, the same shape as `taa_pass::reset_history`).
+
+Verified: gate 12 x 2, **0 changed, 0 flaky**, all four GI hashes plus `sponza_march` and the seven pre-GI
+scenarios. `metal_rough_glossy` and `glossy_motion` are the two the feature was built around, and they are the
+ones that decide this move.
+
+WHAT IS LEFT: the temporal resolve and the spatial filter. Both own a SET LAYOUT of their own (the temporal
+denoiser's four inputs), so they are the first GI stages that need the `pass_context` create half as well as the
+frame half - which the TAA resolve already demonstrated.
 
 ## WHAT THE INVENTORY ALREADY FOUND (recorded, not yet fixed)
 

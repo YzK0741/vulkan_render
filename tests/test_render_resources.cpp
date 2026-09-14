@@ -326,5 +326,24 @@ int main() {
         CHECK(!rr::validate(dup).has_value());
     }
 
+    // ---- the FIFTH declaration: the glossy lobe, which writes the tracer's OWN image and adds two of its own
+    //      to the same barrier channel - the declaration that proves the channel is per-pass rather than a
+    //      special case for one pass ----
+    {
+        CHECK(rr::validate(rr::ssgi_spec_io).has_value());
+        CHECK(rr::ssgi_spec_io.bindings.empty());
+        CHECK(rr::ssgi_spec_io.targets.empty());
+        CHECK(rr::ssgi_spec_io.shared_sets.size() == 2); // the tracer's two, because it reads that trace
+        CHECK(rr::ssgi_spec_io.shared_sets[0] == rr::ssgi_trace_io.shared_sets[0]);
+        CHECK(rr::ssgi_spec_io.shared_sets[1] == rr::ssgi_trace_io.shared_sets[1]);
+        CHECK(rr::ssgi_spec_io.barrier_images.size() == 3);
+        CHECK(rr::ssgi_spec_io.barrier_images[0].resource == rr::resource_id::gi_trace); // read AND written
+        CHECK(rr::ssgi_spec_io.barrier_images[1].resource == rr::resource_id::gi_spec_trace);
+        CHECK(rr::ssgi_spec_io.barrier_images[2].resource == rr::resource_id::gi_spec_reproject);
+        CHECK(rr::ssgi_spec_io.push.has_value());
+        CHECK(rr::ssgi_spec_io.push->size == 96); // a mat4 and two vectors: the tracer's block is the full 128
+        CHECK(rr::ssgi_spec_io.push->stages == rr::stage_flag::compute);
+    }
+
     return vk_test::finish("test_render_resources");
 }

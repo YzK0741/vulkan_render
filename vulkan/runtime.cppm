@@ -32,6 +32,7 @@ import vulkan.pass.taa;               // the second, and the first GRAPHICS one
 import vulkan.pass.scene;             // the third: the scene itself, whose work is DATA rather than a declaration
 import vulkan.pass.transparent;       // the fourth: the blended geometry, over the shaded frame
 import vulkan.pass.ssgi_trace;        // the fifth, and the GI chain's first stage: the half-resolution tracer
+import vulkan.pass.ssgi_spec;         // the sixth: the glossy lobe, which corrects the tracer's own image
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
@@ -379,6 +380,11 @@ namespace vulkan {
         /// know (whether the denoiser's accumulation is trustworthy, and whether the lobe runs next).
         pass::ssgi_trace_pass ssgi_trace;
         std::array<pass::frame_pass*, 1> ssgi_trace_stage = {&this->ssgi_trace};
+        /// THE GLOSSY LOBE (vulkan.pass.ssgi_spec): it owns its pipeline layout, its pipeline, the ordering
+        /// barrier, the hand-off and its per-image first-use state. It runs between the tracer and the denoiser
+        /// and writes the SAME image the tracer wrote - which is why the tracer asks whether it will run.
+        pass::ssgi_spec_pass ssgi_spec;
+        std::array<pass::frame_pass*, 1> ssgi_spec_stage = {&this->ssgi_spec};
         bool ssgi_on = false;
         float ssgi_intensity = 0.7f; // scales the traced indirect against the IBL probe it overlaps
         float ssgi_radius = 3.0f;    // ray length, view units
@@ -435,17 +441,8 @@ namespace vulkan {
         // The glossy lobe's own block (shaders/ssgi_spec.comp). It is a separate pass, so it is not bound
         // by the tracer's 128 bytes - which is the second reason it is a pass of its own: the first is
         // that a pass that is not recorded cannot perturb the frame at all (see ssgi_specular_active).
-        struct ssgi_spec_push_constants {
-            glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world, as the tracer's
-            // x = ray length in world units (the tracer's scene-relative radius), y = glossy rays per
-            // pixel, z = the self-intersection bias scale a shaded hit's shadow ray uses, w = the frame
-            // counter the ray sequence is seeded from.
-            glm::vec4 params = glm::vec4(0.0f);
-            // z/w = the instance table's device address in two 32-bit halves, the shape the tracer carries
-            // it in proj_terms. 0 means "no table", i.e. a hit cannot be shaded, and the pass then does
-            // nothing at all rather than replacing the environment's answer with a worse one.
-            glm::vec4 table = glm::vec4(0.0f);
-        };
+        // THE PUSH BLOCK ITSELF IS THE PASS'S NOW (pass::ssgi_spec_pass::push_constants): its shape belongs to
+        // the pass that pushes it, and the host only fills the values in.
 
         struct deferred_push_constants {
             glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip (xy from the pixel, z = depth, w = 1) -> world
@@ -531,11 +528,8 @@ namespace vulkan {
         // what the composite samples. Same two set layouts as the tracer, so no set of its own.
         std::optional<vk_pipeline> ssgi_spatial_pipeline = std::nullopt;
         VkPipelineLayout ssgi_spatial_pipeline_layout = VK_NULL_HANDLE;
-        // The glossy lobe (see shaders/ssgi_spec.comp): same two set layouts as the tracer again, because
-        // it binds the tracer's own sets - the scene set and the G-buffer set, whose binding 6 is the raw
-        // trace it reads, adds to and writes back.
-        std::optional<vk_pipeline> ssgi_spec_pipeline = std::nullopt;
-        VkPipelineLayout ssgi_spec_pipeline_layout = VK_NULL_HANDLE;
+        // The glossy lobe is NOT here any more: its pipeline layout, its pipeline and its per-image first-use
+        // state are the PASS's (see vulkan.pass.ssgi_spec).
         struct ssgi_spatial_push_constants {
             float depth_scale = 0.0f;   // proj[2][2]
             float depth_offset = 0.0f;  // proj[3][2]
@@ -632,7 +626,9 @@ namespace vulkan {
         // GENERAL, so they never get a first-use transition at all - which is invisible until something
         // READS one of them, and then it is a validation error on whichever slot ran second. (This project's
         // per-image-lifetime trap, third occurrence.)
-        std::vector<bool> gi_spec_seen = {};
+        // THE FLAG ITSELF IS THE PASS'S NOW (pass::ssgi_spec_pass's per-image state): the host only tells the
+        // pass when the generation changed or when the chain was switched on (see on_swapchain_recreated and
+        // set_ssgi), because those are the two moments the renderer knows and the pass cannot.
         // The alphaMode MASK bake (shaders/mask_bake.comp): device addresses as two 32-bit halves, the same
         // shape every pass here pushes them in. Three uvec2s then five uints, so the block is 48 bytes on
         // the CPU and 44 in the shader - the offsets agree and the range covers both (see the note in
@@ -2437,14 +2433,20 @@ namespace vulkan {
         std::expected<void, std::string> make_ssgi_spatial_pipeline(std::span<unsigned char const> compute_shader_code);
 
         /**
-         * @brief create the glossy lobe's pipeline from shaders/ssgi_spec.comp
-         * @param compute_shader_code raw SPIR-V of the pass
-         * @return success, or an error message on failure
-         * @note optional, and it is not part of ssgi_active(): unlike the three passes of the chain, a
-         *       build without it renders exactly as it did before the feature existed - the tracer's
-         *       estimate stands and the spatial filter's second subtraction is never armed
+         * @ingroup vulkan_runtime
+         * @brief this frame's input for the glossy lobe: the image count its per-image state is sized from
+         * @note the pass needs almost nothing from the frame - its push block is the renderer's and arrives
+         *       through `resolved_io::push`, its images through the declaration - so this is one number, and the
+         *       struct exists to keep the boundary named rather than to carry data
          */
-        std::expected<void, std::string> make_ssgi_spec_pipeline(std::span<unsigned char const> compute_shader_code);
+        [[nodiscard]] pass::ssgi_spec_frame make_ssgi_spec_frame() const noexcept;
+        /**
+         * @brief resolve the glossy lobe: its three declared images, the two shared sets, its pipeline and the
+         *        push block the renderer composes
+         * @return false when the frame cannot shade a hit (no instance table) or has no GI trace image, which
+         *         skips the pass WITHOUT recording anything - the same early returns the moved body made
+         */
+        [[nodiscard]] bool resolve_ssgi_spec(pass::resolved_io& out);
 
         /**
          * @brief create the ray-traced sun shadow pipeline from shaders/rt_shadow.comp

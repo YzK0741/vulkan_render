@@ -209,7 +209,8 @@ namespace vulkan {
         // (an empty vector reads as "no history" for every frame, which silently turns the temporal
         // resolve into a pass-through of the raw trace).
         this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
-        this->gi_spec_seen.assign(this->vulkan_core.gi_spec_images.size(), false); // new targets: the lobe's outputs need their first-use transition again
+        // The lobe's per-image first-use state starts where its images do (empty, which reads as "nothing has
+        // been transitioned"), and the pass owns it - see vulkan.pass.ssgi_spec.
 
         // The probe cache's remaining flag starts where the images do: nothing has transitioned the grid out
         // of UNDEFINED, so the tracer's gain is 0 until the TRACE pass - the frame's first reader of the grid
@@ -303,11 +304,8 @@ namespace vulkan {
             vkDestroyPipelineLayout(this->vulkan_core.device, this->ssgi_spatial_pipeline_layout, nullptr);
             this->ssgi_spatial_pipeline_layout = VK_NULL_HANDLE;
         }
-        if (this->ssgi_spec_pipeline_layout != VK_NULL_HANDLE) {
-            // the same shape as the spatial filter's: the shared two sets, so only the layout is ours
-            vkDestroyPipelineLayout(this->vulkan_core.device, this->ssgi_spec_pipeline_layout, nullptr);
-            this->ssgi_spec_pipeline_layout = VK_NULL_HANDLE;
-        }
+        // The glossy lobe's layout and pipeline are NOT destroyed here any more either: they are the pass's
+        // (vulkan.pass.ssgi_spec::release_owned), the same way the probe cache's and the TAA resolve's left.
         // The probe cache's pipeline and its layout are NOT destroyed here any more: they are the pass's
         // (vulkan.pass.gi_probe builds and destroys them), which is the whole point of the extraction - a
         // handle only that pass names is that pass's to release. The TAA resolve's set layout, pipeline
@@ -1216,6 +1214,16 @@ namespace vulkan {
             [[maybe_unused]] pass::run_report const probe_recreated = pass::recreate_stage(probe_stage, this->make_pass_host());
             pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
             [[maybe_unused]] pass::run_report const taa_recreated = pass::recreate_stage(taa_stage, this->make_pass_host());
+            // THE STAGES ADDED SINCE THIS LIST WAS WRITTEN. Both are here for the same reason and one of them
+            // was a real defect found by asking the question: the tracer's `probe_grid_seen_` and the lobe's
+            // per-image first-use flags describe a GENERATION, so a swapchain recreation owes both another
+            // first-use batch. Leaving a pass out of this list is invisible until someone resizes the window -
+            // exactly the hazard `recreate_stage` exists to remove, which is why the fix is this call and not a
+            // second hand-kept flag in the host.
+            pass::stage const ssgi_trace_stage = {.name = "ssgi_trace", .passes = this->ssgi_trace_stage, .marks = false};
+            [[maybe_unused]] pass::run_report const trace_recreated = pass::recreate_stage(ssgi_trace_stage, this->make_pass_host());
+            pass::stage const ssgi_spec_stage = {.name = "ssgi_spec", .passes = this->ssgi_spec_stage, .marks = false};
+            [[maybe_unused]] pass::run_report const spec_recreated = pass::recreate_stage(ssgi_spec_stage, this->make_pass_host());
         }
         // Every swapchain image's history died with the old generation (and its size may have
         // changed): forget the matrices, so the next frame for each image starts a new accumulation
@@ -1227,7 +1235,8 @@ namespace vulkan {
         // generation has no history to blend with, and the resolve would otherwise reproject into an
         // image that holds a different resolution's data.
         this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
-        this->gi_spec_seen.assign(this->vulkan_core.gi_spec_images.size(), false); // new targets: the lobe's outputs need their first-use transition again
+        // The lobe's per-image first-use state is the PASS's, and the recreate_stage call above is what told it
+        // (vulkan.pass.ssgi_spec::on_swapchain_recreated).
         // The probe cache's generation flag, for the same reason (see gi_probe_grid_seen). Whether the grid
         // HOLDS anything is the pass's own state, and the pass was told above (recreate_stage).
         this->gi_probe_grid_seen = false;
@@ -2762,7 +2771,9 @@ namespace vulkan {
             // not have the history thrown away on each of those calls - the resolve would show the raw
             // trace forever, which looks like a denoiser running while doing nothing.
             this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
-            this->gi_spec_seen.assign(this->vulkan_core.gi_spec_images.size(), false); // new targets: the lobe's outputs need their first-use transition again
+            // ... and the lobe's outputs are re-transitioned from UNDEFINED, which is what "switched on" means
+            // for a pass that has not run yet this generation: the pass owns the flags, so the host asks it.
+            this->ssgi_spec.reset_first_use();
         }
     }
 
@@ -3160,26 +3171,13 @@ namespace vulkan {
         return this->ssgi_active() && this->ssgi_ray_tracing && this->vulkan_core.ray_query_available && this->rt_top_levels.has_value();
     }
 
-    std::expected<void, std::string> runtime::make_ssgi_spec_pipeline(std::span<unsigned char const> const compute_shader_code) {
-        using fail = std::unexpected<std::string>;
-        if (!this->deferred_pipeline.has_value()) {
-            return fail(std::string("ssgi spec: create the deferred lighting pipeline first (it owns the G-buffer set layout)"));
-        }
-        auto built = pipelines::build_ssgi_spec(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, this->gbuffer_set_layout, sizeof(ssgi_spec_push_constants), compute_shader_code);
-        if (!built) {
-            return fail(built.error());
-        }
-        this->ssgi_spec_pipeline_layout = built->pipeline_layout;
-        this->ssgi_spec_pipeline = std::move(built->trace);
-        return {};
-    }
-
     bool runtime::ssgi_specular_active() const noexcept {
         // Hit shading is part of the predicate, and not as a quality preference: without the instance
         // table a glossy ray that LANDS on geometry cannot be shaded, so the pass would have nothing to
         // add for the only samples that make it more than the lighting stage's own term. The table is the
-        // same switch the tracer uses (record_ssgi_pass publishes it), so the two agree by construction.
-        return this->ssgi_specular && this->ssgi_hit_shading && this->ssgi_traced_active() && this->ssgi_spec_pipeline.has_value();
+        // same switch the tracer uses, and the pipeline is the PASS's - so this predicate and the pass's own
+        // feature are the same answer to "does the lobe run", which is what the tracer relies on.
+        return this->ssgi_specular && this->ssgi_hit_shading && this->ssgi_traced_active() && this->ssgi_spec.pipeline_ready();
     }
 
     void runtime::set_ssgi_specular(bool const enabled, uint32_t const rays, float const radius) noexcept {
@@ -3322,6 +3320,11 @@ namespace vulkan {
         pass::run_report const ssgi_created = pass::create_stage(ssgi_stage, build);
         if (!ssgi_created.rejected.empty()) {
             utility::log("pass '{}': its declaration was refused by the validator, so it does not run", ssgi_created.rejected);
+        }
+        pass::stage const spec_stage = {.name = "ssgi_spec", .passes = this->ssgi_spec_stage, .marks = false};
+        pass::run_report const spec_created = pass::create_stage(spec_stage, build);
+        if (!spec_created.rejected.empty()) {
+            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", spec_created.rejected);
         }
         pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
         pass::run_report const created = pass::create_stage(probe_stage, build);
@@ -3562,6 +3565,9 @@ namespace vulkan {
         }
         if (&pass == static_cast<pass::frame_pass const*>(&this->ssgi_trace)) {
             return this->resolve_ssgi_trace(out);
+        }
+        if (&pass == static_cast<pass::frame_pass const*>(&this->ssgi_spec)) {
+            return this->resolve_ssgi_spec(out);
         }
         if (&pass == static_cast<pass::frame_pass const*>(&this->taa_resolve)) {
             return this->resolve_taa_pass(out);
@@ -4004,120 +4010,86 @@ namespace vulkan {
         return true;
     }
 
-    bool runtime::record_ssgi_spec_pass(VkCommandBuffer const command_buffer) {
-        core& vk = this->vulkan_core;
+    pass::ssgi_spec_frame runtime::make_ssgi_spec_frame() const noexcept {
+        // One number: the pass's per-image first-use state is sized from the generation's image count, the same
+        // shape the TAA resolve's history flags have.
+        return pass::ssgi_spec_frame{.image_count = static_cast<uint32_t>(this->vulkan_core.gi_spec_images.size())};
+    }
+
+    bool runtime::resolve_ssgi_spec(pass::resolved_io& out) {
+        core const& vk = this->vulkan_core;
         std::size_t const index = this->current_image_index;
-        if (!this->ssgi_specular_active() || index >= vk.gi_images.size() || vk.gi_images[index] == VK_NULL_HANDLE) {
+        // THE MOVED BODY'S EARLY RETURNS, in the same order: no GI trace image, no G-buffer set, or no instance
+        // table (a hit that cannot be shaded is nothing to add - see ssgi_specular_active, which is the same
+        // predicate one level up). Each one skips the pass WITHOUT recording anything.
+        if (index >= vk.gi_images.size() || vk.gi_images[index] == VK_NULL_HANDLE || vk.gi_spec_images.size() != vk.gi_images.size() ||
+            vk.gi_spec_reproject_images.size() != vk.gi_images.size()) {
             return false;
         }
-        // The tracer's own sets, unchanged: set 0 is the shared scene set (the camera, the environment, the
-        // BRDF LUT, the material table and the top level structure) and set 1 is the G-buffer set, whose
-        // binding 6 is the raw trace this pass reads, adds to and writes back. No descriptor work at all -
-        // the image was already written as a read-write storage image in GENERAL for the tracer.
         this->ensure_gbuffer_descriptors();
         VkDescriptorSet const gbuffer_set = this->gbuffer_family.set(static_cast<uint32_t>(index), 0);
         if (gbuffer_set == VK_NULL_HANDLE) {
             return false;
         }
-
-        // The instance table's address, exactly as the tracer's push carries it, and the switch with it: a
-        // zero would leave the pass with nothing to shade a hit from, which ssgi_specular_active() already
-        // refused above - so a table that turns out to be missing here is a frame whose structures went away
-        // between the two calls, and doing nothing is the right answer rather than replacing the lighting
-        // stage's specular ambient with the environment alone (which would be a no-op anyway).
+        // The instance table's address, exactly as the tracer's push carries it, and the switch with it: a zero
+        // would leave the pass with nothing to shade a hit from, which ssgi_specular_active() already refused -
+        // so a table that turns out to be missing here is a frame whose structures went away between the two
+        // calls, and not recording is the right answer rather than replacing the lighting stage's specular
+        // ambient with the environment alone (which would be a no-op anyway).
         uint64_t instance_table = 0;
         if (this->ssgi_hit_shading && this->rt_top_levels.has_value()) {
             VkBuffer const table = this->rt_top_levels->instance_table(static_cast<uint32_t>(vk.current_frame));
             if (table != VK_NULL_HANDLE) {
-                VkBufferDeviceAddressInfo const table_info = {
-                    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};
+                VkBufferDeviceAddressInfo const table_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};
                 instance_table = vkGetBufferDeviceAddress(vk.device, &table_info);
             }
         }
         if (instance_table == 0) {
             return false;
         }
-
-        // The raw trace is about to be READ as well as written, by a dispatch that is not the one that
-        // wrote it: consecutive dispatches in one command buffer have no memory dependency between them, so
-        // without this the glossy pass can read a texel the tracer has not finished writing. Same layout on
-        // both sides (GENERAL), which is why this is the compute-storage barrier rather than a transition -
-        // and why record_ssgi_pass left the image in GENERAL instead of handing it to the denoiser itself.
-        //
-        // The lobe's own two outputs are written by the same dispatch, so they need whatever layout a
-        // storage image must be in before its FIRST write: UNDEFINED -> GENERAL, once per target generation
-        // (see runtime::gi_spec_seen). After that they are already in GENERAL - this dispatch is their only
-        // writer, so no later frame needs a barrier for them - and claiming UNDEFINED again would discard
-        // the image for no reason. A missing first-use transition is the trap this project has paid for
-        // twice already; a new image is not in a legal layout because its neighbours are.
-        std::array<VkImageMemoryBarrier2, 3> lobe_barriers = {};
-        lobe_barriers[0] = vulkan::compute_storage_transition;
-        lobe_barriers[0].image = vk.gi_images[index];
-        uint32_t lobe_barrier_count = 1;
-        if (index < vk.gi_spec_images.size() && index < vk.gi_spec_reproject_images.size()) {
-            // EVERY frame, not only the first: this pass is the storage writer of both images and the resolve
-            // reads them back as samplers, so the frame's LAST transition of each is to SHADER_READ (see the
-            // hand-back at the end of this function). The first frame of a target generation comes from
-            // UNDEFINED, and later ones from that readable state. Claiming UNDEFINED every frame would also
-            // work - the pass rewrites every non-background texel - but it would throw the images away for no
-            // reason; claiming a layout an image is not in is the thing that is actually illegal.
-            VkImageMemoryBarrier2 const from = this->gi_spec_seen[index] ? vulkan::sampling_to_general_transition : vulkan::undefined_to_general_transition;
-            lobe_barriers[lobe_barrier_count] = from;
-            lobe_barriers[lobe_barrier_count].image = vk.gi_spec_images[index];
-            ++lobe_barrier_count;
-            lobe_barriers[lobe_barrier_count] = from;
-            lobe_barriers[lobe_barrier_count].image = vk.gi_spec_reproject_images[index];
-            ++lobe_barrier_count;
-            this->gi_spec_seen[index] = true;
-        }
-        VkDependencyInfo const order_dependency = make_image_dependency_info(lobe_barrier_count, lobe_barriers.data());
-        vkCmdPipelineBarrier2(command_buffer, &order_dependency);
-
-        uint32_t const gi_width = std::max(1u, vk.swap_chain_extent.width / 2u);
-        uint32_t const gi_height = std::max(1u, vk.swap_chain_extent.height / 2u);
-        std::array<VkDescriptorSet, 2> const sets = {this->scene_sets.set(static_cast<uint32_t>(vk.current_frame)), gbuffer_set};
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_spec_pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_spec_pipeline->get_pipeline());
-
+        out.frame = this->pass_frame();
+        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
+        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
+        out.shared.gbuffer = gbuffer_set;
+        // The three declared barrier images, in the declaration's order.
+        out.barrier_storage[0] = {.view = vk.gi_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_images[index]};
+        out.barrier_storage[1] = {.view = vk.gi_spec_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_spec_images[index]};
+        out.barrier_storage[2] = {.view = vk.gi_spec_reproject_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_spec_reproject_images[index]};
+        out.barrier_images = std::span<pass::resolved_binding const>(out.barrier_storage.data(), 3);
+        out.pipeline_storage[0] = this->ssgi_spec.pipeline();
+        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
+        out.pipeline_layout = this->ssgi_spec.pipeline_layout();
         // The two halves of the instance table's address, bit-cast into float lanes - a push constant is raw
         // bytes, so half an address survives the trip exactly (the same trick the tracer's proj_terms uses).
         float const table_low = std::bit_cast<float>(static_cast<uint32_t>(instance_table & 0xFFFFFFFFu));
         float const table_high = std::bit_cast<float>(static_cast<uint32_t>(instance_table >> 32u));
-        ssgi_spec_push_constants const push = {
-            .inv_view_proj = this->current_inv_view_proj,
-            // The ray length is the lobe's OWN reach (`ssgi_specular_radius`), not the diffuse bounce's
-            // `ssgi_radius` - see the setter for why the two are different questions and what the curve
-            // between them costs (measured: 39% of the available signal at the marched path's 0.12, 90% at
-            // 0.5, flat past it). z is the self-intersection bias as an explicit WORLD length rather than a
-            // fraction of x - so that raising the reach does not also lift every ray's origin further off its
-            // surface (see the shader's push comment).
-            .params = glm::vec4(this->ssgi_specular_radius * this->scene_radius,
+        pass::ssgi_spec_pass::push_constants push = {};
+        push.inv_view_proj = this->current_inv_view_proj;
+        // The ray length is the lobe's OWN reach (`ssgi_specular_radius`), not the diffuse bounce's
+        // `ssgi_radius` - see the setter for why the two are different questions and what the curve between
+        // them costs. z is the self-intersection bias as an explicit WORLD length rather than a fraction of x,
+        // so that raising the reach does not also lift every ray's origin further off its surface.
+        push.params = glm::vec4(this->ssgi_specular_radius * this->scene_radius,
                                 static_cast<float>(this->ssgi_specular_rays),
                                 this->scene_radius * 0.0002f,
-                                static_cast<float>(this->ssgi_frame)),
-            .table = glm::vec4(0.0f, 0.0f, table_low, table_high)};
-        vkCmdPushConstants(command_buffer, this->ssgi_spec_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-
-        constexpr uint32_t group_size = 8; // shaders/ssgi_spec.comp's local_size_x/y
-        vkCmdDispatch(command_buffer, (gi_width + group_size - 1) / group_size, (gi_height + group_size - 1) / group_size, 1);
-
-        // ... and hand the completed raw trace to the denoiser. This is the transition record_ssgi_pass
-        // would have written when this pass does not run, moved here because the image has a second writer
-        // now: the barrier has to come after the LAST one, or the resolve could sample a half-written trace.
-        //
-        // The lobe's own two outputs come along: they were written as storage images by the same dispatch and
-        // the reflection's resolve reads BOTH as samplers (its trace, and the reprojection it reprojects by),
-        // so this is where they become readable. Their descriptors in the G-buffer set declare GENERAL, which
-        // is what they were written in; the temporal set declares SHADER_READ, which is what this leaves them
-        // in - the two sets describe the same image at different points of the frame's pass order.
-        VkImageMemoryBarrier2 const to_sampling = vulkan::general_to_sampling_transition;
-        std::array<VkImageMemoryBarrier2, 3> to_sampling_barriers = {to_sampling, to_sampling, to_sampling};
-        to_sampling_barriers[0].image = vk.gi_images[index];
-        to_sampling_barriers[1].image = index < vk.gi_spec_images.size() ? vk.gi_spec_images[index] : vk.gi_images[index];
-        to_sampling_barriers[2].image = index < vk.gi_spec_reproject_images.size() ? vk.gi_spec_reproject_images[index] : vk.gi_images[index];
-        VkDependencyInfo const sampling_dependency = make_image_dependency_info(static_cast<uint32_t>(to_sampling_barriers.size()), to_sampling_barriers.data());
-        vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
+                                static_cast<float>(this->ssgi_frame));
+        push.table = glm::vec4(0.0f, 0.0f, table_low, table_high);
+        static_assert(sizeof(push) <= pass::max_push_bytes, "the lobe's push block must fit the guaranteed minimum");
+        std::memcpy(out.push_storage.data(), &push, sizeof(push));
+        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
+        out.extent = vk.swap_chain_extent; // the declaration's rule is `half`
         return true;
+    }
+
+    bool runtime::record_ssgi_spec_pass(VkCommandBuffer const command_buffer) {
+        static_cast<void>(command_buffer); // the pass records into the frame's command buffer it is resolved with
+        // THE GLOSSY LOBE records the ordering barrier, its two first-use transitions, the dispatch and the
+        // hand-off (see vulkan.pass.ssgi_spec). It runs between the tracer and the denoiser: after because it
+        // reads and corrects the raw trace, before because the temporal resolve consumes the SUM.
+        this->ssgi_spec.set_frame(this->make_ssgi_spec_frame());
+        pass::stage const spec_stage = {.name = "ssgi_spec", .passes = this->ssgi_spec_stage, .marks = false};
+        pass::run_report const spec_report = pass::record_stage(spec_stage, this->make_pass_host());
+        return spec_report.recorded > 0;
     }
 
     void runtime::record_gbuffer_debug_pass(VkCommandBuffer const command_buffer) {
@@ -4816,6 +4788,13 @@ namespace vulkan {
         }
         if (name == "ssgi_probes") {
             return f.ssgi_probes;
+        }
+        if (name == "ssgi_specular") {
+            // The lobe's own feature name, and the FIRST one whose answer is a predicate rather than a struct
+            // field: "the knob is on, the frame can shade a hit, and the pass built its pipeline". It has to be
+            // this exact predicate because the tracer reads it too (specular_next) to decide who owes the
+            // denoiser the hand-off barrier - one answer, so the two passes cannot disagree.
+            return this->ssgi_specular_active();
         }
         if (name == "taa") {
             return f.taa;

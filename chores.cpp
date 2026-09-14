@@ -290,14 +290,12 @@ namespace chores {
             // every frame before this feature existed looked like - and runtime::ssgi_specular_active()
             // then keeps the frame from even recording the pass, so the knob-off frame is byte-identical
             // by construction.
+            //
+            // IT IS A PASS TOO: the app registers the shader, and the pass builds its own pipeline layout and
+            // compute pipeline from it (see vulkan.pass.ssgi_spec) - create_passes() below runs that step.
             std::vector<unsigned char> spec_code;
             load_shader(shaders_dir, "ssgi_spec.comp.spv", spec_code);
-            auto const spec_result = runtime.make_ssgi_spec_pipeline(spec_code);
-            if (!spec_result) {
-                utility::log("glossy GI disabled (reflections stay the environment's): {}", spec_result.error());
-            } else {
-                utility::log("SUCCESS: glossy GI pipeline created (a traced reflection, one GGX lobe per ray)");
-            }
+            runtime.register_shader("ssgi_spec.comp.spv", spec_code);
             // The world-space probe cache. OPTIONAL, unlike the three above: it is what answers for a hit
             // the screen cannot resolve (off screen or hidden), where the tracer otherwise falls back to
             // the far-field environment probe - so a build without it renders exactly as it did before it

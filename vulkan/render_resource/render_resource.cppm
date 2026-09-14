@@ -1,4 +1,4 @@
-// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/render_resource/render_resource.cppm
@@ -962,6 +962,43 @@ export namespace vulkan::render_resource {
         .targets = {},
         .barrier_images = ssgi_trace_barriers,
         .push = push_block{.offset = 0, .size = 128, .stages = stage_flag::compute},
+    };
+
+    /**
+     * @brief the images the glossy lobe transitions, in the order its record() indexes them
+     *
+     * The lobe binds the tracer's own two shared sets and writes the SAME raw trace the tracer just wrote (it
+     * adds its reflection to it, see shaders/ssgi_spec.comp), so `gi_trace` is here for the compute-to-compute
+     * ordering barrier that makes the read-after-write legal - and again at the end, where the completed trace
+     * is handed to the denoiser. Its own two outputs are the other entries: they are storage images whose
+     * descriptors in the G-buffer set declare GENERAL, so the lobe is their only writer and their first-use
+     * transition is per image (see the pass's state).
+     *
+     *   0: `gi_trace`         the raw trace, read AND written (both writers of it are here and in the tracer)
+     *   1: `gi_spec_trace`    this frame's reflection correction
+     *   2: `gi_spec_reproject` where the reflected surface was, which the resolve reprojects by
+     */
+    inline constexpr std::array<barrier_image, 3> ssgi_spec_barriers = {{
+        {.resource = resource_id::gi_trace, .element = 0},
+        {.resource = resource_id::gi_spec_trace, .element = 0},
+        {.resource = resource_id::gi_spec_reproject, .element = 0},
+    }};
+
+    /**
+     * @brief the glossy lobe's declaration: the tracer's two shared sets, no binding of its own, three images
+     *
+     * The second pass to reach its resources through `barrier_images`, and the reason that channel is per-pass
+     * rather than a special case for the tracer: the lobe writes images it does not own and binds no descriptor
+     * to reach them either.
+     */
+    inline constexpr pass_io ssgi_spec_io = {
+        .name = "ssgi_spec",
+        .own_set = 2, // unused, exactly as in the tracer
+        .bindings = {},
+        .shared_sets = ssgi_trace_shared_sets,
+        .targets = {},
+        .barrier_images = ssgi_spec_barriers,
+        .push = push_block{.offset = 0, .size = 96, .stages = stage_flag::compute},
     };
 
 } // namespace vulkan::render_resource
