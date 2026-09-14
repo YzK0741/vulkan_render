@@ -82,9 +82,16 @@ export namespace vulkan::pass {
         uint32_t group_size_z = 1;
         extent_rule extent = extent_rule::full;
         resource_id extent_of = resource_id::none; // read only when extent == resource
-        /// how many pipelines the pass asks its host for. Post asks for four (prefilter, downsample,
-        /// composite, FXAA); most ask for one. The count is what the runner binds, in order.
-        uint32_t pipelines = 1;
+        /**
+         * The pipelines this pass records with, BY NAME, in the order it will use them.
+         *
+         * NAMES RATHER THAN A BUILD REQUEST, decided deliberately: `vulkan.runtime` already owns the pipelines
+         * and already keys them by name (`make_pipeline` / `set_default_pipeline` / `get_pipeline`), so a pass
+         * naming what it needs is the existing mechanism rather than a new one - and it keeps the 787 lines of
+         * `vulkan.pipelines` where they are, with the pipeline layouts still built there. The host resolves the
+         * names into `resolved_io::pipelines`, in this order, so `pipelines[i]` is the i-th name here.
+         */
+        std::span<std::string_view const> pipelines = {};
         /**
          * Whether the runner must resynchronise the viewport and scissor before this pass.
          *
@@ -110,6 +117,21 @@ export namespace vulkan::pass {
     };
 
     /**
+     * @brief the SHARED sets, as they are: a pass that declared usage of one may bind it directly
+     *
+     * Three owners exist today (the scene set, the G-buffer set, the post set) and they are shared by
+     * construction - the G-buffer set alone carries the GI chain's images, the probe's SH-2 coefficients and
+     * the post pass's depth and normal. A pass DECLARES that it uses a shared binding (`set_owner`) and this
+     * is the set behind it; who actually binds it is the host's business, and the runtime already binds the
+     * scene set before a draw.
+     */
+    struct shared_sets {
+        VkDescriptorSet scene = VK_NULL_HANDLE;
+        VkDescriptorSet gbuffer = VK_NULL_HANDLE;
+        VkDescriptorSet post = VK_NULL_HANDLE;
+    };
+
+    /**
      * @brief what a pass is given: its own declaration, resolved
      *
      * `own` is indexed by the pass's OWN BINDING NUMBER - `vulkan.render_resource`'s validator requires those
@@ -118,9 +140,17 @@ export namespace vulkan::pass {
      */
     struct resolved_io {
         frame_identity frame = {};
+        /// THE command buffer is handed out per frame, at recording time, and never stored: a pass records
+        /// into what it is given, which is why it holds no device state between frames.
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        /// the pass's own binding number -> the two handles a binding can be (exactly one is set)
         std::span<resolved_binding const> own = {};
         VkDescriptorSet own_set = VK_NULL_HANDLE;
-        std::span<VkPipeline const> pipelines = {}; // in declaration order, `behaviour::pipelines` of them
+        shared_sets shared = {};
+        /// in the order `behaviour::pipelines` names them, one entry per name
+        std::span<VkPipeline const> pipelines = {};
+        /// the extent THIS pass works at: the frame's, half of it, or a resource's, per `behaviour::extent`
+        VkExtent2D extent = {0, 0};
     };
 
     // =============================================================================================

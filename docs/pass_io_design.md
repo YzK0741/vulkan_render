@@ -153,3 +153,40 @@ Failure modes to refuse in advance:
 * **over-reach into ordering**: steps 1-3 must not derive a single barrier. The byte-exact gate is what proves
   a step changed nothing, and a step that reorders synchronization can pass it while changing behaviour on
   another driver - so barriers are a separate stage with their own justification, not a side effect.
+
+## 8. What a pass needs from Vulkan, and the three decisions that settled the interface
+
+AT CREATE TIME, once per device generation: the device; the shaders' SPIR-V; for each declared set, a
+`VkDescriptorSetLayout` (the pass's own generated from its declaration, the shared ones borrowed from their
+owners); a `VkPipelineLayout` from those plus the declared push range; the pipelines themselves; for a graphics
+pass the colour/depth formats and blend state; a descriptor family (the pool lives in `vulkan.bindings`, not in
+a pass); and one of the renderer's six samplers per sampled binding.
+
+EVERY FRAME: the command buffer, the pass's own `VkDescriptorSet`, the shared sets it declared usage of, one
+`VkImageView`/`VkBuffer` per own binding, the resolved pipelines, and the extent this pass works at.
+
+AND DELIBERATELY NOT: instance, physical device, surface, swapchain, queue, fence, semaphore, command pool,
+`VkRenderPass`/`VkFramebuffer` (this renderer uses dynamic rendering), and `VmaAllocator` - a pass allocates
+nothing, because `vulkan.core` is the single allocator of images. A pass that wanted a `VmaAllocator` would be
+taking over an image family, which is a resource-layer change and must be argued separately.
+
+THREE DECISIONS, taken while the interface was being written and recorded because each one closes a gap that
+was open in the first draft of this document:
+
+* **shared sets are simply given.** `resolved_io` carries them as they are (one slot per owner: scene, G-buffer,
+  post) and a pass that declared usage of one may bind it. No ownership mechanism, no per-set abstraction: the
+  runtime already binds the scene set before a draw, and the G-buffer set is shared by six passes by
+  construction.
+* **the command buffer is handed out per frame, at recording time, and never stored.** That is what lets a pass
+  hold no device state between frames - and it closes the first draft's hard gap, in which a pass had nothing to
+  record into at all.
+* **pipelines are referenced by NAME for now**, and this costs nothing new: `vulkan.runtime` already keys its
+  pipelines by name (`make_pipeline` / `set_default_pipeline` / `get_pipeline`), so a pass names what it records
+  with and the host resolves those names into `resolved_io::pipelines`, in order. The 787 lines of
+  `vulkan.pipelines` stay where they are, with the pipeline layouts still built there.
+
+STILL OPEN, stated rather than implied: push constants are the one input that is neither a resource nor a
+behaviour, and they are composed by the runtime today (camera matrices, radii, the frame counter, the instance
+table's device address) while the shader that consumes them belongs to the pass - so either the pass pushes them
+itself (needing the pipeline layout in `resolved_io`) or the host pushes on its behalf (needing to know each
+pass's push layout). And parallel recording (`main_segments` + the task pool) is not expressible in `stage` yet.

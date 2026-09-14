@@ -33,6 +33,14 @@ namespace {
         };
     }
 
+    /// fake handles, so a resolved pass can be told apart from an unresolved one without a device
+    /// (not `constexpr`: a handle comes from `reinterpret_cast`, which is not a constant expression)
+    VkCommandBuffer const fake_cmd = reinterpret_cast<VkCommandBuffer>(0xC0);
+    VkDescriptorSet const fake_own_set = reinterpret_cast<VkDescriptorSet>(0x0F);
+    VkDescriptorSet const fake_scene = reinterpret_cast<VkDescriptorSet>(0x5E);
+    std::array<VkPipeline, 4> const fake_pipelines = {
+        reinterpret_cast<VkPipeline>(0x1), reinterpret_cast<VkPipeline>(0x2), reinterpret_cast<VkPipeline>(0x3), reinterpret_cast<VkPipeline>(0x4)};
+
     /// the host's own state: the log every callback writes, plus what the fake host answers
     struct host_state {
         std::vector<std::string> log;
@@ -40,7 +48,6 @@ namespace {
         std::vector<std::string_view> active_features = {"gi"};
         std::string_view failing_pass = {}; // resolve returns false for this pass's name
         std::array<vp::resolved_binding, 9> own = {};
-        std::array<VkPipeline, 2> pipelines = {reinterpret_cast<VkPipeline>(0x1), reinterpret_cast<VkPipeline>(0x2)};
     };
 
     vp::frame_identity host_frame(void* ctx) {
@@ -52,15 +59,21 @@ namespace {
         return std::find(active.begin(), active.end(), feature) != active.end();
     }
 
+    /// the resolver a real runtime would write: the extent rule is applied HERE, from the declaration
     bool host_resolve(void* ctx, vp::frame_pass const& pass, vp::resolved_io& out) {
         auto& state = *static_cast<host_state*>(ctx);
         state.log.emplace_back(std::string("resolve:") + std::string(pass.io().name));
         if (pass.io().name == state.failing_pass) {
             return false;
         }
+        vp::behaviour const& behaviour = pass.behaviour();
         out.frame = state.frame;
+        out.cmd = fake_cmd;
         out.own = state.own;
-        out.pipelines = state.pipelines;
+        out.own_set = fake_own_set;
+        out.shared.scene = fake_scene;
+        out.pipelines = std::span<VkPipeline const>(fake_pipelines.data(), behaviour.pipelines.size());
+        out.extent = behaviour.extent == vp::extent_rule::half ? VkExtent2D{state.frame.extent.width / 2u, state.frame.extent.height / 2u} : state.frame.extent;
         return true;
     }
 
@@ -136,14 +149,22 @@ namespace {
         }
         void record(vp::resolved_io const& io) const override {
             state_->log.emplace_back(std::string("record:") + std::string(io_.name));
+            last_cmd = io.cmd;
+            last_own_set = io.own_set;
+            last_scene_set = io.shared.scene;
+            last_pipelines = io.pipelines.size();
+            last_extent = io.extent;
             last_image_index = io.frame.image_index;
             last_slot = io.frame.slot;
-            last_pipeline_count = io.pipelines.size();
         }
 
+        mutable VkCommandBuffer last_cmd = VK_NULL_HANDLE;
+        mutable VkDescriptorSet last_own_set = VK_NULL_HANDLE;
+        mutable VkDescriptorSet last_scene_set = VK_NULL_HANDLE;
+        mutable std::size_t last_pipelines = 0;
+        mutable VkExtent2D last_extent = {0, 0};
         mutable uint32_t last_image_index = 0;
         mutable uint32_t last_slot = 0;
-        mutable std::size_t last_pipeline_count = 0;
 
     private:
         rr::pass_io io_;
@@ -152,8 +173,11 @@ namespace {
         host_state* state_;
     };
 
-    constexpr vp::behaviour compute_behaviour = {.kind = vp::behaviour_kind::compute, .group_size_x = 4, .group_size_y = 4, .group_size_z = 4, .extent = vp::extent_rule::resource};
-    constexpr vp::behaviour fullscreen_behaviour = {.kind = vp::behaviour_kind::fullscreen, .pipelines = 2, .resync_viewport = true};
+    // the names are `vulkan.runtime`'s own pipeline keys, which is what makes this cost nothing new
+    constexpr std::array<std::string_view, 1> compute_pipeline_names = {"gi_probe"};
+    constexpr std::array<std::string_view, 2> fullscreen_pipeline_names = {"post_composite", "fxaa"};
+    constexpr vp::behaviour compute_behaviour = {.kind = vp::behaviour_kind::compute, .group_size_x = 4, .group_size_y = 4, .group_size_z = 4, .extent = vp::extent_rule::resource, .pipelines = compute_pipeline_names};
+    constexpr vp::behaviour fullscreen_behaviour = {.kind = vp::behaviour_kind::fullscreen, .extent = vp::extent_rule::half, .pipelines = fullscreen_pipeline_names, .resync_viewport = true};
 } // namespace
 
 int main() {
@@ -210,10 +234,24 @@ int main() {
         CHECK(at(state.log, "record:probe") < at(state.log, "resolve:tail"));
         // ... and the behaviour is passed through, not interpreted: the fullscreen pass asked for a resync
         CHECK(has(state.log, "behaviour:tail:resync"));
-        // the pass saw the frame the host declared, and its declared pipeline count
-        CHECK(probe.last_image_index == 3);
+    }
+
+    // ---- what a pass is GIVEN, which is the reason it needs no device state of its own ----
+    {
+        std::array<frame_pass*, 2> passes = {&probe, &tail};
+        stage const st = {.name = "scene", .passes = passes};
+        state.log.clear();
+        run_report const given = record_stage(st, host);
+        CHECK(given.recorded == 2);
+        CHECK(probe.last_cmd == fake_cmd);         // the command buffer is handed out per frame...
+        CHECK(probe.last_own_set == fake_own_set); // ... with the pass's own resolved descriptor set...
+        CHECK(probe.last_scene_set == fake_scene); // ... and the shared sets it declared usage of
+        CHECK(probe.last_image_index == 3);        // ... and both frame counters, kept apart
         CHECK(probe.last_slot == 1);
-        CHECK(tail.last_pipeline_count == 2);
+        CHECK(probe.last_pipelines == 1);      // one declared name -> one resolved pipeline
+        CHECK(tail.last_pipelines == 2);       // two names -> two, in the declared order
+        CHECK(probe.last_extent.width == 640); // extent_rule::resource, with a fake host that hands the frame's
+        CHECK(tail.last_extent.width == 320);  // extent_rule::half is half of it, applied by the resolver
     }
 
     // ---- an inactive feature is skipped WITHOUT being resolved: what makes an off feature byte-exact ----
