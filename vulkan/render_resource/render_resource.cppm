@@ -1,4 +1,4 @@
-// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/render_resource/render_resource.cppm
@@ -433,6 +433,22 @@ export namespace vulkan::render_resource {
         std::string_view name = {};
         uint32_t own_set = 1;
         std::span<pass_binding const> bindings = {};
+        /**
+         * The SHARED sets this pass binds, BY INDEX - the sets it does not own and must not describe.
+         *
+         * WHY THIS IS SEPARATE FROM `bindings`, and the reason is a measured one rather than a stylistic
+         * preference: a pass that binds a whole set it does not own cannot enumerate that set's bindings
+         * without copying a fact its OWNER owns. The G-buffer set is the case that proved it - it carries the
+         * GI chain's four images, the world-space probe's four SH-2 coefficients, the post chain's depth and
+         * normal, and the scene pass that binds it reads exactly one of those. A declaration that listed them
+         * would be the drift this module exists to remove, in the one place where nothing can be GENERATED
+         * from it (this pass builds no layout from that set; its owner does).
+         *
+         * The index is what a pipeline layout needs (the sets are bound in order), and a pass that binds only
+         * such a set declares it here and declares no `own` binding at all - which is what the scene pass
+         * does: it writes attachments and binds the shared scene set.
+         */
+        std::span<uint32_t const> shared_sets = {};
         /// the images this pass renders into, in the order it uses them (a fullscreen pass has one)
         std::span<render_target const> targets = {};
         std::optional<push_block> push = std::nullopt;
@@ -605,6 +621,19 @@ export namespace vulkan::render_resource {
                 return std::unexpected(who + ": the push block does not fit the 128-byte guaranteed minimum in 4-byte units");
             }
         }
+        // THE SHARED SETS, checked after the bindings are counted: a set cannot be both the pass's own (whose
+        // layout it generates and whose bindings it describes) and one it merely binds.
+        for (std::size_t i = 0; i < io.shared_sets.size(); ++i) {
+            uint32_t const set = io.shared_sets[i];
+            if (own_count != 0 && set == io.own_set) {
+                return std::unexpected(who + ": set " + std::to_string(set) + " is declared as both its own and a shared set");
+            }
+            for (std::size_t j = i + 1; j < io.shared_sets.size(); ++j) {
+                if (io.shared_sets[j] == set) {
+                    return std::unexpected(who + ": shared set " + std::to_string(set) + " is declared twice");
+                }
+            }
+        }
         return {};
     }
 
@@ -749,6 +778,55 @@ export namespace vulkan::render_resource {
         // eight floats: the history flag, the two blend weights, the texel size, and the projection's two
         // depth terms (see vulkan.pass.taa::taa_pass::push_constants, which static_asserts this number)
         .push = push_block{.offset = 0, .size = 32, .stages = stage_flag::fragment},
+    };
+
+    // =============================================================================================
+    // 6. THE THIRD DECLARATION - the scene pass, which binds a whole set it does not own
+    // =============================================================================================
+
+    /**
+     * @brief the scene pass's I/O: five colour attachments, one depth attachment, and the shared scene set
+     *
+     * THIS IS THE FIRST DECLARATION WITH NO OWN BINDINGS AT ALL, and that is what the pass IS: it draws the
+     * scene's primitives into the frame's surface targets. The material table, the texture array, the camera
+     * and light UBOs, the shadow map, the instance table and the top level structure all arrive through the
+     * SHARED scene set (set 0), whose layout and contents its owner decides - so this declaration names the SET
+     * and not its bindings (see `pass_io::shared_sets` for why that is the honest statement rather than a
+     * shortcut). The pass builds no set layout of its own, which is why `own_set` is unused here.
+     *
+     * THE TARGETS ARE THE FRAME'S SURFACE, in the order the rendering instance needs them: the three stored
+     * G-buffer targets, the motion-vector target, the scene colour target the lighting stage adds on top of,
+     * and the G-buffer's own depth. The per-leaf push constants are the LEAVES' (a model matrix, a material
+     * index), pushed through the draw path the primitive owns, so this declaration has no push block.
+     *
+     * `scene_color` IS AN ALIAS, and deliberately: the resolver maps it to the image the frame's scene pass
+     * accumulates emissive into, which is `runtime::scene_target_view()` - the HDR target normally, and the
+     * TAA resolve's input while that resolve runs (it takes the HDR target for its own output). That is a
+     * FRAME decision, not a resource fact, so the declaration names what it means and the renderer decides
+     * which image that is. It also means the scene pass and the TAA resolve agree by construction about which
+     * image the scene writes and the resolve reads.
+     */
+    inline constexpr std::array<render_target, 6> scene_targets = {{
+        {.resource = resource_id::gbuffer_targets, .element = 0},
+        {.resource = resource_id::gbuffer_targets, .element = 1},
+        {.resource = resource_id::gbuffer_targets, .element = 2},
+        {.resource = resource_id::velocity, .element = 0},
+        {.resource = resource_id::scene_color, .element = 0},
+        {.resource = resource_id::gbuffer_depth, .element = 0, .kind = target_kind::depth},
+    }};
+
+    /// @brief set 0 is the shared scene set: the scene pass binds it and owns nothing of it
+    inline constexpr std::array<uint32_t, 1> scene_shared_sets = {0};
+
+    /// @brief the scene pass's declaration
+    /// @ingroup vulkan_render_resource
+    inline constexpr pass_io scene_io = {
+        .name = "scene",
+        .own_set = 1, // unused: this pass has no own bindings (see the declaration's note)
+        .bindings = {},
+        .shared_sets = scene_shared_sets,
+        .targets = scene_targets,
+        .push = std::nullopt,
     };
 
 } // namespace vulkan::render_resource

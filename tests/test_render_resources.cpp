@@ -253,5 +253,41 @@ int main() {
         CHECK(rr::descriptor_counts_for(rr::taa_io, 1).total() == 0);
     }
 
+    // ---- the THIRD declaration: the scene pass, the first one with NO own bindings (it binds a whole shared
+    //      set and writes the frame's surface) and the first with six targets including the DEPTH slot ----
+    {
+        CHECK(rr::validate(rr::scene_io).has_value());
+        CHECK(rr::scene_io.bindings.empty()); // it owns no set: everything arrives through set 0
+        CHECK(rr::scene_io.shared_sets.size() == 1);
+        CHECK(rr::scene_io.shared_sets[0] == 0); // the shared scene set
+        CHECK(rr::scene_io.targets.size() == 6);
+        CHECK(rr::scene_io.targets[0].resource == rr::resource_id::gbuffer_targets);
+        CHECK(rr::scene_io.targets[2].element == 2); // all three stored surface targets
+        CHECK(rr::scene_io.targets[3].resource == rr::resource_id::velocity);
+        CHECK(rr::scene_io.targets[4].resource == rr::resource_id::scene_color); // the frame decision (see the doc)
+        CHECK(rr::scene_io.targets[5].resource == rr::resource_id::gbuffer_depth);
+        CHECK(rr::scene_io.targets[5].kind == rr::target_kind::depth); // exactly one depth, as an instance wants
+        std::size_t depth_targets = 0;
+        for (rr::render_target const& t : rr::scene_io.targets) {
+            if (t.kind == rr::target_kind::depth) {
+                ++depth_targets;
+            }
+        }
+        CHECK(depth_targets == 1);
+        CHECK(!rr::scene_io.push.has_value()); // the per-leaf pushes belong to the leaves
+        CHECK(rr::descriptor_counts_for(rr::scene_io, rr::scene_io.own_set).total() == 0);
+    }
+    {
+        // a set cannot be both the pass's own and one it only binds
+        std::array<uint32_t, 1> const conflicting = {1};
+        rr::pass_io const io = {.name = "scene", .own_set = 1, .bindings = rr::gi_probe_bindings, .shared_sets = conflicting, .targets = {}, .push = std::nullopt};
+        CHECK(!rr::validate(io).has_value());
+    }
+    {
+        std::array<uint32_t, 2> const twice = {0, 0};
+        rr::pass_io const io = {.name = "scene", .own_set = 1, .bindings = {}, .shared_sets = twice, .targets = {}, .push = std::nullopt};
+        CHECK(!rr::validate(io).has_value()); // the same shared set twice
+    }
+
     return vk_test::finish("test_render_resources");
 }
