@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.27.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.28.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -28,6 +28,7 @@ import vulkan.profiling;
 import vulkan.bindings;               // the per-image descriptor-set families (the G-buffer debug view's for now)
 import vulkan.pass;                   // the pass framework: the host the runner talks to, and the stage runner
 import vulkan.pass.scene;             // the second pass this branch drives: the surface write
+import vulkan.pass.taa;               // the third, and the first that OWNS a set layout, a pipeline and a family
 import vulkan.pass.transparent;       // the first pass this branch drives: the blended geometry
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
@@ -385,21 +386,23 @@ namespace vulkan {
         // core::scene_color and the resolve writes the HDR target, so the whole post chain keeps
         // reading exactly what it read before TAA existed. A copy of the resolved frame becomes the
         // next frame's history (no ping-pong, hence no per-frame descriptor rewrites).
-        std::optional<vk_pipeline> taa_pipeline = std::nullopt;
+        /// THE TAA RESOLVE (vulkan.pass.taa): it owns its set layout, its pipeline layout, its pipeline, its
+        /// per-image family and its history flags - which is why none of those are members here any more. This
+        /// runtime keeps only what is NOT the pass's: the sampler (a shared handle its declaration picks by
+        /// hint), the two blend weights (config), the jitter counter, and the per-image matrix the NEXT
+        /// frame's motion vectors are computed against.
+        pass::taa_pass taa_resolve;
+        std::array<pass::frame_pass*, 1> taa_stage = {&this->taa_resolve};
         vk_sampler taa_sampler = {};
-        VkDescriptorSetLayout taa_set_layout = VK_NULL_HANDLE;
-        VkPipelineLayout taa_pipeline_layout = VK_NULL_HANDLE;
-        // The resolve's sets, one per swapchain image: the same per-image family the G-buffer debug
-        // view uses, for the same reason - the rebinding rule and the pool lifetime belong to the sets.
-        bindings::image_set_family taa_family;
         bool taa_on = false;           // [render] taa
         float taa_blend_static = 0.9f; // history weight for a static pixel
         float taa_blend_min = 0.5f;    // history weight floor under motion
         uint32_t taa_jitter_index = 0; // position in the Halton sequence
-        // The view-projection each swapchain image's history was rendered with, and whether that
-        // history holds anything. Remembered PER IMAGE on purpose: with several swapchain images in
-        // rotation, "the previous frame's camera" is not what that image's history was rendered with,
-        // and reprojecting against the wrong matrix is exactly what makes a TAA history smear.
+        // The view-projection each swapchain image's history was rendered with. Remembered PER IMAGE
+        // on purpose: with several swapchain images in rotation, "the previous frame's camera" is not
+        // what that image's history was rendered with, and reprojecting against the wrong matrix is
+        // exactly what makes a TAA history smear. (Whether that history HOLDS anything is the pass's
+        // now - see taa_pass::reset_history.)
         std::vector<glm::mat4> image_view_proj = {};
         /// THE SCENE PASS (vulkan.pass.scene): it owns the surface instance, the segment strategy and the
         /// draw loop; the renderer hands it the leaves through a typed frame (see make_scene_frame) and keeps
@@ -413,18 +416,21 @@ namespace vulkan {
         /// THE TRANSPARENT PASS (vulkan.pass.transparent): the blended geometry, over the shaded frame
         pass::transparent_pass transparent;
         std::array<pass::frame_pass*, 1> transparent_stage = {&this->transparent};
-        std::vector<bool> taa_history_valid = {};
-        struct taa_push_constants {
-            float history_valid = 0.0f; // 1 = trust the history, 0 = first frame for this image
-            float blend_static = 0.9f;  // history weight for a static pixel
-            float blend_min = 0.5f;     // history weight floor under motion
-            float texel_size_x = 0.0f;  // 1 / target width
-            float texel_size_y = 0.0f;  // 1 / target height
-            float depth_scale = 0.0f;   // projection[2][2]: the depth-linearization term
-            float depth_offset = 0.0f;  // projection[3][2]
-            float unused = 0.0f;
-        };
-        void ensure_taa_descriptors();
+        /**
+         * The shaders the app has loaded, by file name, for the passes that build their own pipelines. The APP
+         * is the loader (it knows the shader directory); the runtime is only the place a pass asks. A copy
+         * rather than a view, because the caller's buffer is a local in a startup scope - and a vector of pairs
+         * rather than a map, because the lookup happens once per pass per device generation and a container
+         * whose iteration order is an accident would be a poor place to keep anything.
+         */
+        std::vector<std::pair<std::string, std::vector<unsigned char>>> registered_shaders = {};
+        /**
+         * @brief create the TAA resolve's shared sampler if it does not exist (see create_passes for why it is
+         *        made here rather than inside the pipeline builder that used to make it)
+         * @note the sampler is a SHARED handle - a declaration chooses it by `sampler_hint::taa` - so it stays
+         *       the renderer's even though the only pass that picks it is the resolve's
+         */
+        void ensure_taa_sampler();
         void record_taa_pass(VkCommandBuffer command_buffer);
         /** @brief whether the TAA resolve runs this frame (enabled + deferred lighting + pipeline) */
         [[nodiscard]] bool taa_active() const noexcept;
@@ -1223,6 +1229,17 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief hand the runtime a loaded shader, by file name, for the passes that build their own pipelines
+         * @param name the file name a pass asks for at create time (a pass's own constant)
+         * @param bytecode raw SPIR-V; copied, because the caller's buffer is a local in a startup scope
+         * @note THE APP IS THE SHADER LOADER and this is the hand-over: the runtime knows a shader DIRECTORY
+         *       and a file format nowhere, and a pass knows neither - it asks for its own by name. Register
+         *       before calling create_passes(); a pass whose shader is missing says so and does not run.
+         */
+        void register_shader(std::string_view name, std::span<unsigned char const> bytecode);
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief run the create step of every pass in every stage this runtime wires, once per device
          * @note the app calls this AFTER the shared samplers, the shared set layouts and the shaders a
          *       pass declares exist (see chores.cpp): a pass builds what it owns from a `pass_context`,
@@ -1264,6 +1281,8 @@ namespace vulkan {
         [[nodiscard]] pass::pass_host make_pass_host() noexcept;
         /// @brief the frame a pass is being recorded in: both counters, the generation's image count, the extent
         [[nodiscard]] pass::frame_identity pass_frame() const noexcept;
+        /// @brief the bytes of a shader the app registered, by file name (empty when it did not)
+        [[nodiscard]] std::span<unsigned char const> registered_shader(std::string_view name) const noexcept;
         /// @brief this frame's blended geometry, as the transparent pass needs it (see its scene_frame header)
         [[nodiscard]] pass::transparent_frame make_transparent_frame() noexcept;
         /**
@@ -1326,6 +1345,15 @@ namespace vulkan {
          *         the pass WITHOUT recording anything
          */
         [[nodiscard]] bool resolve_scene_pass(pass::resolved_io& out);
+        /**
+         * @brief resolve the TAA resolve: its four per-image inputs, the HDR target it writes and copies out
+         *        of, its pipeline and the push block the renderer composes
+         * @return false when the target generation or the pass's own pipeline is not there, which skips the
+         *         pass WITHOUT recording anything - and the frame is then shown unresolved rather than broken
+         * @note the ONE lane the host does not compose is `history_valid`: whether an image's history holds a
+         *       resolved frame is the PASS's state, so it writes that lane itself after the memcpy
+         */
+        [[nodiscard]] bool resolve_taa_pass(pass::resolved_io& out);
 
         /** @brief close the scene rendering instance and record the post-process pass (HDR ->
          *         exposure/tonemap -> swapchain) plus the debug overlay on the final image
@@ -1768,24 +1796,13 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief create the TAA resolve pipeline (fullscreen: scene color + history + motion vectors +
-         *        depth -> the HDR target)
-         * @param vertex_shader_code raw SPIR-V of post.vert (the fullscreen triangle)
-         * @param fragment_shader_code raw SPIR-V of taa.frag
-         * @return success, or an error message on failure
-         * @note optional but required for set_taa(true) to take effect
-         */
-        std::expected<void, std::string> make_taa_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
-
-        /**
-         * @ingroup vulkan_runtime
          * @brief enable/disable temporal anti-aliasing and set its two blend weights
          * @param enabled when true (and the deferred path is the active render mode) the projection is
          *        jittered every frame, the G-buffer's motion vectors are resolved against a reprojected
          *        history, and the result is what the post chain processes. This is the deferred path's
          *        anti-aliasing: it resolves sub-pixel detail no edge filter can, AND the
-         *        shimmer in motion that no edge filter can remove. Requires make_taa_pipeline(); without
-         *        it the flag has no effect.
+         *        shimmer in motion that no edge filter can remove. Requires the TAA pass to have built its
+         *        pipeline (a shader the app registered, see register_shader); without it the flag has no effect.
          * @param blend_static history weight for a pixel that did not move (0.9 = 10% of the current
          *        frame per frame; higher converges smoother but reacts slower to lighting changes)
          * @param blend_min history weight floor once a pixel moves a pixel or more per frame (lower =

@@ -1,0 +1,159 @@
+// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+
+/**
+ * @file vulkan/pass/taa.cppm
+ * @brief The THIRD pass on this branch, and the first one that OWNS its own GPU objects: the temporal
+ *        anti-aliasing resolve.
+ * @defgroup vulkan_pass_taa Temporal Anti-Aliasing Pass
+ *
+ * WHAT MAKES THIS ONE DIFFERENT FROM `scene` AND `transparent`: those two own no device objects at all. Their
+ * leaves name their pipelines, everything they bind is the shared scene set, and their create step is empty -
+ * so the framework's CREATE half (`pass_context`) was never exercised by them. This pass exercises it: it
+ * builds its own set layout FROM ITS DECLARATION (`bindings::make_set_layout`), its own pipeline layout and
+ * its own pipeline (`pipelines::build_taa`), and it allocates and rewrites its own per-image descriptor family.
+ * It is also the first GRAPHICS pass here that declares a render TARGET: an attachment is not a descriptor (it
+ * is declared as a `render_target` and bound by a rendering instance), so this pass opens that instance itself
+ * - the load op is its knowledge, not the runner's - and the two things it must not be able to forget, the
+ * pipeline being bound and the viewport being set, are done FOR it by the runner before `record`.
+ *
+ * WHAT IT OWNS: its set layout and the four per-swapchain-image inputs it names (this frame's colour, the
+ * reprojected history, the motion vectors, the depth the disocclusion guard reads), its pipeline layout, its
+ * pipeline, its per-image descriptor family, its push block's SHAPE, and the two pieces of state that say what
+ * its history holds: whether each image has one, and which views identified the target generation its family
+ * was built against.
+ *
+ * WHAT IT DELIBERATELY DOES NOT OWN, and this is the real discovery this extraction produced: ONE LINE OF ITS
+ * OWN SEQUENCE BELONGS TO ANOTHER PASS. The resolve samples the G-buffer depth, and that image is transitioned
+ * out of its attachment layout by `runtime::ensure_gbuffer_depth_sampled`, whose per-image "was it written this
+ * frame" flag is the G-buffer pass's. It is shared per-image bookkeeping, it is the barrier/order stage's job in
+ * the long run, and it is not expressible here while a pass can only declare its OWN bindings - so it stays with
+ * the host, which is the one that knows the flag. The order the host has to preserve is recorded at the call
+ * site. (On `master` there is a second such line - the motion-vector flag the GI chain reads - which this branch
+ * does not have, because it has no GI chain yet.)
+ *
+ * THE GENERATION FINGERPRINT is the one piece of this pass that is not a straight move. A per-image descriptor
+ * family fingerprints "the thing my sets point at", and for a per-image resource the CURRENT image's view is
+ * exactly the wrong fingerprint: it changes every frame, which would make the family rewrite every set every
+ * frame - and rewriting a set a pending frame names is a validation error. The generation-level identity is
+ * what the fingerprint needs, and the pass already receives the signal that invalidates it: the runner calls
+ * `on_swapchain_recreated` for every pass in a stage (the contract that replaced the runtime's hand-kept reset
+ * list). So the pass caches the first frame's views as its generation stamp and drops them when told.
+ */
+
+module;
+
+#include <array>
+#include <cstdint>
+#include <cstring>
+#include <optional>
+#include <span>
+#include <string_view>
+#include <vulkan/vulkan.h>
+
+export module vulkan.pass.taa;
+
+import vulkan.pass;
+import vulkan.render_resource;
+import vulkan.render_resource.shared;
+import vulkan.bindings;
+import vulkan.constant_init;
+import vulkan.core.handles; // vk_pipeline: the RAII owner of the pipeline this pass builds
+
+export namespace vulkan::pass {
+
+    /**
+     * @brief the temporal resolve: blend this frame's colour with the reprojected history, then copy the
+     *        result into the history image the next frame for this swapchain image will read
+     *
+     * A fullscreen triangle writing the frame's HDR target. The blend weights come from the renderer (they are
+     * a config knob), the reprojection comes from the motion vectors the G-buffer pass wrote, and the history
+     * is the image this same pass filled on an earlier frame for the SAME swapchain image - remembered per
+     * image on purpose, because with several images in rotation "the previous frame's camera" is not what that
+     * image's history was rendered with.
+     */
+    class taa_pass final : public frame_pass {
+    public:
+        /**
+         * @brief the pass's push block, which is also the fragment shader's
+         *
+         * Eight floats in the order taa.frag declares them. `history_valid` is the one lane the PASS sets and
+         * the rest are the renderer's values, which is the split the framework settled: the block's shape is
+         * the pass's (and `static_assert`ed against the declaration's size), the values are the owner's, and
+         * the lane that describes the pass's own state is the pass's to write.
+         */
+        struct push_constants {
+            float history_valid = 0.0f; // 1 = trust the history, 0 = first frame for this image
+            float blend_static = 0.9f;  // history weight for a static pixel
+            float blend_min = 0.5f;     // history weight floor under motion
+            float texel_size_x = 0.0f;  // 1 / target width
+            float texel_size_y = 0.0f;  // 1 / target height
+            float depth_scale = 0.0f;   // projection[2][2]: the depth-linearization term
+            float depth_offset = 0.0f;  // projection[3][2]
+            float unused = 0.0f;
+        };
+
+        taa_pass() = default;
+        ~taa_pass() override;
+
+        [[nodiscard]] render_resource::pass_io const& io() const noexcept override;
+        [[nodiscard]] vulkan::pass::behaviour const& behaviour() const noexcept override;
+        [[nodiscard]] std::string_view feature() const noexcept override;
+        void create(pass_context const& context) override;
+        void on_swapchain_recreated(pass_host const& host) override;
+        void record(resolved_io const& io) override;
+
+        /// @brief whether the pass built everything it records with (the renderer gates the feature on this)
+        [[nodiscard]] bool pipeline_ready() const noexcept;
+        /// @brief the pipeline the runner binds before this pass records
+        [[nodiscard]] VkPipeline pipeline() const noexcept;
+        /// @brief the layout that pipeline binds its set and takes its push constants through
+        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept;
+        /**
+         * @brief whether the last record actually resolved and wrote a new history
+         *
+         * The renderer's `image_view_proj` bookkeeping - the matrix the NEXT frame's motion vectors are
+         * computed against - keys on this rather than on "the stage ran": a resolve that bailed out (no
+         * descriptor set) must not claim a history it did not write.
+         */
+        [[nodiscard]] bool wrote_history() const noexcept;
+        /// @brief forget every image's history: the off -> on edge, when blending would resume against
+        ///        frames that were never resolved
+        void reset_history() noexcept;
+
+    private:
+        /// the four inputs the resolve reads, which the declaration numbers contiguously from zero
+        static constexpr uint32_t own_binding_count = 4;
+        static constexpr std::string_view vertex_shader_name = "post.vert.spv"; // the synthetic fullscreen triangle
+        static constexpr std::string_view fragment_shader_name = "taa.frag.spv";
+
+        static constexpr std::array<std::string_view, 1> pipeline_names = {"taa"};
+        inline static constexpr vulkan::pass::behaviour behaviour_ = {
+            .kind = behaviour_kind::fullscreen,
+            .extent = extent_rule::full, // the resolve runs at the frame's resolution
+            .extent_of = resource_id::none,
+            .pipelines = pipeline_names,
+            .resync_viewport = true, // the runner sets the viewport and scissor: the hazard this field exists for
+        };
+        void release_owned() noexcept;
+
+        VkDevice device_ = VK_NULL_HANDLE;
+        render_resource::shared::sampler_set samplers_ = {};
+        VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
+        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+        std::optional<vk_pipeline> pipeline_ = std::nullopt;
+        bindings::image_set_family family_ = {};
+        /// one flag per swapchain image: whether that image's history holds a resolved frame
+        std::vector<bool> history_valid_ = {};
+        /// the views that identified the target generation the family was built for, and whether they are set
+        std::array<VkImageView, own_binding_count> generation_views_ = {};
+        bool generation_views_valid_ = false;
+        /// whether the last record wrote the history (see wrote_history)
+        bool wrote_history_ = false;
+    };
+
+    /// THE DECLARATION'S NUMBER AND THE PASS'S STRUCT CANNOT DRIFT: the declared push block is what the
+    /// pipeline layout's range is built from and what the host composes into.
+    static_assert(sizeof(taa_pass::push_constants) == render_resource::taa_io.push->size,
+                  "the TAA resolve's declared push block must be the size of the struct the pass pushes");
+
+} // namespace vulkan::pass

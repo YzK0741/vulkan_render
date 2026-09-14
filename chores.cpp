@@ -238,25 +238,27 @@ namespace chores {
                     if (!deferred_result) {
                         utility::log("deferred lighting disabled: {}", deferred_result.error());
                     } else {
-                        // TAA resolve (deferred-only): its own set layout (scene color, history,
-                        // motion vectors, depth) and a fullscreen pipeline writing the HDR target
+                        // TAA resolve (deferred-only). IT IS A PASS: the app registers the two shaders and
+                        // the pass builds its own set layout, pipeline layout and pipeline (see
+                        // vulkan.pass.taa) - the create_passes() call below is what runs that step, for every
+                        // pass at once. The vertex stage is post.vert's synthetic triangle, the same one the
+                        // debug view and the post chain use.
+                        load_shader(shaders_dir, "post.vert.spv", vertex_code);
                         load_shader(shaders_dir, "taa.frag.spv", fragment_code);
-                        auto const taa_result = runtime.make_taa_pipeline(vertex_code, fragment_code);
-                        if (!taa_result) {
-                            utility::log("taa disabled: {}", taa_result.error());
-                        } else {
-                            utility::log("SUCCESS: gbuffer + deferred pipelines created (surface write, debug view, deferred lighting, taa)");
-                        }
+                        runtime.register_shader("post.vert.spv", vertex_code);
+                        runtime.register_shader("taa.frag.spv", fragment_code);
+                        utility::log("SUCCESS: gbuffer + deferred pipelines created (surface write, debug view, deferred lighting); TAA's shaders registered");
                     }
                 }
             }
         }
 
-        // Every pass's CREATE step, once, now that the shared samplers, the shared set layouts and the pipelines
-        // above exist: a pass builds what it OWNS (its set layout, its descriptor family, its pipeline) from a
-        // `pass_context` the runtime fills, and a pass that cannot build itself says so and stays inactive
-        // rather than taking the frame down. See vulkan.pass.transparent (the one pass this branch drives, which
-        // owns nothing: its leaves name their pipelines) and runtime::create_passes for what the context carries.
+        // Every pass's CREATE step, once, now that the shared samplers, the shared set layouts and the shaders
+        // the passes declare exist: a pass builds what it OWNS (its set layout, its descriptor family, its
+        // pipeline) from a `pass_context` the runtime fills, and a pass that cannot build itself says so and
+        // stays inactive rather than taking the frame down. The scene and transparent passes own nothing (their
+        // leaves name their pipelines); the TAA resolve owns all three, which is why this call is where its
+        // pipeline comes into existence.
         runtime.create_passes();
     }
 

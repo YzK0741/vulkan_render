@@ -39,8 +39,9 @@ GI is not involved.
 | `2f363c6`, `db99f0e` | this plan, and the measured scope of the generator port |
 | `e05d0b5` | the generators take a `VkDevice` (`make_set_layout`, `write_set`, `image_set_family::ensure*`), which is the prerequisite for a pass building its own layout |
 | `bcf62bb` | the `scene` and `transparent` pass modules come over from `master` and build here with **no edit at all**. Still unconsumed: gate 7 x 2, 0 changed |
-| this step | the **transparent pass is wired and recording**: the runtime drives a real `pass::stage`, and the frame is byte-identical |
-| the step after | the **scene pass is wired**: the runtime no longer opens OR closes the surface instance, and `record_opaque_scene` / `record_main_segment` / `sub_render_task` are gone |
+| `1e2e493` | the **transparent pass is wired and recording**: the runtime drives a real `pass::stage`, and the frame is byte-identical |
+| `99583e6` | the **scene pass is wired**: the runtime no longer opens OR closes the surface instance, and `record_opaque_scene` / `record_main_segment` / `sub_render_task` are gone |
+| this step | the **TAA resolve is wired, and it is the first pass here that OWNS something**: set layout from its declaration, pipeline layout, pipeline, per-image family, history flags. `make_taa_pipeline` and `ensure_taa_descriptors` are gone, and the app's shader hand-over (`register_shader`) exists because a pass that builds a pipeline needs shader bytes |
 
 `docs/pass_chain_inventory.md` (192 lines) is the read-only map of this state: its resource set, the frame's
 recording spine and mark intervals, every function of the PBR/scene chain with its attachments, sets,
@@ -155,6 +156,51 @@ Two honesty fixes taken while the file was open, both about text that had stoppe
 Verified: gate 7 x 2, **0 changed, 0 flaky**, including `sponza` (`0EBA5300E8F84E6F`) - the scene the GI
 acceptance anchor is measured on - and `transparent_blend`, whose pass runs after lighting over the surface
 this one writes.
+
+## THE TAA RESOLVE: THE FIRST PASS HERE THAT OWNS GPU OBJECTS
+
+`scene` and `transparent` left the framework's CREATE half unexercised: their `create` is empty because their
+leaves name their pipelines and everything they bind is the shared scene set. The resolve is the first pass on
+this branch that owns something, and that is what made this step the first real test of the other half:
+
+* it builds its **set layout from its declaration** (`bindings::make_set_layout(device, taa_io, taa_io.own_set)`),
+  so the layout the fragment stage sees and the declaration cannot drift - which is what the generator port in
+  `e05d0b5` was for;
+* it builds its pipeline layout and pipeline through `pipelines::build_taa`, whose signature CHANGED for this
+  step: `(core&, push_size, vert, frag)` became `(VkDevice, pass_set_layout, push_size, vert, frag)`, because a
+  pass's create step has a device and its own layout and no `core`. `taa_owned` consequently lost its
+  `set_layout` field;
+* it owns its **per-image descriptor family**, and needed the one piece of design that is not a straight move:
+  the fingerprint. The family compares "what my sets point at", and for a per-image resource the CURRENT image's
+  view is the wrong fingerprint (it changes every frame, and rewriting a set a pending frame names is a
+  validation error), so the pass caches ONE image's four views as its generation stamp and drops them in
+  `on_swapchain_recreated` - which the runner calls for every pass in a stage (`recreate_stage`), replacing the
+  runtime's hand-kept `taa_family.retire_all()` line;
+* it owns its **history flags**, so the runtime's `taa_history_valid` member is gone and `set_taa` calls
+  `taa_resolve.reset_history()` instead of assigning to a vector it used to own.
+
+The app gained a **shader hand-over** because of it - `register_shader(name, bytes)` and the runtime's
+`registered_shader(name)`, filled through `pass_context::shader`. This is the piece the transparent step
+recorded as MISSING ("`pass_context::shader` is null here because no pass wired on this branch declares a
+shader"), and it landed exactly where it was predicted to: with the TAA pass. Chores now registers
+`post.vert.spv` + `taa.frag.spv` instead of calling a pipeline builder, and `create_passes` is the one call that
+turns those bytes into a pipeline.
+
+ONE LINE OF THE OLD BODY DELIBERATELY DID NOT MOVE: `ensure_gbuffer_depth_sampled`. The resolve samples the
+G-buffer depth, and that image is transitioned out of its attachment layout by a helper whose per-image "was it
+written this frame" flag belongs to the G-buffer pass - shared per-image bookkeeping that a pass cannot express
+while it may only declare its own bindings. It stays with the host, gated on the SAME predicate the runner gates
+the stage on. (On `master` there is a second such line - clearing the GI chain's motion-vector flag - which this
+branch does not have because it has no GI chain.) This is the framework gap the plan already named, now with a
+measurement attached: **one stage in this frame needed one host-side line that a pass cannot yet own.**
+
+Two hand-kept lists disappeared with it, both of them hazards the framework removes by construction:
+`update_pass_geometry` no longer resyncs the resolve's viewport (the pass declares `resync_viewport = true`, so
+the runner sets it from the declaration's extent every frame), and the runtime's destructor no longer destroys
+the resolve's set layout and pipeline layout (the pass does, in `release_owned`).
+
+Verified: gate 7 x 2, **0 changed, 0 flaky**, including `deferred_taa_fxaa` (`6999D01E5FBAB508`) - the one
+scenario that records the resolve.
 
 ## WHAT THE INVENTORY ALREADY FOUND (recorded, not yet fixed)
 

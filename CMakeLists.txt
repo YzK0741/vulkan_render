@@ -124,6 +124,7 @@ target_sources(vulkancorekit
         vulkan/render_resource/shared.cppm
         vulkan/pass/pass.cppm
         vulkan/pass/scene.cppm
+        vulkan/pass/taa.cppm
         vulkan/pass/transparent.cppm
         vulkan/bindings/bindings.cppm
         vulkan/pipelines/pipelines.cppm
@@ -147,6 +148,7 @@ target_sources(vulkancorekit
         vulkan/core/pipeline/spirv_parser.cpp
         vulkan/runtime.cpp
         vulkan/pass/scene.cpp
+        vulkan/pass/taa.cpp
         vulkan/pass/transparent.cpp
         vulkan/shadow_fit/shadow_fit.cpp
         vulkan/readback/readback.cpp
