@@ -447,11 +447,35 @@ failed on its own descriptor family, twice, in a way that is not about the two s
 see.** `taa_pass::record` ignores the `image_index` its write callback is given and writes `io.own` (the current
 frame's four views) into EVERY set: with more than one swapchain image, every set points at one image's history,
 velocity and depth. The gate reports no finding because the reference was captured from the same code - and
-because the pages this branch compares are pages `master` renders with the same defect. The honest fix is one
-channel serving both: a pass that owns a per-image family should be handed the view lists *per image* (either as
-`std::span<std::span<VkImageView const> const>` in `resolved_io`, or by having `ensure` hand the callback the
-image's own views). That is a framework decision like the first one, it fixes the TAA pass's latent bug as a
-side effect, and it is what the temporal (and then spatial) extraction should be built on.
+because the pages this branch compares are pages `master` renders with the same defect.
+
+**THE DESIGN IS SETTLED AND IS ONE FIELD.** `resolved_io` gains
+
+```cpp
+/// the same own bindings, ONE VIEW PER SWAPCHAIN IMAGE: own_per_image[k][image] is the view binding k has for
+/// swapchain image `image` (each span is frame.image_count long, or empty where the host filled nothing)
+std::array<std::span<VkImageView const>, max_own_bindings> own_per_image = {};
+```
+
+and that is all the framework needs to add: the host already holds these lists (they are the core's
+`gi_image_views`, `gi_history_image_views`, ... - the same vectors the host-written families index by hand), and
+a pass's write callback is handed an `image_index` precisely so it can look up that image's views. The first
+entry doubles as the per-generation fingerprint (`own_per_image[k][0]` is stable for as long as the target
+generation lives, while `own[k].view` changes every frame).
+
+The three places it lands, in the order they should be done:
+
+1. **the temporal resolve** (the diffuse signal first, as a pass of its own - its declaration is already in
+   `render_resource.cppm` and already verified), which is the extraction that measured the need;
+2. **`taa_pass::record`**, which becomes correct for more than one swapchain image. THIS ONE CHANGES FRAMES: the
+   reference for `deferred_taa_fxaa` was captured from the defective code, so fixing it is a deliberate,
+   separately verified change with a reference update - not something to fold into an extraction whose
+   acceptance is "0 changed";
+3. the same field then serves the SPATIAL filter, the last GI stage.
+
+Each of the two failed attempts is preserved in this document rather than in the tree: the branch is at
+`b7633e0`, whose code is `f117f29` (fully verified: Release/Debug/ASan, ctest, doxygen, gate 12 x 2 with 0
+changed and 0 flaky), because a half-wired pass is worse than an unimplemented one.
 
 ## WHAT THE INVENTORY ALREADY FOUND (recorded, not yet fixed)
 
