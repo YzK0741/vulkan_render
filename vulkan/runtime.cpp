@@ -3811,7 +3811,12 @@ namespace vulkan {
                 }
             }
         };
-        if (!this->gi_probe_family.ensure_all(vk, this->gi_probe_set_layout, static_cast<uint32_t>(image_count), 2u, 9u, fingerprints, write_sets)) {
+        // The pool's per-set budget is DERIVED for the same reason the layout and the writes are: a literal
+        // here is the drift class this sequence exists to remove, and this project's history has exactly that
+        // bug (a pool sized for four descriptors per set while the layout asked for five). A pool size is a
+        // capacity rather than an allocation, so deriving it costs nothing.
+        uint32_t const own_descriptors = render_resource::descriptor_counts_for(render_resource::gi_probe_io, render_resource::gi_probe_io.own_set).total();
+        if (!this->gi_probe_family.ensure_all(vk, this->gi_probe_set_layout, static_cast<uint32_t>(image_count), 2u, own_descriptors, fingerprints, write_sets)) {
             utility::log("runtime: probe cache descriptor sets unavailable - the tracer keeps its environment fallback");
         }
     }

@@ -228,9 +228,14 @@ pass's push layout). And parallel recording (`main_segments` + the task pool) is
                                                         writes the probe cache's nine own bindings and
                                                         `runtime::ensure_gi_probe_descriptors` no longer
                                                         spells them out - its first change to `runtime`, and
-                                                        byte-identical through the gate. POOL COUNTS are
-                                                        derivable (`descriptor_counts_for`) but the family
-                                                        still sizes its pool from its fingerprint count
+                                                        byte-identical through the gate. POOL COUNTS DONE for
+                                                        this pass too: the family's per-set budget is derived
+                                                        (`descriptor_counts_for(...).total()`) instead of
+                                                        restated as a literal, which is the drift class the
+                                                        project has already been bitten by (a pool sized for
+                                                        four descriptors per set while the layout asked for
+                                                        five). The post family keeps its literal until it
+                                                        has a declaration of its own
     step 3: the SPIR-V check                      NOT STARTED
     step 4: barrier and order derivation          NOT STARTED, and deliberately last (see section 7)
 
