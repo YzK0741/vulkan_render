@@ -236,23 +236,33 @@ one thing this layer exists to prevent.
                                                         consumer, not this table
     step 1: the layout generator                  DONE for the probe cache, and PROVEN BY THE GATE rather
                                                         than by a comparison test: `bindings::make_set_layout`
-                                                        generates `build_gi_probe`'s layout from the
-                                                        declaration, and `sponza_gi` - the scenario that runs
-                                                        with the probe cache on - is byte-identical across it
-    step 2: the write generator + pool counts     WRITE GENERATOR DONE and in use: `bindings::write_set`
-                                                        writes the probe cache's nine own bindings and
-                                                        `runtime::ensure_gi_probe_descriptors` no longer
-                                                        spells them out - its first change to `runtime`, and
-                                                        byte-identical through the gate. POOL COUNTS DONE for
-                                                        this pass too: the family's per-set budget is derived
+                                                        generates the pass's layout from the declaration, and
+                                                        `sponza_gi` - the scenario that runs with the probe
+                                                        cache on - is byte-identical across it
+    step 2: the write generator + pool counts     DONE for this pass: `bindings::write_set` writes its nine
+                                                        own bindings and the PASS, not `runtime`, is now the
+                                                        caller; the family's per-set budget is derived
                                                         (`descriptor_counts_for(...).total()`) instead of
                                                         restated as a literal, which is the drift class the
                                                         project has already been bitten by (a pool sized for
                                                         four descriptors per set while the layout asked for
-                                                        five). The post family keeps its literal until it
-                                                        has a declaration of its own
+                                                        five). The post chain keeps its literals until it has
+                                                        a declaration of its own
     step 3: the SPIR-V check                      NOT STARTED
     step 4: barrier and order derivation          NOT STARTED, and deliberately last (see section 7)
+    the first consumer: vulkan.pass.gi_probe      DONE, and it is the probe cache: the pass owns its set
+                                                        layout, its two-set ping-pong family, its barriers,
+                                                        its clear and its push, while the renderer keeps the
+                                                        pipeline and its layout. `runtime` lost
+                                                        `record_gi_probe_pass` and
+                                                        `ensure_gi_probe_descriptors` entirely, and the frame
+                                                        is byte-identical across the move - `sponza_gi` back
+                                                        to 58EC848DFABE654A, 12 x 2 with 0 changed and 0
+                                                        flaky. WHAT IT DISCOVERED is in `vulkan.pass` itself
+                                                        (the create-time host, the generation's image count,
+                                                        the layout and the host-composed push, non-const
+                                                        record, and an image handle next to the view) and in
+                                                        section 8 above
 
 THE CHOICE THAT MADE STEP 1 PROVABLE is worth keeping: the generator emits bindings IN DECLARATION ORDER, and
 `validate` requires a pass's own bindings to be contiguous from zero - so the layout the shader sees and the
@@ -261,3 +271,12 @@ gate could decide instead of a claim needing a new test. What a comparison test 
 layout is *used* the same way; `sponza_gi` can, because the probe pass runs in it. Step 2 got the same treatment:
 the declaration carries an explicit `image_layout`, and with it the generated writes reproduce the hand-written
 ones exactly - again decided by the gate, and again on the pass that actually runs.
+
+A BOUNDARY OF THE INSTRUMENT, measured while moving the pass and recorded because a claim of "verified" is only
+worth what the instrument can decide: the capture gate is a RELEASE instrument. Pointed at this project's Debug
+or ASan+UBSan build, two runs of the SAME binary differ - measured on `sponza_gi` and on `deferred_ssao_off`,
+which runs none of the GI chain at all - so those builds are not deterministic here and cannot be gated against
+the Release references. That is why every acceptance number in this sequence comes from the Release build, and
+why Debug/ASan+UBSan are held to "clean build, ctest 8/8, and a run that reports no validation or sanitizer
+finding" instead.
+

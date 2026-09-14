@@ -3,6 +3,7 @@ module;
 #include <GLFW/glfw3.h>
 #include <bit> // std::bit_cast for the caster world-matrix hash
 #include <chrono>
+#include <cstring> // std::memcpy, for composing a pass's push block
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <thread> // std::this_thread::yield in the frame limiter
@@ -210,10 +211,10 @@ namespace vulkan {
         this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
         this->gi_spec_seen.assign(this->vulkan_core.gi_spec_images.size(), false); // new targets: the lobe's outputs need their first-use transition again
 
-        // The probe cache's own flags start where the images do: nothing has been deposited into the grid
-        // and nothing has transitioned it out of UNDEFINED, so the tracer's gain is 0 (see
-        // gi_probe_valid) until record_gi_probe_pass has run once.
-        this->gi_probe_valid = false;
+        // The probe cache's remaining flag starts where the images do: nothing has transitioned the grid out
+        // of UNDEFINED, so the tracer's gain is 0 until the TRACE pass - the frame's first reader of the grid
+        // - has taken its first-use transition once. (What the grid HOLDS is the pass's own state now:
+        // gi_probe_pass::cache_valid, which starts false with the pass.)
         this->gi_probe_grid_seen = false;
         // ... and the furnace cube is a new image too, so its level has to be written again.
         this->furnace_cube_ready = false;
@@ -309,17 +310,12 @@ namespace vulkan {
             vkDestroyPipelineLayout(this->vulkan_core.device, this->ssgi_spec_pipeline_layout, nullptr);
             this->ssgi_spec_pipeline_layout = VK_NULL_HANDLE;
         }
-        // ... and the probe cache's two raw handles, for the same reason: the pass owns its set layout
-        // (nothing else groups the resolved GI, the depth and the two grid images), and neither handle is
-        // RAII, so leaving them out of this teardown is a leaked VkPipelineLayout + VkDescriptorSetLayout
-        // that validation reports at vkDestroyDevice and nothing else notices.
+        // ... and the probe cache's PIPELINE LAYOUT, for the same reason: it is a raw handle and the pass
+        // that records through it owns the SET layout it was created from (the pass destroys that one
+        // itself, which happens after this body - so the layout that references it goes first, here).
         if (this->gi_probe_pipeline_layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(this->vulkan_core.device, this->gi_probe_pipeline_layout, nullptr);
             this->gi_probe_pipeline_layout = VK_NULL_HANDLE;
-        }
-        if (this->gi_probe_set_layout != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->gi_probe_set_layout, nullptr);
-            this->gi_probe_set_layout = VK_NULL_HANDLE;
         }
         // ... and the TAA resolve's own objects (its set layout and layout are raw handles; the pool
         // belongs to taa_family, whose destructor destroys it and the generations it retired)
@@ -1223,6 +1219,15 @@ namespace vulkan {
         // ... and the GI denoiser's, which binds five per-image views (trace, history, motion, depth,
         // resolve) and is therefore the one family here with the most stale pointers in it.
         this->ssgi_temporal_family.retire_all();
+        // AND THE PASSES ARE TOLD, by the runner rather than by this list. That is the hazard this layer was
+        // built to remove: the retires above are a hand-kept list and it covered four of the six families -
+        // the probe cache's and the reflection denoiser's survived only because `ensure` re-detects changed
+        // views. A pass that owns a family now cannot be missed here, because it is not this function that
+        // remembers: `recreate_stage` calls every pass in the stage, and a pass added to it is covered.
+        {
+            pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
+            [[maybe_unused]] pass::run_report const recreated = pass::recreate_stage(probe_stage, this->make_pass_host());
+        }
         // Every swapchain image's history died with the old generation (and its size may have
         // changed): forget the matrices and mark the histories invalid, so the next frame for each
         // image starts a new accumulation instead of blending in a misaligned one.
@@ -1234,11 +1239,8 @@ namespace vulkan {
         // image that holds a different resolution's data.
         this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
         this->gi_spec_seen.assign(this->vulkan_core.gi_spec_images.size(), false); // new targets: the lobe's outputs need their first-use transition again
-        // The probe cache's pair of flags belongs to a target generation too: the grid images are created
-        // and destroyed with the swapchain (create_render_targets), so a new generation has an UNDEFINED
-        // cache to transition on its first tracer dispatch and nothing worth sampling until the update
-        // pass has run once in it.
-        this->gi_probe_valid = false;
+        // The probe cache's generation flag, for the same reason (see gi_probe_grid_seen). Whether the grid
+        // HOLDS anything is the pass's own state, and the pass was told above (recreate_stage).
         this->gi_probe_grid_seen = false;
         // ... and the furnace cube is a new image too, so its level has to be written again.
         this->furnace_cube_ready = false;
@@ -3104,7 +3106,7 @@ namespace vulkan {
                 this->vulkan_core.gi_resolve_image_views[image_index], // 7: the accumulation the filter reads
                 this->vulkan_core.gi_spatial_image_views[image_index], // 8: the filtered GI the composite reads
                 // 9..12: the world-space probe cache's four SH-2 coefficients (one copy for the whole
-                // device, so index 0 rather than this image's - see the ping-pong in record_gi_probe_pass:
+                // device, so index 0 rather than this image's - see the ping-pong in vulkan.pass.gi_probe:
                 // the cache side is always the one the tracer reads).
                 this->vulkan_core.gi_probe_image_views[0],
                 this->vulkan_core.gi_probe_image_views[1],
@@ -3293,7 +3295,7 @@ namespace vulkan {
         //
         // The probe cache's two numbers are the same scene-relative ones: its cube is the scene's bounds
         // (what the shadow fit uses) and its cell size falls out of that cube and the fixed extent.
-        bool const probe_ready = this->gi_probe_active() && this->gi_probe_valid;
+        bool const probe_ready = this->gi_probe_active() && this->gi_probe.cache_valid();
         float const probe_cell_size = (2.0f * this->scene_radius) / static_cast<float>(vulkan::gi_probe_grid_extent);
         // The instance table's device address, split across the two free lanes (see the shader): it is how
         // a hit learns which triangle it landed on, and it is also the switch - 0 keeps the screen-sampling
@@ -3732,6 +3734,9 @@ namespace vulkan {
         // of 1 would make the grid an immediate echo of the frame that read it, so it stops below that.
         this->gi_probe_rate = std::clamp(rate, 0.0f, 0.5f);
         this->gi_probe_rounds = std::clamp(rounds, 0u, 4u);
+        // The dispatch count is the pass's: it owns the update sequence, so the renderer hands it the one
+        // number of that sequence that is configuration rather than structure.
+        this->gi_probe.set_rounds(this->gi_probe_rounds);
         // The sign is the cache's DIRECTION A/B rather than a mistake: |gain| is the gain, and a negative
         // value looks the cache up along the opposite direction of the ray - the same cell, the other side.
         // It is clamped rather than rejected because it is a documented measurement setting.
@@ -3751,198 +3756,170 @@ namespace vulkan {
     }
 
     std::expected<void, std::string> runtime::make_gi_probe_pipeline(std::span<unsigned char const> const compute_shader_code) {
-        auto built = pipelines::build_gi_probe(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, sizeof(gi_probe_push_constants), compute_shader_code);
+        // THE PASS BUILDS WHAT IT OWNS FIRST, and this is the one ordering constraint that the pass owning
+        // its set layout introduces: the pipeline layout below is created FROM that layout. The runner runs
+        // the create step (it validates the declaration before it builds anything), exactly as it runs the
+        // record step later - so the pipeline is built for the pass the pass itself described.
+        pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
+        pass::run_report const created = pass::create_stage(probe_stage, this->make_pass_host());
+        if (!created.rejected.empty()) {
+            return std::unexpected(std::string("gi probe: the declaration was refused"));
+        }
+        if (this->gi_probe.set_layout() == VK_NULL_HANDLE) {
+            return std::unexpected(std::string("gi probe: the pass could not build its set layout"));
+        }
+        // The push range comes from the DECLARATION too (the pass's own block size), so the range the driver
+        // is told about and the bytes the pass pushes cannot disagree.
+        auto built = pipelines::build_gi_probe(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, this->gi_probe.set_layout(),
+                                               render_resource::gi_probe_io.push->size, compute_shader_code);
         if (!built) {
             return std::unexpected(std::move(built.error()));
         }
-        this->gi_probe_set_layout = built->set_layout;
         this->gi_probe_pipeline_layout = built->pipeline_layout;
         this->gi_probe_pipeline = std::move(built->pass);
         return {};
     }
 
-    void runtime::ensure_gi_probe_descriptors() {
-        core& vk = this->vulkan_core;
-        if (this->gi_probe_pipeline == std::nullopt || this->gi_probe_set_layout == VK_NULL_HANDLE) {
-            return;
-        }
-        std::size_t const image_count = vk.gi_resolve_images.size();
-        if (image_count == 0 || vk.gi_probe_image_views.size() != 8 || vk.gi_probe_surface_image_views.empty()) {
-            return;
-        }
-        // Three fingerprints, one per KIND of thing a set points at - the cache's four coefficients, the
-        // scratch's four, and the per-cell geometry. The family compares what a set points at, and a span of
-        // four says "these four, in this order", which is what a set with four coefficient bindings needs.
-        std::array<VkImageView, 4> const cache_views = {
-            vk.gi_probe_image_views[0], vk.gi_probe_image_views[1], vk.gi_probe_image_views[2], vk.gi_probe_image_views[3]};
-        std::array<VkImageView, 4> const scratch_views = {
-            vk.gi_probe_image_views[4], vk.gi_probe_image_views[5], vk.gi_probe_image_views[6], vk.gi_probe_image_views[7]};
-        std::array<VkImageView, 1> const surface_view = {vk.gi_probe_surface_image_views[0]};
-        std::array<std::span<VkImageView const>, 3> const fingerprints = {cache_views, scratch_views, surface_view};
-        // TWO sets per swapchain image, and they are the entire ping-pong: set 0 writes the cache and reads
-        // the scratch, set 1 the other way round. Choosing a set per dispatch is why the propagation needs
-        // no descriptor rewrite between its dispatches (see record_gi_probe_pass). The two sides are at
-        // index side * 4 + coefficient.
-        auto const write_sets = [this](uint32_t const /*image_index*/, std::span<VkDescriptorSet const> const sets) {
-            // The nine views are all this lambda still decides, because WHICH half of the ping-pong each of the
-            // family's two sets reads and writes is the one thing that differs between them. Everything else -
-            // the nine binding numbers, their descriptor types, their counts, their GENERAL layouts (all nine,
-            // see the declaration: the grid's sides stay in GENERAL for the whole update) and the fact that the
-            // four sampled ones take the probe grid's sampler - is generated from the pass's declaration by
-            // `bindings::write_set`. That is the point: the layout and the writes used to be two hand-written
-            // halves, and this project has already paid twice for them drifting apart.
-            for (uint32_t which = 0; which < sets.size(); ++which) {
-                uint32_t const read_side = (1u - which) * 4u;
-                uint32_t const write_side = which * 4u;
-                std::array<VkImageView, 9> const views = {
-                    this->vulkan_core.gi_probe_image_views[read_side + 0u],
-                    this->vulkan_core.gi_probe_image_views[read_side + 1u],
-                    this->vulkan_core.gi_probe_image_views[read_side + 2u],
-                    this->vulkan_core.gi_probe_image_views[read_side + 3u],
-                    this->vulkan_core.gi_probe_image_views[write_side + 0u],
-                    this->vulkan_core.gi_probe_image_views[write_side + 1u],
-                    this->vulkan_core.gi_probe_image_views[write_side + 2u],
-                    this->vulkan_core.gi_probe_image_views[write_side + 3u],
-                    this->vulkan_core.gi_probe_surface_image_views[0]};
-                render_resource::shared::sampler_set const samplers = {.probe_grid = *this->gi_probe_sampler};
-                auto const written = bindings::write_set(this->vulkan_core.device, render_resource::gi_probe_io, render_resource::gi_probe_io.own_set, sets[which], views, {}, samplers);
-                if (!written) {
-                    utility::log("runtime: probe cache descriptors: {}", written.error());
-                }
-            }
+    pass::frame_identity runtime::pass_frame() const noexcept {
+        core const& vk = this->vulkan_core;
+        return pass::frame_identity{
+            .image_index = this->current_image_index,
+            .slot = static_cast<uint32_t>(vk.current_frame),
+            // the generation's image count, which is what a pass that owns a per-image family sizes it from -
+            // and NOT the same number as the image index above
+            .image_count = static_cast<uint32_t>(vk.gi_resolve_images.size()),
+            .extent = vk.swap_chain_extent,
         };
-        // The pool's per-set budget is DERIVED for the same reason the layout and the writes are: a literal
-        // here is the drift class this sequence exists to remove, and this project's history has exactly that
-        // bug (a pool sized for four descriptors per set while the layout asked for five). A pool size is a
-        // capacity rather than an allocation, so deriving it costs nothing.
-        uint32_t const own_descriptors = render_resource::descriptor_counts_for(render_resource::gi_probe_io, render_resource::gi_probe_io.own_set).total();
-        if (!this->gi_probe_family.ensure_all(vk.device, this->gi_probe_set_layout, static_cast<uint32_t>(image_count), 2u, own_descriptors, fingerprints, write_sets)) {
-            utility::log("runtime: probe cache descriptor sets unavailable - the tracer keeps its environment fallback");
-        }
     }
 
-    bool runtime::record_gi_probe_pass(VkCommandBuffer const command_buffer) {
-        core& vk = this->vulkan_core;
-        if (!this->gi_probe_active()) {
+    // ---- the pass host: the runner's callbacks, answered by the renderer ---------------------------------
+    //
+    // It is rebuilt per call because it is a struct of function pointers (it holds no state of its own); the
+    // context is this runtime, which is what each callback casts back to. A pass never sees this: it is
+    // handed `resolved_io`, so it cannot reach a resource its declaration did not name.
+    pass::pass_host runtime::make_pass_host() noexcept {
+        return pass::pass_host{
+            .context = this,
+            .device = this->vulkan_core.device,
+            // the six samplers a declaration chooses between, as handles: a pass writes a declared sampler
+            // binding through one and never names a VkSampler of its own
+            .samplers = {.gbuffer = *this->gbuffer_sampler,
+                         .probe_grid = *this->gi_probe_sampler,
+                         .taa = *this->taa_sampler,
+                         .post = *this->post_sampler,
+                         .nearest = *this->post_nearest_sampler,
+                         .shadow = *this->shadow_sampler},
+            .frame = [](void* context) { return static_cast<runtime*>(context)->pass_frame(); },
+            .feature_active = [](void* context, std::string_view const feature) { return static_cast<runtime*>(context)->feature_active(feature); },
+            .resolve = [](void* context, pass::frame_pass const& pass, pass::resolved_io& out) { return static_cast<runtime*>(context)->resolve_pass(pass, out); },
+            .apply_behaviour = [](void* context, pass::frame_pass const& pass, pass::resolved_io const& io) { static_cast<runtime*>(context)->apply_pass_behaviour(pass, io); },
+            // No mark pair for the probe's stage yet, and deliberately: the frame has an END mark for the
+            // cache and no begin mark (its interval is measured from the GI chain's end), so adding a query
+            // pair here would change the timing report for a pass whose cost is ~0. The runtime keeps writing
+            // the end mark itself, right after the stage.
+            .mark_begin = nullptr,
+            .mark_end = nullptr,
+        };
+    }
+
+    bool runtime::resolve_pass(pass::frame_pass const& pass, pass::resolved_io& out) {
+        core const& vk = this->vulkan_core;
+        if (&pass != static_cast<pass::frame_pass const*>(&this->gi_probe)) {
+            return false; // no other pass is wired into a stage yet
+        }
+        // A frame whose grid images are not there cannot run this pass at all: the images are created and
+        // destroyed with the target generation (see core::create_render_targets).
+        if (vk.gi_probe_image_views.size() != 8 || vk.gi_probe_images.size() != 8 || vk.gi_probe_surface_image_views.empty() || vk.gi_probe_surface_images.empty() ||
+            !this->gi_probe_pipeline.has_value()) {
             return false;
         }
-        std::size_t const index = this->current_image_index;
-        if (index >= vk.gi_resolve_images.size() || vk.gi_probe_images.size() != 8 || vk.gi_probe_image_views.size() != 8) {
+        out.frame = this->pass_frame();
+        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
+        // The nine own bindings, resolved BY DECLARATION ELEMENT: the declaration says binding k is element k
+        // of `probe_grid` (0..7) and binding 8 element 0 of `probe_surface`, and mapping an element onto the
+        // renderer's image is exactly what a resolver is for. Which half of the ping-pong each of the pass's
+        // two sets binds is the PASS's fact, not this function's, so nothing here decides it.
+        for (uint32_t k = 0; k < 8; ++k) {
+            out.own_storage[k] = {.view = vk.gi_probe_image_views[k], .buffer = VK_NULL_HANDLE, .image = vk.gi_probe_images[k]};
+        }
+        out.own_storage[8] = {.view = vk.gi_probe_surface_image_views[0], .buffer = VK_NULL_HANDLE, .image = vk.gi_probe_surface_images[0]};
+        out.own = std::span<pass::resolved_binding const>(out.own_storage.data(), 9);
+        // The pass owns its family, so it resolves its own sets; what the host resolves is the SHARED set the
+        // declaration uses (a cell's ray needs the top level structure, the material table, the light UBO).
+        out.own_set = VK_NULL_HANDLE;
+        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
+        // The pipeline, by the name the behaviour declares - the mechanism this renderer already had for the
+        // scene's pipelines, used here for a compute pass, with the layout it was built from.
+        if (pass.behaviour().pipelines.size() != 1 || pass.behaviour().pipelines[0] != "gi_probe") {
             return false;
         }
-        this->ensure_gi_probe_descriptors();
-        VkDescriptorSet const write_cache = this->gi_probe_family.set(static_cast<uint32_t>(index), 0);
-        VkDescriptorSet const write_scratch = this->gi_probe_family.set(static_cast<uint32_t>(index), 1);
-        if (write_cache == VK_NULL_HANDLE || write_scratch == VK_NULL_HANDLE) {
-            return false;
-        }
-
-        // The cache comes back from the sampler the tracer left it in, and goes to GENERAL for the whole
-        // update: both sides of the ping-pong stay there, which is what makes the propagation's barriers
-        // same-layout ones. All FOUR coefficients move together - a cell is its four images.
-        // Step C: if the global lighting has changed materially since the grid was filled, the grid is
-        // worthless - it holds light for a sun that is not there any more - so it is CLEARED rather than
-        // faded out over 1/rate frames. A change of more than about 25 degrees in the sun''s direction is
-        // the trigger: a dot product against the direction the cache was filled under.
-        constexpr float light_reset_cosine = 0.9f;
-        glm::vec3 const current_light_dir = glm::normalize(glm::vec3(this->light_state.light_dir));
-        bool const light_changed = this->gi_probe_light_dir_valid && glm::dot(this->gi_probe_light_dir, current_light_dir) < light_reset_cosine;
-        this->gi_probe_light_dir = current_light_dir;
-        this->gi_probe_light_dir_valid = true;
-
-        std::array<VkImageMemoryBarrier2, 4> to_general = {};
-        for (uint32_t c = 0; c < to_general.size(); ++c) {
-            to_general[c] = vulkan::sampling_to_general_transition;
-            to_general[c].image = vk.gi_probe_images[c];
-        }
-        VkDependencyInfo const general_dependency = make_image_dependency_info(static_cast<uint32_t>(to_general.size()), to_general.data());
-        vkCmdPipelineBarrier2(command_buffer, &general_dependency);
-
-        if (light_changed) {
-            // Every image is in GENERAL here (the cache by the barrier above, the scratch and the geometry
-            // by their first-use transitions), which is what a clear needs; TRANSFER_DST is in their usage
-            // for this.
-            VkClearColorValue const nothing = {};
-            VkImageSubresourceRange const whole = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-            for (VkImage const cache : vk.gi_probe_images) {
-                vkCmdClearColorImage(command_buffer, cache, VK_IMAGE_LAYOUT_GENERAL, &nothing, 1, &whole);
-            }
-            vkCmdClearColorImage(command_buffer, vk.gi_probe_surface_images[0], VK_IMAGE_LAYOUT_GENERAL, &nothing, 1, &whole);
-            utility::log("probe cache: cleared - the global lighting changed materially");
-        }
-
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->gi_probe_pipeline->get_pipeline());
-
-        // The grid covers the scene's bounds, the same cube the shadow fit uses, and the cell size falls
-        // out of that and the fixed extent: a scene-relative cache, so one set of numbers means the same
-        // thing on a 1.6-unit model and on Sponza's 18.5.
+        out.pipeline_storage[0] = this->gi_probe_pipeline->get_pipeline();
+        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
+        out.pipeline_layout = this->gi_probe_pipeline_layout;
+        // The push block, composed HERE because its values are the renderer's: the grid is anchored to the
+        // scene's bounds (the same cube the shadow fit uses, so one set of numbers means the same thing on a
+        // 1.6-unit model and on Sponza's 18.5), the rate is the config's, the table address is the tracing
+        // structures', and the light direction is what the cache's own invalidation compares against.
+        pass::gi_probe_pass::push_constants push = {};
         float const cell_size = (2.0f * this->scene_radius) / static_cast<float>(vulkan::gi_probe_grid_extent);
-        gi_probe_push_constants push = {};
         push.grid_min_cell = glm::vec4(this->shadow_scene_center - glm::vec3(this->scene_radius), cell_size);
-        // The same instance table the tracer publishes, so that the cells can trace and shade their own
-        // hits. A frame without built structures pushes zero. Nothing else is pushed: the block used to
-        // carry the frame's view-projection and the eye position for an injection that projected a cell
-        // into the frame, and that injection is gone (see shaders/gi_probe.comp).
+        push.params = glm::vec4(this->gi_probe_rate, 0.0f, 0.0f, 0.0f);
         uint64_t probe_table = 0;
         if (this->rt_top_levels.has_value()) {
             VkBuffer const table = this->rt_top_levels->instance_table(static_cast<uint32_t>(vk.current_frame));
             if (table != VK_NULL_HANDLE) {
-                VkBufferDeviceAddressInfo const table_info = {
-                    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};
+                VkBufferDeviceAddressInfo const table_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};
                 probe_table = vkGetBufferDeviceAddress(vk.device, &table_info);
             }
         }
         push.instance_table = glm::uvec2(static_cast<uint32_t>(probe_table & 0xFFFFFFFFu), static_cast<uint32_t>(probe_table >> 32u));
-        push.params = glm::vec4(this->gi_probe_rate, 0.0f, 0.0f, 0.0f);
-
-        constexpr uint32_t group_size = 4; // shaders/gi_probe.comp's local_size_x/y/z
-        uint32_t const groups = (vulkan::gi_probe_grid_extent + group_size - 1) / group_size;
-        auto const storage_barrier = [&command_buffer](VkImage image) {
-            VkImageMemoryBarrier2 barrier = vulkan::compute_storage_transition;
-            barrier.image = image;
-            VkDependencyInfo const dependency = make_image_dependency_info(1, &barrier);
-            vkCmdPipelineBarrier2(command_buffer, &dependency);
-        };
-        auto const dispatch = [&](VkDescriptorSet const set, float const mode) {
-            push.params.w = mode;
-            vkCmdPushConstants(command_buffer, this->gi_probe_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-            std::array<VkDescriptorSet, 2> const probe_sets = {this->scene_sets.set(static_cast<uint32_t>(vk.current_frame)), set};
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->gi_probe_pipeline_layout, 0, static_cast<uint32_t>(probe_sets.size()), probe_sets.data(), 0, nullptr);
-            vkCmdDispatch(command_buffer, groups, groups, groups);
-        };
-        // One side is four images (side * 4 + coefficient), so a barrier "for the side just written" is
-        // four barriers: missing one would leave a coefficient of the next dispatch reading stale data,
-        // which looks like the directional part lagging a frame behind rather than like an error.
-        auto const side_barrier = [&](uint32_t const first) {
-            for (uint32_t c = 0; c < 4; ++c) {
-                storage_barrier(vk.gi_probe_images[first + c]);
+        push.light_dir = glm::vec4(glm::normalize(glm::vec3(this->light_state.light_dir)), 0.0f);
+        static_assert(sizeof(push) <= pass::max_push_bytes, "the probe cache's push block must fit the guaranteed minimum");
+        std::memcpy(out.push_storage.data(), &push, sizeof(push));
+        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
+        // The extent, from the declaration's rule: `resource` and the probe grid is 32 cells on a side. The
+        // rule is applied HERE because it is a mapping from the declaration to a number the renderer owns.
+        VkExtent2D extent = {};
+        switch (pass.behaviour().extent) {
+        case pass::extent_rule::full:
+            extent = vk.swap_chain_extent;
+            break;
+        case pass::extent_rule::half:
+            extent = VkExtent2D{std::max(1u, vk.swap_chain_extent.width / 2u), std::max(1u, vk.swap_chain_extent.height / 2u)};
+            break;
+        case pass::extent_rule::resource:
+            if (pass.behaviour().extent_of == pass::resource_id::probe_grid) {
+                extent = VkExtent2D{vulkan::gi_probe_grid_extent, vulkan::gi_probe_grid_extent};
             }
-        };
-
-        // Inject: every cell fills itself from its OWN rays (see the shader); a cell whose frame has nothing
-        // to trace against keeps what it holds.
-        dispatch(write_cache, 0.0f);
-        // Propagate: an even number of dispatches, so a frame's last one always lands back in the cache -
-        // which is why the tracer samples one side instead of running a ping-pong of its own.
-        for (uint32_t round = 0; round < this->gi_probe_rounds; ++round) {
-            side_barrier(0); // the cache was just written: the next dispatch reads it
-            dispatch(write_scratch, 1.0f);
-            side_barrier(4); // ... and the scratch was: this one reads that
-            dispatch(write_cache, 1.0f);
+            break;
         }
-
-        // Hand the cache's four coefficients back to the sampler the tracer reads them with next frame.
-        std::array<VkImageMemoryBarrier2, 4> to_sampling = {};
-        for (uint32_t c = 0; c < to_sampling.size(); ++c) {
-            to_sampling[c] = vulkan::general_to_sampling_transition;
-            to_sampling[c].image = vk.gi_probe_images[c];
-        }
-        VkDependencyInfo const sampling_dependency = make_image_dependency_info(static_cast<uint32_t>(to_sampling.size()), to_sampling.data());
-        vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
-
-        // From here on the grid holds something, so the tracer may sample it (see gi_probe_valid).
-        this->gi_probe_valid = true;
+        out.extent = extent;
         return true;
+    }
+
+    void runtime::apply_pass_behaviour(pass::frame_pass const& pass, pass::resolved_io const& io) {
+        // The mechanical part of "how this pass is called", done by the runner so that a pass cannot forget
+        // it. Two of the three things it owes a pass are not implemented yet, and they say so out loud rather
+        // than doing nothing - a silent skip is the one thing this step must not do:
+        pass::behaviour const& behaviour = pass.behaviour();
+        if (behaviour.kind != pass::behaviour_kind::compute) {
+            // A graphics/fullscreen/instanced pass draws inside a rendering instance the STAGE opened, and
+            // nothing in this framework opens one yet: the first such pass to move here brings that shape,
+            // and with it the viewport resync below.
+            utility::log("pass runner: pass '{}' is not a compute pass, which this framework does not drive yet", pass.io().name);
+            return;
+        }
+        if (behaviour.resync_viewport) {
+            // The renderer's resync is not a command-buffer call: it re-stores the viewport on every cached
+            // pipeline (see update_pass_geometry), because begin_pipeline re-emits it. Guessing that here
+            // would be inventing behaviour no consumer can verify.
+            utility::log("pass runner: pass '{}' asked for a viewport resync, which this framework cannot do yet", pass.io().name);
+        }
+        for (VkPipeline const pipeline : io.pipelines) {
+            if (pipeline != VK_NULL_HANDLE) {
+                vkCmdBindPipeline(io.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+            }
+        }
     }
 
     std::expected<void, std::string> runtime::make_mask_bake_pipeline(std::span<unsigned char const> const compute_shader_code) {
@@ -4737,9 +4714,15 @@ namespace vulkan {
         // The world-space probe cache, last in the GI stretch: it deposits THIS frame's resolved GI into
         // the cells the frame can see, so it has to run after the spatial filter (the image it reads is
         // this frame's) and before the composite (nothing about it is needed for this frame's image -
-        // what it produces is read by the NEXT frame's tracer, which is what a cache costs). Skipped
-        // silently when it is off or has no pipeline: the frame is then bit for bit what it was.
-        this->record_gi_probe_pass(command_buffer);
+        // what it produces is read by the NEXT frame's tracer, which is what a cache costs). The RUNNER
+        // decides whether it runs at all: the pass declares the feature `ssgi_probes`, and an inactive
+        // feature is skipped WITHOUT being resolved - which is what keeps a cache that is off bit for bit
+        // what the frame was before it existed. Its stage writes no mark pair (the interval is measured
+        // from the GI chain's end), so `marks = false` and the end mark below is the runtime's.
+        {
+            pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
+            [[maybe_unused]] pass::run_report const probe_report = pass::record_stage(probe_stage, this->make_pass_host());
+        }
         this->gpu_mark(command_buffer, gpu_mark_id::gi_probe_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         // The G-buffer debug view forces the bloom weight to 0: bloom is a display effect, and a glow
         // smeared over the channel being inspected is the opposite of a debug view (it would also
@@ -4982,6 +4965,9 @@ namespace vulkan {
         f.unlit = this->unlit_active;
         f.gbuffer_debug = this->gbuffer_debug && this->gbuffer_pipeline.has_value() && this->gbuffer_debug_pipeline.has_value();
         f.ssgi = this->ssgi_active();
+        // The probe cache is a pass of its own, so its activity is a feature of its own: the tracer asks
+        // whether the cache is READY (probe_ready below), and the runner asks whether the pass RUNS.
+        f.ssgi_probes = this->gi_probe_active();
         // The G-buffer pass and its lighting stage are the engine's only scene path, so there is no
         // flag for them: taa/ssao below ask this instead, and the debug view stands in for the
         // lighting stage rather than running alongside it (the two write the HDR target differently).
@@ -5010,6 +4996,9 @@ namespace vulkan {
         }
         if (name == "ssgi") {
             return f.ssgi;
+        }
+        if (name == "ssgi_probes") {
+            return f.ssgi_probes;
         }
         if (name == "taa") {
             return f.taa;

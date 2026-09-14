@@ -1,4 +1,4 @@
-// module version: 0.16.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.17.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
@@ -96,17 +96,17 @@ namespace vulkan::pipelines {
 
     export std::expected<ssgi_temporal_owned, std::string> build_ssgi_temporal(core& vk, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
 
-    /// what build_gi_probe() creates: the world-space probe cache's pass, which owns its set layout for
-    /// the same reason the denoiser's resolve does - the things it binds (this frame's resolved
-    /// screen-space GI, the depth, and the two grid images it ping-pongs between) are grouped by no
-    /// other pass. It binds no scene set: the push block carries the projection it needs.
+    /// what build_gi_probe() creates: the world-space probe cache's pipeline layout and pipeline. The SET
+    /// layout comes IN as a parameter rather than being built here, because it is the PASS's (see
+    /// vulkan.pass.gi_probe): the pass generates it from its own declaration, and this builder is handed it -
+    /// which is why the caller must have run the pass's create step first.
     export struct gi_probe_owned {
-        VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pass;
     };
 
-    export std::expected<gi_probe_owned, std::string> build_gi_probe(core& vk, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    export std::expected<gi_probe_owned, std::string> build_gi_probe(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size,
+                                                                     std::span<unsigned char const> compute_shader_code);
 
     /// the passes that reuse a layout someone else owns, so theirs comes in as a parameter
     export std::expected<vk_pipeline, std::string> build_fxaa(core& vk, VkPipelineLayout post_pipeline_layout, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
@@ -683,35 +683,29 @@ namespace vulkan::pipelines {
     // resolved GI, the depth, and the grid image it is reading - and 3 is the STORAGE 3D image it
     // writes, plus the per-cell surface offsets the filter tests visibility with, which is why two bindings
     // differ from the rest.
-    std::expected<gi_probe_owned, std::string> build_gi_probe(core& vk, VkDescriptorSetLayout const scene_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    std::expected<gi_probe_owned, std::string> build_gi_probe(core& vk, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size,
+                                                              std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         gi_probe_owned out;
 
-        // NINE bindings: the four SH-2 coefficient images being READ (0..3), the four being WRITTEN (4..7),
-        // and the per-cell surface offsets the propagation tests visibility with (8). The read side has to
-        // be sampler3D images - a lookup blends neighbouring cells trilinearly - and the write side storage
-        // images. The two dead bindings this layout used to carry (this frame's resolved GI and the G-buffer
-        // depth, for the screen-projection injection) went with that injection.
-        // THE LAYOUT IS GENERATED FROM THE PASS'S DECLARATION, not written here. The nine bindings this
-        // function used to spell out - four coefficient images read, four written, the per-cell surface - are
-        // the declaration's own set in `vulkan.render_resource::gi_probe_io`, and the descriptor WRITES will be
-        // generated from the same place once that side is converted: one fact, one source, which is what
-        // removes the pair of hand-written halves that drifted twice in this project's history (a pool sized
-        // for four descriptors per set while the layout asked for five, and a binding whose type changed
-        // without its writer noticing).
+        // THE SET LAYOUT IS THE PASS'S. Nine bindings - the four SH-2 coefficient images being READ (0..3),
+        // the four being WRITTEN (4..7), and the per-cell surface offsets the propagation tests visibility
+        // with (8) - generated from `vulkan.render_resource::gi_probe_io` by the pass that declares them
+        // (`vulkan.pass.gi_probe`), which is also where the descriptor WRITES come from. One fact, one
+        // source: that is what removed the pair of hand-written halves that drifted twice in this project's
+        // history (a pool sized for four descriptors per set while the layout asked for five, and a binding
+        // whose type changed without its writer noticing).
         //
-        // THAT THE GENERATED LAYOUT IS THE ONE THIS FUNCTION CARRIED IS ASSERTED BY THE CAPTURE GATE, not by a
-        // comment: `sponza_gi` is the scenario that runs with the probe cache ON, so its frame is compared byte
-        // for byte across this change.
-        std::expected<VkDescriptorSetLayout, std::string> const layout = bindings::make_set_layout(vk.device, render_resource::gi_probe_io, render_resource::gi_probe_io.own_set);
-        if (!layout.has_value()) {
-            return fail(layout.error());
+        // THAT THE GENERATED LAYOUT IS THE ONE THIS FUNCTION USED TO CARRY IS ASSERTED BY THE CAPTURE GATE,
+        // not by a comment: `sponza_gi` is the scenario that runs with the probe cache ON, so its frame is
+        // compared byte for byte across the change.
+        if (pass_set_layout == VK_NULL_HANDLE) {
+            return fail("gi probe: the pass has no set layout yet (its create step must run first)");
         }
-        out.set_layout = *layout;
 
         // The shared scene set comes FIRST, because the tracing this pass will do needs what the tracer
         // already has: the top level structure, the material records, the texture array, the light UBO.
-        std::array<VkDescriptorSetLayout, 2> const set_layouts = {scene_layout, out.set_layout};
+        std::array<VkDescriptorSetLayout, 2> const set_layouts = {scene_layout, pass_set_layout};
 
         VkPushConstantRange push_range = {};
         push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;

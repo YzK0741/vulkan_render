@@ -116,10 +116,19 @@ export namespace vulkan::pass {
         VkExtent2D extent = {0, 0};
     };
 
-    /// @brief one resolved own binding: exactly one of the two handles is set, according to the binding's kind
+    /// @brief one resolved own binding: the handles this binding's resource actually is
     struct resolved_binding {
         VkImageView view = VK_NULL_HANDLE;
         VkBuffer buffer = VK_NULL_HANDLE;
+        /**
+         * The image BEHIND @c view, because a descriptor takes a view and a BARRIER takes an image.
+         *
+         * This field exists because the first real pass needed it: the probe cache transitions and clears
+         * its own nine images (same-layout storage barriers for the propagation, a clear when the global
+         * lighting changed), and a pass that has only views cannot name them. It is resolved from the same
+         * declaration element as the view, so a pass still reaches nothing it did not declare.
+         */
+        VkImage image = VK_NULL_HANDLE;
     };
 
     /**
@@ -137,22 +146,38 @@ export namespace vulkan::pass {
         VkDescriptorSet post = VK_NULL_HANDLE;
     };
 
+    /// @brief how many own bindings one pass may resolve (the probe cache's nine are the most today)
+    inline constexpr uint32_t max_own_bindings = 16;
+    /// @brief how many pipelines one pass may name (the post chain's five are the most today)
+    inline constexpr uint32_t max_pass_pipelines = 8;
+    /// @brief the largest push block a pass may declare: the 128 bytes Vulkan guarantees
+    inline constexpr uint32_t max_push_bytes = 128;
+
     /**
      * @brief what a pass is given: its own declaration, resolved
      *
      * `own` is indexed by the pass's OWN BINDING NUMBER - `vulkan.render_resource`'s validator requires those
      * to be contiguous from zero, so the index IS the declaration's `binding` field and nothing is looked up
      * in the frame path.
+     *
+     * THE STORAGE LIVES HERE, in fixed arrays the host fills and the spans view. That shape is deliberate:
+     * the runner creates this struct per pass per frame and the pass records from it immediately, so one
+     * struct owns everything the pass reads and there is no second place for a handle to live (and no
+     * lifetime for a host to get wrong).
      */
     struct resolved_io {
         frame_identity frame = {};
         /// THE command buffer is handed out per frame, at recording time, and never stored: a pass records
         /// into what it is given, which is why it holds no device state between frames.
         VkCommandBuffer cmd = VK_NULL_HANDLE;
-        /// the pass's own binding number -> the two handles a binding can be (exactly one is set)
+        /// the storage `own` views
+        std::array<resolved_binding, max_own_bindings> own_storage = {};
+        /// the pass's own binding number -> the handles that binding's resource is (exactly one is set)
         std::span<resolved_binding const> own = {};
         VkDescriptorSet own_set = VK_NULL_HANDLE;
         shared_sets shared = {};
+        /// the storage `pipelines` views
+        std::array<VkPipeline, max_pass_pipelines> pipeline_storage = {};
         /// in the order `behaviour::pipelines` names them, one entry per name
         std::span<VkPipeline const> pipelines = {};
         /**
@@ -175,6 +200,7 @@ export namespace vulkan::pass {
          * global light direction - are the renderer's, not the pass's; what the pass owns is the block's
          * SHAPE and the fields it changes per dispatch (the probe cache's mode lane).
          */
+        std::array<std::byte, max_push_bytes> push_storage = {};
         std::span<std::byte const> push = {};
         /// the extent THIS pass works at: the frame's, half of it, or a resource's, per `behaviour::extent`
         VkExtent2D extent = {0, 0};

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.55.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.56.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -26,6 +26,8 @@ export module vulkan.runtime;
 
 import vulkan.profiling;
 import vulkan.bindings;               // the per-image descriptor-set families (the G-buffer debug view's for now)
+import vulkan.pass;                   // the pass framework: the host the runner talks to, and the stage runner
+import vulkan.pass.gi_probe;          // the first real pass (its member is declared below, so the class must be complete)
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
 import vulkan.acceleration_structure; // the ray-tracing bottom level structures (built once, lazily)
@@ -581,9 +583,21 @@ namespace vulkan {
         // the whole feature costs nothing but its own dispatches, because it is not sampled at all while
         // its gain is 0 (the tracer branches on the gain rather than multiplying by it).
         std::optional<vk_pipeline> gi_probe_pipeline = std::nullopt;
-        VkDescriptorSetLayout gi_probe_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout gi_probe_pipeline_layout = VK_NULL_HANDLE;
-        bindings::image_set_family gi_probe_family;
+        // THE FIRST REAL PASS. It owns what is only its own: the set layout it generated from its
+        // declaration, the two-set ping-pong descriptor family, the dispatch sequence with its barriers, and
+        // the two pieces of state that say what the grid currently holds (its validity, and the light it was
+        // filled under). What stays here is what the RENDERER owns: the pipeline and its layout (the pass
+        // names them and the runtime builds and destroys them), the switch, and the values the pass's push
+        // block needs - which are the renderer's, so it composes the block.
+        pass::gi_probe_pass gi_probe;
+        // ... and the stage the runner is handed. One entry, and the pass is declared before this initialiser
+        // so it refers to a constructed object; a pass list is pointers in DECLARATION ORDER, never a
+        // container whose iteration order is an accident (the capture gate compares frames byte for byte).
+        std::array<pass::frame_pass*, 1> gi_probe_stage = {&this->gi_probe};
+        // The storage `resolved_io::push` points into for the frame. It is the pass's own block type, so the
+        // two sides of the boundary cannot disagree about the layout; the host fills it, the pass reads it.
+        std::array<std::byte, sizeof(pass::gi_probe_pass::push_constants)> gi_probe_push = {};
         bool gi_probe_enabled = false;
         // The grid's own blend rate ([render] ssgi_probe_rate): how much of a cell's stored value one
         // frame's observation replaces. Small on purpose - this is the cache that is meant to survive
@@ -608,10 +622,12 @@ namespace vulkan {
         // acceptance test: it has to fail before the SH-2 change and pass after (see
         // shaders/ssgi.comp's probe_radiance and docs/gi_hit_shading.md).
         float gi_probe_gain = 1.0f;
-        // Whether the grid holds anything at all: false until the first probe dispatch has run. The
-        // tracer's gain is forced to 0 until then, because a grid nobody has written has undefined
-        // texels and the pass's first-use transition only makes its LAYOUT legal.
-        bool gi_probe_valid = false;
+        // Whether the grid holds anything at all, and the light it holds it for, are the PASS's own state now
+        // (see gi_probe_pass::cache_valid): it is the pass's cache, so its invalidation is the pass's - and
+        // the pass owns the light-change trigger, which is why the current direction rides in the push block.
+        // What stays here is the first-use transition's flag below, because that transition belongs to the
+        // TRACER (the trace pass is the frame's first reader of the grid, not its writer).
+        //
         // Whether this target generation's grid images have been transitioned out of UNDEFINED yet
         // (they are created with the swapchain and destroyed with it - see core::create_render_targets).
         bool gi_probe_grid_seen = false;
@@ -622,31 +638,10 @@ namespace vulkan {
         // READS one of them, and then it is a validation error on whichever slot ran second. (This project's
         // per-image-lifetime trap, third occurrence.)
         std::vector<bool> gi_spec_seen = {};
-        // The global lighting the cache currently holds light for. A material change in it invalidates the
-        // whole grid: the cache is a slow EMA, so after the sun moves it holds light for a sun that is no
-        // longer there and would take ~1/rate frames to fade instead of starting over. The reference
-        // implementation resets on a 4x / 0.25x change in the light or skylight colour; the parameter this
-        // renderer can actually change at runtime is the sun's DIRECTION, so that is what is compared.
-        glm::vec3 gi_probe_light_dir = glm::vec3(0.0f);
-        bool gi_probe_light_dir_valid = false;
-        struct gi_probe_push_constants {
-            glm::vec4 grid_min_cell = glm::vec4(0.0f); // xyz = cell (0,0,0)'s corner, w = cell size
-            // x = the injection rate, w = the mode (0 = inject, 1 = propagate). y and z are free now: they
-            // carried the projection pair for an injection that projected a cell into the frame, and the
-            // cells trace their own rays instead. No camera data is left in this block at all, which is
-            // what makes the cache's view independence a property of its inputs rather than a claim.
-            glm::vec4 params = glm::vec4(0.0f);
-            // The instance table's device address, split into two 32-bit halves - the same shape the
-            // tracer's push uses. LAST, so the padding a 16-byte-aligned block adds after it lands past
-            // every lane the shader reads: an 8-byte field in the MIDDLE would pad the CPU struct while the
-            // shader's block stays packed, which shifts every lane after it and silently turns the mode
-            // lane into a table-address half read as a float.
-            glm::uvec2 instance_table = glm::uvec2(0u);
-        };
         // The alphaMode MASK bake (shaders/mask_bake.comp): device addresses as two 32-bit halves, the same
         // shape every pass here pushes them in. Three uvec2s then five uints, so the block is 48 bytes on
-        // the CPU and 44 in the shader - the offsets agree and the range covers both (see the note on
-        // gi_probe_push_constants above for why a MIDDLE uvec2 would be the dangerous case).
+        // the CPU and 44 in the shader - the offsets agree and the range covers both (see the note in
+        // vulkan.pass.gi_probe's push_constants for why a MIDDLE uvec2 would be the dangerous case).
         struct mask_bake_push_constants {
             glm::uvec2 source_vertices = glm::uvec2(0u); // the source vertex buffer, low and high halves
             glm::uvec2 source_indices = glm::uvec2(0u);  // ... its index buffer (zero = not indexed)
@@ -723,12 +718,30 @@ namespace vulkan {
         /** @brief allocate or rewrite the denoiser's per-image descriptor sets (see vulkan.bindings) */
         void ensure_ssgi_denoise_descriptors();
         /**
-         * @brief allocate or rewrite the probe cache's per-image descriptor sets (see vulkan.bindings)
-         * @note the two sets are the ping-pong's two directions - set 0 writes the cache, set 1 the
-         *       scratch - so the propagation picks a set per dispatch instead of rewriting descriptors
-         *       between its dispatches
+         * @brief the host the pass runner talks to: the callbacks a stage needs, and the create-time facts
+         * @note rebuilt per call (it is a struct of function pointers), so it holds no state of its own; the
+         *       context is this runtime, which is what the callbacks cast back to
          */
-        void ensure_gi_probe_descriptors();
+        [[nodiscard]] pass::pass_host make_pass_host() noexcept;
+        /**
+         * @brief the frame a pass is being recorded in: both counters, the generation's image count, the extent
+         * @note `image_count` is the swapchain generation's count and NOT the image index - a pass that owns a
+         *       per-image descriptor family sizes it from the first and indexes with the second
+         */
+        [[nodiscard]] pass::frame_identity pass_frame() const noexcept;
+        /**
+         * @brief resolve a pass's declaration into this frame's handles (the runner's `resolve` callback)
+         * @return false when this frame cannot run the pass, which skips it WITHOUT recording anything
+         * @note the mapping is the HOST's job and not the pass's (the pass must not be able to reach a
+         *       resource it did not declare): an element of `resource_id::probe_grid` becomes that element's
+         *       image and view, an element of `probe_surface` becomes the per-cell geometry, the shared scene
+         *       set comes from the frame's slot, and the pipeline handles come from the name the pass's
+         *       behaviour declares. The EXTENT is applied here too, from the declaration's rule.
+         */
+        [[nodiscard]] bool resolve_pass(pass::frame_pass const& pass, pass::resolved_io& out);
+        /** @brief the behaviour's mechanical part, before the pass records: bind the pipeline(s), resync the
+         *         viewport. A pass cannot forget these because it does not do them */
+        void apply_pass_behaviour(pass::frame_pass const& pass, pass::resolved_io const& io);
         /**
          * @ingroup vulkan_runtime
          * @brief record the GI spatial filter into @p command_buffer
@@ -2380,18 +2393,6 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief record the probe cache's dispatches for this frame, if it is active
-         * @param command_buffer the frame's command buffer
-         * @return true when the grid was updated (and therefore holds something to sample)
-         * @note runs AFTER the screen-space chain, because what it deposits is that chain's resolved
-         *       result for this frame, and BEFORE the composite, because it reads the resolved image
-         *       while it is still this frame's. Its own result is read by the NEXT frame's tracer: a grid
-         *       cell is a cache, and one frame of delay is what a cache costs.
-         */
-        bool record_gi_probe_pass(VkCommandBuffer command_buffer);
-
-        /**
-         * @ingroup vulkan_runtime
          * @brief whether this frame's GI pass will actually TRACE its rays
          * @note the predicate both the tracer's push block and the light UBO's gi_full_indirect are
          *       composed from, because the second one is a PREDICTION: it tells the lighting stage to
@@ -2713,6 +2714,7 @@ namespace vulkan {
             bool unlit = false;         // the flat render mode (no lighting anywhere)
             bool gbuffer_debug = false; // the opaque pass stores the G-buffer for the debug view
             bool ssgi = false;          // trace one bounce of screen-space diffuse indirect
+            bool ssgi_probes = false;   // update the world-space probe cache (the pass, not the tracer's fallback)
             bool shadow = false;        // record the directional shadow pass
             bool clustered = false;     // record the cluster compute pass
             bool taa = false;           // resolve TAA

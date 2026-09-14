@@ -125,6 +125,7 @@ target_sources(vulkancorekit
         vulkan/render_resource/render_resource.cppm
         vulkan/render_resource/shared.cppm
         vulkan/pass/pass.cppm
+        vulkan/pass/gi_probe.cppm
         vulkan/profiling/profiling.cppm
         vulkan/shadow_fit/shadow_fit.cppm
         vulkan/readback/readback.cppm
@@ -145,6 +146,7 @@ target_sources(vulkancorekit
         vulkan/math/math.cpp
         vulkan/core/pipeline/spirv_parser.cpp
         vulkan/runtime.cpp
+        vulkan/pass/gi_probe.cpp
         vulkan/shadow_fit/shadow_fit.cpp
         vulkan/readback/readback.cpp
         vulkan/acceleration_structure/acceleration_structure.cpp

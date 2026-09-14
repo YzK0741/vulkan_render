@@ -649,7 +649,12 @@ export namespace vulkan::render_resource {
         .name = "gi_probe",
         .own_set = 1,
         .bindings = gi_probe_bindings,
-        .push = std::nullopt,
+        // The pass's push block, DECLARED here because it is the range its pipeline layout is built with and
+        // the size its host must compose. It is the pass's own struct
+        // (`vulkan.pass.gi_probe::gi_probe_pass::push_constants`), and `vulkan.pass.gi_probe` carries the
+        // `static_assert` that ties this number to that struct - a fact in two units that the compiler keeps
+        // in agreement is the next best thing to a fact in one.
+        .push = push_block{.offset = 0, .size = 56, .stages = stage_flag::compute},
     };
 
 } // namespace vulkan::render_resource

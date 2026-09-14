@@ -118,6 +118,17 @@ extraction is also the smallest risk that can still fail in every way the later 
 sampler is created inside `make_gbuffer_debug_pipeline` (`2563-2568`), which is a naming accident to fix while
 passing through.
 
+**Extraction 1 is DONE, and it landed as a PASS rather than as the `vulkan.gi_probe` module this map proposed.**
+The boundary the project chose for a pass is `vulkan.pass` (the framework) plus one module per pass
+(`vulkan.pass.gi_probe`), because the thing being extracted is not "some code in a file" but a unit with a
+DECLARED interface - and the declaration is what made the move provable: the frame is byte-identical
+(`sponza_gi` back to 58EC848DFABE654A). What moved is narrower than the `218 cpp + 70 cppm, 8 members` above and
+what stayed is on purpose: the pass owns its set layout, its two-set ping-pong family, its barriers, its clear and
+its push; `vulkan.runtime` keeps the pipeline, the pipeline layout, the switch, and the values the push block is
+composed from (they are the renderer's). `record_gi_probe_pass` and `ensure_gi_probe_descriptors` are gone, and
+`gi_probe_valid`/`gi_probe_light_dir_valid` are the pass's state now. The remaining entries in the order above are
+unchanged, and TAA is next.
+
 ## 6. Step 1 - the file-level split of `runtime.cpp`, and its honest value
 
 The build already lists a module's implementation units under `target_sources(... PRIVATE ...)`

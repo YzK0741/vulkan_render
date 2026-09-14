@@ -23,6 +23,11 @@
 # Check mode runs every scenario TWICE and requires the two runs to agree before comparing against the
 # reference, so "flaky" is reported as flaky instead of as a regression.
 #
+#  3. WHICH BUILD IT RUNS: the Release build, and only the Release build. Pointed at a Debug or an
+#     ASan+UBSan build, two runs of one binary DIFFER - measured on `sponza_gi` AND on `deferred_ssao_off`,
+#     a scenario that runs none of the GI chain - so the flakiness is a property of those builds and not of
+#     any pass. The references are Release captures, and "0 changed" is only meaningful against them.
+#
 # Usage:
 #   pwsh -File scripts/windows/check_render.ps1                 # compare against the references
 #   pwsh -File scripts/windows/check_render.ps1 -Update         # accept the current output as reference
