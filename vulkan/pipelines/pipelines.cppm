@@ -1,4 +1,4 @@
-// module version: 0.15.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.16.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
@@ -31,6 +31,8 @@ export module vulkan.pipelines;
 
 import vulkan.core;
 import vulkan.core.pipeline; // vk_pipeline
+import vulkan.bindings;      // make_set_layout: a declaration generates the layout (see bindings.cppm)
+import vulkan.render_resource;
 
 namespace vulkan::pipelines {
     /// what build_post() creates: the post set layout, its pipeline layout and the two composites
@@ -690,22 +692,22 @@ namespace vulkan::pipelines {
         // be sampler3D images - a lookup blends neighbouring cells trilinearly - and the write side storage
         // images. The two dead bindings this layout used to carry (this frame's resolved GI and the G-buffer
         // depth, for the screen-projection injection) went with that injection.
-        std::array<VkDescriptorSetLayoutBinding, 9> bindings = {};
-        for (uint32_t b = 0; b < bindings.size(); ++b) {
-            bindings[b].binding = b;
-            bindings[b].descriptorType = b >= 4u ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            bindings[b].descriptorCount = 1;
-            bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-            bindings[b].pImmutableSamplers = nullptr;
+        // THE LAYOUT IS GENERATED FROM THE PASS'S DECLARATION, not written here. The nine bindings this
+        // function used to spell out - four coefficient images read, four written, the per-cell surface - are
+        // the declaration's own set in `vulkan.render_resource::gi_probe_io`, and the descriptor WRITES will be
+        // generated from the same place once that side is converted: one fact, one source, which is what
+        // removes the pair of hand-written halves that drifted twice in this project's history (a pool sized
+        // for four descriptors per set while the layout asked for five, and a binding whose type changed
+        // without its writer noticing).
+        //
+        // THAT THE GENERATED LAYOUT IS THE ONE THIS FUNCTION CARRIED IS ASSERTED BY THE CAPTURE GATE, not by a
+        // comment: `sponza_gi` is the scenario that runs with the probe cache ON, so its frame is compared byte
+        // for byte across this change.
+        std::expected<VkDescriptorSetLayout, std::string> const layout = bindings::make_set_layout(vk, render_resource::gi_probe_io, render_resource::gi_probe_io.own_set);
+        if (!layout.has_value()) {
+            return fail(layout.error());
         }
-
-        VkDescriptorSetLayoutCreateInfo layout_info = {};
-        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
-        layout_info.pBindings = bindings.data();
-        if (vkCreateDescriptorSetLayout(vk.device, &layout_info, nullptr, &out.set_layout) != VK_SUCCESS) {
-            return fail("gi probe: descriptor set layout creation failed");
-        }
+        out.set_layout = *layout;
 
         // The shared scene set comes FIRST, because the tracing this pass will do needs what the tracer
         // already has: the top level structure, the material records, the texture array, the light UBO.

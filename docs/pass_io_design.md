@@ -190,3 +190,28 @@ behaviour, and they are composed by the runtime today (camera matrices, radii, t
 table's device address) while the shader that consumes them belongs to the pass - so either the pass pushes them
 itself (needing the pipeline layout in `resolved_io`) or the host pushes on its behalf (needing to know each
 pass's push layout). And parallel recording (`main_segments` + the task pool) is not expressible in `stage` yet.
+
+## 9. Status
+
+    description module (vulkan.render_resource)   DONE: the schema, the usage records, the validators,
+                                                        the pool counts, and one real declaration (the probe
+                                                        cache); pure CPU, so ctest covers its invariants
+    framework module (vulkan.pass)                DONE: behaviour vocabulary, resolved_io, the base class,
+                                                        pass_host, stage, and the three runner functions;
+                                                        no consumer yet
+    step 1: the layout generator                  DONE for the probe cache, and PROVEN BY THE GATE rather
+                                                        than by a comparison test: `bindings::make_set_layout`
+                                                        generates `build_gi_probe`'s layout from the
+                                                        declaration, and `sponza_gi` - the scenario that runs
+                                                        with the probe cache on - is byte-identical across it
+    step 2: the write generator + pool counts     NOT STARTED for a real pass: the counts are already
+                                                        derivable (`descriptor_counts_for`) and the writes are
+                                                        still hand-written in `runtime`'s ensure_*_descriptors
+    step 3: the SPIR-V check                      NOT STARTED
+    step 4: barrier and order derivation          NOT STARTED, and deliberately last (see section 7)
+
+THE CHOICE THAT MADE STEP 1 PROVABLE is worth keeping: the generator emits bindings IN DECLARATION ORDER, and
+`validate` requires a pass's own bindings to be contiguous from zero - so the layout the shader sees and the
+declaration cannot drift, and the equality of generated-with-hand-written became a property the existing capture
+gate could decide instead of a claim needing a new test. What a comparison test could not have done is prove the
+layout is *used* the same way; `sponza_gi` can, because the probe pass runs in it.

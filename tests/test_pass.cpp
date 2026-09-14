@@ -18,6 +18,7 @@
 
 import vulkan.pass;
 import vulkan.render_resource;
+import vulkan.bindings;
 
 namespace {
     namespace vp = vulkan::pass;
@@ -301,6 +302,34 @@ int main() {
         CHECK(has(state.log, "recreate:probe"));
         CHECK(has(state.log, "recreate:tail"));
         CHECK(has(state.log, "recreate:gated")); // even the pass this frame skipped
+    }
+
+    // ---- the declaration -> Vulkan mapping, which is what the generator builds a layout from ----
+    // These live in this test rather than in test_render_resources because they are Vulkan-typed: the
+    // description layer itself stays pure CPU, and everything that has to name a VkDescriptorType lives on the
+    // bindings side. No device is created - an enum mapping needs none - so this still runs in CI.
+    {
+        using namespace vulkan::bindings;
+        CHECK(descriptor_type_of(rr::binding_kind::sampled_image) == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+        CHECK(descriptor_type_of(rr::binding_kind::storage_image) == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+        CHECK(descriptor_type_of(rr::binding_kind::sampler) == VK_DESCRIPTOR_TYPE_SAMPLER);
+        CHECK(descriptor_type_of(rr::binding_kind::uniform_buffer) == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+        CHECK(descriptor_type_of(rr::binding_kind::storage_buffer) == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        CHECK(descriptor_type_of(rr::binding_kind::input_attachment) == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT);
+        CHECK(descriptor_type_of(rr::binding_kind::acceleration_structure) == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR);
+        CHECK(stage_flags_of(rr::stage_flag::compute) == VK_SHADER_STAGE_COMPUTE_BIT);
+        CHECK(stage_flags_of(rr::stage_flag::fragment | rr::stage_flag::compute) == (VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT));
+        CHECK(stage_flags_of(rr::stage_flag::none) == 0u);
+        // the probe declaration's own set is exactly the nine bindings its shader declares, in order, and the
+        // generated layout is what `pipelines::build_gi_probe` now builds from them
+        uint32_t own = 0;
+        for (rr::pass_binding const& b : rr::gi_probe_io.bindings) {
+            if (b.set == rr::gi_probe_io.own_set) {
+                CHECK(b.binding == own); // contiguous from zero: the index IS the binding number
+                ++own;
+            }
+        }
+        CHECK(own == 9);
     }
 
     return vk_test::finish("test_pass");

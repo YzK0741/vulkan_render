@@ -1,4 +1,4 @@
-// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/bindings/bindings.cppm
@@ -28,16 +28,116 @@ module;
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <expected>
 #include <functional>
 #include <span>
+#include <string>
 #include <vector>
 #include <vulkan/vulkan.h>
 
 export module vulkan.bindings;
 
 import vulkan.core;
+import vulkan.render_resource;
 
 namespace vulkan::bindings {
+
+    // =============================================================================================
+    // A DECLARATION -> A DESCRIPTOR SET LAYOUT
+    //
+    // The half of `vulkan.render_resource` that needs Vulkan: the description layer is pure CPU on purpose
+    // (so its own invariants are testable without a device), and everything that has to name a
+    // `VkDescriptorType` or call `vkCreateDescriptorSetLayout` lives here instead.
+    //
+    // WHY IT IS WORTH GENERATING AT ALL, in this project's own history: the layout and the descriptor WRITES
+    // were two hand-written halves kept in agreement by discipline, and both drifts that pair can have have
+    // already happened - a pool sized for four descriptors per set while the layout asked for five, and a
+    // binding whose type changed without its writer noticing. Both were found by the validation layer rather
+    // than by review. One declaration, from which the layout and the writes are generated, removes the pair.
+    // =============================================================================================
+
+    /// @brief the `VkDescriptorType` a declared binding kind means
+    /// @ingroup vulkan_bindings
+    export [[nodiscard]] constexpr VkDescriptorType descriptor_type_of(render_resource::binding_kind const kind) noexcept {
+        switch (kind) {
+        case render_resource::binding_kind::sampled_image:
+            return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        case render_resource::binding_kind::storage_image:
+            return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        case render_resource::binding_kind::sampler:
+            return VK_DESCRIPTOR_TYPE_SAMPLER;
+        case render_resource::binding_kind::uniform_buffer:
+            return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        case render_resource::binding_kind::storage_buffer:
+            return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        case render_resource::binding_kind::input_attachment:
+            return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+        case render_resource::binding_kind::acceleration_structure:
+            return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        }
+        return VK_DESCRIPTOR_TYPE_MAX_ENUM;
+    }
+
+    /// @brief the shader stages a declared stage set means (a shared set serves two, hence the union)
+    /// @ingroup vulkan_bindings
+    export [[nodiscard]] constexpr VkShaderStageFlags stage_flags_of(render_resource::stage_flag const stages) noexcept {
+        VkShaderStageFlags flags = 0u;
+        if (render_resource::has_stage(stages, render_resource::stage_flag::vertex)) {
+            flags |= VK_SHADER_STAGE_VERTEX_BIT;
+        }
+        if (render_resource::has_stage(stages, render_resource::stage_flag::fragment)) {
+            flags |= VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
+        if (render_resource::has_stage(stages, render_resource::stage_flag::compute)) {
+            flags |= VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+        return flags;
+    }
+
+    /// @brief how many bindings one set of one declaration may hold (the generator's fixed buffer)
+    /// @ingroup vulkan_bindings
+    export inline constexpr uint32_t max_set_bindings = 32;
+
+    /**
+     * @brief build a `VkDescriptorSetLayout` from a pass's declaration
+     * @param vk the device to create it on
+     * @param io the declaration; its bindings for @p set become the layout, and everything else is ignored
+     * @param set which set to generate - the pass's own, normally `io.own_set`
+     * @return the layout, or a message naming the pass and the set it was building
+     * @ingroup vulkan_bindings
+     *
+     * THE BINDINGS ARE EMITTED IN DECLARATION ORDER, which is why `vulkan.render_resource::validate` requires
+     * a pass's own bindings to be numbered contiguously from zero: the generated layout is then the same thing
+     * the shader declares, and the number in the shader and the number in the declaration cannot drift.
+     */
+    export [[nodiscard]] inline std::expected<VkDescriptorSetLayout, std::string> make_set_layout(core const& vk, render_resource::pass_io const& io, uint32_t const set) {
+        std::array<VkDescriptorSetLayoutBinding, max_set_bindings> bindings = {};
+        uint32_t count = 0;
+        for (render_resource::pass_binding const& b : io.bindings) {
+            if (b.set != set) {
+                continue;
+            }
+            if (count == bindings.size()) {
+                return std::unexpected(std::string(io.name) + ": set " + std::to_string(set) + " declares more than " + std::to_string(max_set_bindings) + " bindings");
+            }
+            bindings[count].binding = b.binding;
+            bindings[count].descriptorType = descriptor_type_of(b.kind);
+            bindings[count].descriptorCount = b.descriptor_count;
+            bindings[count].stageFlags = stage_flags_of(b.stages);
+            bindings[count].pImmutableSamplers = nullptr;
+            ++count;
+        }
+        VkDescriptorSetLayoutCreateInfo layout_info = {};
+        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layout_info.bindingCount = count;
+        layout_info.pBindings = bindings.data();
+        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+        if (vkCreateDescriptorSetLayout(vk.device, &layout_info, nullptr, &layout) != VK_SUCCESS) {
+            return std::unexpected(std::string(io.name) + ": set " + std::to_string(set) + " layout creation failed");
+        }
+        return layout;
+    }
+
     /**
      * @brief the descriptor sets of one per-image family (post chain, G-buffer debug view, TAA)
      * @ingroup vulkan_bindings
