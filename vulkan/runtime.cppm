@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.25.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.26.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -25,9 +25,12 @@ module;
 export module vulkan.runtime;
 
 import vulkan.profiling;
-import vulkan.bindings;   // the per-image descriptor-set families (the G-buffer debug view's for now)
-import vulkan.shadow_fit; // the cascade fit itself (pure CPU; the runtime gathers and caches)
-import vulkan.readback;   // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
+import vulkan.bindings;               // the per-image descriptor-set families (the G-buffer debug view's for now)
+import vulkan.pass;                   // the pass framework: the host the runner talks to, and the stage runner
+import vulkan.pass.transparent;       // the first pass this branch drives: the blended geometry
+import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
+import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
+import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
 export import vstd;
 export import vulkan.core;
 export import vulkan.core.filter;
@@ -397,6 +400,9 @@ namespace vulkan {
         // rotation, "the previous frame's camera" is not what that image's history was rendered with,
         // and reprojecting against the wrong matrix is exactly what makes a TAA history smear.
         std::vector<glm::mat4> image_view_proj = {};
+        /// THE TRANSPARENT PASS (vulkan.pass.transparent): the blended geometry, over the shaded frame
+        pass::transparent_pass transparent;
+        std::array<pass::frame_pass*, 1> transparent_stage = {&this->transparent};
         std::vector<bool> taa_history_valid = {};
         struct taa_push_constants {
             float history_valid = 0.0f; // 1 = trust the history, 0 = first frame for this image
@@ -1193,8 +1199,71 @@ namespace vulkan {
          * @note these leaves carry no motion vectors, so TAA reprojects them with whatever the opaque
          *       surface behind them reported - good enough while the camera is the only thing moving,
          *       and the thing to revisit when object motion vectors land.
+         * @note THE BODY IS THE PASS'S NOW: the barriers, the LOAD instance, the secondary and the depth
+         *       hand-back moved to `vulkan.pass.transparent` unchanged, and this function is the frame
+         *       loop's one-line driver (build the frame, record the stage). @p command_buffer is
+         *       consequently UNUSED - a pass records into the command buffer the resolver hands it.
          */
         void record_transparent_pass(VkCommandBuffer command_buffer);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief run the create step of every pass in every stage this runtime wires, once per device
+         * @note the app calls this AFTER the shared samplers, the shared set layouts and the shaders a
+         *       pass declares exist (see chores.cpp): a pass builds what it owns from a `pass_context`,
+         *       so a pass that needs something the context cannot supply builds nothing and says so
+         *       instead of taking the frame down
+         */
+        void create_passes();
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the shared samplers a declaration chooses between, as handles
+         * @note ONE place, so two passes cannot end up with two ideas of "the post sampler". The
+         *       `sampler_set` carries six slots; TWO of them have no backing sampler on this branch -
+         *       `probe_grid` (there is no GI probe pass here yet) and `nearest` (the post chain has no
+         *       pass here yet) - and they are left null rather than borrowed, because a pass that asked
+         *       for a hint this renderer cannot answer must be able to tell.
+         */
+        [[nodiscard]] render_resource::shared::sampler_set shared_samplers() const noexcept;
+
+        /**
+         * @brief resolve a pass's declaration into this frame's handles (the runner's `resolve` callback)
+         * @return false when this frame cannot run the pass, which skips it WITHOUT recording anything
+         * @note the mapping is the HOST's job and not the pass's, so a pass cannot reach a resource it
+         *       did not declare. On this branch one pass is wired, so this is a one-branch chain; the
+         *       table that replaces it is recorded in `docs/pass_chain_plan.md`.
+         */
+        [[nodiscard]] bool resolve_pass(pass::frame_pass const& pass, pass::resolved_io& out);
+        /** @brief the behaviour's mechanical part, before the pass records: bind the pipeline(s), resync the
+         *         viewport. A pass cannot forget these because it does not do them */
+        void apply_pass_behaviour(pass::frame_pass const& pass, pass::resolved_io const& io);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the host the pass runner talks to: the frame, the feature registry, the resolver and the marks
+         * @note it is rebuilt per call (a struct of function pointers), and the context is this runtime, which
+         *       is what each callback casts back to. A pass never sees it: at create time a pass is given a
+         *       `pass_context`, and while recording it is handed `resolved_io`.
+         */
+        [[nodiscard]] pass::pass_host make_pass_host() noexcept;
+        /// @brief the frame a pass is being recorded in: both counters, the generation's image count, the extent
+        [[nodiscard]] pass::frame_identity pass_frame() const noexcept;
+        /// @brief this frame's blended geometry, as the transparent pass needs it (see its scene_frame header)
+        [[nodiscard]] pass::transparent_frame make_transparent_frame() noexcept;
+        /**
+         * @brief resolve the transparent pass: the shaded colour target and the surface depth it blends over
+         * @return false on a frame whose culling left nothing blended, which skips the pass WITHOUT recording
+         *         anything - the property that keeps such a frame byte-identical to one before this pass existed
+         */
+        [[nodiscard]] bool resolve_transparent_pass(pass::resolved_io& out);
+        /**
+         * @brief build ONE segment's draw state for the scene-family passes
+         * @note the pipeline REGISTRY is the runtime's: a leaf names the pipeline it wants, so the renderer is
+         *       the side that builds the environment (and a fresh one per segment - the dedup state is per
+         *       recording session)
+         */
+        static render_environment make_scene_environment(void* owner, VkCommandBuffer command_buffer, bool gbuffer);
 
         /**
          * @ingroup vulkan_runtime

@@ -36,6 +36,10 @@ GI is not involved.
 | `bfed4cd` | the description layer (24 schema families - this state's resources, not master's 37), the shared sampler module, and `vulkan.pass` (the framework). Nothing consumes it: gate 7 x 2, 0 changed |
 | `de23673` | `/build/` is ignored (this branch predates that rule, which is why a bare `build/` was committed once and had to be amended out) |
 | `2593e7e` | `test_render_resources` ported and adapted (89 checks): the schema, the validators, the three declarations this state can carry |
+| `2f363c6`, `db99f0e` | this plan, and the measured scope of the generator port |
+| `e05d0b5` | the generators take a `VkDevice` (`make_set_layout`, `write_set`, `image_set_family::ensure*`), which is the prerequisite for a pass building its own layout |
+| `bcf62bb` | the `scene` and `transparent` pass modules come over from `master` and build here with **no edit at all**. Still unconsumed: gate 7 x 2, 0 changed |
+| this step | the **transparent pass is wired and recording**: the runtime drives a real `pass::stage`, and the frame is byte-identical |
 
 `docs/pass_chain_inventory.md` (192 lines) is the read-only map of this state: its resource set, the frame's
 recording spine and mark intervals, every function of the PBR/scene chain with its attachments, sets,
@@ -48,9 +52,12 @@ and what this state does NOT have.
    `VkDevice` rather than a whole `core`, because a pass's create step is handed a device and nothing else.
 2. **`scene`** - the PBR surface write: the rendering instance over its declared targets, the segmented draw of
    the visible leaves, and the instance's close. This is the pass that fixes the coupling the inventory found:
-   the instance is opened by one function and closed by another, three subsystems later.
+   the instance is opened by one function and closed by another, three subsystems later. It is also the step
+   that has to delete `record_opaque_scene`, `record_main_segment` and `sub_render_task`.
 3. **`transparent`**, then **`taa`** - both are small once `scene` exists, and both are on this branch already
-   (TAA predates GI).
+   (TAA predates GI). `transparent` landed FIRST of the two anyway, because it is the additive one and needed no
+   change to any existing function: see the next section. `taa` is where `pass_context::shader` stops being
+   null, because it is the first pass that owns a pipeline.
 4. **`lighting`** and **`post`** - the rest of what "PBR as a pass chain" means.
 5. **then GI**: `ssgi` (trace) -> `temporal` -> `spatial` -> `spec` -> `probe cache`, each added as a pass and
    each verified against `master`'s references for the GI scenarios.
@@ -74,6 +81,44 @@ a declaration, and this branch has exactly ONE declaration that owns bindings (`
 the G-buffer debug view have no declarations yet, so their hand-written layouts are not a missed conversion -
 they are the honest state until those passes are written. That is why the order in this document puts the
 declarations and the passes together: a layout cannot be generated before the thing that declares it exists.
+
+## THE FIRST PASS THE RUNTIME DRIVES, AND WHY IT WAS `transparent` RATHER THAN `scene`
+
+The order above is by DEPENDENCY (`scene` is what the rest are shaped like); the first WIRING went to
+`transparent`, and for a reason worth keeping: its body is the only one that moves without touching anything
+else. It owns its own LOAD instance and its own per-slot secondary, so `record_opaque_scene`,
+`record_main_segment` and `sub_render_task` are not involved at all and the step is purely additive - the
+cheapest possible proof that the framework can drive a real pass and produce the same bytes. The `scene` step is
+the one that has to delete those three functions, and it is next.
+
+What the wiring needed, measured:
+
+* the pass module took **no edit** (already true at `bcf62bb`); the runtime gained five host answers
+  (`create_passes`, `shared_samplers`, `make_scene_environment`, `make_transparent_frame`,
+  `resolve_transparent_pass`) plus `pass_frame`, `make_pass_host`, `resolve_pass` and `apply_pass_behaviour`;
+* the early return that used to open `record_transparent_pass` ("nothing blended this frame") moved into
+  `resolve_transparent_pass`, which is where the runner asks - so a frame with no blended leaves still records
+  no instance and pays no barrier, and the pass is skipped WITHOUT being resolved;
+* `make_scene_environment` is `record_main_segment`'s environment builder lifted out into a `static` member
+  (the pass hands it an owner pointer), which is why its comments still speak of "the main pass";
+* the result: gate 7 x 2, **0 changed, 0 flaky**, including `transparent_blend` (`26D9B28C00EA4D00`) - the one
+  scenario that actually records the pass.
+
+The two facts the create context forced into the open, both recorded rather than papered over:
+
+* `pass_context::samplers` is a six-slot `sampler_set`, and **two slots have no backing sampler on this
+  branch** - `probe_grid` (the GI probe pass does not exist here) and `nearest` (the post chain has no pass
+  here). `shared_samplers` fills the four that exist and leaves those two null, named in the code; this is the
+  second half of the "hint nothing can resolve" finding below, and it says the lie is in the vocabulary rather
+  than in the fill;
+* `pass_context::shader` is **null** here, because no pass wired on this branch declares a shader. The app-side
+  registration (`register_shader`) therefore lands with the TAA pass, and until then a `create_passes` call's
+  only observable effect is the VALIDATION of the declaration - which is still worth the call.
+
+`resolve_pass` is a one-branch `if (&pass == &this->transparent)` chain, and stays one until a second pass
+exists to make the missing table obvious. The framework gaps this does NOT close are unchanged: the resolver
+chain, the absence of a channel for shared-set IMAGE handles (the GI chain's blocker), and parallel segment
+recording still being the frame loop's policy rather than a framework concept.
 
 ## WHAT THE INVENTORY ALREADY FOUND (recorded, not yet fixed)
 

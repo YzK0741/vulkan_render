@@ -13,6 +13,8 @@ module vulkan.runtime;
 import vulkan.profiling;
 import vulkan.pipelines;
 import vulkan.bindings;
+import vulkan.render_resource;        // a pass's declaration vocabulary (the framework's interface uses it)
+import vulkan.render_resource.shared; // the sampler_set a pass_context carries
 
 import utility;
 import vulkan.constant_init;
@@ -2390,55 +2392,214 @@ namespace vulkan {
     //    one instance;
     //  - before the TAA resolve, so the resolve sees the composited frame.
     void runtime::record_transparent_pass(VkCommandBuffer const command_buffer) {
-        if (this->frame_transparent.empty()) {
-            return; // nothing blended this frame: no instance and no barriers to pay for
-        }
-        core& vk = this->vulkan_core;
-        uint32_t const image_index = this->current_image_index;
-        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
-        auto const& secondaries = this->secondary_command_buffers[static_cast<std::size_t>(frame_slot)];
-        VkCommandBuffer const transparent_secondary = *secondaries[static_cast<std::size_t>(secondary_pass::transparent)];
+        static_cast<void>(command_buffer); // the pass records into the frame's command buffer it is resolved with
+        // THE TRANSPARENT PASS records the blended geometry: the two hand-off barriers, the LOAD instance over
+        // its two declared targets, one secondary and the depth hand-back - all in one function now (see
+        // vulkan.pass.transparent). IT IS SKIPPED WITHOUT RESOLVING ANYTHING on a frame whose culling left
+        // nothing blended, which is what keeps a frame with no blended leaves byte-exact: the early return that
+        // used to open this function moved into resolve_transparent_pass, where the runner asks for it.
+        this->transparent.set_frame(this->make_transparent_frame());
+        pass::stage const transparent_stage = {.name = "transparent", .passes = this->transparent_stage, .marks = false};
+        [[maybe_unused]] pass::run_report const transparent_report = pass::record_stage(transparent_stage, this->make_pass_host());
+    }
 
-        // The lighting stage sampled the G-buffer depth, so ensure_gbuffer_depth_sampled() left it in
-        // SHADER_READ_ONLY_OPTIMAL: hand it back to attachment layout for the depth test. The scene
-        // target is already in COLOR_ATTACHMENT_OPTIMAL (the lighting instance ended as an attachment
-        // write), but dynamic rendering inserts no dependency between two instances, so that store
-        // still has to be published before this instance LOADs the same image.
-        std::array<VkImageMemoryBarrier2, 2> barriers = {};
-        barriers[0] = vulkan::sampling_to_depth_attachment_transition;
-        barriers[0].image = vk.gbuffer_depth_images[image_index];
-        barriers[1] = vulkan::color_attachment_dependency;
-        barriers[1].image = this->scene_target_image(image_index);
-        VkDependencyInfo const dependency = make_image_dependency_info(static_cast<uint32_t>(barriers.size()), barriers.data());
-        vkCmdPipelineBarrier2(command_buffer, &dependency);
-
-        // Record the leaves into the per-slot transparent secondary, with inheritance matching the
-        // instance below: ONE color attachment (the HDR scene target) at 1x. Deliberately not the
-        // forward path's sample count - there is no multisampled image in a frame.
-        std::array<VkFormat, 1> const color_formats = {vulkan::hdr_format};
-        VkCommandBufferInheritanceRenderingInfo const inheritance = make_inheritance_rendering_info(color_formats.data(), 1, vk.depth_format, VK_SAMPLE_COUNT_1_BIT);
-        VkCommandBufferInheritanceInfo const secondary_inherit = make_inheritance_info(&inheritance);
-        VkCommandBufferBeginInfo const secondary_begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &secondary_inherit);
-        bool recorded = false;
-        if (vkBeginCommandBuffer(transparent_secondary, &secondary_begin) == VK_SUCCESS) {
-            this->record_main_segment(transparent_secondary, this->frame_transparent, /*gbuffer_pass=*/false);
-            vkEndCommandBuffer(transparent_secondary);
-            recorded = true;
-        } else {
-            utility::log("runtime: deferred transparent secondary begin failed - transparent leaves skipped this frame");
+    // ---- the pass framework's half: what the runner asks the renderer for ---------------------------------
+    //
+    // The pass layer (`vulkan.pass`) owns HOW a pass is called; this section owns what the ANSWER is, because
+    // every one of these answers is this renderer's business: where its images live, which pipeline name is
+    // the frame's default, how many swapchain images this generation has. Nothing here is visible to a pass -
+    // a pass is given a `pass_context` at create time and a `resolved_io` while recording, and reaches
+    // nothing else. That is the property the framework is worth having for, so the temptation to fold these
+    // callbacks into one context object is exactly what it exists to resist.
+    void runtime::create_passes() {
+        // The runner's create step for every stage this runtime wires. A pass builds what it owns from its own
+        // declaration and its own shader, so this is also where a pass that could not build itself says so -
+        // and a pass that says so stays INACTIVE, which is what makes a startup failure here a log line rather
+        // than a broken frame.
+        //
+        // IT IS HANDED A CONTEXT, NOT A HOST: building a pass needs a device and the shared lookups, and it
+        // needs no frame. ANY owner can fill this struct - that is what makes a pass usable outside this
+        // renderer - and this runtime is one such owner, filling the device from the core it owns.
+        //
+        // ON THIS BRANCH THERE IS ONE STAGE AND ONE PASS, and the pass owns nothing: the transparent pass has no
+        // set layout and no pipeline of its own (its leaves name theirs, and everything it binds is the shared
+        // scene set). So this call's observable effect today is the VALIDATION of its declaration - which is
+        // the point of doing it here rather than not at all: the declaration is checked against the schema by
+        // `vulkan.render_resource::validate` on every machine, at startup, with no device work.
+        pass::pass_context const build = {
+            .device = this->vulkan_core.device,
+            .samplers = this->shared_samplers(),
+            .shared_set_layout = [](void* owner, uint32_t const set) {
+                // The scene set is the only shared set a pass's OWN pipeline layout ever needs today: it is
+                // set 0, and it is what every compute pass's tracing/shading reads. A pass asking for any
+                // other set gets "none", which makes it build nothing and say so.
+                return set == 0u ? static_cast<runtime*>(owner)->vulkan_core.scene_descriptor_set_layout : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
+            .shader = nullptr, // no pass wired on this branch declares a shader; a pass that does (taa) is where the app-side registration lands, see docs/pass_chain_plan.md
+            .owner = this,
+        };
+        pass::stage const transparent_stage = {.name = "transparent", .passes = this->transparent_stage, .marks = false};
+        pass::run_report const created = pass::create_stage(transparent_stage, build);
+        if (!created.rejected.empty()) {
+            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", created.rejected);
         }
+    }
 
-        // loadOp LOAD on both attachments: the scene target holds the shaded frame and the G-buffer
-        // depth holds the opaque surface, and neither may be cleared. The leaves are sorted far -> near
-        // by the cull, which is the order alpha blending needs.
-        VkRenderingAttachmentInfo const color_attachment = make_load_color_attachment_info(this->scene_target_view(image_index));
-        VkRenderingAttachmentInfo const depth_attachment = make_load_depth_attachment_info(vk.gbuffer_depth_image_views[image_index]);
-        VkRenderingInfo const rendering_info = make_rendering_info(VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT, {{0, 0}, vk.swap_chain_extent}, &color_attachment, 1, &depth_attachment);
-        vkCmdBeginRendering(command_buffer, &rendering_info);
-        if (recorded) {
-            vkCmdExecuteCommands(command_buffer, 1, &transparent_secondary);
+    render_resource::shared::sampler_set runtime::shared_samplers() const noexcept {
+        // The six samplers a declaration chooses between, as handles: ONE place, so that two passes cannot end
+        // up with two different ideas of "the post sampler". TWO SLOTS ARE DELIBERATELY LEFT NULL on this
+        // branch, and they are named rather than silently defaulted: `probe_grid` (the sampler the GI probe
+        // grid's declaration picks exists only with that pass, which this branch does not have) and `nearest`
+        // (it belongs to the post chain's pass, which this branch does not have either). A declaration that
+        // asked for one of the two would get a null sampler in its set, which is a validation error rather
+        // than a silent fetch - and no pass wired here asks for either.
+        return {.gbuffer = *this->gbuffer_sampler, .taa = *this->taa_sampler, .post = *this->post_sampler, .shadow = *this->shadow_sampler};
+    }
+
+    /// build ONE segment's draw state; a fresh one per segment, because the pipeline-dedup state is per
+    /// recording session (see scene_frame::make_environment). Moved from record_main_segment's body, which is
+    /// why its comments still speak of "the main pass": the pass that draws the transparent leaves uses the
+    /// SAME environment (one colour attachment instead of the G-buffer's five, which is the pass's business).
+    render_environment runtime::make_scene_environment(void* owner, VkCommandBuffer const command_buffer, bool const gbuffer) {
+        runtime& self = *static_cast<runtime*>(owner);
+        render_environment env;
+        env.command_buffer = command_buffer;
+        // The G-buffer pass binds its own pipeline as the pass default (see gbuffer_pipeline_name): same
+        // leaves, same draw path, but the fragment stage writes the surface instead of shading.
+        {
+            std::shared_lock const lock(self.access_mutex);
+            env.default_name = gbuffer ? gbuffer_pipeline_name : self.default_pipeline_name;
         }
-        vkCmdEndRendering(command_buffer);
+        env.bind = [&self, gbuffer](VkCommandBuffer const cb, std::string_view const name) {
+            if (gbuffer) {
+                if (name == gbuffer_pipeline_name) {
+                    self.gbuffer_pipeline->begin_pipeline(cb);
+                    return;
+                }
+                // a leaf with explicit pipeline semantics cannot draw in the G-buffer instance (the named
+                // pipelines declare the single HDR attachment): say so once per leaf instead of issuing a draw
+                // that would be a validation error
+                utility::log("runtime: leaf requests pipeline '{}' during the G-buffer pass - draw skipped (only default-semantics leaves write the G-buffer)", name);
+                return;
+            }
+            if (auto const it = self.pipelines.find(name); it != self.pipelines.end()) {
+                it->second.begin_pipeline(cb);
+            } else {
+                utility::log("runtime: main pass references unknown pipeline '{}' - draw skipped", name);
+            }
+        };
+        // transparent leaves toggle depth writes off via this (core dynamic state, 1.3)
+        env.set_depth_write_fn = [](VkCommandBuffer const cb, VkBool32 const enabled) { vkCmdSetDepthWriteEnable(cb, enabled); };
+        // single-sided materials keep back-face culling here (the shadow pass overrides it with env.two_sided;
+        // the main pass must not, or double-sided handling would cost fill rate)
+        env.set_cull_mode_fn = [](VkCommandBuffer const cb, VkCullModeFlags const mode) { vkCmdSetCullMode(cb, mode); };
+        env.layout = self.vulkan_core.scene_pipeline_layout;
+        return env;
+    }
+
+    pass::transparent_frame runtime::make_transparent_frame() noexcept {
+        core const& vk = this->vulkan_core;
+        auto const& secondaries = this->secondary_command_buffers[static_cast<std::size_t>(vk.current_frame)];
+        return pass::transparent_frame{
+            .leaves = this->frame_transparent,
+            .secondary = *secondaries[static_cast<std::size_t>(secondary_pass::transparent)],
+            .make_environment = &runtime::make_scene_environment,
+            .owner = this,
+            .color_format = vulkan::hdr_format,
+            .depth_format = vk.depth_format,
+            .extent = vk.swap_chain_extent,
+        };
+    }
+
+    bool runtime::resolve_transparent_pass(pass::resolved_io& out) {
+        core const& vk = this->vulkan_core;
+        std::size_t const index = this->current_image_index;
+        std::size_t const image_count = vk.scene_color_image_views.size();
+        if (this->frame_transparent.empty() || image_count == 0 || index >= image_count || vk.gbuffer_depth_image_views.size() != image_count) {
+            return false; // nothing blended this frame: no instance and no barriers to pay for
+        }
+        out.frame = this->pass_frame();
+        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
+        out.own = {};
+        out.own_set = VK_NULL_HANDLE;
+        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
+        // the two declared targets, in declaration order: the scene colour it composites over (an ALIAS - the
+        // same image the scene pass writes) and the surface depth it depth-tests against
+        out.target_storage[0] = {.view = this->scene_target_view(index), .buffer = VK_NULL_HANDLE, .image = this->scene_target_image(index)};
+        out.target_storage[1] = {.view = vk.gbuffer_depth_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_depth_images[index]};
+        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), 2);
+        out.pipelines = {}; // a leaf names its pipeline; see the scene pass
+        out.pipeline_layout = VK_NULL_HANDLE;
+        out.push = {};
+        out.extent = vk.swap_chain_extent;
+        return true;
+    }
+
+    pass::frame_identity runtime::pass_frame() const noexcept {
+        core const& vk = this->vulkan_core;
+        return pass::frame_identity{
+            .image_index = this->current_image_index,
+            .slot = static_cast<uint32_t>(vk.current_frame),
+            // the generation's image count, which is what a pass that owns a per-image family sizes it from -
+            // and NOT the same number as the image index above
+            .image_count = static_cast<uint32_t>(vk.scene_color_image_views.size()),
+            .extent = vk.swap_chain_extent,
+        };
+    }
+
+    pass::pass_host runtime::make_pass_host() noexcept {
+        // It is rebuilt per call because it is a struct of function pointers (it holds no state of its own);
+        // the context is this runtime, which is what each callback casts back to. This is the RUNNER's half of
+        // the interface and a pass never sees it: at create time a pass is given a `pass_context`, and while
+        // recording it is handed `resolved_io`, so it cannot reach a resource its declaration did not name.
+        //
+        // The two mark callbacks are null, and deliberately: the frame's timing intervals are still written by
+        // the recording spine (gpu_mark_id's positional contract), and giving a stage its own pair here would
+        // insert marks into a capture that is verified byte-for-byte. A stage CAN mark - the framework asks
+        // for it - this runtime simply has no reason to yet.
+        return pass::pass_host{
+            .context = this,
+            .frame = [](void* context) { return static_cast<runtime*>(context)->pass_frame(); },
+            .feature_active = [](void* context, std::string_view const feature) { return static_cast<runtime*>(context)->feature_active(feature); },
+            .resolve = [](void* context, pass::frame_pass const& pass, pass::resolved_io& out) { return static_cast<runtime*>(context)->resolve_pass(pass, out); },
+            .apply_behaviour = [](void* context, pass::frame_pass const& pass, pass::resolved_io const& io) { static_cast<runtime*>(context)->apply_pass_behaviour(pass, io); },
+            .mark_begin = nullptr,
+            .mark_end = nullptr,
+        };
+    }
+
+    bool runtime::resolve_pass(pass::frame_pass const& pass, pass::resolved_io& out) {
+        if (&pass == static_cast<pass::frame_pass const*>(&this->transparent)) {
+            return this->resolve_transparent_pass(out);
+        }
+        // No other pass is wired into a stage yet, so "this frame cannot run it" is the honest answer: a pass
+        // the runtime does not know is not resolved, and the runner skips it rather than recording it with
+        // null handles.
+        return false;
+    }
+
+    void runtime::apply_pass_behaviour(pass::frame_pass const& pass, pass::resolved_io const& io) {
+        // The mechanical part of "how this pass is called", done by the runner so that a pass cannot forget
+        // it: the pipeline is bound HERE, and the viewport/scissor are set HERE for a pass that asked for them
+        // (which is what replaces the hand-kept pipeline list in update_pass_geometry - a pass cannot drop
+        // itself from a list it does not maintain).
+        //
+        // What is deliberately NOT here: the rendering instance. EVERY graphics pass opens its own, over the
+        // targets it declared, because the load op and the clear value are the PASS's knowledge.
+        pass::behaviour const& behaviour = pass.behaviour();
+        if (behaviour.resync_viewport) {
+            // io.extent is the extent the declaration's rule produced (the frame's, half of it, or a
+            // resource's), so a fullscreen pass gets a viewport that matches the target it declared.
+            VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(io.extent.width), static_cast<float>(io.extent.height), 0.0f, 1.0f};
+            VkRect2D const scissor = {{0, 0}, io.extent};
+            vkCmdSetViewport(io.cmd, 0, 1, &viewport);
+            vkCmdSetScissor(io.cmd, 0, 1, &scissor);
+        }
+        VkPipelineBindPoint const bind_point = behaviour.kind == pass::behaviour_kind::compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
+        for (VkPipeline const pipeline : io.pipelines) {
+            if (pipeline != VK_NULL_HANDLE) {
+                vkCmdBindPipeline(io.cmd, bind_point, pipeline);
+            }
+        }
     }
 
     // ---- temporal anti-aliasing (M3) ----

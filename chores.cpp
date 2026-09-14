@@ -251,6 +251,13 @@ namespace chores {
                 }
             }
         }
+
+        // Every pass's CREATE step, once, now that the shared samplers, the shared set layouts and the pipelines
+        // above exist: a pass builds what it OWNS (its set layout, its descriptor family, its pipeline) from a
+        // `pass_context` the runtime fills, and a pass that cannot build itself says so and stays inactive
+        // rather than taking the frame down. See vulkan.pass.transparent (the one pass this branch drives, which
+        // owns nothing: its leaves name their pipelines) and runtime::create_passes for what the context carries.
+        runtime.create_passes();
     }
 
     // Optional instancing stress: grid_side > 1 (config or argv) draws the first imported
