@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.26.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.27.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -27,6 +27,7 @@ export module vulkan.runtime;
 import vulkan.profiling;
 import vulkan.bindings;               // the per-image descriptor-set families (the G-buffer debug view's for now)
 import vulkan.pass;                   // the pass framework: the host the runner talks to, and the stage runner
+import vulkan.pass.scene;             // the second pass this branch drives: the surface write
 import vulkan.pass.transparent;       // the first pass this branch drives: the blended geometry
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
@@ -400,6 +401,15 @@ namespace vulkan {
         // rotation, "the previous frame's camera" is not what that image's history was rendered with,
         // and reprojecting against the wrong matrix is exactly what makes a TAA history smear.
         std::vector<glm::mat4> image_view_proj = {};
+        /// THE SCENE PASS (vulkan.pass.scene): it owns the surface instance, the segment strategy and the
+        /// draw loop; the renderer hands it the leaves through a typed frame (see make_scene_frame) and keeps
+        /// the pipeline registry, the secondary buffers and the scheduler.
+        pass::scene_pass scene;
+        std::array<pass::frame_pass*, 1> scene_stage = {&this->scene};
+        /// the scene frame's view of the per-slot segments (a member, so the span it hands the pass outlives it)
+        std::vector<pass::segment_buffer> scene_segment_view = {};
+        /// the colour formats the scene pass's secondaries inherit, in attachment order
+        std::array<VkFormat, vulkan::gbuffer_pass_attachment_count> scene_color_formats = {};
         /// THE TRANSPARENT PASS (vulkan.pass.transparent): the blended geometry, over the shaded frame
         pass::transparent_pass transparent;
         std::array<pass::frame_pass*, 1> transparent_stage = {&this->transparent};
@@ -1179,6 +1189,11 @@ namespace vulkan {
          * compose over the SHADED image - a G-buffer cannot hold a surface that does not exist yet.
          * record_scene_tail() turns the G-buffer into the frame afterwards through
          * record_lighting_pass().
+         * @note THE SCENE PASS RECORDS THE LEAVES NOW: the rendering instance over the six declared targets,
+         *       the segment strategy and the draw loop live in `vulkan.pass.scene` (the renderer hands it the
+         *       leaves through `make_scene_frame`) - which is also why the instance no longer has to be closed
+         *       by record_scene_tail(). What stays here is the part the pass cannot own: the attachment
+         *       barriers, the per-frame geometry resync, and the degenerate frame with no surface pipeline.
          */
         void record_scene(VkCommandBuffer command_buffer);
 
@@ -1289,36 +1304,29 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief record the opaque scene into @p command_buffer: one secondary per task-pool worker
-         *        segment (or a single one for a small frame), each inheriting the instance's color +
-         *        depth attachments, plus the transparent secondary when @p draw_transparent - the
-         *        primary executes them in order inside the rendering instance
-         * @param command_buffer the frame's primary command buffer
-         * @param gbuffer_pass true when the leaves bind the G-buffer pipelines (deferred path)
-         * @param draw_transparent record and execute the alpha-blended leaves inside THIS instance
-         *        (the forward path, which shades as it draws and therefore already has an image to
-         *        blend over). The deferred path passes false and records them in an instance of its
-         *        own after the lighting stage - see record_transparent_pass()
-         *
-         * Shared by both scene paths on purpose - the segmentation, the per-segment secondary
-         * lifetime and the execute order are the same work in either; only the pipelines the leaves
-         * bind (chosen in record_main_segment() from @p gbuffer_pass) and the two optional extras
-         * differ.
+         * @brief the scene pass's per-frame input: the visible leaves, the per-slot segments, and the four
+         *        things only the renderer can answer (see `pass::scene_frame`)
+         * @note built per frame rather than stored, because every field is this frame's; the one member it
+         *       writes through - `scene_segment_view` - is the pass's VIEW of the per-slot secondary buffers,
+         *       and it has to outlive the stage, which is why it is not a local
+         * @note the colour formats are the secondaries' inheritance order, which is the DECLARATION's order:
+         *       three surface targets, the velocity target, the scene colour
          */
-        void record_opaque_scene(VkCommandBuffer command_buffer);
-
+        [[nodiscard]] pass::scene_frame make_scene_frame() noexcept;
         /**
-         * @ingroup vulkan_runtime
-         * @brief record one contiguous slice of the main-pass leaves into @p command_buffer:
-         *        bind the shared scene set, then draw the leaves of @p leaves (a sub-range of
-         *        frame_visible). When @p draw_skybox the skybox background is drawn first so
-         *        the background stays ordered before the scene (segment 0 only); later
-         *        segments are pure scene.
-         * @note stage 3 of parallel recording: each task-pool worker records one segment into
-         *       its own secondary command buffer (see sub_render_task), the primary executes
-         *       them in order. Only bind/push/draw commands - caller owns barriers + the
-         *       rendering instance.
+         * @brief hand a segment batch to the task pool (the pass's `run_tasks` callback)
+         * @note the scheduler - the pool, its priorities and its wait - stays the frame loop's policy; the
+         *       pass only says WHAT the segments are. When the framework learns to schedule segments itself,
+         *       this callback is what disappears
          */
+        static void run_scene_tasks(void* owner, std::span<std::function<void()>> tasks);
+        /**
+         * @brief resolve the scene pass: the five colour targets and the surface depth, in declaration order
+         * @return false on a frame with no surface pipeline or no target generation to write into, which skips
+         *         the pass WITHOUT recording anything
+         */
+        [[nodiscard]] bool resolve_scene_pass(pass::resolved_io& out);
+
         /** @brief close the scene rendering instance and record the post-process pass (HDR ->
          *         exposure/tonemap -> swapchain) plus the debug overlay on the final image
          *  @return true when a fullscreen pass actually wrote the SWAPCHAIN image (so it is in
@@ -1335,9 +1343,12 @@ namespace vulkan {
         /** @brief (re)bind the post descriptor sets to the current per-image HDR targets */
         void ensure_post_descriptors();
         /**
-         * @brief close the geometry instance and record the scene-side stages that follow it
-         *        (deferred lighting, the TAA resolve, the G-buffer debug view), each with its own
-         *        GPU timing mark
+         * @brief record the scene-side stages that follow the geometry instance (deferred lighting, the TAA
+         *        resolve, the G-buffer debug view), each with its own GPU timing mark
+         * @note it no longer CLOSES the geometry instance: the scene pass owns the instance and ends it at the
+         *       end of its own record (see vulkan.pass.scene). This function used to open with a
+         *       `vkCmdEndRendering` whose matching begin was three functions away - the coupling the scene
+         *       pass removed by existing
          * @note the marks are unconditional even when a stage does not run this frame: the
          *       label-to-interval mapping is positional, so a skipped stage writes its mark
          *       immediately after the previous one and its interval reads 0
@@ -1402,49 +1413,6 @@ namespace vulkan {
          *       (screenshot_staging_mapped / screenshot_readback_extent) that the later read needs
          */
         void record_screenshot_copy(VkCommandBuffer command_buffer);
-        /**
-         * @brief record one segment of the main pass (see the doc block above record_opaque_scene)
-         * @param gbuffer_pass true = the leaves bind the G-buffer pipeline (the opaque instance of
-         *        the deferred path); false = they bind their own forward pipelines. Passed in rather
-         *        than re-derived from gbuffer_pass_active(), because the deferred path also has
-         *        forward-style segments: its transparent pass runs while the G-buffer pass is the
-         *        active mode, and still shades while it draws.
-         */
-        void record_main_segment(VkCommandBuffer command_buffer, std::span<primitive const* const> leaves, bool gbuffer_pass) const;
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief one recording job of the parallel main pass (stage 3): records @p leaves (a
-         *        contiguous slice of the frame's visible leaves) into @p command_buffer, a
-         *        per-slot SECONDARY command buffer. operator() begins the secondary (inheriting
-         *        the main instance's color+depth attachments via dynamic rendering 1.3
-         *        inheritance info), records the slice and ends it, so a batch of these can be
-         *        posted straight to the shared task pool and the recording group waited on.
-         * @note value type (span + handle + formats; no owning pointers), safe to copy into
-         *       std::function for the pool; the begin-info is assembled fresh inside operator()
-         *       so copies never share dangling pNext chains.
-         */
-        struct sub_render_task {
-            VkCommandBuffer command_buffer = VK_NULL_HANDLE;
-            std::span<primitive const* const> leaves = {};
-            // Color attachment formats of the instance this secondary is recorded into, in
-            // attachment order: one entry (the HDR target) for the forward pass, the G-buffer set
-            // when the opaque pass writes the G-buffer. Held by value because the task outlives the
-            // call that builds it (it is moved into the task pool).
-            std::array<VkFormat, vulkan::gbuffer_pass_attachment_count> color_formats = {};
-            uint32_t color_count = 0;                    // formats in use (1 forward, 4 G-buffer: surface targets + HDR)
-            VkFormat depth_format = VK_FORMAT_UNDEFINED; // main depth attachment format
-            VkSampleCountFlagBits rasterization_samples = VK_SAMPLE_COUNT_1_BIT;
-            bool gbuffer_pass = false;      // leaves bind the G-buffer pipeline (not the forward ones)
-            runtime const* owner = nullptr; // recording context (scene set / pipeline caches)
-            // set to true by operator() when the secondary was actually recorded (begin + end
-            // succeeded). Points into a per-frame array owned by the caller of the task batch;
-            // the caller waits the recording group before reading it, so no extra sync is
-            // needed. The primary must NOT execute a segment whose begin failed.
-            std::atomic<bool>* recorded = nullptr;
-
-            void operator()() const; // defined in runtime.cpp (module-private)
-        };
 
         /** @brief the command buffer currently being recorded (between begin_recording() and
          *         end_recording()); internal use for the runtime's own recording */

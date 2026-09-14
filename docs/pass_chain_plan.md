@@ -40,6 +40,7 @@ GI is not involved.
 | `e05d0b5` | the generators take a `VkDevice` (`make_set_layout`, `write_set`, `image_set_family::ensure*`), which is the prerequisite for a pass building its own layout |
 | `bcf62bb` | the `scene` and `transparent` pass modules come over from `master` and build here with **no edit at all**. Still unconsumed: gate 7 x 2, 0 changed |
 | this step | the **transparent pass is wired and recording**: the runtime drives a real `pass::stage`, and the frame is byte-identical |
+| the step after | the **scene pass is wired**: the runtime no longer opens OR closes the surface instance, and `record_opaque_scene` / `record_main_segment` / `sub_render_task` are gone |
 
 `docs/pass_chain_inventory.md` (192 lines) is the read-only map of this state: its resource set, the frame's
 recording spine and mark intervals, every function of the PBR/scene chain with its attachments, sets,
@@ -88,8 +89,8 @@ The order above is by DEPENDENCY (`scene` is what the rest are shaped like); the
 `transparent`, and for a reason worth keeping: its body is the only one that moves without touching anything
 else. It owns its own LOAD instance and its own per-slot secondary, so `record_opaque_scene`,
 `record_main_segment` and `sub_render_task` are not involved at all and the step is purely additive - the
-cheapest possible proof that the framework can drive a real pass and produce the same bytes. The `scene` step is
-the one that has to delete those three functions, and it is next.
+cheapest possible proof that the framework can drive a real pass and produce the same bytes. The `scene` step,
+which has to delete those three functions, followed it and is described in its own section below.
 
 What the wiring needed, measured:
 
@@ -115,10 +116,45 @@ The two facts the create context forced into the open, both recorded rather than
   registration (`register_shader`) therefore lands with the TAA pass, and until then a `create_passes` call's
   only observable effect is the VALIDATION of the declaration - which is still worth the call.
 
-`resolve_pass` is a one-branch `if (&pass == &this->transparent)` chain, and stays one until a second pass
-exists to make the missing table obvious. The framework gaps this does NOT close are unchanged: the resolver
-chain, the absence of a channel for shared-set IMAGE handles (the GI chain's blocker), and parallel segment
-recording still being the frame loop's policy rather than a framework concept.
+`resolve_pass` is a two-branch `if (&pass == &this->scene) / (&this->transparent)` chain, and stays a chain
+until a third pass makes the missing table obvious (the next section's scene step has landed since this was
+written, and the chain grew by exactly the one branch it was predicted to). The framework gaps this does NOT
+close are unchanged: the resolver chain, the absence of a channel for shared-set IMAGE handles (the GI chain's
+blocker), and parallel segment recording still being the frame loop's policy rather than a framework concept.
+
+## THE SCENE PASS: THE OPEN AND THE CLOSE IN ONE FUNCTION
+
+This is the step the inventory said was worth the most, because it fixes a COUPLING rather than moving code: the
+surface rendering instance used to be opened by `record_opaque_scene` and closed by `record_scene_tail`, three
+subsystems later, with the whole rest of the frame's work between them. Now `vulkan.pass.scene` opens it, draws
+the segments and CLOSES it in one function, and `record_scene_tail` simply starts with a GPU mark.
+
+What moved, and what deliberately did not:
+
+* the instance, the segment strategy (`segment_count`, the `leaf_count < 4` threshold), the secondary
+  begin/end and its inheritance, the per-segment environment and the draw loop are the PASS's;
+* the pipeline registry, the per-slot secondary buffers, the task pool and the scheduler are the RENDERER's,
+  handed over as `scene_frame::make_environment` and `scene_frame::run_tasks` - so the pass says WHAT the
+  segments are and the frame loop still decides HOW they are recorded;
+* the attachment barriers (`record_scene_attachments`) and the per-frame geometry resync
+  (`update_pass_geometry`) stay in `record_scene`, because they are frame facts, not pass facts;
+* `record_opaque_scene`, `record_main_segment` and `sub_render_task` are DELETED - including their declarations,
+  which `master` still carries (a dangling `record_opaque_scene` declaration with no definition). Nothing on
+  this branch declares a function it does not define;
+* `begin_rendering` survives for one caller only, and it is documented as such: the DEGENERATE frame with no
+  surface pipeline, where there is no pass to run and an empty instance is opened and closed anyway so the
+  scene target still ends in a layout the post chain can sample.
+
+Two honesty fixes taken while the file was open, both about text that had stopped being true:
+
+* `record_scene_tail`'s declaration said "close the geometry instance and record the scene-side stages that
+  follow it" - it no longer closes anything, and now says so (and says why);
+* `record_scene`'s declaration described a body that no longer exists, so it now names the pass and lists the
+  three things that stayed.
+
+Verified: gate 7 x 2, **0 changed, 0 flaky**, including `sponza` (`0EBA5300E8F84E6F`) - the scene the GI
+acceptance anchor is measured on - and `transparent_blend`, whose pass runs after lighting over the surface
+this one writes.
 
 ## WHAT THE INVENTORY ALREADY FOUND (recorded, not yet fixed)
 
