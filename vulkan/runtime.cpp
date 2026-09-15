@@ -4781,10 +4781,41 @@ namespace vulkan {
         }
         // GPU pipeline creation is expensive and touches no shared registry state: build it
         // OUTSIDE the lock so a reader is never blocked by shader compilation.
-        auto make_result = this->vulkan_core.make_pipeline(vertex_shader_code, fragment_shader_code);
+        //
+        // BUILT FROM THE DEVICE, not through `core::make_pipeline`: that entry point is the old style - it
+        // reached into the core for the flat scene layout, the surface format and the depth format, which is
+        // exactly what a caller that is not the runtime (a pass, whose create step has a device and its own
+        // layout) cannot do. The four facts are read here instead, and they are the ones that entry point used,
+        // so this is a re-expression: same layout, same formats, same single-sampled pipeline.
+        std::array<VkFormat, 1> const color_formats = {this->vulkan_core.swap_chain_image_format};
+        // ... AND THE BLEND STATE, which the old entry point got from the convenience overload: the FORWARD
+        // pipelines' convention is src-alpha blending (alpha is coverage, and an opaque draw's alpha of one
+        // reduces the blend math to the source colour), while the span-based form's default is "overwrite".
+        // Omitting it is not a no-op - the gate caught it as a changed scenario, and this is why the conversion
+        // is a re-expression rather than a rewrite.
+        std::array<VkPipelineColorBlendAttachmentState, 1> const blend_attachments = {make_color_blend_attachment()};
+        auto make_result = vulkan::make_pipeline(this->vulkan_core.device,
+                                                 this->vulkan_core.scene_pipeline_layout,
+                                                 std::span<VkFormat const>(color_formats),
+                                                 this->vulkan_core.depth_format,
+                                                 vertex_shader_code,
+                                                 fragment_shader_code,
+                                                 VK_SAMPLE_COUNT_1_BIT,
+                                                 /*depth_test_enabled=*/true,
+                                                 0.0f,
+                                                 0.0f,
+                                                 0.0f,
+                                                 std::span<VkPipelineColorBlendAttachmentState const>(blend_attachments));
         if (!make_result) {
-            return fail(make_result.error());
+            return fail(std::string(make_result.error()));
         }
+        // ... AND THE VIEWPORT THE OLD ENTRY POINT ALSO SAVED, which is not incidental: these pipelines are
+        // drawn through `vk_pipeline::begin_pipeline`, which re-emits the cached viewport, and the scene path
+        // resyncs it once per frame in update_pass_geometry. Leaving it at its creation-time zero is the
+        // zero-width viewport this project has already paid for once - and the gate caught exactly this
+        // omission here, as one changed scenario.
+        make_result->viewport = {0.0f, 0.0f, static_cast<float>(this->vulkan_core.swap_chain_extent.width), static_cast<float>(this->vulkan_core.swap_chain_extent.height), 0.0f, 1.0f};
+        make_result->scissor = {{0, 0}, this->vulkan_core.swap_chain_extent};
         {
             std::unique_lock const lock(this->access_mutex);
             this->pipelines.emplace(pipeline_name, std::move(make_result).value());
