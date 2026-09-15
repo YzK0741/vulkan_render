@@ -167,6 +167,12 @@ namespace chores {
             }
             runtime.register_shader("post.vert.spv", vertex_code);
             runtime.register_shader("post.frag.spv", fragment_code);
+            // ... and FXAA's, whose pass builds its own pipeline layout around the post set layout the composite
+            // owns - which is why this registration sits HERE, before create_passes(), and not after it: the pass
+            // is created with every other pass now, and the ordering constraint the old make_fxaa_pipeline() call
+            // needed is gone with the call.
+            load_shader(shaders_dir, "fxaa.frag.spv", fragment_code);
+            runtime.register_shader("fxaa.frag.spv", fragment_code);
         }
 
         {
@@ -328,28 +334,6 @@ namespace chores {
             // block above because one of them must be created AFTER its shaders exist and the shared set
             // layouts do. Each object logs its own outcome.
             runtime.create_passes();
-
-            {
-                // FXAA pipeline (gamma-encoded LDR image -> anti-aliased swapchain). Optional. Failure is not
-                // fatal - FXAA simply stays unavailable and runtime::set_fxaa() logs it.
-                //
-                // IT IS CREATED HERE, AFTER create_passes(), and that ORDER is the whole reason this block moved:
-                // the pipeline is built against the post chain's pipeline layout and its descriptor set comes from
-                // the post set layout, and BOTH belong to the post composite PASS now (vulkan.pass.post) - so
-                // before create_passes() there is no layout to build it from. The check that used to say "create
-                // the post-process pipeline first" was what a mis-ordered call would hit; now the order is
-                // structural.
-                std::vector<unsigned char> vertex_code;
-                std::vector<unsigned char> fragment_code;
-                load_shader(shaders_dir, "post.vert.spv", vertex_code);
-                load_shader(shaders_dir, "fxaa.frag.spv", fragment_code);
-                auto const fxaa_result = runtime.make_fxaa_pipeline(vertex_code, fragment_code);
-                if (!fxaa_result) {
-                    utility::log("fxaa pipeline disabled: {}", fxaa_result.error());
-                } else {
-                    utility::log("SUCCESS: fxaa pipeline created (LDR -> anti-aliased swapchain)");
-                }
-            }
         }
     }
 

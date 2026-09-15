@@ -1599,6 +1599,19 @@ own until step ③ owns it) and of `runtime::post_push_constants`.
    definition. What is left of step ③ is the WIRING: the pass in the chain, its resolver, its stage, the
    deletion of `runtime::make_fxaa_pipeline` / `record_fxaa` / the `post_fxaa_pipeline` member, and - with them -
    `record_fullscreen_triangle` and the two `barrier_image_to_*` helpers, whose last caller `record_fxaa` was.
+   **SLICE 3 IS LANDED, AND STEP ③ IS DONE**: the pass is in the chain (`fxaa_resolve`, and the rename is itself a
+   finding - the class already had a `fxaa()` accessor returning the knob, so the member that collides with it is
+   `fxaa_resolve`, the same naming `taa_resolve` uses), `resolve_fxaa_pass` resolves its frame, its stage records
+   it after the composite's, and `runtime::make_fxaa_pipeline`, `record_fxaa`, `record_fullscreen_triangle` and
+   `barrier_image_to_colour_attachment` are DELETED (the last two had no other caller; `barrier_image_to_sampling`
+   stays, because the HDR target's transition - the one the post chain deliberately does not own - still uses it).
+   The chores block that had to run AFTER `create_passes()` is gone with `make_fxaa_pipeline`: the app registers
+   `post.vert.spv` and `fxaa.frag.spv` with the other post shaders, the pass builds its own layout and pipeline in
+   the one create step, and the ordering constraint disappeared rather than being documented.
+   **PROVEN ON THE SCENARIO THAT RUNS IT**: `deferred_taa_fxaa` is the one gate scenario with FXAA on, and it came
+   back `6999D01E5FBAB508` - the reference, byte for byte - with `deferred` (FXAA off, so the composite is the last
+   writer and carries the overlay) also matching. The overlay's ON path is the one frame the gate cannot cover and
+   it was measured the same way the composite's was (see the section above).
 3. **④ the G-buffer debug view**. It shares the G-buffer set layout with the lighting stage, and that layout is
    currently built by `make_gbuffer_debug_pipeline` (`pipelines::build_gbuffer_debug` returns it) because the
    deferred pass needed it first. Once BOTH are passes, the layout has to belong to one of them or to the
