@@ -538,6 +538,11 @@ says what a re-audit of the current tree found.
 
 **DONE, and each step verified byte-for-byte against the capture gate as it landed.**
 
+* **EVERY STAGE OF THE GI CHAIN IS A PASS** (as of `fa8c1c0`): `gi_probe` (the cache), `ssgi_trace` (`b62c4b3`),
+  `ssgi_spec` (the glossy lobe, `d2f5715`), `ssgi_temporal` (the resolve's recording, `bc2dc1d`) and
+  `ssgi_spatial` (the filter that ends the chain, `fa8c1c0`). The last two are the same shape as the first two -
+  the pass owns the frame's recording and the renderer supplies what the declaration cannot describe - and each
+  move left the gate 12 x 2 with 0 changed and 0 flaky.
 * The non-GI PBR chain is passes: `vulkan.pass` (framework), the declaration layer (`render_resource`), the
   generators (`make_set_layout` / `write_set` / `image_set_family` taking a `VkDevice`), and `scene`,
   `transparent` and `taa` wired and recording (commits `bfed4cd` .. `6cd9c6e`). The branch's own baselines
