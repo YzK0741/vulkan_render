@@ -1684,6 +1684,45 @@ So the next round's first action is those two additive pieces (the builder + the
 with a test), and the module after them - the order this document's own lesson prescribes: the prerequisites are
 written down before the thing that needs them.
 
+## THE OBJECTIVE IS REACHED: THE FINAL INVENTORY, MEASURED AT `b00253d`
+
+**NINETEEN PASS INSTANCES own every graphics stage of this renderer's frame**, and the chain is the frame's order:
+`gbuffer_debug_view`, `shadow`, `scene`, `transparent`, the four GI stages (`ssgi_trace`, `ssgi_spec`,
+`ssgi_temporal`, `ssgi_spatial`), `gi_probe`, `taa_resolve`, `rt_shadow`, `cluster`, `deferred`, `post_composite`,
+the four bloom levels, and `fxaa_resolve` - each built by one `passes.emplace` in the header, each owning its
+pipelines, layouts and descriptor families where its step's verification said so.
+
+**WHAT `vulkan.runtime` STILL RECORDS, by name, and why each is not a stage** (a grep of `runtime::record_*`):
+* the SEQUENCERS - `record_post_process`, `record_scene`, `record_scene_tail`, `record_main_drawcalls`: they set
+  the frames, call `record_stage`, and write the marks. They record no draw of their own.
+* `record_scene_attachments`: the G-buffer instance's attachment TRANSITIONS, which the scene pass then opens its
+  instance over (the pass owns the instance; the transitions are the host's because the same images are attachments
+  for several stages).
+* `record_shadow_cascade` / `record_shadow_content`: the shadow pass's two CONTENT callbacks (the pass owns the
+  per-cascade order - see its frame).
+* `record_transparent_pass`: the transparent stage's two-line wrapper (set the frame, record the stage).
+* `record_reflection` + `record_ssgi_resolve_pass`: THE ONE DOCUMENTED EXCEPTION - the GI denoiser resolves two
+  signals through one pipeline, and one declaration cannot describe both signals' image lists, so the reflection's
+  recording and its per-image family stay the renderer's. This is the framework gap this document has named since
+  the temporal resolve's extraction, and it is not closable without a second declaration channel.
+* `record_compute_skin_pass`: the compute-skinning JOB's caller (a job, not a frame pass).
+* `record_overlay_if_enabled`: the debug overlay, drawn inside whichever pass's instance is the frame's last writer
+  (a callback the composite and FXAA passes carry).
+* `record_acceleration_structures` / `record_top_level_structure` / `record_screenshot_copy`: the AS builds and the
+  read-back copy - not graphics stages, and the AS ones are the acceleration-structure module's calls.
+
+**WHAT IT STILL HOLDS, and this is the "almost": the SHARED resources, each with more than one consumer** - the
+G-buffer and post descriptor families (five and six consumers), the post chain's samplers, the shadow map's layered
+image and its layer views (created here, bound by the scene set), the scene/post set layouts' owners, the scene
+buffers (material, instance, motion, skin, morph, cluster, masks), the AS structures, the command buffers and
+secondaries, and the read-back staging. Every one of them is a resource whose OWNER is a shared object rather than
+a stage, and the pass-chain plan's rule - a pass owns what no other pass may write - is what leaves them here.
+
+**AND EVERY STEP'S ACCEPTANCE IS ON THE RECORD**: gate 12 x 2 with 0 changed / 0 flaky after each of ①-⑤ (and
+after every slice in between), a knob-on A/B against the immediate parent for the two paths the gate cannot reach
+(`gbuffer_debug = true` for the debug view, `[gui] show = true` for the overlay's ownership), Release/Debug/ASan
+clean, `ctest` 8/8 in all three, and a clean doxygen - the last of which caught two real defects on the way (a
+stray backtick in a doc comment, and the missing `VkPipelineLayout` lookup that made six passes build nothing).
 ## HANDOFF: WHERE THIS STANDS AND WHAT IS LEFT, EXACTLY
 **DONE, and each step verified byte-for-byte against the capture gate as it landed.**
 
