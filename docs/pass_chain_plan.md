@@ -1563,7 +1563,71 @@ wiring was then split in two and the FIRST half was landed on its own:
    G-buffer depth and normal in the wrong layouts (two `VUID-vkCmdDraw-imageLayout-00344` lines per frame). LANDED.
 3. **THE `deferred_taa_fxaa` REGRESSION IS THE OPEN QUESTION** (see above): the recording move, nothing else.
 
-## HANDOFF: WHERE THIS STANDS AND WHAT IS LEFT, EXACTLY
+## THE NEXT STEP, EXACTLY: ⑤ THE SHADOW PASS (recipe, read out of the tree at `86035ff`)
+
+**WHERE IT LIVES, and it is NOT `record_scene_tail` like every other stage**: the whole block is inside
+`begin_recording` (runtime.cpp 1807-1953), because the maps have to be rendered BEFORE the scene pass that samples
+them. The sequence around it: the acceleration-structure builds -> the `rt_build_end` mark -> **the shadow block** ->
+the `shadow_end` mark -> `record_scene`. Its pieces are `make_shadow_pipeline` (4706, already device-taking),
+`record_shadow_content` (2103, `const`: bind the shadow pipeline, the scene set, draw every leaf with depth writes
+and the two-sided env), `ensure_shadow_resources` (451, which CREATES the layered shadow map images per frame slot),
+and the members `shadow_pipeline`, `shadow_images`/`shadow_layer_views`/`shadow_allocated_layers`,
+`shadow_map_size`, `shadow_recording[slot][cascade]` (the {pool, buffer} secondaries), the fit cache
+(`shadow_fit_view_proj`, `shadow_frustum_valid`, the two caster-box scratch vectors) and the reuse bookkeeping
+(`shadow_content_version`, `shadow_rendered_version[slot]`, `shadow_rendered_models[slot]`,
+`shadow_geometry_signature()`).
+
+**WHAT THE BLOCK DOES, in order**: the reuse test (`features.shadow && !shadow_reuse`) -> per-cascade tasks on the
+TASK POOL, each recording into ITS OWN secondary (a `VkCommandPool` is not thread safe), each pushing
+`scene_cascade_push_offset` = that cascade's index into the SHARED SCENE pipeline layout, then
+`record_shadow_content` -> per cascade, in the primary: the layer's `depth_attachment_transition` (single-layer
+subresource range), a depth-only instance over `shadow_layer_views[slot][cascade]` at
+`{shadow_map_size, shadow_map_size}` with `VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT`, the secondary's
+execution, the instance's end -> ONE hand-back barrier over EVERY ALLOCATED layer
+(`{DEPTH, 0, 1, 0, shadow_allocated_layers}`), because the descriptor's array view spans them all -> the two
+bookkeeping writes that make the next frame's reuse test true.
+
+**THE TWO OFF PATHS, and they are different from each other**: a REUSE frame does NOTHING (the maps are already in
+the sampling layout, the descriptor still points at them); a NO-SHADOW frame (the knob off, or no light) still
+transitions every allocated layer from UNDEFINED, because the scene set's binding 8 is statically used whether or
+not the shader samples it - the VUID that fix is recorded next to.
+
+**THE DECISIONS THIS STEP HAS TO MAKE, and the two the framework does not cover yet:**
+
+1. **A VARIABLE NUMBER OF TARGETS**, which no declaration can express: the pass renders 1..`max_shadow_cascades`
+   LAYERS of one image, each in its own instance. The shape that fits the framework is `targets` naming ALL FOUR
+   layers (`resource_id::shadow_map`, elements 0..3 - the duplicate check is satisfied and `max_render_targets` is
+   8) with the RESOLVER handing over only the first `cascades` of them (`out.targets` is a span the host sizes),
+   and the same for `barrier_images`. The declaration then says "the images this pass may render into", which is
+   what it has always said, and the frame says how many of them this frame has - a deviation worth recording beside
+   the deferred stage's and the composite's.
+2. **THE SCENE PIPELINE LAYOUT, which `pass_context` cannot answer.** The shadow pipeline is built against
+   `core::scene_pipeline_layout` and its per-cascade push goes through THAT layout (the same one the scene leaves
+   push through), so a pass that owns the pipeline needs the layout - and there is no `shared_pipeline_layout`
+   callback: `shared_set_layout` answers SET layouts only. The additive fix is a second context callback (with a
+   test and a MINOR bump of `vulkan.pass`), or the pass borrows the layout from... nothing else, since a pass may
+   not reach another pass's members.
+3. **THE HAND-BACK STAYS THE HOST'S**: one barrier over every ALLOCATED layer, including the spare ones a shrank
+   cascade count left behind, is about the IMAGE the runtime created and owns (`ensure_shadow_resources`) - the
+   pass cannot know `shadow_allocated_layers`, and the descriptor's array view is the host's own set. The pass
+   transitions its own layers to attachments; the host hands the array back (the composite's HDR transition
+   argument, one resource class over).
+4. **WHAT STAYS THE HOST'S besides that**, each for a stated reason: the shadow map IMAGES and their pool (the
+   runtime creates them, the scene set binds them - a shared resource like the G-buffer family); the reuse
+   bookkeeping and `shadow_geometry_signature()` (they decide WHETHER the pass runs at all); the fit cache and the
+   caster gather (the shadow_fit module plus this class's scene walk); the TASK-POOL fan-out and the per-cascade
+   secondaries (the scene pass's segments/leaves precedent - the scheduler is the frame loop's); the marks; and the
+   per-cascade PUSH VALUE (the frame's index, like the compute-skin job's frame slot).
+5. **THE FEATURE NAME ALREADY EXISTS**: `f.shadow` = `shadow_enabled && shadows_enabled && shadow_pipeline &&
+   !f.unlit` (`feature_active("shadow")`), so the runner's gate needs no new branch - only the pipeline's source
+   changes.
+
+**ACCEPTANCE**: the ordinary gate is the whole verification this step needs, and that is a difference from the last
+two: EVERY gate scenario runs with `shadow = true` (the config default), `shadow_single` exists precisely to change
+the cascade count, and `unlit` exercises the no-shadow path - so the cascades, the hand-back, the reuse path across
+40 frames and the off path are all in the twelve. No knob-on A/B is needed (and the reuse path is exactly what a
+40-frame capture exercises: a static scene reuses the maps from frame 2 on).
+
 
 **DONE, and each step verified byte-for-byte against the capture gate as it landed.**
 
