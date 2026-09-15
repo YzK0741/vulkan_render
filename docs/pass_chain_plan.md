@@ -1350,7 +1350,35 @@ reach it through that pass: the **composite** is the one whose targets need BOTH
 format and the LDR image's R16F), which is the `gbuffer_debug`-owns-the-G-buffer-layout pattern this renderer
 already has - `shared_set_layout(2)` then answers `post_composite.set_layout()`, and the bloom passes get the HDR
 variant through `resolved_io::pipelines`. What stays the runtime's is unchanged by this: `post_family` and
-`ensure_post_descriptors` (five passes share the five sets, so no one pass can write them).
+`ensure_post_descriptors` (five passes share the five sets, so no one pass can write them). **THE NEXT SLICES DID
+EXACTLY THIS** - see below.
+
+**SLICES 3 AND 4 ARE LANDED, and the module is COMPLETE but still inert**: `vulkan/pass/post.{cppm,cpp}`
+declares AND implements `post_composite_pass` and `post_bloom_pass`. One commit rather than two, because neither
+half is verifiable on its own and nothing constructs either pass yet - which the gate proves (12 x 2, 0 changed).
+What the module settles, each as a decision rather than a transcription:
+
+* the COMPOSITE owns the chain's whole GPU material (the set layout, the pipeline layout and BOTH pipelines),
+  because `pipelines::build_post` creates all four in one call and the five stages share one layout - the
+  `gbuffer_debug`-owns-the-G-buffer-layout pattern. The BLOOM passes own nothing: `create` and
+  `on_swapchain_recreated` are empty (documented as such), and the R16F pipeline reaches them through
+  `resolved_io::pipelines`, which is the shape the GI denoiser's first extraction established.
+* **THE OVERLAY'S `after_draw` DECISION IS TAKEN HERE** (item 5), and it needed NO framework change: it is a
+  callback on the composite's frame, invoked between the draw and `vkCmdEndRendering`, and the host leaves it null
+  on the frames the FXAA pass is the frame's last writer instead. `deferred_frame::ensure_inputs` is the same
+  shape, which is why the framework did not grow a field for it.
+* the composite declares NO feature name, so the runner never gates it - its gate is the host's bail-out (the
+  pipelines or the frame's composite set are missing), and a second predicate would be that question asked twice
+  (the deferred step measured what a feature name with no runtime branch does). The bloom passes name `"bloom"`,
+  which the runtime already answers with `bloom_intensity > 0 && the chain's pipeline && !gbuffer_debug` - so the
+  OFF path stays the host's (its four transitions) and is triggered by the stage recording none of its passes.
+* the push block's SHAPE moved out of `vulkan.runtime` into this module - the same thirteen lanes with the same
+  defaults, `static_assert`ed against the declaration's 52 bytes - and the split is the one TAA's block has: the
+  bloom stages fill three values and write their own `mode` (0 prefilter, 1 downsample), the composite takes the
+  host's filled block and overwrites `mode` with 2. That is why the bytes are the old bytes, lane for lane.
+* the input transition belongs to the LEVEL THAT READS IT (levels 1..3 declare one and move it), except level 0's,
+  which is the HDR target's and stays the frame loop's; and the DEEPEST level hands its own output back to a
+  sampled layout, because it has no successor to do it and the composite samples all four.
 
 **ACCEPTANCE FOR EVERY SLICE**: Release/Debug/ASan clean, `ctest` 8/8, a clean doxygen, and the gate 12 x 2 with
 0 changed and 0 flaky - which covers the composite in every scenario and the bloom chain in every scenario
@@ -1461,9 +1489,11 @@ variant through `resolved_io::pipelines`. What stays the runtime's is unchanged 
    RECIPE NOW** (the section above, with the framework changes it needs and the measurement that the gate covers
    both halves - which is the fact that decides its acceptance). Five passes: one per bloom level (the level IS the
    pass boundary, because each stage binds a different one of the five post sets) plus the composite.
-   **SLICE 1 IS LANDED** (items 2 and 3 of the recipe): the `bloom` family's `count` and the framework's
-   `extent_of_element` + the host's level formula, all inert (no pass declares either yet), verified by the same
-   battery every slice needs.
+   **SLICES 1, 2, 3 AND 4 ARE LANDED**: the `bloom` family's `count` and the framework's `extent_of_element` +
+   the host's level formula (inert), the five declarations (inert), and the module itself - `post_composite_pass`
+   plus four `post_bloom_pass` instances, complete and compiling, with only the WIRING left (the resolvers, the
+   two stages, the `post_family`'s layout coming from the composite, the overlay callback, and the deletion of
+   `record_bloom_chain` / `record_composite` / `make_post_pipeline` / the four raw members).
 2. **③ FXAA**, including the decision the post header records: the FXAA pass is the frame's LAST writer and it
    currently carries the overlay (`record_fullscreen_triangle(..., /*overlay_after=*/true)` at the end of
    `runtime::record_post_process`), so the overlay's ownership has to be decided - the preferred shape is an
