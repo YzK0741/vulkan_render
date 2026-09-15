@@ -1571,6 +1571,17 @@ own until step ③ owns it) and of `runtime::post_push_constants`.
    `runtime::record_post_process`), so the overlay's ownership has to be decided - the preferred shape is an
    `after_draw` callback on the pass's frame that keeps the recorded command order byte-identical, rather than a
    second instance.
+   **WHAT THE POST STEP LEFT FOR IT, decided already**: `record_fxaa` + the `post_fxaa_pipeline` member +
+   `make_fxaa_pipeline` become `vulkan.pass.fxaa`, and the OVERLAY SHAPE IS SETTLED - the callback that the
+   composite already uses (`composite_frame::after_draw`, measured above) is the shape this pass needs too, with
+   the roles swapped: FXAA runs only when it is the frame's last writer, so its own frame carries the overlay and
+   the host never sets it on the composite then. The one thing to decide first is its PIPELINE LAYOUT:
+   `pipelines::build_fxaa` takes an EXISTING layout (the post chain's), and a pass may not reach another pass's
+   layout - so either the builder grows a variant that creates the layout from the SET layout the pass is already
+   handed (`build_taa` does exactly that, with the pass's own set layout as its parameter, so the precedent is in
+   the same file), or the FXAA pass binds with a layout of its own. The first is the smaller change and keeps one
+   layout in the chain; the descriptor set is `post_family`'s set 4 either way, and two layouts with identical
+   bindings are compatible.
 3. **④ the G-buffer debug view**. It shares the G-buffer set layout with the lighting stage, and that layout is
    currently built by `make_gbuffer_debug_pipeline` (`pipelines::build_gbuffer_debug` returns it) because the
    deferred pass needed it first. Once BOTH are passes, the layout has to belong to one of them or to the
