@@ -134,6 +134,7 @@ target_sources(vulkancorekit
         vulkan/pass/ssgi_temporal.cppm
         vulkan/pass/ssgi_spatial.cppm
         vulkan/pass/rt_shadow.cppm
+        vulkan/pass/mask_bake.cppm
         vulkan/profiling/profiling.cppm
         vulkan/shadow_fit/shadow_fit.cppm
         vulkan/readback/readback.cppm
@@ -163,6 +164,7 @@ target_sources(vulkancorekit
         vulkan/pass/ssgi_temporal.cpp
         vulkan/pass/ssgi_spatial.cpp
         vulkan/pass/rt_shadow.cpp
+        vulkan/pass/mask_bake.cpp
         vulkan/shadow_fit/shadow_fit.cpp
         vulkan/readback/readback.cpp
         vulkan/acceleration_structure/acceleration_structure.cpp

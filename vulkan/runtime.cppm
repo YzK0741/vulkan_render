@@ -36,6 +36,7 @@ import vulkan.pass.ssgi_spec;         // the sixth: the glossy lobe, which corre
 import vulkan.pass.ssgi_temporal;     // the seventh: the diffuse temporal resolve's recording (see its header)
 import vulkan.pass.ssgi_spatial;      // the eighth, and the GI chain's last stage: the spatial filter
 import vulkan.pass.rt_shadow;         // the ninth, and the first one OUTSIDE the GI chain: the ray-traced shadow
+import vulkan.pass.mask_bake;         // ... and the one-shot MASK bake, which is a JOB rather than a frame pass
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
@@ -642,20 +643,8 @@ namespace vulkan {
         // THE FLAG ITSELF IS THE PASS'S NOW (pass::ssgi_spec_pass's per-image state): the host only tells the
         // pass when the generation changed or when the chain was switched on (see on_swapchain_recreated and
         // set_ssgi), because those are the two moments the renderer knows and the pass cannot.
-        // The alphaMode MASK bake (shaders/mask_bake.comp): device addresses as two 32-bit halves, the same
-        // shape every pass here pushes them in. Three uvec2s then five uints, so the block is 48 bytes on
-        // the CPU and 44 in the shader - the offsets agree and the range covers both (see the note in
-        // vulkan.pass.gi_probe's push_constants for why a MIDDLE uvec2 would be the dangerous case).
-        struct mask_bake_push_constants {
-            glm::uvec2 source_vertices = glm::uvec2(0u); // the source vertex buffer, low and high halves
-            glm::uvec2 source_indices = glm::uvec2(0u);  // ... its index buffer (zero = not indexed)
-            glm::uvec2 destination = glm::uvec2(0u);     // ... the expanded buffer this pass fills
-            uint32_t source_stride = 0;
-            uint32_t destination_stride = 0; // 32: position(3) + normal(3) + uv(2), what hit shading reads
-            uint32_t index_type = 1;         // VkIndexType: 0 = uint16, 1 = uint32 (ignored when unindexed)
-            uint32_t triangle_count = 0;
-            uint32_t material_index = 0; // the material whose alpha texture and cutoff decide the mask
-        };
+        // The alphaMode MASK bake's push block is NOT here any more: its shape is the JOB's
+        // (pass::mask_bake_push_constants in vulkan.pass.mask_bake), because only that job composes it.
         struct ssgi_temporal_push_constants {
             float history_valid = 0.0f;
             float blend_static = 0.9f;
@@ -1262,20 +1251,22 @@ namespace vulkan {
         // The expanded buffers themselves, owned here for as long as the structures are: a build reads one,
         // and the hit shading reads its vertices through the instance table's address.
         std::vector<vk_buffer> rt_mask_buffers = {};
-        // The alphaMode MASK bake (see shaders/mask_bake.comp): runs once, inside the same command buffer as
-        // the bottom level builds it feeds. Absent on a device without ray queries - and then masked geometry
-        // is silently solid to a ray, which is the documented behaviour of every traced effect here.
-        std::optional<vk_pipeline> mask_bake_pipeline = std::nullopt;
-        VkPipelineLayout mask_bake_pipeline_layout = VK_NULL_HANDLE;
-        // The bake's OWN descriptor set, created from the SCENE layout so its two bindings have the shapes
-        // the scene set gives them, and written ONCE - never the per-slot scene set. That is not tidiness:
-        // the bake runs before any pass of the frame, and the frame WRITES the scene set's binding 16 (the
-        // top level structure) later in the same command buffer, so a set updated while a recording command
-        // buffer holds it invalidates that buffer. Measured before this was split out: 62 validation errors
-        // per run, every command after the update reported against a command buffer "now in an invalid
-        // state". Only the two bindings the bake reads are written; the rest of the layout stays unwritten,
-        // which is legal because this pass's shader does not statically use them.
-        vk_descriptor_set mask_bake_set = {};
+        // The alphaMode MASK bake (see shaders/mask_bake.comp): ONE JOB OBJECT owns its pipeline layout, its
+        // pipeline and the set it writes (vulkan.pass.mask_bake_job), because it is not a frame pass at all -
+        // it runs once, inside the same command buffer as the bottom level builds it feeds, and its input is
+        // the caster list this renderer is walking at that moment. Absent on a device without ray queries, and
+        // then masked geometry is silently solid to a ray, which is the documented behaviour of every traced
+        // effect here.
+        //
+        // The set is the reason it OWNS one instead of using a scene set: it is created from the SCENE layout
+        // so its two bindings have the shapes the scene set gives them, and written ONCE - never the per-slot
+        // scene set. That is not tidiness: the bake runs before any pass of the frame, and the frame WRITES the
+        // scene set's binding 16 (the top level structure) later in the same command buffer, so a set updated
+        // while a recording command buffer holds it invalidates that buffer. Measured before this was split
+        // out: 62 validation errors per run, every command after the update reported against a command buffer
+        // "now in an invalid state". Only the two bindings the bake reads are written; the rest of the layout
+        // stays unwritten, which is legal because this job's shader does not statically use them.
+        pass::mask_bake_job mask_bake;
         // Whether that bake runs at all ([render] rt_mask_bake). Off by default: the per-triangle rule
         // measured WORSE than the raster path (see the member comment above and docs/gi_hit_shading.md).
         bool rt_mask_bake = false;
@@ -2481,15 +2472,17 @@ namespace vulkan {
         [[nodiscard]] VkExtent2D pass_extent(pass::frame_pass const& pass) const noexcept;
 
         /**
-         * @brief create the alphaMode MASK bake pipeline from shaders/mask_bake.comp
-         * @param compute_shader_code the compiled SPIR-V
-         * @return an error string when the device has no ray queries or the pipeline could not be created
+         * @brief create the alphaMode MASK bake JOB: its pipeline, its layout and its own set
+         * @return an error string when the device has no ray queries, the material table or the texture array
+         *         is not ready, or the pipeline could not be created
          * @note optional like the rest of the traced features: without it a caster's geometry is built
-         *       OPAQUE and a MASK surface is solid to a ray, exactly as it is today. It runs once, on the
-         *       frame the bottom level structures are built, and writes the expanded vertex buffer each
-         *       masked caster's structure is then built from.
+         *       OPAQUE and a MASK surface is solid to a ray, exactly as it is today. The JOB owns everything
+         *       it builds (vulkan.pass.mask_bake_job) - this method is the renderer's half: the context, the
+         *       set allocation (the pool is the core's) and the two bindings the set is written with. The
+         *       shader arrives the way every pass's does, through the runtime's registry by NAME, which is why
+         *       there is no SPIR-V parameter here.
          */
-        std::expected<void, std::string> make_mask_bake_pipeline(std::span<unsigned char const> compute_shader_code);
+        [[nodiscard]] std::expected<void, std::string> create_mask_bake();
         /**
          * @brief create the compute skinning pipeline and its per-slot descriptor sets
          * @param compute_shader_code the compiled SPIR-V

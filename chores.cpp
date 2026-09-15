@@ -327,7 +327,8 @@ namespace chores {
             // are built from the expanded, mask-baked copy of their vertices instead of the original ones.
             std::vector<unsigned char> mask_bake_code;
             load_shader(shaders_dir, "mask_bake.comp.spv", mask_bake_code);
-            auto const mask_bake_result = runtime.make_mask_bake_pipeline(mask_bake_code);
+            runtime.register_shader("mask_bake.comp.spv", mask_bake_code);
+            auto const mask_bake_result = runtime.create_mask_bake();
             if (!mask_bake_result) {
                 utility::log("alphaMode MASK bake unavailable: {} (masked geometry stays solid to a ray)", mask_bake_result.error());
             } else {

@@ -721,6 +721,49 @@ Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen
 changed and 0 flaky (a statement about the twelve frames that exist), plus the four-run A/B above for the path
 that actually changed.
 
+## THE MASK BAKE: A JOB, NOT A FRAME PASS - AND A COMMENT THAT WAS WRONG FOR 44 BYTES' WORTH OF REASON
+
+The alphaMode MASK bake was four raw handles plus a 45-line `make_mask_bake_pipeline` and eight lines of
+recording inside `record_acceleration_structures`. It is now `vulkan.pass.mask_bake_job`, which owns its pipeline
+layout, its pipeline, the descriptor set it writes and the dispatch; the renderer keeps the policy (which casters
+carry a MASK material, the expanded buffer each one is baked into, the counters) and the two bindings the set is
+written with.
+
+**IT IS NOT A `frame_pass`, and that is a statement about the work rather than a shortcut.** The framework's pass
+contract is per frame: a declaration, a `resolved_io` built from it, a stage the runner walks, generation state
+reset by `on_swapchain_recreated`. This runs ONCE, inside the command buffer that builds the bottom level
+structures, and its input is the caster list the runtime is walking at that moment. Making it a frame pass would
+need a feature gate that is true on exactly one frame and a frame struct standing in for a build loop - two lies
+instead of one honest difference. What it shares with a pass is the ownership rule, and it is CONSTRUCTED the same
+way: the runtime builds the same `pass_context` a pass's create step gets (device, the six samplers, the shared
+set layouts, the shader registry) and hands it over. The set itself stays the renderer's to ALLOCATE - the pool is
+the core's - and is moved into the job, which frees it.
+
+**VERIFIED THE SAME WAY THE RAY-TRACED SHADOW WAS, because the gate has no scenario that enables it either**
+(`rt_mask_bake = false` is the default): an A/B against the pre-change binary with the knob ON. The asset is the
+one that actually carries MASK materials - `AlphaBlendModeTest`, not the gate's helmet - and the config pins
+`rt_shadows = true` (structures are built for `rt_shadows || ssgi`, and the bake feeds the structures) plus
+`rt_mask_bake = true`:
+
+| build | run A | run B | the bake |
+|---|---|---|---|
+| pre-change | `ED602F42AF764D70…` | `ED602F42AF764D70…` | `3 MASK casters baked into their structures` |
+| this change | `ED602F42AF764D70…` | `ED602F42AF764D70…` | `3 MASK casters baked into their structures` |
+
+Four runs, one hash, validation clean, and the log line is the proof that the bake RAN rather than that the frame
+merely looks the same. Both runs also had `rt_shadows` on, so the A/B isolates this change rather than measuring
+two at once.
+
+**AND IT FOUND A COMMENT THAT WAS WRONG, which the static assertion then made un-repeatable.** The old note
+claimed the push block is "48 bytes on the CPU and 44 in the shader". It is 44 and 44: measured with a
+`show<sizeof(...)>` probe, `glm::uvec2` is 8 bytes with ALIGNMENT 4 in this build (glm does not SIMD-align the
+2-component vector types here), so five uints after three uvec2s need no tail padding. The number was harmless -
+`sizeof` is what the pipeline layout's range was always built with, and validation is clean - but it was a claim
+nothing checked, so the job now carries `static_assert(sizeof(mask_bake_push_constants) == 44, ...)`.
+
+Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0, gate 12 x 2 with 0
+changed and 0 flaky (about the twelve frames that exist), plus the four-run A/B above for the path that changed.
+
 ## WHAT THE INVENTORY ALREADY FOUND (RE-AUDITED AGAINST THE CURRENT TREE)
 
 The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought `master`'s files over, so most
@@ -802,6 +845,12 @@ says what a re-audit of the current tree found.
   keeps only the stage's position, its off path and its mark. Verified by a four-run A/B against the parent
   commit with `rt_shadows = true`, because **the gate has no scenario that enables it** - a coverage gap that is
   itself recorded above.
+* **The alphaMode MASK bake is a JOB** (`vulkan.pass.mask_bake_job`), not a frame pass: it owns its pipeline
+  layout, its pipeline, its own set (moved in from the renderer, which owns the pool) and the per-caster
+  dispatch, and it is constructed from the same `pass_context` a pass's create step is handed. Its four raw
+  handles and `make_mask_bake_pipeline` are gone, and its verification is the same knob-on A/B (3 MASK casters
+  baked, one hash across four runs). The step also found and fixed a comment that claimed a 48-byte CPU push
+  block where the measured size is 44 - now a `static_assert`.
 
 **NOT DONE, with the reason and the exact next step.**
 

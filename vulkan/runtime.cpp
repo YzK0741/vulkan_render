@@ -283,12 +283,9 @@ namespace vulkan {
         // pipeline layout and pipeline (vulkan.pass.ssgi_temporal) - so no SSGI pipeline handle is torn down in
         // this destructor at all now, and the only GI object still the renderer's is the denoiser's two
         // descriptor FAMILIES (the diffuse and the reflection), which one declaration cannot describe.
-        if (this->mask_bake_pipeline_layout != VK_NULL_HANDLE) {
-            // It owns no set layout either (it is created from the scene one), so only the layout. Its
-            // descriptor set is a vk_descriptor_set member, which frees itself with the pool still alive.
-            vkDestroyPipelineLayout(this->vulkan_core.device, this->mask_bake_pipeline_layout, nullptr);
-            this->mask_bake_pipeline_layout = VK_NULL_HANDLE;
-        }
+        // The bake's pipeline layout is NOT destroyed here: it is the JOB's (vulkan.pass.mask_bake_job), which
+        // releases its pipeline layout, its pipeline and its own descriptor set in its own destructor - the
+        // same rule the extracted passes follow.
         if (this->compute_skin_pipeline_layout != VK_NULL_HANDLE) {
             // The same shape as the mask bake's: it is created from the scene set layout and owns none of
             // its own, so only the VkPipelineLayout is ours to destroy. Found the same way, too - as a
@@ -3749,45 +3746,48 @@ namespace vulkan {
         }
     }
 
-    std::expected<void, std::string> runtime::make_mask_bake_pipeline(std::span<unsigned char const> const compute_shader_code) {
+    std::expected<void, std::string> runtime::create_mask_bake() {
         if (!this->vulkan_core.ray_query_available) {
             return std::unexpected(std::string("mask bake: this device has no ray queries (VK_KHR_acceleration_structure + VK_KHR_ray_query)"));
         }
-        // The scene set ALONE, because everything the bake reads is in it: the material table (the alpha
-        // texture's index, the base colour factor's alpha, the cutoff) and the bindless texture array.
-        auto built = pipelines::build_mask_bake(this->vulkan_core.device, this->vulkan_core.scene_descriptor_set_layout, sizeof(mask_bake_push_constants), compute_shader_code);
-        if (!built) {
-            return std::unexpected(std::move(built.error()));
-        }
-        this->mask_bake_pipeline_layout = built->pipeline_layout;
-        this->mask_bake_pipeline = std::move(built->trace);
-
-        // The bake's own set (see the member's comment for why it is not the scene set): the layout is the
-        // scene one, so binding 1 is the bindless texture array and binding 5 the material table, exactly as
-        // the raster path declares them. Written once, here, when both already exist.
+        // The context the JOB is created with, built here for one object: the device, the six shared samplers,
+        // the two shared set layouts and the shader registry - exactly the struct a pass's create step is handed
+        // (see pass_context). The JOB is not a frame pass (see its header), but the way it is CONSTRUCTED is the
+        // same, which is what keeps a second construction path from appearing.
+        pass::pass_context const build = {
+            .device = this->vulkan_core.device,
+            .samplers = this->shared_samplers(),
+            .shared_set_layout = [](void* owner, uint32_t const set) {
+                runtime* const self = static_cast<runtime*>(owner);
+                if (set == 0u) {
+                    return self->vulkan_core.scene_descriptor_set_layout;
+                }
+                return set == 1u ? self->gbuffer_set_layout : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
+            .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
+            .owner = this,
+        };
+        // The two bindings its set is written with, from the resources the renderer owns: the material table
+        // (binding 5) and the bindless texture array with its sampler (binding 1).
         auto const* const material_detail = this->vulkan_core.vma.get_buffer_detail(this->material_buffer.handle());
-        if (material_detail == nullptr || this->owned_texture_views.empty() || this->texture_sampler.get() == VK_NULL_HANDLE) {
+        if (material_detail == nullptr || this->owned_texture_views.empty() || this->texture_sampler.get() == VK_NULL_HANDLE || this->material_mapped == nullptr) {
             return std::unexpected(std::string("mask bake: the material table or the texture array is not ready"));
         }
-        this->mask_bake_set = this->vulkan_core.make_descriptor_set(this->vulkan_core.scene_descriptor_set_layout);
-        if (this->mask_bake_set.get() == VK_NULL_HANDLE) {
+        pass::mask_bake_inputs const inputs = {
+            .material_table = material_detail->buffer,
+            .textures = *this->owned_texture_views[0],
+            .texture_sampler = *this->texture_sampler,
+        };
+        // The set itself: allocated from the SCENE layout here, because the pool is the core's, and MOVED into
+        // the job, which owns it from then on (see vulkan.pass.mask_bake_job).
+        vk_descriptor_set set = this->vulkan_core.make_descriptor_set(this->vulkan_core.scene_descriptor_set_layout);
+        if (set.get() == VK_NULL_HANDLE) {
             return std::unexpected(std::string("mask bake: descriptor set allocation failed"));
         }
-        VkDescriptorImageInfo const textures_info = {
-            .sampler = *this->texture_sampler, .imageView = *this->owned_texture_views[0], .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        VkDescriptorBufferInfo const materials_info = {.buffer = material_detail->buffer, .offset = 0, .range = VK_WHOLE_SIZE};
-        std::array<VkWriteDescriptorSet, 2> writes = {};
-        for (uint32_t b = 0; b < writes.size(); ++b) {
-            writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[b].dstSet = this->mask_bake_set.get();
-            writes[b].dstBinding = b == 0u ? 1u : 5u; // the texture array, then the material table
-            writes[b].dstArrayElement = 0;
-            writes[b].descriptorCount = 1;
-            writes[b].descriptorType = b == 0u ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[b].pImageInfo = b == 0u ? &textures_info : nullptr;
-            writes[b].pBufferInfo = b == 0u ? nullptr : &materials_info;
+        auto created = this->mask_bake.create(build, std::move(set), inputs);
+        if (!created) {
+            return std::unexpected(std::move(created.error()));
         }
-        vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        utility::log("SUCCESS: alphaMode MASK bake pipeline created (the mask is collapsed into the structures)");
         return {};
     }
 
@@ -5335,12 +5335,18 @@ namespace vulkan {
 
             // alphaMode MASK: bake the material's holes into an EXPANDED copy of this caster's vertices and
             // build the structure from that. An inline ray query has no any-hit stage, so a traversal cannot
-            // run the material's discard - this pass is where the mask is applied instead, and it is startup
+            // run the material's discard - this bake is where the mask is applied instead, and it is startup
             // work because the structures are built once and a MASK material is a property of the file (see
             // shaders/mask_bake.comp for the rule and for what the mechanism cannot represent).
+            //
+            // WHAT IS STILL THE RENDERER'S HERE, and what is the JOB's: the policy is this loop's - which
+            // casters carry a MASK material, and the allocation of the expanded buffer each one is baked into
+            // (the buffer outlives the loop: the build below reads it, and hit shading reads its vertices
+            // through the instance table for as long as the structures live). The pipeline, its layout, the set
+            // it binds and the dispatch are `mask_bake`'s (vulkan.pass.mask_bake_job).
             VkDeviceAddress mask_address = 0;
             uint32_t mask_stride = 0;
-            if (this->rt_mask_bake && this->mask_bake_pipeline.has_value() && this->material_mapped != nullptr) {
+            if (this->rt_mask_bake && this->mask_bake.ready() && this->material_mapped != nullptr) {
                 // material_record::flags bit 4 is alphaMode MASK (see vulkan/primitive.cppm; the bits are
                 // literals in register_material, so they are literals here too).
                 uint32_t const material_index = caster->push.material_index.value;
@@ -5361,27 +5367,17 @@ namespace vulkan {
                             .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = expanded_detail->buffer};
                         mask_address = vkGetBufferDeviceAddress(vk.device, &expanded_info);
                         mask_stride = mask_vertex_stride;
-
-                        mask_bake_push_constants bake = {};
-                        auto const halves = [](VkDeviceAddress const address) {
-                            return glm::uvec2(static_cast<uint32_t>(address & 0xFFFFFFFFu), static_cast<uint32_t>(address >> 32u));
-                        };
-                        bake.source_vertices = halves(source_vertex_address);
-                        bake.source_indices = halves(source_index_address);
-                        bake.destination = halves(mask_address);
-                        bake.source_stride = caster->vertex_stride;
-                        bake.destination_stride = mask_vertex_stride;
-                        bake.index_type = static_cast<uint32_t>(caster->index_type);
-                        bake.triangle_count = caster->index_count / 3u;
-                        bake.material_index = material_index;
-                        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->mask_bake_pipeline->get_pipeline());
-                        // The bake's own set - NOT the frame's scene set, which this same command buffer
-                        // will have updated by the end of the frame (binding 16). See the member's comment.
-                        VkDescriptorSet const bake_set = this->mask_bake_set.get();
-                        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->mask_bake_pipeline_layout, 0, 1, &bake_set, 0, nullptr);
-                        vkCmdPushConstants(command_buffer, this->mask_bake_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(bake), &bake);
-                        constexpr uint32_t mask_bake_group = 64; // shaders/mask_bake.comp's local_size_x
-                        vkCmdDispatch(command_buffer, (bake.triangle_count + mask_bake_group - 1u) / mask_bake_group, 1, 1);
+                        this->mask_bake.record(command_buffer,
+                                               pass::mask_bake_request{
+                                                   .source_vertices = source_vertex_address,
+                                                   .source_indices = source_index_address,
+                                                   .destination = mask_address,
+                                                   .source_stride = caster->vertex_stride,
+                                                   .destination_stride = mask_vertex_stride,
+                                                   .index_type = static_cast<uint32_t>(caster->index_type),
+                                                   .triangle_count = caster->index_count / 3u,
+                                                   .material_index = material_index,
+                                               });
                         mask_bakes_recorded = true;
                         ++mask_baked;
                         // The buffer outlives this loop: the build below reads it, and a hit's shading reads
