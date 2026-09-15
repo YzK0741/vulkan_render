@@ -1652,6 +1652,20 @@ found by reading the two functions the pass has to absorb:
    points were deleted), so the shadow pass needs a `pipelines::build_shadow(device, depth_format, pipeline_layout,
    vert, frag)`-shaped entry point AND the depth format in the context (a second session-stable format, beside the
    surface's - the same class of fact and the same reason).
+**A CORRECTION TO ITEM 2 ABOVE, written after trying to write the module**: the channel is NOT an environment
+factory. A first draft gave the frame `make_environment(owner, cmd)` (the scene pass's field) and could not finish
+`record`, because recording a SECONDARY is not "build an environment and draw": it is
+`vkBeginCommandBuffer` with an INHERITANCE struct (whose rendering info names the depth format and no colour
+attachment), then the cascade's push, then the content, then `vkEndCommandBuffer` - and the begin info, the
+inheritance struct and the scene set are all the RENDERER's facts. The field that works is one callback that does
+the whole per-cascade content recording:
+
+    void (*record_cascade)(void* owner, VkCommandBuffer secondary, uint32_t cascade_index, VkPipeline pipeline, VkPipelineLayout layout);
+
+The renderer implements it (begin + push + the scene set + the casters + end), the PASS owns the loop, the layer
+barrier, the depth-only instance at `map_size`, the secondary's execution and the instance's end. The draft was
+deleted rather than committed half-finished; the module's shape is now this section plus the frame's other fields
+(the secondaries, the cascade count, the map size, the frame slot and the live bias state).
 2. **THE CONTENT RECORDING CHANNEL, which is the SCENE pass's, not a new one.** `record_shadow_content` binds the
    shared scene set through `core::scene_pipeline_layout`, sets the live depth-bias dynamic state, builds a
    `render_environment` whose binder always binds the SHADOW pipeline (whatever pipeline a leaf asks for), whose
