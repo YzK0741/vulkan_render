@@ -1582,6 +1582,12 @@ own until step ③ owns it) and of `runtime::post_push_constants`.
    the same file), or the FXAA pass binds with a layout of its own. The first is the smaller change and keeps one
    layout in the chain; the descriptor set is `post_family`'s set 4 either way, and two layouts with identical
    bindings are compatible.
+   **SLICE 1 IS LANDED**: `render_resource::fxaa_io` (the post set, the swapchain as its target, and - unlike the
+   composite - the LDR image DECLARED as the barrier image it moves, because a frame without FXAA touches that
+   image not at all, so there is no "nobody ran" case to hand over to the frame loop) with its tests, and
+   `pipelines::build_fxaa_owned` + `fxaa_owned`: the pass-shaped entry point that creates ITS OWN pipeline layout
+   from the SET layout it is handed (`build_taa`'s shape). Both are inert - the runtime still calls the old
+   `build_fxaa` - and both are exactly what the module slice needs.
 3. **④ the G-buffer debug view**. It shares the G-buffer set layout with the lighting stage, and that layout is
    currently built by `make_gbuffer_debug_pipeline` (`pipelines::build_gbuffer_debug` returns it) because the
    deferred pass needed it first. Once BOTH are passes, the layout has to belong to one of them or to the

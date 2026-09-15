@@ -520,5 +520,25 @@ int main() {
         CHECK(rr::post_composite_io.push.has_value());
         CHECK(rr::post_composite_io.push->size == rr::post_push_bytes);
     }
+
+    // ---- the FOURTEENTH declaration: the FXAA pass, the frame's LAST writer whenever it runs ----
+    {
+        auto const fxaa = rr::validate(rr::fxaa_io);
+        CHECK_MSG(fxaa.has_value(), fxaa.has_value() ? "" : fxaa.error().c_str());
+        CHECK(rr::fxaa_io.bindings.empty()); // everything it reads belongs to the post set
+        CHECK(rr::fxaa_io.shared_sets.size() == 1);
+        CHECK(rr::fxaa_io.shared_sets[0] == 2); // the SAME post set the composite binds (its set 4)
+        CHECK(rr::fxaa_io.targets.size() == 1);
+        CHECK(rr::fxaa_io.targets[0].resource == rr::resource_id::swapchain_image); // it finishes the frame
+        CHECK(rr::fxaa_io.targets[0].kind == rr::target_kind::color);
+        // ITS INPUT IS DECLARED, unlike the composite's, and the difference is the frame: the LDR image is written
+        // by the composite and read here, and on a frame without FXAA nobody touches it at all - so this pass is
+        // the one that moves it, and there is no "nobody ran" case to hand over to the frame loop
+        CHECK(rr::fxaa_io.barrier_images.size() == 1);
+        CHECK(rr::fxaa_io.barrier_images[0].resource == rr::resource_id::ldr);
+        CHECK(rr::fxaa_io.push.has_value());
+        CHECK(rr::fxaa_io.push->size == rr::post_push_bytes); // FXAA is mode 3 of the chain's one shader block
+        CHECK(rr::fxaa_io.push->stages == rr::stage_flag::fragment);
+    }
     return vk_test::finish("test_render_resources");
 }

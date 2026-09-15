@@ -1358,4 +1358,35 @@ export namespace vulkan::render_resource {
         .barrier_buffers = {},
         .push = push_block{.offset = 0, .size = post_push_bytes, .stages = stage_flag::fragment},
     };
+
+    /// @brief what the FXAA pass RENDERS INTO by declaration: the swapchain, which it is the last writer of
+    inline constexpr std::array<render_target, 1> fxaa_targets = {{render_target{.resource = resource_id::swapchain_image, .element = 0, .kind = target_kind::color}}};
+
+    /// @brief the image the FXAA pass reads and therefore has to move to a sampled layout: the composite's LDR output
+    inline constexpr std::array<barrier_image, 1> fxaa_barriers = {{barrier_image{.resource = resource_id::ldr, .element = 0}}};
+
+    /**
+     * @brief the FXAA pass's declaration: the gamma-encoded LDR image -> the anti-aliased swapchain
+     *
+     * It binds the SAME shared post set the composite does (set 4 of the family - the composite writes the LDR
+     * image through binding 5 and FXAA reads it back through it, which is why FXAA cannot be folded into
+     * `post.frag`: a descriptor may not name the image the pipeline is rendering into, and that would be a
+     * different statically-used binding set).
+     *
+     * ITS INPUT IS DECLARED, unlike the composite's, and the difference is the frame: the LDR image is written by
+     * the composite and read here, so this pass is the one that moves it - there is no frame where it has to be
+     * moved and no pass runs, because a frame without FXAA never touches it at all.
+     *
+     * The push block is the chain's own (`post_push_bytes`): FXAA is mode 3 of the same shader's block.
+     */
+    inline constexpr pass_io fxaa_io = {
+        .name = "fxaa",
+        .own_set = 0, // unused: no own bindings (everything it reads is in the post set)
+        .bindings = {},
+        .shared_sets = post_shared_sets,
+        .targets = fxaa_targets,
+        .barrier_images = fxaa_barriers,
+        .barrier_buffers = {},
+        .push = push_block{.offset = 0, .size = post_push_bytes, .stages = stage_flag::fragment},
+    };
 } // namespace vulkan::render_resource

@@ -127,6 +127,22 @@ namespace vulkan::pipelines {
 
     /// the passes that reuse a layout someone else owns, so theirs comes in as a parameter
     export std::expected<vk_pipeline, std::string> build_fxaa(VkDevice device, VkFormat swap_chain_format, VkPipelineLayout post_pipeline_layout, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    /**
+     * @brief what the FXAA pass's own create step needs: ITS pipeline layout, created from the SET layout it is
+     *        handed, and the anti-aliasing pipeline
+     *
+     * WHY A SECOND ENTRY POINT rather than the one above: a pass may not reach another pass's pipeline layout, and
+     * the post chain's belongs to the composite. `build_taa` is the same shape (the pass's set layout comes in and
+     * the layout is created around it), and the descriptor SET is unaffected either way - it is the post family's
+     * set 4, allocated from the composite's layout, and two layouts created from identically-defined set layouts
+     * are compatible for that set.
+     */
+    export struct fxaa_owned {
+        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+        std::optional<vk_pipeline> antialias;
+    };
+    export std::expected<fxaa_owned, std::string> build_fxaa_owned(VkDevice device, VkFormat swap_chain_format, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size,
+                                                                   std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     export struct deferred_owned {
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> lighting;
@@ -805,5 +821,43 @@ namespace vulkan::pipelines {
             return fail(std::string(pipeline_result.error()));
         }
         return std::move(pipeline_result).value();
+    }
+
+    std::expected<fxaa_owned, std::string> build_fxaa_owned(VkDevice const device, VkFormat const swap_chain_format, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size,
+                                                            std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+        using fail = std::unexpected<std::string>;
+        fxaa_owned out;
+        // The set layout is the POST CHAIN's, which the pass is handed by its owner (the composite pass owns it);
+        // what this creates around it is the pass's OWN pipeline layout, because a pipeline's layout is what its
+        // binds and pushes go through and a pass may not borrow another pass's.
+        if (pass_set_layout == VK_NULL_HANDLE) {
+            return fail("fxaa: the post set layout is missing (the composite pass's create step must run first)");
+        }
+
+        VkPushConstantRange push_range = {};
+        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        push_range.offset = 0;
+        push_range.size = push_constant_size;
+
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &pass_set_layout;
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+            return fail("fxaa: pipeline layout creation failed");
+        }
+
+        // The anti-aliasing pipeline renders into the SWAPCHAIN, so its declared colour format is the surface's.
+        auto pipeline_result = vulkan::make_pipeline(
+            device, out.pipeline_layout, swap_chain_format, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
+        if (!pipeline_result) {
+            vkDestroyPipelineLayout(device, out.pipeline_layout, nullptr);
+            out.pipeline_layout = VK_NULL_HANDLE;
+            return fail(std::string(pipeline_result.error()));
+        }
+        out.antialias = std::move(pipeline_result).value();
+        return out;
     }
 } // namespace vulkan::pipelines
