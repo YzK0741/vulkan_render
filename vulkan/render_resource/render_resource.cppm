@@ -206,7 +206,8 @@ export namespace vulkan::render_resource {
         {.id = resource_id::gi_spec_reproject, .name = "gi_spec_reproject", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::gi_spec_resolve, .name = "gi_spec_resolve", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::gi_spec_history, .name = "gi_spec_history", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::persistent},
-        {.id = resource_id::shadow_map, .name = "shadow_map", .kind = resource_kind::image2d, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::per_frame},
+        // FOUR LAYERS, not one: the runtime creates the shadow map as ONE layered image (`max_shadow_cascades` layers, one per cascade, plus the spare layers a shrank count leaves behind - see ensure_shadow_resources), and the shadow pass renders into them one at a time. The count was 1 (the default) until that pass was declared, which made `element = cascade` illegal for every cascade but the first - the same correction the bloom family needed, and the validator`s element check is what says so.
+        {.id = resource_id::shadow_map, .name = "shadow_map", .kind = resource_kind::image2d, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::per_frame, .count = 4},
         {.id = resource_id::rt_shadow_visibility, .name = "rt_shadow_visibility", .kind = resource_kind::image2d, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::camera_ubo, .name = "camera_ubo", .kind = resource_kind::buffer, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::light_ubo, .name = "light_ubo", .kind = resource_kind::buffer, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::per_frame},
@@ -1426,5 +1427,41 @@ export namespace vulkan::render_resource {
         .barrier_images = gbuffer_debug_barriers,
         .barrier_buffers = {},
         .push = push_block{.offset = 0, .size = 16, .stages = stage_flag::fragment},
+    };
+    /// @brief set 0 is the shared scene set: the shadow pass binds it for the light UBO, the material table and the
+    ///        texture array its depth-only draw reads, through the same scene pipeline layout the leaves use
+    inline constexpr std::array<uint32_t, 1> shadow_shared_sets = {0};
+
+    /// @brief the layer the shadow pass renders into BY DECLARATION: element 0, the first cascade
+    ///
+    /// A RECORDED DEVIATION, and this one was FORCED by the framework rather than chosen: the pass renders
+    /// 1..`max_shadow_cascades` LAYERS of one array image, one per cascade, and the validator refuses a second
+    /// DEPTH target ("an instance has one depth attachment") - so the declaration names the image and its first
+    /// layer, and the FRAME hands over the layers this frame has (`resolved_io::targets` is a span the host sizes,
+    /// exactly as `resolved_io::own` is). The alternative - four declarations - was written first and refused by
+    /// the validator, which is how the rule was found.
+    inline constexpr std::array<render_target, 1> shadow_targets = {{render_target{.resource = resource_id::shadow_map, .element = 0, .kind = target_kind::depth}}};
+    /**
+     * @brief the shadow pass's declaration: the scene's depth from the light, one cascade at a time
+     *
+     * The PUSH BLOCK is four bytes at offset 96 - the cascade index, pushed at `vulkan::scene_cascade_push_offset`
+     * (`scene_push_constant_size`), which is where the scene's own push block ends: this pass draws the scene's
+     * leaves through the SCENE pipeline layout, so its push shares that layout's range rather than owning one. The
+     * literal is checked against the constant where both are visible (`vulkan.pass.shadow`'s static_assert), the
+     * same "two copies, one size" rule the other pass blocks follow.
+     *
+     * NO BARRIER IMAGES: each layer is transitioned to a depth attachment immediately before the instance that
+     * renders it, so the pass reaches every image it moves through `targets` - the shape the composite and the
+     * debug view have.
+     */
+    inline constexpr pass_io shadow_io = {
+        .name = "shadow",
+        .own_set = 0, // unused: no own bindings (the scene set carries everything the draw reads)
+        .bindings = {},
+        .shared_sets = shadow_shared_sets,
+        .targets = shadow_targets,
+        .barrier_images = {},
+        .barrier_buffers = {},
+        .push = push_block{.offset = 96, .size = 4, .stages = stage_flag::vertex | stage_flag::fragment},
     };
 } // namespace vulkan::render_resource

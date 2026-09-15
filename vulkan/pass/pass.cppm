@@ -1,4 +1,4 @@
-// module version: 0.10.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.11.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/pass.cppm
@@ -333,6 +333,24 @@ export namespace vulkan::pass {
          * vocabulary as the declaration, which already says which set each of its bindings lives in.
          */
         VkDescriptorSetLayout (*shared_set_layout)(void* owner, uint32_t set) = nullptr;
+        /**
+         * The PIPELINE LAYOUT a pass must build its own pipeline against when that layout belongs to a SHARED
+         * object rather than to the pass - or `VK_NULL_HANDLE` when the owner has none to offer.
+         *
+         * WHY THIS IS A SECOND CALLBACK rather than a corner of the one above: a set layout and a pipeline layout
+         * are different objects, and the shadow pass is the case that proves it. Its pipeline is created against
+         * the SCENE pipeline layout (`vulkan.core`'s, which the scene leaves also push through), its draw is a
+         * subset of the scene's, and its per-cascade push goes through that same layout at
+         * `scene_cascade_push_offset` - so a pass that owns the pipeline without owning that layout has nowhere to
+         * put its push constants. Building its own layout from the set layout instead would be a SECOND layout
+         * object whose push ranges are the pass's guess, and the frames would depend on the guess matching the
+         * scene's.
+         *
+         * NO INDEX, unlike `shared_set_layout`: there is one shared pipeline layout in this renderer today, and an
+         * index would be a vocabulary with a single entry (the same reason `behaviour::extent_of` names a resource
+         * rather than a slot).
+         */
+        VkPipelineLayout (*shared_pipeline_layout)(void* owner) = nullptr;
         /**
          * The SPIR-V of one of this pass's shaders, by the name it declares; empty when the owner does not
          * have it.

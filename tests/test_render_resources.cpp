@@ -566,5 +566,32 @@ int main() {
         CHECK(rr::gbuffer_debug_io.push->size == 16); // the channel, two projection terms, the motion gain
         CHECK(rr::gbuffer_debug_io.push->stages == rr::stage_flag::fragment);
     }
+
+    // ---- the SIXTEENTH declaration: the shadow pass, one cascade at a time into a layer of the map array ----
+    {
+        auto const shadow = rr::validate(rr::shadow_io);
+        std::string const shadow_error = shadow.has_value() ? std::string{} : shadow.error(); // a temporary`s c_str() would dangle
+        CHECK_MSG(shadow.has_value(), shadow_error.c_str());
+        CHECK(rr::shadow_io.bindings.empty()); // the scene set carries everything the depth-only draw reads
+        CHECK(rr::shadow_io.shared_sets.size() == 1);
+        CHECK(rr::shadow_io.shared_sets[0] == 0); // the SCENE set (the light UBO, the material table, the textures)
+        // ONE TARGET BY DECLARATION, N BY FRAME - and this is the framework's own rule rather than a choice: the
+        // validator refuses a second DEPTH target ("an instance has one depth attachment"), so the declaration names
+        // the map and its FIRST layer and the frame hands over the layers this frame has (the host sizes
+        // `resolved_io::targets`, the same way it sizes `own`). The four-layer version was written first and
+        // refused, which is how the rule was found.
+        CHECK(rr::shadow_io.targets.size() == 1);
+        CHECK(rr::shadow_io.targets[0].resource == rr::resource_id::shadow_map);
+        CHECK(rr::shadow_io.targets[0].element == 0); // the first cascade; the rest arrive through the frame
+        CHECK(rr::shadow_io.targets[0].kind == rr::target_kind::depth);
+        // ... and the map family holds the layers that deviation needs: FOUR, like the image ensure_shadow_resources
+        // creates (the count was 1 until this declaration, which is the same correction the bloom family needed)
+        CHECK(rr::find(rr::resource_id::shadow_map)->count == 4);
+        CHECK(rr::shadow_io.barrier_images.empty()); // each layer is moved through its own target
+        CHECK(rr::shadow_io.push.has_value());
+        CHECK(rr::shadow_io.push->size == 4);    // the cascade index
+        CHECK(rr::shadow_io.push->offset == 96); // where the scene's own push block ends (scene_push_constant_size)
+        CHECK(rr::shadow_io.push->stages == (rr::stage_flag::vertex | rr::stage_flag::fragment));
+    }
     return vk_test::finish("test_render_resources");
 }

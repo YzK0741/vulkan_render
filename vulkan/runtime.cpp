@@ -3340,6 +3340,8 @@ namespace vulkan {
                     return self->gbuffer_debug_view.set_layout();
                 }
                 return set == 2u ? self->post_composite.set_layout() : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
+            // ... and the SCENE pipeline layout, which the shadow pass builds its pipeline against (its draw is a subset of the scene's and its per-cascade push goes through the same layout): .shader above is the shape, one callback per thing a pass cannot own.
+            .shared_pipeline_layout = [](void* owner) { return static_cast<runtime*>(owner)->vulkan_core.scene_pipeline_layout; },
             .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
             // The surface's format: a SESSION-STABLE device fact a pipeline that renders into the swapchain must
             // be created with (see pass_context). The post chain needs it today; the graphics passes being

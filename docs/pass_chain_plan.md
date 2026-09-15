@@ -1594,7 +1594,17 @@ not the shader samples it - the VUID that fix is recorded next to.
 
 **THE DECISIONS THIS STEP HAS TO MAKE, and the two the framework does not cover yet:**
 
-1. **A VARIABLE NUMBER OF TARGETS**, which no declaration can express: the pass renders 1..`max_shadow_cascades`
+1. **SLICE 1 IS LANDED, AND THE FRAMEWORK DECIDED THIS ONE**: the "declare all four layers" shape this recipe
+   first recommended is REFUSED by the validator - "more than one DEPTH target is declared, and an instance has one"
+   - so `shadow_io` names the map and its FIRST layer and the FRAME hands over the layers this frame has
+   (`resolved_io::targets` is a span the host sizes, exactly as `resolved_io::own` is). The same slice also had to
+   correct `resource_id::shadow_map`s `count` from 1 to 4 (the image IS a four-layer array; the validator`s element
+   check is what found it, the same way the bloom family was corrected). The framework side landed too:
+   `pass_context::shared_pipeline_layout` (`vulkan.pass` 0.11.0), because the shadow pipeline is built against the
+   SCENE pipeline layout and a set-layout lookup cannot answer for it. Both are inert and the gate is 12 x 2 with 0
+   changed.
+2. **THE ORIGINAL WORDING, kept because it is what the validator answered: a VARIABLE NUMBER OF TARGETS**, which no
+   declaration can express: the pass renders 1..`max_shadow_cascades`
    LAYERS of one image, each in its own instance. The shape that fits the framework is `targets` naming ALL FOUR
    layers (`resource_id::shadow_map`, elements 0..3 - the duplicate check is satisfied and `max_render_targets` is
    8) with the RESOLVER handing over only the first `cascades` of them (`out.targets` is a span the host sizes),

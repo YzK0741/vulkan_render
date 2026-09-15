@@ -148,6 +148,12 @@ namespace {
         return set == 0u ? reinterpret_cast<VkDescriptorSetLayout>(0x0C) : VK_NULL_HANDLE;
     }
 
+    /// the second shared lookup: a pass that owns a pipeline whose layout belongs to a SHARED object (the shadow
+    /// pass and the scene's layout) needs it at create time, and it is one callback with no index - see
+    /// pass_context::shared_pipeline_layout for why a set layout and a pipeline layout are not the same question
+    VkPipelineLayout fake_shared_pipeline_layout(void* /*owner*/) {
+        return reinterpret_cast<VkPipelineLayout>(0x1A);
+    }
     std::span<unsigned char const> fake_shader(void* /*owner*/, std::string_view const name) {
         static std::array<unsigned char, 3> const bytes = {0x03, 0x02, 0x23};
         return name == "fake.comp.spv" ? std::span<unsigned char const>(bytes) : std::span<unsigned char const>{};
@@ -158,6 +164,7 @@ namespace {
             .device = fake_device,
             .samplers = {.probe_grid = fake_probe_sampler},
             .shared_set_layout = fake_shared_layout,
+            .shared_pipeline_layout = fake_shared_pipeline_layout,
             .shader = fake_shader,
             .swap_chain_image_format = VK_FORMAT_B8G8R8A8_SRGB,
             .owner = nullptr,
@@ -391,6 +398,11 @@ int main() {
         CHECK(context.samplers.of(rr::sampler_hint::probe_grid) == fake_probe_sampler);
         CHECK(context.shared_set_layout(context.owner, 0) == reinterpret_cast<VkDescriptorSetLayout>(0x0C));
         CHECK(context.shared_set_layout(context.owner, 1) == VK_NULL_HANDLE);
+        // ... and the SECOND lookup a pass that owns a pipeline still needs when the layout that pipeline must be
+        // created against belongs to a shared object (the scene's, for the shadow pass): one callback, no index,
+        // because there is one such layout in this renderer and an index would be a vocabulary with one entry
+        CHECK(context.shared_pipeline_layout != nullptr);
+        CHECK(context.shared_pipeline_layout(context.owner) == fake_layout);
         CHECK(context.shader(context.owner, "fake.comp.spv").size() == 3);
         CHECK(context.shader(context.owner, "missing.comp.spv").empty());
         // ... and the SURFACE's format, which a pipeline that renders into the swapchain must be created with:
