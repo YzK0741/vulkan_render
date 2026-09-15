@@ -116,6 +116,7 @@ target_sources(vulkancorekit
         vulkan/core/vma/handles/vma_handles.cppm
         vulkan/core/handles/handles.cppm
         vulkan/core/init_utils/init_utils.cppm
+        vulkan/init_utils/init_utils.cppm
         vulkan/core/pipeline/pipeline.cppm
         vulkan/math/math.cppm
         vulkan/constant_init/constant_init.cppm
@@ -159,6 +160,7 @@ target_sources(vulkancorekit
         vulkan/core/vma/vma.cpp
         vulkan/core/handles/handles.cpp
         vulkan/core/init_utils/init_util.cpp
+        vulkan/init_utils/init_utils.cpp
         vulkan/core/pipeline/pipeline.cpp
         vulkan/math/math.cpp
         vulkan/core/pipeline/spirv_parser.cpp

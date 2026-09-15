@@ -2020,3 +2020,78 @@ clean; `ctest` 8/8 in all three; `doxygen Doxyfile` exit 0 with zero warnings; a
 0 unseeded** against `%LOCALAPPDATA%\vulkan_render\baseline`, with `deferred` `2DD1D13857322C0F`,
 `deferred_taa_fxaa` `6999D01E5FBAB508`, `unlit` `D445A8E5F3EBDD53` and `shadow_single` `0C9EBD7F895511A9` among
 them - i.e. the relocation is invisible in every frame the gate can reach, which is what a pure move must be.
+
+## THE RUNTIME'S INIT UTILITIES ARE THEIR OWN MODULE (`vulkan.init_utils`, audited at `b29182a`)
+
+**THE REQUEST**: put some of the runtime's initialization utility functions into their own `init_utils` module.
+**THE CONSTRAINT THAT SHAPES THE ANSWER**: a member function of a class attached to a named module must be DEFINED
+in that module, so `runtime::init_scene_resources()`, `runtime::init_recording_resources()`, `reset_image_generation_state()`
+and the whole `ensure_*` family **cannot** be moved to another module at all - not "should not", cannot: the module
+that owns `vulkan::runtime` is the only place those definitions may live. What CAN move is the part of them that
+needs no `this`: a creation sequence that is identical at every site and differs only in a capacity, a buffer type and
+the resource's name in the failure log. Those three differences became parameters.
+
+**THE MODULE**: `vulkan/init_utils/init_utils.{cppm,cpp}`, `export module vulkan.init_utils`, namespace
+`vulkan::init_utils`, `import vulkan.core` + `import utility` and nothing else (it is a leaf: nothing it needs imports
+it back). It is the RENDERER-side counterpart of `vulkan.core.init_utils`, which holds the DEVICE-side equivalents
+(device/queue/swapchain selection, memory-type and format queries) - the banner says so, so a reader who finds one
+finds the other.
+
+**WHAT MOVED, and how many sites each one replaced** (counted in `runtime.cpp` before the change):
+
+* `default_task_pool_threads()` - out of the runtime's private static member and into the module, which is where the
+  measurement that decided the quarter (`hardware_concurrency()/4`, with the hw/2 experiment's 11-12% fps cost) now
+  lives. Its only caller is the `task_pool` member initializer; `task_pool_threads()` (the read-only accessor) and
+  `chores.cpp`'s use of it are unchanged.
+* `create_host_buffer` (single) - **2 sites**: the material table, the instance transforms.
+* `create_host_buffers` (per frame slot) - **7 sites**: the camera UBO, the motion matrices, the skin matrices, the
+  morph data, the light UBO, the cluster counts, the cluster index rows. Each site was create -> panic -> detail
+  lookup -> panic -> push -> push the mapped pointer; each is now one call naming the resource. The mapped-pointer
+  list is optional (`std::vector<void*>* = nullptr`), which is what the cluster index rows need: they are
+  host-visible, but only the dispatch ever writes them.
+* `create_recording_pool` - **2 sites**: one {pool, secondary} per shadow cascade and one per task-pool worker. The
+  "a VkCommandPool is not thread safe, so every recording consumer owns its own" rule is now stated once, in the
+  function that implements it.
+* `create_texture_2d` - **2 sites**: the 1x1 white fallback that has to be array element 0, and every material
+  texture `register_material` uploads.
+
+Measured size of the move: `runtime.cpp` **+78 / -154** (net -76 lines), `runtime.cppm` +4 / -2, and the new module is
+251 lines - the module is larger than what it removed, on purpose: every function carries the failure contract
+(what it panics on), the reason it takes a `std::byte const` span, and the per-slot rationale that used to be a
+comment at each of the seven sites.
+
+**ALSO REMOVED**: a four-line orphan in `init_scene_resources` ("Shared sampler for the texture array entries /
+maxLod 12 ...") - the sampler it described moved into the core with the other six in `dcab4f0`, and the comment stayed
+behind describing code that is not there any more. It now says where the sampler went.
+
+**WHAT DELIBERATELY DID NOT MOVE, and why**:
+
+* **the member functions themselves** (module ownership, above) - they now *call* the utilities instead.
+* **`is_srgb_format`**: a format QUERY, evaluated per frame when the composite's and FXAA's push blocks decide who
+  encodes gamma (`encode_gamma`), not an initialization utility. Moving it would be name-shuffling, and it belongs
+  with the format decisions rather than with creation.
+* **the shadow map's image, array view and per-layer views** (`ensure_shadow_resources`): ONE site, and its shape is
+  policy - the layer count is `shadow_cascades` at creation and `shadow_allocated_layers` afterwards, which is the
+  "shrinking keeps the layers already owned" rule the function documents. A one-site helper with a policy parameter
+  is a function call that hides the policy.
+* **`ensure_scene_set`'s `get_buffer_detail` re-lookups** (the binding-write sites): those do not CREATE anything -
+  they re-read the raw handle of a buffer the runtime already owns, which is a different operation that happens to
+  use the same vma call.
+* **the GLFW callbacks**: input policy, and the trim list's "overlay + GLFW callbacks" item is where they belong.
+
+**A FINDING RECORDED WHILE WRITING THE MODULE, not fixed here**: `vma::create_image(std::span<T>)` and its
+fixed-size sibling **cannot be instantiated**. They forward `(data, create_info, size, type)` to an overload declared
+`(data, size, create_info, type)` (`vulkan/core/vma/vma.cppm:338-356`), so the struct argument lands in the
+`uint64_t size_byte` parameter. Nothing has ever noticed because every call site in the tree passes the raw pointer
+overload instead - and now, so does this module: it takes `std::span<std::byte const>` (the callers' sources are const
+arrays and const zero-filled vectors, which the span templates could not accept anyway, since they
+`reinterpret_cast` to `unsigned char*`). Both facts are in the module's `@note`; the fix belongs to
+`vulkan.core.vma` and is a separate slice, because it is a change to a module nothing here is allowed to fold in.
+
+**ACCEPTANCE**: Release, Debug and ASan all build clean; `ctest` 8/8 in all three; `doxygen Doxyfile` exit 0 with zero
+warnings; and the capture gate - 12 scenarios x 2 runs - returned **12 passed, 0 changed, 0 flaky, 0 unseeded**
+against `%LOCALAPPDATA%\vulkan_render\baseline`. That is the acceptance this change needs: it moves code, it creates
+the same buffers in the same order with the same initial bytes, so every frame the gate can reach has to be
+byte-identical - and `default_gi` `BF180E98ADB29E7E`, `sponza_gi` `58EC848DFABE654A`,
+`metal_rough_glossy` `46F9851B7BC89872` and `glossy_motion` `98B06F2190B49519` say it is.
+

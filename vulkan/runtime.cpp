@@ -6,6 +6,7 @@ module;
 #include <cstring> // std::memcpy, for composing a pass's push block
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <span>   // std::as_bytes for the init_utils calls (the bytes behind a UBO or a zeroed table)
 #include <thread> // std::this_thread::yield in the frame limiter
 #include <vulkan/vulkan.h>
 
@@ -19,6 +20,7 @@ import vulkan.render_resource.shared;
 
 import utility;
 import vulkan.constant_init;
+import vulkan.init_utils;    // the resource-creation patterns the init/ensure functions below repeat
 import vulkan.core.pipeline; // vulkan::make_pipeline for the post-process pipeline
 
 // Route std::pmr allocations through mimalloc for this TU (utility.better_pmr). Idempotent:
@@ -102,19 +104,6 @@ namespace {
 } // namespace
 
 namespace vulkan {
-    // Shared worker-pool sizing: hardware_concurrency()/4 (floor 1; fall back to 2 when the
-    // runtime cannot report the core count). A quarter keeps the pool off the frame thread's
-    // back while still giving heavy CPU stages (animation sampling fan-out) real parallelism.
-    int runtime::default_task_pool_threads() noexcept {
-        unsigned const hw = std::thread::hardware_concurrency();
-        // A QUARTER of the hardware threads, not a half: measured on a 16-thread machine, moving this
-        // to hw/2 cost 11-12% fps (822 -> 735 forward, 1706 -> 1497 unlit) and lengthened the shadow
-        // sub-phase (0.61 -> 0.65 ms) - the recording stages are not worker-starved at hw/4, and more
-        // workers only add wake/join, cache and driver-side recording contention. Kept as a documented
-        // negative result so the experiment is not repeated.
-        return static_cast<int>(hw == 0 ? 2u : std::max(1u, hw / 4u));
-    }
-
     // Run a batch of tasks on the shared pool and wait for exactly this stage's group: the
     // frame phases are synchronous (the paced slot is read right after animation sampling),
     // so run_tasks blocks until every task in the batch finished. The enum tier is mapped
@@ -249,21 +238,14 @@ namespace vulkan {
         // Camera UBO: one buffer per frame slot, mapped for direct writes; all models reference
         // these buffers through the shared scene set, so one memcpy per frame replaces the old
         // per-primitive per-frame UBO updates
-        this->camera_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        this->camera_mapped.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            camera_ubo initial = {};
-            vk_buffer buffer = this->vulkan_core.vma.create_buffer(std::span(&initial, 1), vulkan::buffer_type::uniform_coherent);
-            if (!buffer.valid()) {
-                utility::panic("failed to create camera ubo buffer");
-            }
-            auto const* detail = this->vulkan_core.vma.get_buffer_detail(buffer.handle());
-            if (detail == nullptr) {
-                utility::panic("failed to get camera ubo buffer detail");
-            }
-            this->camera_buffers.push_back(std::move(buffer));
-            this->camera_mapped.push_back(detail->allocation_info.pMappedData);
-        }
+        camera_ubo initial = {};
+        init_utils::create_host_buffers(this->vulkan_core,
+                                        vulkan::core::MAX_FRAMES_IN_FLIGHT,
+                                        std::as_bytes(std::span(&initial, 1)),
+                                        vulkan::buffer_type::uniform_coherent,
+                                        "camera ubo buffer",
+                                        this->camera_buffers,
+                                        &this->camera_mapped);
 
         // 1x1 white fallback texture, always the first entry of the scene texture array; missing
         // material textures point at it
@@ -274,51 +256,36 @@ namespace vulkan {
         white_info.mip_levels = 1;
         white_info.array_layers = 1;
         white_info.format = VK_FORMAT_R8G8B8A8_UNORM;
-        vk_image white_image = this->vulkan_core.vma.create_image(white_pixels.data(), white_pixels.size(), white_info, vulkan::image_type::texture_2d);
-        if (!white_image.valid()) {
-            utility::panic("failed to create white fallback texture");
-        }
-        auto const* white_detail = this->vulkan_core.vma.get_image_detail(white_image.handle());
-        if (white_detail == nullptr) {
-            utility::panic("failed to get white texture detail");
-        }
-        this->owned_textures.push_back(std::move(white_image));
-        this->owned_texture_views.push_back(this->vulkan_core.make_image_view(white_detail->image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_VIEW_TYPE_2D));
+        init_utils::texture_2d white = init_utils::create_texture_2d(this->vulkan_core, std::as_bytes(std::span(white_pixels)), white_info, "white fallback texture");
+        this->owned_textures.push_back(std::move(white.image));
+        this->owned_texture_views.push_back(std::move(white.view));
         this->white_texture_index = static_cast<uint32_t>(this->texture_array_views.size());
         this->texture_array_views.push_back(*this->owned_texture_views.back());
 
-        // Shared sampler for the texture array entries
-        // maxLod 12 covers mip chains up to 4096x4096 (13 levels); images with fewer mips simply
-        // clamp to their last level. Sampled with a LINEAR mip filter, so far/small surfaces
-        // use the pre-generated mips instead of aliasing mip0.
+        // (The sampler the array entries are read through is NOT created here: the maxLod-12 REPEAT
+        // sampler the comment that used to sit here described moved into the core, next to the other six
+        // - see core::create_samplers / shared_samplers.) The white element above is the one entry this
+        // function has to place, because every later texture index is assigned around it.
 
         // GPU material table: fixed capacity, host-visible (direct mapping); records are appended
         // at registration and read-only for the GPU (set 0 binding 5)
         std::vector<unsigned char> const zeroed_materials(static_cast<size_t>(vulkan::material_capacity) * sizeof(material_record), 0);
-        vk_buffer material_buf = this->vulkan_core.vma.create_buffer(zeroed_materials.data(), zeroed_materials.size(), vulkan::buffer_type::storage_coherent);
-        if (!material_buf.valid()) {
-            utility::panic("failed to create material table buffer");
-        }
-        auto const* material_detail = this->vulkan_core.vma.get_buffer_detail(material_buf.handle());
-        if (material_detail == nullptr) {
-            utility::panic("failed to get material table buffer detail");
-        }
-        this->material_buffer = std::move(material_buf);
-        this->material_mapped = material_detail->allocation_info.pMappedData;
+        init_utils::create_host_buffer(this->vulkan_core,
+                                       std::as_bytes(std::span(zeroed_materials)),
+                                       vulkan::buffer_type::storage_coherent,
+                                       "material table buffer",
+                                       this->material_buffer,
+                                       this->material_mapped);
 
         // Per-instance transform buffer (set 0 binding 6): one mat4 per instance, host-visible;
         // filled by set_instanced_draw() for instanced stress draws (see pbr.vert)
         std::vector<unsigned char> const zeroed_instances(static_cast<size_t>(vulkan::instance_capacity) * sizeof(glm::mat4), 0);
-        vk_buffer instance_buf = this->vulkan_core.vma.create_buffer(zeroed_instances.data(), zeroed_instances.size(), vulkan::buffer_type::storage_coherent);
-        if (!instance_buf.valid()) {
-            utility::panic("failed to create instance transform buffer");
-        }
-        auto const* instance_detail = this->vulkan_core.vma.get_buffer_detail(instance_buf.handle());
-        if (instance_detail == nullptr) {
-            utility::panic("failed to get instance transform buffer detail");
-        }
-        this->instance_buffer = std::move(instance_buf);
-        this->instance_mapped = instance_detail->allocation_info.pMappedData;
+        init_utils::create_host_buffer(this->vulkan_core,
+                                       std::as_bytes(std::span(zeroed_instances)),
+                                       vulkan::buffer_type::storage_coherent,
+                                       "instance transform buffer",
+                                       this->instance_buffer,
+                                       this->instance_mapped);
 
         // Per-motion-slot previous world matrices (set 0 binding 13): ONE buffer per frame slot, like
         // the skin and morph buffers below, so a frame in flight never shares the buffer the next
@@ -326,60 +293,39 @@ namespace vulkan {
         // nothing was there to move from. motion_previous is the CPU-side copy of what is currently
         // in it, advanced by advance_motion_transforms().
         std::vector<unsigned char> const zeroed_motion(static_cast<size_t>(vulkan::scene_motion_capacity) * sizeof(glm::mat4), 0);
-        this->motion_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        this->motion_mapped.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            vk_buffer motion_buf = this->vulkan_core.vma.create_buffer(zeroed_motion.data(), zeroed_motion.size(), vulkan::buffer_type::storage_coherent);
-            if (!motion_buf.valid()) {
-                utility::panic("failed to create motion transform buffer");
-            }
-            auto const* motion_detail = this->vulkan_core.vma.get_buffer_detail(motion_buf.handle());
-            if (motion_detail == nullptr) {
-                utility::panic("failed to get motion transform buffer detail");
-            }
-            this->motion_buffers.push_back(std::move(motion_buf));
-            this->motion_mapped.push_back(motion_detail->allocation_info.pMappedData);
-        }
+        init_utils::create_host_buffers(this->vulkan_core,
+                                        vulkan::core::MAX_FRAMES_IN_FLIGHT,
+                                        std::as_bytes(std::span(zeroed_motion)),
+                                        vulkan::buffer_type::storage_coherent,
+                                        "motion transform buffer",
+                                        this->motion_buffers,
+                                        &this->motion_mapped);
         this->motion_previous.assign(vulkan::scene_motion_capacity, glm::mat4(1.0f));
 
         // Per-joint skin matrices (set 0 binding 9): one buffer PER FRAME SLOT (scene_skin_capacity
         // mat4s each, host-visible) so an in-flight frame never shares the buffer the next frame
         // rewrites. Zero-filled initially (the identity block is written by the setup upload).
         std::vector<unsigned char> const zeroed_skins(static_cast<size_t>(vulkan::scene_skin_capacity) * sizeof(glm::mat4), 0);
-        this->skin_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        this->skin_mapped.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            vk_buffer skin_buf = this->vulkan_core.vma.create_buffer(zeroed_skins.data(), zeroed_skins.size(), vulkan::buffer_type::storage_coherent);
-            if (!skin_buf.valid()) {
-                utility::panic("failed to create skin matrix buffer");
-            }
-            auto const* skin_detail = this->vulkan_core.vma.get_buffer_detail(skin_buf.handle());
-            if (skin_detail == nullptr) {
-                utility::panic("failed to get skin matrix buffer detail");
-            }
-            this->skin_buffers.push_back(std::move(skin_buf));
-            this->skin_mapped.push_back(skin_detail->allocation_info.pMappedData);
-        }
+        init_utils::create_host_buffers(this->vulkan_core,
+                                        vulkan::core::MAX_FRAMES_IN_FLIGHT,
+                                        std::as_bytes(std::span(zeroed_skins)),
+                                        vulkan::buffer_type::storage_coherent,
+                                        "skin matrix buffer",
+                                        this->skin_buffers,
+                                        &this->skin_mapped);
 
         // Morph data (set 0 binding 10): one buffer PER FRAME SLOT (scene_morph_capacity floats
         // each, host-visible); the caller bakes per-primitive morph blocks (deltas + weights)
         // into every slot's buffer at setup, then rewrites only the active slot's weights per frame.
         // Zero-filled from one shared host vector (each create_buffer copies its own GPU buffer).
         std::vector<unsigned char> const zeroed_morphs(static_cast<size_t>(vulkan::scene_morph_capacity) * sizeof(float), 0);
-        this->morph_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        this->morph_mapped.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            vk_buffer morph_buf = this->vulkan_core.vma.create_buffer(zeroed_morphs.data(), zeroed_morphs.size(), vulkan::buffer_type::storage_coherent);
-            if (!morph_buf.valid()) {
-                utility::panic("failed to create morph data buffer");
-            }
-            auto const* morph_detail = this->vulkan_core.vma.get_buffer_detail(morph_buf.handle());
-            if (morph_detail == nullptr) {
-                utility::panic("failed to get morph data buffer detail");
-            }
-            this->morph_buffers.push_back(std::move(morph_buf));
-            this->morph_mapped.push_back(morph_detail->allocation_info.pMappedData);
-        }
+        init_utils::create_host_buffers(this->vulkan_core,
+                                        vulkan::core::MAX_FRAMES_IN_FLIGHT,
+                                        std::as_bytes(std::span(zeroed_morphs)),
+                                        vulkan::buffer_type::storage_coherent,
+                                        "morph data buffer",
+                                        this->morph_buffers,
+                                        &this->morph_mapped);
 
         // Reserve table index 0 as the DEFAULT material (white textures + identity factors):
         // registrations that overflow the table degrade to it (see register_material). Done
@@ -432,15 +378,13 @@ namespace vulkan {
             std::vector<std::pair<VkCommandPool, vk_command_buffer>> cascade_recording;
             cascade_recording.reserve(vulkan::max_shadow_cascades);
             for (uint32_t cascade = 0; cascade < vulkan::max_shadow_cascades; ++cascade) {
-                VkCommandPool const cascade_pool = this->vulkan_core.make_command_pool();
-                cascade_recording.emplace_back(cascade_pool, this->vulkan_core.make_secondary_command_buffer(cascade_pool));
+                cascade_recording.push_back(init_utils::create_recording_pool(this->vulkan_core));
             }
             this->shadow_recording.push_back(std::move(cascade_recording));
             std::vector<std::pair<VkCommandPool, vk_command_buffer>> segments;
             segments.reserve(record_workers);
             for (unsigned s = 0; s < record_workers; ++s) {
-                VkCommandPool const pool = this->vulkan_core.make_command_pool(); // one per worker
-                segments.emplace_back(pool, this->vulkan_core.make_secondary_command_buffer(pool));
+                segments.push_back(init_utils::create_recording_pool(this->vulkan_core)); // one per worker
             }
             this->main_segments.push_back(std::move(segments));
         }
@@ -522,21 +466,14 @@ namespace vulkan {
         // a frame being rendered never shares the buffer the next frame rewrites. CPU-side
         // content lives in light_state; the frame loop memcpys it into the paced slot's buffer
         // (pace_and_acquire) - see the member docs for the concurrency rationale.
-        this->light_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        this->light_mapped.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            light_ubo initial = {};
-            vk_buffer light_buf = this->vulkan_core.vma.create_buffer(std::span(&initial, 1), vulkan::buffer_type::uniform_coherent);
-            if (!light_buf.valid()) {
-                utility::panic("failed to create light ubo buffer");
-            }
-            auto const* light_detail = this->vulkan_core.vma.get_buffer_detail(light_buf.handle());
-            if (light_detail == nullptr) {
-                utility::panic("failed to get light ubo buffer detail");
-            }
-            this->light_buffers.push_back(std::move(light_buf));
-            this->light_mapped.push_back(light_detail->allocation_info.pMappedData);
-        }
+        light_ubo initial = {};
+        init_utils::create_host_buffers(this->vulkan_core,
+                                        vulkan::core::MAX_FRAMES_IN_FLIGHT,
+                                        std::as_bytes(std::span(&initial, 1)),
+                                        vulkan::buffer_type::uniform_coherent,
+                                        "light ubo buffer",
+                                        this->light_buffers,
+                                        &this->light_mapped);
     }
 
     void runtime::ensure_cluster_buffers() {
@@ -555,27 +492,21 @@ namespace vulkan {
         std::size_t const slots = static_cast<std::size_t>(vulkan::core::MAX_FRAMES_IN_FLIGHT);
         std::vector<unsigned char> const zero_counts(static_cast<std::size_t>(vulkan::max_cluster_count) * sizeof(uint32_t), 0);
         std::vector<unsigned char> const zero_indices(static_cast<std::size_t>(vulkan::max_cluster_count) * vulkan::cluster_light_capacity * sizeof(uint32_t), 0);
-        this->cluster_count_buffers.reserve(slots);
-        this->cluster_count_mapped.reserve(slots);
-        this->cluster_index_buffers.reserve(slots);
-        for (std::size_t slot = 0; slot < slots; ++slot) {
-            vk_buffer counts = this->vulkan_core.vma.create_buffer(zero_counts.data(), zero_counts.size(), vulkan::buffer_type::storage_coherent);
-            if (!counts.valid()) {
-                utility::panic("failed to create cluster count buffer");
-            }
-            auto const* count_detail = this->vulkan_core.vma.get_buffer_detail(counts.handle());
-            if (count_detail == nullptr) {
-                utility::panic("failed to get cluster count buffer detail");
-            }
-            this->cluster_count_buffers.push_back(std::move(counts));
-            this->cluster_count_mapped.push_back(count_detail->allocation_info.pMappedData);
-
-            vk_buffer indices = this->vulkan_core.vma.create_buffer(zero_indices.data(), zero_indices.size(), vulkan::buffer_type::storage_coherent);
-            if (!indices.valid()) {
-                utility::panic("failed to create cluster index buffer");
-            }
-            this->cluster_index_buffers.push_back(std::move(indices));
-        }
+        init_utils::create_host_buffers(this->vulkan_core,
+                                        static_cast<uint32_t>(slots),
+                                        std::as_bytes(std::span(zero_counts)),
+                                        vulkan::buffer_type::storage_coherent,
+                                        "cluster count buffer",
+                                        this->cluster_count_buffers,
+                                        &this->cluster_count_mapped);
+        // The index rows are host-visible for the same reason, but nothing on the CPU ever writes
+        // through the mapping: the dispatch fills them, so the mapped list stays a nullptr.
+        init_utils::create_host_buffers(this->vulkan_core,
+                                        static_cast<uint32_t>(slots),
+                                        std::as_bytes(std::span(zero_indices)),
+                                        vulkan::buffer_type::storage_coherent,
+                                        "cluster index buffer",
+                                        this->cluster_index_buffers);
     }
 
     void runtime::ensure_scene_set() {
@@ -946,16 +877,9 @@ namespace vulkan {
             image_info.mip_levels = tex.mip_levels; // the caller uploads a full mip-major chain
             image_info.array_layers = 1;
             image_info.format = slots[i].second;
-            vk_image tex_image = this->vulkan_core.vma.create_image(tex.data.data(), tex.data.size_bytes(), image_info, vulkan::image_type::texture_2d);
-            if (!tex_image.valid()) {
-                utility::panic("failed to create material texture");
-            }
-            auto const* detail = this->vulkan_core.vma.get_image_detail(tex_image.handle());
-            if (detail == nullptr) {
-                utility::panic("failed to get material texture detail");
-            }
-            this->owned_textures.push_back(std::move(tex_image));
-            this->owned_texture_views.push_back(this->vulkan_core.make_image_view(detail->image, slots[i].second, VK_IMAGE_VIEW_TYPE_2D));
+            init_utils::texture_2d material_texture = init_utils::create_texture_2d(this->vulkan_core, std::as_bytes(tex.data), image_info, "material texture");
+            this->owned_textures.push_back(std::move(material_texture.image));
+            this->owned_texture_views.push_back(std::move(material_texture.view));
             uint32_t const index = static_cast<uint32_t>(this->texture_array_views.size());
             this->texture_array_views.push_back(*this->owned_texture_views.back());
             this->texture_slot_cache.emplace(key, index);

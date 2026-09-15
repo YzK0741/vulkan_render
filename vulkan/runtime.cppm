@@ -49,6 +49,7 @@ import vulkan.render_resource.shared; // the six samplers a pass's declaration c
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
 import vulkan.acceleration_structure; // the ray-tracing bottom level structures (built once, lazily)
+import vulkan.init_utils;             // the resource-creation patterns the init functions below repeat
 export import vstd;
 export import vulkan.core;
 export import vulkan.core.filters;
@@ -1097,8 +1098,9 @@ namespace vulkan {
         // are grouped by priority so each consumer waits only for its own group. Declared
         // before the scene/pipeline state so the pool outlives what tasks may touch (destructor
         // order is reverse declaration: pipelines etc. go first, the pool joins last).
-        static int default_task_pool_threads() noexcept;
-        utility::thread_pool task_pool = utility::thread_pool{default_task_pool_threads()};
+        // The width is init_utils::default_task_pool_threads(), which carries the measurement
+        // that decided the quarter (see vulkan/init_utils/init_utils.cppm).
+        utility::thread_pool task_pool = utility::thread_pool{init_utils::default_task_pool_threads()};
 
         // Guards the pipeline registry below (pipelines / default_pipeline_name):
         // parallel recording workers read it through render_environment's binder (shared locks,
