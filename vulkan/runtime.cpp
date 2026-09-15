@@ -3541,8 +3541,22 @@ namespace vulkan {
         case pass::extent_rule::half:
             return VkExtent2D{std::max(1u, vk.swap_chain_extent.width / 2u), std::max(1u, vk.swap_chain_extent.height / 2u)};
         case pass::extent_rule::resource:
-            // The one resource-shaped extent this renderer has: the probe cache's grid.
-            return pass.behaviour().extent_of == pass::resource_id::probe_grid ? VkExtent2D{vulkan::gi_probe_grid_extent, vulkan::gi_probe_grid_extent} : VkExtent2D{};
+            // The resources whose extent is not the frame's, mapped from the declaration's (resource, element)
+            // pair - the HOST's half, because only the host knows its own images.
+            if (pass.behaviour().extent_of == pass::resource_id::probe_grid) {
+                // The one resource-shaped extent this renderer had until the bloom chain: the probe cache's grid.
+                return VkExtent2D{vulkan::gi_probe_grid_extent, vulkan::gi_probe_grid_extent};
+            }
+            if (pass.behaviour().extent_of == pass::resource_id::bloom) {
+                // A bloom level is HALF the previous one - max(1, swap >> (level + 1)) - which is the SAME
+                // formula `core::create_render_targets` created the images with, for the reason `half` above
+                // exists: a pass may not disagree with the image it writes. The clamp is belt-and-braces rather
+                // than the contract: the schema's `count` (4) plus the validator's element check is what limits
+                // the level, and a shift of 32 or more would be undefined behaviour if one ever got through.
+                uint32_t const shift = std::min<uint32_t>(static_cast<uint32_t>(pass.behaviour().extent_of_element) + 1u, 31u);
+                return VkExtent2D{std::max(1u, vk.swap_chain_extent.width >> shift), std::max(1u, vk.swap_chain_extent.height >> shift)};
+            }
+            return VkExtent2D{};
         case pass::extent_rule::none:
             // The pass sizes its own work (the cluster sort's 1D dispatch is `tiles_x * tiles_y * slices`), so
             // there is no extent to hand over - and handing one over "just in case" is what would make a pass

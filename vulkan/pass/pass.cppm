@@ -1,4 +1,4 @@
-// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.10.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/pass.cppm
@@ -100,6 +100,19 @@ export namespace vulkan::pass {
         uint32_t group_size_z = 1;
         extent_rule extent = extent_rule::full;
         resource_id extent_of = resource_id::none; // read only when extent == resource
+        /**
+         * WHICH ELEMENT of `extent_of` the extent is, read only when `extent == resource` and `extent_of` names
+         * a family with more than one image.
+         *
+         * ADDED FOR THE BLOOM CHAIN, and the reason is a measured shape rather than symmetry: its four levels are
+         * a 4-element family whose sizes are `max(1, swap >> (level + 1))`, so a rule that can name the family but
+         * not the level cannot describe the pass's own target - and the two alternatives are both dishonest. A
+         * new `extent_rule` per level would be four enumerators for one formula, and `extent_rule::none` means the
+         * pass sizes its OWN work and `resolved_io::extent` stays empty, which would make the declaration claim
+         * the host had nothing to do with the size. The mapping from (resource, element) to an extent is the
+         * HOST's - only it knows its own images - so this field is carried, not interpreted here.
+         */
+        uint16_t extent_of_element = 0;
         /**
          * The pipelines this pass records with, BY NAME, in the order it will use them.
          *

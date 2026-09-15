@@ -58,6 +58,18 @@ int main() {
     CHECK(rr::find(rr::resource_id::probe_grid) != nullptr);
     CHECK(rr::find(rr::resource_id::probe_grid)->count == 8);      // side*4+coefficient, as core indexes it
     CHECK(rr::find(rr::resource_id::gbuffer_targets)->count == 3); // albedo, normal+roughness, material+AO
+    // the bloom chain's FOUR levels are elements of one family (core::bloom_images is an array of four vectors),
+    // and the count is what makes `element = 3` legal and `element = 4` refused - the contract the post chain's
+    // declarations are written against, asserted where it lives rather than assumed by them
+    CHECK(rr::find(rr::resource_id::bloom)->count == 4);
+    {
+        std::array<rr::render_target, 1> const last_level = {rr::render_target{.resource = rr::resource_id::bloom, .element = 3, .kind = rr::target_kind::color}};
+        rr::pass_io const io = {.name = "bloom", .own_set = 0, .bindings = {}, .shared_sets = {}, .targets = last_level, .push = std::nullopt};
+        CHECK(rr::validate(io).has_value()); // the deepest level a pass may render into
+        std::array<rr::render_target, 1> const past_the_end = {rr::render_target{.resource = rr::resource_id::bloom, .element = 4, .kind = rr::target_kind::color}};
+        rr::pass_io const bad = {.name = "bloom", .own_set = 0, .bindings = {}, .shared_sets = {}, .targets = past_the_end, .push = std::nullopt};
+        CHECK(!rr::validate(bad).has_value()); // ... and the one past it, which names no image at all
+    }
     CHECK(rr::find(rr::resource_id::top_level_structure)->kind == rr::resource_kind::accel_struct);
     CHECK(rr::find(rr::resource_id::swapchain_image)->lifetime == rr::resource_lifetime::imported);
     // the two scopes this project has been bitten by, asserted where they live

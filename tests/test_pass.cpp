@@ -64,6 +64,11 @@ namespace {
         /// what a pass was handed at create time, recorded so the create interface can be asserted
         VkDevice created_with_device = VK_NULL_HANDLE;
         VkSampler created_with_sampler = VK_NULL_HANDLE;
+        /// WHAT THE RESOLVER CAN READ OFF THE DECLARATION, recorded here because the extent rule is applied by
+        /// the HOST (see host_resolve): a rule that names a resource and one of its elements is only usable if
+        /// both halves of the pair reach the host that has to map them to a size.
+        rr::resource_id last_extent_of = rr::resource_id::none;
+        uint16_t last_extent_element = 0;
     };
 
     vp::frame_identity host_frame(void* ctx) {
@@ -83,6 +88,8 @@ namespace {
             return false;
         }
         vp::behaviour const& behaviour = pass.behaviour();
+        state.last_extent_of = behaviour.extent_of;
+        state.last_extent_element = behaviour.extent_of_element;
         out.frame = state.frame;
         out.cmd = fake_cmd;
         out.own = state.own;
@@ -255,6 +262,14 @@ namespace {
     constexpr std::array<rr::render_target, 1> fullscreen_targets = {fullscreen_target};
     constexpr vp::behaviour compute_behaviour = {.kind = vp::behaviour_kind::compute, .group_size_x = 4, .group_size_y = 4, .group_size_z = 4, .extent = vp::extent_rule::resource, .pipelines = compute_pipeline_names};
     constexpr vp::behaviour fullscreen_behaviour = {.kind = vp::behaviour_kind::fullscreen, .extent = vp::extent_rule::half, .pipelines = fullscreen_pipeline_names, .resync_viewport = true};
+    /// a behaviour whose extent rule names a RESOURCE **and one element of it**: the framework carries the pair,
+    /// and the HOST is the layer that maps it to a size (the bloom chain's four levels are the first real user -
+    /// see vp::behaviour::extent_of_element)
+    constexpr vp::behaviour level_behaviour = {.kind = vp::behaviour_kind::fullscreen,
+                                               .extent = vp::extent_rule::resource,
+                                               .extent_of = rr::resource_id::bloom,
+                                               .extent_of_element = 2,
+                                               .pipelines = fullscreen_pipeline_names};
 } // namespace
 
 int main() {
@@ -347,6 +362,24 @@ int main() {
         // supply - see resolved_io::own_per_image and docs/pass_chain_plan.md
         CHECK(probe.last_per_image_length == 3); // one entry per swapchain image of the frame
         CHECK(probe.last_per_image_first != VK_NULL_HANDLE);
+    }
+
+    // ---- the extent rule's (resource, element) PAIR reaches the host, which is the only layer that can map it
+    //      to a size: the framework carries a declaration, it does not interpret one ----
+    {
+        fake_pass level{named_io("bloom_level"), level_behaviour, "gi", state};
+        std::array<frame_pass*, 1> passes = {&level};
+        stage const st = {.name = "post", .passes = passes};
+        state.log.clear();
+        run_report const report = record_stage(st, host);
+        CHECK(report.recorded == 1);
+        CHECK(state.last_extent_of == rr::resource_id::bloom); // the family the rule names...
+        CHECK(state.last_extent_element == 2);                 // ... and WHICH of its images
+        // ... and a declaration that names no element says 0 rather than an arbitrary level: the field is
+        // additive, so every declaration written before it existed still means exactly what it meant
+        CHECK(fullscreen_behaviour.extent_of_element == 0);
+        CHECK(compute_behaviour.extent_of_element == 0);
+        CHECK(fullscreen_behaviour.extent_of == rr::resource_id::none);
     }
 
     // ---- the create-time context on its own: a pass is built from THIS and nothing else ----

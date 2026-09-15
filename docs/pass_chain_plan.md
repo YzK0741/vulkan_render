@@ -1296,6 +1296,9 @@ step's lesson was that a slice which cannot leave the tree half-wired is worth m
    declares it with the default `count = 1` while `core::bloom_images` is `std::array<std::vector<VkImage>, 4>`.
    `count = 4` is both the correction and what makes `element = level` legal: `validate` checks
    `element >= info->count` for targets (617), barrier images (642) and bindings (691).
+   **ITEM 2 IS LANDED** (slice 1): the count is 4, `vulkan.render_resource` is 0.11.0, and `test_render_resources`
+   asserts both halves of what it buys - `bloom` element 3 validates as a target and element 4 is REFUSED - so the
+   correction is observable rather than cosmetic.
 3. **THE EXTENT RULE for a level is `max(1, swap >> (level + 1))`** - the SAME formula `core` creates the images
    with, which is the property `extent_rule::half`'s comment already relies on for the GI chain.
    `extent_rule::resource` + `extent_of` names a resource but not an ELEMENT, so the framework needs
@@ -1304,6 +1307,12 @@ step's lesson was that a slice which cannot leave the tree half-wired is worth m
    resolver filling `io.extent` - is rejected on the framework's own terms: `none` means "the pass sizes its own
    work and `io.extent` stays empty", so using it here would be a declaration that lies about where the extent
    came from.
+   **ITEM 3 IS LANDED** (slice 1): `behaviour::extent_of_element` exists (`vulkan.pass` 0.10.0), the runtime's
+   `pass_extent` maps `bloom` + element through the level formula with the shift clamped (the validator is not the
+   only reader of a hand-written declaration), and `test_pass` records what the HOST's resolver can read off a
+   declaration - the family, the element, and 0 for every declaration written before the field existed. The test
+   asserts the CARRIER, deliberately: the mapping lives in `runtime::pass_extent`, which needs a device, so what a
+   device-free test can hold is that the pair reaches the layer that maps it.
 4. **THE PUSH BLOCK'S HOME.** Five passes and one shader share it, so it becomes one struct in one module (the
    composite's module, imported by the bloom passes - or a small shared post module) and
    `runtime::post_push_constants` is DELETED, exactly as `deferred_push_constants` was. It must keep the defaults
@@ -1431,6 +1440,9 @@ step's lesson was that a slice which cannot leave the tree half-wired is worth m
    RECIPE NOW** (the section above, with the framework changes it needs and the measurement that the gate covers
    both halves - which is the fact that decides its acceptance). Five passes: one per bloom level (the level IS the
    pass boundary, because each stage binds a different one of the five post sets) plus the composite.
+   **SLICE 1 IS LANDED** (items 2 and 3 of the recipe): the `bloom` family's `count` and the framework's
+   `extent_of_element` + the host's level formula, all inert (no pass declares either yet), verified by the same
+   battery every slice needs.
 2. **③ FXAA**, including the decision the post header records: the FXAA pass is the frame's LAST writer and it
    currently carries the overlay (`record_fullscreen_triangle(..., /*overlay_after=*/true)` at the end of
    `runtime::record_post_process`), so the overlay's ownership has to be decided - the preferred shape is an
