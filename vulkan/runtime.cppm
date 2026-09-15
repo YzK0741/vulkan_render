@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.62.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.63.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -1158,8 +1158,8 @@ namespace vulkan {
         // the scene is unchanged: update_world rewrites the same matrices each frame).
         //
         // Liveness contract (why the raw primitive const* inside the BVH / cull_visible can
-        // never dangle): every scene mutation that removes or adds leaves - clear_primitives,
-        // make_primitive / make_instanced_primitive, import, set_scene, set_scene_transform,
+        // never dangle): every scene mutation that removes or adds leaves -
+        // make_primitive / make_instanced_primitive, import, set_scene,
         // and scene_changed() for callers editing get_scene() directly - sets bvh_dirty. The
         // next begin_recording() then (1) recollects frame_leaves from the CURRENT tree, (2)
         // destroys the old cull_bvh (its stale leaf pointers die with it) and rebuilds from
@@ -1181,14 +1181,6 @@ namespace vulkan {
         // camera identity for result reuse: yaw, pitch, distance, target.xyz (7 floats)
         std::array<float, 7> camera_key = {};
         bool camera_moved = true; // camera key differs from the last cull frame
-        // optional external (glTF/programmatic) camera: when active, the per-frame camera UBO
-        // uses these matrices directly (the orbit camera + its mouse controls are ignored) and
-        // frustum culling re-runs only when the authored view/projection actually changed
-        glm::mat4 external_view = glm::mat4(1.0f);
-        glm::mat4 external_proj = glm::mat4(1.0f);
-        glm::vec3 external_eye = glm::vec3(0.0f);
-        bool external_camera_active = false;
-        bool external_camera_changed = true; // set when the override differs -> re-cull
         // one command buffer per frame slot, used and reused every frame
         std::vector<vk_command_buffer> command_buffers;
         // per-slot secondary command buffers for pass recording (stage 2/3 of parallel
@@ -1384,7 +1376,7 @@ namespace vulkan {
         // runtime drives it inside the frame steps (new_frame before recording, record after the
         // runtime's own draw calls) so callers only manage its content via debug_gui().
         gui::gui_content debug_overlay;
-        // whether the active overlay is drawn (set_debug_gui_visible / the built-in F1 toggle);
+        // whether the active overlay is drawn (the built-in F1 toggle flips it);
         // hiding keeps the overlay initialized and its panels intact, so showing is instant
         bool debug_gui_shown = true;
         // F1 edge detection for the overlay toggle (true while the key is held, so one press
@@ -1492,32 +1484,6 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief take over the per-frame camera UBO with an externally computed view/projection
-         *        (e.g. a glTF camera, see the demo). While active the orbit camera mouse controls
-         *        are ignored and frustum culling re-runs only when the view/projection changed.
-         * @param eye camera position in world space (written into the UBO for the shaders)
-         * @param view world -> camera space matrix
-         * @param proj camera space -> clip space matrix (Vulkan conventions, i.e. with the Y
-         *        flip already applied, same as make_orbit_camera_ubo)
-         * @note call every frame while the authored camera is in use; identical matrices are
-         *       deduplicated (no cull invalidation when nothing changed)
-         */
-        void set_external_camera(glm::vec3 const& eye, glm::mat4 const& view, glm::mat4 const& proj) noexcept;
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief return to the orbit camera (ignores any previously set external camera)
-         */
-        void clear_external_camera() noexcept;
-
-        /** @brief whether an external (glTF/programmatic) camera currently drives the UBO */
-        [[nodiscard]] bool using_external_camera() const noexcept;
-
-        /** @brief current swapchain aspect ratio (for authored-camera projections) */
-        [[nodiscard]] float aspect_ratio() const noexcept;
-
-        /**
-         * @ingroup vulkan_runtime
          * @brief background clear color applied every frame (the skybox is drawn over it, so it
          *        shows only where the environment pass leaves the background uncovered)
          */
@@ -1596,38 +1562,16 @@ namespace vulkan {
          *       per-frame new_frame/record calls are driven by the runtime once enabled. Call
          *       after the runtime is fully set up (window/device ready). Safe to call again to
          *       re-enable after shutdown; no-op when already active.
-         * @note F1 toggles the overlay at runtime (see set_debug_gui_visible): hide/show the whole
+         * @note F1 toggles the overlay at runtime: hide/show the whole
          *       overlay without losing its panels, and press it once more to bring it back
          */
         bool enable_debug_gui();
 
         /**
-         * @ingroup vulkan_runtime
-         * @brief true while the Dear ImGui debug overlay is active (initialized)
-         */
-        [[nodiscard]] bool debug_gui_active() const noexcept;
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief whether the active overlay is currently drawn (distinct from debug_gui_active():
-         *        the overlay stays initialized while hidden, so showing it again is instant)
-         */
-        [[nodiscard]] bool debug_gui_visible() const noexcept;
-        /**
          * @brief true while the debug overlay owns the mouse: the camera orbit/zoom callbacks are
          *        suppressed then, so dragging an overlay slider cannot rotate or zoom the view
          */
         [[nodiscard]] bool debug_gui_wants_mouse() const noexcept;
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief hide / show the whole debug overlay without touching its panels or widgets
-         * @param visible false skips the overlay's per-frame work and leaves the frame to the
-         *        scene only; true draws it again
-         * @note the flag is remembered while the overlay is inactive and takes effect as soon as
-         *       enable_debug_gui() succeeds; the runtime's built-in F1 key toggles this same flag
-         */
-        void set_debug_gui_visible(bool visible) noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -1658,15 +1602,6 @@ namespace vulkan {
          */
         frame_status render_frame();
 
-        /**
-         * @ingroup vulkan_runtime
-         * @brief the frame slot paced by the last successful pace_and_acquire(); per-frame host
-         *        writes (set_skin_matrices / morph_scratch) go into this slot's per-slot buffers
-         */
-        [[nodiscard]] uint32_t active_frame_slot() const noexcept {
-            return this->active_slot;
-        }
-
         // ---- frame phases: one frame is these calls in order. render_frame() runs them all
         //      back to back; callers with per-frame host writes run them at fine granularity
         //      (writes go between pace_and_acquire() and begin_recording()) ----
@@ -1677,7 +1612,7 @@ namespace vulkan {
         /** @brief recreate the swapchain if the window was minimized (extent 0) since the last frame */
         void recreate_if_minimized();
         /** @brief wait the frame slot's timeline, acquire the next image, write the camera UBO,
-         *         and remember the paced slot in active_frame_slot(); skipped when the swapchain
+         *         and remember the paced slot; skipped when the swapchain
          *         was recreated, acquire_failed on a fatal acquire error */
         frame_status pace_and_acquire();
         /** @brief begin the slot's command buffer and run the CPU scene prep (world-matrix
@@ -1964,9 +1899,6 @@ namespace vulkan {
             void operator()() const; // defined in runtime.cpp (module-private)
         };
 
-        /** @brief the command buffer currently being recorded (between begin_recording() and
-         *         end_recording()); internal use for the runtime's own recording */
-        [[nodiscard]] VkCommandBuffer active_command_buffer() const noexcept;
         /** @brief end the rendering instance / render pass and finish recording;
          *         end_recording_failed when vkEndCommandBuffer fails */
         frame_status end_recording();
@@ -2042,14 +1974,6 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief the active cluster grid (tile columns, tile rows) - 0 until the first frame
-         */
-        [[nodiscard]] std::pair<uint32_t, uint32_t> cluster_grid_extent() const noexcept {
-            return {this->cluster_tiles_x, this->cluster_tiles_y};
-        }
-
-        /**
-         * @ingroup vulkan_runtime
          * @brief enable directional shadow mapping: fills the light UBO with an orthographic
          *        view-proj framing the given scene bounds (plus the light direction, matching
          *        the sky sun). Must be called after the models exist (the shadow pass draws them).
@@ -2059,15 +1983,6 @@ namespace vulkan {
          * @note requires the shadow PASS's pipeline (vulkan.pass.shadow, created by create_passes()); no-op otherwise
          */
         void enable_shadows(glm::vec3 const& scene_center, float scene_radius);
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief set an extra whole-scene transform applied on top of every scene-tree root
-         * @param transform world matrix placed before the roots' local transforms
-         * @note identity (the default) leaves rendering untouched; useful for programmatic
-         *       grouping / demo rotation of the whole imported scene
-         */
-        void set_scene_transform(glm::mat4 const& transform);
 
         /**
          * @ingroup vulkan_runtime
@@ -2246,16 +2161,6 @@ namespace vulkan {
         /** @brief whether GPU pass timings are being collected (see set_gpu_timings) */
         [[nodiscard]] bool gpu_timings() const noexcept {
             return this->gpu_timings_enabled;
-        }
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief whether this device can measure GPU pass timings at all
-         * @note false when the graphics queue family cannot write timestamps: the timing calls
-         *       become no-ops instead of failing, so a caller can always ask
-         */
-        [[nodiscard]] bool gpu_timings_available() const noexcept {
-            return this->vulkan_core.gpu_timing_available();
         }
 
         /**
@@ -2643,11 +2548,6 @@ namespace vulkan {
          */
         void set_ssao(bool enabled, float radius = 0.5f, float intensity = 1.0f, uint32_t samples = 8) noexcept;
 
-        /** @brief how many shadow cascades are active (1 = the single-map behavior) */
-        [[nodiscard]] uint32_t shadow_cascade_count() const noexcept {
-            return this->shadow_cascades;
-        }
-
         /**
          * @ingroup vulkan_runtime
          * @brief set the shadow map's edge length in texels ([render] shadow_map_size)
@@ -2678,11 +2578,6 @@ namespace vulkan {
         /** @brief whether TAA is enabled (see set_taa) */
         [[nodiscard]] bool taa() const noexcept {
             return this->taa_on;
-        }
-
-        /** @brief the halton jitter position the NEXT frame will use (0..taa_jitter_count-1) */
-        [[nodiscard]] uint32_t taa_jitter_position() const noexcept {
-            return this->taa_jitter_index;
         }
 
         /**
@@ -2774,13 +2669,6 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief per-phase CPU milliseconds averaged over the window in progress (0 when empty)
-         * @note raw access for diagnostics/tests; the overlay uses cpu_timing_summary()
-         */
-        [[nodiscard]] std::array<double, static_cast<std::size_t>(vulkan::profiling::cpu_phase::count)> cpu_timing_means() const noexcept;
-
-        /**
-         * @ingroup vulkan_runtime
          * @brief whether a feature is available AND switched on right now (name-keyed)
          * @param name "gbuffer-debug", "taa", "fxaa", "shadow", "clustered",
          *        "ssao", "bloom", "unlit", "transparent", "ssgi" - the same vocabulary as
@@ -2792,11 +2680,6 @@ namespace vulkan {
          * startup log reports.
          */
         [[nodiscard]] bool feature_active(std::string_view name) const noexcept;
-
-        /** @brief whether the opaque pass currently writes the G-buffer (see set_gbuffer_debug) */
-        [[nodiscard]] bool gbuffer_debug_enabled() const noexcept {
-            return this->gbuffer_debug;
-        }
 
         /**
          * @ingroup vulkan_runtime
@@ -2902,8 +2785,8 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief mark the scene tree as changed (structure or per-node local transforms edited
          *        through get_scene(), e.g. programmatic animation): the culling BVH is rebuilt on
-         *        the next frame. Internal scene mutations (import / make / clear /
-         *        set_scene_transform) invalidate automatically.
+         *        the next frame. Internal scene mutations (import / make / clear)
+         *        invalidate automatically.
          */
         void scene_changed() noexcept {
             this->bvh_dirty = true;
@@ -3056,20 +2939,6 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief append a static_draw_primitive: OWNS one merged vertex/index buffer and draws
-         *        a chunk table over it — one buffer bind, then one offset draw per chunk with
-         *        each chunk's own material. The primitive-level form of a static scene: N
-         *        static sub-meshes cost 1 bind + N draws instead of N binds + N draws.
-         * @param info merged geometry + chunk table (the packer's output; empty chunks draw the
-         *        whole merged range once, degenerating to a plain normal draw)
-         * @return pointer to the appended static primitive, or nullptr if nothing was appended
-         * @note the whole batch shares one world (push.model from update_world); per-chunk
-         *       placement needs separate batches or baked chunk models
-         */
-        primitive* make_static_draw(static_draw_create_info const& info);
-
-        /**
-         * @ingroup vulkan_runtime
          * @brief batch-import a scene by traversing the retained node hierarchy (structural
          *        node stream) and its drawables (geometry stream) together.
          *        @p nfirst must model vulkan::scene_node_iterator: DFS pre-order over every
@@ -3215,12 +3084,5 @@ namespace vulkan {
             result.material_count = this->material_count - materials_before;
             return result;
         }
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief destroy and remove all models of a pipeline, no-op if the pipeline has none
-         * @param pipeline_name the pipeline name passed to make_primitive()
-         */
-        void clear_primitives(std::string_view pipeline_name);
     };
 } // namespace vulkan

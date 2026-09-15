@@ -77,10 +77,6 @@ namespace {
             glfwGetCursorPos(window, &camera.last_x, &camera.last_y);
             return;
         }
-        // an external (glTF/programmatic) camera owns the view: orbit dragging is ignored
-        if (runtime_from_window(window)->using_external_camera()) {
-            return;
-        }
         constexpr float sensitivity = 0.005f;
         float const dx = static_cast<float>(x - camera.last_x);
         float const dy = static_cast<float>(y - camera.last_y);
@@ -92,10 +88,6 @@ namespace {
     }
 
     void scroll_callback(GLFWwindow* window, [[maybe_unused]] double const xoffset, double const yoffset) {
-        // an external (glTF/programmatic) camera owns the view: wheel zoom is ignored
-        if (runtime_from_window(window)->using_external_camera()) {
-            return;
-        }
         if (runtime_from_window(window)->debug_gui_wants_mouse()) {
             return; // scrolling inside an overlay panel must not zoom the camera
         }
@@ -1365,16 +1357,9 @@ namespace vulkan {
         // Write this frame's camera UBO into the paced slot's per-slot buffer. The scene
         //    descriptor sets are static per slot (ensure_scene_set wired bindings 0/7/8/9/10 to
         //    each slot's own camera/light/shadow/skin/morph resources), so one memcpy is the whole
-        //    camera update - no per-frame descriptor write exists anymore. An external
-        //    (glTF/programmatic) camera, when active, supplies the matrices directly.
+        //    camera update - no per-frame descriptor write exists anymore.
         this->current_aspect = static_cast<float>(vk.swap_chain_extent.width) / static_cast<float>(vk.swap_chain_extent.height);
-        if (this->external_camera_active) {
-            this->current_ubo.view = this->external_view;
-            this->current_ubo.proj = this->external_proj;
-            this->current_ubo.camera_pos = this->external_eye;
-        } else {
-            this->current_ubo = make_orbit_camera_ubo(this->camera.yaw, this->camera.pitch, this->camera.distance, this->camera.target, this->scene_radius, this->current_aspect);
-        }
+        this->current_ubo = make_orbit_camera_ubo(this->camera.yaw, this->camera.pitch, this->camera.distance, this->camera.target, this->scene_radius, this->current_aspect);
         // Motion-vector support: the G-buffer computes its vectors from the UNJITTERED pair, and the
         // previous matrix is the one THIS swapchain image's history was rendered with (not simply the
         // last frame's: several images are in rotation, so the last frame's camera is not what that
@@ -1556,7 +1541,7 @@ namespace vulkan {
 
         // Accumulate scene-tree world transforms: every leaf's push.model = scene_transform *
         //     identity * local. With the default scene_transform (identity) this reproduces the
-        //     old flat-list world matrices exactly; set_scene_transform() adds programmatic
+        //     old flat-list world matrices exactly; the scene transform adds programmatic
         //     whole-scene grouping on top.
         for (scene_tree::scene_node& root : this->bound_scene->roots) {
             scene_tree::update_world(root, this->scene_transform);
@@ -1587,25 +1572,18 @@ namespace vulkan {
         camera_ubo const& ubo = this->current_ubo;
         std::pmr::vector<primitive const*> visible_leaves = this->frame_leaves; // fallback: no culling
         if (this->frustum_culling) {
-            // camera identity: the orbit state that shapes the frustum, or the authored
-            // external camera's view/projection when one is active
-            std::array<float, 7> key = {}; // orbit key; unused while an external camera is active
+            // camera identity: the orbit state that shapes the frustum
             bool const scene_changed_this_frame = this->bvh_dirty;
-            if (this->external_camera_active) {
-                this->camera_moved = this->external_camera_changed;
-                this->external_camera_changed = false;
-            } else {
-                key = {
-                    this->camera.yaw,
-                    this->camera.pitch,
-                    this->camera.distance,
-                    this->camera.target.x,
-                    this->camera.target.y,
-                    this->camera.target.z,
-                    aspect,
-                };
-                this->camera_moved = key != this->camera_key;
-            }
+            std::array<float, 7> const key = {
+                this->camera.yaw,
+                this->camera.pitch,
+                this->camera.distance,
+                this->camera.target.x,
+                this->camera.target.y,
+                this->camera.target.z,
+                aspect,
+            };
+            this->camera_moved = key != this->camera_key;
 
             if (scene_changed_this_frame || !this->cull_bvh.has_value()) {
                 // scene changed: rebuild the BVH from current world AABBs (and drop stale leaves)
@@ -4611,10 +4589,6 @@ namespace vulkan {
         return frame_status::proceed;
     }
 
-    VkCommandBuffer runtime::active_command_buffer() const noexcept {
-        return *this->command_buffers[static_cast<uint32_t>(this->vulkan_core.current_frame)];
-    }
-
     frame_status runtime::render_frame() {
         // Whole frame in one call: run the frame phases directly, in order, with no caller
         // writes interleaved (callers that need per-frame host updates run the phases at fine
@@ -4660,20 +4634,8 @@ namespace vulkan {
         return this->debug_overlay.init(info);
     }
 
-    bool runtime::debug_gui_active() const noexcept {
-        return this->debug_overlay.is_active();
-    }
-
-    bool runtime::debug_gui_visible() const noexcept {
-        return this->debug_overlay.is_active() && this->debug_gui_shown;
-    }
-
     bool runtime::debug_gui_wants_mouse() const noexcept {
         return this->debug_gui_shown && this->debug_overlay.is_active() && this->debug_overlay.wants_mouse();
-    }
-
-    void runtime::set_debug_gui_visible(bool const visible) noexcept {
-        this->debug_gui_shown = visible;
     }
 
     gui::gui_content& runtime::debug_gui() noexcept {
@@ -4984,10 +4946,6 @@ namespace vulkan {
 
     std::string runtime::cpu_timing_summary() const {
         return this->cpu_timings.summary();
-    }
-
-    std::array<double, static_cast<std::size_t>(vulkan::profiling::cpu_phase::count)> runtime::cpu_timing_means() const noexcept {
-        return this->cpu_timings.means();
     }
 
     void runtime::set_unlit(bool const unlit) noexcept {
@@ -5874,11 +5832,6 @@ namespace vulkan {
         this->light_state.light_count.x = static_cast<float>(count);
     }
 
-    void runtime::set_scene_transform(glm::mat4 const& transform) {
-        this->scene_transform = transform;
-        this->bvh_dirty = true; // whole-scene transform changes every leaf's world AABB
-    }
-
     void runtime::log_scene_tree() const noexcept {
         size_t total_nodes = 0;
         size_t leaf_count = 0;
@@ -6064,141 +6017,6 @@ namespace vulkan {
         return created;
     }
 
-    primitive* runtime::make_static_draw(static_draw_create_info const& info) {
-        if (info.vertex_count == 0 || info.index_data.empty() || info.chunks.empty()) {
-            return nullptr; // nothing to draw: no vertices, no indices, or no chunks
-        }
-        // Default-semantics draw (like normal_draw_primitive): static geometry renders with the
-        // runtime's default pipeline, which must exist by now (the first make_pipeline() set it).
-        {
-            std::shared_lock const lock(this->access_mutex);
-            if (this->default_pipeline_name.empty() || !this->pipelines.contains(this->default_pipeline_name)) {
-                return nullptr;
-            }
-        }
-        this->ensure_scene_set();
-
-        auto result = std::make_unique<static_draw_primitive>();
-
-        // ---- merged geometry buffers (owned by this primitive) ----
-        // Same build-input usage as create_primitive's, for the same reason (see there).
-        VkBufferUsageFlags const rt_input_usage = this->vulkan_core.ray_query_available ? acceleration_structure::build_input_usage : 0u;
-        result->vertex_buffer = this->vulkan_core.vma.create_buffer(info.vertex_data.data(), info.vertex_data.size_bytes(), vulkan::buffer_type::vertex, rt_input_usage);
-        if (!result->vertex_buffer.valid()) {
-            utility::panic("failed to create static vertex buffer");
-        }
-        result->vertex_detail = this->vulkan_core.vma.get_buffer_detail(result->vertex_buffer.handle());
-        if (result->vertex_detail == nullptr) {
-            utility::panic("failed to get static vertex buffer detail");
-        }
-        result->index_buffer = this->vulkan_core.vma.create_buffer(info.index_data.data(), info.index_data.size_bytes(), vulkan::buffer_type::index, rt_input_usage);
-        if (!result->index_buffer.valid()) {
-            utility::panic("failed to create static index buffer");
-        }
-        result->index_detail = this->vulkan_core.vma.get_buffer_detail(result->index_buffer.handle());
-        if (result->index_detail == nullptr) {
-            utility::panic("failed to get static index buffer detail");
-        }
-        result->index_type = info.index_type;
-        result->index_count = info.index_count;
-        result->vertex_count = info.vertex_count;
-        result->vertex_stride = info.vertex_stride; // see create_primitive: the AS build reads the buffer
-
-        // ---- local AABB over the whole merged geometry (batch-level culling) ----
-        if (info.vertex_count > 0 && info.vertex_stride >= sizeof(glm::vec3) && !info.vertex_data.empty()) {
-            glm::vec3 aabb_min = glm::vec3(std::numeric_limits<float>::infinity());
-            glm::vec3 aabb_max = glm::vec3(-std::numeric_limits<float>::infinity());
-            auto const* cursor = info.vertex_data.data();
-            for (uint32_t v = 0; v < info.vertex_count; ++v) {
-                glm::vec3 position;
-                std::memcpy(&position, cursor, sizeof(position));
-                aabb_min = glm::min(aabb_min, position);
-                aabb_max = glm::max(aabb_max, position);
-                cursor += info.vertex_stride;
-            }
-            result->local_aabb_min = aabb_min;
-            result->local_aabb_max = aabb_max;
-            result->has_bounds = true;
-        }
-
-        // ---- chunk table: register each chunk's material, record its index range ----
-        // The merged index element count is the hard bound every chunk must stay inside.
-        uint32_t const index_element_size = info.index_type == VK_INDEX_TYPE_UINT16 ? 2u : 4u;
-        if (info.index_data.size_bytes() % index_element_size != 0) {
-            utility::error("static draw: index data size is not a multiple of the index element size");
-            return nullptr;
-        }
-        uint64_t const index_element_count = info.index_data.size_bytes() / index_element_size;
-        auto const* const index_bytes = info.index_data.data();
-
-        result->chunks.reserve(info.chunks.size());
-        for (static_draw_chunk const& chunk : info.chunks) {
-            if (chunk.index_count == 0) {
-                continue; // empty chunk: skip (keeps is_valid simple)
-            }
-            // Bounds check against the merged buffers BEFORE anything is registered: a bad chunk
-            // table (out-of-range index window or a vertex_offset pushing past vertex_count)
-            // would otherwise read out of bounds in vkCmdDrawIndexed - only visible under
-            // validation/debug. Offending chunks are logged and skipped (the batch keeps the
-            // valid remainder, like the material-table overflow degradation).
-            bool const index_window_ok = static_cast<uint64_t>(chunk.first_index) + chunk.index_count <= index_element_count;
-            bool vertex_reference_ok = chunk.vertex_offset < info.vertex_count;
-            if (index_window_ok && vertex_reference_ok) {
-                // walk the chunk's indices to verify the referenced vertices exist (the packer
-                // may have left per-chunk offsets instead of remapping indices)
-                for (uint32_t k = 0; k < chunk.index_count; ++k) {
-                    uint32_t index = 0;
-                    std::memcpy(&index, index_bytes + (static_cast<size_t>(chunk.first_index) + k) * index_element_size, index_element_size);
-                    if (static_cast<uint64_t>(index) + chunk.vertex_offset >= info.vertex_count) {
-                        vertex_reference_ok = false;
-                        break;
-                    }
-                }
-            }
-            if (!index_window_ok || !vertex_reference_ok) {
-                utility::error("static draw: chunk [first_index {}, count {}, vertex_offset {}] out of the merged buffer range ({} indices, {} vertices) - chunk skipped",
-                               chunk.first_index, chunk.index_count, chunk.vertex_offset, index_element_count, info.vertex_count);
-                continue;
-            }
-            // register this chunk's material (register_material only reads the material
-            // fields of primitive_create_info, so a material-only info is enough)
-            primitive_create_info material_info = {};
-            material_info.albedo = chunk.albedo;
-            material_info.metallic_roughness = chunk.metallic_roughness;
-            material_info.normal = chunk.normal;
-            material_info.occlusion = chunk.occlusion;
-            material_info.emissive = chunk.emissive;
-            material_info.factors = chunk.factors;
-            material_info.double_sided = chunk.double_sided;
-            static_draw_primitive::chunk_record record = {};
-            record.first_index = chunk.first_index;
-            record.index_count = chunk.index_count;
-            record.vertex_offset = chunk.vertex_offset;
-            record.material_index = this->register_material(material_info);
-            record.double_sided = chunk.double_sided;
-            result->chunks.push_back(record);
-            // A merged batch with any transparent chunk is drawn as ONE transparent unit in the
-            // transparent pass (depth-write off). Within the batch the chunk order is the draw
-            // order - the caller packs back-to-front chunks itself. Masked chunks need no batch
-            // flag: the alpha test lives in the material record, which shadow.frag reads too.
-            result->transparent = result->transparent || chunk.factors.alpha_blend;
-        }
-        if (result->chunks.empty()) {
-            return nullptr; // every chunk was empty or out of range: nothing drawable
-        }
-        // The whole batch is one draw of one world, so it tracks object motion through ONE slot,
-        // exactly like a normal primitive (see create_primitive).
-        result->motion_slot_index = this->motion_cursor++;
-        result->push.motion_base = result->motion_slot_index;
-
-        scene_tree::scene_node& leaf = this->get_scene().add_root();
-        leaf.name = "static";
-        leaf.local = info.model_matrix; // whole-batch placement, like make_primitive (update_world fills push.model from it)
-        primitive* const created = static_cast<primitive*>(leaf.attach(std::move(result)));
-        this->bvh_dirty = true; // new leaf -> culling BVH must be rebuilt
-        return created;
-    }
-
     std::vector<primitive const*> runtime::get_primitives(std::string_view const pipeline_name) const noexcept {
         // match by the pipeline a leaf effectively draws with: an explicit pipeline_name, or the
         // runtime default for default-semantics leaves (empty pipeline_name). Snapshot the
@@ -6223,69 +6041,6 @@ namespace vulkan {
             });
         }
         return result;
-    }
-
-    void runtime::clear_primitives(std::string_view const pipeline_name) {
-        // snapshot the default (a concurrent set_default_pipeline must not tear the comparison)
-        std::string_view default_name;
-        {
-            std::shared_lock const lock(this->access_mutex);
-            default_name = this->default_pipeline_name;
-        }
-        auto const matches = [default_name, pipeline_name](scene_tree::scene_node const& node) {
-            if (node.primitive_leaf == nullptr) {
-                return false;
-            }
-            auto const* const m = static_cast<primitive const*>(node.primitive_leaf.get());
-            std::string_view const effective = m->pipeline_name.empty() ? default_name : m->pipeline_name;
-            return effective == pipeline_name;
-        };
-        // DFS remove: erase every leaf primitive drawing with the pipeline, wherever it sits in
-        // the tree (imported scenes nest leaves under hierarchy nodes; make_primitive attaches
-        // them at roots). A node whose leaf matches is stripped of that leaf; it (or an ancestor)
-        // is dropped only when nothing remains below it, so models of other pipelines survive.
-        auto& roots = this->get_scene().roots;
-        // prune(node) -> true when the node is now empty (no leaf, no children) and should be dropped
-        auto const prune = [&](auto&& self, scene_tree::scene_node& node) -> bool {
-            for (auto it = node.children.begin(); it != node.children.end();) {
-                if (self(self, *it)) {
-                    it = node.children.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-            if (matches(node)) {
-                static_cast<primitive*>(node.primitive_leaf.get())->destroy(this->vulkan_core.vma);
-                node.primitive_leaf.reset();
-            }
-            return node.primitive_leaf == nullptr && node.children.empty();
-        };
-        for (auto it = roots.begin(); it != roots.end();) {
-            if (prune(prune, *it)) {
-                it = roots.erase(it);
-            } else {
-                ++it;
-            }
-        }
-        // Instanced primitives are the only writers of the shared instance transform buffer;
-        // when none survive the removal their slices are dead, so the cursor can recycle the
-        // whole buffer (next make_instanced_primitive starts at 0 again). push.flags bit0 is the
-        // instanced marker - only instanced_draw_primitive ever sets it.
-        bool any_instanced_left = false;
-        for (scene_tree::scene_node const& root : roots) {
-            scene_tree::visit_primitives(root, glm::mat4(1.0f), [&](scene_tree::scene_node const& n, glm::mat4 const&) {
-                auto const* const leaf = static_cast<primitive const*>(n.primitive_leaf.get());
-                any_instanced_left = any_instanced_left || (leaf->push.flags & 1u) != 0u;
-            });
-        }
-        if (!any_instanced_left) {
-            this->instance_cursor = 0;
-        }
-        // The motion cursor is NOT recycled with it: every leaf owns a slot from that cursor, not
-        // just the instanced ones, so resetting it here would hand a surviving leaf's slot to the
-        // next primitive created. It is monotonic for the runtime's lifetime, and recycling it would
-        // need a free list over the slots that just disappeared.
-        this->bvh_dirty = true; // leaves removed -> culling BVH must be rebuilt
     }
 
     void runtime::collect_leaf_primitives(scene_tree::scene_node const& node, std::pmr::vector<primitive const*>& out) {
@@ -6323,30 +6078,5 @@ namespace vulkan {
         // is read back through a plain load in shadow_geometry_signature(), on the frame thread.
         this->morph_revision.fetch_add(1, std::memory_order_relaxed); // no upload hook: assume the caller is about to deform the mesh
         return this->morph_mapped[slot];
-    }
-
-    void runtime::set_external_camera(glm::vec3 const& eye, glm::mat4 const& view, glm::mat4 const& proj) noexcept {
-        if (!this->external_camera_active || eye != this->external_eye || view != this->external_view || proj != this->external_proj) {
-            this->external_eye = eye;
-            this->external_view = view;
-            this->external_proj = proj;
-            this->external_camera_changed = true;
-        }
-        this->external_camera_active = true;
-    }
-
-    void runtime::clear_external_camera() noexcept {
-        if (this->external_camera_active) {
-            this->external_camera_active = false;
-            this->external_camera_changed = true; // orbit view is different: re-cull next frame
-        }
-    }
-
-    bool runtime::using_external_camera() const noexcept {
-        return this->external_camera_active;
-    }
-
-    float runtime::aspect_ratio() const noexcept {
-        return this->current_aspect;
     }
 } // namespace vulkan

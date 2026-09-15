@@ -655,13 +655,13 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_primitive
-     * @brief build description for runtime::make_static_draw(): ONE merged vertex/index buffer
+     * @brief build description for a static draw: ONE merged vertex/index buffer
      *        (the packer's output) plus the chunk table over it. Each chunk is drawn as a
      *        single offset draw call after ONE buffer bind, so N static sub-meshes cost 1 bind
      *        + N draws instead of N binds + N draws.
      * @note the chunk table is REQUIRED (a non-empty, validated list): every chunk's index
      *       window and vertex references are checked against the merged buffers at
-     *       make_static_draw() time - out-of-range chunks are logged and skipped.
+     *       static-draw build time - out-of-range chunks are logged and skipped.
      */
     export struct static_draw_create_info {
         std::span<unsigned char const> vertex_data = {};
@@ -682,7 +682,7 @@ namespace vulkan {
      *        source primitive to outlive, destroy() releases the owned buffers like a normal
      *        draw. This is the primitive-level form of a static scene: one buffer, one bind,
      *        N offset draws. Placement works like every other leaf: the node's local
-     *        transform (set from static_draw_create_info::model_matrix by make_static_draw)
+     *        transform (set from static_draw_create_info::model_matrix by the static-draw builder)
      *        becomes push.model via update_world, so the whole batch shares one world
      *        transform; per-chunk placement needs separate batches or per-chunk model baking
      *        later.
@@ -701,7 +701,7 @@ namespace vulkan {
         uint32_t vertex_count = 0;
         // chunk table over the merged buffer; each entry draws once after the single bind.
         // Material identity lives in material_index; double_sided is per chunk (cull mode).
-        // Always non-empty after make_static_draw() succeeds (chunks are validated there).
+        // Always non-empty after a static draw is built (chunks are validated there).
         struct chunk_record {
             uint32_t first_index = 0;
             uint32_t index_count = 0;

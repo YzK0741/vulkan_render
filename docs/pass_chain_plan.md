@@ -1723,6 +1723,42 @@ after every slice in between), a knob-on A/B against the immediate parent for th
 (`gbuffer_debug = true` for the debug view, `[gui] show = true` for the overlay's ownership), Release/Debug/ASan
 clean, `ctest` 8/8 in all three, and a clean doxygen - the last of which caught two real defects on the way (a
 stray backtick in a doc comment, and the missing `VkPipelineLayout` lookup that made six passes build nothing).
+## AFTER THE FIVE STEPS: THE DEAD CODE AUDIT, AND WHAT IT REMOVED
+
+The question "does `vulkan.runtime` still hold anything obsolete after the extractions?" was answered by
+measurement rather than by reading: every identifier the header declares and every `runtime::` definition was
+counted across the WHOLE repository (123 sources, build directories excluded) on **code lines only** (lines whose
+first non-space characters are `//`, `*` or `/*` were dropped, so a doc comment cannot keep a dead name alive), and
+a candidate was reported when it had no occurrence beyond its declaration and definition. A use through a function
+pointer still leaves the name, so a miss is unlikely; it is not a linker-level check (no LTO / `--gc-sections`).
+
+**REMOVED: seventeen public members plus one whole unreachable path.**
+
+* six accessors that were only ever DEFINED (inline in the header) and never called: `active_frame_slot`,
+  `cluster_grid_extent`, `gpu_timings_available` (a wrapper around `core::gpu_timing_available()`, which the
+  renderer calls directly), `shadow_cascade_count`, `taa_jitter_position`, `gbuffer_debug_enabled`.
+* eleven declared-and-defined members with no call sites: `active_command_buffer`, `aspect_ratio`,
+  `clear_primitives`, `cpu_timing_means` (`cpu_timing_summary()` is the one the overlay uses),
+  `debug_gui_active`, `debug_gui_visible`, `set_debug_gui_visible`, `set_external_camera`,
+  `clear_external_camera`, `set_scene_transform`, `make_static_draw`.
+* **and the external-camera path they belonged to**, which is the finding worth keeping: deleting only the two
+  setters would have left a feature that can never turn on. `external_camera_active` was READ in
+  `pace_and_acquire()` twice and in the cull-key block, and in the GLFW mouse/scroll callbacks through
+  `using_external_camera()` - but its only WRITER was `set_external_camera()`, which nothing called, so the flag
+  was `false` on every frame this repository can produce and every one of those reads took the orbit-camera
+  branch. The whole path went with it (the flag and its three matrices, the getter, both input guards, the UBO
+  branch and the cull branch), which is a behaviour-preserving change precisely BECAUSE the flag was unreachable -
+  and the gate is what proves it (12 x 2 with **0 changed / 0 flaky**).
+
+**THE VERSION, and a convention question left open**: `vulkan.runtime` went 0.62.0 -> 0.63.0. By the banner's
+letter a removal is a BREAKING interface change (MAJOR), but every extraction step on this branch removed public
+entry points (`make_post_pipeline`, `make_shadow_pipeline`, `make_gbuffer_debug_pipeline`, ...) without touching
+the version, so the number stopped tracking that rule several steps ago. MINOR was chosen as the signal that the
+interface changed; whether the project wants 1.0.0, a MAJOR-rule exemption for in-repo-only removals, or no bump is
+the author's call - the version is one line.
+
+**THE RE-AUDIT AFTER THE REMOVAL FINDS NOTHING**: no `runtime::` definition and no header-declared accessor is
+without a call site any more. Release/Debug/ASan clean, `ctest` 8/8 in all three, `doxygen` exit 0.
 ## HANDOFF: WHERE THIS STANDS AND WHAT IS LEFT, EXACTLY
 **DONE, and each step verified byte-for-byte against the capture gate as it landed.**
 

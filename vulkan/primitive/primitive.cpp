@@ -104,7 +104,7 @@ namespace vulkan {
 
         // chunked: per chunk set the cull mode + material_index (push.material_index is the
         // first field, so only that slice needs re-pushing; model stays from the base push).
-        // The chunk table is validated at make_static_draw() time (in-range index windows and
+        // The chunk table is validated when a static draw is built (in-range index windows and
         // vertex references), so no draw can go out of bounds.
         for (chunk_record const& chunk : this->chunks) {
             env.set_cull_mode(chunk.double_sided);
@@ -142,7 +142,7 @@ namespace vulkan {
 
     bool static_draw_primitive::is_valid() const noexcept {
         if (this->vertex_detail == nullptr || this->index_detail == nullptr || this->chunks.empty()) {
-            return false; // a validated, non-empty chunk table is required (see make_static_draw)
+            return false; // a validated, non-empty chunk table is required (see the static-draw builder)
         }
         return std::ranges::all_of(this->chunks, [](chunk_record const& c) { return c.index_count != 0; });
     }
