@@ -38,6 +38,7 @@ import vulkan.pass.ssgi_spatial;      // the eighth, and the GI chain's last sta
 import vulkan.pass.rt_shadow;         // the ninth, and the first one OUTSIDE the GI chain: the ray-traced shadow
 import vulkan.pass.mask_bake;         // ... and the one-shot MASK bake, which is a JOB rather than a frame pass
 import vulkan.pass.compute_skin;      // ... and the compute-skinning job, which is a job for the same reason
+import vulkan.pass.cluster;           // the tenth: the clustered-light sort, the first pass with BUFFER barriers
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
@@ -1008,12 +1009,13 @@ namespace vulkan {
         float shadow_depth_bias_clamp = 0.0f;
 
         // ---- clustered light culling (M5) ----
-        // The cluster COMPUTE pipeline (shaders/light_cluster.comp) sorts the punctual lights into
-        // screen tiles x exponential depth slices once per frame; the shading stage then loops only
-        // its own cluster's list instead of every active light. Optional: without the shader (or
-        // with clustering off) shade_surface() falls back to the brute-force loop, which is exactly
-        // what the clustered path is verified against.
-        std::optional<vk_pipeline> cluster_pipeline = std::nullopt;
+        // THE PASS (vulkan.pass.cluster) owns the pipeline, its layout, the shared scene set's bind AND the two
+        // buffer barriers its own writes need; the renderer keeps the grid's dimensions (they come from the
+        // swapchain extent) and hands the cluster count over in the pass's frame. Optional: without the shader
+        // (or with clustering off) shade_surface() falls back to the brute-force loop, which is exactly what the
+        // clustered path is verified against.
+        pass::cluster_pass cluster;
+        std::array<pass::frame_pass*, 1> cluster_stage = {&this->cluster};
         // Per-cascade shadow recording pairs (one {pool, buffer} per cascade per frame slot). The
         // cascade tasks run CONCURRENTLY on the task pool, and a VkCommandPool is not thread safe, so
         // they may not share one - the same rule the main-pass workers already follow. The shared
@@ -1668,17 +1670,19 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief dispatch the clustered-light-culling compute pass (M5) and hand its buffers to the
-         *        fragment stages
-         * @param command_buffer the frame's primary command buffer (recorded before any rendering)
+         * @brief resolve the clustered-light sort's frame: the shared scene set, the two cluster buffers and
+         *        the pipeline
+         * @param out the pass's resolved I/O, filled here
+         * @return whether the pass can record at all this frame
          *
-         * No-op without the cluster pipeline, with clustering off, or before the first paced frame
-         * (the grid comes from the swapchain extent). The per-cluster counts were zeroed by the host
-         * in pace_and_acquire(), so the pass only appends; the buffer barrier after the dispatch is
-         * what makes its SHADER_WRITE visible to the fragment stages that read the lists later in
-         * the same submission.
+         * The PASS records the dispatch and the two buffer barriers (vulkan.pass.cluster); what this resolver
+         * owns is the frame's data - the frame slot's scene set, the slot's two cluster buffers (declared
+         * through `pass_io::barrier_buffers`, because the pass orders them without binding them: they are the
+         * shared scene set's bindings 11 and 12) and the cluster count the pass dispatches over. No-op without
+         * the pipeline, with clustering off, or before the first paced frame - the grid comes from the
+         * swapchain extent.
          */
-        void record_cluster_pass(VkCommandBuffer command_buffer);
+        [[nodiscard]] bool resolve_cluster_pass(pass::resolved_io& out);
 
         /**
          * @ingroup vulkan_runtime
@@ -1979,19 +1983,7 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief create the clustered-light-culling compute pipeline (M5)
-         * @param compute_shader_code raw SPIR-V binary of shaders/light_cluster.comp
-         * @return success, or an error message on failure
-         * @note optional: without it (or with clustering off) the shading stage loops every active
-         *       light instead, which is the brute-force reference the clustered path is verified
-         *       against. The per-slot cluster buffers exist regardless (they are created with the
-         *       scene set), so enabling the pass later needs no resource rebuild.
-         */
-        std::expected<void, std::string> make_cluster_pipeline(std::span<unsigned char const> compute_shader_code);
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief turn clustered light culling on/off (no-op without make_cluster_pipeline())
+         * @brief turn clustered light culling on/off (no-op without the cluster PASS's pipeline)
          * @param enabled true = the shading stage loops only its own cluster's light list
          * @note CPU-side only (the flag rides the light UBO's cluster_grid.w lane): the next frame's
          *       cluster pass and shading both read it, so it is safe to toggle mid-run.

@@ -199,14 +199,13 @@ namespace chores {
             // lights into the screen-tile x depth-slice grid the shading stage then reads. Optional -
             // without it (or with [render] clustered_lights = false) shade_surface() loops every
             // active light, which is the brute-force reference the clustered path is verified on.
+            // IT IS A PASS: the app registers the shader and the pass builds its own pipeline layout and
+            // compute pipeline from it (see vulkan.pass.cluster) - create_passes() below runs that step, and
+            // the pass logs its own outcome. It has to be registered HERE, before that call, because a pass
+            // created before its shader exists builds nothing and says so.
             std::vector<unsigned char> compute_code;
             load_shader(shaders_dir, "light_cluster.comp.spv", compute_code);
-            auto const cluster_result = runtime.make_cluster_pipeline(compute_code);
-            if (!cluster_result) {
-                utility::log("clustered light culling disabled: {}", cluster_result.error());
-            } else {
-                utility::log("SUCCESS: cluster compute pipeline created (clustered light culling)");
-            }
+            runtime.register_shader("light_cluster.comp.spv", compute_code);
         }
 
         {

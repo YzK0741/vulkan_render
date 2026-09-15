@@ -93,6 +93,11 @@ namespace vulkan::pipelines {
     /// the compute skinning pass: the same shape again, over the scene set's per-joint matrices - see
     /// shaders/compute_skin.comp
     export std::expected<ssgi_owned, std::string> build_compute_skin(VkDevice device, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    /// the clustered-light sort (shaders/light_cluster.comp): the shared scene set alone, and NO push constants
+    /// at all - the shader reads the light UBO and writes the two cluster buffers through that set's bindings
+    /// 11 and 12, which is why this builder takes no push size. It is the first compute pipeline in this module
+    /// that came out of `vulkan.core` (where it was built against the core's own scene pipeline layout).
+    export std::expected<ssgi_owned, std::string> build_cluster(VkDevice device, VkDescriptorSetLayout scene_layout, std::span<unsigned char const> compute_shader_code);
 
     /// what build_ssgi_temporal() creates: the pipeline layout and the resolve pipeline. The SET layout comes IN
     /// as a parameter now - it is generated from the denoiser's own DECLARATION (see
@@ -459,6 +464,49 @@ namespace vulkan::pipelines {
         VkPipeline pipeline = VK_NULL_HANDLE;
         if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("compute skin: vkCreateComputePipelines failed");
+        }
+        out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
+        return out;
+    }
+
+    // The clustered-light sort: the shared scene set alone and NO push range, because the shader reads the
+    // light UBO and the cluster buffers through that set's own bindings (7, 11 and 12) and takes no constants.
+    // The pipeline layout is still this pass's OWN - built here from the set layout its owner hands over -
+    // rather than the core's scene pipeline layout, which is what the old `core::make_cluster_pipeline` used:
+    // the two are equivalent for this pipeline (same set layout, and the shader uses no push constants), and
+    // owning it is what lets the pass release it.
+    std::expected<ssgi_owned, std::string> build_cluster(VkDevice const device, VkDescriptorSetLayout const scene_layout, std::span<unsigned char const> const compute_shader_code) {
+        using fail = std::unexpected<std::string>;
+        ssgi_owned out;
+
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &scene_layout;
+        pipeline_layout_info.pushConstantRangeCount = 0;
+        pipeline_layout_info.pPushConstantRanges = nullptr;
+        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+            return fail("cluster: pipeline layout creation failed");
+        }
+
+        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
+        if (!module.has_value()) {
+            return fail("cluster: compute shader module creation failed");
+        }
+        VkPipelineShaderStageCreateInfo stage_info = {};
+        stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage_info.module = **module;
+        stage_info.pName = "main";
+
+        VkComputePipelineCreateInfo pipeline_info = {};
+        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.stage = stage_info;
+        pipeline_info.layout = out.pipeline_layout;
+
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+            return fail("cluster: vkCreateComputePipelines failed");
         }
         out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
         return out;

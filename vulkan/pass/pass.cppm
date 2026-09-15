@@ -59,6 +59,15 @@ export namespace vulkan::pass {
         full,     // the frame's extent
         half,     // half the frame's extent - the GI chain's resolution
         resource, // the extent of the resource named in `extent_of` (the probe grid is not the frame's size)
+        /**
+         * The pass sizes its OWN work and `resolved_io::extent` stays empty.
+         *
+         * Added for the clustered-light sort, whose dispatch is one-dimensional over `tiles_x * tiles_y *
+         * slices` - a number derived from the frame's extent but equal to neither it nor half of it, so all
+         * three rules above would have been a claim the host could not honour. What such a pass works at is its
+         * own data, and the host hands that over in the pass's frame (see `scene_frame` for the same split).
+         */
+        none,
     };
 
     /// @brief the shape of the work: what the runner must do AROUND the pass, not what the pass computes
@@ -160,6 +169,8 @@ export namespace vulkan::pass {
     inline constexpr uint32_t max_render_targets = 8;
     /// @brief how many images one pass may declare for its own transitions (the SSGI tracer's twelve are the most)
     inline constexpr uint32_t max_barrier_images = 16;
+    /// @brief how many BUFFERS one pass may declare for its own ordering (the cluster sort's two are the only ones today)
+    inline constexpr uint32_t max_barrier_buffers = 8;
     /// @brief the largest push block a pass may declare: the 128 bytes Vulkan guarantees
     inline constexpr uint32_t max_push_bytes = 128;
 
@@ -226,6 +237,19 @@ export namespace vulkan::pass {
          */
         std::array<resolved_binding, max_barrier_images> barrier_storage = {};
         std::span<resolved_binding const> barrier_images = {};
+        /**
+         * The BUFFERS this pass declared as BARRIER BUFFERS (`pass_io::barrier_buffers`), in the declaration's
+         * order - the handles it may order around with a buffer memory barrier but never bind itself.
+         *
+         * The same argument as the images above, one resource class over, and it was measured rather than
+         * assumed: the clustered-light sort writes two buffers that live in the SHARED scene set, so its
+         * declaration names no binding for either - and without their handles it could not place the barrier
+         * that makes its writes visible to the fragment stages reading them later in the same submission. Each
+         * entry carries the BUFFER (the `view` and `image` lanes stay null: a barrier takes a buffer, and this
+         * resource has no view).
+         */
+        std::array<resolved_binding, max_barrier_buffers> barrier_buffer_storage = {};
+        std::span<resolved_binding const> barrier_buffers = {};
         /// the storage `pipelines` views
         std::array<VkPipeline, max_pass_pipelines> pipeline_storage = {};
         /// in the order `behaviour::pipelines` names them, one entry per name
@@ -252,7 +276,8 @@ export namespace vulkan::pass {
          */
         std::array<std::byte, max_push_bytes> push_storage = {};
         std::span<std::byte const> push = {};
-        /// the extent THIS pass works at: the frame's, half of it, or a resource's, per `behaviour::extent`
+        /// the extent THIS pass works at: the frame's, half of it, or a resource's, per `behaviour::extent` -
+        /// and EMPTY for a pass that declared `extent_rule::none`, which sizes its own work from its frame
         VkExtent2D extent = {0, 0};
     };
 

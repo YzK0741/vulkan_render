@@ -446,6 +446,28 @@ export namespace vulkan::render_resource {
     };
 
     /**
+     * @brief a BUFFER a pass orders around but never binds itself - the buffer twin of `barrier_image`
+     *
+     * WHY THIS EXISTS, and it is a measured need rather than symmetry for its own sake: the clustered-light
+     * sort (`vulkan.pass.cluster`) writes two buffers that live in the SHARED scene set (bindings 11 and 12).
+     * The pass binds the whole set, as it must, so its declaration names no binding for either buffer - and yet
+     * its writes are not visible to the fragment stages that read them later in the same submission without a
+     * buffer memory barrier, which only the writer can place. Before this field the renderer kept the whole
+     * recording for exactly that reason: a pass could declare an IMAGE it moves and had no way to name a BUFFER
+     * it moves. The pair of channel fields is now the same shape as `barrier_images`, one per resource class.
+     *
+     * The ACCESS masks are deliberately not declared, for the reason `barrier_image` gives about layouts: which
+     * stages and accesses a barrier names is the pass's knowledge of its own ordering, and a declaration that
+     * named them would be a barrier generator rather than a description of what the pass touches.
+     */
+    struct barrier_buffer {
+        resource_id resource = resource_id::none;
+        /// which buffer of the resource's family - the frame's slot for a per-frame-slot resource (resolved by
+        /// the host from the frame, exactly as `barrier_image` does for images)
+        uint16_t element = 0;
+    };
+
+    /**
      * @brief one pass's declared I/O
      *
      * `own_set` is the set index of the `set_owner::own` bindings; the validator requires every `own` binding
@@ -480,6 +502,11 @@ export namespace vulkan::render_resource {
          * record() indexes them. Empty for every pass whose resources are all its own or all descriptors.
          */
         std::span<barrier_image const> barrier_images = {};
+        /**
+         * The BUFFERS this pass orders around but never binds (see `barrier_buffer`), in the order the pass's
+         * own record() indexes them. Empty for every pass but the clustered-light sort today.
+         */
+        std::span<barrier_buffer const> barrier_buffers = {};
         std::optional<push_block> push = std::nullopt;
     };
 
@@ -617,6 +644,27 @@ export namespace vulkan::render_resource {
                                        std::to_string(info->count));
             }
             for (barrier_image const& other : io.barrier_images) {
+                if (&other != &t && other.resource == t.resource && other.element == t.element) {
+                    return std::unexpected(where + " is declared twice, and a pass indexes these by position");
+                }
+            }
+        }
+        // ... and THE BARRIER BUFFERS, the same three checks one resource class over: it has to exist in the
+        // schema, it has to BE a buffer, and a pass indexes these by position so a duplicate is a defect.
+        for (barrier_buffer const& t : io.barrier_buffers) {
+            std::string const where = who + ": barrier buffer " + std::to_string(t.element);
+            resource_info const* const info = find(t.resource);
+            if (info == nullptr) {
+                return std::unexpected(where + " names a resource the schema does not declare");
+            }
+            if (info->kind != resource_kind::buffer) {
+                return std::unexpected(where + " names " + std::string(info->name) + ", which is not a buffer");
+            }
+            if (t.element >= info->count) {
+                return std::unexpected(where + " names element " + std::to_string(t.element) + " of " + std::string(info->name) + ", which holds " +
+                                       std::to_string(info->count));
+            }
+            for (barrier_buffer const& other : io.barrier_buffers) {
                 if (&other != &t && other.resource == t.resource && other.element == t.element) {
                     return std::unexpected(where + " is declared twice, and a pass indexes these by position");
                 }
@@ -1122,6 +1170,45 @@ export namespace vulkan::render_resource {
         .targets = {},
         .barrier_images = rt_shadow_barriers,
         .push = push_block{.offset = 0, .size = 80, .stages = stage_flag::compute},
+    };
+
+    /**
+     * @brief the two buffers the clustered-light sort writes, and the ONLY resources it has to name
+     *
+     * They are bindings 11 and 12 of the SHARED scene set - so this pass binds them as part of that set and
+     * declares no binding of its own - but a pass's writes are not visible to the fragment stages reading them
+     * later in the same submission without a BUFFER memory barrier, and only the writer can place it. That is
+     * what `pass_io::barrier_buffers` exists for (see `barrier_buffer`), and this declaration is why the field
+     * was added: before it, a pass could name an image it moves and had no way to name a buffer it moves.
+     *
+     * Both are per FRAME SLOT (the slot's count and index arrays), which the host resolves from the frame.
+     */
+    inline constexpr std::array<barrier_buffer, 2> cluster_barriers = {{
+        {.resource = resource_id::cluster_counts, .element = 0},
+        {.resource = resource_id::cluster_indices, .element = 0},
+    }};
+
+    /// @brief set 0 is the shared scene set: the camera, the light UBO and the two cluster buffers it writes
+    inline constexpr std::array<uint32_t, 1> cluster_shared_sets = {0};
+
+    /**
+     * @brief the clustered-light sort's declaration: a one-dimensional compute dispatch over the cluster grid
+     *
+     * It has no push block at all (the shader reads the light UBO and writes the cluster buffers through the
+     * scene set's own bindings), no own binding, no target and no image to transition - the whole declaration is
+     * "the shared scene set, and the two buffers I write". Its dispatch size is neither the frame's nor half of
+     * it: it is `tiles_x * tiles_y * slices`, which is why its behaviour declares `extent_rule::none` and the
+     * host hands the count over in the pass's frame instead.
+     */
+    inline constexpr pass_io cluster_io = {
+        .name = "cluster",
+        .own_set = 1, // unused: no own bindings
+        .bindings = {},
+        .shared_sets = cluster_shared_sets,
+        .targets = {},
+        .barrier_images = {},
+        .barrier_buffers = cluster_barriers,
+        .push = std::nullopt,
     };
 
 } // namespace vulkan::render_resource

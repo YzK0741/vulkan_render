@@ -1900,32 +1900,6 @@ namespace vulkan {
         return result;
     }
 
-    std::expected<vk_pipeline, std::string_view> core::make_cluster_pipeline(std::span<unsigned char const> const compute_shader_code) const {
-        using fail = std::unexpected<std::string_view>;
-        std::optional<vk_shader_module> const module = vulkan::make_shader_module(compute_shader_code, this->device);
-        if (!module.has_value()) {
-            return fail("failed to create the cluster compute shader module");
-        }
-        VkPipelineShaderStageCreateInfo stage_info = {};
-        stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        stage_info.module = **module;
-        stage_info.pName = "main"; // the SPIR-V entry point, as in vulkan::make_pipeline
-
-        VkComputePipelineCreateInfo pipeline_info = {};
-        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pipeline_info.stage = stage_info;
-        // the shared scene layout: the cluster pass reads the camera + light UBOs and writes the
-        // per-cluster buffers through the same set 0 every graphics pipeline uses
-        pipeline_info.layout = this->scene_pipeline_layout;
-
-        VkPipeline pipeline = VK_NULL_HANDLE;
-        if (vkCreateComputePipelines(this->device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
-            return fail("vkCreateComputePipelines failed");
-        }
-        return vk_pipeline(pipeline, this->scene_pipeline_layout, this->device);
-    }
-
     void core::wait_idle() const noexcept {
         vkDeviceWaitIdle(this->device);
     }

@@ -413,5 +413,40 @@ int main() {
         CHECK(rr::descriptor_counts_for(rr::rt_shadow_io, rr::rt_shadow_io.own_set).total() == 0);
     }
 
+    // ---- the NINTH declaration: the clustered-light sort, the first pass whose resources are BUFFERS it
+    //      orders without binding (they are the shared scene set's bindings 11 and 12) - which is what the
+    //      barrier_buffers channel was added for ----
+    {
+        CHECK(rr::validate(rr::cluster_io).has_value());
+        CHECK(rr::cluster_io.bindings.empty());       // it binds the whole shared scene set, so it enumerates nothing
+        CHECK(rr::cluster_io.targets.empty());        // a compute pass
+        CHECK(!rr::cluster_io.push.has_value());      // light_cluster.comp declares no push_constant block at all
+        CHECK(rr::cluster_io.barrier_images.empty()); // it moves no image
+        CHECK(rr::cluster_io.shared_sets.size() == 1);
+        CHECK(rr::cluster_io.shared_sets[0] == 0); // the scene set: the camera, the light UBO, the two buffers
+        CHECK(rr::cluster_io.barrier_buffers.size() == 2);
+        CHECK(rr::cluster_io.barrier_buffers[0].resource == rr::resource_id::cluster_counts);
+        CHECK(rr::cluster_io.barrier_buffers[1].resource == rr::resource_id::cluster_indices);
+        CHECK(rr::find(rr::resource_id::cluster_counts)->kind == rr::resource_kind::buffer);
+        CHECK(rr::find(rr::resource_id::cluster_indices)->kind == rr::resource_kind::buffer);
+        CHECK(rr::find(rr::resource_id::cluster_counts)->scope == rr::resource_scope::per_frame_slot);
+        CHECK(rr::descriptor_counts_for(rr::cluster_io, rr::cluster_io.own_set).total() == 0);
+    }
+    {
+        // the barrier-BUFFER rule, the same three checks one resource class over: it must be a buffer the
+        // schema declares, and a pass indexes these by position so the same one twice cannot be read
+        std::array<rr::barrier_buffer, 1> const not_a_buffer = {rr::barrier_buffer{.resource = rr::resource_id::gi_trace, .element = 0}};
+        rr::pass_io const io = {.name = "cluster", .own_set = 1, .bindings = {}, .shared_sets = {}, .targets = {}, .barrier_buffers = not_a_buffer, .push = std::nullopt};
+        CHECK(!rr::validate(io).has_value());
+        std::array<rr::barrier_buffer, 2> const twice = {rr::barrier_buffer{.resource = rr::resource_id::cluster_counts, .element = 0},
+                                                         rr::barrier_buffer{.resource = rr::resource_id::cluster_counts, .element = 0}};
+        rr::pass_io const dup = {.name = "cluster", .own_set = 1, .bindings = {}, .shared_sets = {}, .targets = {}, .barrier_buffers = twice, .push = std::nullopt};
+        CHECK(!rr::validate(dup).has_value());
+        // ... and an element the family does not hold is rejected too (the schema's count is the contract)
+        std::array<rr::barrier_buffer, 1> const out_of_range = {rr::barrier_buffer{.resource = rr::resource_id::cluster_counts, .element = 9}};
+        rr::pass_io const bad_element = {.name = "cluster", .own_set = 1, .bindings = {}, .shared_sets = {}, .targets = {}, .barrier_buffers = out_of_range, .push = std::nullopt};
+        CHECK(!rr::validate(bad_element).has_value());
+    }
+
     return vk_test::finish("test_render_resources");
 }

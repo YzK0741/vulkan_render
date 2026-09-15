@@ -1465,7 +1465,7 @@ namespace vulkan {
                     cluster_near = std::max(camera_near, 0.05f);
                     cluster_far = std::max(std::min(camera_far, scene_far), cluster_near * 2.0f);
                 }
-                bool const clustered = this->clustered_lights && this->cluster_pipeline.has_value() && !degenerate && this->cluster_tiles_x > 0 && this->cluster_tiles_y > 0;
+                bool const clustered = this->clustered_lights && this->cluster.pipeline_ready() && !degenerate && this->cluster_tiles_x > 0 && this->cluster_tiles_y > 0;
                 this->light_state.cluster_grid = glm::vec4(static_cast<float>(this->cluster_tiles_x),
                                                            static_cast<float>(this->cluster_tiles_y),
                                                            static_cast<float>(vulkan::cluster_slice_count),
@@ -1796,7 +1796,12 @@ namespace vulkan {
         //      is as early as possible; nothing before it reads the lists.
         {
             vulkan::profiling::cpu_phase_timer const cluster_timer{this->cpu_timings, vulkan::profiling::cpu_phase::cluster};
-            this->record_cluster_pass(*command_buffer);
+            // THE CLUSTER SORT records its own dispatch and its own two buffer barriers now
+            // (vulkan.pass.cluster); what is this loop's is WHERE it runs - before the passes that read the
+            // bins - and the frame data it is handed.
+            this->cluster.set_frame(pass::cluster_frame{.cluster_count = this->cluster_tiles_x * this->cluster_tiles_y * vulkan::cluster_slice_count});
+            pass::stage const cluster_stage = {.name = "cluster", .passes = this->cluster_stage, .marks = false};
+            [[maybe_unused]] pass::run_report const cluster_report = pass::record_stage(cluster_stage, this->make_pass_host());
         }
 
         // ---- Ray-traced shadows: build the acceleration structures once, before the passes that will
@@ -3345,6 +3350,11 @@ namespace vulkan {
         if (!rt_shadow_created.rejected.empty()) {
             utility::log("pass '{}': its declaration was refused by the validator, so it does not run", rt_shadow_created.rejected);
         }
+        pass::stage const cluster_stage = {.name = "cluster", .passes = this->cluster_stage, .marks = false};
+        pass::run_report const cluster_created = pass::create_stage(cluster_stage, build);
+        if (!cluster_created.rejected.empty()) {
+            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", cluster_created.rejected);
+        }
     }
 
     void runtime::ensure_taa_sampler() {
@@ -3531,8 +3541,8 @@ namespace vulkan {
     }
 
     VkExtent2D runtime::pass_extent(pass::frame_pass const& pass) const noexcept {
-        // The three rules the framework defines, applied from the pass's own declaration. `half` is the GI
-        // chain's resolution and the SAME max(1, axis / 2) the images are created with (see
+        // The rules the framework defines, applied from the pass's own declaration. `half` is the GI chain's
+        // resolution and the SAME max(1, axis / 2) the images are created with (see
         // core::create_render_targets), so a pass cannot disagree with the image it writes.
         core const& vk = this->vulkan_core;
         switch (pass.behaviour().extent) {
@@ -3543,6 +3553,11 @@ namespace vulkan {
         case pass::extent_rule::resource:
             // The one resource-shaped extent this renderer has: the probe cache's grid.
             return pass.behaviour().extent_of == pass::resource_id::probe_grid ? VkExtent2D{vulkan::gi_probe_grid_extent, vulkan::gi_probe_grid_extent} : VkExtent2D{};
+        case pass::extent_rule::none:
+            // The pass sizes its own work (the cluster sort's 1D dispatch is `tiles_x * tiles_y * slices`), so
+            // there is no extent to hand over - and handing one over "just in case" is what would make a pass
+            // that declares `none` look like one that works at the frame's size.
+            return VkExtent2D{};
         }
         return {};
     }
@@ -3606,6 +3621,9 @@ namespace vulkan {
         }
         if (&pass == static_cast<pass::frame_pass const*>(&this->rt_shadow)) {
             return this->resolve_rt_shadow(out);
+        }
+        if (&pass == static_cast<pass::frame_pass const*>(&this->cluster)) {
+            return this->resolve_cluster_pass(out);
         }
         if (&pass != static_cast<pass::frame_pass const*>(&this->gi_probe)) {
             return false; // no other pass is wired into a stage yet
@@ -4722,17 +4740,6 @@ namespace vulkan {
         return {};
     }
 
-    std::expected<void, std::string> runtime::make_cluster_pipeline(std::span<unsigned char const> const compute_shader_code) {
-        auto result = this->vulkan_core.make_cluster_pipeline(compute_shader_code);
-        if (!result) {
-            return std::unexpected(std::string(result.error()));
-        }
-        // no viewport/scissor: a compute dispatch binds no graphics state, so the frame path's
-        // viewport resync (which walks the named pipeline cache) never touches this pipeline
-        this->cluster_pipeline = std::move(result).value();
-        return {};
-    }
-
     void runtime::set_shadow_map_size(uint32_t const size) noexcept {
         // Startup-only: everything that consumes the size (the layered image + its views + the
         // descriptor, the depth pass rendering instance, the pipeline viewport, the light UBO texel
@@ -4778,7 +4785,7 @@ namespace vulkan {
         f.rt_shadow = this->rt_shadows_active() && this->rt_shadow.pipeline_ready();
         // Same argument for the cluster pass: flat shading reads no light list, and with no active
         // punctual light there is nothing to sort in the first place.
-        f.clustered = this->clustered_lights && this->cluster_pipeline.has_value() && this->light_state.light_count.x > 0.5f && !f.unlit;
+        f.clustered = this->clustered_lights && this->cluster.pipeline_ready() && this->light_state.light_count.x > 0.5f && !f.unlit;
         f.taa = this->taa_on && this->taa_resolve.pipeline_ready() && shaded_scene;
         f.ssao = this->ssao_enabled && shaded_scene; // shader-side gate: no pass of its own to skip
         f.bloom = this->bloom_intensity > 0.0f && this->post_hdr_pipeline.has_value() && !f.gbuffer_debug;
@@ -4878,7 +4885,9 @@ namespace vulkan {
             return this->shadow_pipeline.has_value();
         }
         if (name == "clustered") {
-            return this->cluster_pipeline.has_value();
+            // AVAILABILITY, not activity: this is the one feature whose answer is "the pass built a pipeline",
+            // while `feature_active` above answers "it runs THIS frame" (a live punctual light is part of that).
+            return this->cluster.pipeline_ready();
         }
         if (name == "ssgi") {
             return this->ssgi_trace.pipeline_ready();
@@ -4951,67 +4960,52 @@ namespace vulkan {
         // pace_and_acquire() copies light_state into the paced slot's buffer, so the next frame's
         // cluster dispatch and shading both see it (no in-flight buffer is touched).
         this->clustered_lights = enabled;
-        if (enabled && !this->cluster_pipeline.has_value()) {
+        if (enabled && !this->cluster.pipeline_ready()) {
             this->warn_missing_feature("clustered", "clustered light culling has no effect: the cluster compute pipeline was not created, so the shading stage loops EVERY active light instead (see the startup log)");
         }
     }
 
-    void runtime::record_cluster_pass(VkCommandBuffer const command_buffer) {
-        core& vk = this->vulkan_core;
-        // Feature registry: skipped when no shading stage reads a light list (flat render mode) or
-        // when no punctual light is active - there would be nothing to sort, and the shading stage
-        // then falls back to looping zero lights.
-        if (!this->active_features().clustered || !this->scene_sets.created()) {
-            return;
-        }
+    bool runtime::resolve_cluster_pass(pass::resolved_io& out) {
+        core& vk = this->vulkan_core; // not const: the two buffer details are read through the non-const VMA
+        // Feature registry: skipped when no shading stage reads a light list (flat render mode) or when no
+        // punctual light is active - there would be nothing to sort, and the shading stage then falls back to
+        // looping zero lights. The stage is gated on the same predicate (feature "clustered"), so this is the
+        // pass's own half of that answer.
         uint32_t const tiles_x = this->cluster_tiles_x;
         uint32_t const tiles_y = this->cluster_tiles_y;
         uint32_t const cluster_count = tiles_x * tiles_y * vulkan::cluster_slice_count;
-        if (cluster_count == 0) {
-            return; // no paced frame yet (the grid comes from the swapchain extent)
-        }
         uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
-        if (frame_slot >= this->cluster_count_buffers.size()) {
-            return;
+        if (cluster_count == 0 || frame_slot >= this->cluster_count_buffers.size() || !this->cluster.pipeline_ready()) {
+            return false; // no paced frame yet (the grid comes from the swapchain extent), or no pipeline
         }
-        // The dispatch reads the frame's OWN scene set (the paced slot's camera/light UBOs) and
-        // writes the same slot's cluster buffers: a compute stage is not part of a rendering
-        // instance, so this records before vkCmdBeginRendering.
-        VkDescriptorSet const scene_set_handle = this->scene_sets.set(static_cast<uint32_t>(frame_slot));
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, vk.scene_pipeline_layout, 0, 1, &scene_set_handle, 0, nullptr);
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->cluster_pipeline->get_pipeline());
-        constexpr uint32_t group_size = 64; // matches local_size_x in shaders/light_cluster.comp
-        vkCmdDispatch(command_buffer, (cluster_count + group_size - 1) / group_size, 1, 1);
-
-        // Hand the two buffers to the fragment stages that read them later in this submission
-        // (forward shading inside the main instance, and the deferred lighting pass): a compute
-        // SHADER_WRITE is not visible to a later SHADER_READ without this barrier. One barrier per
-        // buffer (VkBufferMemoryBarrier2 covers a single buffer).
-        std::array<VkBufferMemoryBarrier2, 2> barriers = {};
-        auto const* count_detail = vk.vma.get_buffer_detail(this->cluster_count_buffers[static_cast<std::size_t>(frame_slot)].handle());
-        auto const* index_detail = vk.vma.get_buffer_detail(this->cluster_index_buffers[static_cast<std::size_t>(frame_slot)].handle());
+        if (!this->scene_sets.created()) {
+            return false;
+        }
+        VkDescriptorSet const scene_set = this->scene_sets.set(frame_slot);
+        if (scene_set == VK_NULL_HANDLE) {
+            return false;
+        }
+        // The two buffers the pass ORDERS but does not bind: they are the shared scene set's bindings 11 and
+        // 12, so the pass reaches them through the declaration's `barrier_buffers` channel - which is what that
+        // channel was added for. Resolved from the FRAME's slot, exactly as the scene set is.
+        auto const* const count_detail = vk.vma.get_buffer_detail(this->cluster_count_buffers[static_cast<std::size_t>(frame_slot)].handle());
+        auto const* const index_detail = vk.vma.get_buffer_detail(this->cluster_index_buffers[static_cast<std::size_t>(frame_slot)].handle());
         if (count_detail == nullptr || index_detail == nullptr) {
-            return;
+            return false;
         }
-        barriers[0].buffer = count_detail->buffer;
-        barriers[1].buffer = index_detail->buffer;
-        for (VkBufferMemoryBarrier2& barrier : barriers) {
-            barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-            barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-            barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-            // the shader reads counts/indices as storage buffers, not as sampled images
-            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.offset = 0;
-            barrier.size = VK_WHOLE_SIZE;
-        }
-        VkDependencyInfo dependency = {};
-        dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dependency.bufferMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
-        dependency.pBufferMemoryBarriers = barriers.data();
-        vkCmdPipelineBarrier2(command_buffer, &dependency);
+        out.frame = this->pass_frame();
+        out.cmd = *this->command_buffers[frame_slot];
+        out.shared.scene = scene_set;
+        out.barrier_buffer_storage[0] = {.view = VK_NULL_HANDLE, .buffer = count_detail->buffer, .image = VK_NULL_HANDLE};
+        out.barrier_buffer_storage[1] = {.view = VK_NULL_HANDLE, .buffer = index_detail->buffer, .image = VK_NULL_HANDLE};
+        out.barrier_buffers = std::span<pass::resolved_binding const>(out.barrier_buffer_storage.data(), render_resource::cluster_barriers.size());
+        out.pipeline_storage[0] = this->cluster.pipeline();
+        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
+        out.pipeline_layout = this->cluster.pipeline_layout();
+        // `extent_rule::none`: the dispatch is sized by the pass's own frame (the cluster count), so the extent
+        // stays empty here rather than being a number the host made up - see pass::extent_rule.
+        out.extent = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->cluster));
+        return true;
     }
 
     // Tighten the directional shadow frustum to the camera's own view frustum every frame. One

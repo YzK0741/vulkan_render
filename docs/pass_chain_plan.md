@@ -808,6 +808,51 @@ being left unexplained.
 Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0 with an empty warning
 stream, gate 12 x 2 with 0 changed and 0 flaky (about the twelve frames that exist), plus the four-run A/B above.
 
+## THE CLUSTERED-LIGHT SORT: THE FIRST PASS WHOSE RESOURCES ARE BUFFERS, AND TWO CHANNELS IT NEEDED
+
+The last compute stage on the "still the runtime's" list, and the one that had been out of reach for a reason
+worth stating: `record_cluster_pass` wrote two buffers that live in the SHARED scene set (bindings 11 and 12),
+and the framework had a channel for an IMAGE a pass moves without binding it (`barrier_images`) and none for a
+BUFFER. So the renderer kept the whole recording. `vulkan.pass.cluster` owns it now, and the step added exactly
+the two things it needed:
+
+1. **`pass_io::barrier_buffers`** (+ `resolved_io::barrier_buffer_storage` / `barrier_buffers`, `max_barrier_buffers`,
+   the validator's three checks and their tests) - the buffer twin of `barrier_images`, with the same argument: a
+   compute SHADER_WRITE is not visible to the fragment stages that read it later in the same submission without a
+   buffer memory barrier, and only the WRITER can place it. The old pass's own comment said as much; what was
+   missing was a way to name the buffers in a declaration.
+2. **`extent_rule::none`** - the sort's dispatch is `tiles_x * tiles_y * slices` workgroups, a count derived from
+   the frame's extent but equal to neither it nor half of it. All three existing rules would have been a claim the
+   host cannot honour, so `none` says "this pass sizes its own work" and `pass_extent` hands over an EMPTY extent
+   rather than a plausible-looking number. The pass reads its count from its own frame, the same split as the
+   scene pass's leaves.
+
+**AND THE LAST `core::make_*` COMPUTE PIPELINE IS GONE.** `core::make_cluster_pipeline` built the cluster pipeline
+against the core's own scene pipeline layout, which a pass cannot own; `vulkan.pipelines::build_cluster` builds the
+same shape (one set layout, no push range - `light_cluster.comp` declares no push_constant block) and the pass
+releases it. The runtime's `make_cluster_pipeline` wrapper and the two feature predicates that asked a raw
+`optional<vk_pipeline>` now ask the pass; `feature_available("clustered")` still answers AVAILABILITY (the pass
+built a pipeline) while `feature_active` answers ACTIVITY (it runs this frame, which also needs a live punctual
+light) - those two are different questions and the comments now say so, because a change like this is exactly where
+they get conflated.
+
+**VERIFIED BY THE KNOB-ON A/B, and this knob is the app's own stress test rather than a config flag**: no gate
+scenario has a punctual light, so `f.clustered` is false in all twelve and the 12 x 2 run says nothing about the
+sort. `[lighting] demo_lights = 4` spawns four procedural lights ("clustered light stress" in the log), and with
+that the pass runs:
+
+| build | run A | run B | the lights |
+|---|---|---|---|
+| pre-change (`0146b77`) | `EAFBC494D3032737…` | `EAFBC494D3032737…` | `demo lights: 4 procedural punctual lights` |
+| this change | `EAFBC494D3032737…` | `EAFBC494D3032737…` | `demo lights: 4 procedural punctual lights` |
+
+Four runs, one hash, validation clean - and validation clean here is a real statement, because the two buffer
+barriers are the pass's own now: a pass that skipped them would leave the fragment stages reading a buffer the
+compute stage wrote in the same submission.
+
+Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0 with an empty output
+stream, gate 12 x 2 with 0 changed and 0 flaky (about the twelve frames that exist), plus the four-run A/B above.
+
 ## WHAT THE INVENTORY ALREADY FOUND (RE-AUDITED AGAINST THE CURRENT TREE)
 
 The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought `master`'s files over, so most
@@ -900,6 +945,11 @@ says what a re-audit of the current tree found.
   job's; the renderer keeps the knob, the caster policy, the request list and the refit bookkeeping, and hands
   the FRAME SLOT to `record` because the job cannot know it. Its verification is the same knob-on A/B on
   `CesiumMan` (1 skinned caster re-skinned and refitted, one hash across four runs). See the section above.
+* **The clustered-light sort is a PASS** (`vulkan.pass.cluster`), and it is the last compute stage that was the
+  runtime's: `core::make_cluster_pipeline` (the last `core::make_*` compute builder) is deleted in favour of
+  `vulkan.pipelines::build_cluster`, the recorder and its two buffer barriers are the pass's, and the framework
+  grew `pass_io::barrier_buffers` and `extent_rule::none` to describe it. Verified by the same knob-on A/B with
+  `[lighting] demo_lights = 4` (four runs, one hash). See the section above.
 
 **NOT DONE, with the reason and the exact next step.**
 
