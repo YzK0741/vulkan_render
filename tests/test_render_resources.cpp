@@ -394,5 +394,24 @@ int main() {
         CHECK(rr::descriptor_counts_for(rr::ssgi_spatial_io, rr::ssgi_spatial_io.own_set).total() == 0);
     }
 
+    // ---- the EIGHTH declaration, and the first one OUTSIDE the GI chain: the ray-traced shadow, the same
+    //      shared-sets shape as the tracer and the spatial filter but at the FRAME's resolution, and its one
+    //      barrier image is a per-frame-slot resource rather than a per-swapchain-image family ----
+    {
+        CHECK(rr::validate(rr::rt_shadow_io).has_value());
+        CHECK(rr::rt_shadow_io.bindings.empty()); // the camera, the light UBO and the TLAS are the scene set's
+        CHECK(rr::rt_shadow_io.targets.empty());  // a compute pass
+        CHECK(rr::rt_shadow_io.shared_sets.size() == 2);
+        CHECK(rr::rt_shadow_io.shared_sets[0] == 0); // the scene set: the top level structure lives at binding 16
+        CHECK(rr::rt_shadow_io.shared_sets[1] == 1); // the G-buffer set: the surface each ray starts from
+        CHECK(rr::rt_shadow_io.barrier_images.size() == 1);
+        CHECK(rr::rt_shadow_io.barrier_images[0].resource == rr::resource_id::rt_shadow_visibility);
+        CHECK(rr::find(rr::resource_id::rt_shadow_visibility)->scope == rr::resource_scope::per_frame_slot);
+        CHECK(rr::rt_shadow_io.push.has_value());
+        CHECK(rr::rt_shadow_io.push->size == 80); // inv_view_proj (64) + the four ray-offset terms (16)
+        CHECK(rr::rt_shadow_io.push->stages == rr::stage_flag::compute);
+        CHECK(rr::descriptor_counts_for(rr::rt_shadow_io, rr::rt_shadow_io.own_set).total() == 0);
+    }
+
     return vk_test::finish("test_render_resources");
 }

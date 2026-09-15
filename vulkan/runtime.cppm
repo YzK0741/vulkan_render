@@ -35,6 +35,7 @@ import vulkan.pass.ssgi_trace;        // the fifth, and the GI chain's first sta
 import vulkan.pass.ssgi_spec;         // the sixth: the glossy lobe, which corrects the tracer's own image
 import vulkan.pass.ssgi_temporal;     // the seventh: the diffuse temporal resolve's recording (see its header)
 import vulkan.pass.ssgi_spatial;      // the eighth, and the GI chain's last stage: the spatial filter
+import vulkan.pass.rt_shadow;         // the ninth, and the first one OUTSIDE the GI chain: the ray-traced shadow
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
@@ -413,6 +414,13 @@ namespace vulkan {
         /// composite samples is its output, so the renderer's `gi_resolved` is read from whether it recorded.
         pass::ssgi_spatial_pass ssgi_spatial;
         std::array<pass::frame_pass*, 1> ssgi_spatial_stage = {&this->ssgi_spatial};
+        /// THE RAY-TRACED SHADOW (vulkan.pass.rt_shadow): the first pass on this branch that is NOT part of the
+        /// GI chain. It owns its pipeline layout, its pipeline, the two barriers around the visibility image it
+        /// rewrites and the dispatch; the renderer keeps the STAGE's two facts - where it sits (after the
+        /// G-buffer pass, before the lighting stage) and the transition the lighting stage needs on a frame it
+        /// does not run. `light_state.rt_shadows` and the feature registry both ask it whether it is ready.
+        pass::rt_shadow_pass rt_shadow;
+        std::array<pass::frame_pass*, 1> rt_shadow_stage = {&this->rt_shadow};
         bool ssgi_on = false;
         float ssgi_intensity = 0.7f; // scales the traced indirect against the IBL probe it overlaps
         float ssgi_radius = 3.0f;    // ray length, view units
@@ -1303,28 +1311,19 @@ namespace vulkan {
             uint32_t skin_base = 0; // this primitive's joint block in skins.matrices
         };
         bool rt_top_level_logged = false;
-        // The ray-traced sun shadow pass (see shaders/rt_shadow.comp): one ray per pixel against the top
-        // level structure, writing the visibility image the deferred lighting stage multiplies its sun
-        // term by. It runs between the G-buffer pass (whose depth and normal it starts the rays from) and
-        // the lighting stage (which reads its output), and it binds the same two set layouts the GI tracer
-        // does - so it needs no descriptor family of its own.
-        std::optional<vk_pipeline> rt_shadow_pipeline = std::nullopt;
-        VkPipelineLayout rt_shadow_pipeline_layout = VK_NULL_HANDLE;
-        struct rt_shadow_push_constants {
-            glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world, the block the lighting stage uses
-            // x = ray tmin, y = absolute normal-offset floor, z = relative offset scale (per unit of
-            // distance from the camera), w = unused
-            glm::vec4 params = glm::vec4(0.01f, 0.002f, 0.0015f, 0.0f);
-        };
-        bool rt_shadow_logged = false;
+        // The ray-traced sun shadow pass (see shaders/rt_shadow.comp): its pipeline, its pipeline layout, its
+        // push block's shape and its one-shot log line are the PASS's now (vulkan.pass.rt_shadow), and its
+        // member and stage are declared next to the other passes above. The renderer keeps two facts about it:
+        // WHERE it sits (after the G-buffer pass, before the lighting stage - see the frame loop) and the
+        // transition the lighting stage's descriptor needs on a frame where the pass does not run.
         /** @brief record the one-time acceleration-structure build into the frame's command buffer */
         void record_acceleration_structures(VkCommandBuffer command_buffer);
         /** @brief record this frame's top level structure (the culled instance list) */
         void record_top_level_structure(VkCommandBuffer command_buffer);
         /** @brief point a scene set's binding 16 at @p tlas (see the null-descriptor rule it avoids) */
         void write_rt_structure_binding(VkDescriptorSet set, VkAccelerationStructureKHR tlas);
-        /** @brief record the ray-traced sun shadow pass */
-        void record_rt_shadow_pass(VkCommandBuffer command_buffer);
+        /// @brief resolve the ray-traced shadow pass's frame: the two shared sets, the visibility image and the push
+        [[nodiscard]] bool resolve_rt_shadow(pass::resolved_io& out);
         // scene center handed to enable_shadows. The fit falls back to center +- scene_radius when a
         // shadow caster has no world AABB of its own AND is not an instanced draw whose instance
         // matrices we can read (see instanced_world_aabb).
@@ -2482,15 +2481,6 @@ namespace vulkan {
         [[nodiscard]] VkExtent2D pass_extent(pass::frame_pass const& pass) const noexcept;
 
         /**
-         * @brief create the ray-traced sun shadow pipeline from shaders/rt_shadow.comp
-         * @param compute_shader_code raw SPIR-V of the pass
-         * @return success, or an error message on failure
-         * @note optional in the same sense every ray-traced path is: it is only created when the DEVICE
-         *       has ray queries, and when it is missing the cascaded shadow maps keep running (the
-         *       lighting stage's override stays off)
-         */
-        std::expected<void, std::string> make_rt_shadow_pipeline(std::span<unsigned char const> compute_shader_code);
-        /**
          * @brief create the alphaMode MASK bake pipeline from shaders/mask_bake.comp
          * @param compute_shader_code the compiled SPIR-V
          * @return an error string when the device has no ray queries or the pipeline could not be created
@@ -2786,6 +2776,7 @@ namespace vulkan {
             bool ssgi = false;          // trace one bounce of screen-space diffuse indirect
             bool ssgi_probes = false;   // update the world-space probe cache (the pass, not the tracer's fallback)
             bool shadow = false;        // record the directional shadow pass
+            bool rt_shadow = false;     // record the ray-traced shadow pass (the knob, ray queries, its pipeline)
             bool clustered = false;     // record the cluster compute pass
             bool taa = false;           // resolve TAA
             bool ssao = false;          // the lighting stage applies screen-space AO (shader-side gate)

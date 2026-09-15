@@ -1,4 +1,4 @@
-// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/render_resource/render_resource.cppm
@@ -1091,6 +1091,37 @@ export namespace vulkan::render_resource {
         .targets = {},
         .barrier_images = ssgi_spatial_barriers,
         .push = push_block{.offset = 0, .size = 48, .stages = stage_flag::compute},
+    };
+
+    /**
+     * @brief the image the ray-traced shadow pass rewrites, and the only resource it has to name
+     *
+     * `rt_shadow` is per FRAME SLOT rather than per swapchain image (the rays are traced once per frame, not once
+     * per presented image), so the host resolves this one from the frame's slot - the declaration says WHICH
+     * resource, and the element is 0 because there is one family entry to choose from there. It is a storage
+     * image the pass writes (UNDEFINED -> GENERAL) and the lighting stage samples (GENERAL -> SHADER_READ), both
+     * transitions recorded by the pass itself.
+     */
+    inline constexpr std::array<barrier_image, 1> rt_shadow_barriers = {{
+        {.resource = resource_id::rt_shadow_visibility, .element = 0},
+    }};
+
+    /**
+     * @brief the ray-traced sun shadow pass's declaration: a full-resolution compute dispatch over two shared sets
+     *
+     * The same shape as the tracer's, with the frame's resolution instead of half: it binds the shared scene set
+     * (the camera, the light UBO, the top level structure at binding 16) and the shared G-buffer set (the surface
+     * each ray starts from), owns no descriptor at all, and names the one image it rewrites through
+     * `barrier_images`. Its push block is the camera's inverse view-projection and four ray-offset terms.
+     */
+    inline constexpr pass_io rt_shadow_io = {
+        .name = "rt_shadow",
+        .own_set = 2, // unused: no own bindings (everything it reads is in the shared sets)
+        .bindings = {},
+        .shared_sets = ssgi_trace_shared_sets, // the same two: the scene set (0) and the G-buffer set (1)
+        .targets = {},
+        .barrier_images = rt_shadow_barriers,
+        .push = push_block{.offset = 0, .size = 80, .stages = stage_flag::compute},
     };
 
 } // namespace vulkan::render_resource

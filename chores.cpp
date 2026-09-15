@@ -306,23 +306,20 @@ namespace chores {
             load_shader(shaders_dir, "gi_probe.comp.spv", probe_code);
             runtime.register_shader("gi_probe.comp.spv", probe_code);
 
+            // Ray-traced sun shadows: one ray per pixel against the scene's acceleration structures. IT IS A
+            // PASS, so its shader has to be registered BEFORE create_passes() below - the pass builds its own
+            // pipeline layout and compute pipeline from it (see vulkan.pass.rt_shadow), and a pass created
+            // before its shader exists builds nothing and says so. Optional, and the builder refuses on a device
+            // without ray queries: without it the cascaded shadow maps keep running.
+            std::vector<unsigned char> rt_shadow_code;
+            load_shader(shaders_dir, "rt_shadow.comp.spv", rt_shadow_code);
+            runtime.register_shader("rt_shadow.comp.spv", rt_shadow_code);
+
             // ... and now that every pass's shaders are registered, run the passes' create steps. This is the
             // ONE call that builds what the passes own (their set layouts, pipeline layouts and pipelines),
             // and it happens here rather than inside each block above because a pass must be created AFTER
             // its shaders exist and the shared set layouts do.
             runtime.create_passes();
-
-            // Ray-traced sun shadows: one ray per pixel against the scene's acceleration structures.
-            // Created only on a device with ray queries (the builder says so as an error otherwise), and
-            // optional even there: without it the cascaded shadow maps keep running.
-            std::vector<unsigned char> rt_shadow_code;
-            load_shader(shaders_dir, "rt_shadow.comp.spv", rt_shadow_code);
-            auto const rt_shadow_result = runtime.make_rt_shadow_pipeline(rt_shadow_code);
-            if (!rt_shadow_result) {
-                utility::log("ray-traced shadows unavailable: {}", rt_shadow_result.error());
-            } else {
-                utility::log("SUCCESS: ray-traced sun shadow pipeline created (one ray per pixel, terminated on first hit)");
-            }
 
             // The alphaMode MASK bake (shaders/mask_bake.comp), created here for the same reason and with
             // the same optionality: without it a MASK surface is solid to a ray. It runs once, inside the

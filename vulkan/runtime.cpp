@@ -283,10 +283,6 @@ namespace vulkan {
         // pipeline layout and pipeline (vulkan.pass.ssgi_temporal) - so no SSGI pipeline handle is torn down in
         // this destructor at all now, and the only GI object still the renderer's is the denoiser's two
         // descriptor FAMILIES (the diffuse and the reflection), which one declaration cannot describe.
-        if (this->rt_shadow_pipeline_layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->vulkan_core.device, this->rt_shadow_pipeline_layout, nullptr);
-            this->rt_shadow_pipeline_layout = VK_NULL_HANDLE;
-        }
         if (this->mask_bake_pipeline_layout != VK_NULL_HANDLE) {
             // It owns no set layout either (it is created from the scene one), so only the layout. Its
             // descriptor set is a vk_descriptor_set member, which frees itself with the pool still alive.
@@ -1453,7 +1449,7 @@ namespace vulkan {
             // after the settings are applied, which is where this flag was first lost) resets fields of
             // this struct. Recomposing it makes the flag authoritative - the lighting stage reads exactly
             // what the passes below will do this frame.
-            this->light_state.rt_shadows = (this->rt_shadows && this->rt_shadow_pipeline.has_value() && this->vulkan_core.ray_query_available) ? 1.0f : 0.0f;
+            this->light_state.rt_shadows = (this->rt_shadows && this->rt_shadow.pipeline_ready() && this->vulkan_core.ray_query_available) ? 1.0f : 0.0f;
             this->light_state.sun_intensity = this->furnace ? 0.0f : 1.0f;
             this->light_state.furnace_level = this->furnace ? 1.0f : 0.0f;
 
@@ -3212,7 +3208,7 @@ namespace vulkan {
         this->ssgi_ray_tracing = enabled;
         if (enabled && !this->vulkan_core.ray_query_available) {
             this->warn_missing_feature("ssgi", "GI rays are marched, not traced: this device has no ray queries");
-        } else if (enabled && !this->rt_shadow_pipeline.has_value()) {
+        } else if (enabled && !this->rt_shadow.pipeline_ready()) {
             this->warn_missing_feature("ssgi", "GI rays are marched, not traced: the ray-traced pipelines were not created");
         }
     }
@@ -3352,6 +3348,11 @@ namespace vulkan {
         pass::run_report const taa_created = pass::create_stage(taa_stage, build);
         if (!taa_created.rejected.empty()) {
             utility::log("pass '{}': its declaration was refused by the validator, so it does not run", taa_created.rejected);
+        }
+        pass::stage const rt_shadow_stage = {.name = "rt_shadow", .passes = this->rt_shadow_stage, .marks = false};
+        pass::run_report const rt_shadow_created = pass::create_stage(rt_shadow_stage, build);
+        if (!rt_shadow_created.rejected.empty()) {
+            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", rt_shadow_created.rejected);
         }
     }
 
@@ -3611,6 +3612,9 @@ namespace vulkan {
         }
         if (&pass == static_cast<pass::frame_pass const*>(&this->taa_resolve)) {
             return this->resolve_taa_pass(out);
+        }
+        if (&pass == static_cast<pass::frame_pass const*>(&this->rt_shadow)) {
+            return this->resolve_rt_shadow(out);
         }
         if (&pass != static_cast<pass::frame_pass const*>(&this->gi_probe)) {
             return false; // no other pass is wired into a stage yet
@@ -3890,79 +3894,57 @@ namespace vulkan {
         return true;
     }
 
-    std::expected<void, std::string> runtime::make_rt_shadow_pipeline(std::span<unsigned char const> const compute_shader_code) {
-        using fail = std::unexpected<std::string>;
-        if (!this->vulkan_core.ray_query_available) {
-            return fail(std::string("rt shadow: this device has no ray queries (VK_KHR_acceleration_structure + VK_KHR_ray_query)"));
-        }
-        if (!this->deferred_pipeline.has_value()) {
-            return fail(std::string("rt shadow: create the deferred lighting pipeline first (it owns the G-buffer set layout)"));
-        }
-        auto built = pipelines::build_rt_shadow(this->vulkan_core.device, this->vulkan_core.scene_descriptor_set_layout, this->gbuffer_set_layout, sizeof(rt_shadow_push_constants), compute_shader_code);
-        if (!built) {
-            return fail(built.error());
-        }
-        this->rt_shadow_pipeline_layout = built->pipeline_layout;
-        this->rt_shadow_pipeline = std::move(built->trace);
-        return {};
-    }
-
-    void runtime::record_rt_shadow_pass(VkCommandBuffer const command_buffer) {
-        core& vk = this->vulkan_core;
+    bool runtime::resolve_rt_shadow(pass::resolved_io& out) {
+        core const& vk = this->vulkan_core;
         uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
-        auto const& visibility_images = vk.rt_shadow_images;
-        if (frame_slot >= visibility_images.size() || visibility_images[frame_slot] == VK_NULL_HANDLE) {
-            return;
+        // The visibility image is per FRAME SLOT, not per swapchain image: the rays are traced once per frame.
+        if (frame_slot >= vk.rt_shadow_images.size() || vk.rt_shadow_images[frame_slot] == VK_NULL_HANDLE) {
+            return false;
         }
-        // Nothing to trace against, or this slot's structure is not built yet: the caller's off path
-        // leaves the image readable and the light UBO's flag is 0, so the frame shades from the cascaded
-        // maps. Gating on the SAME handle the binding-16 write is gated on is what keeps a dispatch from
-        // ever reading an unwritten descriptor.
+        // Nothing to trace against, or this slot's structure is not built yet: the frame shades from the cascaded
+        // maps instead (the light UBO's flag is 0 - see set_rt_shadows and the frame loop). Gating on the SAME
+        // handle the binding-16 write is gated on is what keeps a dispatch from ever reading an unwritten
+        // descriptor.
         if (!this->rt_top_levels.has_value() || this->rt_top_levels->handle(frame_slot) == VK_NULL_HANDLE) {
-            return;
+            return false;
         }
-        // The G-buffer set is written by the accessor the GI passes and the debug view share; this pass
-        // can be the first to need it on a frame where none of them ran.
+        // The G-buffer set is written by the accessor the GI passes and the debug view share; this pass can be
+        // the first to need it on a frame where none of them ran.
         this->ensure_gbuffer_descriptors();
-        // ... and this pass is the FIRST sampler of the stored surface when it runs, so it is the one
-        // that has to publish the G-buffer instance's attachment writes (the lighting stage's identical
-        // call then finds the flags clear).
-        this->ensure_gbuffer_targets_sampled(command_buffer, static_cast<uint32_t>(this->current_image_index));
-        this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(this->current_image_index));
+        VkDescriptorSet const gbuffer_set = this->gbuffer_family.set(static_cast<uint32_t>(this->current_image_index), 0);
+        VkDescriptorSet const scene_set = this->scene_sets.set(frame_slot);
+        if (gbuffer_set == VK_NULL_HANDLE || scene_set == VK_NULL_HANDLE) {
+            return false;
+        }
+        // ... and this pass is the FIRST sampler of the stored surface when it runs, so it is the one that has to
+        // publish the G-buffer instance's attachment writes (the lighting stage's identical call then finds the
+        // flags clear).
+        VkCommandBuffer const command_buffer = *this->command_buffers[frame_slot];
+        static_cast<void>(this->ensure_gbuffer_targets_sampled(command_buffer, static_cast<uint32_t>(this->current_image_index)));
+        static_cast<void>(this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(this->current_image_index)));
 
-        // The image is written as a storage image (GENERAL) and read by the lighting stage as a sampler
-        // (SHADER_READ). Both transitions happen here, around the dispatch, because this is the only
-        // place that knows the image is being rewritten - the lighting stage's descriptor declares
-        // SHADER_READ whether or not this pass ran (see the off path at the caller).
-        VkImageMemoryBarrier2 to_general = vulkan::undefined_to_general_transition;
-        to_general.image = visibility_images[frame_slot];
-        VkDependencyInfo const general_dependency = make_image_dependency_info(1, &to_general);
-        vkCmdPipelineBarrier2(command_buffer, &general_dependency);
-
-        std::array<VkDescriptorSet, 2> const sets = {this->scene_sets.set(frame_slot), this->gbuffer_family.set(this->current_image_index, 0)};
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->rt_shadow_pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->rt_shadow_pipeline->get_pipeline());
-
-        rt_shadow_push_constants const push = {
+        out.frame = this->pass_frame();
+        out.cmd = command_buffer;
+        out.shared.scene = scene_set;
+        out.shared.gbuffer = gbuffer_set;
+        // The one image it transitions, resolved by declaration element: the declaration names WHICH resource and
+        // the host resolves it from the frame's slot.
+        out.barrier_storage[0] = {.view = vk.rt_shadow_image_views[frame_slot], .buffer = VK_NULL_HANDLE, .image = vk.rt_shadow_images[frame_slot]};
+        out.barrier_images = std::span<pass::resolved_binding const>(out.barrier_storage.data(), render_resource::rt_shadow_barriers.size());
+        out.pipeline_storage[0] = this->rt_shadow.pipeline();
+        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
+        out.pipeline_layout = this->rt_shadow.pipeline_layout();
+        // The push block's values are the renderer's: the camera's inverse view-projection and the three ray-offset
+        // terms (which are the shader's own constants, written once here).
+        pass::rt_shadow_pass::push_constants push = {
             .inv_view_proj = this->current_inv_view_proj,
             .params = glm::vec4(0.01f, 0.002f, 0.0015f, 0.0f),
         };
-        vkCmdPushConstants(command_buffer, this->rt_shadow_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-
-        constexpr uint32_t group_size = 8; // shaders/rt_shadow.comp's local_size_x/y
-        vkCmdDispatch(command_buffer, (vk.swap_chain_extent.width + group_size - 1) / group_size, (vk.swap_chain_extent.height + group_size - 1) / group_size, 1);
-
-        VkImageMemoryBarrier2 to_sampling = vulkan::general_to_sampling_transition;
-        to_sampling.image = visibility_images[frame_slot];
-        VkDependencyInfo const sampling_dependency = make_image_dependency_info(1, &to_sampling);
-        vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
-
-        if (!this->rt_shadow_logged) {
-            this->rt_shadow_logged = true;
-            utility::log("ray-traced shadows: tracing {}x{} rays per frame (one per pixel, terminated on the first hit)",
-                         vk.swap_chain_extent.width,
-                         vk.swap_chain_extent.height);
-        }
+        static_assert(sizeof(push) <= pass::max_push_bytes, "the shadow pass's push block must fit the guaranteed minimum");
+        std::memcpy(out.push_storage.data(), &push, sizeof(push));
+        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
+        out.extent = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->rt_shadow));
+        return true;
     }
 
     bool runtime::resolve_ssgi_spatial(pass::resolved_io& out) {
@@ -4200,10 +4182,12 @@ namespace vulkan {
             // Ray-traced sun shadows run HERE: after the G-buffer pass (whose depth and normal the rays
             // start from) and before the lighting stage (which multiplies the sun term by the result).
             // Running it before the G-buffer pass would mean starting rays from the PREVIOUS frame's
-            // surface, so the position is not a detail - it is the ordering constraint.
-            if (this->rt_shadow_pipeline.has_value() && this->rt_shadows_active()) {
-                this->record_rt_shadow_pass(command_buffer);
-            } else if (static_cast<std::size_t>(vk.current_frame) < vk.rt_shadow_images.size() && vk.rt_shadow_images[vk.current_frame] != VK_NULL_HANDLE) {
+            // surface, so the position is not a detail - it is the ordering constraint. The PASS owns the
+            // recording (vulkan.pass.rt_shadow); what is this loop's is the position and the off path below.
+            pass::stage const rt_shadow_stage = {.name = "rt_shadow", .passes = this->rt_shadow_stage, .marks = false};
+            pass::run_report const rt_shadow_report = pass::record_stage(rt_shadow_stage, this->make_pass_host());
+            if (rt_shadow_report.recorded == 0 && static_cast<std::size_t>(vk.current_frame) < vk.rt_shadow_images.size() &&
+                vk.rt_shadow_images[vk.current_frame] != VK_NULL_HANDLE) {
                 // The pass did not run, but the lighting stage's descriptor still declares the image as
                 // a shader input: its shader samples the binding only under a flag, and Vulkan requires
                 // a statically-used binding's image to be in the layout the descriptor declares whether
@@ -4814,6 +4798,10 @@ namespace vulkan {
         // (unlit.frag has no lighting include; the lighting stage returns the albedo before any
         // shading), so recording the pass would be pure waste - it measured 0.22 ms of a 0.5 ms frame.
         f.shadow = this->shadow_enabled && this->shadows_enabled && this->shadow_pipeline.has_value() && !f.unlit;
+        // The ray-traced shadow is a pass of its own, so it is a feature of its own: the knob, a device with ray
+        // queries, and its own pipeline. The frame loop gates its STAGE on this, and the light UBO's
+        // `rt_shadows` lane (what the lighting stage actually reads) is composed from the same three.
+        f.rt_shadow = this->rt_shadows_active() && this->rt_shadow.pipeline_ready();
         // Same argument for the cluster pass: flat shading reads no light list, and with no active
         // punctual light there is nothing to sort in the first place.
         f.clustered = this->clustered_lights && this->cluster_pipeline.has_value() && this->light_state.light_count.x > 0.5f && !f.unlit;
@@ -4853,6 +4841,9 @@ namespace vulkan {
         }
         if (name == "shadow") {
             return f.shadow;
+        }
+        if (name == "rt_shadow") {
+            return f.rt_shadow;
         }
         if (name == "clustered") {
             return f.clustered;
@@ -5253,7 +5244,7 @@ namespace vulkan {
         // next frame's paced write - which is why it is set here rather than recomputed per frame. The
         // device check and the pipeline check are folded in: a request that cannot be honoured leaves the
         // cascaded shadow maps running, and the shader never even looks at the visibility image.
-        this->light_state.rt_shadows = (enabled && this->rt_shadow_pipeline.has_value() && this->vulkan_core.ray_query_available) ? 1.0f : 0.0f;
+        this->light_state.rt_shadows = (enabled && this->rt_shadow.pipeline_ready() && this->vulkan_core.ray_query_available) ? 1.0f : 0.0f;
     }
 
     void runtime::set_rt_mask_bake(bool const enabled) noexcept {

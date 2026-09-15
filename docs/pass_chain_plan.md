@@ -678,6 +678,49 @@ Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen
 changed and 0 flaky**. What is still the renderer's: the reflection's family, and the mode-1 recording that uses
 it - the two things a declaration cannot express.
 
+## THE FIRST PASS OUTSIDE THE GI CHAIN: THE RAY-TRACED SHADOW - AND A GATE COVERAGE GAP IT EXPOSED
+
+With the GI chain fully extracted, the next pass is one the frame loop calls between two other stages:
+`record_rt_shadow_pass` was a 55-line function in `runtime.cpp`, and its pipeline was built by
+`runtime::make_rt_shadow_pipeline`. It is now `vulkan.pass.rt_shadow` (`rt_shadow_io` in the declaration layer,
+80-byte push, two shared sets, one barrier image, `extent_rule::full`), and it owns its pipeline layout, its
+pipeline and its one-shot "tracing WxH rays per frame" log. What the renderer keeps is the STAGE: its position
+(after the G-buffer pass, before the lighting stage - the ordering constraint the rays' origins depend on), the
+off-path transition the lighting stage's descriptor needs on a frame where the pass does not run, and the
+`rt_shadow_end` mark.
+
+**THE GATE CANNOT DECIDE THIS PASS, and finding that out is worth more than the extraction.** All twelve
+scenarios were captured with `rt_shadows = false` (it is the config default and no scenario overrides it), so the
+pass built nothing, recorded nothing, and the 12 x 2 run came back 0 changed - which is a TRUE statement about
+frames that never ran it and worthless as evidence. The claim "the gate decides the move on the scenarios that run
+with `rt_shadows` on" was written in the pass's first draft; it is false, and the gate is not a proof of a path it
+does not enter.
+
+So the pass was verified the way the gate is built to avoid needing: **an A/B against the parent commit's binary,
+with the feature ON.** A worktree at `b08c8b5` (the commit before this change) was configured and built Release,
+and both binaries were run with `shadow_single`'s settings plus `rt_shadows = true`
+(1080x960, camera `35,20,7,0,-1.6,0`, 40 frames, validation layers on), twice each:
+
+| build | run A | run B | validation |
+|---|---|---|---|
+| parent (`b08c8b5`) | `AEEB757EA347CC41…` | `AEEB757EA347CC41…` | clean |
+| this change | `AEEB757EA347CC41…` | `AEEB757EA347CC41…` | clean |
+
+Four runs, one hash: the extraction is byte-identical on the path it changes, the path is deterministic, and it is
+validation-clean. The pass's own log line is in both logs ("ray-traced shadows: tracing 1080x960 rays per frame"),
+which is also how the run proves the pass's `record` ran rather than the frame merely looking the same.
+
+**WHAT THIS MEANS FOR THE GATE, stated rather than left implicit**: `rt_shadows`, `rt_mask_bake` and the compute
+skin path are all OFF in every scenario, so the harness covers the deferred path, the GI chain and the TAA resolve,
+and does NOT cover the traced-shadow path or the bake. Adding a thirteenth scenario would close it - and that
+scenario needs a reference captured with a deliberate `-Update`, which is the anchor rule's one forbidden move
+without an explicit override. The A/B above is what that scenario would have bought, taken without touching the
+anchor.
+
+Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0, gate 12 x 2 with 0
+changed and 0 flaky (a statement about the twelve frames that exist), plus the four-run A/B above for the path
+that actually changed.
+
 ## WHAT THE INVENTORY ALREADY FOUND (RE-AUDITED AGAINST THE CURRENT TREE)
 
 The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought `master`'s files over, so most
@@ -753,6 +796,12 @@ says what a re-audit of the current tree found.
   same declaration as the layout), retired by its own `on_swapchain_recreated`, and with one deliberate
   substitution at binding 6 that the section above records. The reflection's family in the renderer uses the same
   generated writes now.
+* **The ray-traced shadow is a pass, and it is the FIRST one outside the GI chain** (see the section above):
+  `vulkan.pass.rt_shadow` owns its pipeline layout, its pipeline, the two barriers around the visibility image and
+  the dispatch; `runtime::make_rt_shadow_pipeline` and `record_rt_shadow_pass` are deleted, and the frame loop
+  keeps only the stage's position, its off path and its mark. Verified by a four-run A/B against the parent
+  commit with `rt_shadows = true`, because **the gate has no scenario that enables it** - a coverage gap that is
+  itself recorded above.
 
 **NOT DONE, with the reason and the exact next step.**
 
