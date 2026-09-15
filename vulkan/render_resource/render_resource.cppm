@@ -1,4 +1,4 @@
-// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.10.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/render_resource/render_resource.cppm
@@ -1211,4 +1211,41 @@ export namespace vulkan::render_resource {
         .push = std::nullopt,
     };
 
+    /// @brief the deferred lighting stage's two shared sets: the scene set (0) and the G-buffer set (1)
+    inline constexpr std::array<uint32_t, 2> deferred_shared_sets = {0, 1};
+
+    /// @brief the resource the deferred lighting stage RENDERS INTO, by declaration
+    inline constexpr std::array<render_target, 1> deferred_targets = {{
+        {.resource = resource_id::scene_color, .element = 0, .kind = target_kind::color},
+    }};
+
+    /**
+     * @brief the deferred lighting stage's declaration: a fullscreen triangle that shades every pixel
+     *
+     * Every binding it uses belongs to one of its TWO SHARED SETS (the scene set: the camera, the IBL, the light
+     * UBO, the shadow map; the G-buffer set: the three surface targets, the depth, the velocity), so it declares
+     * no binding of its own - the shape the tracer, the lobe and the spatial filter have, with one render target
+     * instead of a compute dispatch.
+     *
+     * THE TARGET IS A RECORDED DEVIATION: it names `scene_color`, and the host hands over whichever image the frame
+     * actually lights - `scene_color` while the TAA resolve runs and `hdr` when it does not (the accessor the
+     * renderer always used). A `render_target` names one resource today, and a "frame-dependent target" is a
+     * framework decision this pass does not get to make on its own; the deviation is written down here and in
+     * docs/pass_chain_plan.md rather than hidden.
+     *
+     * The push block is 88 bytes - a mat4, a vec4 (the SSAO knobs) and two floats (the render mode, and whether the
+     * traced chain replaces the ambient this frame) - and the attachment is LOADed, because the lighting ADDS to
+     * the emissive the G-buffer pass already wrote (which is also why the pass builds its pipeline with the
+     * additive blend).
+     */
+    inline constexpr pass_io deferred_io = {
+        .name = "deferred",
+        .own_set = 2, // unused: no own bindings (every binding it uses lives in the two shared sets)
+        .bindings = {},
+        .shared_sets = deferred_shared_sets,
+        .targets = deferred_targets,
+        .barrier_images = {},
+        .barrier_buffers = {},
+        .push = push_block{.offset = 0, .size = 88, .stages = stage_flag::fragment},
+    };
 } // namespace vulkan::render_resource

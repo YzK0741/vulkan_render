@@ -448,5 +448,23 @@ int main() {
         CHECK(!rr::validate(bad_element).has_value());
     }
 
+    // ---- the TENTH declaration: the deferred lighting stage, a fullscreen pass over the same two shared sets the
+    //      GI chain binds, whose only resource of its own is the target it renders into - and whose target is a
+    //      recorded deviation (it names scene_color; the host hands over hdr on the frames TAA is off) ----
+    {
+        CHECK(rr::validate(rr::deferred_io).has_value());
+        CHECK(rr::deferred_io.bindings.empty()); // every binding it uses is in one of the two shared sets
+        CHECK(rr::deferred_io.shared_sets.size() == 2);
+        CHECK(rr::deferred_io.shared_sets[0] == 0); // the scene set: camera, IBL, light UBO, shadow map
+        CHECK(rr::deferred_io.shared_sets[1] == 1); // the G-buffer set: the surface it shades
+        CHECK(rr::deferred_io.targets.size() == 1); // the only resource of its own: what it renders into
+        CHECK(rr::deferred_io.targets[0].resource == rr::resource_id::scene_color);
+        CHECK(rr::deferred_io.targets[0].kind == rr::target_kind::color);
+        CHECK(rr::deferred_io.barrier_images.empty()); // it moves no image of its own
+        CHECK(rr::deferred_io.push.has_value());
+        CHECK(rr::deferred_io.push->size == 88);                         // mat4 + vec4 + two floats
+        CHECK(rr::deferred_io.push->stages == rr::stage_flag::fragment); // the vertex stage pushes nothing
+        CHECK(rr::descriptor_counts_for(rr::deferred_io, rr::deferred_io.own_set).total() == 0);
+    }
     return vk_test::finish("test_render_resources");
 }
