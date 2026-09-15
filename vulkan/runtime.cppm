@@ -1443,7 +1443,21 @@ namespace vulkan {
         void begin_rendering(VkCommandBuffer command_buffer, uint32_t image_index, VkRenderingFlags flags = 0) const;
 
         // ---- scene resource management (see the members above) ----
-        void init_scene_resources();    // camera UBO buffers + white fallback texture + texture sampler + material table
+        void init_scene_resources();     // camera UBO buffers + white fallback texture + texture sampler + material table
+        void init_recording_resources(); // primary + secondary command buffers and their pools
+        /**
+         * @brief reset every per-image flag that describes a swapchain GENERATION
+         *
+         * A freshly created target image starts in UNDEFINED, holds nothing, and no pass has written
+         * it yet - which is the state generation 0 (the constructor, after the core built this
+         * generation's targets) and every later generation (on_swapchain_recreated) both need. One
+         * function, so the two call sites cannot drift apart.
+         *
+         * @note deliberately NOT the TAA history matrices (image_view_proj): those may only be written
+         *       from a real camera snapshot (current_ubo), which the constructor does not have yet, so
+         *       they stay with the two call sites that do
+         */
+        void reset_image_generation_state();
         void ensure_shadow_resources(); // (lazily) layered shadow map + light UBO buffers
         void ensure_cluster_buffers();  // (lazily) per-slot cluster count/index buffers (M5)
         // Diagnostics for the optional features (see log_feature_status / warn_missing_feature): a

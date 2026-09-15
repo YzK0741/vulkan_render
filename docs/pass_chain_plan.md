@@ -1943,3 +1943,80 @@ frame that predates GI byte-identical, measured against BOTH the branch's origin
 `%LOCALAPPDATA%\vulkan_render\baseline` (12 scenarios) and never passes `-Update` without an explicit override;
 and `-BuildDir` must be ABSOLUTE or the script's relative `screenshot_dir` produces a false FLAKY (fixed in the
 script, `5036a01`).
+
+## THE CONSTRUCTOR'S OWN INITIALIZATION: WHAT MOVED INTO A FUNCTION, AND WHAT CANNOT (audited at `dcab4f0`)
+
+**THE QUESTION**: are there members whose initialization belongs in an init function rather than in the constructor?
+Read against the tree at `dcab4f0`, the answer is yes for two of the four groups - and the two that CANNOT move are
+more informative than the two that can, because each one names the structural decision that blocks it.
+
+**WHAT THE CONSTRUCTOR STILL DID, by group** (before this slice):
+
+1. **the member-init list, 5 entries** (`core_owner`, `vulkan_core`, `readback_staging`, `filtered_core`,
+   `pass_resources`) - forced: `readback_staging` is deliberately neither copyable nor movable (two owners of one
+   staging buffer is the bug its deleted copy would be), and the other four are views/references onto the core.
+2. **the default member initializers that do real work**: `task_pool{default_task_pool_threads()}` (runtime.cppm:1101)
+   - which SPAWNS THREADS at member-init time - and the pass chain: `passes{"render"}` plus 19
+   `passes.emplace<...>()` plus 11 stage arrays plus `gi_chain`, plus two `passes.keep<...>()` jobs
+   (runtime.cppm:401-505, 1307, 1323).
+3. **the constructor body**: the 4 GLFW callback registrations (150-153), the recording-resource block (155-194,
+   the largest single block at 40 lines), `init_scene_resources()`, and five per-image state resets (203-221).
+4. **`init_scene_resources()`**, which was already a function.
+
+**LANDED IN THIS SLICE** - two functions, both pure relocations (0 changed, measured below):
+
+* **the recording-resource block is now `runtime::init_recording_resources()`** (definition at 406, call at 159).
+  It was the one block in the body with no reader and no dependency inside the constructor: its inputs are exactly
+  `core::MAX_FRAMES_IN_FLIGHT` and `task_pool_threads()`, and the first reader of `command_buffers` is
+  `begin_recording()` (1510, first touch 1517) - i.e. the FRAME, after the app has applied the config it cannot
+  apply at construction time. It is also the collection point the trim list's "command pools and secondaries" item
+  needs: the OBJECTS are device resources (the core hands out each one through `make_command_pool` /
+  `make_command_buffer` / `make_secondary_command_buffer`), while the SHAPE - one secondary per transparent pass,
+  one {pool, buffer} pair per cascade, one per task-pool worker - is policy and stays in the renderer.
+* **the five per-image resets are now `runtime::reset_image_generation_state()`** (definition at 457), called by
+  BOTH the constructor (168, generation 0) and `on_swapchain_recreated()` (1239, every later generation). This was
+  not only tidiness: the same five entries - `gbuffer_depth_written`, `velocity_written`,
+  `gbuffer_targets_written`, `gi_history_valid`, `furnace_cube_ready` - were hand-kept in two places, and the two
+  had ALREADY DRIFTED, because `on_swapchain_recreated` also resets `image_view_proj` and the constructor does not.
+  **`image_view_proj` STAYS OUT of the shared function, deliberately.** It is assigned from
+  `current_ubo.view_proj_unjittered` (1228), a camera snapshot that does not exist yet in the constructor
+  (`current_ubo` is a plain member, default-constructed there; `pace_and_acquire()` is what fills it). `set_taa`'s
+  off -> on edge (2526) assigns the same vector from the same snapshot, which is the proof that the value is a
+  CAMERA fact and not a generation fact. Folding it in would have written a default-constructed matrix into the
+  first frame's `prev_view_proj` - the input the TAA pass reprojects with - and the first frame's history is invalid
+  anyway, so no gate scenario was guaranteed to catch it. The exclusion is stated in the function's doc comment in
+  `runtime.cppm` (1448-1459), where the next author will read it.
+
+**WHAT CANNOT MOVE, and the decision each one waits on**:
+
+* **the 19 `passes.emplace<...>()` and the 11 stage arrays**: they are REFERENCE members
+  (`pass::shadow_pass& shadow = this->passes.emplace<pass::shadow_pass>();`). A reference must be bound where it is
+  declared, so there is nothing to delegate to; the only alternative is the `keep<T>()` shape the two jobs already
+  use (1307, 1323), which returns a POINTER and therefore makes every use nullable. That is a change of contract,
+  and it is the "pass chain into the core" item of the trim list - an ownership decision, not an init function.
+* **the 4 GLFW callback registrations**: not an initialization question at all. They are input POLICY, and the trim
+  list's "overlay + GLFW callbacks" item records the real content: the callbacks fish the `runtime*` back out of the
+  GLFW window user pointer, so input handling belongs to the app and the runtime should not be reachable through
+  the window at all.
+* **the member-init list's 5 entries**: non-movable/non-copyable members and views onto the core, in a fixed order.
+* **`init_scene_resources()`'s texture half** (the white fallback texture and the array entry it occupies): device
+  resources with no policy in them, which is why they belong to the "core owns the images" item - the same batch as
+  the shadow images, the two cubemaps and the BRDF LUT. Ownership change, not a move.
+
+**A REAL DEFECT THIS AUDIT FOUND - recorded here, NOT fixed in this slice**: `task_pool` (runtime.cppm:1101) is
+constructed by a DEFAULT MEMBER INITIALIZER from `default_task_pool_threads()`, i.e. before the app has applied any
+config. `utility::thread_pool` has no resize (only `shutdown` / `thread_count`), `task_pool_threads()` is read-only,
+and `chores.cpp:688` only reads it - so the pool's width is frozen at its default, and so is everything derived from
+it, including `init_recording_resources()`'s `record_workers` and therefore the NUMBER of {pool, secondary} pairs
+per frame slot. This is the same "the app config arrives after construction" problem the shadow resources solve by
+being created LAZILY (the constructor's own note at 178-184 says exactly that), handled the opposite way here.
+Fixing it needs `std::optional<utility::thread_pool>` plus an `init_task_pool(threads)` step (or a resize on the
+pool type), which changes when threads exist - and it is a prerequisite of the command-pool item above, because the
+pool count is part of the shape that item would move.
+
+**ACCEPTANCE**: Release (`build-release-clang64`), Debug (`build-debug-clang64`) and ASan (`build-asan`) all build
+clean; `ctest` 8/8 in all three; `doxygen Doxyfile` exit 0 with zero warnings; and the capture gate
+`check_render.ps1 -BuildDir <ABSOLUTE>` - 12 scenarios x 2 runs - returned **12 passed, 0 changed, 0 flaky,
+0 unseeded** against `%LOCALAPPDATA%\vulkan_render\baseline`, with `deferred` `2DD1D13857322C0F`,
+`deferred_taa_fxaa` `6999D01E5FBAB508`, `unlit` `D445A8E5F3EBDD53` and `shadow_single` `0C9EBD7F895511A9` among
+them - i.e. the relocation is invisible in every frame the gate can reach, which is what a pure move must be.

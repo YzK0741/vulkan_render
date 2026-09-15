@@ -152,63 +152,20 @@ namespace vulkan {
         glfwSetCursorPosCallback(this->vulkan_core.window, cursor_pos_callback);
         glfwSetScrollCallback(this->vulkan_core.window, scroll_callback);
 
-        // One command buffer per frame slot, owned and reused every frame
-        this->command_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            this->command_buffers.push_back(this->vulkan_core.make_command_buffer());
-        }
-        // One shadow-pass + one gui-overlay secondary command buffer per frame slot (stage 2/3
-        // of parallel recording): pre-allocated with the primaries so the GPU can read them
-        // while this slot's primary executes. Stage 3 additionally gives the main pass one
-        // parallel segment per task-pool worker, each as a {pool, secondary} PAIR (vma-style):
-        // a VkCommandPool is not thread safe, so the workers must never begin buffers of a
-        // shared pool concurrently - every worker owns its own pool + its buffer (recorded in
-        // parallel; see sub_render_task).
-        this->secondary_command_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        this->main_segments.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        unsigned const record_workers = static_cast<unsigned>(std::max(1, this->task_pool_threads()));
-        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            // one entry: the alpha-blended pass's secondary (see secondary_pass). The shadow cascades
-            // and the main-pass segments own their buffers elsewhere, because they record concurrently.
-            std::array<vk_command_buffer, static_cast<std::size_t>(secondary_pass::count)> pair = {
-                this->vulkan_core.make_secondary_command_buffer(), // transparent
-            };
-            this->secondary_command_buffers.push_back(std::move(pair));
-
-            // Shadow cascades record on the task pool, so each cascade gets its OWN {pool, buffer}: a
-            // VkCommandPool is not thread safe and concurrent recording must not share one (M9).
-            std::vector<std::pair<VkCommandPool, vk_command_buffer>> cascade_recording;
-            cascade_recording.reserve(vulkan::max_shadow_cascades);
-            for (uint32_t cascade = 0; cascade < vulkan::max_shadow_cascades; ++cascade) {
-                VkCommandPool const cascade_pool = this->vulkan_core.make_command_pool();
-                cascade_recording.emplace_back(cascade_pool, this->vulkan_core.make_secondary_command_buffer(cascade_pool));
-            }
-            this->shadow_recording.push_back(std::move(cascade_recording));
-            std::vector<std::pair<VkCommandPool, vk_command_buffer>> segments;
-            segments.reserve(record_workers);
-            for (unsigned s = 0; s < record_workers; ++s) {
-                VkCommandPool const pool = this->vulkan_core.make_command_pool(); // one per worker
-                segments.emplace_back(pool, this->vulkan_core.make_secondary_command_buffer(pool));
-            }
-            this->main_segments.push_back(std::move(segments));
-        }
+        // The recording resources - one primary command buffer per frame slot, plus the secondary
+        // buffers (and the per-consumer pools that must own them) the parallel recording stages hand
+        // out - are built by init_recording_resources(): they depend on nothing else in this
+        // constructor but the two capacities, and nothing else here reads them.
+        this->init_recording_resources();
 
         // Shared scene resources: camera UBO buffers, white fallback texture, texture sampler
         this->init_scene_resources();
-        // The G-buffer depth layout flags are one per swapchain image, and the core has already
-        // built this generation's G-buffer targets (core::create_hdr_resolve_resources runs in the
-        // core constructor), so they can be sized here - before any frame records. Every flag
-        // starts clear, which is what a freshly created depth image is in (UNDEFINED);
-        // on_swapchain_recreated() re-sizes them for every later generation.
-        this->gbuffer_depth_written.assign(this->vulkan_core.gbuffer_depth_images.size(), false);
-        this->velocity_written.assign(this->vulkan_core.velocity_images.size(), false);
-        this->gbuffer_targets_written.assign(this->vulkan_core.gbuffer_images[0].size(), false);
-        // The GI accumulation starts empty for the same reason (see gi_history_valid): the first
-        // frame of a generation has nothing to blend with, and sized HERE rather than only on the
-        // off -> on edge in set_ssgi, because a run that starts with GI enabled never sees that edge
-        // (an empty vector reads as "no history" for every frame, which silently turns the temporal
-        // resolve into a pass-through of the raw trace).
-        this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
+        // Every per-image flag that describes this generation starts where the generation's images do.
+        // The core has already built this generation's targets (its constructor ran
+        // create_hdr_resolve_resources), so the flags can be sized HERE, before any frame records; every
+        // later generation gets the very same reset from on_swapchain_recreated - one function, so the
+        // two lists cannot drift (which they already had).
+        this->reset_image_generation_state();
         // The lobe's per-image first-use state starts where its images do (empty, which reads as "nothing has
         // been transitioned"), and the pass owns it - see vulkan.pass.ssgi_spec.
 
@@ -217,8 +174,7 @@ namespace vulkan {
         // - has taken its first-use transition once. (What the grid HOLDS is the pass's own state now:
         // gi_probe_pass::cache_valid, and whether the batch happened is the TRACER's - its own
         // `on_swapchain_recreated` clears it, which is what the recreate_stage call in the swapchain path runs.)
-        // ... and the furnace cube is a new image too, so its level has to be written again.
-        this->furnace_cube_ready = false;
+        // (The furnace cube is a new image too - its level is part of the generation reset above.)
         // NOTE: the shadow resources (map layers + light UBO buffers) are created LAZILY, by
         // ensure_shadow_resources() from ensure_scene_set(). The shadow map is a layered 2D array
         // whose layer count is [render] shadow_cascades, and the app config that carries it is applied
@@ -437,6 +393,84 @@ namespace vulkan {
                 utility::panic("default material must occupy table index 0");
             }
         }
+    }
+
+    // The recording resources: one primary command buffer per frame slot, plus the secondary buffers
+    // of the two parallel recording stages and the pools that have to own them. They are pre-allocated
+    // so the GPU can read a secondary while this slot's primary executes, and reused every frame, so
+    // they must exist before the first recorded frame - but nothing else in the constructor depends on
+    // them, and they depend on nothing else but the two capacities below (hence a function of their
+    // own). This is also where the command pools would move to the core (the "command pools and
+    // secondaries" item of the trim list in docs/pass_chain_plan.md): the SHAPE is policy and stays
+    // here, the objects are device resources.
+    void runtime::init_recording_resources() {
+        // One command buffer per frame slot, owned and reused every frame
+        this->command_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            this->command_buffers.push_back(this->vulkan_core.make_command_buffer());
+        }
+        // One shadow-pass + one gui-overlay secondary command buffer per frame slot (stage 2/3
+        // of parallel recording): pre-allocated with the primaries so the GPU can read them
+        // while this slot's primary executes. Stage 3 additionally gives the main pass one
+        // parallel segment per task-pool worker, each as a {pool, secondary} PAIR (vma-style):
+        // a VkCommandPool is not thread safe, so the workers must never begin buffers of a
+        // shared pool concurrently - every worker owns its own pool + its buffer (recorded in
+        // parallel; see sub_render_task).
+        this->secondary_command_buffers.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        this->main_segments.reserve(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        unsigned const record_workers = static_cast<unsigned>(std::max(1, this->task_pool_threads()));
+        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            // one entry: the alpha-blended pass's secondary (see secondary_pass). The shadow cascades
+            // and the main-pass segments own their buffers elsewhere, because they record concurrently.
+            std::array<vk_command_buffer, static_cast<std::size_t>(secondary_pass::count)> pair = {
+                this->vulkan_core.make_secondary_command_buffer(), // transparent
+            };
+            this->secondary_command_buffers.push_back(std::move(pair));
+
+            // Shadow cascades record on the task pool, so each cascade gets its OWN {pool, buffer}: a
+            // VkCommandPool is not thread safe and concurrent recording must not share one (M9).
+            std::vector<std::pair<VkCommandPool, vk_command_buffer>> cascade_recording;
+            cascade_recording.reserve(vulkan::max_shadow_cascades);
+            for (uint32_t cascade = 0; cascade < vulkan::max_shadow_cascades; ++cascade) {
+                VkCommandPool const cascade_pool = this->vulkan_core.make_command_pool();
+                cascade_recording.emplace_back(cascade_pool, this->vulkan_core.make_secondary_command_buffer(cascade_pool));
+            }
+            this->shadow_recording.push_back(std::move(cascade_recording));
+            std::vector<std::pair<VkCommandPool, vk_command_buffer>> segments;
+            segments.reserve(record_workers);
+            for (unsigned s = 0; s < record_workers; ++s) {
+                VkCommandPool const pool = this->vulkan_core.make_command_pool(); // one per worker
+                segments.emplace_back(pool, this->vulkan_core.make_secondary_command_buffer(pool));
+            }
+            this->main_segments.push_back(std::move(segments));
+        }
+    }
+
+    // The per-image state a swapchain GENERATION starts from. A freshly created target image is in
+    // UNDEFINED, holds nothing, and no pass has written it: that is equally true of generation 0 (this
+    // constructor, after the core built the generation's targets) and of every later generation
+    // (on_swapchain_recreated), so both call THIS and the two can no longer drift.
+    //
+    // NOT here, deliberately: the TAA history matrices (image_view_proj). They may only be written from
+    // a real camera snapshot (current_ubo), which does not exist yet in the constructor - they stay with
+    // the two call sites that have one (on_swapchain_recreated, and set_taa's off -> on edge).
+    void runtime::reset_image_generation_state() {
+        // The G-buffer depth layout flags are one per swapchain image, and a freshly created depth image
+        // is in UNDEFINED (which is what a clear flag says); see ensure_gbuffer_depth_sampled.
+        this->gbuffer_depth_written.assign(this->vulkan_core.gbuffer_depth_images.size(), false);
+        // The motion-vector images died with the generation as well: clear the layout flag so the first
+        // frame of the new generation takes the attachment -> sampled transition (see
+        // ensure_velocity_sampled).
+        this->velocity_written.assign(this->vulkan_core.velocity_images.size(), false);
+        this->gbuffer_targets_written.assign(this->vulkan_core.gbuffer_images[0].size(), false);
+        // The GI accumulation starts empty for the same reason (see gi_history_valid): the first frame of
+        // a generation has nothing to blend with, and it is reset HERE rather than only on the off -> on
+        // edge in set_ssgi, because a run that starts with GI enabled never sees that edge (an empty
+        // vector reads as "no history" for every frame, which silently turns the temporal resolve into a
+        // pass-through of the raw trace).
+        this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
+        // ... and the furnace cube is a new image too, so its level has to be written again.
+        this->furnace_cube_ready = false;
     }
 
     void runtime::ensure_shadow_resources() {
@@ -1192,25 +1226,17 @@ namespace vulkan {
         // state, and the call above is what cleared it.)
         std::size_t const image_count = this->vulkan_core.taa_history_images.size();
         this->image_view_proj.assign(image_count, this->current_ubo.view_proj_unjittered);
-        // The GI accumulation is per image for the same reason (see gi_history_valid): a new
-        // generation has no history to blend with, and the resolve would otherwise reproject into an
-        // image that holds a different resolution's data.
-        this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
         // The lobe's per-image first-use state is the PASS's, and the recreate_stage call above is what told it
         // (vulkan.pass.ssgi_spec::on_swapchain_recreated). The tracer's "this generation's probe grid has had
         // its first-use batch" is the same shape and the same call cleared it - which is why there is no host
         // flag for it any more (the renderer asks the pass: `probe_grid_seen`).
-        // ... and the furnace cube is a new image too, so its level has to be written again.
-        this->furnace_cube_ready = false;
-        // The motion-vector images died with the generation as well, and a brand new one is in
-        // UNDEFINED until this frame's G-buffer instance renders into it: clear the layout flag so the
-        // first frame of the new generation takes the attachment -> sampled transition (see
-        // ensure_velocity_sampled).
-        this->velocity_written.assign(this->vulkan_core.velocity_images.size(), false);
-        this->gbuffer_targets_written.assign(this->vulkan_core.gbuffer_images[0].size(), false);
-        // The G-buffer depth images died with the generation too: the same flag, the same reason
-        // (see ensure_gbuffer_depth_sampled).
-        this->gbuffer_depth_written.assign(this->vulkan_core.gbuffer_depth_images.size(), false);
+        //
+        // Every OTHER per-image flag is the generation reset, and it is the very function the constructor
+        // calls for generation 0: this list used to be hand-kept in two places (the G-buffer depth flag, the
+        // motion-vector flag, the G-buffer target flags, the GI accumulation and the furnace cube), and the
+        // two copies had already drifted. `image_view_proj` above stays out of it, because it needs a camera
+        // snapshot (current_ubo) - which only this call site and set_taa's off -> on edge have.
+        this->reset_image_generation_state();
     }
 
     void runtime::gpu_mark(VkCommandBuffer const command_buffer, gpu_mark_id const mark, VkPipelineStageFlagBits const stage) noexcept {
