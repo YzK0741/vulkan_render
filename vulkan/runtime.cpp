@@ -285,15 +285,9 @@ namespace vulkan {
         // descriptor FAMILIES (the diffuse and the reflection), which one declaration cannot describe.
         // The bake's pipeline layout is NOT destroyed here: it is the JOB's (vulkan.pass.mask_bake_job), which
         // releases its pipeline layout, its pipeline and its own descriptor set in its own destructor - the
-        // same rule the extracted passes follow.
-        if (this->compute_skin_pipeline_layout != VK_NULL_HANDLE) {
-            // The same shape as the mask bake's: it is created from the scene set layout and owns none of
-            // its own, so only the VkPipelineLayout is ours to destroy. Found the same way, too - as a
-            // "[ERROR] vkDestroyDevice(): ... has 1 leaked objects" on the FIRST capture of the L2.2b A/B,
-            // which is why the off arm of that measurement was taken again afterwards.
-            vkDestroyPipelineLayout(this->vulkan_core.device, this->compute_skin_pipeline_layout, nullptr);
-            this->compute_skin_pipeline_layout = VK_NULL_HANDLE;
-        }
+        // same rule the extracted passes follow. The compute-skinning job's layout, pipeline and per-slot sets
+        // left the same way (vulkan.pass.compute_skin_job), so this destructor no longer names either of the two
+        // traced-feature jobs.
         // The glossy lobe's layout and pipeline are NOT destroyed here any more either: they are the pass's
         // (vulkan.pass.ssgi_spec::release_owned), the same way the probe cache's and the TAA resolve's left.
         // ... and the SPATIAL FILTER's left the same way with it (vulkan.pass.ssgi_spatial::release_owned), so
@@ -3791,107 +3785,87 @@ namespace vulkan {
         return {};
     }
 
-    std::expected<void, std::string> runtime::make_compute_skin_pipeline(std::span<unsigned char const> const compute_shader_code) {
+    std::expected<void, std::string> runtime::create_compute_skin() {
         if (!this->vulkan_core.ray_query_available) {
             return std::unexpected(std::string("compute skin: this device has no ray queries (VK_KHR_acceleration_structure + VK_KHR_ray_query)"));
         }
-        // The scene set alone, because the pass reads exactly one thing from it: the per-joint matrices at
-        // binding 9. The vertices come through push-constant device addresses, like every other traced pass.
-        auto built = pipelines::build_compute_skin(this->vulkan_core.device, this->vulkan_core.scene_descriptor_set_layout, sizeof(compute_skin_push_constants), compute_shader_code);
-        if (!built) {
-            return std::unexpected(std::move(built.error()));
-        }
-        this->compute_skin_pipeline_layout = built->pipeline_layout;
-        this->compute_skin_pipeline = std::move(built->trace);
-
-        // One set per frame slot, from the SCENE layout, with only binding 9 written: the slot's OWN
-        // per-joint matrices. The animation rewrites that BUFFER every frame, not the descriptor, so the
-        // sets are written once here and stay valid - which matters twice over, because a set updated while
-        // a recording command buffer holds it invalidates that buffer (the trap the mask bake's own set
-        // documents) and one set would point at the wrong slot's matrices for half the frames.
-        if (this->skin_buffers.size() != this->compute_skin_sets.size()) {
+        // The context the JOB is created with, the same struct a pass's create step is handed (see
+        // pass_context) - so the one way to construct a GPU-owning object in this renderer stays one way. The
+        // per-slot sets are allocated HERE (the pool is the core's) and moved into the job, which writes each
+        // one's binding 9 from that slot's per-joint matrix buffer and owns the set from then on.
+        pass::pass_context const build = {
+            .device = this->vulkan_core.device,
+            .samplers = this->shared_samplers(),
+            .shared_set_layout = [](void* owner, uint32_t const set) {
+                runtime* const self = static_cast<runtime*>(owner);
+                if (set == 0u) {
+                    return self->vulkan_core.scene_descriptor_set_layout;
+                }
+                return set == 1u ? self->gbuffer_set_layout : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
+            .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
+            .owner = this,
+        };
+        if (this->skin_buffers.empty()) {
             return std::unexpected(std::string("compute skin: the per-slot skin matrix buffers are not created"));
         }
-        for (std::size_t slot = 0; slot < this->compute_skin_sets.size(); ++slot) {
-            auto const* const detail = this->vulkan_core.vma.get_buffer_detail(this->skin_buffers[slot].handle());
+        // The VkBuffer behind each slot's VMA allocation: `vk_buffer::handle()` is the ALLOCATOR's handle, so
+        // the descriptor needs the detail's `buffer` - and asking for the detail here is also the check that
+        // the allocation is one this device can bind.
+        std::vector<VkBuffer> skin_handles;
+        skin_handles.reserve(this->skin_buffers.size());
+        for (vk_buffer const& buffer : this->skin_buffers) {
+            auto const* const detail = this->vulkan_core.vma.get_buffer_detail(buffer.handle());
             if (detail == nullptr) {
                 return std::unexpected(std::string("compute skin: a skin matrix buffer has no VMA detail"));
             }
-            this->compute_skin_sets[slot] = this->vulkan_core.make_descriptor_set(this->vulkan_core.scene_descriptor_set_layout);
-            if (this->compute_skin_sets[slot].get() == VK_NULL_HANDLE) {
+            skin_handles.push_back(detail->buffer);
+        }
+        std::vector<vk_descriptor_set> sets;
+        sets.reserve(skin_handles.size());
+        for (std::size_t slot = 0; slot < skin_handles.size(); ++slot) {
+            vk_descriptor_set set = this->vulkan_core.make_descriptor_set(this->vulkan_core.scene_descriptor_set_layout);
+            if (set.get() == VK_NULL_HANDLE) {
                 return std::unexpected(std::string("compute skin: descriptor set allocation failed"));
             }
-            VkDescriptorBufferInfo const skins_info = {.buffer = detail->buffer, .offset = 0, .range = VK_WHOLE_SIZE};
-            VkWriteDescriptorSet write = {};
-            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = this->compute_skin_sets[slot].get();
-            write.dstBinding = 9; // SkinMatrices, the same binding shaders/pbr.vert reads
-            write.dstArrayElement = 0;
-            write.descriptorCount = 1;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            write.pBufferInfo = &skins_info;
-            vkUpdateDescriptorSets(this->vulkan_core.device, 1, &write, 0, nullptr);
+            sets.push_back(std::move(set));
+        }
+        auto created = this->compute_skin.create(build, std::move(sets), skin_handles);
+        if (!created) {
+            return std::unexpected(std::move(created.error()));
         }
         return {};
     }
 
-    bool runtime::record_compute_skin_pass(VkCommandBuffer const command_buffer) {
-        if (!this->rt_skin_bake || !this->compute_skin_pipeline.has_value() || this->rt_skin_levels.empty()) {
-            return false;
-        }
-        uint32_t const slot = static_cast<uint32_t>(this->vulkan_core.current_frame);
-        if (slot >= this->compute_skin_sets.size() || this->compute_skin_sets[slot].get() == VK_NULL_HANDLE) {
-            return false;
-        }
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->compute_skin_pipeline->get_pipeline());
-        VkDescriptorSet const set = this->compute_skin_sets[slot].get();
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->compute_skin_pipeline_layout, 0, 1, &set, 0, nullptr);
-
-        auto const halves = [](VkDeviceAddress const address) {
-            return glm::uvec2(static_cast<uint32_t>(address & 0xFFFFFFFFu), static_cast<uint32_t>(address >> 32u));
-        };
-        constexpr uint32_t group_size = 64; // shaders/compute_skin.comp's local_size_x
-        bool recorded = false;
+    void runtime::fill_compute_skin_requests() {
+        // The job's input, built from the casters this frame's structure phase knows: one request per SKINNED
+        // caster (a zero destination means "not skinned: its geometry is what the build read"). The list is a
+        // member so a frame does not allocate while recording, and the JOB decides what to do with it.
+        this->compute_skin_requests.clear();
+        this->compute_skin_requests.reserve(this->rt_caster_levels.size());
         for (auto const& built : this->rt_caster_levels) {
             if (built.skin_destination_address == 0) {
-                continue; // not a skinned caster: its geometry is what the build read, unchanged
+                continue;
             }
-            compute_skin_push_constants push = {};
-            push.source_vertices = halves(built.skin_source_address);
-            push.destination = halves(built.skin_destination_address);
-            push.source_stride = built.skin_source_stride;
-            push.destination_stride = built.skin_destination_stride;
-            push.vertex_count = built.skin_vertex_count;
-            push.skin_base = built.skin_base;
-            vkCmdPushConstants(command_buffer, this->compute_skin_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-            vkCmdDispatch(command_buffer, (push.vertex_count + group_size - 1u) / group_size, 1, 1);
-            recorded = true;
+            this->compute_skin_requests.push_back(pass::compute_skin_request{
+                .source_vertices = built.skin_source_address,
+                .destination = built.skin_destination_address,
+                .source_stride = built.skin_source_stride,
+                .destination_stride = built.skin_destination_stride,
+                .vertex_count = built.skin_vertex_count,
+                .skin_base = built.skin_base,
+            });
         }
-        if (!recorded) {
+    }
+
+    bool runtime::record_compute_skin_pass(VkCommandBuffer const command_buffer) {
+        // The knob, the caster list and the frame slot are the RENDERER's; the dispatches and the barrier the
+        // acceleration structure build needs after them are the JOB's (vulkan.pass.compute_skin_job). The gate
+        // is the moved code's, in the same order: the knob, the job, and whether anything is skinned at all.
+        if (!this->rt_skin_bake || !this->compute_skin.ready() || this->rt_skin_levels.empty()) {
             return false;
         }
-
-        // What follows reads what this dispatch wrote: the BUILD on the frame the structures are created, and
-        // the REFIT on every frame after. A compute write is not visible to the acceleration structure build
-        // stage without this barrier, and the symptom would be a structure built or refitted against the
-        // previous frame's vertices - a shadow one frame behind, which reads as animation lag.
-        VkMemoryBarrier2 skin_order = {};
-        skin_order.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-        skin_order.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        skin_order.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-        skin_order.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-        skin_order.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-        VkDependencyInfo const skin_dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                                  .pNext = nullptr,
-                                                  .dependencyFlags = 0,
-                                                  .memoryBarrierCount = 1,
-                                                  .pMemoryBarriers = &skin_order,
-                                                  .bufferMemoryBarrierCount = 0,
-                                                  .pBufferMemoryBarriers = nullptr,
-                                                  .imageMemoryBarrierCount = 0,
-                                                  .pImageMemoryBarriers = nullptr};
-        vkCmdPipelineBarrier2(command_buffer, &skin_dependency);
-        return true;
+        this->fill_compute_skin_requests();
+        return this->compute_skin.record(command_buffer, static_cast<uint32_t>(this->vulkan_core.current_frame), this->compute_skin_requests);
     }
 
     bool runtime::resolve_rt_shadow(pass::resolved_io& out) {
@@ -5404,7 +5378,7 @@ namespace vulkan {
             uint32_t skin_source_stride = 0;
             uint32_t skin_vertex_count = 0;
             uint32_t skin_base = 0;
-            if (mask_address == 0 && this->rt_skin_bake && this->compute_skin_pipeline.has_value() && caster->push.skin_base != 0 && caster->vertex_count != 0 &&
+            if (mask_address == 0 && this->rt_skin_bake && this->compute_skin.ready() && caster->push.skin_base != 0 && caster->vertex_count != 0 &&
                 caster->vertex_stride == skin_source_stride_expected) {
                 constexpr uint32_t skin_vertex_stride = 32u; // position, normal, uv - what hit shading reads
                 uint64_t const skinned_bytes = static_cast<uint64_t>(caster->vertex_count) * skin_vertex_stride;

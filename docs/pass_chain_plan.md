@@ -764,6 +764,50 @@ nothing checked, so the job now carries `static_assert(sizeof(mask_bake_push_con
 Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0, gate 12 x 2 with 0
 changed and 0 flaky (about the twelve frames that exist), plus the four-run A/B above for the path that changed.
 
+## COMPUTE SKINNING: THE THIRD JOB, AND THE ONE WHOSE LIST IS RECORDED TWICE
+
+The compute-skinning stage was `make_compute_skin_pipeline` (pipeline layout, pipeline, one descriptor set per
+frame slot with binding 9 written) plus `record_compute_skin_pass` (a dispatch per skinned caster and the memory
+barrier the acceleration structure build needs after them). It is now `vulkan.pass.compute_skin_job`: the job owns
+the pipeline layout, the pipeline, the per-slot sets and the barrier; the renderer keeps the knob, the policy
+(which casters are skinned, the buffer each is skinned into, the strides), the request list - a member, so a frame
+does not allocate while recording - and the refit bookkeeping (`rt_skin_levels`).
+
+**THE FRAME SLOT IS AN ARGUMENT, not something the job looks up.** The original read
+`vk.current_frame` from the core to pick which slot's per-joint matrices to bind. A job has no core, and picking
+the wrong slot would skin against another frame's animation - so `record(command_buffer, slot, requests)` is
+handed it by the one component that paces frames. That is the same split as the push block's VALUES: the renderer
+knows the frame, the job knows the work.
+
+**WHY A JOB RATHER THAN A `frame_pass`, stated as the measured shape rather than a preference**: the SAME request
+list is recorded at TWO places with different meanings - once on the frame the structures are created (the build
+below reads the vertices those dispatches wrote) and once per frame after (the structure is REFITTED because only
+the bytes change). A frame pass would have to pretend the first of those is a frame. Everything else is the pass
+rule: constructed from the same `pass_context`, owns what it names, releases it in its own destructor.
+
+**VERIFIED BY THE SAME KNOB-ON A/B, on the asset class this stage exists for.** `rt_skin_bake` is false in every
+gate scenario, so the 12 x 2 run says nothing about it; the A/B is `CesiumMan` (the model with a skinned caster)
+with `rt_shadows = true` and `rt_skin_bake = true`:
+
+| build | run A | run B | the skinning |
+|---|---|---|---|
+| pre-change | `6E0BED153DA631F0…` | `6E0BED153DA631F0…` | `1 skinned casters re-skinned and REFITTED … every frame` |
+| this change | `6E0BED153DA631F0…` | `6E0BED153DA631F0…` | `1 skinned casters re-skinned and REFITTED … every frame` |
+
+Four runs, one hash, validation clean, and the log line in BOTH runs is what shows the job recorded rather than
+that the frame merely looks the same. (The refit has to happen for the frames to match at all: a frame that
+skipped it would cast the bind pose, which is exactly the A/B `docs/gi_hit_shading.md`'s L2.2b measured.)
+
+**ONE TOOL OBSERVATION, recorded because the acceptance criterion is a clean doxygen run**: the first `doxygen`
+after this change printed `error: Problems running epstopdf. Check your TeX installation!` while regenerating the
+LaTeX output. It is NOT the sources: there is no `\f$` formula anywhere under `vulkan/`, three subsequent runs are
+silent (this tree and the pre-change worktree alike), the exit code was 0 every time, and the message comes from
+MiKTeX's converter rather than from doxygen's warning stream. Recorded as a one-off from the toolchain instead of
+being left unexplained.
+
+Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0 with an empty warning
+stream, gate 12 x 2 with 0 changed and 0 flaky (about the twelve frames that exist), plus the four-run A/B above.
+
 ## WHAT THE INVENTORY ALREADY FOUND (RE-AUDITED AGAINST THE CURRENT TREE)
 
 The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought `master`'s files over, so most
@@ -851,6 +895,11 @@ says what a re-audit of the current tree found.
   handles and `make_mask_bake_pipeline` are gone, and its verification is the same knob-on A/B (3 MASK casters
   baked, one hash across four runs). The step also found and fixed a comment that claimed a 48-byte CPU push
   block where the measured size is 44 - now a `static_assert`.
+* **Compute skinning is the third JOB** (`vulkan.pass.compute_skin_job`): pipeline layout, pipeline, the
+  per-slot sets it writes (binding 9 from each slot's matrix buffer) and the build-ordering barrier are the
+  job's; the renderer keeps the knob, the caster policy, the request list and the refit bookkeeping, and hands
+  the FRAME SLOT to `record` because the job cannot know it. Its verification is the same knob-on A/B on
+  `CesiumMan` (1 skinned caster re-skinned and refitted, one hash across four runs). See the section above.
 
 **NOT DONE, with the reason and the exact next step.**
 

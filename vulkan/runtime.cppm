@@ -37,6 +37,7 @@ import vulkan.pass.ssgi_temporal;     // the seventh: the diffuse temporal resol
 import vulkan.pass.ssgi_spatial;      // the eighth, and the GI chain's last stage: the spatial filter
 import vulkan.pass.rt_shadow;         // the ninth, and the first one OUTSIDE the GI chain: the ray-traced shadow
 import vulkan.pass.mask_bake;         // ... and the one-shot MASK bake, which is a JOB rather than a frame pass
+import vulkan.pass.compute_skin;      // ... and the compute-skinning job, which is a job for the same reason
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
@@ -1278,13 +1279,12 @@ namespace vulkan {
         // section). The pass below writes the same vertices the vertex shader computes into the buffer the
         // structure is built from, once per frame, and the structure is REFITTED rather than rebuilt
         // because only the bytes change.
-        std::optional<vk_pipeline> compute_skin_pipeline = std::nullopt;
-        VkPipelineLayout compute_skin_pipeline_layout = VK_NULL_HANDLE;
-        // ONE set per frame slot: binding 9 is the SLOT's own per-joint matrix buffer, and the animation
-        // writes the slot it paced. Each is written once and never updated, for the reason the mask bake's
-        // set documents - a set updated while a recording command buffer holds it invalidates that buffer,
-        // and this pass runs before the frame writes the scene set's binding 16.
-        std::array<vk_descriptor_set, vulkan::core::MAX_FRAMES_IN_FLIGHT> compute_skin_sets = {};
+        // The job owns the pipeline layout, the pipeline and the per-slot sets (vulkan.pass.compute_skin_job);
+        // what stays here is the POLICY - the knob, the skinned caster list, the buffers each caster is skinned
+        // into, and the refit bookkeeping - plus the request list it hands over, kept as a member so a frame
+        // does not allocate while recording.
+        pass::compute_skin_job compute_skin;
+        std::vector<pass::compute_skin_request> compute_skin_requests = {};
         // The skinned vertex buffers (one per skinned caster, owned here for as long as the structures are)
         // and the geometry indices that have to be refitted every frame.
         std::vector<vk_buffer> rt_skin_buffers = {};
@@ -1293,14 +1293,6 @@ namespace vulkan {
         // whether a traced shadow now follows the pose, and because a device without ray queries has no
         // structures for it to feed.
         bool rt_skin_bake = false;
-        struct compute_skin_push_constants {
-            glm::uvec2 source_vertices = glm::uvec2(0u); // the primitive's bind-pose vertices, low and high
-            glm::uvec2 destination = glm::uvec2(0u);     // the skinned buffer this pass fills
-            uint32_t source_stride = 0;                  // 64: the engine's interleaved vertex
-            uint32_t destination_stride = 0;             // 32: position, normal, uv
-            uint32_t vertex_count = 0;
-            uint32_t skin_base = 0; // this primitive's joint block in skins.matrices
-        };
         bool rt_top_level_logged = false;
         // The ray-traced sun shadow pass (see shaders/rt_shadow.comp): its pipeline, its pipeline layout, its
         // push block's shape and its one-shot log line are the PASS's now (vulkan.pass.rt_shadow), and its
@@ -2484,23 +2476,27 @@ namespace vulkan {
          */
         [[nodiscard]] std::expected<void, std::string> create_mask_bake();
         /**
-         * @brief create the compute skinning pipeline and its per-slot descriptor sets
-         * @param compute_shader_code the compiled SPIR-V
-         * @return an error string when the device has no ray queries or something could not be created
-         * @note optional like the rest of the traced features: without it a skinned mesh's structure holds
-         *       its bind pose, which is what every traced effect here did before this pass existed.
+         * @brief create the compute skinning JOB: its pipeline and its per-slot sets' only written binding
+         * @return an error string when the device has no ray queries, the per-slot skin buffers or their sets
+         *         are missing, or the pipeline could not be created
+         * @note optional like the rest of the traced features: without it a skinned mesh's structure holds its
+         *       bind pose, which is what every traced effect here did before this job existed. The JOB owns
+         *       everything it builds (vulkan.pass.compute_skin_job); this method is the renderer's half: the
+         *       context, the set allocation (the pool is the core's) and the per-slot matrix buffers.
          */
-        std::expected<void, std::string> make_compute_skin_pipeline(std::span<unsigned char const> compute_shader_code);
+        [[nodiscard]] std::expected<void, std::string> create_compute_skin();
         /**
          * @brief re-skin every skinned caster and REFIT its structure, for this frame
          * @param command_buffer where to record (the frame's structure phase, before the top level build)
          * @return whether anything was recorded
-         * @note the pass writes the vertices the VERTEX shader would compute, into the buffer the structure
+         * @note the job writes the vertices the VERTEX shader would compute, into the buffer the structure
          *       was built from, and the refit then makes traversal see them. It has to run AFTER the
          *       animation uploaded this slot's per-joint matrices and BEFORE the frame writes the scene
          *       set's binding 16 - the ordering the mask bake's own-set comment explains.
          */
         bool record_compute_skin_pass(VkCommandBuffer command_buffer);
+        /// @brief refill the job's request list from the skinned casters this frame's structure phase knows
+        void fill_compute_skin_requests();
 
         /**
          * @brief set the spatial filter's strength
