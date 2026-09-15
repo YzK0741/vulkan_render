@@ -17,6 +17,7 @@
 #include <vulkan/vulkan.h>
 
 import vulkan.pass;
+import vulkan.pass.chain;
 import vulkan.render_resource;
 import vulkan.render_resource.shared;
 import vulkan.bindings;
@@ -459,6 +460,52 @@ int main() {
             }
         }
         CHECK(own == 9);
+    }
+
+    // ---- THE CHAIN: a value that holds a run of passes and its ORDER, and nothing else - it must behave
+    //      exactly like the separate stages it replaces (same per-pass feature gate, resolver and record),
+    //      because that is the whole claim its header makes ----
+    {
+        pass_chain chain{"gi"};
+        CHECK(chain.empty());
+        CHECK(chain.name() == "gi");
+        chain.add(probe);
+        chain.add(tail);
+        CHECK(chain.size() == 2);
+        // the lookup is by the DECLARATION's name, so a caller never has to know the chain's order to find one
+        CHECK(chain.find("tail") == static_cast<frame_pass*>(&tail));
+        CHECK(chain.find("nothing") == nullptr);
+        // ... and the stage it hands the runner is its own name, its own list, and its own mark policy
+        CHECK(chain.as_stage().name == "gi");
+        CHECK(chain.as_stage().passes.size() == 2);
+        CHECK(!chain.as_stage().marks);
+
+        state.log.clear();
+        run_report const created = chain.init(make_context());
+        CHECK(created.created == 2);
+        CHECK(created.rejected.empty());
+        CHECK(at(state.log, "create:probe") < at(state.log, "create:tail")); // the ORDER OF THE add CALLS
+
+        state.log.clear();
+        run_report const recorded = chain.record(host);
+        CHECK(recorded.recorded == 2);
+        // the order of resolve/behaviour/record is the runner's, unchanged by the chain: resolve then behaviour
+        // then the pass, per pass, in chain order
+        CHECK(at(state.log, "resolve:probe") < at(state.log, "behaviour:probe:plain"));
+        CHECK(at(state.log, "behaviour:probe:plain") < at(state.log, "record:probe"));
+        CHECK(at(state.log, "record:probe") < at(state.log, "resolve:tail"));
+    }
+    {
+        // a pass whose feature is off is skipped INSIDE the chain, exactly as it was inside its own stage - a
+        // chain that could skip differently would be a scheduler, which this class deliberately is not
+        pass_chain chain{"gi"};
+        chain.add(probe);
+        chain.add(gated); // feature "off"
+        state.log.clear();
+        run_report const recorded = chain.record(host);
+        CHECK(recorded.recorded == 1);
+        CHECK(recorded.skipped_inactive == 1);
+        CHECK(!has(state.log, "record:gated"));
     }
 
     return vk_test::finish("test_pass");
