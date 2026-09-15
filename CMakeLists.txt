@@ -111,7 +111,7 @@ target_sources(vulkancorekit
         FILE_SET CXX_MODULES
         FILES
         vulkan/core/core.cppm
-        vulkan/core/filter/filter.cppm
+        vulkan/core/filter/filters.cppm
         vulkan/core/vma/vma.cppm
         vulkan/core/vma/handles/vma_handles.cppm
         vulkan/core/handles/handles.cppm
@@ -149,7 +149,7 @@ target_sources(vulkancorekit
         vulkan/animation/controller.cppm
     PRIVATE
         vulkan/core/core.cpp
-        vulkan/core/filter/filter.cpp
+        vulkan/core/filter/filters.cpp
         vulkan/core/vma/vma.cpp
         vulkan/core/handles/handles.cpp
         vulkan/core/init_utils/init_util.cpp

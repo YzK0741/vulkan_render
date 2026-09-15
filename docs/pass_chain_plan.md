@@ -853,6 +853,63 @@ compute stage wrote in the same submission.
 Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0 with an empty output
 stream, gate 12 x 2 with 0 changed and 0 flaky (about the twelve frames that exist), plus the four-run A/B above.
 
+## THE FILTERS MODULE: TWO NAMED VIEWS OF THE DEVICE ROOT, AND THE CHANNEL A PASS'S INIT NEEDED
+
+The goal of this step is the one the pass work has been heading toward: **the runtime should stop holding
+per-pass resources.** What it still held, measured before touching anything, was wiring rather than GPU objects -
+`runtime::create_mask_bake()` and `runtime::create_compute_skin()`, each building its own copy of the create-time
+context plus a bespoke input struct, because a pass had no way to name a resource the RENDERER owns.
+
+**WHAT WAS ACTUALLY MISSING, measured rather than assumed.** A pass already needs only `device` to own a
+per-image descriptor family: `bindings::image_set_family` creates and retires its own `VkDescriptorPool` from a
+raw `VkDevice` (`bindings.cppm:299/469`), which is how the TAA resolve and the temporal pass work. Two things
+were missing, and no more: **a one-off descriptor set from the owner's pool** (the two jobs write exactly one set
+each from the scene layout) and **the handle of a declared resource** (the material table, the bindless texture
+array, a slot's skin matrices). Formats were NOT missing either: `hdr_format`/`gbuffer_formats` are compile-time
+constants in `core.cppm`, and `depth_format`/`swap_chain_image_format` are runtime values that the `scene` and
+`transparent` passes already receive per frame in their own frame structs.
+
+**THE MODULE**: `vulkan/core/filter/filters.{cppm,cpp}` (module `vulkan.core.filters`), holding two named views
+of a core, both constructed from a `std::shared_ptr<core>`:
+
+* `vulkan::user_filter` - what `runtime::operator->` exposes to the application. It is the old `core_filter`,
+  renamed (and now holding a share instead of a bare `core&`), which is what makes room for a family of filters.
+* `vulkan::pass_filter` - what a pass's create step is handed: `device()`, `swap_chain_image_format()`,
+  `swap_chain_extent()`, `make_descriptor_set(layout)`, `vma()` (the door for a pass that must create its own
+  buffer or image) and `resource(id, element)` over what the owner published through `register_resource`.
+
+**THE NAMING IS `vulkan::user_filter`, NOT `vulkan::core::user_filter`, and that is a language fact rather than a
+preference**: `vulkan::core` is the device-root CLASS (`export struct core`), so no namespace of that name can
+exist. Nesting the filters inside `core` would put their definitions in the `vulkan.core` module (a nested class
+cannot be defined in a different module), which is the opposite of "a new module for the filters". If nesting is
+wanted later, it is available - at the cost of the module split.
+
+**TWO RESOURCE DOMAINS, and why the filter is a registry rather than a lookup table.** Core owns the images it
+creates (the HDR chain, the G-buffer, the GI chain, the probe grid); the RUNTIME owns others (the material table,
+the bindless texture array, the per-slot skin matrices and cluster bins, the shadow map). A filter built over core
+alone can only answer for the first. So the pass filter carries a small registry the owner fills
+(`register_resource(id, element, handles)`), and `resource()` resolves from it - which serves both domains with one
+vocabulary and lets the core-owned families join the same table when the first pass needs one.
+
+**THE LIFETIME CONTRACT, which is why the channel is small and why it is not `resolved_io`**: what `resource()`
+answers at CREATE time is a SESSION-STABLE handle. The runtime's material table and texture array are created once
+and only have their contents rewritten; its per-frame-slot buffers are created once and rewritten per slot. A
+per-swapchain-image VIEW is not stable - it is rebuilt with every generation - and those keep arriving per frame
+through `own` / `own_per_image` / `barrier_images`. The measured evidence that the contract is satisfiable: the
+MASK bake's create already runs BEFORE the scene is uploaded (log line 301 vs 311 in a real run; the material
+buffer is created once at `runtime.cpp:371` and the textures only ever `push_back` at `:946`).
+
+**AND ONE CONSTRUCTION SITE**: `runtime::make_pass_context()` replaces the three copies of the create-time context
+(the stage loop and the two jobs), which is what stops a per-pass entry point per job from growing back.
+
+This step lands the channel INERT - no pass calls `resource()` yet - which is the same shape the per-image view
+channel landed in (`own_per_image`), and for the same reason: adding a channel is provably harmless while its user
+is absent. The migration that uses it is the next step (the two jobs), and its acceptance is the two knob-on A/Bs,
+since neither path runs in the twelve gate scenarios.
+
+Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0 with an empty output
+stream, gate 12 x 2 with 0 changed and 0 flaky.
+
 ## WHAT THE INVENTORY ALREADY FOUND (RE-AUDITED AGAINST THE CURRENT TREE)
 
 The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought `master`'s files over, so most
@@ -950,6 +1007,12 @@ says what a re-audit of the current tree found.
   `vulkan.pipelines::build_cluster`, the recorder and its two buffer barriers are the pass's, and the framework
   grew `pass_io::barrier_buffers` and `extent_rule::none` to describe it. Verified by the same knob-on A/B with
   `[lighting] demo_lights = 4` (four runs, one hash). See the section above.
+* **The filters module exists** (`vulkan.core.filters`): `vulkan::user_filter` (the old `core_filter`, renamed,
+  now holding a `shared_ptr<core>`) and `vulkan::pass_filter` (a pass's init view: device, surface format,
+  descriptor-set allocation, the allocator, and `resource(id, element)` over what the owner registers). The
+  framework's `pass_context` gained the two callbacks that forward to it (`resource`, `descriptor_set`), and the
+  three copies of the create-time context collapsed into `runtime::make_pass_context()`. The channel is INERT
+  until the two jobs migrate - the next step - and the gate is 12 x 2 with 0 changed.
 
 **NOT DONE, with the reason and the exact next step.**
 

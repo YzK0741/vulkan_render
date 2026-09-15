@@ -153,7 +153,8 @@ namespace vulkan {
         // is why its member declaration sits ABOVE filtered_core's, matching this order. Both only need
         // the core, so the order between them is otherwise free.
         , readback_staging{vulkan_core}
-        , filtered_core{vulkan_core} {
+        , filtered_core{core_owner}
+        , pass_resources{core_owner} {
         glfwSetWindowUserPointer(this->vulkan_core.window, this);
         glfwSetMouseButtonCallback(this->vulkan_core.window, mouse_button_callback);
         glfwSetCursorPosCallback(this->vulkan_core.window, cursor_pos_callback);
@@ -3294,22 +3295,7 @@ namespace vulkan {
         // probe grid's - which is the naming accident `docs/runtime_split.md` records; the TAA resolve's is
         // made here because the pass that declares it is what needs it now.
         this->ensure_taa_sampler();
-        pass::pass_context const build = {
-            .device = this->vulkan_core.device,
-            .samplers = this->shared_samplers(),
-            .shared_set_layout = [](void* owner, uint32_t const set) {
-                // TWO shared sets, and the GI tracer is why there are two: it binds the scene set (0) and the
-                // G-buffer set (1) and owns no layout of its own, so the pipeline layout it builds needs both
-                // of their owners' layouts. A pass asking for any other set gets "none", which makes it build
-                // nothing and say so.
-                runtime* const self = static_cast<runtime*>(owner);
-                if (set == 0u) {
-                    return self->vulkan_core.scene_descriptor_set_layout;
-                }
-                return set == 1u ? self->gbuffer_set_layout : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
-            .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
-            .owner = this,
-        };
+        pass::pass_context const build = this->make_pass_context();
         pass::stage const scene_stage = {.name = "scene", .passes = this->scene_stage, .marks = false};
         pass::run_report const scene_created = pass::create_stage(scene_stage, build);
         if (!scene_created.rejected.empty()) {
@@ -3394,6 +3380,42 @@ namespace vulkan {
             }
         }
         return {}; // a pass whose shader was never registered builds nothing and says so
+    }
+
+    pass::pass_context runtime::make_pass_context() noexcept {
+        // THE ONE CONSTRUCTION SITE for a pass's create-time context, and it is a method rather than a block
+        // because there were two of them: `create_passes()` built one for the stages, and the two jobs that are
+        // not frame passes (the MASK bake, the compute-skinning job) each built their own copy. A second copy of
+        // this struct is how a per-pass entry point per job appears, which is what the pass filter exists to
+        // remove - so there is one builder now, and everything that constructs a pass uses it.
+        return pass::pass_context{
+            .device = this->vulkan_core.device,
+            .samplers = this->shared_samplers(),
+            .shared_set_layout = [](void* owner, uint32_t const set) {
+                // TWO shared sets, and the GI tracer is why there are two: it binds the scene set (0) and the
+                // G-buffer set (1) and owns no layout of its own, so the pipeline layout it builds needs both
+                // of their owners' layouts. A pass asking for any other set gets "none", which makes it build
+                // nothing and say so.
+                runtime* const self = static_cast<runtime*>(owner);
+                if (set == 0u) {
+                    return self->vulkan_core.scene_descriptor_set_layout;
+                }
+                return set == 1u ? self->gbuffer_set_layout : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
+            .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
+            // The two channels a pass uses to build what it owns over resources the RENDERER holds: the handles
+            // of the resources this runtime published (`pass_resources`), and a set from the core's pool for a
+            // layout it handed out above. Both forward to the filter, which is the object that knows what a pass
+            // may reach - the context itself stays a plain struct of callbacks, so the framework still does not
+            // depend on `vulkan.core`.
+            .resource =
+                [](void* owner, render_resource::resource_id const id, uint32_t const element) {
+                    runtime* const self = static_cast<runtime*>(owner);
+                    resource_handles const handles = self->pass_resources.resource(id, element);
+                    return pass::resolved_binding{.view = handles.view, .buffer = handles.buffer, .image = handles.image};
+                },
+            .descriptor_set = [](void* owner, VkDescriptorSetLayout const layout) { return static_cast<runtime*>(owner)->pass_resources.make_descriptor_set(layout); },
+            .owner = this,
+        };
     }
 
     /// the scene pass's per-frame input: the leaves, the segments, and the three things only the renderer can
@@ -3762,22 +3784,11 @@ namespace vulkan {
         if (!this->vulkan_core.ray_query_available) {
             return std::unexpected(std::string("mask bake: this device has no ray queries (VK_KHR_acceleration_structure + VK_KHR_ray_query)"));
         }
-        // The context the JOB is created with, built here for one object: the device, the six shared samplers,
-        // the two shared set layouts and the shader registry - exactly the struct a pass's create step is handed
-        // (see pass_context). The JOB is not a frame pass (see its header), but the way it is CONSTRUCTED is the
-        // same, which is what keeps a second construction path from appearing.
-        pass::pass_context const build = {
-            .device = this->vulkan_core.device,
-            .samplers = this->shared_samplers(),
-            .shared_set_layout = [](void* owner, uint32_t const set) {
-                runtime* const self = static_cast<runtime*>(owner);
-                if (set == 0u) {
-                    return self->vulkan_core.scene_descriptor_set_layout;
-                }
-                return set == 1u ? self->gbuffer_set_layout : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
-            .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
-            .owner = this,
-        };
+        // The context the JOB is created with: the SAME one every pass gets, from the one builder (see
+        // make_pass_context). The job is not a frame pass (see its header), but the way it is CONSTRUCTED is the
+        // same - which is what keeps a second construction path - and a second copy of the struct - from
+        // appearing.
+        pass::pass_context const build = this->make_pass_context();
         // The two bindings its set is written with, from the resources the renderer owns: the material table
         // (binding 5) and the bindless texture array with its sampler (binding 1).
         auto const* const material_detail = this->vulkan_core.vma.get_buffer_detail(this->material_buffer.handle());
@@ -3807,22 +3818,10 @@ namespace vulkan {
         if (!this->vulkan_core.ray_query_available) {
             return std::unexpected(std::string("compute skin: this device has no ray queries (VK_KHR_acceleration_structure + VK_KHR_ray_query)"));
         }
-        // The context the JOB is created with, the same struct a pass's create step is handed (see
-        // pass_context) - so the one way to construct a GPU-owning object in this renderer stays one way. The
-        // per-slot sets are allocated HERE (the pool is the core's) and moved into the job, which writes each
-        // one's binding 9 from that slot's per-joint matrix buffer and owns the set from then on.
-        pass::pass_context const build = {
-            .device = this->vulkan_core.device,
-            .samplers = this->shared_samplers(),
-            .shared_set_layout = [](void* owner, uint32_t const set) {
-                runtime* const self = static_cast<runtime*>(owner);
-                if (set == 0u) {
-                    return self->vulkan_core.scene_descriptor_set_layout;
-                }
-                return set == 1u ? self->gbuffer_set_layout : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
-            .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
-            .owner = this,
-        };
+        // The context the JOB is created with: the SAME one every pass gets, from the one builder. The per-slot
+        // sets are allocated here (the pool is the core's) and moved into the job, which writes each one's
+        // binding 9 from that slot's per-joint matrix buffer and owns the set from then on.
+        pass::pass_context const build = this->make_pass_context();
         if (this->skin_buffers.empty()) {
             return std::unexpected(std::string("compute skin: the per-slot skin matrix buffers are not created"));
         }

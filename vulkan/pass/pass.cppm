@@ -1,4 +1,4 @@
-// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/pass.cppm
@@ -42,6 +42,7 @@ export module vulkan.pass;
 
 import vulkan.render_resource;
 import vulkan.render_resource.shared;
+import vulkan.core.handles; // vk_descriptor_set: the RAII set `pass_context::descriptor_set` hands over
 
 export namespace vulkan::pass {
 
@@ -329,7 +330,36 @@ export namespace vulkan::pass {
          * this framework.
          */
         std::span<unsigned char const> (*shader)(void* owner, std::string_view name) = nullptr;
-        /// what the two lookups above are called with (the renderer passes itself)
+        /**
+         * One of THIS pass's declared resources, at CREATE time: the handles its own resources are, or all-null
+         * when the owner has none.
+         *
+         * WHY A PASS NEEDS IT, measured: a pass that owns a descriptor set built over a resource the RENDERER
+         * holds - the alphaMode MASK bake's material table and bindless texture array, the compute-skinning
+         * job's per-slot matrix buffers - had no way to name it, so the runtime built those sets on the pass's
+         * behalf through a bespoke entry point per job. This is the channel that replaces them, and it speaks the
+         * DECLARATION's vocabulary (`resource_id` + element) rather than a new one, so an owner can refuse an id
+         * the pass never declared.
+         *
+         * THE LIFETIME RULE IS THE SAME ONE `resolved_io` FOLLOWS PER FRAME: what arrives here is a
+         * session-stable handle (the runtime's material table, its texture array, a per-frame-SLOT buffer). A
+         * per-swapchain-image VIEW is not stable - it is rebuilt with every generation - and those keep arriving
+         * per frame through `own` / `own_per_image` / `barrier_images`, which is the channel that was added for
+         * exactly that reason. A pass that cached one of those here would be storing a handle its own
+         * `on_swapchain_recreated` cannot repair.
+         */
+        resolved_binding (*resource)(void* owner, render_resource::resource_id id, uint32_t element) = nullptr;
+        /**
+         * A descriptor set from the OWNER's pool, for a layout the owner handed over through
+         * `shared_set_layout`.
+         *
+         * The pool is the core's, so a pass cannot allocate one of these itself without a pool of its own; a pass
+         * that owns a PER-IMAGE family does not need this call at all (it builds the family with
+         * `bindings::image_set_family`, which owns its pool and retires it correctly - see vulkan.bindings). This
+         * is for the one-off set: a job that writes a single set from a shared layout and keeps it.
+         */
+        vk_descriptor_set (*descriptor_set)(void* owner, VkDescriptorSetLayout layout) = nullptr;
+        /// what the lookups above are called with (the renderer passes itself)
         void* owner = nullptr;
     };
 

@@ -45,7 +45,7 @@ import vulkan.readback;               // GPU -> CPU buffer copies (the screensho
 import vulkan.acceleration_structure; // the ray-tracing bottom level structures (built once, lazily)
 export import vstd;
 export import vulkan.core;
-export import vulkan.core.filter;
+export import vulkan.core.filters;
 export import vulkan.scene_tree;         // scene storage + the abstract leaf interface (pure CPU)
 export import vulkan.primitive;          // the GPU primitives + material/UBO records (peer module)
 export import vulkan.render_environment; // per-worker draw state (peer module)
@@ -725,6 +725,14 @@ namespace vulkan {
         [[nodiscard]] pass::frame_identity pass_frame() const noexcept;
         /// the bytes of a shader the app registered, by file name (empty when it did not)
         [[nodiscard]] std::span<unsigned char const> registered_shader(std::string_view name) const noexcept;
+        /**
+         * @brief the ONE create-time context every pass is built with
+         *
+         * It was a block inside `create_passes()` plus a copy per job (the MASK bake, the compute-skinning job) -
+         * and a second copy of this struct is exactly how a per-pass entry point per job appears. One builder,
+         * used by everything that constructs a pass, is what keeps that from growing back.
+         */
+        [[nodiscard]] pass::pass_context make_pass_context() noexcept;
         /// the six samplers a declaration chooses between, in one place (see pass_context::samplers)
         [[nodiscard]] render_resource::shared::sampler_set shared_samplers() const noexcept;
         /// create the TAA resolve's shared sampler if it does not exist (see create_passes for why it is
@@ -1340,7 +1348,16 @@ namespace vulkan {
         // toggles exactly once - see poll_events)
         bool gui_toggle_down = false;
         // filtered view over vulkan_core, exposed via operator-> (external code never sees the raw core)
-        core_filter filtered_core;
+        user_filter filtered_core;
+        /**
+         * THE PASS FILTER (vulkan.core.filters): the view a pass's create step is handed, which is how the
+         * renderer stops knowing what each pass needs. It shares the device (`core_owner`) and carries the
+         * resources this runtime publishes for its passes to name - the material table, the bindless texture
+         * array, the per-slot skin matrices - so a pass can write its own descriptor set from its own
+         * declaration instead of the renderer doing it through a bespoke entry point per pass. Declared here,
+         * after `core_owner`, so it is released before the device.
+         */
+        pass_filter pass_resources;
 
         /**
          * @ingroup vulkan_runtime
@@ -1417,10 +1434,10 @@ namespace vulkan {
     public:
         // A non-const runtime exposes a mutable filter (e.g. runtime->get_vma()); a const runtime
         // gets a read-only filter, so mutating operations are impossible through const access.
-        core_filter* operator->() noexcept {
+        user_filter* operator->() noexcept {
             return &this->filtered_core;
         }
-        core_filter const* operator->() const noexcept {
+        user_filter const* operator->() const noexcept {
             return &this->filtered_core;
         }
 
