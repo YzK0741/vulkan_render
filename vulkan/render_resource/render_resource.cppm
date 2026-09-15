@@ -1389,4 +1389,42 @@ export namespace vulkan::render_resource {
         .barrier_buffers = {},
         .push = push_block{.offset = 0, .size = post_push_bytes, .stages = stage_flag::fragment},
     };
+
+    /// @brief set 1 is the shared G-buffer set, whose LAYOUT the debug view's pass owns (it is the one that
+    ///        generates it) and whose per-image SETS the renderer writes (six consumers bind them)
+    inline constexpr std::array<uint32_t, 1> gbuffer_debug_shared_sets = {1};
+
+    /// @brief what the debug view RENDERS INTO: the HDR target, which is the image it actually writes - so unlike
+    ///        the deferred stage's and the composite's, this declaration carries no deviation
+    inline constexpr std::array<render_target, 1> gbuffer_debug_targets = {{render_target{.resource = resource_id::hdr, .element = 0, .kind = target_kind::color}}};
+
+    /// @brief the four images it moves to a sampled layout: the three stored surface targets and the motion vectors
+    inline constexpr std::array<barrier_image, 4> gbuffer_debug_barriers = {{barrier_image{.resource = resource_id::gbuffer_targets, .element = 0},
+                                                                             barrier_image{.resource = resource_id::gbuffer_targets, .element = 1},
+                                                                             barrier_image{.resource = resource_id::gbuffer_targets, .element = 2},
+                                                                             barrier_image{.resource = resource_id::velocity, .element = 0}}};
+
+    /**
+     * @brief the G-buffer debug view's declaration: the stored surface, one channel at a time, into the HDR target
+     *
+     * Everything it READS is in the shared G-buffer set (the three targets, the depth, the velocity), so it declares
+     * no binding of its own - and the DEPTH is deliberately not among its barrier images: its old layout depends on
+     * whether the G-buffer instance rendered this frame, which is shared per-image bookkeeping the host owns (the
+     * same hand-back the deferred stage's frame carries as a callback). The velocity target IS declared, because the
+     * debug view runs INSTEAD of the lighting stage and is therefore the only stage that hands it to a sampler on
+     * those frames.
+     *
+     * The push block is 16 bytes - the channel, the two projection terms the depth channel linearizes with, and the
+     * motion gain - and all four values are the frame's (the renderer's knob and camera).
+     */
+    inline constexpr pass_io gbuffer_debug_io = {
+        .name = "gbuffer-debug",
+        .own_set = 0, // unused: no own bindings (everything it reads is in the shared G-buffer set)
+        .bindings = {},
+        .shared_sets = gbuffer_debug_shared_sets,
+        .targets = gbuffer_debug_targets,
+        .barrier_images = gbuffer_debug_barriers,
+        .barrier_buffers = {},
+        .push = push_block{.offset = 0, .size = 16, .stages = stage_flag::fragment},
+    };
 } // namespace vulkan::render_resource

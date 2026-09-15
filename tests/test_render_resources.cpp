@@ -540,5 +540,31 @@ int main() {
         CHECK(rr::fxaa_io.push->size == rr::post_push_bytes); // FXAA is mode 3 of the chain's one shader block
         CHECK(rr::fxaa_io.push->stages == rr::stage_flag::fragment);
     }
+
+    // ---- the FIFTEENTH declaration: the G-buffer debug view - the stored surface, one channel at a time ----
+    {
+        auto const debug = rr::validate(rr::gbuffer_debug_io);
+        CHECK_MSG(debug.has_value(), debug.has_value() ? "" : debug.error().c_str());
+        CHECK(rr::gbuffer_debug_io.bindings.empty()); // everything it reads is in the shared G-buffer set
+        CHECK(rr::gbuffer_debug_io.shared_sets.size() == 1);
+        CHECK(rr::gbuffer_debug_io.shared_sets[0] == 1); // the G-buffer set (1), NOT the scene's or the post's
+        // THE HDR TARGET, declared as itself: this is the one graphics declaration in the chain with no deviation -
+        // the image it writes is the image it names
+        CHECK(rr::gbuffer_debug_io.targets.size() == 1);
+        CHECK(rr::gbuffer_debug_io.targets[0].resource == rr::resource_id::hdr);
+        CHECK(rr::gbuffer_debug_io.targets[0].kind == rr::target_kind::color);
+        // the four images it moves to a sampled layout: the three stored targets and the motion vectors. The DEPTH
+        // is deliberately NOT here - its old layout depends on whether the G-buffer instance rendered this frame,
+        // which is the host's per-image bookkeeping (the accessor the two other sampling stages share)
+        CHECK(rr::gbuffer_debug_io.barrier_images.size() == 4);
+        CHECK(rr::gbuffer_debug_io.barrier_images[0].resource == rr::resource_id::gbuffer_targets);
+        CHECK(rr::gbuffer_debug_io.barrier_images[0].element == 0);
+        CHECK(rr::gbuffer_debug_io.barrier_images[1].element == 1);
+        CHECK(rr::gbuffer_debug_io.barrier_images[2].element == 2);
+        CHECK(rr::gbuffer_debug_io.barrier_images[3].resource == rr::resource_id::velocity);
+        CHECK(rr::gbuffer_debug_io.push.has_value());
+        CHECK(rr::gbuffer_debug_io.push->size == 16); // the channel, two projection terms, the motion gain
+        CHECK(rr::gbuffer_debug_io.push->stages == rr::stage_flag::fragment);
+    }
     return vk_test::finish("test_render_resources");
 }
