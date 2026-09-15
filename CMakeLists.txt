@@ -125,6 +125,7 @@ target_sources(vulkancorekit
         vulkan/pipelines/pipelines.cppm
         vulkan/render_resource/render_resource.cppm
         vulkan/render_resource/shared.cppm
+        vulkan/frame_constants/frame_constants.cppm
         vulkan/pass/pass.cppm
         vulkan/pass/gi_probe.cppm
         vulkan/pass/taa.cppm

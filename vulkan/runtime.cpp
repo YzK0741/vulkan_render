@@ -1,7 +1,8 @@
 module;
 
 #include <GLFW/glfw3.h>
-#include <bit> // std::bit_cast for the caster world-matrix hash
+#include <algorithm> // std::min in the resource publication
+#include <bit>       // std::bit_cast for the caster world-matrix hash
 #include <chrono>
 #include <cstring> // std::memcpy, for composing a pass's push block
 #include <glm/glm.hpp>
@@ -20,8 +21,9 @@ import vulkan.render_resource.shared;
 
 import utility;
 import vulkan.constant_init;
-import vulkan.init_utils;    // the resource-creation patterns the init/ensure functions below repeat
-import vulkan.core.pipeline; // vulkan::make_pipeline for the post-process pipeline
+import vulkan.init_utils;      // the resource-creation patterns the init/ensure functions below repeat
+import vulkan.frame_constants; // one frame's shared constants (see update_frame_constants)
+import vulkan.core.pipeline;   // vulkan::make_pipeline for the post-process pipeline
 
 // Route std::pmr allocations through mimalloc for this TU (utility.better_pmr). Idempotent:
 // init_pmr() returns the same process-wide singleton no matter which TU calls it first, so
@@ -1402,6 +1404,10 @@ namespace vulkan {
         // morph_scratch) land in this slot's buffers and are safe to make now that the slot's
         // previous submission has completed.
         this->active_slot = frame_slot;
+        // ... and the frame's shared constants are THIS frame's from here on: the camera record, the light
+        // UBO and the fitted scene bounds above are all final at this point, and every pass of the frame reads
+        // the same numbers the shaders see (see vulkan.frame_constants).
+        this->update_frame_constants();
         return frame_status::proceed;
     }
 
@@ -1437,6 +1443,11 @@ namespace vulkan {
         if (this->bound_scene == nullptr) {
             utility::panic("runtime::begin_recording() called before set_scene() bound a scene");
         }
+        // THIS FRAME's resources, in the declaration's vocabulary: published before anything resolves, because
+        // the per-swapchain-image views are this generation's, an alias (`scene_color`) is decided per frame, and
+        // the lazily created shadow map exists only after a scene set does - so this is the first point where
+        // "what exists right now" has an answer (see pass::resource_table and runtime::publish_frame_resources).
+        this->publish_frame_resources();
         // Record the frame into this slot's command buffer (inline recording: no inheritance)
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
         VkCommandBufferBeginInfo const begin_info = {
@@ -3293,6 +3304,233 @@ namespace vulkan {
         }
     }
 
+    void runtime::update_frame_constants() noexcept {
+        // THE ONE PLACE THE FACTS TYPE AND THE UBOs HAVE TO AGREE. `vulkan.frame_constants` deliberately does not
+        // include `camera_ubo`/`light_ubo` (the pass framework must not depend on vulkan.primitive, which imports
+        // core), so the fields are copied here - one site to check, instead of a type relationship spread across
+        // two modules that only a reader of both would notice breaking.
+        this->frame_facts.view = this->current_ubo.view;
+        this->frame_facts.proj = this->current_ubo.proj; // JITTERED: the geometry is sampled at these offsets
+        this->frame_facts.view_proj_unjittered = this->current_ubo.view_proj_unjittered;
+        this->frame_facts.inv_view_proj = this->current_inv_view_proj;
+        this->frame_facts.camera_pos = glm::vec3(this->current_ubo.camera_pos);
+        this->frame_facts.scene_center = this->shadow_scene_center;
+        this->frame_facts.scene_radius = this->scene_radius;
+        // The sun, normalized for the same reason the probe cache's resolve normalizes it (the shader wants a
+        // direction, the UBO's own lane stays as the app set it). A zero direction - nothing has set a light yet
+        // - is kept as zero rather than turned into a NaN by normalize().
+        glm::vec3 const sun = glm::vec3(this->light_state.light_dir);
+        this->frame_facts.light_dir = glm::dot(sun, sun) > 0.0f ? glm::vec4(glm::normalize(sun), 0.0f) : glm::vec4(0.0f);
+    }
+
+    void runtime::publish_frame_resources() {
+        core const& vk = this->vulkan_core;
+        pass::resource_table& table = this->frame_resources;
+        table.clear();
+
+        // One per-swapchain-image family: one entry per image, instance = the image index. `element` is the
+        // family's own index (the G-buffer's third target, the bloom chain's level 2) and stays the caller's.
+        auto const family = [&table](render_resource::resource_id const id, uint32_t const element, std::vector<VkImageView> const& views, std::vector<VkImage> const& images) {
+            std::size_t const count = std::min(views.size(), images.size());
+            for (std::size_t i = 0; i < count; ++i) {
+                table.publish(id, element, static_cast<uint32_t>(i), pass::resolved_binding{.view = views[i], .buffer = VK_NULL_HANDLE, .image = images[i]});
+            }
+        };
+        // One resource that exists once (a device-wide image): the instance is still the schema's (0 for
+        // device-wide, the slot for a per-frame-slot buffer that happens to exist once).
+        auto const single = [&table](render_resource::resource_id const id, uint32_t const element, uint32_t const instance, pass::resolved_binding const binding) {
+            table.publish(id, element, instance, binding);
+        };
+        // One buffer: the RAII wrapper holds a handle and the descriptor needs the VkBuffer behind it, so the
+        // lookup goes through vma exactly where the renderer's own binding writes do.
+        auto const buffer = [this, &table](render_resource::resource_id const id, uint32_t const instance, vk_buffer const& owned) {
+            auto const* const detail = this->vulkan_core.vma.get_buffer_detail(owned.handle());
+            if (detail == nullptr) {
+                return;
+            }
+            table.publish(id, 0, instance, pass::resolved_binding{.buffer = detail->buffer});
+        };
+        auto const image = [this](vk_image const& owned) -> pass::resolved_binding {
+            auto const* const detail = this->vulkan_core.vma.get_image_detail(owned.handle());
+            return detail == nullptr ? pass::resolved_binding{} : pass::resolved_binding{.image = detail->image};
+        };
+
+        // ---- the render-target chain: the image families core owns ----
+        family(render_resource::resource_id::swapchain_image, 0, vk.swap_chain_image_views, vk.swap_chain_images);
+        family(render_resource::resource_id::hdr, 0, vk.hdr_image_views, vk.hdr_images);
+        family(render_resource::resource_id::ldr, 0, vk.ldr_image_views, vk.ldr_images);
+        family(render_resource::resource_id::gbuffer_depth, 0, vk.gbuffer_depth_image_views, vk.gbuffer_depth_images);
+        family(render_resource::resource_id::velocity, 0, vk.velocity_image_views, vk.velocity_images);
+        family(render_resource::resource_id::taa_history, 0, vk.taa_history_image_views, vk.taa_history_images);
+        family(render_resource::resource_id::gi_trace, 0, vk.gi_image_views, vk.gi_images);
+        family(render_resource::resource_id::gi_resolve, 0, vk.gi_resolve_image_views, vk.gi_resolve_images);
+        family(render_resource::resource_id::gi_history, 0, vk.gi_history_image_views, vk.gi_history_images);
+        family(render_resource::resource_id::gi_spatial, 0, vk.gi_spatial_image_views, vk.gi_spatial_images);
+        family(render_resource::resource_id::gi_spec_trace, 0, vk.gi_spec_image_views, vk.gi_spec_images);
+        family(render_resource::resource_id::gi_spec_reproject, 0, vk.gi_spec_reproject_image_views, vk.gi_spec_reproject_images);
+        family(render_resource::resource_id::gi_spec_resolve, 0, vk.gi_spec_resolve_image_views, vk.gi_spec_resolve_images);
+        family(render_resource::resource_id::gi_spec_history, 0, vk.gi_spec_history_image_views, vk.gi_spec_history_images);
+        for (std::size_t target = 0; target < vk.gbuffer_image_views.size() && target < vk.gbuffer_images.size(); ++target) {
+            family(render_resource::resource_id::gbuffer_targets, static_cast<uint32_t>(target), vk.gbuffer_image_views[target], vk.gbuffer_images[target]);
+        }
+        for (std::size_t level = 0; level < vk.bloom_image_views.size() && level < vk.bloom_images.size(); ++level) {
+            family(render_resource::resource_id::bloom, static_cast<uint32_t>(level), vk.bloom_image_views[level], vk.bloom_images[level]);
+        }
+        // `scene_color` is an ALIAS rather than a family of its own: the scene-side passes write the TAA input
+        // while the resolve runs and the HDR target otherwise (see scene_target_view), so WHAT THE ID MEANS is
+        // decided here, once per frame, in the same place that answers it for the resolvers - which is also why
+        // the table is refreshed per frame rather than per generation.
+        std::size_t const scene_images = std::min({vk.scene_color_image_views.size(), vk.scene_color_images.size(), vk.hdr_image_views.size(), vk.hdr_images.size()});
+        for (std::size_t i = 0; i < scene_images; ++i) {
+            single(render_resource::resource_id::scene_color, 0, static_cast<uint32_t>(i),
+                   pass::resolved_binding{.view = this->scene_target_view(static_cast<uint32_t>(i)), .buffer = VK_NULL_HANDLE, .image = this->scene_target_image(static_cast<uint32_t>(i))});
+        }
+
+        // ---- per FRAME SLOT: the ray-traced visibility image, the shadow map's cascades, the buffers ----
+        for (std::size_t slot = 0; slot < vk.rt_shadow_image_views.size() && slot < vk.rt_shadow_images.size(); ++slot) {
+            single(render_resource::resource_id::rt_shadow_visibility, 0, static_cast<uint32_t>(slot),
+                   pass::resolved_binding{.view = vk.rt_shadow_image_views[slot], .buffer = VK_NULL_HANDLE, .image = vk.rt_shadow_images[slot]});
+        }
+        // The shadow map's family elements are the CASCADES (see render_resource::shadow_io): the image is one
+        // layered depth array per slot and the pass renders one layer at a time, so every layer the image
+        // currently HAS is published, by cascade index, with the image behind it for the layer's own barrier.
+        for (std::size_t slot = 0; slot < this->shadow_images.size() && slot < this->shadow_layer_views.size(); ++slot) {
+            auto const* const detail = this->vulkan_core.vma.get_image_detail(this->shadow_images[slot].handle());
+            if (detail == nullptr) {
+                continue;
+            }
+            for (std::size_t layer = 0; layer < this->shadow_layer_views[slot].size(); ++layer) {
+                single(render_resource::resource_id::shadow_map, static_cast<uint32_t>(layer), static_cast<uint32_t>(slot),
+                       pass::resolved_binding{.view = *this->shadow_layer_views[slot][layer], .buffer = VK_NULL_HANDLE, .image = detail->image});
+            }
+        }
+        // The per-slot buffers, each into its own instance: a frame in flight reads its own copy, which is the
+        // whole reason those resources exist per slot (see the member docs).
+        uint32_t const slots = static_cast<uint32_t>(vulkan::core::MAX_FRAMES_IN_FLIGHT);
+        for (uint32_t slot = 0; slot < slots; ++slot) {
+            if (slot < this->camera_buffers.size()) {
+                buffer(render_resource::resource_id::camera_ubo, slot, this->camera_buffers[slot]);
+            }
+            if (slot < this->light_buffers.size()) {
+                buffer(render_resource::resource_id::light_ubo, slot, this->light_buffers[slot]);
+            }
+            if (slot < this->motion_buffers.size()) {
+                buffer(render_resource::resource_id::motion_vectors, slot, this->motion_buffers[slot]);
+            }
+            if (slot < this->skin_buffers.size()) {
+                buffer(render_resource::resource_id::skin_matrices, slot, this->skin_buffers[slot]);
+            }
+            if (slot < this->morph_buffers.size()) {
+                buffer(render_resource::resource_id::morph_targets, slot, this->morph_buffers[slot]);
+            }
+            if (slot < this->cluster_count_buffers.size()) {
+                buffer(render_resource::resource_id::cluster_counts, slot, this->cluster_count_buffers[slot]);
+            }
+            if (slot < this->cluster_index_buffers.size()) {
+                buffer(render_resource::resource_id::cluster_indices, slot, this->cluster_index_buffers[slot]);
+            }
+            // ... and the two that exist ONCE while their schema scope still says per-frame-slot: the material
+            // table and the instance transforms are rewritten in place rather than per slot, which is why the
+            // same handle is published for every instance.
+            buffer(render_resource::resource_id::material_table, slot, this->material_buffer);
+            buffer(render_resource::resource_id::instance_table, slot, this->instance_buffer);
+        }
+
+        // ---- device-wide: the probe grid's eight elements, its geometry, the cubes and the textures ----
+        for (std::size_t element = 0; element < vk.gi_probe_image_views.size() && element < vk.gi_probe_images.size(); ++element) {
+            single(render_resource::resource_id::probe_grid, static_cast<uint32_t>(element), 0,
+                   pass::resolved_binding{.view = vk.gi_probe_image_views[element], .buffer = VK_NULL_HANDLE, .image = vk.gi_probe_images[element]});
+        }
+        if (!vk.gi_probe_surface_image_views.empty() && !vk.gi_probe_surface_images.empty()) {
+            single(render_resource::resource_id::probe_surface, 0, 0,
+                   pass::resolved_binding{.view = vk.gi_probe_surface_image_views[0], .buffer = VK_NULL_HANDLE, .image = vk.gi_probe_surface_images[0]});
+        }
+        if (!vk.furnace_cube_views.empty() && !vk.furnace_cube_images.empty()) {
+            single(render_resource::resource_id::furnace_cube, 0, 0,
+                   pass::resolved_binding{.view = vk.furnace_cube_views[0], .buffer = VK_NULL_HANDLE, .image = vk.furnace_cube_images[0]});
+        }
+        // The white fallback and the array it is element 0 of. The array is BINDLESS (one binding, N descriptors),
+        // which the declaration vocabulary cannot index element by element yet - so what is published is the one
+        // element that always exists, which is also the one every declaration can name (element 0).
+        if (this->white_texture_index < this->owned_textures.size() && this->white_texture_index < this->owned_texture_views.size()) {
+            pass::resolved_binding white = image(this->owned_textures[this->white_texture_index]);
+            white.view = *this->owned_texture_views[this->white_texture_index];
+            single(render_resource::resource_id::white_texture, 0, 0, white);
+            single(render_resource::resource_id::scene_textures, 0, 0, white);
+        }
+        // The IBL triple, in the order set_ibl uploads it: prefiltered environment, irradiance, BRDF LUT.
+        if (this->ibl_views.size() >= 3 && this->ibl_images.size() >= 3) {
+            pass::resolved_binding env = image(this->ibl_images[0]);
+            env.view = *this->ibl_views[0];
+            pass::resolved_binding irradiance = image(this->ibl_images[1]);
+            irradiance.view = *this->ibl_views[1];
+            pass::resolved_binding lut = image(this->ibl_images[2]);
+            lut.view = *this->ibl_views[2];
+            single(render_resource::resource_id::ibl_env, 0, 0, env);
+            single(render_resource::resource_id::ibl_irradiance, 0, 0, irradiance);
+            single(render_resource::resource_id::brdf_lut, 0, 0, lut);
+        }
+        // NOT published: `top_level_structure`. It is an acceleration structure, and `resolved_binding` carries
+        // the three handles a set write and a barrier take - a device address is neither. Whoever needs it asks
+        // the runtime for it today (see the scene set's binding 16), and a table entry that could not carry the
+        // handle would be a claim this type cannot make.
+    }
+
+    void runtime::verify_resource_table(pass::frame_pass const& pass, pass::resolved_io const& io) {
+        render_resource::pass_io const& decl = pass.io();
+        pass::resource_table const& table = this->frame_resources;
+        uint32_t checked = 0;
+        uint32_t mismatched = 0;
+        auto const as_pointer = [](auto const handle) { return static_cast<void const*>(handle); };
+        auto const check = [&](render_resource::resource_id const id, uint32_t const element, pass::resolved_binding const& resolved, std::string_view const channel) {
+            render_resource::resource_info const* const info = render_resource::find(id);
+            if (info == nullptr) {
+                return;
+            }
+            ++checked;
+            pass::resolved_binding const published = table.find(id, element, pass::instance_for(info->scope, io.frame));
+            if (published.view == resolved.view && published.buffer == resolved.buffer && published.image == resolved.image) {
+                return;
+            }
+            ++mismatched;
+            // Bounded, and only while the check's window is open: a wrong entry is a finding to fix, not a reason
+            // to fill the log of every frame.
+            if (this->resource_check_frames < 3 && this->resource_check_mismatched + mismatched <= 10) {
+                utility::log("resource table: pass '{}' {} (resource {}, element {}) resolved as [view {}, buffer {}, image {}] but published as [view {}, buffer {}, image {}]",
+                             decl.name, channel, static_cast<int>(id), element,
+                             as_pointer(resolved.view), as_pointer(resolved.buffer), as_pointer(resolved.image),
+                             as_pointer(published.view), as_pointer(published.buffer), as_pointer(published.image));
+            }
+        };
+        // The own bindings, indexed by their own binding number: the validator requires those to be contiguous
+        // from zero, so `own[binding]` IS this binding's handle (see resolved_io).
+        for (render_resource::pass_binding const& binding : decl.bindings) {
+            if (binding.owner != render_resource::set_owner::own || binding.binding >= io.own.size()) {
+                continue;
+            }
+            check(binding.resource, binding.element, io.own[binding.binding], "own binding");
+        }
+        for (std::size_t t = 0; t < decl.targets.size() && t < io.targets.size(); ++t) {
+            check(decl.targets[t].resource, decl.targets[t].element, io.targets[t], "render target");
+        }
+        for (std::size_t i = 0; i < decl.barrier_images.size() && i < io.barrier_images.size(); ++i) {
+            check(decl.barrier_images[i].resource, decl.barrier_images[i].element, io.barrier_images[i], "barrier image");
+        }
+        for (std::size_t i = 0; i < decl.barrier_buffers.size() && i < io.barrier_buffers.size(); ++i) {
+            check(decl.barrier_buffers[i].resource, decl.barrier_buffers[i].element, io.barrier_buffers[i], "barrier buffer");
+        }
+        this->resource_check_checked += checked;
+        this->resource_check_mismatched += mismatched;
+        // One line per pass, inside the same window: it says WHICH passes the running scenario put under the
+        // check, which is what tells a reader which resolvers the table has been proven against and which ones a
+        // different scenario has to exercise.
+        if (this->resource_check_frames < 3 && checked > 0 &&
+            std::find(this->resource_check_passes.begin(), this->resource_check_passes.end(), &pass) == this->resource_check_passes.end()) {
+            this->resource_check_passes.push_back(&pass);
+            utility::log("resource table: verified {} declaration handle(s) for pass '{}'", checked, decl.name);
+        }
+    }
+
     /// the scene pass's per-frame input: the leaves, the segments, and the three things only the renderer can
     /// answer (see scene_frame). Built here rather than stored, because every field is this frame's.
     pass::scene_frame runtime::make_scene_frame() noexcept {
@@ -3508,6 +3746,22 @@ namespace vulkan {
     }
 
     bool runtime::resolve_pass(pass::frame_pass const& pass, pass::resolved_io& out) {
+        // TWO THINGS WRAP THE PER-PASS DISPATCH, and neither belongs inside it: this frame's shared constants,
+        // which every pass is handed whether or not it reads them yet, and the differential check that keeps the
+        // resource table honest against the resolvers that are still here (see verify_resource_table).
+        out.constants = this->frame_facts;
+        bool const resolved = this->resolve_pass_impl(pass, out);
+        if (resolved) {
+            this->verify_resource_table(pass, out);
+        }
+        return resolved;
+    }
+
+    // The per-pass dispatch itself: one branch per pass in the chain, each answered by this renderer's own
+    // resolver for it. THIS IS THE LAYER THE RESOURCE TABLE REPLACES, one pass at a time: for a pass whose
+    // declaration is all it needs, the branch and its resolver disappear and the framework resolves the
+    // declaration itself (see pass::resource_table and docs/pass_chain_plan.md).
+    bool runtime::resolve_pass_impl(pass::frame_pass const& pass, pass::resolved_io& out) {
         core const& vk = this->vulkan_core;
         if (&pass == static_cast<pass::frame_pass const*>(&this->transparent)) {
             return this->resolve_transparent_pass(out);
@@ -4459,6 +4713,21 @@ namespace vulkan {
     }
 
     frame_status runtime::submit_and_present() {
+        // The resource table's differential check reports itself HERE, once, at the end of the frame that closes
+        // its window - the last point of a frame, so the counters cover EVERY stage (the post and GI stages record
+        // inside `end_recording`, which is why this cannot sit there). THREE frames rather than one, because a
+        // pass may legitimately resolve only from the second frame on (TAA needs a history), and a check that
+        // watched one frame would report those as uncovered. See verify_resource_table: a mismatch is a table
+        // entry to fix before that pass's resolver can be deleted.
+        ++this->resource_check_frames;
+        if (!this->resource_check_reported && this->resource_check_frames >= 3) {
+            this->resource_check_reported = true;
+            utility::log("resource table: {} entries published, {} declaration handle checks against the resolvers, {} mismatch(es) over {} frame(s)",
+                         this->frame_resources.size(),
+                         this->resource_check_checked,
+                         this->resource_check_mismatched,
+                         this->resource_check_frames);
+        }
         vulkan::profiling::cpu_phase_timer const phase_timer{this->cpu_timings, vulkan::profiling::cpu_phase::submit};
         core& vk = this->vulkan_core;
         vk_command_buffer& command_buffer = this->command_buffers[static_cast<uint32_t>(vk.current_frame)];

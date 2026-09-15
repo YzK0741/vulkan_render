@@ -11,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <glm/glm.hpp> // the frame constants carry glm types (see vulkan.frame_constants)
 #include <string>
 #include <string_view>
 #include <vector>
@@ -587,6 +588,70 @@ int main() {
             CHECK(!has(state.log, "record:kept_job"));
         }
         CHECK(destroyed == 1); // ... and the CHAIN is what destroys it, at its own scope's end
+    }
+
+    // ---- the resource table: what EXISTS, keyed the way a DECLARATION names it (resource + element + instance).
+    //      The instance rule is the schema's own SCOPE, and it is one function so the publisher and the reader
+    //      cannot disagree - which is the whole reason this container exists instead of sixteen resolvers ----
+    {
+        vp::frame_identity const frame = {.image_index = 2, .slot = 1, .image_count = 3, .extent = {64, 64}};
+        CHECK(vp::instance_for(rr::resource_scope::per_swapchain_image, frame) == 2);
+        CHECK(vp::instance_for(rr::resource_scope::per_frame_slot, frame) == 1);
+        CHECK(vp::instance_for(rr::resource_scope::device_wide, frame) == 0); // one instance, whatever the frame says
+
+        vp::resource_table table;
+        VkImageView const view_a = reinterpret_cast<VkImageView>(0x1000);
+        VkImage const image_a = reinterpret_cast<VkImage>(0x2000);
+        VkImageView const view_b = reinterpret_cast<VkImageView>(0x3000);
+        VkImage const image_b = reinterpret_cast<VkImage>(0x4000);
+        VkBuffer const buffer_a = reinterpret_cast<VkBuffer>(0x5000);
+
+        // an empty table answers all-null rather than failing: "the owner does not have it" and "this frame
+        // cannot use it" are different statements, and only the second is a pass's business
+        CHECK(table.size() == 0);
+        CHECK(table.find(rr::resource_id::hdr, 0, 0).view == VK_NULL_HANDLE);
+        CHECK(table.find(rr::resource_id::hdr, 0, 0).image == VK_NULL_HANDLE);
+        CHECK(table.find(rr::resource_id::hdr, 0, 0).buffer == VK_NULL_HANDLE);
+
+        // one entry per IMAGE, which is what makes `own_per_image` and the bloom levels expressible
+        table.publish(rr::resource_id::hdr, 0, 0, {.view = view_a, .image = image_a});
+        table.publish(rr::resource_id::hdr, 0, 1, {.view = view_b, .image = image_b});
+        CHECK(table.size() == 2);
+        CHECK(table.find(rr::resource_id::hdr, 0, 0).view == view_a);
+        CHECK(table.find(rr::resource_id::hdr, 0, 1).view == view_b);
+        CHECK(table.find(rr::resource_id::hdr, 0, 2).view == VK_NULL_HANDLE); // no third image this generation
+        CHECK(table.instances_of(rr::resource_id::hdr, 0) == 2);
+        // the ELEMENT is part of the key: the bloom chain's four levels are four entries of one family
+        table.publish(rr::resource_id::bloom, 3, 0, {.view = view_a, .image = image_a});
+        CHECK(table.size() == 3);
+        CHECK(table.find(rr::resource_id::bloom, 3, 0).view == view_a);
+        CHECK(table.find(rr::resource_id::bloom, 2, 0).view == VK_NULL_HANDLE);
+        CHECK(table.instances_of(rr::resource_id::bloom, 3) == 1);
+        // a buffer-only family carries the buffer and leaves the image lanes null, which is how a barrier
+        // buffer is told apart from an image with a view
+        table.publish(rr::resource_id::cluster_counts, 0, 1, {.buffer = buffer_a});
+        CHECK(table.find(rr::resource_id::cluster_counts, 0, 1).buffer == buffer_a);
+        CHECK(table.find(rr::resource_id::cluster_counts, 0, 1).view == VK_NULL_HANDLE);
+        CHECK(table.find(rr::resource_id::cluster_counts, 1, 1).buffer == VK_NULL_HANDLE);
+
+        // publishing the same key REPLACES it: a frame that re-publishes an alias (scene_color is TAA-or-HDR)
+        // ends with the last value rather than with two entries that disagree
+        table.publish(rr::resource_id::hdr, 0, 0, {.view = view_b, .image = image_b});
+        CHECK(table.size() == 4);
+        CHECK(table.find(rr::resource_id::hdr, 0, 0).view == view_b);
+
+        // ... and `clear` is what makes the next frame's publication the whole truth
+        table.clear();
+        CHECK(table.size() == 0);
+        CHECK(table.find(rr::resource_id::hdr, 0, 0).view == VK_NULL_HANDLE);
+    }
+
+    // ---- the frame constants ride with the resolved I/O: a value, defaulted, so a pass that reads it before
+    //      the frame loop has filled it reads zeros rather than whatever was on the stack ----
+    {
+        vp::resolved_io io = {};
+        CHECK(io.constants.scene_radius == 0.0f);
+        CHECK(io.constants.view == glm::mat4(1.0f)); // the identity, not the frame's camera: nothing has run yet
     }
 
     return vk_test::finish("test_pass");

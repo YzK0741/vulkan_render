@@ -46,6 +46,7 @@ import vulkan.pass.gbuffer_debug;     // the fifteenth: the G-buffer debug view 
 import vulkan.pass.shadow;            // the sixteenth: the directional shadow map, one depth-only cascade per layer
 import vulkan.pass.chain;             // the chain container: what holds a run of passes and its ORDER
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
+import vulkan.frame_constants;        // one frame's shared constants, filled by the frame loop and read by passes
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
 import vulkan.acceleration_structure; // the ray-tracing bottom level structures (built once, lazily)
@@ -828,6 +829,38 @@ namespace vulkan {
         void publish_pass_resources();
         /// the samplers a declaration chooses between, in one place (see pass_context::samplers)
         [[nodiscard]] render_resource::shared::sampler_set shared_samplers() const noexcept;
+        /**
+         * @brief fill this frame's shared constants (`pass::resolved_io::constants`) from the camera/light state
+         *
+         * Called once per frame, after `pace_and_acquire` has computed the camera record, the light UBO and the
+         * fitted scene bounds - so every pass of that frame reads the same numbers the shaders see. It exists as
+         * a function because it is the ONE place where `vulkan.frame_constants` and `camera_ubo`/`light_ubo` have
+         * to agree (the facts type deliberately does not include those, so that the pass framework keeps its
+         * distance from `vulkan.core`).
+         */
+        void update_frame_constants() noexcept;
+        /**
+         * @brief publish every resource that exists right now into `frame_resources`, in the declaration's
+         *        vocabulary (`resource_id` + element + instance)
+         *
+         * Called once per frame before the first stage records: a per-swapchain-image view is a generation
+         * object, an alias like `scene_color` is decided per frame (TAA or HDR), and the lazily created shadow
+         * map only exists once a scene set does - so "this frame's resources" is the only honest publication
+         * time. See `pass::resource_table` for why the table exists at all.
+         */
+        void publish_frame_resources();
+        /**
+         * @brief the differential check of the resource table against the resolver that just ran
+         *
+         * THE MIGRATION'S ORACLE: while a pass still has a hand-written resolver in this class, that resolver's
+         * answer - the handles it put into `own`, `targets`, `barrier_images` and `barrier_buffers` - is compared
+         * against what the table answers for the SAME declaration entries. A mismatch is a table entry that is
+         * wrong or missing, which is exactly the fact that has to be right before the resolver can be deleted;
+         * it is logged (once per pass) rather than fatal, so a wrong entry can never change a frame while the
+         * layering is being moved. The check becomes vacuous for a pass whose resolver is gone, which is the
+         * point at which it has nothing left to disagree with.
+         */
+        void verify_resource_table(pass::frame_pass const& pass, pass::resolved_io const& io);
         /// create the TAA resolve's shared sampler if it does not exist (see create_passes for why it is
         /// made here rather than in a pipeline builder)
         /**
@@ -840,6 +873,9 @@ namespace vulkan {
          *       behaviour declares. The EXTENT is applied here too, from the declaration's rule.
          */
         [[nodiscard]] bool resolve_pass(pass::frame_pass const& pass, pass::resolved_io& out);
+        /// the per-pass dispatch `resolve_pass` wraps: one branch per pass, answered by this renderer's resolver
+        /// for it (the layer the resource table replaces one pass at a time)
+        [[nodiscard]] bool resolve_pass_impl(pass::frame_pass const& pass, pass::resolved_io& out);
         /** @brief the behaviour's mechanical part, before the pass records: bind the pipeline(s), resync the
          *         viewport. A pass cannot forget these because it does not do them */
         void apply_pass_behaviour(pass::frame_pass const& pass, pass::resolved_io const& io);
@@ -1387,6 +1423,31 @@ namespace vulkan {
          * after `core_owner`, so it is released before the device.
          */
         pass_filter pass_resources;
+
+        /**
+         * THIS FRAME's shared constants, and THIS FRAME's resources in the declaration's own vocabulary.
+         *
+         * The first is handed to every pass through `resolved_io::constants`; the second is what the framework
+         * will resolve a declaration against once the per-pass resolvers in this class are gone (see
+         * `publish_frame_resources`). Both are per-FRAME state - the table is refreshed every frame rather than
+         * every generation, because one of its families is an alias decided per frame - which is why they sit
+         * next to the frame's other state rather than next to the create-time publication above.
+         */
+        frame_constants frame_facts = {};
+        pass::resource_table frame_resources = {};
+        /**
+         * The differential check's running totals, and the passes it has already named.
+         *
+         * THE WINDOW IS THE FIRST FEW FRAMES, not just the first: a pass can legitimately resolve later than
+         * frame 0 (TAA needs a history, a feature can be gated on the previous frame's result), and a check that
+         * only watched the first frame would silently report "not covered" for exactly those. The pass list is
+         * what keeps the coverage lines to one per pass rather than one per pass per frame.
+         */
+        uint32_t resource_check_checked = 0;
+        uint32_t resource_check_mismatched = 0;
+        uint32_t resource_check_frames = 0;
+        bool resource_check_reported = false;
+        std::vector<pass::frame_pass const*> resource_check_passes = {};
 
         /**
          * @ingroup vulkan_runtime

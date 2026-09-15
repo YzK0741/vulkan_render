@@ -2095,3 +2095,88 @@ the same buffers in the same order with the same initial bytes, so every frame t
 byte-identical - and `default_gi` `BF180E98ADB29E7E`, `sponza_gi` `58EC848DFABE654A`,
 `metal_rough_glossy` `46F9851B7BC89872` and `glossy_motion` `98B06F2190B49519` say it is.
 
+## THE RESOLVE LAYER'S FIRST TWO PIECES: A RESOURCE TABLE AND THE FRAME'S CONSTANTS (S1 + S2)
+
+**THE OBJECTIVE THIS SERVES**, stated by its owner: `vulkan.runtime` should manage the PER-FRAME state and the
+SHARED resources, and the pass chain should own the resolve-and-record content. The measured state it starts from is
+in the sections above: `resolve_pass` is a 16-branch type switch (107 lines) onto sixteen hand-written
+`resolve_*_pass` functions (846 lines), each of which does the same seven things - can this frame run it, frame +
+command buffer, **map the declaration's elements onto the renderer's images**, the shared sets, relay the pass's own
+pipeline, **compose the push block out of renderer state**, and the extent.
+
+This slice lands the two pieces that layer needs, and NOTHING CONSUMES EITHER ONE YET. That is the point: both are
+additive, so the gate can prove they change no frame, and the differential check below is what proves they are
+RIGHT before a resolver is allowed to depend on them.
+
+**S1 - `pass::resource_table`** (`vulkan/pass/pass.cppm`, section 5): the resources that EXIST, keyed the way a
+DECLARATION names them - `(resource_id, element, instance)` - where the instance rule is the schema's own `scope`
+(`per_swapchain_image` -> the frame's image index, `per_frame_slot` -> the frame's slot, `device_wide` -> 0) and lives
+in ONE function, `pass::instance_for`, so whatever fills the table and whatever reads it cannot disagree about which
+image a declaration meant. The runtime fills it once per frame (`runtime::publish_frame_resources()`, called at the
+top of `begin_recording`) with every family the chain can name: the render-target chain core owns, the per-slot
+buffers, the probe grid's eight elements, the cubes and the textures. Publishing it per FRAME rather than per
+generation is deliberate and has a measured reason: `scene_color` is an ALIAS whose target is decided per frame
+(the TAA input or the HDR image - the same choice `resolve_scene_pass` makes), and a table refreshed per generation
+would hand a pass the wrong side of it. Measured size: **107 entries** in the `deferred` scenario, 103 in
+`shadow_single` (fewer cascades -> fewer `shadow_map` layers).
+
+**S2 - `vulkan.frame_constants`** (new leaf module) and `resolved_io::constants`: the per-frame facts a pass will
+compose its own push block from. The fields are MEASURED rather than guessed - they are exactly what the sixteen
+resolvers read out of the renderer today (`proj[2][2]`/`proj[3][2]` at eight sites, `inv_view_proj` at four,
+`view_proj_unjittered`, `view`/`camera_pos` for the shadow fit, `scene_center`/`scene_radius` for the probe grid and
+the GI radii, the sun's direction). It does NOT include `prev_view_proj` (uploaded to the camera UBO, read by no
+pass) and does NOT duplicate the frame identity (already in `resolved_io::frame`). The module depends on glm and the
+Vulkan headers and deliberately NOT on `vulkan.primitive`, whose `camera_ubo`/`light_ubo` it mirrors - that module
+imports `vulkan.core`, and the framework's own rule is that it depends on neither core nor runtime. The mirror is
+filled in ONE function, `runtime::update_frame_constants()`, at the end of `pace_and_acquire`, where the camera
+record, the light UBO and the fitted scene bounds are all final; `resolve_pass` copies it into every pass's
+`resolved_io` before the per-pass dispatch.
+
+**THE DIFFERENTIAL CHECK, which is what makes S1 verifiable at all.** While a resolver still exists, it is an ORACLE:
+`runtime::verify_resource_table` takes the handles a resolver just put into `own`, `targets`, `barrier_images` and
+`barrier_buffers` and compares them - entry by entry, through the same `instance_for` rule - against what the table
+answers for the same declaration entries. It runs for the first THREE frames (not one: TAA legitimately resolves
+only from the second frame on, and a one-frame window would report it as uncovered), names each pass it verified
+once, and bounds the detail lines to ten. Measured over the twelve gate scenarios:
+
+| scenario | published | handle checks | resolvers put under the check |
+|---|---|---|---|
+| `unlit`, `default_gi` | 107 | 27 | shadow, scene, deferred, ssgi_trace (12), ssgi_spec (3), ssgi_temporal (2), ssgi_spatial, post_composite |
+| `transparent_blend` | 107 | 11 | shadow, scene, deferred, transparent, post_composite |
+| `sponza`, `deferred`, `deferred_ssao_off`, `shadow_single` | 107 / 103 | 9 | shadow, scene, deferred, post_composite |
+| `sponza_gi` | 107 | 33 | the eight above + `gi_probe` (9) |
+| `sponza_march` | 107 | 24 | the GI chain without the probe cache |
+| `deferred_taa_fxaa` | 107 | 54 | shadow, scene, deferred, post_composite, **taa (5)**, **post_bloom_0..3**, **fxaa (2)** |
+| `metal_rough_glossy`, `glossy_motion` | 107 | 27 | the eight above |
+
+**WHAT THE CHECK FOUND - one deviating declaration entry in the whole chain, and it is a KNOWN one, now measured.**
+`post_composite`'s render target: its declaration names the swapchain image, and with FXAA on the resolver hands
+over the **LDR** image instead (the composite cannot write the image the FXAA pass has to read - the comment in
+`resolve_post_composite` calls it "the recorded deviation"). The table publishes what the declaration says, so the
+two disagree on exactly that entry, once per frame: **2 mismatches over 3 frames, one distinct entry**. That is the
+first measurement of a fact the code previously only asserted in prose, and it is the reason THAT pass keeps an
+override when the resolvers go - a `render_target` cannot express "the LDR image when FXAA is on", and neither can a
+table keyed by the declaration.
+
+**WHAT THE CHECK DOES NOT COVER, measured rather than assumed**: the resolvers that resolved in NO scenario are
+`cluster` (its feature is inactive without punctual lights), `rt_shadow` and `gbuffer_debug` (off in the twelve), and
+the shared-set families (`scene_textures`, `ibl_*`, `brdf_lut`, `material_table`, `top_level_structure`) are named by
+the SCENE SET's declaration rather than by a pass channel, so no resolver resolves them through `resolved_io`: they
+are published and UNVERIFIED. `gbuffer_debug` keeps the knob-on A/B this branch already documents; `cluster` and
+`rt_shadow` need a scenario that runs them before their resolvers can be considered proven.
+
+**ACCEPTANCE**: Release, Debug and ASan build clean; `ctest` 8/8 in all three (with the new `resource_table` /
+`instance_for` / `frame_constants` contract tests in `tests/test_pass.cpp`); `doxygen Doxyfile` exit 0 with zero
+warnings; and the capture gate - the twelve scenarios run one at a time, two runs each - returned **0 changed,
+0 flaky, 0 unseeded** with every reference hash matching, including `deferred` `2DD1D13857322C0F`,
+`deferred_taa_fxaa` `6999D01E5FBAB508`, `default_gi` `BF180E98ADB29E7E`, `sponza_gi` `58EC848DFABE654A`,
+`shadow_single` `0C9EBD7F895511A9` and `deferred_ssao_off` `08D10DF4CDA2A2D3`. The gate's own log check
+(`VUID-|Validation Error|[ERROR]|[WARNING]|panic`) sees none of the check's lines, which is why they are plain
+`resource table:` text.
+
+**WHAT S3 DOES WITH THIS**: for each pass, the branch in `resolve_pass_impl` and its `resolve_*_pass` function are
+deleted and replaced by resolution driven by the declaration + the table, and the pass composes its own push block
+from `resolved_io::constants` and its own parameters. The check stays as the migration's net: it becomes vacuous for
+a pass whose resolver is gone, and it keeps naming the passes whose resolvers are still the oracle.
+
+

@@ -36,6 +36,7 @@ module;
 #include <cstdint>
 #include <span>
 #include <string_view>
+#include <vector>
 #include <vulkan/vulkan.h>
 
 export module vulkan.pass;
@@ -43,6 +44,8 @@ export module vulkan.pass;
 import vulkan.render_resource;
 import vulkan.render_resource.shared;
 import vulkan.core.handles; // vk_descriptor_set: the RAII set `pass_context::descriptor_set` hands over
+
+export import vulkan.frame_constants; // the per-frame constants a pass reads (see resolved_io::constants)
 
 export namespace vulkan::pass {
 
@@ -290,6 +293,22 @@ export namespace vulkan::pass {
          */
         std::array<std::byte, max_push_bytes> push_storage = {};
         std::span<std::byte const> push = {};
+        /**
+         * THIS FRAME's shared constants: the camera, the fitted scene bounds and the sun, as the frame loop
+         * produced them (see `vulkan.frame_constants`).
+         *
+         * WHY THEY ARE HERE RATHER THAN COMPOSED INTO THE PUSH BLOCK BY THE HOST, which is what happens today:
+         * a push block's values come from three places - this frame's facts (here), the pass's own parameters
+         * (the pass's), and its own per-dispatch lanes (the pass's) - and only the first is the frame loop's
+         * business. Composing the whole block in the renderer is what makes every new pass a new resolver
+         * function in `vulkan.runtime`; handing the facts over as DATA is what lets the pass do it itself,
+         * without a callback that answers arbitrary questions (the shape `pass_host` is deliberately kept away
+         * from - see its note).
+         *
+         * A VALUE, not a pointer: the frame loop produces one of these per frame whether or not any pass wants
+         * it, and a pass reading it cannot outlive the frame it was recorded in.
+         */
+        frame_constants constants = {};
         /// the extent THIS pass works at: the frame's, half of it, or a resource's, per `behaviour::extent` -
         /// and EMPTY for a pass that declared `extent_rule::none`, which sizes its own work from its frame
         VkExtent2D extent = {0, 0};
@@ -634,5 +653,134 @@ export namespace vulkan::pass {
         }
         return report;
     }
+
+    // =============================================================================================
+    // 5. THE RESOURCE TABLE - what EXISTS right now, in the declaration's own vocabulary
+    //
+    // WHY THIS EXISTS. Every pass's declaration already says WHICH resource it uses (`resource_id`) and which
+    // image of that family (`element`); what it cannot say is WHICH DEVICE HANDLE that is, because a resource's
+    // view is a per-generation object and a pass does not create one. The host has that knowledge - it is the
+    // renderer that owns the images - and today it hands it over through one hand-written resolver PER PASS
+    // (`runtime::resolve_taa_pass`, `resolve_post_composite`, ... sixteen of them), each indexing the renderer's
+    // own arrays. This table is the same knowledge kept ONCE, under the key the declaration already uses, so
+    // that the per-declaration part of resolution can be a loop instead of sixteen functions.
+    //
+    // WHAT IT IS NOT: it is not an allocator, not a lifetime tracker and not a validity rule. A resource that
+    // exists but is not registered here answers all-null, exactly as a resource the owner does not have - and
+    // deciding whether a frame can run is still the resolver's job, not the table's.
+    // =============================================================================================
+
+    /**
+     * @ingroup vulkan_pass
+     * @brief which INSTANCE of a resource a frame names, decided by the schema's SCOPE rather than by the caller
+     *
+     * The rule is the one the declaration layer already documents per resource: a per-swapchain-image resource
+     * is indexed by the frame's image, a per-frame-slot one by the frame's slot, and a device-wide one has a
+     * single instance. Putting it in one function is what stops the two places that need it (whatever FILLS the
+     * table and whatever READS it) from each writing their own switch.
+     * @param scope the resource's scope, from `render_resource::find(id)->scope`
+     * @param frame the frame being recorded
+     * @return the instance index to use as the table's third key field
+     */
+    [[nodiscard]] constexpr uint32_t instance_for(render_resource::resource_scope const scope, frame_identity const& frame) noexcept {
+        switch (scope) {
+        case render_resource::resource_scope::per_swapchain_image:
+            return frame.image_index;
+        case render_resource::resource_scope::per_frame_slot:
+            return frame.slot;
+        case render_resource::resource_scope::device_wide:
+            return 0;
+        }
+        return 0;
+    }
+
+    /**
+     * @ingroup vulkan_pass
+     * @brief the device handles behind every declared resource, keyed by (resource, element, instance)
+     *
+     * FILLED BY THE OWNER, READ BY THE FRAMEWORK: the renderer publishes what its core and its own members hold,
+     * and the runner's resolution asks for it in the declaration's vocabulary. A pass never touches this type -
+     * it receives the handles through `resolved_io`, which is the only interface it has.
+     *
+     * @note PUBLISHED PER FRAME, not once per swapchain generation, and that is a decision with a measured
+     *       reason behind it: at least one family is an ALIAS whose target changes within a generation
+     *       (`scene_color` is the TAA input or the HDR image depending on whether the resolve runs this frame),
+     *       and a table that is refreshed once per generation would hand a pass a view from the wrong side of
+     *       that choice. The cost is one pass over a handful of entries per frame, which is what the renderer
+     *       already spends deciding the same facts.
+     * @note a `resource_id` nobody published answers all-null rather than failing: "the owner does not have it"
+     *       and "this frame cannot use it" are different statements, and only the second is a pass's business.
+     */
+    class resource_table {
+    public:
+        /// @brief forget everything: the caller is about to publish this frame's resources
+        void clear() noexcept {
+            this->entries_.clear();
+        }
+
+        /**
+         * @brief publish one resource instance's handles
+         * @param id the resource, in the declaration's vocabulary
+         * @param element which image of the family (the G-buffer's third target, the bloom chain's level 2, ...)
+         * @param instance the swapchain image index or the frame slot, per the resource's scope (see instance_for)
+         * @param binding the handles; a family of buffers carries only `buffer`
+         * @note publishing the same key twice REPLACES it, so a frame that re-publishes an alias (or an owner
+         *       that publishes in two passes) ends with the last value rather than with two entries
+         */
+        void publish(render_resource::resource_id const id, uint32_t const element, uint32_t const instance, resolved_binding const binding) noexcept {
+            for (entry& e : this->entries_) {
+                if (e.id == id && e.element == element && e.instance == instance) {
+                    e.binding = binding;
+                    return;
+                }
+            }
+            this->entries_.push_back(entry{.id = id, .element = element, .instance = instance, .binding = binding});
+        }
+
+        /**
+         * @brief the handles published for one resource instance, or all-null when the owner has none
+         * @param id the resource, in the declaration's vocabulary
+         * @param element which image of the family
+         * @param instance the swapchain image index or the frame slot (see instance_for)
+         */
+        [[nodiscard]] resolved_binding find(render_resource::resource_id const id, uint32_t const element, uint32_t const instance) const noexcept {
+            for (entry const& e : this->entries_) {
+                if (e.id == id && e.element == element && e.instance == instance) {
+                    return e.binding;
+                }
+            }
+            return {};
+        }
+
+        /// @brief how many entries are published (a diagnostic: the count a frame published, and what a test pins)
+        [[nodiscard]] uint32_t size() const noexcept {
+            return static_cast<uint32_t>(this->entries_.size());
+        }
+
+        /// @brief how many instances of one (resource, element) are published - 0 when the owner has none
+        [[nodiscard]] uint32_t instances_of(render_resource::resource_id const id, uint32_t const element) const noexcept {
+            uint32_t count = 0;
+            for (entry const& e : this->entries_) {
+                if (e.id == id && e.element == element) {
+                    ++count;
+                }
+            }
+            return count;
+        }
+
+    private:
+        struct entry {
+            render_resource::resource_id id = render_resource::resource_id::none;
+            uint32_t element = 0;
+            uint32_t instance = 0;
+            resolved_binding binding = {};
+        };
+        /// A vector rather than a map: the table holds what one frame's chain can NAME, it is filled once per
+        /// frame in one pass, and the lookups happen during resolution - so the smallest container that works is
+        /// the honest one, and its order is the publishing order rather than a hash (this renderer's
+        /// verification rests on byte-identical captures, and an iteration order that is an accident is exactly
+        /// what the stage runner refuses to depend on).
+        std::vector<entry> entries_ = {};
+    };
 
 } // namespace vulkan::pass
