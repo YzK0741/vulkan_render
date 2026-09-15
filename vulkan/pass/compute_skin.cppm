@@ -88,11 +88,11 @@ export namespace vulkan::pass {
 
         /**
          * @brief build the pipeline and write the per-slot sets' binding 9
-         * @param context the same create-time context a pass gets (device, shared set layouts, shader lookup)
-         * @param sets the per-slot sets, allocated by the renderer from the scene layout (the pool is the core's)
-         * @param skin_buffers one handle per set, in the same order: that slot's per-joint matrix buffer
+         * @param context the same create-time context a pass gets - the job asks it for one `skin_matrices`
+         *        element per frame slot and for each set (the pool is the owner's), so nothing about the
+         *        renderer's buffers is handed in
          */
-        [[nodiscard]] std::expected<void, std::string> create(pass_context const& context, std::vector<vk_descriptor_set> sets, std::span<VkBuffer const> skin_buffers);
+        [[nodiscard]] std::expected<void, std::string> create(pass_context const& context);
         /**
          * @brief record one dispatch per request, then the build-ordering barrier; whether anything was recorded
          * @param slot the FRAME SLOT whose per-joint buffer this recording reads (the renderer paces it; the job

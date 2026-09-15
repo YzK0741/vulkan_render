@@ -733,7 +733,17 @@ namespace vulkan {
          * used by everything that constructs a pass, is what keeps that from growing back.
          */
         [[nodiscard]] pass::pass_context make_pass_context() noexcept;
-        /// the six samplers a declaration chooses between, in one place (see pass_context::samplers)
+        /**
+         * @brief publish the resources a PASS may name, in the declaration layer's own vocabulary
+         *
+         * Called once, before the passes are created: it is the renderer's half of the pass filter's registry
+         * (`register_resource`), and it is what lets a job write its own descriptor set from its own declaration
+         * instead of the renderer doing it through an entry point per pass. Everything published here is
+         * SESSION-STABLE by the filter's contract - created once, contents rewritten - so a pass may bind it
+         * into a set it writes at create time.
+         */
+        void publish_pass_resources();
+        /// the samplers a declaration chooses between, in one place (see pass_context::samplers)
         [[nodiscard]] render_resource::shared::sampler_set shared_samplers() const noexcept;
         /// create the TAA resolve's shared sampler if it does not exist (see create_passes for why it is
         /// made here rather than in a pipeline builder)
@@ -2472,28 +2482,6 @@ namespace vulkan {
          */
         [[nodiscard]] VkExtent2D pass_extent(pass::frame_pass const& pass) const noexcept;
 
-        /**
-         * @brief create the alphaMode MASK bake JOB: its pipeline, its layout and its own set
-         * @return an error string when the device has no ray queries, the material table or the texture array
-         *         is not ready, or the pipeline could not be created
-         * @note optional like the rest of the traced features: without it a caster's geometry is built
-         *       OPAQUE and a MASK surface is solid to a ray, exactly as it is today. The JOB owns everything
-         *       it builds (vulkan.pass.mask_bake_job) - this method is the renderer's half: the context, the
-         *       set allocation (the pool is the core's) and the two bindings the set is written with. The
-         *       shader arrives the way every pass's does, through the runtime's registry by NAME, which is why
-         *       there is no SPIR-V parameter here.
-         */
-        [[nodiscard]] std::expected<void, std::string> create_mask_bake();
-        /**
-         * @brief create the compute skinning JOB: its pipeline and its per-slot sets' only written binding
-         * @return an error string when the device has no ray queries, the per-slot skin buffers or their sets
-         *         are missing, or the pipeline could not be created
-         * @note optional like the rest of the traced features: without it a skinned mesh's structure holds its
-         *       bind pose, which is what every traced effect here did before this job existed. The JOB owns
-         *       everything it builds (vulkan.pass.compute_skin_job); this method is the renderer's half: the
-         *       context, the set allocation (the pool is the core's) and the per-slot matrix buffers.
-         */
-        [[nodiscard]] std::expected<void, std::string> create_compute_skin();
         /**
          * @brief re-skin every skinned caster and REFIT its structure, for this frame
          * @param command_buffer where to record (the frame's structure phase, before the top level build)

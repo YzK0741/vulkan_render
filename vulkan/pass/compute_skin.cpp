@@ -16,6 +16,7 @@ module;
 
 module vulkan.pass.compute_skin;
 
+import vulkan.render_resource;
 import vulkan.pipelines; // build_compute_skin: the compute pipeline this job owns
 import utility;
 
@@ -53,8 +54,7 @@ namespace vulkan::pass {
         return slot < this->sets_.size() ? this->sets_[slot].get() : VK_NULL_HANDLE;
     }
 
-    std::expected<void, std::string> compute_skin_job::create(pass_context const& context, std::vector<vk_descriptor_set> sets, std::span<VkBuffer const> skin_buffers) {
-        this->sets_ = std::move(sets);
+    std::expected<void, std::string> compute_skin_job::create(pass_context const& context) {
         if (context.device == VK_NULL_HANDLE) {
             return std::unexpected(std::string("compute skin: no device"));
         }
@@ -79,28 +79,38 @@ namespace vulkan::pass {
         this->pipeline_layout_ = built->pipeline_layout;
         this->pipeline_ = std::move(built->trace);
 
-        // One set per frame slot, with only binding 9 written: the slot's OWN per-joint matrices. The animation
-        // rewrites that BUFFER every frame, not the descriptor, so the sets are written once here and stay
-        // valid - which matters twice over, because a set updated while a recording command buffer holds it
-        // invalidates that buffer (the trap the mask bake's set documents) and one set would point at the wrong
-        // slot's matrices for half the frames.
-        if (this->sets_.size() != skin_buffers.size()) {
-            return std::unexpected(std::string("compute skin: the per-slot skin matrix buffers are not created"));
+        // ONE SET PER FRAME SLOT, each allocated here from the owner's pool and written with THAT slot's
+        // per-joint matrix buffer - both asked for by declaration identity (`skin_matrices`, element = slot),
+        // which is what replaced the renderer allocating and writing them on the job's behalf. Only binding 9 is
+        // written; the animation rewrites the BUFFER every frame, not the descriptor, so the sets stay valid -
+        // which matters twice over, because a set updated while a recording command buffer holds it invalidates
+        // that buffer (the trap the MASK bake's set documents) and one set would point at another slot's
+        // matrices for half the frames.
+        if (context.frames_in_flight == 0) {
+            return std::unexpected(std::string("compute skin: the owner did not say how many frames are in flight"));
         }
-        for (std::size_t slot = 0; slot < this->sets_.size(); ++slot) {
-            if (this->sets_[slot].get() == VK_NULL_HANDLE || skin_buffers[slot] == VK_NULL_HANDLE) {
-                return std::unexpected(std::string("compute skin: a per-slot descriptor set or skin matrix buffer is missing"));
+        this->sets_.clear();
+        this->sets_.reserve(context.frames_in_flight);
+        for (uint32_t slot = 0; slot < context.frames_in_flight; ++slot) {
+            resolved_binding const matrices = context.resource != nullptr ? context.resource(context.owner, render_resource::resource_id::skin_matrices, slot) : resolved_binding{};
+            if (matrices.buffer == VK_NULL_HANDLE || context.descriptor_set == nullptr) {
+                return std::unexpected(std::string("compute skin: the per-slot skin matrix buffers or the set allocation are not available"));
             }
-            VkDescriptorBufferInfo const skins_info = {.buffer = skin_buffers[slot], .offset = 0, .range = VK_WHOLE_SIZE};
+            vk_descriptor_set set = context.descriptor_set(context.owner, scene_layout);
+            if (set.get() == VK_NULL_HANDLE) {
+                return std::unexpected(std::string("compute skin: descriptor set allocation failed"));
+            }
+            VkDescriptorBufferInfo const skins_info = {.buffer = matrices.buffer, .offset = 0, .range = VK_WHOLE_SIZE};
             VkWriteDescriptorSet write = {};
             write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = this->sets_[slot].get();
+            write.dstSet = set.get();
             write.dstBinding = 9; // SkinMatrices, the same binding shaders/pbr.vert reads
             write.dstArrayElement = 0;
             write.descriptorCount = 1;
             write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             write.pBufferInfo = &skins_info;
             vkUpdateDescriptorSets(this->device_, 1, &write, 0, nullptr);
+            this->sets_.push_back(std::move(set));
         }
         utility::log("SUCCESS: compute skinning pipeline created (skinned casters can be refitted per frame)");
         return {};

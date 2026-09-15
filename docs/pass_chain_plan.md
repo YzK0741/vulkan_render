@@ -910,6 +910,47 @@ since neither path runs in the twelve gate scenarios.
 Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0 with an empty output
 stream, gate 12 x 2 with 0 changed and 0 flaky.
 
+## THE RESOURCE CHANNEL'S FIRST TWO USERS: THE RUNTIME STOPS BUILDING WHAT A PASS CAN ASK FOR
+
+The previous step landed the channel inert (the pass filter, `pass_context::resource` / `descriptor_set`, and one
+`make_pass_context()`); this one spends it. The renderer's two per-pass entry points - `create_mask_bake()` and
+`create_compute_skin()`, each building its own copy of the create-time context plus a bespoke input struct - are
+DELETED, and both jobs now build themselves inside `create_passes()` from the same context every pass gets:
+
+* `mask_bake_job::create(context)` asks for `resource_id::material_table` and `resource_id::scene_textures`, takes
+  the set from `descriptor_set(scene_layout)`, reads the array's sampler from the shared `sampler_set`, and logs
+  its own outcome;
+* `compute_skin_job::create(context)` asks for `resource_id::skin_matrices` once per frame slot (the count comes
+  from the new `pass_context::frames_in_flight`, because "the owner has three slots" and "it forgot the fourth"
+  must not be the same statement) and allocates one set per slot itself;
+* the runtime's half is `publish_pass_resources()`, called before any pass is created: it registers the material
+  table, the texture array and each slot's skin matrix buffer in the DECLARATION's vocabulary, so a pass asks by
+  `resource_id` rather than being handed a member of `runtime`.
+
+**ONE SAMPLER JOINED THE SHARED SET.** The bake's set needs the sampler the bindless array is read through
+(REPEAT, a long LOD range), which until now was reachable only from the renderer's hand-written set code:
+`render_resource::shared::sampler_set` grew a seventh field (`textures`). It has no `sampler_hint` yet, and
+deliberately: the only user is a job with no declaration of its own, and a hint belongs with the first DECLARATION
+that names the array.
+
+**THE APP'S PART SHRANK TO WHAT ONLY IT KNOWS**: it registers the two jobs' SPIR-V files (whose names the jobs
+own) before the single `create_passes()` call, and it no longer calls, logs or unwraps anything per job.
+
+**VERIFIED BY THE TWO KNOB-ON A/Bs, because neither path runs in the twelve gate scenarios.** Both were run
+against the IMMEDIATE parent commit (`e25b7d8`) with the knob on, twice each on both sides - eight runs, one hash
+per path:
+
+| path | scenario | pre-change | this change | the work ran |
+|---|---|---|---|---|
+| alphaMode MASK bake | `AlphaBlendModeTest`, `rt_mask_bake = true` | `ED602F42AF764D70…` | `ED602F42AF764D70…` | `3 MASK casters baked into their structures` |
+| compute skinning | `CesiumMan`, `rt_skin_bake = true` | `6E0BED153DA631F0…` | `6E0BED153DA631F0…` | `1 skinned casters re-skinned and REFITTED` |
+
+Each log line is the proof the work ran rather than that the frame merely looks the same, and both paths are
+validation-clean on both sides.
+
+Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0 with an empty output
+stream, gate 12 x 2 with 0 changed and 0 flaky (about the twelve frames that exist), plus the eight A/B runs above.
+
 ## WHAT THE INVENTORY ALREADY FOUND (RE-AUDITED AGAINST THE CURRENT TREE)
 
 The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought `master`'s files over, so most
@@ -1010,9 +1051,14 @@ says what a re-audit of the current tree found.
 * **The filters module exists** (`vulkan.core.filters`): `vulkan::user_filter` (the old `core_filter`, renamed,
   now holding a `shared_ptr<core>`) and `vulkan::pass_filter` (a pass's init view: device, surface format,
   descriptor-set allocation, the allocator, and `resource(id, element)` over what the owner registers). The
-  framework's `pass_context` gained the two callbacks that forward to it (`resource`, `descriptor_set`), and the
-  three copies of the create-time context collapsed into `runtime::make_pass_context()`. The channel is INERT
-  until the two jobs migrate - the next step - and the gate is 12 x 2 with 0 changed.
+  framework's `pass_context` gained the callbacks that forward to it (`resource`, `descriptor_set`,
+  `frames_in_flight`), and the three copies of the create-time context collapsed into
+  `runtime::make_pass_context()`.
+* **The channel has its first two users, and the runtime's per-pass entry points are GONE** (see the section
+  above): `runtime::create_mask_bake()` and `runtime::create_compute_skin()` are deleted, both jobs build
+  themselves inside `create_passes()`, and the renderer's half is `publish_pass_resources()` - the material
+  table, the texture array and the per-slot skin buffers published in the declaration's own vocabulary. Verified
+  by eight A/B runs against the immediate parent (one hash per path, both paths validation-clean).
 
 **NOT DONE, with the reason and the exact next step.**
 

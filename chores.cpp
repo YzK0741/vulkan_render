@@ -314,39 +314,27 @@ namespace chores {
             load_shader(shaders_dir, "rt_shadow.comp.spv", rt_shadow_code);
             runtime.register_shader("rt_shadow.comp.spv", rt_shadow_code);
 
-            // ... and now that every pass's shaders are registered, run the passes' create steps. This is the
-            // ONE call that builds what the passes own (their set layouts, pipeline layouts and pipelines),
-            // and it happens here rather than inside each block above because a pass must be created AFTER
-            // its shaders exist and the shared set layouts do.
-            runtime.create_passes();
 
-            // The alphaMode MASK bake (shaders/mask_bake.comp), created here for the same reason and with
-            // the same optionality: without it a MASK surface is solid to a ray. It runs once, inside the
-            // command buffer that builds the bottom level structures, and the structures of masked casters
-            // are built from the expanded, mask-baked copy of their vertices instead of the original ones.
+            // The alphaMode MASK bake (shaders/mask_bake.comp) and the compute skinning job
+            // (shaders/compute_skin.comp) are TWO JOBS rather than frame passes - one runs once inside the
+            // command buffer that builds the bottom level structures (without it a MASK surface is solid to
+            // a ray), the other re-skins the casters and refits their structures per frame (without it a
+            // skinned caster's traced shadow is cast by its BIND POSE). Both are built by `create_passes()`
+            // below, from the SAME context and the same resource channel every pass gets (see
+            // vulkan.pass.mask_bake and vulkan.pass.compute_skin), so their shaders are registered here too.
             std::vector<unsigned char> mask_bake_code;
             load_shader(shaders_dir, "mask_bake.comp.spv", mask_bake_code);
             runtime.register_shader("mask_bake.comp.spv", mask_bake_code);
-            auto const mask_bake_result = runtime.create_mask_bake();
-            if (!mask_bake_result) {
-                utility::log("alphaMode MASK bake unavailable: {} (masked geometry stays solid to a ray)", mask_bake_result.error());
-            } else {
-                utility::log("SUCCESS: alphaMode MASK bake pipeline created (the mask is collapsed into the structures)");
-            }
-
-            // The compute skinning JOB (shaders/compute_skin.comp), created here and optional the same
-            // way: without it a skinned caster's traced shadow is cast by its BIND POSE. It does not
-            // run until [render] rt_skin_bake says so (set_rt_skin_bake), which is what makes the two arms
-            // of the L2.2b measurement the same binary and the same scene. IT IS A JOB (not a frame pass):
-            // the app registers the shader and the renderer's create method builds it and hands over the
-            // per-slot sets, which the job writes and owns - see vulkan.pass.compute_skin.
             std::vector<unsigned char> compute_skin_code;
             load_shader(shaders_dir, "compute_skin.comp.spv", compute_skin_code);
             runtime.register_shader("compute_skin.comp.spv", compute_skin_code);
-            auto const compute_skin_result = runtime.create_compute_skin();
-            if (!compute_skin_result) {
-                utility::log("skinned shadow refit unavailable: {} (a traced shadow keeps the bind pose)", compute_skin_result.error());
-            }
+
+            // ... and now that every pass's and every job's shaders are registered, run the create steps.
+            // This is the ONE call that builds what the passes and the jobs own (their set layouts, pipeline
+            // layouts, pipelines and their own descriptor sets), and it happens here rather than inside each
+            // block above because one of them must be created AFTER its shaders exist and the shared set
+            // layouts do. Each object logs its own outcome.
+            runtime.create_passes();
         }
     }
 

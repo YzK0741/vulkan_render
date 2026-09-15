@@ -16,6 +16,7 @@ module;
 
 module vulkan.pass.mask_bake;
 
+import vulkan.render_resource;
 import vulkan.pipelines; // build_mask_bake: the compute pipeline this job owns
 import utility;
 
@@ -46,8 +47,7 @@ namespace vulkan::pass {
         return this->pipeline_layout_;
     }
 
-    std::expected<void, std::string> mask_bake_job::create(pass_context const& context, vk_descriptor_set set, mask_bake_inputs const& inputs) {
-        this->set_ = std::move(set);
+    std::expected<void, std::string> mask_bake_job::create(pass_context const& context) {
         if (context.device == VK_NULL_HANDLE) {
             return std::unexpected(std::string("mask bake: no device"));
         }
@@ -72,8 +72,17 @@ namespace vulkan::pass {
         this->pipeline_layout_ = built->pipeline_layout;
         this->pipeline_ = std::move(built->trace);
 
-        // The two bindings the bake reads, written ONCE here: binding 1 is the bindless texture array and
-        // binding 5 the material table, exactly as the raster path declares them.
+        // THE TWO BINDINGS AND THE SET, all asked for by DECLARATION IDENTITY rather than handed in: this is the
+        // channel (`pass_context::resource` / `descriptor_set`) that replaced the renderer building this set on
+        // the job's behalf. Both are SESSION-STABLE - the material table is created once and only has its
+        // contents rewritten, and the texture array only ever grows - which is what makes them safe to bind to a
+        // set written once here (see pass_filter's lifetime contract).
+        mask_bake_inputs const inputs = {
+            .material_table = context.resource != nullptr ? context.resource(context.owner, render_resource::resource_id::material_table, 0).buffer : VK_NULL_HANDLE,
+            .textures = context.resource != nullptr ? context.resource(context.owner, render_resource::resource_id::scene_textures, 0).view : VK_NULL_HANDLE,
+            .texture_sampler = context.samplers.textures,
+        };
+        this->set_ = context.descriptor_set != nullptr ? context.descriptor_set(context.owner, scene_layout) : vk_descriptor_set{};
         if (this->set_.get() == VK_NULL_HANDLE || inputs.textures == VK_NULL_HANDLE || inputs.texture_sampler == VK_NULL_HANDLE || inputs.material_table == VK_NULL_HANDLE) {
             return std::unexpected(std::string("mask bake: the material table, the texture array or the set is not ready"));
         }
@@ -91,6 +100,7 @@ namespace vulkan::pass {
             writes[b].pBufferInfo = b == 0u ? nullptr : &materials_info;
         }
         vkUpdateDescriptorSets(this->device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        utility::log("SUCCESS: alphaMode MASK bake pipeline created (the mask is collapsed into the structures)");
         return {};
     }
 

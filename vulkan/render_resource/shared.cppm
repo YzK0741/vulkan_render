@@ -41,8 +41,14 @@ import vulkan.render_resource;
 export namespace vulkan::render_resource::shared {
 
     /**
-     * @brief the six samplers this renderer owns, addressed by what a declaration asks for
+     * @brief the samplers this renderer owns, addressed by what a declaration asks for
      * @ingroup vulkan_render_resource_shared
+     *
+     * SIX of them have a `sampler_hint` a declaration can choose by (see `of`). `textures` is the seventh and
+     * has none YET: it is the sampler the bindless texture ARRAY is read through (repeat addressing, a long LOD
+     * range), it was reachable only from the renderer's hand-written set code, and it joined this struct when
+     * the alphaMode MASK bake - a job with no declaration of its own - had to write the scene layout's binding 1
+     * itself. A hint for it belongs with the first DECLARATION that names the array.
      */
     struct sampler_set {
         VkSampler gbuffer = VK_NULL_HANDLE;
@@ -51,6 +57,8 @@ export namespace vulkan::render_resource::shared {
         VkSampler post = VK_NULL_HANDLE;
         VkSampler nearest = VK_NULL_HANDLE;
         VkSampler shadow = VK_NULL_HANDLE;
+        /// @brief the bindless texture array's sampler (no hint yet: see the struct's doc)
+        VkSampler textures = VK_NULL_HANDLE;
 
         /// @brief the sampler a declared hint means; `none` is "this binding has no sampler", which the
         ///        declaration's validator enforces exactly

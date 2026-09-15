@@ -359,6 +359,14 @@ export namespace vulkan::pass {
          * is for the one-off set: a job that writes a single set from a shared layout and keeps it.
          */
         vk_descriptor_set (*descriptor_set)(void* owner, VkDescriptorSetLayout layout) = nullptr;
+        /**
+         * How many frames the owner has in flight - the number of per-frame-slot resources it will publish.
+         *
+         * A pass with per-slot state (the compute-skinning job's one set per slot) knows how many slots to ask
+         * for only from the owner, and the alternative - looping until a slot answers with nothing - makes "the
+         * owner has three slots" and "this owner forgot to publish the fourth" the same statement.
+         */
+        uint32_t frames_in_flight = 0;
         /// what the lookups above are called with (the renderer passes itself)
         void* owner = nullptr;
     };

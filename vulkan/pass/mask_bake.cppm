@@ -82,19 +82,24 @@ export namespace vulkan::pass {
     };
 
     /// @brief the two resources the bake's own set is written with, and the sampler the array is read through
+    ///
+    /// Kept as a named shape because the job's TWO bindings are a fact about the bake rather than about the
+    /// caller: `create` fills it from the resource channel, and a reader of the write below can see what the set
+    /// is made of without following two callback calls.
     struct mask_bake_inputs {
         VkBuffer material_table = VK_NULL_HANDLE;   // the scene layout's binding 5
         VkImageView textures = VK_NULL_HANDLE;      // ... binding 1: the bindless texture array
         VkSampler texture_sampler = VK_NULL_HANDLE; // the sampler the raster path uses for that array
     };
-
     /**
      * @brief the one-shot bake job: it owns its pipeline layout, its pipeline and its descriptor set
      *
-     * `create` is handed the same `pass_context` a pass gets (the device, the shared set layouts, the shader
-     * lookup), the set to write (allocated from the scene layout by the renderer, which owns the pool) and the
-     * two bindings that set needs; `record` is one caster's dispatch. Everything the job owns is released in
-     * its destructor, so what the renderer holds is one member instead of four raw handles.
+     * `create` is handed the same `pass_context` a pass gets and NOTHING else: it asks that context for the two
+     * bindings its set needs (`material_table` and `scene_textures`, through the resource channel) and for the
+     * set itself (from the owner's pool, through `descriptor_set`). That is the whole point of the channel - the
+     * renderer used to build this set on the job's behalf, through an entry point that existed only because a
+     * pass could not name a resource the renderer owns. `record` is one caster's dispatch. Everything the job
+     * owns is released in its destructor, so what the renderer holds is one member instead of four raw handles.
      */
     class mask_bake_job {
     public:
@@ -107,7 +112,7 @@ export namespace vulkan::pass {
         mask_bake_job& operator=(mask_bake_job&&) = delete;
 
         /// @brief build the pipeline and write the job's own set; an error message says what was missing
-        [[nodiscard]] std::expected<void, std::string> create(pass_context const& context, vk_descriptor_set set, mask_bake_inputs const& inputs);
+        [[nodiscard]] std::expected<void, std::string> create(pass_context const& context);
         /// @brief bind this job's pipeline and set and dispatch ONE caster's bake
         void record(VkCommandBuffer command_buffer, mask_bake_request const& request) const noexcept;
         /// @brief whether the job built what it records with (the renderer's gate for baking at all)

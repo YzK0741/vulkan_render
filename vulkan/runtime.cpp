@@ -3295,6 +3295,10 @@ namespace vulkan {
         // probe grid's - which is the naming accident `docs/runtime_split.md` records; the TAA resolve's is
         // made here because the pass that declares it is what needs it now.
         this->ensure_taa_sampler();
+        // ... and what the passes may NAME, before any of them is created: the registry the pass filter answers
+        // `resource()` from (see publish_pass_resources). It is the renderer's half of the channel; the passes'
+        // half is that they ask for what their own declaration lists instead of being handed it.
+        this->publish_pass_resources();
         pass::pass_context const build = this->make_pass_context();
         pass::stage const scene_stage = {.name = "scene", .passes = this->scene_stage, .marks = false};
         pass::run_report const scene_created = pass::create_stage(scene_stage, build);
@@ -3341,6 +3345,17 @@ namespace vulkan {
         if (!cluster_created.rejected.empty()) {
             utility::log("pass '{}': its declaration was refused by the validator, so it does not run", cluster_created.rejected);
         }
+        // THE TWO JOBS, and they are created HERE rather than by the application: neither is a frame pass (see
+        // their headers - one runs once inside the structure-build command buffer, the other per frame from a
+        // caster list), but both are GPU-owning objects constructed from the same context, so they belong in the
+        // same step. Before the pass filter existed each had its own entry point in this class, because a pass
+        // could not name a resource the renderer owns; now it asks (see publish_pass_resources).
+        if (auto const created = this->mask_bake.create(build); !created) {
+            utility::log("alphaMode MASK bake unavailable: {} (masked geometry stays solid to a ray)", created.error());
+        }
+        if (auto const created = this->compute_skin.create(build); !created) {
+            utility::log("skinned shadow refit unavailable: {} (a traced shadow keeps the bind pose)", created.error());
+        }
     }
 
     void runtime::ensure_taa_sampler() {
@@ -3370,7 +3385,10 @@ namespace vulkan {
                 .taa = *this->taa_sampler,
                 .post = *this->post_sampler,
                 .nearest = *this->post_nearest_sampler,
-                .shadow = *this->shadow_sampler};
+                .shadow = *this->shadow_sampler,
+                // The bindless texture array's sampler, which only hand-written set code used until the MASK
+                // bake had to write the scene layout's binding 1 itself (see sampler_set's doc).
+                .textures = this->texture_sampler.get() == VK_NULL_HANDLE ? VK_NULL_HANDLE : *this->texture_sampler};
     }
 
     std::span<unsigned char const> runtime::registered_shader(std::string_view const name) const noexcept {
@@ -3414,8 +3432,29 @@ namespace vulkan {
                     return pass::resolved_binding{.view = handles.view, .buffer = handles.buffer, .image = handles.image};
                 },
             .descriptor_set = [](void* owner, VkDescriptorSetLayout const layout) { return static_cast<runtime*>(owner)->pass_resources.make_descriptor_set(layout); },
+            .frames_in_flight = vulkan::core::MAX_FRAMES_IN_FLIGHT,
             .owner = this,
         };
+    }
+
+    void runtime::publish_pass_resources() {
+        // WHAT THE RENDERER PUBLISHES FOR ITS PASSES, in the declaration layer's own vocabulary: a pass asks for
+        // `resource_id::material_table` or `resource_id::skin_matrices` + a slot, not for a member of this class.
+        // Everything here is SESSION-STABLE by the filter's contract (the material table and the texture array
+        // are created once and only rewritten; the skin matrix buffers are created once and rewritten per slot),
+        // which is what makes them safe for a pass to bind into a descriptor set it writes once at create time.
+        if (auto const* const materials = this->vulkan_core.vma.get_buffer_detail(this->material_buffer.handle()); materials != nullptr && this->material_mapped != nullptr) {
+            this->pass_resources.register_resource(render_resource::resource_id::material_table, 0, resource_handles{.buffer = materials->buffer});
+        }
+        if (!this->owned_texture_views.empty()) {
+            this->pass_resources.register_resource(render_resource::resource_id::scene_textures, 0, resource_handles{.view = *this->owned_texture_views[0]});
+        }
+        for (uint32_t slot = 0; slot < this->skin_buffers.size(); ++slot) {
+            auto const* const detail = this->vulkan_core.vma.get_buffer_detail(this->skin_buffers[slot].handle());
+            if (detail != nullptr) {
+                this->pass_resources.register_resource(render_resource::resource_id::skin_matrices, slot, resource_handles{.buffer = detail->buffer});
+            }
+        }
     }
 
     /// the scene pass's per-frame input: the leaves, the segments, and the three things only the renderer can
@@ -3778,79 +3817,6 @@ namespace vulkan {
                 vkCmdBindPipeline(io.cmd, bind_point, pipeline);
             }
         }
-    }
-
-    std::expected<void, std::string> runtime::create_mask_bake() {
-        if (!this->vulkan_core.ray_query_available) {
-            return std::unexpected(std::string("mask bake: this device has no ray queries (VK_KHR_acceleration_structure + VK_KHR_ray_query)"));
-        }
-        // The context the JOB is created with: the SAME one every pass gets, from the one builder (see
-        // make_pass_context). The job is not a frame pass (see its header), but the way it is CONSTRUCTED is the
-        // same - which is what keeps a second construction path - and a second copy of the struct - from
-        // appearing.
-        pass::pass_context const build = this->make_pass_context();
-        // The two bindings its set is written with, from the resources the renderer owns: the material table
-        // (binding 5) and the bindless texture array with its sampler (binding 1).
-        auto const* const material_detail = this->vulkan_core.vma.get_buffer_detail(this->material_buffer.handle());
-        if (material_detail == nullptr || this->owned_texture_views.empty() || this->texture_sampler.get() == VK_NULL_HANDLE || this->material_mapped == nullptr) {
-            return std::unexpected(std::string("mask bake: the material table or the texture array is not ready"));
-        }
-        pass::mask_bake_inputs const inputs = {
-            .material_table = material_detail->buffer,
-            .textures = *this->owned_texture_views[0],
-            .texture_sampler = *this->texture_sampler,
-        };
-        // The set itself: allocated from the SCENE layout here, because the pool is the core's, and MOVED into
-        // the job, which owns it from then on (see vulkan.pass.mask_bake_job).
-        vk_descriptor_set set = this->vulkan_core.make_descriptor_set(this->vulkan_core.scene_descriptor_set_layout);
-        if (set.get() == VK_NULL_HANDLE) {
-            return std::unexpected(std::string("mask bake: descriptor set allocation failed"));
-        }
-        auto created = this->mask_bake.create(build, std::move(set), inputs);
-        if (!created) {
-            return std::unexpected(std::move(created.error()));
-        }
-        utility::log("SUCCESS: alphaMode MASK bake pipeline created (the mask is collapsed into the structures)");
-        return {};
-    }
-
-    std::expected<void, std::string> runtime::create_compute_skin() {
-        if (!this->vulkan_core.ray_query_available) {
-            return std::unexpected(std::string("compute skin: this device has no ray queries (VK_KHR_acceleration_structure + VK_KHR_ray_query)"));
-        }
-        // The context the JOB is created with: the SAME one every pass gets, from the one builder. The per-slot
-        // sets are allocated here (the pool is the core's) and moved into the job, which writes each one's
-        // binding 9 from that slot's per-joint matrix buffer and owns the set from then on.
-        pass::pass_context const build = this->make_pass_context();
-        if (this->skin_buffers.empty()) {
-            return std::unexpected(std::string("compute skin: the per-slot skin matrix buffers are not created"));
-        }
-        // The VkBuffer behind each slot's VMA allocation: `vk_buffer::handle()` is the ALLOCATOR's handle, so
-        // the descriptor needs the detail's `buffer` - and asking for the detail here is also the check that
-        // the allocation is one this device can bind.
-        std::vector<VkBuffer> skin_handles;
-        skin_handles.reserve(this->skin_buffers.size());
-        for (vk_buffer const& buffer : this->skin_buffers) {
-            auto const* const detail = this->vulkan_core.vma.get_buffer_detail(buffer.handle());
-            if (detail == nullptr) {
-                return std::unexpected(std::string("compute skin: a skin matrix buffer has no VMA detail"));
-            }
-            skin_handles.push_back(detail->buffer);
-        }
-        std::vector<vk_descriptor_set> sets;
-        sets.reserve(skin_handles.size());
-        for (std::size_t slot = 0; slot < skin_handles.size(); ++slot) {
-            vk_descriptor_set set = this->vulkan_core.make_descriptor_set(this->vulkan_core.scene_descriptor_set_layout);
-            if (set.get() == VK_NULL_HANDLE) {
-                return std::unexpected(std::string("compute skin: descriptor set allocation failed"));
-            }
-            sets.push_back(std::move(set));
-        }
-        auto created = this->compute_skin.create(build, std::move(sets), skin_handles);
-        if (!created) {
-            return std::unexpected(std::move(created.error()));
-        }
-        return {};
     }
 
     void runtime::fill_compute_skin_requests() {
