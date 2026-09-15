@@ -1721,11 +1721,13 @@ wiring was then split in two and the FIRST half was landed on its own:
    back `6999D01E5FBAB508` - the reference, byte for byte - with `deferred` (FXAA off, so the composite is the last
    writer and carries the overlay) also matching. The overlay's ON path is the one frame the gate cannot cover and
    it was measured the same way the composite's was (see the section above).
-3. **④ the G-buffer debug view**. It shares the G-buffer set layout with the lighting stage, and that layout is
-   currently built by `make_gbuffer_debug_pipeline` (`pipelines::build_gbuffer_debug` returns it) because the
-   deferred pass needed it first. Once BOTH are passes, the layout has to belong to one of them or to the
-   declaration layer - and its knob is a genuine A/B (the debug view replaces the lighting stage), so it is
-   verified by the knob-on A/B the rt_shadow/mask_bake/compute_skin steps used.
+3. **④ the G-buffer debug view - DONE** (`9b0bd2f` + `02693fe`, after the first attempt was bisected and the
+   recording half rebuilt): the pass owns the G-buffer set LAYOUT (which is why `shared_set_layout(1)` answers with
+   it and why the pass is emplaced FIRST), its pipeline layout and its pipeline; `make_gbuffer_debug_pipeline` and
+   the three raw members are gone; the two samplers became `ensure_gbuffer_samplers()`; the recording is a stage
+   with its resolver, the frame's `ensure_inputs` callback and the host's missing-set fallback. Gate 12 x 2 with 0
+   changed, and the knob-on A/B (`gbuffer_debug = true`) matches the parent commit byte for byte - which is the
+   acceptance this step needed, because no gate scenario enables the view.
 4. **⑤ the shadow pass** (the cascaded maps, the per-cascade cache and the parallel secondary recording): the last
    graphics stage that is still the renderer's, and the one with the most renderer state behind it (the fit cache,
    the caster gather, the per-slot secondaries).
