@@ -996,6 +996,43 @@ Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen
 stream, gate 12 x 2 with **0 changed and 0 flaky** - including all five GI scenarios, which are the ones that run
 the chain this step rewired.
 
+## THE RENDERER HOLDS NO PASS: THE CHAIN OWNS THEM, THE RUNTIME HOLDS VIEWS
+
+The last "who owns whom" exception is gone. `pass_chain` gained the owning half of its interface -
+`emplace<PassT>(...)` builds a pass INTO the chain and returns the reference the caller keeps - and the runtime's
+twelve per-pass members became ONE owning chain plus non-owning references to the ten passes:
+
+```cpp
+pass::pass_chain passes{"render"};                                  // OWNS every pass this renderer has
+pass::scene_pass& scene = this->passes.emplace<pass::scene_pass>();  // ... and these are the views
+pass::ssgi_trace_pass& ssgi_trace = this->passes.emplace<pass::ssgi_trace_pass>();
+// ... ten of them, in the order the chain builds them
+pass::pass_chain gi_chain{"gi"};                                     // the record-order SUB-chain over four of them
+```
+
+WHAT THIS CHANGES, concretely: the runtime no longer constructs, orders or destroys a pass. The chain decides the
+build order (the declaration order of those references), the destruction order (its own destructor), and the
+record order (`gi_chain` and the six single-pass stages). The runtime keeps views, and because they are declared
+AFTER the chain they are destroyed before it and can never dangle. `runtime::create_passes()` collapsed with it:
+ten per-stage `create_stage` calls and their rejection logs became ONE `this->passes.init(build)`, whose `rejected`
+already names the pass that refused its own declaration.
+
+WHY REFERENCES RATHER THAN NOTHING: the renderer still has to CONFIGURE each pass per frame - set a frame, read
+the answer the composite's weight depends on, ask whether the probe grid has had its batch - and those are typed
+calls on a typed object. Handing the renderer a name-keyed container and a cast per call site would trade one
+honest reference for a lookup and a `static_cast`, which is strictly worse. The ownership question is answered by
+WHO CONSTRUCTS AND DESTROYS, and that is the chain now.
+
+THE TWO JOBS STAY MEMBERS, and the reason is a TYPE rather than a policy: `mask_bake_job` and
+`compute_skin_job` are not `frame_pass` (one runs once inside the structure-build command buffer, the other per
+frame from a caster list), so the owning chain cannot hold them. They still follow the same rules - built from the
+pass context, own their pipelines and sets, release them in their own destructors. A `job_chain` of the same shape
+is what would remove those two as well.
+
+Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0 with an empty output
+stream, gate 12 x 2 with **0 changed and 0 flaky** - a pure ownership move, which is exactly what that gate result
+should look like.
+
 ## WHAT THE INVENTORY ALREADY FOUND (RE-AUDITED AGAINST THE CURRENT TREE)
 
 The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought `master`'s files over, so most
@@ -1109,6 +1146,10 @@ says what a re-audit of the current tree found.
   chain stays contiguous, and the filter's "only if the temporal resolved" gate lives in `feature_active`. The
   step's two traps - the gate written into the wrong feature function, and the reflection family's ensure moving
   with the callback - are recorded with their measurements. Gate 12 x 2 = 0 changed, GI scenarios included.
+* **THE RENDERER HOLDS NO PASS** (see the section above): the chain OWNS the ten passes (`emplace`), the runtime
+  holds non-owning references to configure them, `create_passes()` is one `passes.init(build)`, and the runtime's
+  per-pass destructors and per-stage create calls are gone with the members. The two JOBS stay members only
+  because they are not `frame_pass` (a `job_chain` would remove them too). Gate 12 x 2 = 0 changed.
 * **`bind_pass_chain` is NOT here yet, deliberately**: a selector needs a second candidate chain to select
   between, and the renderer has exactly one frame order today (`gbuffer_debug`/`unlit` are per-pass feature
   gates, not alternative chains). The candidates arrive with the graphics stages: the deferred tail

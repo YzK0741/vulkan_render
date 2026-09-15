@@ -3273,36 +3273,13 @@ namespace vulkan {
         this->gi_chain.add(this->ssgi_temporal);
         this->gi_chain.add(this->ssgi_spatial);
         pass::pass_context const build = this->make_pass_context();
-        pass::stage const scene_stage = {.name = "scene", .passes = this->scene_stage, .marks = false};
-        pass::run_report const scene_created = pass::create_stage(scene_stage, build);
-        if (!scene_created.rejected.empty()) {
-            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", scene_created.rejected);
-        }
-        // THE GI CHAIN is created as ONE call over its four passes (see gi_chain), which is also what makes the
-        // chain's ORDER the thing that decides the create order - the same statement the frame's record makes.
-        pass::run_report const gi_created = this->gi_chain.init(build);
-        if (!gi_created.rejected.empty()) {
-            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", gi_created.rejected);
-        }
-        pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
-        pass::run_report const created = pass::create_stage(probe_stage, build);
+        // ONE CREATE STEP OVER EVERY PASS, in the order the OWNING chain holds them (see the member block in the
+        // header): `passes` owns the ten passes this renderer has, so its `init` IS the whole create step. A pass
+        // that could not build itself reports its own name in `rejected` and stays INACTIVE (its feature predicate
+        // is false), which is what makes a startup failure a log line rather than a broken frame.
+        pass::run_report const created = this->passes.init(build);
         if (!created.rejected.empty()) {
             utility::log("pass '{}': its declaration was refused by the validator, so it does not run", created.rejected);
-        }
-        pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
-        pass::run_report const taa_created = pass::create_stage(taa_stage, build);
-        if (!taa_created.rejected.empty()) {
-            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", taa_created.rejected);
-        }
-        pass::stage const rt_shadow_stage = {.name = "rt_shadow", .passes = this->rt_shadow_stage, .marks = false};
-        pass::run_report const rt_shadow_created = pass::create_stage(rt_shadow_stage, build);
-        if (!rt_shadow_created.rejected.empty()) {
-            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", rt_shadow_created.rejected);
-        }
-        pass::stage const cluster_stage = {.name = "cluster", .passes = this->cluster_stage, .marks = false};
-        pass::run_report const cluster_created = pass::create_stage(cluster_stage, build);
-        if (!cluster_created.rejected.empty()) {
-            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", cluster_created.rejected);
         }
         // THE TWO JOBS, and they are created HERE rather than by the application: neither is a frame pass (see
         // their headers - one runs once inside the structure-build command buffer, the other per frame from a

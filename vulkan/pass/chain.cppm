@@ -33,8 +33,10 @@
 module;
 
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 export module vulkan.pass.chain;
@@ -55,6 +57,17 @@ export namespace vulkan::pass {
         std::string_view name_ = {};
         /// the passes, in the order they were added; fixed once the frame starts, so nothing allocates per frame
         std::vector<frame_pass*> passes_ = {};
+        /**
+         * THE PASSES THIS CHAIN OWNS - and it is the chain's, not the renderer's, on purpose.
+         *
+         * A renderer that declares one member per pass decides when every pass is built and destroyed, which is
+         * the "who owns whom" question this branch keeps answering in one place: the device root is the
+         * `shared_ptr<core>`, and everything else holds a view. The passes were the exception - the runtime
+         * constructed them as its own members - and a chain that owns them makes the ORDER it already decides
+         * (the running order) the same thing as the lifetime order. `emplace` is how a renderer hands a pass
+         * over; `add` still takes a pass it does NOT own, for a test or for a pass that lives elsewhere.
+         */
+        std::vector<std::unique_ptr<frame_pass>> owned_ = {};
         /// whether the runner writes a mark pair around the chain (false for every chain in this renderer: the
         /// frame loop owns the marks and their positions are the timing report's contract)
         bool marks_ = false;
@@ -67,8 +80,26 @@ export namespace vulkan::pass {
         }
 
         /// @brief append a pass to the end of the chain; the order of the calls IS the order of the stages
+        /// @note the chain does NOT own it: see `emplace` for the owning form
         void add(frame_pass& pass) {
             this->passes_.push_back(&pass);
+        }
+
+        /**
+         * @brief build a pass INTO the chain and return the reference the caller keeps
+         *
+         * The owning form of `add`: the chain allocates, destroys and orders the pass, and the renderer keeps a
+         * non-owning reference to configure it per frame. That split is what makes "the renderer holds no pass"
+         * true without making the renderer fish its own passes out of a container: it holds views, the chain
+         * holds the objects.
+         */
+        template <typename PassT, typename... Args>
+        PassT& emplace(Args&&... args) {
+            std::unique_ptr<PassT> pass = std::make_unique<PassT>(std::forward<Args>(args)...);
+            PassT& reference = *pass;
+            this->owned_.push_back(std::move(pass));
+            this->passes_.push_back(&reference);
+            return reference;
         }
 
         [[nodiscard]] std::string_view name() const noexcept {

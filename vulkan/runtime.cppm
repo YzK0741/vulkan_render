@@ -394,43 +394,68 @@ namespace vulkan {
             // itself across resolutions instead of being a magic number per window size.
             float motion_gain = 1.0f;
         };
-        // ---- screen-space global illumination (see shaders/ssgi.comp) ----
+        // ---- THE PASSES: OWNED BY THE CHAIN, HELD HERE AS VIEWS --------------------------------------
+        //
+        // THE OWNERSHIP RULE, and it is the reason these are references rather than objects: a renderer that
+        // declares one member per pass decides when every pass is built and destroyed. That question - who owns
+        // whom - is answered in exactly one place in this branch: the device root is the `shared_ptr<core>`, and
+        // every other holder holds a VIEW (`pass_filter`, `core::user_filter`, a chain's pass list). The passes
+        // were the last exception, and `passes` below is what removes it: the chain OWNS them (`emplace`), it
+        // decides the order they are built and destroyed in, and the runtime keeps non-owning references to
+        // configure each one per frame. Nothing here destroys a pass, and nothing here outlives the chain (the
+        // references are declared AFTER it, so they are destroyed first and are never dangling).
+        //
+        // WHAT EACH PASS OWNS is its own GPU objects - its pipeline layout, its pipeline, its set layout, its
+        // per-image descriptor family, its barrier batches - so what is left in this class is the RENDERER's:
+        // the knobs, the frame counters, the push block's VALUES, and the frame state a pass cannot know.
+        pass::pass_chain passes{"render"};
+
+        // the order of these declarations IS the order the chain builds them in, and today it is the order the
+        // renderer used to spell out in `create_passes()`.
+        pass::scene_pass& scene = this->passes.emplace<pass::scene_pass>();
+        pass::transparent_pass& transparent = this->passes.emplace<pass::transparent_pass>();
         /// THE SSGI TRACER (vulkan.pass.ssgi_trace): it owns its pipeline layout, its compute pipeline and the
-        /// first-use barrier batch, so neither of those is a member here any more. What stays is what is the
-        /// RENDERER's: the knobs, the frame counter, the push block's VALUES, and the state the pass cannot
-        /// know (whether the denoiser's accumulation is trustworthy, and whether the lobe runs next).
-        pass::ssgi_trace_pass ssgi_trace;
+        /// first-use barrier batch, so neither of those is a member here any more.
+        pass::ssgi_trace_pass& ssgi_trace = this->passes.emplace<pass::ssgi_trace_pass>();
         /// THE GLOSSY LOBE (vulkan.pass.ssgi_spec): it owns its pipeline layout, its pipeline, the ordering
         /// barrier, the hand-off and its per-image first-use state. It runs between the tracer and the denoiser
         /// and writes the SAME image the tracer wrote - which is why the tracer asks whether it will run.
-        pass::ssgi_spec_pass ssgi_spec;
-        /// THE DIFFUSE TEMPORAL RESOLVE (vulkan.pass.ssgi_temporal): step 1a - it owns the RECORDING (the two
-        /// barrier batches, the dispatch, the two push lanes that describe its own state, the history copy and
-        /// the hand-backs); step 1b added the set layout, the pipeline and its per-image family. Its frame carries
-        /// the REFLECTION's recording as a callback, so the chain below stays contiguous.
-        pass::ssgi_temporal_pass ssgi_temporal;
+        pass::ssgi_spec_pass& ssgi_spec = this->passes.emplace<pass::ssgi_spec_pass>();
+        /// THE DIFFUSE TEMPORAL RESOLVE (vulkan.pass.ssgi_temporal): it owns the RECORDING (the two barrier
+        /// batches, the dispatch, the two push lanes that describe its own state, the history copy and the
+        /// hand-backs), the set layout its declaration generates, the pipeline and its per-image family. Its
+        /// frame carries the REFLECTION's recording as a callback, so the GI chain stays contiguous.
+        pass::ssgi_temporal_pass& ssgi_temporal = this->passes.emplace<pass::ssgi_temporal_pass>();
         /// THE SPATIAL FILTER (vulkan.pass.ssgi_spatial): the GI chain's LAST stage, and the shape the tracer and
         /// the lobe already have - the shared scene set, the shared G-buffer set, no descriptor of its own, and
         /// the one image it transitions (its own storage output) declared through `barrier_images`. What the
         /// composite samples is its output, so the renderer's `gi_resolved` is read from whether it recorded.
-        pass::ssgi_spatial_pass ssgi_spatial;
+        pass::ssgi_spatial_pass& ssgi_spatial = this->passes.emplace<pass::ssgi_spatial_pass>();
+        /// THE PROBE CACHE (vulkan.pass.gi_probe): the world-space radiance cache, a pass in its own right.
+        pass::gi_probe_pass& gi_probe = this->passes.emplace<pass::gi_probe_pass>();
+        /// THE TAA RESOLVE (vulkan.pass.taa): the first pass here that owns GPU objects - set layout, pipeline
+        /// layout, pipeline and the per-image history family.
+        pass::taa_pass& taa_resolve = this->passes.emplace<pass::taa_pass>();
+        /// THE RAY-TRACED SHADOW (vulkan.pass.rt_shadow): the first pass on this branch that is NOT part of the
+        /// GI chain. It owns its pipeline layout, its pipeline, the two barriers around the visibility image it
+        /// rewrites and the dispatch; the renderer keeps the STAGE's two facts - where it sits (after the
+        /// G-buffer pass, before the lighting stage) and the transition the lighting stage needs on a frame it
+        /// does not run. `light_state.rt_shadows` and the feature registry both ask it whether it is ready.
+        pass::rt_shadow_pass& rt_shadow = this->passes.emplace<pass::rt_shadow_pass>();
+        /// THE CLUSTERED-LIGHT SORT (vulkan.pass.cluster): it owns its pipeline, its layout, the shared scene
+        /// set's bind AND the two buffer barriers its own writes need.
+        pass::cluster_pass& cluster = this->passes.emplace<pass::cluster_pass>();
+
         /**
-         * THE GI CHAIN (vulkan.pass.chain): the four stages above, in the order that makes them a chain - each
-         * one reads what the one before it wrote - held as a VALUE rather than as four call sites' worth of
-         * conventions. It is built in `create_passes()` (the passes are members, so the chain is filled there),
-         * it is initialized with the chain's own `init`, and the frame records it with one `record` call.
+         * THE GI CHAIN (vulkan.pass.chain): the four GI stages, in the order that makes them a chain - each one
+         * reads what the one before it wrote - as a SUB-chain over the passes `passes` owns. It is built and
+         * recorded with the chain's own calls, so the frame loop does not spell the order out.
          *
          * The spatial filter's "only if the temporal resolve ran" gate is NOT expressed here: it lives in the
          * feature registry (`feature_active("ssgi_spatial")`), which is the one place that answers "does this
          * pass run this frame" - see chain.cppm's header for why a chain does not skip its own tail.
          */
         pass::pass_chain gi_chain{"gi"};
-        /// THE RAY-TRACED SHADOW (vulkan.pass.rt_shadow): the first pass on this branch that is NOT part of the
-        /// GI chain. It owns its pipeline layout, its pipeline, the two barriers around the visibility image it
-        /// rewrites and the dispatch; the renderer keeps the STAGE's two facts - where it sits (after the
-        /// G-buffer pass, before the lighting stage) and the transition the lighting stage needs on a frame it
-        /// does not run. `light_state.rt_shadows` and the feature registry both ask it whether it is ready.
-        pass::rt_shadow_pass rt_shadow;
         std::array<pass::frame_pass*, 1> rt_shadow_stage = {&this->rt_shadow};
         bool ssgi_on = false;
         float ssgi_intensity = 0.7f; // scales the traced indirect against the IBL probe it overlaps
@@ -599,7 +624,6 @@ namespace vulkan {
         // filled under), and - since the second half of the extraction - its pipeline layout and its
         // pipeline, which it builds in its own create step. What stays here is what the RENDERER owns: the
         // switch, and the VALUES the pass's push block needs (which are the renderer's, so it composes them).
-        pass::gi_probe_pass gi_probe;
         // ... and the stage the runner is handed. One entry, and the pass is declared before this initialiser
         // so it refers to a constructed object; a pass list is pointers in DECLARATION ORDER, never a
         // container whose iteration order is an accident (the capture gate compares frames byte for byte).
@@ -668,14 +692,11 @@ namespace vulkan {
             glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent
         };
 
-        pass::taa_pass taa_resolve;
         // THE SCENE PASS (vulkan.pass.scene): it owns the surface instance, the segment strategy and the draw
         // loop; the renderer hands it the leaves through a typed frame (see make_scene_frame) and keeps the
         // pipeline registry, the secondary buffers and the scheduler.
-        pass::scene_pass scene;
         std::array<pass::frame_pass*, 1> scene_stage = {&this->scene};
         /// THE TRANSPARENT PASS (vulkan.pass.transparent): the same scene, its own LOAD instance, after lighting
-        pass::transparent_pass transparent;
         std::array<pass::frame_pass*, 1> transparent_stage = {&this->transparent};
         /// the scene frame's view of the per-slot segments (a member, so the span it hands the pass outlives it)
         std::vector<pass::segment_buffer> scene_segment_view = {};
@@ -1030,7 +1051,6 @@ namespace vulkan {
         // swapchain extent) and hands the cluster count over in the pass's frame. Optional: without the shader
         // (or with clustering off) shade_surface() falls back to the brute-force loop, which is exactly what the
         // clustered path is verified against.
-        pass::cluster_pass cluster;
         std::array<pass::frame_pass*, 1> cluster_stage = {&this->cluster};
         // Per-cascade shadow recording pairs (one {pool, buffer} per cascade per frame slot). The
         // cascade tasks run CONCURRENTLY on the task pool, and a VkCommandPool is not thread safe, so
@@ -1285,6 +1305,12 @@ namespace vulkan {
         // out: 62 validation errors per run, every command after the update reported against a command buffer
         // "now in an invalid state". Only the two bindings the bake reads are written; the rest of the layout
         // stays unwritten, which is legal because this job's shader does not statically use them.
+        // THE TWO JOBS ARE THE EXCEPTION THIS FILE STILL HAS, and the reason is a TYPE, not a policy: neither is
+        // a `frame_pass` (see their headers - one runs once inside the structure-build command buffer, the other
+        // per frame from a caster list), so the owning chain above cannot hold them. Everything else follows the
+        // same rule they do: they are built from the pass context, they own their pipelines and sets, and they
+        // release them in their own destructors. A `job_chain` of the same shape (owning, with typed references
+        // out) is what would remove these two members as well.
         pass::mask_bake_job mask_bake;
         // Whether that bake runs at all ([render] rt_mask_bake). Off by default: the per-triangle rule
         // measured WORSE than the raster path (see the member comment above and docs/gi_hit_shading.md).
