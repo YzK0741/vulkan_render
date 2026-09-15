@@ -137,6 +137,7 @@ target_sources(vulkancorekit
         vulkan/pass/mask_bake.cppm
         vulkan/pass/compute_skin.cppm
         vulkan/pass/cluster.cppm
+        vulkan/pass/deferred.cppm
         vulkan/pass/chain.cppm
         vulkan/profiling/profiling.cppm
         vulkan/shadow_fit/shadow_fit.cppm
