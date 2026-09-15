@@ -176,19 +176,16 @@ namespace chores {
         }
 
         {
-            // Shadow pass pipeline (depth-only): renders the scene from the light into the shadow
-            // map. Created once; enable_shadows() activates the pass after the scene import.
-            // Failure is not fatal - the scene simply renders without shadows.
+            // The shadow pass is a PASS (vulkan.pass.shadow): the app REGISTERS its two shaders and the pass builds
+            // the depth-only pipeline itself, against the scene pipeline layout the context hands it and the
+            // context's depth format - which is why there is no make_* here any more. Optional: without the
+            // pipeline the scene simply renders without shadows.
             std::vector<unsigned char> vertex_code;
             std::vector<unsigned char> fragment_code;
             load_shader(shaders_dir, "shadow.vert.spv", vertex_code);
             load_shader(shaders_dir, "shadow.frag.spv", fragment_code);
-            auto const shadow_result = runtime.make_shadow_pipeline(vertex_code, fragment_code);
-            if (!shadow_result) { // NOLINT(bugprone-branch-clone): CLion FP - the branches log different messages
-                utility::log("shadow pipeline disabled: {}", shadow_result.error());
-            } else {
-                utility::log("SUCCESS: shadow pipeline created (directional shadow map pass)");
-            }
+            runtime.register_shader("shadow.vert.spv", vertex_code);
+            runtime.register_shader("shadow.frag.spv", fragment_code);
         }
 
         {

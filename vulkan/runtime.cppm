@@ -43,6 +43,7 @@ import vulkan.pass.deferred;          // the eleventh: the deferred lighting sta
 import vulkan.pass.post;              // the twelfth and thirteenth: the post chain (the composite + the bloom levels)
 import vulkan.pass.fxaa;              // the fourteenth: the FXAA resolve, the frame's last writer when it runs
 import vulkan.pass.gbuffer_debug;     // the fifteenth: the G-buffer debug view (and the G-buffer set layout's owner)
+import vulkan.pass.shadow;            // the sixteenth: the directional shadow map, one depth-only cascade per layer
 import vulkan.pass.chain;             // the chain container: what holds a run of passes and its ORDER
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
@@ -408,6 +409,11 @@ namespace vulkan {
         /// passes reach through pass_context::shared_set_layout(1) while THEY are being created - so this emplace is
         /// a CREATE-ORDER constraint and not tidiness. Its pipeline layout and pipeline are its own too.
         pass::gbuffer_debug_pass& gbuffer_debug_view = this->passes.emplace<pass::gbuffer_debug_pass>();
+        /// THE DIRECTIONAL SHADOW MAP (vulkan.pass.shadow): it owns its depth-only pipeline, built against the
+        /// SCENE pipeline layout (the context's shared_pipeline_layout) and the context's depth format. The map
+        /// IMAGES, the caster gather, the fit cache and the task pool stay the renderer's - the pass draws the scene
+        /// into the layers the frame hands it.
+        pass::shadow_pass& shadow = this->passes.emplace<pass::shadow_pass>();
         pass::scene_pass& scene = this->passes.emplace<pass::scene_pass>();
         pass::transparent_pass& transparent = this->passes.emplace<pass::transparent_pass>();
         /// THE SSGI TRACER (vulkan.pass.ssgi_trace): it owns its pipeline layout, its compute pipeline and the
@@ -1034,8 +1040,7 @@ namespace vulkan {
         // buffer is the bug its deletion prevents), so it cannot be constructed in the constructor
         // body. Only the core is needed to build either, so their relative order is free.
         readback readback_staging;
-        std::optional<vk_pipeline> shadow_pipeline = std::nullopt; // depth-only pass pipeline
-        bool shadows_enabled = false;                              // true after enable_shadows() (light UBO filled + pipeline ready)
+        bool shadows_enabled = false; // true after enable_shadows() (light UBO filled + pipeline ready)
         // live-tunable depth bias of the shadow pass (dynamic state, set per frame before the
         // depth-only draw): slope-scaled bias removes acne on angled surfaces, the constant
         // factor adds a fixed push; tune from the debug gui when a model shows acne/peter-panning
@@ -2002,20 +2007,6 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief create the directional shadow pipeline: renders scene geometry depth-only into
-         *        the shadow map (no color attachment), from the light's view
-         * @param vertex_shader_code raw SPIR-V binary of the shadow vertex shader
-         * @param fragment_shader_code raw SPIR-V binary of the shadow fragment shader
-         * @return success, or an error message on failure
-         * @note depth-only rendering (no color attachment) requires dynamic rendering, which
-         *       is core Vulkan 1.3 - the only path the engine supports
-         */
-        std::expected<void, std::string> make_shadow_pipeline(
-            std::span<unsigned char const> vertex_shader_code,
-            std::span<unsigned char const> fragment_shader_code);
-
-        /**
-         * @ingroup vulkan_runtime
          * @brief turn clustered light culling on/off (no-op without the cluster PASS's pipeline)
          * @param enabled true = the shading stage loops only its own cluster's light list
          * @note CPU-side only (the flag rides the light UBO's cluster_grid.w lane): the next frame's
@@ -2052,7 +2043,7 @@ namespace vulkan {
          * @param scene_center world-space center of the shadow frustum (usually the scene bounds
          *        center after the scene offset is applied, i.e. where the models actually sit)
          * @param scene_radius conservative radius covering all shadow casters
-         * @note requires make_shadow_pipeline() to have succeeded; no-op otherwise
+         * @note requires the shadow PASS's pipeline (vulkan.pass.shadow, created by create_passes()); no-op otherwise
          */
         void enable_shadows(glm::vec3 const& scene_center, float scene_radius);
 

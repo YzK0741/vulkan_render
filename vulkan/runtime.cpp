@@ -1924,7 +1924,7 @@ namespace vulkan {
             // Reuse: the maps were rendered into this slot by an earlier frame and nothing that feeds
             // them has changed since, so the sampling layout they are already in is the one the
             // lighting pass needs. Deliberately does nothing.
-        } else if (this->shadow_pipeline && this->shadow_images.size() > static_cast<std::size_t>(frame_slot)) {
+        } else if (this->shadow.pipeline_ready() && this->shadow_images.size() > static_cast<std::size_t>(frame_slot)) {
             // The pass does not run this frame (shadows toggled off, or no light setup yet), but the
             // scene set still binds the shadow map to binding 8 - pbr.frag uses it statically and only
             // decides at runtime whether to sample it - and a sampled descriptor must point at an
@@ -2068,7 +2068,7 @@ namespace vulkan {
         // post pass set a 0-wide viewport (validation: "pViewports[0].width (0.000000) is not
         // greater than zero"). The per-pass viewport is set explicitly right after the bind anyway -
         // this keeps the stored values valid. The shadow pipeline is deliberately excluded: its
-        // viewport is the fixed shadow-map size (set in make_shadow_pipeline).
+        // viewport is the fixed shadow-map size, which the shadow pass's content callback sets (see the pass).
         // ... and the post chain's pipelines are NOT resynced here any more: they belong to the post composite
         // PASS (vulkan.pass.post), which declares `resync_viewport` for the composite and derives each bloom
         // level's extent from its own declaration - so the viewport comes from the pass's declaration instead of
@@ -2125,7 +2125,11 @@ namespace vulkan {
         env.command_buffer = command_buffer;
         env.default_name = "shadow"; // binder ignores the name; kept for in_default_pipeline()
         env.bind = [this](VkCommandBuffer const cb, std::string_view const /*name*/) {
-            this->shadow_pipeline->begin_pipeline(cb);
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, this->shadow.pipeline());
+            VkViewport const shadow_viewport = {0.0f, 0.0f, static_cast<float>(this->shadow_map_size), static_cast<float>(this->shadow_map_size), 0.0f, 1.0f};
+            VkRect2D const shadow_scissor = {{0, 0}, {this->shadow_map_size, this->shadow_map_size}};
+            vkCmdSetViewport(cb, 0, 1, &shadow_viewport);
+            vkCmdSetScissor(cb, 0, 1, &shadow_scissor);
         };
         // The shadow pass MUST write depth for every caster: its env always records depth-write
         // ENABLED (VK_TRUE) regardless of what a leaf requests - the first leaf's
@@ -4708,37 +4712,12 @@ namespace vulkan {
         }
     }
 
-    std::expected<void, std::string> runtime::make_shadow_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code) {
-        using fail = std::unexpected<std::string>;
-        // depth-only pipeline (no color attachment, single sample); requires dynamic rendering.
-        // Slope-scaled rasterization depth bias pushes the stored depths away from the light
-        // proportionally to the surface's depth slope, which removes shadow acne on angled
-        // surfaces (scale-free: units of depth per depth-unit of slope).
-        auto make_result = this->vulkan_core.make_depth_pipeline(vertex_shader_code, fragment_shader_code, this->vulkan_core.depth_format, 0.0f, 1.5f, 0.0f);
-        if (!make_result) {
-            return fail(std::string(make_result.error()));
-        }
-        this->shadow_pipeline = std::move(make_result).value();
-        // The shadow map is a fixed-size depth target: its viewport/scissor do not follow the
-        // swapchain size (the frame path only re-syncs pipelines stored in the pipelines map)
-        this->shadow_pipeline->viewport = {
-            0.0f,
-            0.0f,
-            static_cast<float>(this->shadow_map_size),
-            static_cast<float>(this->shadow_map_size),
-            0.0f,
-            1.0f,
-        };
-        this->shadow_pipeline->scissor = {{0, 0}, {this->shadow_map_size, this->shadow_map_size}};
-        return {};
-    }
-
     void runtime::set_shadow_map_size(uint32_t const size) noexcept {
         // Startup-only: everything that consumes the size (the layered image + its views + the
         // descriptor, the depth pass rendering instance, the pipeline viewport, the light UBO texel
         // size and the fit) is built from it when the scene set is first created, so a change after
         // that cannot take effect - say so instead of pretending otherwise.
-        if (this->shadow_pipeline.has_value() || !this->shadow_images.empty()) {
+        if (this->shadow.pipeline_ready() || !this->shadow_images.empty()) {
             utility::log("runtime: set_shadow_map_size({}) ignored - the shadow resources already exist (set it before the scene import)", size);
             return;
         }
@@ -4771,7 +4750,7 @@ namespace vulkan {
         // The shadow map is only read by the shading stages. The flat render mode samples nothing
         // (unlit.frag has no lighting include; the lighting stage returns the albedo before any
         // shading), so recording the pass would be pure waste - it measured 0.22 ms of a 0.5 ms frame.
-        f.shadow = this->shadow_enabled && this->shadows_enabled && this->shadow_pipeline.has_value() && !f.unlit;
+        f.shadow = this->shadow_enabled && this->shadows_enabled && this->shadow.pipeline_ready() && !f.unlit;
         // The ray-traced shadow is a pass of its own, so it is a feature of its own: the knob, a device with ray
         // queries, and its own pipeline. The frame loop gates its STAGE on this, and the light UBO's
         // `rt_shadows` lane (what the lighting stage actually reads) is composed from the same three.
@@ -4907,7 +4886,7 @@ namespace vulkan {
             return this->fxaa_resolve.pipeline_ready();
         }
         if (name == "shadow") {
-            return this->shadow_pipeline.has_value();
+            return this->shadow.pipeline_ready();
         }
         if (name == "clustered") {
             // AVAILABILITY, not activity: this is the one feature whose answer is "the pass built a pipeline",
@@ -5218,7 +5197,7 @@ namespace vulkan {
         this->shadow_scene_center = scene_center;
         // a new light setup invalidates the cached fit (see update_shadow_frustum)
         this->shadow_frustum_valid = false;
-        if (!this->shadow_pipeline || this->light_mapped.empty()) {
+        if (!this->shadow.pipeline_ready() || this->light_mapped.empty()) {
             utility::log("shadow mapping not enabled (no shadow pipeline / light buffer)");
             return;
         }
