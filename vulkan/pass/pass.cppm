@@ -377,6 +377,13 @@ export namespace vulkan::pass {
          */
         VkFormat swap_chain_image_format = VK_FORMAT_UNDEFINED;
         /**
+         * The DEPTH format, the second session-stable format a pass may need - and the one the shadow pass cannot
+         * do without: its pipeline has a depth attachment and no colour one, so `swap_chain_image_format` is the
+         * wrong fact for it. It is a SESSION-STABLE device fact for the same reason the surface`s is (the renderer
+         * finds it once at startup), which is what lets a pass cache it at create time.
+         */
+        VkFormat depth_format = VK_FORMAT_UNDEFINED;
+        /**
          * One of THIS pass's declared resources, at CREATE time: the handles its own resources are, or all-null
          * when the owner has none.
          *

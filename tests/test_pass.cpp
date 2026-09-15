@@ -167,6 +167,7 @@ namespace {
             .shared_pipeline_layout = fake_shared_pipeline_layout,
             .shader = fake_shader,
             .swap_chain_image_format = VK_FORMAT_B8G8R8A8_SRGB,
+            .depth_format = VK_FORMAT_D32_SFLOAT,
             .owner = nullptr,
         };
     }
@@ -409,6 +410,9 @@ int main() {
         // a session-stable device fact the host hands over rather than one a pass could guess (the extent, which
         // DOES change, is deliberately not here - a pass that bakes one rebuilds in on_swapchain_recreated)
         CHECK(context.swap_chain_image_format == VK_FORMAT_B8G8R8A8_SRGB);
+        // ... and the DEPTH format, the second session-stable format - the shadow pass's pipeline has a depth
+        // attachment and no colour one, so the surface's format is the wrong fact for it
+        CHECK(context.depth_format == VK_FORMAT_D32_SFLOAT);
     }
 
     // ---- what a pass is given at CREATE time: a device, the six samplers, and two lookups - and nothing that

@@ -3347,6 +3347,9 @@ namespace vulkan {
             // be created with (see pass_context). The post chain needs it today; the graphics passes being
             // extracted need it tomorrow.
             .swap_chain_image_format = this->vulkan_core.swap_chain_image_format,
+            // ... and the DEPTH format, which the shadow pass`s pipeline needs (it has a depth attachment and no
+            // colour one): the same kind of session-stable device fact, and the second one a context carries.
+            .depth_format = this->vulkan_core.depth_format,
             // The two channels a pass uses to build what it owns over resources the RENDERER holds: the handles
             // of the resources this runtime published (`pass_resources`), and a set from the core's pool for a
             // layout it handed out above. Both forward to the filter, which is the object that knows what a pass

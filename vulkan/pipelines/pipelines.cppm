@@ -128,6 +128,17 @@ namespace vulkan::pipelines {
     /// the passes that reuse a layout someone else owns, so theirs comes in as a parameter
     export std::expected<vk_pipeline, std::string> build_fxaa(VkDevice device, VkFormat swap_chain_format, VkPipelineLayout post_pipeline_layout, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     /**
+     * @brief the SHADOW pass's depth-only pipeline, built against the layout the caller hands it
+     *
+     * WHY IT TAKES A DEVICE AND A Layout rather than being `core::make_depth_pipeline`: that method is a member of
+     * the `core` object (it reads `this->device`, `this->scene_pipeline_layout` and the caller's depth format), and
+     * a PASS reaches neither - the device, the layout and the format all arrive through `pass_context`. The three
+     * BIAS factors are parameters for the same reason the depth format is: they are the pipeline's, not the
+     * device's, and the depth pass is the one pipeline in this renderer created with slope-scaled bias.
+     */
+    export std::expected<vk_pipeline, std::string> build_shadow(VkDevice device, VkPipelineLayout pipeline_layout, VkFormat depth_format, float depth_bias_constant_factor, float depth_bias_slope_factor,
+                                                                float depth_bias_clamp, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    /**
      * @brief what the FXAA pass's own create step needs: ITS pipeline layout, created from the SET layout it is
      *        handed, and the anti-aliasing pipeline
      *
@@ -823,6 +834,30 @@ namespace vulkan::pipelines {
         return std::move(pipeline_result).value();
     }
 
+    std::expected<vk_pipeline, std::string> build_shadow(VkDevice const device, VkPipelineLayout const pipeline_layout, VkFormat const depth_format, float const depth_bias_constant_factor,
+                                                         float const depth_bias_slope_factor, float const depth_bias_clamp, std::span<unsigned char const> const vertex_shader_code,
+                                                         std::span<unsigned char const> const fragment_shader_code) {
+        using fail = std::unexpected<std::string>;
+        // No color attachment, depth test + write, single-sampled, and the slope-scaled bias the shadow pass needs
+        // (it removes acne on surfaces angled away from the light, in units of depth per depth-unit of slope - the
+        // numbers are the pass's and the caller's, not this builder's).
+        auto result = vulkan::make_pipeline(device,
+                                            pipeline_layout,
+                                            VK_FORMAT_UNDEFINED,
+                                            depth_format,
+                                            vertex_shader_code,
+                                            fragment_shader_code,
+                                            VK_SAMPLE_COUNT_1_BIT,
+                                            true,  // depth test + write
+                                            false, // no color attachment
+                                            depth_bias_constant_factor,
+                                            depth_bias_slope_factor,
+                                            depth_bias_clamp);
+        if (!result) {
+            return fail(std::string(result.error()));
+        }
+        return std::move(result).value();
+    }
     std::expected<fxaa_owned, std::string> build_fxaa_owned(VkDevice const device, VkFormat const swap_chain_format, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size,
                                                             std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;
