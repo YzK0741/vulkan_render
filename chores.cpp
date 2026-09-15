@@ -149,33 +149,24 @@ namespace chores {
         load_and_create_pipeline(runtime, shaders_dir, "unlit", "pbr.vert.spv", "unlit.frag.spv");
 
         {
-            // Post-process pipeline (HDR scene target -> exposure + ACES + gamma -> swapchain):
-            // the forward passes render into an HDR offscreen target, so this pass is required to
-            // present anything meaningful. Panic on failure like the skybox.
+            // The post chain is a PASS PAIR now (vulkan.pass.post): the composite owns the post set layout, the
+            // pipeline layout and the chain's two pipelines, and the four bloom levels record with them. So the
+            // app REGISTERS the two shaders the pass builds from (post.vert's synthetic triangle and post.frag,
+            // whose `mode` lane selects the stage) and the pass does the rest in create_passes() below.
+            //
+            // WHAT IS LEFT OF `make_post_pipeline` HERE is the SAMPLER pair: it belongs to the descriptor SETS,
+            // which the runtime still writes (post_family), and it has to exist before create_passes() because the
+            // pass context hands every pass the six samplers a declaration may choose between.
             std::vector<unsigned char> vertex_code;
             std::vector<unsigned char> fragment_code;
             load_shader(shaders_dir, "post.vert.spv", vertex_code);
             load_shader(shaders_dir, "post.frag.spv", fragment_code);
-            auto const post_result = runtime.make_post_pipeline(vertex_code, fragment_code);
-            if (!post_result) {
-                utility::panic(std::source_location::current(), "failed to create post-process pipeline: {}", post_result.error());
+            auto const samplers = runtime.ensure_post_samplers();
+            if (!samplers) {
+                utility::panic(std::source_location::current(), "failed to create the post chain's samplers: {}", samplers.error());
             }
-            utility::log("SUCCESS: post-process pipeline created (HDR -> exposure/tonemap -> swapchain)");
-        }
-        {
-            // FXAA pipeline (gamma-encoded LDR image -> anti-aliased swapchain). Optional: it
-            // reuses post.vert and the post set layout, so it must come after the post pipeline.
-            // Failure is not fatal - FXAA simply stays unavailable and runtime::set_fxaa() logs it.
-            std::vector<unsigned char> vertex_code;
-            std::vector<unsigned char> fragment_code;
-            load_shader(shaders_dir, "post.vert.spv", vertex_code);
-            load_shader(shaders_dir, "fxaa.frag.spv", fragment_code);
-            auto const fxaa_result = runtime.make_fxaa_pipeline(vertex_code, fragment_code);
-            if (!fxaa_result) {
-                utility::log("fxaa pipeline disabled: {}", fxaa_result.error());
-            } else {
-                utility::log("SUCCESS: fxaa pipeline created (LDR -> anti-aliased swapchain)");
-            }
+            runtime.register_shader("post.vert.spv", vertex_code);
+            runtime.register_shader("post.frag.spv", fragment_code);
         }
 
         {
@@ -337,6 +328,28 @@ namespace chores {
             // block above because one of them must be created AFTER its shaders exist and the shared set
             // layouts do. Each object logs its own outcome.
             runtime.create_passes();
+
+            {
+                // FXAA pipeline (gamma-encoded LDR image -> anti-aliased swapchain). Optional. Failure is not
+                // fatal - FXAA simply stays unavailable and runtime::set_fxaa() logs it.
+                //
+                // IT IS CREATED HERE, AFTER create_passes(), and that ORDER is the whole reason this block moved:
+                // the pipeline is built against the post chain's pipeline layout and its descriptor set comes from
+                // the post set layout, and BOTH belong to the post composite PASS now (vulkan.pass.post) - so
+                // before create_passes() there is no layout to build it from. The check that used to say "create
+                // the post-process pipeline first" was what a mis-ordered call would hit; now the order is
+                // structural.
+                std::vector<unsigned char> vertex_code;
+                std::vector<unsigned char> fragment_code;
+                load_shader(shaders_dir, "post.vert.spv", vertex_code);
+                load_shader(shaders_dir, "fxaa.frag.spv", fragment_code);
+                auto const fxaa_result = runtime.make_fxaa_pipeline(vertex_code, fragment_code);
+                if (!fxaa_result) {
+                    utility::log("fxaa pipeline disabled: {}", fxaa_result.error());
+                } else {
+                    utility::log("SUCCESS: fxaa pipeline created (LDR -> anti-aliased swapchain)");
+                }
+            }
         }
     }
 

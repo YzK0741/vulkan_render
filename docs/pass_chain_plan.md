@@ -1388,9 +1388,41 @@ so it exists only once `passes.init(build)` has run - the FXAA pipeline therefor
 `create_passes()` (a block move in chores.cpp, not a redesign), and `record_fullscreen_triangle` - whose only
 remaining caller after this step is the FXAA recording - has to take that layout from the pass as well.
 
+**SLICE 5 IS LANDED: THE POST CHAIN'S GPU MATERIAL IS THE COMPOSITE PASS'S.** `runtime::make_post_pipeline` is
+gone, and with it the four raw members it filled (`post_pipeline`, `post_hdr_pipeline`, `post_pipeline_layout`,
+`post_set_layout`), the two viewport-resync blocks in `update_pass_geometry`, the two teardown blocks in the
+destructor and the two branches of `ensure_post_descriptors`'s bail-out - the pass owns the set layout, the
+pipeline layout and both pipelines, and everything else asks IT (`shared_set_layout(2)`, `ensure_post_descriptors`,
+`make_fxaa_pipeline`, the two recorders). What did NOT move, and why: `make_post_pipeline` also created the two
+SAMPLERS, which belong to the descriptor sets this class still writes (`post_family`), so they became
+`ensure_post_samplers()`; and the FXAA pipeline is built AFTER `create_passes()` now, which the ordering note above
+predicted - chores registers `post.vert.spv` and `post.frag.spv` for the pass and calls the samplers' creator,
+exactly where the post block used to be.
+
 **ACCEPTANCE FOR EVERY SLICE**: Release/Debug/ASan clean, `ctest` 8/8, a clean doxygen, and the gate 12 x 2 with
 0 changed and 0 flaky - which covers the composite in every scenario and the bloom chain in every scenario
 (measured above). No knob-on A/B is needed for this step, and the reason it is not is the first paragraph here.
+
+Two things this slice measured rather than assumed:
+
+* **the bloom stages' viewport is now the LEVEL's, and the frames did not move.** The old recorder bound each
+  pipeline through `vk_pipeline::begin_pipeline`, which set the viewport this class had cached in
+  `update_pass_geometry` - the FRAME's viewport, at 1080x960, while the rendering instance was the level's
+  540x480 attachment. The pass's version sets the viewport from the extent the call was given, which is the
+  level's. The gate says 12 x 2 with 0 changed, so the two are the same image for a synthetic fullscreen triangle
+  (the rasterizer clips to the framebuffer and `gl_FragCoord` is a window coordinate either way) - but it was worth
+  measuring, because "the viewport is bigger than the attachment" is exactly the kind of accident a move turns
+  into a defect in the other direction.
+* **`record_fullscreen_triangle` now takes a raw `VkPipeline` + `VkPipelineLayout`** and does the bind, the
+  viewport and the scissor itself: the RAII object the old signature took is the pass's, and a runtime recorder
+  cannot call `begin_pipeline` on a pipeline it does not own. Its only remaining caller after this step is the
+  FXAA recording (step ③).
+
+**WHAT IS LEFT OF STEP ② IS ONE SLICE: the RECORDING.** The two stages (`bloom`'s four passes and the composite),
+their resolvers, the composite's frame (the push values + the overlay's `after_draw`), the bloom-off path, and the
+deletion of `record_bloom_chain` / `record_composite` (with the FXAA half of the latter moving to a function of its
+own until step ③ owns it) and of `runtime::post_push_constants`.
+
 
 ## HANDOFF: WHERE THIS STANDS AND WHAT IS LEFT, EXACTLY
 
@@ -1497,11 +1529,13 @@ remaining caller after this step is the FXAA recording - has to take that layout
    RECIPE NOW** (the section above, with the framework changes it needs and the measurement that the gate covers
    both halves - which is the fact that decides its acceptance). Five passes: one per bloom level (the level IS the
    pass boundary, because each stage binds a different one of the five post sets) plus the composite.
-   **SLICES 1, 2, 3 AND 4 ARE LANDED**: the `bloom` family's `count` and the framework's `extent_of_element` +
-   the host's level formula (inert), the five declarations (inert), and the module itself - `post_composite_pass`
-   plus four `post_bloom_pass` instances, complete and compiling, with only the WIRING left (the resolvers, the
-   two stages, the `post_family`'s layout coming from the composite, the overlay callback, and the deletion of
-   `record_bloom_chain` / `record_composite` / `make_post_pipeline` / the four raw members).
+   **SLICES 1 TO 5 ARE LANDED**: the `bloom` family's `count` and the framework's `extent_of_element` + the host's
+   level formula, the five declarations, the module (`post_composite_pass` + four `post_bloom_pass` instances,
+   complete and compiling), and the GPU MATERIAL - `make_post_pipeline` and its four raw members are gone, the
+   composite pass owns the set layout, the pipeline layout and both pipelines, and the FXAA pipeline is built after
+   `create_passes()` as the ordering note predicted. What is left is the RECORDING: the two stages and their
+   resolvers, the composite's frame, the bloom-off path, and the deletion of `record_bloom_chain` /
+   `record_composite`.
 2. **③ FXAA**, including the decision the post header records: the FXAA pass is the frame's LAST writer and it
    currently carries the overlay (`record_fullscreen_triangle(..., /*overlay_after=*/true)` at the end of
    `runtime::record_post_process`), so the overlay's ownership has to be decided - the preferred shape is an

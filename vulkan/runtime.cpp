@@ -250,19 +250,14 @@ namespace vulkan {
 
         this->pipelines.clear();
 
-        // post-process raw objects. The pipeline(s) and the sampler are RAII members; the two layouts
-        // are not, so they are destroyed here - and this must stay real code: an earlier edit collapsed
-        // this block onto the comment line above it, which commented the destroy calls out and leaked
-        // them (validation: "VkDevice has 18 leaked objects ... VkPipelineLayout,
-        // VkDescriptorSetLayout, VkDescriptorSet"). The pool belongs to post_family now.
-        if (this->post_pipeline_layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->vulkan_core.device, this->post_pipeline_layout, nullptr);
-            this->post_pipeline_layout = VK_NULL_HANDLE;
-        }
-        if (this->post_set_layout != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->post_set_layout, nullptr);
-            this->post_set_layout = VK_NULL_HANDLE;
-        }
+        // post-process objects: the FXAA pipeline and the two samplers are RAII members, and the post chain's set
+        // layout, pipeline layout and two pipelines are NOT here any more - they belong to the post composite PASS
+        // (vulkan.pass.post::release_owned), the same rule every extracted pass follows.
+        //
+        // The block that USED to be here is why this comment exists at all: an earlier edit collapsed it onto the
+        // comment line above it, which commented the destroy calls out and leaked them (validation: "VkDevice has
+        // 18 leaked objects ... VkPipelineLayout, VkDescriptorSetLayout"). The pool belongs to post_family now and
+        // those layouts to the pass, so what is left of the post chain in this destructor is nothing at all.
         // the same objects for the G-buffer debug view, minus the pool: that one belongs to
         // gbuffer_family, whose destructor destroys it (and the generations it retired)
         if (this->gbuffer_pipeline_layout != VK_NULL_HANDLE) {
@@ -2080,14 +2075,10 @@ namespace vulkan {
         // greater than zero"). The per-pass viewport is set explicitly right after the bind anyway -
         // this keeps the stored values valid. The shadow pipeline is deliberately excluded: its
         // viewport is the fixed shadow-map size (set in make_shadow_pipeline).
-        if (this->post_pipeline) {
-            this->post_pipeline->viewport = full_viewport;
-            this->post_pipeline->scissor = full_scissor;
-        }
-        if (this->post_hdr_pipeline) {
-            this->post_hdr_pipeline->viewport = full_viewport;
-            this->post_hdr_pipeline->scissor = full_scissor;
-        }
+        // ... and the post chain's pipelines are NOT resynced here any more: they belong to the post composite
+        // PASS (vulkan.pass.post), which declares `resync_viewport` for the composite and derives each bloom
+        // level's extent from its own declaration - so the viewport comes from the pass's declaration instead of
+        // from a list this class maintains. The two blocks that used to be here are what that field replaced.
         if (this->post_fxaa_pipeline) {
             this->post_fxaa_pipeline->viewport = full_viewport;
             this->post_fxaa_pipeline->scissor = full_scissor;
@@ -2180,8 +2171,12 @@ namespace vulkan {
     }
 
     // ---- post-processing: HDR scene target -> exposure + ACES + gamma -> swapchain ----
-    // The bloom chain lands here next; the push constants already reserve its parameters.
-    std::expected<void, std::string> runtime::make_post_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+    // The post chain's PIPELINES are not made here any more: the composite PASS owns them (vulkan.pass.post,
+    // built by `pipelines::build_post` inside its create step). What stays is the SAMPLERS, and they are the
+    // renderer's for the reason `build_post`'s own comment gives: they belong to the descriptor SETS, which this
+    // class still writes (post_family). They have to exist before `create_passes()`, because the pass context
+    // hands every pass the six samplers a declaration may choose between.
+    std::expected<void, std::string> runtime::ensure_post_samplers() {
         core& vk = this->vulkan_core;
         // sampler for the HDR scene target (linear, clamp) - the descriptor sets use it
         this->post_sampler = vk.make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
@@ -2196,27 +2191,19 @@ namespace vulkan {
             }
             this->post_nearest_sampler = vk_sampler(nearest, vk.device);
         }
-
-        // the layout and both composites come from vulkan.pipelines; the push constant block stays here
-        // (it must match post.frag, so it lives next to the code that fills it)
-        auto built = pipelines::build_post(vk.device, vk.swap_chain_image_format, sizeof(post_push_constants), vertex_shader_code, fragment_shader_code);
-        if (!built) {
-            return std::unexpected(std::move(built.error()));
-        }
-        this->post_set_layout = built->set_layout;
-        this->post_pipeline_layout = built->pipeline_layout;
-        this->post_pipeline = std::move(built->composite);
-        this->post_hdr_pipeline = std::move(built->hdr);
         return {};
     }
 
     std::expected<void, std::string> runtime::make_fxaa_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;
         core& vk = this->vulkan_core;
-        if (this->post_pipeline_layout == VK_NULL_HANDLE) {
-            return fail(std::string("fxaa: create the post-process pipeline first (it owns the set layout)"));
+        // THE LAYOUT IS THE POST COMPOSITE PASS's now, so this call has to come after create_passes() - the
+        // pipeline the FXAA pass records with is created against the same set layout and push block the rest of
+        // the chain uses, which is what makes its descriptor set (post_family's set 4) legal.
+        if (this->post_composite.pipeline_layout() == VK_NULL_HANDLE) {
+            return fail(std::string("fxaa: create the passes first (the post chain's composite owns the layout this pipeline needs)"));
         }
-        auto built = pipelines::build_fxaa(vk.device, vk.swap_chain_image_format, this->post_pipeline_layout, vertex_shader_code, fragment_shader_code);
+        auto built = pipelines::build_fxaa(vk.device, vk.swap_chain_image_format, this->post_composite.pipeline_layout(), vertex_shader_code, fragment_shader_code);
         if (!built) {
             return std::unexpected(std::move(built.error()));
         }
@@ -2226,7 +2213,7 @@ namespace vulkan {
 
     void runtime::ensure_post_descriptors() {
         core& vk = this->vulkan_core;
-        if (this->post_pipeline == std::nullopt || this->post_hdr_pipeline == std::nullopt || this->post_set_layout == VK_NULL_HANDLE) {
+        if (!this->post_composite.pipeline_ready()) {
             return;
         }
         std::size_t const image_count = vk.hdr_image_views.size();
@@ -2302,7 +2289,7 @@ namespace vulkan {
                                                               normal};
             write_set(sets[4], composite_set);
         };
-        if (!this->post_family.ensure_all(vk.device, this->post_set_layout, static_cast<uint32_t>(image_count), 5u, 9u, fingerprints, write_sets)) {
+        if (!this->post_family.ensure_all(vk.device, this->post_composite.set_layout(), static_cast<uint32_t>(image_count), 5u, 9u, fingerprints, write_sets)) {
             utility::log("runtime: post descriptor sets unavailable - post pass skipped");
         }
     }
@@ -3343,7 +3330,7 @@ namespace vulkan {
                 if (set == 1u) {
                     return self->gbuffer_set_layout;
                 }
-                return set == 2u ? self->post_set_layout : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
+                return set == 2u ? self->post_composite.set_layout() : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
             .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
             // The surface's format: a SESSION-STABLE device fact a pipeline that renders into the swapchain must
             // be created with (see pass_context). The post chain needs it today; the graphics passes being
@@ -4174,19 +4161,24 @@ namespace vulkan {
         }
     }
 
-    void runtime::record_fullscreen_triangle(VkCommandBuffer const command_buffer, vk_pipeline const& pipeline, VkImageView const target_view, VkExtent2D const extent, VkDescriptorSet const set, post_push_constants const& push, bool const overlay_after) {
+    void runtime::record_fullscreen_triangle(VkCommandBuffer const command_buffer, VkPipeline const pipeline, VkPipelineLayout const pipeline_layout, VkImageView const target_view, VkExtent2D const extent,
+                                             VkDescriptorSet const set, post_push_constants const& push, bool const overlay_after) {
         VkClearValue clear = {};
         VkRenderingAttachmentInfo const attachment = make_color_attachment_info(target_view, clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
         VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, extent}, true, &attachment, nullptr);
         vkCmdBeginRendering(command_buffer, &rendering_info);
-        pipeline.begin_pipeline(command_buffer);
+        // The bind, the viewport and the scissor are done HERE rather than by `vk_pipeline::begin_pipeline`,
+        // because the chain's pipelines belong to the post composite PASS now (which is why this takes raw
+        // handles). The viewport matches the attachment this call was given - the frame's for the composite and
+        // FXAA, the LEVEL's for a bloom stage.
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0f, 1.0f};
         VkRect2D const scissor = {{0, 0}, extent};
         vkCmdSetViewport(command_buffer, 0, 1, &viewport);
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
         vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE); // the fullscreen triangle has no facing
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->post_pipeline_layout, 0, 1, &set, 0, nullptr);
-        vkCmdPushConstants(command_buffer, this->post_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &set, 0, nullptr);
+        vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
         // Inside THIS instance, before it closes: the overlay is not a fullscreen pass and has no
         // loadOp of its own, so a pass of its own would CLEAR the image the triangle just wrote.
@@ -4220,11 +4212,11 @@ namespace vulkan {
         // requires a valid layout), because the composite samples them and multiplies by 0.
         if (bloom_intensity > 0.0f) {
             this->barrier_image_to_color_attachment(command_buffer, vk.bloom_images[0][index]);
-            this->record_fullscreen_triangle(command_buffer, *this->post_hdr_pipeline, vk.bloom_image_views[0][index], level_size(0), this->post_family.set(image_index, 0), bloom_push(0.0f));
+            this->record_fullscreen_triangle(command_buffer, this->post_composite.hdr_pipeline(), this->post_composite.pipeline_layout(), vk.bloom_image_views[0][index], level_size(0), this->post_family.set(image_index, 0), bloom_push(0.0f));
             for (std::size_t level = 0; level < 3; ++level) {
                 this->barrier_image_to_sampling(command_buffer, vk.bloom_images[level][index]);
                 this->barrier_image_to_color_attachment(command_buffer, vk.bloom_images[level + 1][index]);
-                this->record_fullscreen_triangle(command_buffer, *this->post_hdr_pipeline, vk.bloom_image_views[level + 1][index], level_size(static_cast<uint32_t>(level) + 1u), this->post_family.set(image_index, static_cast<uint32_t>(level) + 1u), bloom_push(1.0f));
+                this->record_fullscreen_triangle(command_buffer, this->post_composite.hdr_pipeline(), this->post_composite.pipeline_layout(), vk.bloom_image_views[level + 1][index], level_size(static_cast<uint32_t>(level) + 1u), this->post_family.set(image_index, static_cast<uint32_t>(level) + 1u), bloom_push(1.0f));
             }
             this->barrier_image_to_sampling(command_buffer, vk.bloom_images[3][index]);
         } else {
@@ -4259,7 +4251,9 @@ namespace vulkan {
         // ... and therefore also the HDR-format pipeline variant: a pipeline's declared color format
         // has to match the attachment it renders into, and the LDR image is R16F like the bloom
         // levels (the shader/descriptor side is identical - only mode and encode_gamma differ).
-        vk_pipeline const& composite_pipeline = fxaa ? *this->post_hdr_pipeline : *this->post_pipeline;
+        // BOTH variants are the post composite PASS's now (vulkan.pass.post), which is what owns the layout and
+        // the two pipelines the whole chain records with.
+        VkPipeline const composite_pipeline = fxaa ? this->post_composite.hdr_pipeline() : this->post_composite.composite_pipeline();
         // Without FXAA the composite writes a LINEAR tonemapped image into an sRGB swapchain
         // attachment, which encodes it to display values in hardware, so the shader must NOT apply
         // gamma as well; only a non-sRGB (UNORM) swapchain needs the manual transfer function. With
@@ -4289,7 +4283,7 @@ namespace vulkan {
             .gi_upsample = this->gi_upsample ? 1.0f : 0.0f,
             .fxaa_subpixel = this->fxaa_subpixel,
             .fxaa_edge_threshold = this->fxaa_edge_threshold};
-        this->record_fullscreen_triangle(command_buffer, composite_pipeline, composite_view, full_extent, this->post_family.set(image_index, 4), composite_push, /*overlay_after=*/!fxaa);
+        this->record_fullscreen_triangle(command_buffer, composite_pipeline, this->post_composite.pipeline_layout(), composite_view, full_extent, this->post_family.set(image_index, 4), composite_push, /*overlay_after=*/!fxaa);
 
         // GPU timing: the composite (and the debug overlay, when it draws here) is done.
         this->gpu_mark(command_buffer, gpu_mark_id::composite_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -4309,7 +4303,7 @@ namespace vulkan {
                 .fxaa_edge_threshold = this->fxaa_edge_threshold};
             this->barrier_image_to_sampling(command_buffer, vk.ldr_images[index]);
             this->barrier_image_to_color_attachment(command_buffer, vk.swap_chain_images[index]);
-            this->record_fullscreen_triangle(command_buffer, *this->post_fxaa_pipeline, vk.swap_chain_image_views[index], full_extent, this->post_family.set(image_index, 4), fxaa_push, /*overlay_after=*/true);
+            this->record_fullscreen_triangle(command_buffer, this->post_fxaa_pipeline->get_pipeline(), this->post_composite.pipeline_layout(), vk.swap_chain_image_views[index], full_extent, this->post_family.set(image_index, 4), fxaa_push, /*overlay_after=*/true);
         }
         // GPU timing: the FXAA pass (and the overlay it carries when it is the last writer) is done.
         // Without FXAA the composite already ended the frame's display work, so this interval is ~0.
@@ -4326,7 +4320,7 @@ namespace vulkan {
         this->record_scene_tail(command_buffer);
 
         this->ensure_post_descriptors();
-        if (this->post_pipeline == std::nullopt || this->post_hdr_pipeline == std::nullopt || this->post_family.set(static_cast<uint32_t>(this->current_image_index), 4) == VK_NULL_HANDLE) {
+        if (!this->post_composite.pipeline_ready() || this->post_family.set(static_cast<uint32_t>(this->current_image_index), 4) == VK_NULL_HANDLE) {
             return false; // no post pipeline (creation failed): the HDR frame cannot be presented correctly
         }
 
@@ -4709,7 +4703,7 @@ namespace vulkan {
         f.clustered = this->clustered_lights && this->cluster.pipeline_ready() && this->light_state.light_count.x > 0.5f && !f.unlit;
         f.taa = this->taa_on && this->taa_resolve.pipeline_ready() && shaded_scene;
         f.ssao = this->ssao_enabled && shaded_scene; // shader-side gate: no pass of its own to skip
-        f.bloom = this->bloom_intensity > 0.0f && this->post_hdr_pipeline.has_value() && !f.gbuffer_debug;
+        f.bloom = this->bloom_intensity > 0.0f && this->post_composite.pipeline_ready() && !f.gbuffer_debug;
         f.fxaa = this->fxaa_on && this->post_fxaa_pipeline.has_value();
         // The transparent pass composites over the shaded frame, so it needs that frame to exist -
         // and it is skipped in the debug view, which shows the G-buffer rather than a frame.

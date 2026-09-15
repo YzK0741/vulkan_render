@@ -40,6 +40,7 @@ import vulkan.pass.mask_bake;         // ... and the one-shot MASK bake, which i
 import vulkan.pass.compute_skin;      // ... and the compute-skinning job, which is a job for the same reason
 import vulkan.pass.cluster;           // the tenth: the clustered-light sort, the first pass with BUFFER barriers
 import vulkan.pass.deferred;          // the eleventh: the deferred lighting stage, the deferred path's shading work
+import vulkan.pass.post;              // the twelfth and thirteenth: the post chain (the composite + the bloom levels)
 import vulkan.pass.chain;             // the chain container: what holds a run of passes and its ORDER
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
@@ -448,6 +449,15 @@ namespace vulkan {
         /// names `scene_color`; a frame with TAA off lights `hdr` - the recorded deviation) and the
         /// no-G-buffer-set fallback, which is about its own descriptor pool.
         pass::deferred_pass& deferred = this->passes.emplace<pass::deferred_pass>();
+        /// THE POST CHAIN's MATERIAL (vulkan.pass.post): the composite pass owns the post set layout (nine
+        /// combined image samplers), the pipeline layout the whole chain binds through and takes its 52-byte push
+        /// block through, and the TWO pipelines the chain records with - one per colour format it renders into
+        /// (the swapchain's, and R16F for the bloom levels and for the LDR image FXAA reads). It is the
+        /// `gbuffer_debug`-owns-the-G-buffer-layout arrangement again: one owner, because five stages share one
+        /// layout and a copy per stage would be five chances to disagree. Its RECORDING is not here yet - the
+        /// frame loop still records the composite and the bloom chain with these pipelines, which is the next
+        /// slice of this step.
+        pass::post_composite_pass& post_composite = this->passes.emplace<pass::post_composite_pass>();
 
         /**
          * THE GI CHAIN (vulkan.pass.chain): the four GI stages, in the order that makes them a chain - each one
@@ -879,8 +889,11 @@ namespace vulkan {
         void on_swapchain_recreated();
 
         // ---- post-processing: HDR scene target -> exposure + ACES + gamma -> swapchain ----
-        // created by make_post_pipeline(); the descriptor sets rebind lazily whenever the
-        // swapchain (and with it the per-image HDR resolve targets) is recreated
+        // The SHAPE of this block is `vulkan.pass.post::post_push_constants`'s now (the passes push it, and the
+        // module static_asserts it against the declaration's 52 bytes); it stays here as well while the frame loop
+        // is still what composes the VALUES into it - the same "two copies, one size" situation the deferred
+        // stage's block was in for exactly one slice. The descriptor sets rebind lazily whenever the swapchain
+        // (and with it the per-image HDR resolve targets) is recreated.
         struct post_push_constants {
             float exposure = 1.0f;        // linear exposure scale (see set_exposure)
             float bloom_intensity = 0.0f; // bloom blend weight (see set_bloom)
@@ -917,13 +930,10 @@ namespace vulkan {
             float fxaa_subpixel = 0.75f;
             float fxaa_edge_threshold = 0.166f;
         };
-        std::optional<vk_pipeline> post_pipeline = std::nullopt;
-        // The SAME shader pair drives two different color formats, so it needs two pipelines:
-        // post_pipeline targets the swapchain (the composite pass) and post_hdr_pipeline targets
-        // hdr_format (the bright-pass prefilter and the three downsample passes, which render into
-        // the R16F bloom levels). Reusing the swapchain-format pipeline for the HDR passes is a
-        // VkPipelineRenderingCreateInfo format mismatch - validation flags it and the write is UB.
-        std::optional<vk_pipeline> post_hdr_pipeline = std::nullopt;
+        // THE POST CHAIN'S GPU MATERIAL IS A PASS's NOW (vulkan.pass.post): the set layout, the pipeline layout
+        // the composite and FXAA bind through, and the two pipelines the chain records with (the swapchain's
+        // format and the R16F one). `post_composite` below owns all four; what is left here is the FXAA pipeline
+        // (its own step), the two samplers the descriptor sets use, and the VALUES the push block carries.
         // FXAA pass (fxaa.frag + post.vert): reads the LDR image and writes the swapchain, so it
         // shares the composite's color format - but it is a separate pipeline because its shader
         // statically uses a different binding (5, the LDR image), and descriptor validation is per
@@ -943,8 +953,6 @@ namespace vulkan {
         // Whether the composite upsamples the GI bilaterally or with the plain bilinear fetch (see
         // post_push_constants::gi_upsample). On by default; false exists for measurement.
         bool gi_upsample = true;
-        VkDescriptorSetLayout post_set_layout = VK_NULL_HANDLE;
-        VkPipelineLayout post_pipeline_layout = VK_NULL_HANDLE;
         // The post chain's sets: five per swapchain image (prefilter, three downsample inputs and the
         // composite), the only family whose rebind depends on three fingerprints. It is also the last
         // one to leave the runtime - with it, no pool is left in this class to retire by hand.
@@ -1881,8 +1889,14 @@ namespace vulkan {
         /**
          * @brief bind the shared render state of every fullscreen post pass and draw the triangle
          * @param command_buffer the frame's command buffer
-         * @param pipeline the pass's pipeline (the HDR-format variant when the target is a bloom
-         *        level or the LDR image, the swapchain-format one when it is the swapchain)
+         * @param pipeline the pass's pipeline, as a RAW HANDLE: the chain's pipelines belong to the post
+         *        composite PASS now (vulkan.pass.post), so this recorder binds the handle and sets the viewport
+         *        and scissor from @p extent itself - which is what `vk_pipeline::begin_pipeline` used to do from
+         *        the pipeline's cached members, and the reason those members are no longer set per frame in
+         *        update_pass_geometry. The bloom stages' viewport is the LEVEL's extent, not the frame's, so
+         *        taking it from the call is also the correct thing rather than an accident of the cached value.
+         * @param pipeline_layout the layout the set and the push block go through (the chain's own, owned by the
+         *        same pass)
          * @param target_view the color attachment to render into
          * @param extent its extent (the viewport and scissor are set for it)
          * @param set the pass's descriptor set (bindings differ per pass - the caller binds it
@@ -1897,7 +1911,8 @@ namespace vulkan {
          * @note records inside the caller's open rendering instance; the caller owns
          *       vkCmdBeginRendering / vkCmdEndRendering and the layout barriers around it
          */
-        void record_fullscreen_triangle(VkCommandBuffer command_buffer, vk_pipeline const& pipeline, VkImageView target_view, VkExtent2D extent, VkDescriptorSet set, post_push_constants const& push, bool overlay_after = false);
+        void record_fullscreen_triangle(VkCommandBuffer command_buffer, VkPipeline pipeline, VkPipelineLayout pipeline_layout, VkImageView target_view, VkExtent2D extent, VkDescriptorSet set,
+                                        post_push_constants const& push, bool overlay_after = false);
         /** @brief the overlay, when it should draw into @p command_buffer (inside the caller's instance) */
         void record_overlay_if_enabled(VkCommandBuffer command_buffer);
         /** @brief transition @p image to SHADER_READ_ONLY (a barrier must not be recorded inside a
@@ -2001,17 +2016,17 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief create the post-process pipeline (HDR scene target -> exposure + ACES tonemap +
-         *        gamma -> swapchain): the fullscreen pass runs after the scene rendering instance
-         *        closes and before the debug overlay, on a 1x swapchain image
-         * @param vertex_shader_code post.vert SPIR-V (synthesizes the fullscreen triangle)
-         * @param fragment_shader_code post.frag SPIR-V (sampler2D HDR input + push constants)
-         * @note call once after the runtime is set up; callers load the SPIR-V (see
-         *       chores::setup_pipeline). Without it the HDR scene target cannot be presented
+         * @brief create the two samplers the post chain's descriptor sets use (linear for everything, NEAREST
+         *        for the composite's GI upsample, which taps depth and normal at exact texel centres)
+         * @return success, or an error message on failure
+         * @note THIS IS THE WHOLE OF WHAT `make_post_pipeline` DID THAT IS STILL THE RENDERER'S. The post set
+         *       layout, the pipeline layout and the chain's two pipelines belong to the post composite PASS
+         *       (`vulkan.pass.post`) and are built by its create step; the samplers stay here because they
+         *       belong to the descriptor SETS, which this class still writes (post_family). It must be called
+         *       before create_passes(): the pass context hands every pass the six samplers a declaration may
+         *       choose between, and a null one in a set is a validation error rather than a skipped fetch.
          */
-        std::expected<void, std::string> make_post_pipeline(
-            std::span<unsigned char const> vertex_shader_code,
-            std::span<unsigned char const> fragment_shader_code);
+        std::expected<void, std::string> ensure_post_samplers();
 
         /**
          * @ingroup vulkan_runtime
@@ -2019,7 +2034,9 @@ namespace vulkan {
          * @param vertex_shader_code post.vert SPIR-V (the same fullscreen triangle)
          * @param fragment_shader_code fxaa.frag SPIR-V (sampler2D LDR input + push constants)
          * @note optional: without it set_fxaa() has no effect and the composite keeps writing the
-         *       swapchain directly. Requires make_post_pipeline() first (it owns the set layout).
+         *       swapchain directly. IT MUST BE CALLED AFTER create_passes(): the pipeline layout it binds through
+         *       and the post set layout its descriptor set was allocated from belong to the post chain's
+         *       composite PASS (vulkan.pass.post), which that call is what creates.
          */
         std::expected<void, std::string> make_fxaa_pipeline(
             std::span<unsigned char const> vertex_shader_code,
