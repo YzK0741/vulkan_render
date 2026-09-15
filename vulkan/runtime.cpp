@@ -223,8 +223,8 @@ namespace vulkan {
         // The probe cache's remaining flag starts where the images do: nothing has transitioned the grid out
         // of UNDEFINED, so the tracer's gain is 0 until the TRACE pass - the frame's first reader of the grid
         // - has taken its first-use transition once. (What the grid HOLDS is the pass's own state now:
-        // gi_probe_pass::cache_valid, which starts false with the pass.)
-        this->gi_probe_grid_seen = false;
+        // gi_probe_pass::cache_valid, and whether the batch happened is the TRACER's - its own
+        // `on_swapchain_recreated` clears it, which is what the recreate_stage call in the swapchain path runs.)
         // ... and the furnace cube is a new image too, so its level has to be written again.
         this->furnace_cube_ready = false;
         // NOTE: the shadow resources (map layers + light UBO buffers) are created LAZILY, by
@@ -1201,20 +1201,13 @@ namespace vulkan {
             [[maybe_unused]] pass::run_report const probe_recreated = pass::recreate_stage(probe_stage, this->make_pass_host());
             pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
             [[maybe_unused]] pass::run_report const taa_recreated = pass::recreate_stage(taa_stage, this->make_pass_host());
-            // THE STAGES ADDED SINCE THIS LIST WAS WRITTEN. Both are here for the same reason and one of them
-            // was a real defect found by asking the question: the tracer's `probe_grid_seen_` and the lobe's
-            // per-image first-use flags describe a GENERATION, so a swapchain recreation owes both another
-            // first-use batch. Leaving a pass out of this list is invisible until someone resizes the window -
-            // exactly the hazard `recreate_stage` exists to remove, which is why the fix is this call and not a
-            // second hand-kept flag in the host.
-            pass::stage const ssgi_trace_stage = {.name = "ssgi_trace", .passes = this->ssgi_trace_stage, .marks = false};
-            [[maybe_unused]] pass::run_report const trace_recreated = pass::recreate_stage(ssgi_trace_stage, this->make_pass_host());
-            pass::stage const ssgi_spec_stage = {.name = "ssgi_spec", .passes = this->ssgi_spec_stage, .marks = false};
-            [[maybe_unused]] pass::run_report const spec_recreated = pass::recreate_stage(ssgi_spec_stage, this->make_pass_host());
-            pass::stage const ssgi_temporal_stage = {.name = "ssgi_temporal", .passes = this->ssgi_temporal_stage, .marks = false};
-            [[maybe_unused]] pass::run_report const temporal_recreated = pass::recreate_stage(ssgi_temporal_stage, this->make_pass_host());
-            pass::stage const ssgi_spatial_stage = {.name = "ssgi_spatial", .passes = this->ssgi_spatial_stage, .marks = false};
-            [[maybe_unused]] pass::run_report const spatial_recreated = pass::recreate_stage(ssgi_spatial_stage, this->make_pass_host());
+            // THE STAGES ADDED SINCE THIS LIST WAS WRITTEN, and now ONE call for all four: the tracer's
+            // `probe_grid_seen_` and the lobe's per-image first-use flags describe a GENERATION, so a swapchain
+            // recreation owes them another first-use batch. Leaving a pass out of this list is invisible until
+            // someone resizes the window - exactly the hazard `recreate_stage` exists to remove, which is why the
+            // fix is this call and not a second hand-kept flag in the host. The chain makes "all four" the
+            // default instead of a list someone has to remember to extend.
+            [[maybe_unused]] pass::run_report const gi_recreated = pass::recreate_stage(this->gi_chain.as_stage(), this->make_pass_host());
         }
         // Every swapchain image's history died with the old generation (and its size may have
         // changed): forget the matrices, so the next frame for each image starts a new accumulation
@@ -1227,10 +1220,9 @@ namespace vulkan {
         // image that holds a different resolution's data.
         this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
         // The lobe's per-image first-use state is the PASS's, and the recreate_stage call above is what told it
-        // (vulkan.pass.ssgi_spec::on_swapchain_recreated).
-        // The probe cache's generation flag, for the same reason (see gi_probe_grid_seen). Whether the grid
-        // HOLDS anything is the pass's own state, and the pass was told above (recreate_stage).
-        this->gi_probe_grid_seen = false;
+        // (vulkan.pass.ssgi_spec::on_swapchain_recreated). The tracer's "this generation's probe grid has had
+        // its first-use batch" is the same shape and the same call cleared it - which is why there is no host
+        // flag for it any more (the renderer asks the pass: `probe_grid_seen`).
         // ... and the furnace cube is a new image too, so its level has to be written again.
         this->furnace_cube_ready = false;
         // The motion-vector images died with the generation as well, and a brand new one is in
@@ -2783,10 +2775,11 @@ namespace vulkan {
             // barrier. THE SAME PREDICATE the lobe's own call site uses, evaluated here so the two cannot
             // disagree about which of them hands the raw trace over.
             .specular_next = this->ssgi_specular_active(),
-            // Whether this generation's probe grid still needs its first-use batch. The tracer's pass also
-            // tracks "have I seen it", so this is the host saying "the grid is there and uninitialised"; the
-            // pass is what remembers having done it.
-            .probe_grid_first_use = !this->gi_probe_grid_seen && this->vulkan_core.gi_probe_images.size() == 8,
+            // Whether this generation's probe grid still needs its first-use batch. The tracer's pass tracks "have
+            // I seen it" itself and the HOST asks it (`probe_grid_seen`), which is why there is no second flag
+            // here: the batch has to happen exactly once per generation, and two copies of "has it happened" can
+            // disagree after a resize.
+            .probe_grid_first_use = !this->ssgi_trace.probe_grid_seen() && this->vulkan_core.gi_probe_images.size() == 8,
         };
     }
 
@@ -2880,23 +2873,6 @@ namespace vulkan {
         return true;
     }
 
-    void runtime::record_ssgi_pass(VkCommandBuffer const command_buffer) {
-        static_cast<void>(command_buffer); // the pass records into the frame's command buffer it is resolved with
-        // THE SSGI TRACER records the first-use barrier batch, the dispatch and the hand-off (see
-        // vulkan.pass.ssgi_trace). This driver is the frame's half: the three facts the pass cannot derive, and
-        // the batch of images it declared. THE ORDER IS THE GI CHAIN'S and it is load-bearing - the tracer runs
-        // after the lighting stage (so a hit samples shaded radiance and never its own output) and before the
-        // lobe and the denoiser that consume its image.
-        this->ssgi_trace.set_frame(this->make_ssgi_trace_frame());
-        pass::stage const ssgi_stage = {.name = "ssgi_trace", .passes = this->ssgi_trace_stage, .marks = false};
-        [[maybe_unused]] pass::run_report const ssgi_report = pass::record_stage(ssgi_stage, this->make_pass_host());
-        // The probe grid's first-use batch is the PASS's to apply and this flag is the HOST's to remember: the
-        // batch has to happen exactly once per generation, and the report is what says whether it did.
-        if (ssgi_report.recorded > 0) {
-            this->gi_probe_grid_seen = true;
-        }
-    }
-
     void runtime::ensure_ssgi_denoise_descriptors() {
         // ONE FAMILY IS LEFT HERE: the REFLECTION's. The diffuse one is the pass's now
         // (vulkan.pass.ssgi_temporal::record writes it from `resolved_io::own_per_image`), and this family shares
@@ -2962,7 +2938,15 @@ namespace vulkan {
     }
 
     pass::ssgi_temporal_frame runtime::make_ssgi_denoise_frame(bool const history_valid) noexcept {
-        return pass::ssgi_temporal_frame{.history_valid = history_valid, .ensure_inputs = &runtime::ensure_denoise_inputs, .owner = this};
+        // TWO callbacks, and both are the renderer's because the pass cannot own either: its two shared per-image
+        // input transitions (their flags belong to the passes that WROTE those images) and the reflection's own
+        // recording (a declaration cannot describe two signals in the same seven slots). The second is what keeps
+        // the GI chain contiguous: the pass calls it at the end of its own recording, so the frame loop does not
+        // have to split the chain around a runtime call.
+        return pass::ssgi_temporal_frame{.history_valid = history_valid,
+                                         .ensure_inputs = &runtime::ensure_denoise_inputs,
+                                         .record_reflection = &runtime::record_reflection,
+                                         .owner = this};
     }
 
     bool runtime::resolve_ssgi_temporal(pass::resolved_io& out) {
@@ -3019,42 +3003,24 @@ namespace vulkan {
         return true;
     }
 
-    bool runtime::record_ssgi_denoise_pass(VkCommandBuffer const command_buffer) {
-        core& vk = this->vulkan_core;
-        std::size_t const index = this->current_image_index;
-        if (index >= vk.gi_resolve_images.size() || vk.gi_history_images.size() != vk.gi_resolve_images.size()) {
-            return false;
-        }
-        // The REFLECTION's family (the diffuse one is the pass's now, and the pass reports whether it recorded).
-        this->ensure_ssgi_denoise_descriptors();
-        // The history-validity flag is read ONCE and set ONCE, around both dispatches: the two accumulations
-        // share it, and a flag read after the first dispatch would tell the reflection its history exists on
-        // the very frame that created it - which is the one frame it must not blend with.
-        bool const history_valid = index < this->gi_history_valid.size() && this->gi_history_valid[index];
-        // THE DIFFUSE RESOLVE is the PASS's now (vulkan.pass.ssgi_temporal): the two barrier batches, the
-        // dispatch, the push lanes that describe its own state, the history copy and the hand-backs. The frame is
-        // set up here because the flag it carries has to be the value read BEFORE the stage - the reflection's
-        // resolve below uses the same value, so the two signals agree about the frame that created the history.
-        this->ssgi_temporal.set_frame(this->make_ssgi_denoise_frame(history_valid));
-        pass::stage const temporal_stage = {.name = "ssgi_temporal", .passes = this->ssgi_temporal_stage, .marks = false};
-        [[maybe_unused]] pass::run_report const temporal_report = pass::record_stage(temporal_stage, this->make_pass_host());
-        bool const resolved = this->ssgi_temporal.resolved();
-        // ... and the reflection's own accumulation, when this frame's lobe produced one. Its reprojection
-        // is the one the lobe published, its history is its own, and the spatial filter's spec_weight lane is
-        // what keeps a stale accumulation out of a frame whose lobe did not run.
+    void runtime::record_reflection(void* const owner, VkCommandBuffer const command_buffer, bool const history_valid) {
+        // THE REFLECTION's own accumulation, recorded for the temporal PASS: it is the renderer's because a
+        // declaration cannot describe two signals in the same seven slots (see vulkan.pass.ssgi_temporal's
+        // header), so the pass calls back here at the end of its own recording - after mode 0's hand-backs and
+        // before the spatial filter's stage, which is exactly where this ran when the frame loop split the chain
+        // around it. Its reprojection is the one the lobe published, its history is its own, and the spatial
+        // filter's spec_weight lane is what keeps a stale accumulation out of a frame whose lobe did not run.
+        runtime& self = *static_cast<runtime*>(owner);
+        core& vk = self.vulkan_core;
+        std::size_t const index = self.current_image_index;
         bool spec_resolved = false;
-        if (this->ssgi_specular_active() && index < vk.gi_spec_resolve_images.size() &&
-            vk.gi_spec_history_images.size() == vk.gi_spec_resolve_images.size()) {
-            VkDescriptorSet const spec_set = this->ssgi_spec_temporal_family.set(static_cast<uint32_t>(index), 0);
+        if (self.ssgi_specular_active() && index < vk.gi_spec_resolve_images.size() && vk.gi_spec_history_images.size() == vk.gi_spec_resolve_images.size()) {
+            VkDescriptorSet const spec_set = self.ssgi_spec_temporal_family.set(static_cast<uint32_t>(index), 0);
             if (spec_set != VK_NULL_HANDLE) {
-                spec_resolved = this->record_ssgi_resolve_pass(command_buffer, spec_set, vk.gi_spec_resolve_images[index], vk.gi_spec_history_images[index], history_valid, 1.0f);
+                spec_resolved = self.record_ssgi_resolve_pass(command_buffer, spec_set, vk.gi_spec_resolve_images[index], vk.gi_spec_history_images[index], history_valid, 1.0f);
             }
         }
-        this->gi_spec_resolved = spec_resolved;
-        if (resolved && this->gi_history_valid.size() > index) {
-            this->gi_history_valid[index] = true;
-        }
-        return resolved;
+        self.gi_spec_resolved = spec_resolved;
     }
 
     bool runtime::record_ssgi_resolve_pass(VkCommandBuffer const command_buffer, VkDescriptorSet const set, VkImage const resolve_image, VkImage const history_image,
@@ -3299,31 +3265,24 @@ namespace vulkan {
         // `resource()` from (see publish_pass_resources). It is the renderer's half of the channel; the passes'
         // half is that they ask for what their own declaration lists instead of being handed it.
         this->publish_pass_resources();
+        // THE GI CHAIN's ORDER, which is data now rather than the line order of the frame loop that records it:
+        // each stage reads what the one before it wrote (the lobe corrects the trace, the denoise accumulates it,
+        // the filter smooths the accumulation and is what the composite samples).
+        this->gi_chain.add(this->ssgi_trace);
+        this->gi_chain.add(this->ssgi_spec);
+        this->gi_chain.add(this->ssgi_temporal);
+        this->gi_chain.add(this->ssgi_spatial);
         pass::pass_context const build = this->make_pass_context();
         pass::stage const scene_stage = {.name = "scene", .passes = this->scene_stage, .marks = false};
         pass::run_report const scene_created = pass::create_stage(scene_stage, build);
         if (!scene_created.rejected.empty()) {
             utility::log("pass '{}': its declaration was refused by the validator, so it does not run", scene_created.rejected);
         }
-        pass::stage const ssgi_stage = {.name = "ssgi_trace", .passes = this->ssgi_trace_stage, .marks = false};
-        pass::run_report const ssgi_created = pass::create_stage(ssgi_stage, build);
-        if (!ssgi_created.rejected.empty()) {
-            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", ssgi_created.rejected);
-        }
-        pass::stage const spec_stage = {.name = "ssgi_spec", .passes = this->ssgi_spec_stage, .marks = false};
-        pass::run_report const spec_created = pass::create_stage(spec_stage, build);
-        if (!spec_created.rejected.empty()) {
-            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", spec_created.rejected);
-        }
-        pass::stage const temporal_stage = {.name = "ssgi_temporal", .passes = this->ssgi_temporal_stage, .marks = false};
-        pass::run_report const temporal_created = pass::create_stage(temporal_stage, build);
-        if (!temporal_created.rejected.empty()) {
-            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", temporal_created.rejected);
-        }
-        pass::stage const spatial_stage = {.name = "ssgi_spatial", .passes = this->ssgi_spatial_stage, .marks = false};
-        pass::run_report const spatial_created = pass::create_stage(spatial_stage, build);
-        if (!spatial_created.rejected.empty()) {
-            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", spatial_created.rejected);
+        // THE GI CHAIN is created as ONE call over its four passes (see gi_chain), which is also what makes the
+        // chain's ORDER the thing that decides the create order - the same statement the frame's record makes.
+        pass::run_report const gi_created = this->gi_chain.init(build);
+        if (!gi_created.rejected.empty()) {
+            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", gi_created.rejected);
         }
         pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
         pass::run_report const created = pass::create_stage(probe_stage, build);
@@ -3954,17 +3913,6 @@ namespace vulkan {
         return true;
     }
 
-    bool runtime::record_ssgi_spatial_pass(VkCommandBuffer const command_buffer) {
-        static_cast<void>(command_buffer); // the pass records into the frame's command buffer it is resolved with
-        // THE SPATIAL FILTER records the two barriers around its storage output, the two shared sets and the
-        // dispatch (see vulkan.pass.ssgi_spatial). It is the LAST stage: what the composite samples is its output,
-        // so the frame's GI becomes usable exactly when this pass recorded.
-        pass::stage const spatial_stage = {.name = "ssgi_spatial", .passes = this->ssgi_spatial_stage, .marks = false};
-        [[maybe_unused]] pass::run_report const spatial_report = pass::record_stage(spatial_stage, this->make_pass_host());
-        this->gi_resolved = this->ssgi_spatial.resolved();
-        return this->gi_resolved;
-    }
-
     pass::ssgi_spec_frame runtime::make_ssgi_spec_frame() const noexcept {
         // One number: the pass's per-image first-use state is sized from the generation's image count, the same
         // shape the TAA resolve's history flags have.
@@ -4036,17 +3984,6 @@ namespace vulkan {
         // here (the shader's `imageSize` clip) and why it was still wrong.
         out.extent = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->ssgi_spec));
         return true;
-    }
-
-    bool runtime::record_ssgi_spec_pass(VkCommandBuffer const command_buffer) {
-        static_cast<void>(command_buffer); // the pass records into the frame's command buffer it is resolved with
-        // THE GLOSSY LOBE records the ordering barrier, its two first-use transitions, the dispatch and the
-        // hand-off (see vulkan.pass.ssgi_spec). It runs between the tracer and the denoiser: after because it
-        // reads and corrects the raw trace, before because the temporal resolve consumes the SUM.
-        this->ssgi_spec.set_frame(this->make_ssgi_spec_frame());
-        pass::stage const spec_stage = {.name = "ssgi_spec", .passes = this->ssgi_spec_stage, .marks = false};
-        pass::run_report const spec_report = pass::record_stage(spec_stage, this->make_pass_host());
-        return spec_report.recorded > 0;
     }
 
     void runtime::record_gbuffer_debug_pass(VkCommandBuffer const command_buffer) {
@@ -4429,13 +4366,32 @@ namespace vulkan {
         // make the staleness smoother.
         this->gi_resolved = false;
         if (this->ssgi_active()) {
-            this->record_ssgi_pass(command_buffer);
-            // The glossy lobe, between the tracer and the denoiser: it adds to the tracer's own image (see
-            // shaders/ssgi_spec.comp), so it has to run BEFORE the temporal resolve reads that image, and
-            // the tracer skipped its hand-off barrier for exactly this case.
-            this->record_ssgi_spec_pass(command_buffer);
-            if (this->record_ssgi_denoise_pass(command_buffer)) {
-                this->record_ssgi_spatial_pass(command_buffer);
+            // THE GI CHAIN, recorded as ONE call: its four stages and their order are the chain's (see
+            // gi_chain in the header), and each pass's own feature gate and resolver still decide whether it
+            // records - so this is the same sequence of four stages the frame loop used to spell out, with the
+            // reflection's recording now called back from inside the temporal pass (see record_reflection).
+            //
+            // The frames the passes need are set HERE, before the chain runs, because two of them carry values
+            // that must be read BEFORE the stage: the tracer's `specular_next` (which decides who owes the
+            // denoiser the hand-off barrier) and the temporal's `history_valid`, which the reflection's callback
+            // is handed as well so the two signals agree about the frame that created the history.
+            bool const history_valid = index < this->gi_history_valid.size() && this->gi_history_valid[index];
+            // The REFLECTION's descriptor family is the RENDERER's (the diffuse one is the temporal pass's own),
+            // so it is ensured HERE - once per frame, before the chain, exactly where the old
+            // `record_ssgi_denoise_pass` ensured it before running the temporal stage.
+            this->ensure_ssgi_denoise_descriptors();
+            this->ssgi_trace.set_frame(this->make_ssgi_trace_frame());
+            this->ssgi_spec.set_frame(this->make_ssgi_spec_frame());
+            this->ssgi_temporal.set_frame(this->make_ssgi_denoise_frame(history_valid));
+            pass::run_report const gi_report = this->gi_chain.record(this->make_pass_host());
+            static_cast<void>(gi_report);
+            // The two answers the RENDERER needs from the chain, read from the passes that own them: whether the
+            // spatial filter wrote the image the composite samples (that is `gi_resolved`), and whether the
+            // denoiser produced an accumulation this frame (which the NEXT frame's history flag is set from).
+            this->gi_resolved = this->ssgi_spatial.resolved();
+            bool const resolved = this->ssgi_temporal.resolved();
+            if (resolved && this->gi_history_valid.size() > index) {
+                this->gi_history_valid[index] = true;
             }
             ++this->ssgi_frame; // the next frame's ray sequence must differ (see ssgi_frame)
         }
@@ -4769,6 +4725,22 @@ namespace vulkan {
         if (name == "ssgi") {
             return f.ssgi;
         }
+        if (name == "ssgi_spatial") {
+            // THE CHAIN'S LAST STAGE, and the one pass whose gate is not just "the chain is on": the filter must
+            // not filter a STALE accumulation, so it runs only when THIS frame's temporal resolve recorded. The
+            // answer comes from the pass that owns it (the temporal pass clears its flag when the host sets the
+            // frame, so this cannot read an earlier frame's answer) - which is what replaced the frame loop's
+            // `if (record_ssgi_denoise_pass(...))` around the filter's stage.
+            //
+            // NOTE WHICH FUNCTION THIS IS: the runner asks `feature_active`, NOT `feature_available` (which
+            // answers "could this feature run this session" for the overlay and the startup log). The first
+            // version of this branch was added to `feature_available` by mistake, and the symptom was precise:
+            // the filter was skipped on every frame (`skipped_inactive 1`), so the composite sampled an image
+            // nothing had written - a subtly darker frame in the model's region, which is exactly what the gate
+            // reported. Two predicates with the same vocabulary and different questions is a trap this file now
+            // has a comment about.
+            return this->ssgi_active() && this->ssgi_temporal.resolved();
+        }
         if (name == "ssgi_probes") {
             return f.ssgi_probes;
         }
@@ -4856,6 +4828,12 @@ namespace vulkan {
         }
         if (name == "ssgi") {
             return this->ssgi_trace.pipeline_ready();
+        }
+        if (name == "ssgi_spatial") {
+            // AVAILABILITY, not activity: "the chain's last stage built its pipeline", which is what the overlay
+            // and the startup log ask. Whether it runs THIS frame is `feature_active`'s answer (the chain is on
+            // AND this frame's temporal resolve recorded) - see the note there.
+            return this->ssgi_spatial.pipeline_ready();
         }
         return false;
     }

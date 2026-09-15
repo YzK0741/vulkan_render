@@ -61,6 +61,10 @@ namespace vulkan::pass {
         return this->pipeline_layout_;
     }
 
+    bool ssgi_trace_pass::probe_grid_seen() const noexcept {
+        return this->probe_grid_seen_;
+    }
+
     void ssgi_trace_pass::set_frame(ssgi_trace_frame const& frame) noexcept {
         this->frame_ = frame;
     }

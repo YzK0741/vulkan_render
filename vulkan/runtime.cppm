@@ -39,6 +39,7 @@ import vulkan.pass.rt_shadow;         // the ninth, and the first one OUTSIDE th
 import vulkan.pass.mask_bake;         // ... and the one-shot MASK bake, which is a JOB rather than a frame pass
 import vulkan.pass.compute_skin;      // ... and the compute-skinning job, which is a job for the same reason
 import vulkan.pass.cluster;           // the tenth: the clustered-light sort, the first pass with BUFFER barriers
+import vulkan.pass.chain;             // the chain container: what holds a run of passes and its ORDER
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
@@ -399,24 +400,31 @@ namespace vulkan {
         /// RENDERER's: the knobs, the frame counter, the push block's VALUES, and the state the pass cannot
         /// know (whether the denoiser's accumulation is trustworthy, and whether the lobe runs next).
         pass::ssgi_trace_pass ssgi_trace;
-        std::array<pass::frame_pass*, 1> ssgi_trace_stage = {&this->ssgi_trace};
         /// THE GLOSSY LOBE (vulkan.pass.ssgi_spec): it owns its pipeline layout, its pipeline, the ordering
         /// barrier, the hand-off and its per-image first-use state. It runs between the tracer and the denoiser
         /// and writes the SAME image the tracer wrote - which is why the tracer asks whether it will run.
         pass::ssgi_spec_pass ssgi_spec;
-        std::array<pass::frame_pass*, 1> ssgi_spec_stage = {&this->ssgi_spec};
         /// THE DIFFUSE TEMPORAL RESOLVE (vulkan.pass.ssgi_temporal): step 1a - it owns the RECORDING (the two
         /// barrier batches, the dispatch, the two push lanes that describe its own state, the history copy and
-        /// the hand-backs) while its set and its pipeline arrive through `resolved_io`, because the two signals
-        /// share one layout and one pipeline. The pass-owned family is step 1b (see docs/pass_chain_plan.md).
+        /// the hand-backs); step 1b added the set layout, the pipeline and its per-image family. Its frame carries
+        /// the REFLECTION's recording as a callback, so the chain below stays contiguous.
         pass::ssgi_temporal_pass ssgi_temporal;
-        std::array<pass::frame_pass*, 1> ssgi_temporal_stage = {&this->ssgi_temporal};
         /// THE SPATIAL FILTER (vulkan.pass.ssgi_spatial): the GI chain's LAST stage, and the shape the tracer and
         /// the lobe already have - the shared scene set, the shared G-buffer set, no descriptor of its own, and
         /// the one image it transitions (its own storage output) declared through `barrier_images`. What the
         /// composite samples is its output, so the renderer's `gi_resolved` is read from whether it recorded.
         pass::ssgi_spatial_pass ssgi_spatial;
-        std::array<pass::frame_pass*, 1> ssgi_spatial_stage = {&this->ssgi_spatial};
+        /**
+         * THE GI CHAIN (vulkan.pass.chain): the four stages above, in the order that makes them a chain - each
+         * one reads what the one before it wrote - held as a VALUE rather than as four call sites' worth of
+         * conventions. It is built in `create_passes()` (the passes are members, so the chain is filled there),
+         * it is initialized with the chain's own `init`, and the frame records it with one `record` call.
+         *
+         * The spatial filter's "only if the temporal resolve ran" gate is NOT expressed here: it lives in the
+         * feature registry (`feature_active("ssgi_spatial")`), which is the one place that answers "does this
+         * pass run this frame" - see chain.cppm's header for why a chain does not skip its own tail.
+         */
+        pass::pass_chain gi_chain{"gi"};
         /// THE RAY-TRACED SHADOW (vulkan.pass.rt_shadow): the first pass on this branch that is NOT part of the
         /// GI chain. It owns its pipeline layout, its pipeline, the two barriers around the visibility image it
         /// rewrites and the dispatch; the renderer keeps the STAGE's two facts - where it sits (after the
@@ -630,12 +638,10 @@ namespace vulkan {
         // Whether the grid holds anything at all, and the light it holds it for, are the PASS's own state now
         // (see gi_probe_pass::cache_valid): it is the pass's cache, so its invalidation is the pass's - and
         // the pass owns the light-change trigger, which is why the current direction rides in the push block.
-        // What stays here is the first-use transition's flag below, because that transition belongs to the
-        // TRACER (the trace pass is the frame's first reader of the grid, not its writer).
-        //
-        // Whether this target generation's grid images have been transitioned out of UNDEFINED yet
-        // (they are created with the swapchain and destroyed with it - see core::create_render_targets).
-        bool gi_probe_grid_seen = false;
+        // What stays here is nothing about the first-use transition: it belongs to the TRACER (the trace pass is
+        // the frame's first reader of the grid, not its writer), and whether it has happened is the pass's own
+        // per-generation flag - the renderer asks it (`ssgi_trace_pass::probe_grid_seen`), which is why the host
+        // flag that used to sit here is gone: two copies of "has the batch happened" can disagree after a resize.
         // The glossy lobe's own two output images (core.cppm's gi_spec_*), which need the same first-use
         // layout transition the GI trace does. PER SWAPCHAIN IMAGE, not one flag for all of them: a single
         // bool is set by the first slot's frame and then tells the other slots their images are already in
@@ -689,13 +695,17 @@ namespace vulkan {
         std::vector<glm::mat4> image_view_proj = {};
         /**
          * @ingroup vulkan_runtime
-         * @brief record the GI temporal resolve and the history copy into @p command_buffer
-         * @return whether the resolve ran, i.e. whether the spatial filter has anything to filter
-         * @note runs right after record_ssgi_pass(), at the GI resolution, and turns the frame's raw
-         *       trace into the accumulated image the spatial filter reads - see shaders/ssgi_temporal.comp
-         *       for the reprojection / depth-guard / clamp trio it needs to accumulate rather than smear
+         * @brief the REFLECTION's resolve, recorded for the temporal PASS at the end of its own recording
+         * @param owner the runtime (the callback's context; see `ssgi_temporal_frame::record_reflection`)
+         * @param command_buffer the frame's command buffer
+         * @param history_valid the flag the DIFFUSE dispatch used, so the two signals agree about the frame that
+         *        created the history
+         * @note it is the renderer's because a declaration cannot describe two signals in the same seven slots
+         *       (see vulkan.pass.ssgi_temporal's header). It used to be a block of `record_ssgi_denoise_pass`
+         *       between two `record_stage` calls; the temporal pass calls it now, which is what lets the GI chain
+         *       be one contiguous chain instead of being split around a runtime call.
          */
-        bool record_ssgi_denoise_pass(VkCommandBuffer command_buffer);
+        static void record_reflection(void* owner, VkCommandBuffer command_buffer, bool history_valid);
         /**
          * @brief run one signal's temporal accumulation: barriers, one dispatch, the history copy, hand-back
          * @param command_buffer the frame's command buffer
@@ -763,20 +773,8 @@ namespace vulkan {
         void apply_pass_behaviour(pass::frame_pass const& pass, pass::resolved_io const& io);
         /**
          * @ingroup vulkan_runtime
-         * @brief record the GI spatial filter into @p command_buffer
-         * @return whether the filter ran, i.e. whether the composite may use this frame's GI
-         * @note runs right after record_ssgi_denoise_pass(), at the GI resolution. It reads the
-         *       temporal resolve's output and writes the image the composite samples - see
-         *       shaders/ssgi_spatial.comp for the depth/normal edge stops it needs to blur the grain
-         *       without blurring across silhouettes
+         * @brief whether the TAA resolve runs this frame (enabled + deferred lighting + pipeline)
          */
-        bool record_ssgi_spatial_pass(VkCommandBuffer command_buffer);
-        /** @brief record the glossy lobe (shaders/ssgi_spec.comp), which adds to the raw trace in place
-         *  @return true when a dispatch was recorded, i.e. when the frame's specular ambient is now the
-         *          traced estimate rather than the lighting stage's - the spatial filter's second
-         *          subtraction is gated on the same predicate (see ssgi_specular_active) */
-        bool record_ssgi_spec_pass(VkCommandBuffer command_buffer);
-        /** @brief whether the TAA resolve runs this frame (enabled + deferred lighting + pipeline) */
         [[nodiscard]] bool taa_active() const noexcept;
         /** @brief the image the scene-side passes write into (the TAA input, or the HDR target) */
         [[nodiscard]] VkImage scene_target_image(uint32_t image_index) const noexcept;
@@ -2452,10 +2450,13 @@ namespace vulkan {
         [[nodiscard]] bool resolve_ssgi_spec(pass::resolved_io& out);
         /**
          * @brief this frame's input for the diffuse temporal resolve
-         * @param history_valid the flag AS READ BEFORE the stage, so the reflection's resolve (which runs after
-         *        it, in the same frame) blends exactly as this one did
+         * @param history_valid the flag AS READ BEFORE the stage, so the reflection's resolve (which the pass
+         *        calls back for at the end of its own recording, in the same frame) blends exactly as this one did
          * @note `ensure_inputs` is the renderer's two shared per-image transitions: their "was it written this
-         *       frame" flags belong to the passes that wrote those images, so the pass calls back for them
+         *       frame" flags belong to the passes that wrote those images, so the pass calls back for them.
+         *       `record_reflection` is the same shape for the second signal - the recording stays the renderer's
+         *       (a declaration cannot describe two signals in the same seven slots), but the pass decides WHEN it
+         *       happens, which is what keeps the GI chain contiguous.
          */
         [[nodiscard]] pass::ssgi_temporal_frame make_ssgi_denoise_frame(bool history_valid) noexcept;
         /// @brief the renderer's two shared per-image transitions, as a callback the resolve calls (see above)
@@ -2517,15 +2518,6 @@ namespace vulkan {
 
         /** @brief whether the tracer runs this frame (see set_ssgi) */
         [[nodiscard]] bool ssgi_active() const noexcept;
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief record the screen-space GI dispatch into @p command_buffer
-         * @note called from record_post_process() right after the HDR target becomes a shader input
-         *       and before the composite that adds its output - the two facts that together keep the
-         *       tracer from sampling an image containing its own result (see the call site)
-         */
-        void record_ssgi_pass(VkCommandBuffer command_buffer);
 
         /** @brief how many channels the G-buffer debug view offers (see set_gbuffer_channel) */
         static constexpr int gbuffer_channel_count = 9;

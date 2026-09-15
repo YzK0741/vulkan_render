@@ -1,4 +1,4 @@
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/ssgi_temporal.cppm
@@ -64,6 +64,17 @@ export namespace vulkan::pass {
          * those images, so the pass cannot own them - the same shape as the scene pass's `make_environment`.
          */
         void (*ensure_inputs)(void* owner, VkCommandBuffer command_buffer, uint32_t image_index) = nullptr;
+        /**
+         * The REFLECTION's recording, which is the renderer's because a declaration cannot describe two signals
+         * in the same seven slots (see the file's header): the pass calls this at the END of its own recording -
+         * after mode 0's hand-backs, before the spatial filter that reads both accumulations - so that the GI
+         * chain stays CONTIGUOUS (`vulkan.pass.chain`) instead of being split around a runtime call.
+         *
+         * The callback is handed the SAME `history_valid` the pass itself used, because the two signals must
+         * agree about the frame that created the history: a flag read after mode 0's dispatch would tell the
+         * reflection its history exists on the very frame that created it.
+         */
+        void (*record_reflection)(void* owner, VkCommandBuffer command_buffer, bool history_valid) = nullptr;
         void* owner = nullptr;
     };
 

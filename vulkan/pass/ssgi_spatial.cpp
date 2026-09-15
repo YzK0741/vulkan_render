@@ -46,8 +46,12 @@ namespace vulkan::pass {
     }
 
     std::string_view ssgi_spatial_pass::feature() const noexcept {
-        // The CHAIN's feature: the filter is the last stage, and a frame whose chain is off records nothing.
-        return "ssgi";
+        // ITS OWN feature name, and not the chain's, because this pass runs on a SECOND condition the chain
+        // cannot express (see chain.cppm's header): the frame's accumulation has to have been resolved THIS
+        // frame, or the filter would smooth a stale image. The renderer's registry answers that
+        // (`feature_active("ssgi_spatial")` = the chain is on AND the temporal pass resolved this frame), and the
+        // pass's own `resolved()` is what the composite's weight is read from.
+        return "ssgi_spatial";
     }
 
     bool ssgi_spatial_pass::pipeline_ready() const noexcept {

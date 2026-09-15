@@ -951,6 +951,51 @@ validation-clean on both sides.
 Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0 with an empty output
 stream, gate 12 x 2 with 0 changed and 0 flaky (about the twelve frames that exist), plus the eight A/B runs above.
 
+## THE PASS CHAIN: THE GI CHAIN IS A VALUE NOW, AND TWO TRAPS IT SPRANG
+
+`vulkan.pass.chain` (module `vulkan.pass.chain`) holds an ordered list of passes and the runner's two calls over
+it (`init`, `record`), so the ORDER of a chain is a sequence of `add` calls rather than the line order of a frame
+loop that also interleaves barriers, marks and the renderer's own work. It is deliberately NOT a scheduler and NOT
+an ownership container: it holds non-owning pointers, and each pass's `feature()` gate, resolver and behaviour
+still belong to the runner - a chain of four passes runs exactly like the four separate stages it replaced, down
+to the per-pass `resolved_io` the runner builds for each of them.
+
+**THE GI CHAIN WAS THE FIRST (AND ONLY) CONTIGUOUS RUN**, measured before touching anything: the tracer, the
+lobe, the temporal resolve and the spatial filter are recorded back to back, and the only thing between the
+temporal and the spatial was the renderer's REFLECTION resolve. So the chain could not be contiguous without
+answering for that, and the answer was the shape the temporal pass already uses twice: a frame CALLBACK. The
+temporal's frame now carries `record_reflection`, which the pass calls at the END of its own recording - after
+mode 0's hand-backs and before the spatial filter's stage, exactly where it ran before - so the reflection's
+recording stays the renderer's (a declaration cannot describe two signals in the same seven slots) while the pass
+decides WHEN it happens. The four `std::array<frame_pass*, 1>` stage members, four `create_stage` calls, four
+`record_stage` sites and the `if (record_ssgi_denoise_pass(...))` around the filter all collapse into one chain,
+one `init` and one `record`.
+
+**AND THE "ONLY IF THE TEMPORAL RESOLVED" GATE MOVED TO THE FEATURE REGISTRY**, because a chain that can skip its
+own tail is a scheduler and this renderer already has one place that answers "does this pass run this frame":
+`feature_active("ssgi_spatial")` = the chain is on AND this frame's temporal resolve recorded. The temporal pass
+now clears its answer when the host sets its frame, so that predicate cannot read an earlier frame's answer.
+
+**TRAP ONE, and it is the kind that a gate catches and reasoning does not.** The new `feature_active` branch was
+first written into `feature_available` instead - the function the overlay and the startup log ask, which answers
+"could this run this session" - so the runner's `feature_active("ssgi_spatial")` fell through to `false` and the
+filter was skipped on EVERY frame. The symptom was a subtly darker frame in the model's region (3.8% of pixels,
+mean -0.089 R) and the five GI scenarios changed. What found it was instrumenting the runtime with the run
+report's own counters for the first four frames: `recorded 3 skipped_inactive 1` on every one of them, which said
+"the last stage never ran" in a single line. Two predicates with the same vocabulary and different questions is
+the trap; the file now has a comment at both branches saying which is which.
+
+**TRAP TWO, the honest half**: the reflection's descriptor family (`ssgi_spec_temporal_family`) used to be ensured
+inside the deleted `record_ssgi_denoise_pass`; the first version of this step moved that ensure into the new
+callback, i.e. AFTER the temporal dispatch instead of before it. That was measured NOT to change the frames (the
+gate reported the same hash before and after moving it back), but it is back in the segment - once per frame,
+before the chain - because that is where the renderer ensures the family it owns, and because "the same hash"
+here would not have held on a frame where the family was first built.
+
+Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0 with an empty output
+stream, gate 12 x 2 with **0 changed and 0 flaky** - including all five GI scenarios, which are the ones that run
+the chain this step rewired.
+
 ## WHAT THE INVENTORY ALREADY FOUND (RE-AUDITED AGAINST THE CURRENT TREE)
 
 The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought `master`'s files over, so most
@@ -1059,6 +1104,15 @@ says what a re-audit of the current tree found.
   themselves inside `create_passes()`, and the renderer's half is `publish_pass_resources()` - the material
   table, the texture array and the per-slot skin buffers published in the declaration's own vocabulary. Verified
   by eight A/B runs against the immediate parent (one hash per path, both paths validation-clean).
+* **THE PASS CHAIN EXISTS** (`vulkan.pass.chain`), and the GI chain is one: `init` and `record` take the chain,
+  the order is the `add` calls, the reflection's recording rides the temporal pass's frame as a callback so the
+  chain stays contiguous, and the filter's "only if the temporal resolved" gate lives in `feature_active`. The
+  step's two traps - the gate written into the wrong feature function, and the reflection family's ensure moving
+  with the callback - are recorded with their measurements. Gate 12 x 2 = 0 changed, GI scenarios included.
+* **`bind_pass_chain` is NOT here yet, deliberately**: a selector needs a second candidate chain to select
+  between, and the renderer has exactly one frame order today (`gbuffer_debug`/`unlit` are per-pass feature
+  gates, not alternative chains). The candidates arrive with the graphics stages: the deferred tail
+  (lighting + transparent) versus the debug view is the first pair that would be two real chains.
 
 **NOT DONE, with the reason and the exact next step.**
 

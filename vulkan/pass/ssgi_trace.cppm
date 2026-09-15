@@ -97,6 +97,14 @@ export namespace vulkan::pass {
 
         /// @brief whether the pass built what it records with (the renderer gates the GI feature on this)
         [[nodiscard]] bool pipeline_ready() const noexcept;
+        /**
+         * @brief whether this generation's probe grid has had its first-use batch
+         *
+         * The pass's own per-generation state, and the HOST reads it now instead of keeping a second flag: the
+         * batch has to happen exactly once per generation, the pass is what applies it, and the host's flag was
+         * the same fact in two places - with the extra failure mode that the two could disagree after a resize.
+         */
+        [[nodiscard]] bool probe_grid_seen() const noexcept;
         /// @brief the pipeline the runner binds before this pass records
         [[nodiscard]] VkPipeline pipeline() const noexcept;
         [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept;

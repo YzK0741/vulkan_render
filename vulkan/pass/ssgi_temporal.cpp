@@ -123,6 +123,11 @@ namespace vulkan::pass {
 
     void ssgi_temporal_pass::set_frame(ssgi_temporal_frame const& frame) noexcept {
         this->frame_ = frame;
+        // A NEW FRAME BEGINS: the answer this pass gives the renderer is per frame, and the host sets the frame
+        // once per frame before the chain runs. Clearing it here is what makes `resolved()` exactly "this frame's
+        // dispatch happened" - which the spatial filter's feature gate reads (see the runtime's feature_active),
+        // and which would otherwise still be true from an earlier frame in which the dispatch DID happen.
+        this->resolved_ = false;
     }
 
     void ssgi_temporal_pass::record(resolved_io const& io) {
@@ -272,6 +277,14 @@ namespace vulkan::pass {
         vkCmdPipelineBarrier2(io.cmd, &hand_back_dependency);
 
         this->resolved_ = true;
+        // ... and the REFLECTION's own resolve, if this frame's lobe produced one. It is the RENDERER's recording
+        // (a declaration cannot describe two signals in the same seven slots - see the header), so the pass asks
+        // for it here rather than the frame loop splitting the chain around a runtime call: the callback runs
+        // after mode 0's hand-backs and before the spatial filter's stage, which is exactly where it ran before,
+        // and it is handed the SAME history flag the diffuse dispatch used.
+        if (this->frame_.record_reflection != nullptr) {
+            this->frame_.record_reflection(this->frame_.owner, io.cmd, this->frame_.history_valid);
+        }
     }
 
 } // namespace vulkan::pass
