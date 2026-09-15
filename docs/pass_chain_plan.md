@@ -1061,6 +1061,23 @@ machinery; the decision is recorded here instead.
 Measured on this step: Release/Debug/ASan clean, ctest 8/8 (test_pass checks the format reaches a pass's create
 context), doxygen exit 0, gate 12 x 2 with 0 changed and 0 flaky.
 
+## THE LAST TWO GPU-OWNING MEMBERS: THE JOBS GO TO THE CHAIN TOO
+
+`pass_chain` could own passes (`emplace`) but not the renderer's two JOBS - `mask_bake_job` and
+`compute_skin_job` are not `frame_pass` (one runs once inside the structure-build command buffer, the other per
+frame from a caster list), so the type of the container is what kept them as runtime members. The chain now has
+`keep<T>(...)`: it KEEPS a non-pass GPU-owning object alive and returns the typed reference the creator configures,
+which is the same split `emplace` uses for a pass. The two members became references, and the runtime now
+constructs and destroys NO GPU-owning object of its own - the chain does, for the ten passes and the two jobs.
+
+Type-erased (`shared_ptr<void>` with the default deleter) because the chain has no business knowing a job's type;
+the caller keeps the typed view. `keep` does NOT add anything to the recorded stages - a job is not a stage.
+
+Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0 with an empty output
+stream, gate 12 x 2 with 0 changed and 0 flaky. The gate cannot exercise the jobs' RECORDING (both knobs are off
+in all twelve scenarios), so their paths were left exactly as they are, down to the create calls and their order -
+an ownership move that cannot change a command stream, and whose two knob-on A/B hashes (`ED602F42...` for the MASK
+bake, `6E0BED15...` for compute skinning) were measured twice each when those jobs were extracted.
 ## WHAT THE INVENTORY ALREADY FOUND (RE-AUDITED AGAINST THE CURRENT TREE)
 
 The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought `master`'s files over, so most

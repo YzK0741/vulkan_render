@@ -1311,7 +1311,10 @@ namespace vulkan {
         // same rule they do: they are built from the pass context, they own their pipelines and sets, and they
         // release them in their own destructors. A `job_chain` of the same shape (owning, with typed references
         // out) is what would remove these two members as well.
-        pass::mask_bake_job mask_bake;
+        // ... and the two jobs are kept alive by the SAME chain (its keep), for the same reason the passes are:
+        // who constructs and destroys a GPU-owning object is the chain's business, and what the renderer holds is a
+        // view it configures. They are not rame_pass, so mplace cannot take them - see pass_chain::keep.
+        pass::mask_bake_job& mask_bake = this->passes.keep<pass::mask_bake_job>();
         // Whether that bake runs at all ([render] rt_mask_bake). Off by default: the per-triangle rule
         // measured WORSE than the raster path (see the member comment above and docs/gi_hit_shading.md).
         bool rt_mask_bake = false;
@@ -1327,7 +1330,7 @@ namespace vulkan {
         // what stays here is the POLICY - the knob, the skinned caster list, the buffers each caster is skinned
         // into, and the refit bookkeeping - plus the request list it hands over, kept as a member so a frame
         // does not allocate while recording.
-        pass::compute_skin_job compute_skin;
+        pass::compute_skin_job& compute_skin = this->passes.keep<pass::compute_skin_job>();
         std::vector<pass::compute_skin_request> compute_skin_requests = {};
         // The skinned vertex buffers (one per skinned caster, owned here for as long as the structures are)
         // and the geometry indices that have to be refitted every frame.

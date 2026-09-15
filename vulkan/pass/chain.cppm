@@ -68,6 +68,18 @@ export namespace vulkan::pass {
          * over; `add` still takes a pass it does NOT own, for a test or for a pass that lives elsewhere.
          */
         std::vector<std::unique_ptr<frame_pass>> owned_ = {};
+        /**
+         * THE NON-PASS OBJECTS THE CHAIN KEEPS ALIVE, and the reason it can keep them: a chain owns the passes, so
+         * it is also the honest place for the GPU-owning objects that are NOT passes - this renderer's two jobs
+         * (the one-shot MASK bake and the compute-skinning job), which are built from the same create-time context
+         * and own their pipelines and sets, but do not implement `frame_pass` (one runs once inside the
+         * structure-build command buffer, the other per frame from a caster list).
+         *
+         * Type-erased because the chain has no business knowing their types: the caller that creates one keeps the
+         * typed reference, which is exactly the split `emplace` uses for a pass. A `shared_ptr<void>` with the
+         * default deleter is the smallest thing that destroys the RIGHT destructor for the object it holds.
+         */
+        std::vector<std::shared_ptr<void>> kept_alive_ = {};
         /// whether the runner writes a mark pair around the chain (false for every chain in this renderer: the
         /// frame loop owns the marks and their positions are the timing report's contract)
         bool marks_ = false;
@@ -99,6 +111,20 @@ export namespace vulkan::pass {
             PassT& reference = *pass;
             this->owned_.push_back(std::move(pass));
             this->passes_.push_back(&reference);
+            return reference;
+        }
+
+        /**
+         * @brief keep a NON-PASS GPU-owning object alive in the chain, and return the reference the caller keeps
+         *
+         * The same split as `emplace`, for the objects that are not passes (see `kept_alive_`): the chain owns and
+         * destroys them, the creator holds a typed view. It does NOT add anything to the recorded stages.
+         */
+        template <typename T, typename... Args>
+        T& keep(Args&&... args) {
+            std::shared_ptr<T> object = std::make_shared<T>(std::forward<Args>(args)...);
+            T& reference = *object;
+            this->kept_alive_.push_back(std::move(object));
             return reference;
         }
 
