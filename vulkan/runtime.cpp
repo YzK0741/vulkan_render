@@ -278,8 +278,9 @@ namespace vulkan {
             this->deferred_pipeline_layout = VK_NULL_HANDLE;
         }
         // ... and the GI tracer is NOT here any more: its pipeline layout and its pipeline are the PASS's (see
-        // vulkan.pass.ssgi_trace::release_owned), which is what the create/record split is for. The temporal and
-        // spatial denoisers still keep theirs here because they have not been extracted yet.
+        // vulkan.pass.ssgi_trace::release_owned), which is what the create/record split is for. The SPATIAL
+        // FILTER's left the same way (vulkan.pass.ssgi_spatial), so the only denoiser handle still kept here is
+        // the temporal resolve's set layout and pipeline layout - the pass that owns those is the next step.
         if (this->ssgi_temporal_set_layout != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->ssgi_temporal_set_layout, nullptr);
             this->ssgi_temporal_set_layout = VK_NULL_HANDLE;
@@ -306,13 +307,10 @@ namespace vulkan {
             vkDestroyPipelineLayout(this->vulkan_core.device, this->compute_skin_pipeline_layout, nullptr);
             this->compute_skin_pipeline_layout = VK_NULL_HANDLE;
         }
-        if (this->ssgi_spatial_pipeline_layout != VK_NULL_HANDLE) {
-            // it owns no set layout (it binds the shared scene and G-buffer sets), so only the layout
-            vkDestroyPipelineLayout(this->vulkan_core.device, this->ssgi_spatial_pipeline_layout, nullptr);
-            this->ssgi_spatial_pipeline_layout = VK_NULL_HANDLE;
-        }
         // The glossy lobe's layout and pipeline are NOT destroyed here any more either: they are the pass's
         // (vulkan.pass.ssgi_spec::release_owned), the same way the probe cache's and the TAA resolve's left.
+        // ... and the SPATIAL FILTER's left the same way with it (vulkan.pass.ssgi_spatial::release_owned), so
+        // the only SSGI layout this destructor still names is the temporal resolve's - whose pass is next.
         // The probe cache's pipeline and its layout are NOT destroyed here any more: they are the pass's
         // (vulkan.pass.gi_probe builds and destroys them), which is the whole point of the extraction - a
         // handle only that pass names is that pass's to release. The TAA resolve's set layout, pipeline
@@ -2758,7 +2756,7 @@ namespace vulkan {
         // weight at 0 - the alternative is a full-resolution frame of whatever the last image happens
         // to contain.
         return this->ssgi_on && this->ssgi_trace.pipeline_ready() && this->ssgi_temporal_pipeline.has_value() &&
-               this->ssgi_spatial_pipeline.has_value() && this->deferred_lit_active() && !this->unlit_active;
+               this->ssgi_spatial.pipeline_ready() && this->deferred_lit_active() && !this->unlit_active;
     }
 
     void runtime::set_ssgi(bool const enabled, float const intensity, float const radius, uint32_t const rays, uint32_t const steps) noexcept {
@@ -2772,7 +2770,7 @@ namespace vulkan {
             this->warn_missing_feature("ssgi", "screen-space GI has no effect: its compute pipeline was not created (see the startup log)");
         } else if (enabled && !this->ssgi_temporal_pipeline.has_value()) {
             this->warn_missing_feature("ssgi", "screen-space GI has no effect: its temporal resolve was not created (see the startup log)");
-        } else if (enabled && !this->ssgi_spatial_pipeline.has_value()) {
+        } else if (enabled && !this->ssgi_spatial.pipeline_ready()) {
             this->warn_missing_feature("ssgi", "screen-space GI has no effect: its spatial filter was not created (see the startup log)");
         }
         if (enabled && !was_on) {
@@ -3245,21 +3243,6 @@ namespace vulkan {
         // gi_history_valid is NOT touched here: record_ssgi_denoise_pass owns it, because it has to be set
         // once for both signals (see the note there).
         return true;
-    }
-
-    std::expected<void, std::string> runtime::make_ssgi_spatial_pipeline(std::span<unsigned char const> const compute_shader_code) {
-        using fail = std::unexpected<std::string>;
-        if (!this->deferred_pipeline.has_value()) {
-            return fail(std::string("ssgi spatial: create the deferred lighting pipeline first (it owns the G-buffer set layout)"));
-        }
-        auto built = pipelines::build_ssgi_spatial(this->vulkan_core.device, this->vulkan_core.scene_descriptor_set_layout, this->gbuffer_set_layout,
-                                                   static_cast<uint32_t>(sizeof(pass::ssgi_spatial_pass::push_constants)), compute_shader_code);
-        if (!built) {
-            return fail(built.error());
-        }
-        this->ssgi_spatial_pipeline_layout = built->pipeline_layout;
-        this->ssgi_spatial_pipeline = std::move(built->trace);
-        return {};
     }
 
     bool runtime::ssgi_traced_active() const noexcept {
@@ -4057,7 +4040,7 @@ namespace vulkan {
         core const& vk = this->vulkan_core;
         std::size_t const index = this->current_image_index;
         if (index >= vk.gi_spatial_images.size() || vk.gi_resolve_images.size() != vk.gi_spatial_images.size() || vk.gi_spatial_images[index] == VK_NULL_HANDLE ||
-            !this->ssgi_spatial_pipeline.has_value() || this->ssgi_spatial_pipeline_layout == VK_NULL_HANDLE) {
+            !this->ssgi_spatial.pipeline_ready() || this->ssgi_spatial.pipeline_layout() == VK_NULL_HANDLE) {
             return false;
         }
         // The G-buffer set carries every binding this pass uses (the normal, the depth, the accumulation it reads
@@ -4075,9 +4058,9 @@ namespace vulkan {
         // The one image it transitions: its own storage output.
         out.barrier_storage[0] = {.view = vk.gi_spatial_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_spatial_images[index]};
         out.barrier_images = std::span<pass::resolved_binding const>(out.barrier_storage.data(), render_resource::ssgi_spatial_barriers.size());
-        out.pipeline_storage[0] = this->ssgi_spatial_pipeline->get_pipeline();
+        out.pipeline_storage[0] = this->ssgi_spatial.pipeline();
         out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
-        out.pipeline_layout = this->ssgi_spatial_pipeline_layout;
+        out.pipeline_layout = this->ssgi_spatial.pipeline_layout();
         VkExtent2D const gi = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->ssgi_spatial));
         pass::ssgi_spatial_pass::push_constants push = {};
         push.depth_scale = this->current_ubo.proj[2][2];

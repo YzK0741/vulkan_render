@@ -553,9 +553,9 @@ namespace vulkan {
         float gi_spatial_depth_sigma = 0.02f;
         float gi_spatial_normal_power = 16.0f;
         // The GI spatial filter: a joint-bilateral pass over the temporal resolve's output, which is
-        // what the composite samples. Same two set layouts as the tracer, so no set of its own.
-        std::optional<vk_pipeline> ssgi_spatial_pipeline = std::nullopt;
-        VkPipelineLayout ssgi_spatial_pipeline_layout = VK_NULL_HANDLE;
+        // what the composite samples. Same two set layouts as the tracer, so no set of its own - and since
+        // the pass owns its pipeline layout and its pipeline (vulkan.pass.ssgi_spatial), there is no handle
+        // for it here at all.
         // The glossy lobe is NOT here any more: its pipeline layout, its pipeline and its per-image first-use
         // state are the PASS's (see vulkan.pass.ssgi_spec). The spatial filter's push block left the same way:
         // its SHAPE is the pass's now (pass::ssgi_spatial_pass::push_constants), and the renderer only fills the
@@ -2443,15 +2443,6 @@ namespace vulkan {
          *       false and the composite's weight is 0)
          */
         std::expected<void, std::string> make_ssgi_temporal_pipeline(std::span<unsigned char const> compute_shader_code);
-
-        /**
-         * @brief create the GI spatial filter pipeline from shaders/ssgi_spatial.comp
-         * @param compute_shader_code raw SPIR-V of the filter
-         * @return success, or an error message on failure
-         * @note required for the same reason as the temporal resolve, and the last pass of the GI
-         *       chain: what the composite samples is this filter's output
-         */
-        std::expected<void, std::string> make_ssgi_spatial_pipeline(std::span<unsigned char const> compute_shader_code);
 
         /**
          * @ingroup vulkan_runtime

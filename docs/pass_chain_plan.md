@@ -578,7 +578,37 @@ Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen
 changed and 0 flaky** - the gate's verdict here is the *proof of the invisibility claim* (the shaders' clips made
 the extra work unobservable), not evidence that the change is inert.
 
-## WHAT THE INVENTORY ALREADY FOUND (RE-AUDITED AGAINST THE CURRENT TREE)
+## THE SPATIAL FILTER BUILDS ITS OWN PIPELINE, AND ONE `make_*` LEAVES THE RUNTIME
+
+The extraction of the chain's last stage (`fa8c1c0`) had left it a pass that records but owns nothing: the
+runtime built its pipeline (`runtime::make_ssgi_spatial_pipeline`, from the shared scene and G-buffer layouts) and
+handed it over through `resolved_io::pipelines`. That is a legal shape - the framework's contract says a pass may
+receive pipelines - but it is the WRONG shape for a handle only this pass ever names, and the tracer and the
+glossy lobe had already shown the right one: `create` builds it from `pass_context::shader` and
+`pass_context::shared_set_layout`, keeps it, and releases it in its own destructor.
+
+So `ssgi_spatial_pass` now owns its pipeline layout and its compute pipeline, and the four places that used to
+reach for the runtime's members changed with it:
+
+* `runtime::make_ssgi_spatial_pipeline` is DELETED (declaration, definition and the two `ssgi_spatial_pipeline*`
+  members), as is the `vkDestroyPipelineLayout` in the runtime's destructor - the destructor no longer names a
+  single SSGI pipeline handle except the temporal resolve's, whose pass is the next step;
+* the app (`chores.cpp`) registers `ssgi_spatial.comp.spv` the way it registers every other pass's shader, and
+  the pass logs its own outcome: `SUCCESS: GI spatial filter created (joint-bilateral, depth + normal edge stops)`
+  now comes from `vulkan.pass.ssgi_spatial`, and the log in the gate's `render-check/debug.log` is where that is
+  visible rather than inferred;
+* `runtime::ssgi_active()` and the warning in `set_ssgi` ask the pass (`pipeline_ready()`) instead of a member;
+* `resolve_ssgi_spatial` reads `this->ssgi_spatial.pipeline()` / `.pipeline_layout()`.
+
+**WHAT MAKES THIS A MEASUREMENT RATHER THAN A REFACTOR**: the GI scenarios only match their references if the
+chain actually runs, and the chain's predicate now requires the SPATIAL FILTER's pipeline - so `default_gi`,
+`sponza_gi`, `metal_rough_glossy` and `glossy_motion` coming back byte-identical is evidence that the pass built a
+working pipeline at create time. A create that silently failed would have turned GI off and changed all four.
+
+Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0, gate 12 x 2 with **0
+changed and 0 flaky**.
+
+
 
 The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought `master`'s files over, so most
 of these were FIXED by that - and a stale finding is its own defect in the record, which is why each entry now
@@ -641,6 +671,10 @@ says what a re-audit of the current tree found.
   (`pass_extent`): the tracer and the lobe had been dispatching the full frame at a half-size image and were
   invisible only because both shaders clip against `imageSize`, and `resolve_pass`'s second copy of the mapping is
   gone. See the section above for the measurement.
+* **The spatial filter builds its own pipeline** (see the section above): `runtime::make_ssgi_spatial_pipeline`
+  and the runtime's two `ssgi_spatial_pipeline*` members are deleted, the app only registers the shader, and the
+  four GI scenarios matching is what proves the pass's own create produced a working pipeline. The temporal
+  resolve's set layout and pipeline layout are the last denoiser handles still held by the runtime.
 
 **NOT DONE, with the reason and the exact next step.**
 

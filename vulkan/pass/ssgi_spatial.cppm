@@ -1,4 +1,4 @@
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/ssgi_spatial.cppm
@@ -7,7 +7,12 @@
  *
  * WHAT IT OWNS: the frame's recording - the two barriers around its storage output, the two shared sets it
  * binds, the push block's values (composed by the renderer) and the dispatch - and the fact that the frame's GI
- * became usable, which is what the composite's weight is read from.
+ * became usable, which is what the composite's weight is read from. It also owns its PIPELINE LAYOUT and its
+ * COMPUTE PIPELINE, built at create time from its own declaration's push-block size and the two shared set
+ * layouts its owner hands over (`pass_context::shared_set_layout`) - the same shape the tracer and the glossy
+ * lobe settled on. The runtime used to build this pipeline (`runtime::make_ssgi_spatial_pipeline`) and hand it
+ * over through `resolved_io::pipelines`; that entry point is gone, because a handle only this pass names is this
+ * pass's to build and to release.
  *
  * WHAT IT DOES NOT OWN, in the same shape as the tracer and the glossy lobe: no descriptor set of its own. Every
  * binding it uses - the normal, the depth, the accumulation it reads and the image it writes - is in the shared
@@ -21,6 +26,7 @@ module;
 #include <cstdint>
 #include <cstring>
 #include <glm/glm.hpp>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vulkan/vulkan.h>
@@ -29,6 +35,7 @@ export module vulkan.pass.ssgi_spatial;
 
 import vulkan.pass;
 import vulkan.render_resource;
+import vulkan.core.handles; // vk_pipeline: the RAII owner of the compute pipeline this pass builds
 
 export namespace vulkan::pass {
 
@@ -59,7 +66,7 @@ export namespace vulkan::pass {
         };
 
         ssgi_spatial_pass() = default;
-        ~ssgi_spatial_pass() override = default;
+        ~ssgi_spatial_pass() override;
 
         [[nodiscard]] render_resource::pass_io const& io() const noexcept override;
         [[nodiscard]] vulkan::pass::behaviour const& behaviour() const noexcept override;
@@ -71,7 +78,14 @@ export namespace vulkan::pass {
         /// @brief whether the filtered image was written this frame, i.e. whether the GI may be composited
         [[nodiscard]] bool resolved() const noexcept;
 
+        /// @brief whether the pass built what it records with (the renderer gates the GI chain on this)
+        [[nodiscard]] bool pipeline_ready() const noexcept;
+        /// @brief the pipeline the runner binds before this pass records
+        [[nodiscard]] VkPipeline pipeline() const noexcept;
+        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept;
+
     private:
+        static constexpr std::string_view shader_name = "ssgi_spatial.comp.spv";
         static constexpr uint32_t group_size = 8; // `ssgi_spatial.comp`'s local_size_x/y
         static constexpr uint32_t barrier_output = 0;
         static_assert(barrier_output + 1 == render_resource::ssgi_spatial_barriers.size(),
@@ -88,8 +102,12 @@ export namespace vulkan::pass {
             .pipelines = pipeline_names,
             .resync_viewport = false,
         };
+        void release_owned() noexcept;
 
         bool resolved_ = false;
+        VkDevice device_ = VK_NULL_HANDLE;
+        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+        std::optional<vk_pipeline> pipeline_ = std::nullopt;
     };
 
     static_assert(sizeof(ssgi_spatial_pass::push_constants) == render_resource::ssgi_spatial_io.push->size,

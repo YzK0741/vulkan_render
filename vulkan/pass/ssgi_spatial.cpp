@@ -1,7 +1,10 @@
 // The spatial filter's implementation: the two barriers around its storage output, the two shared sets and the
-// dispatch. Moved out of `runtime::record_ssgi_spatial_pass` UNCHANGED in behaviour - the same barrier pair, the
-// same bind order (scene set, then G-buffer set), the same 48-byte push and the same half-resolution dispatch -
-// so the capture gate decides the move on the four GI scenarios.
+// dispatch, plus the one thing it owns outside a frame - its pipeline layout and its compute pipeline, built
+// from `ssgi_spatial.comp` and the two shared set layouts its owner hands over at create time (the runtime used
+// to build this pipeline and pass it in; that entry point is gone). The recording itself was moved out of
+// `runtime::record_ssgi_spatial_pass` UNCHANGED in behaviour - the same barrier pair, the same bind order (scene
+// set, then G-buffer set), the same 48-byte push and the same half-resolution dispatch - so the capture gate
+// decides the move on the four GI scenarios.
 
 module;
 
@@ -9,6 +12,7 @@ module;
 #include <cstdint>
 #include <cstring>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vulkan/vulkan.h>
 
@@ -16,8 +20,22 @@ module vulkan.pass.ssgi_spatial;
 
 import vulkan.render_resource;
 import vulkan.constant_init;
+import vulkan.pipelines; // build_ssgi_spatial: the compute pipeline this pass owns
+import utility;
 
 namespace vulkan::pass {
+
+    ssgi_spatial_pass::~ssgi_spatial_pass() {
+        this->release_owned();
+    }
+
+    void ssgi_spatial_pass::release_owned() noexcept {
+        this->pipeline_.reset();
+        if (this->pipeline_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(this->device_, this->pipeline_layout_, nullptr);
+            this->pipeline_layout_ = VK_NULL_HANDLE;
+        }
+    }
 
     render_resource::pass_io const& ssgi_spatial_pass::io() const noexcept {
         return render_resource::ssgi_spatial_io;
@@ -32,9 +50,52 @@ namespace vulkan::pass {
         return "ssgi";
     }
 
-    void ssgi_spatial_pass::create(pass_context const&) {
-        // Nothing to build: no set layout (every binding it uses is in the shared G-buffer set, ensured by that
-        // set's owner) and no pipeline (the renderer builds and hands it over). See the header.
+    bool ssgi_spatial_pass::pipeline_ready() const noexcept {
+        return this->pipeline_.has_value();
+    }
+
+    VkPipeline ssgi_spatial_pass::pipeline() const noexcept {
+        return this->pipeline_.has_value() ? this->pipeline_->get_pipeline() : VK_NULL_HANDLE;
+    }
+
+    VkPipelineLayout ssgi_spatial_pass::pipeline_layout() const noexcept {
+        return this->pipeline_layout_;
+    }
+
+    void ssgi_spatial_pass::create(pass_context const& context) {
+        if (context.device == VK_NULL_HANDLE) {
+            return;
+        }
+        if (this->device_ != VK_NULL_HANDLE && this->device_ != context.device) {
+            this->release_owned();
+        }
+        this->device_ = context.device;
+        if (this->pipeline_.has_value()) {
+            return; // already built for this device
+        }
+        std::span<unsigned char const> const spirv = context.shader != nullptr ? context.shader(context.owner, shader_name) : std::span<unsigned char const>{};
+        if (spirv.empty()) {
+            utility::log("GI spatial filter disabled (screen-space GI will stay off): the owner has no {}", shader_name);
+            return;
+        }
+        // The two set layouts come from the CONTEXT, not from this pass: it binds the shared scene set and the
+        // shared G-buffer set and owns no layout of its own (see pass_context::shared_set_layout) - which is
+        // also why `build_ssgi_spatial` creates a pipeline layout and no set layout.
+        VkDescriptorSetLayout const scene_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 0) : VK_NULL_HANDLE;
+        VkDescriptorSetLayout const gbuffer_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 1) : VK_NULL_HANDLE;
+        if (scene_layout == VK_NULL_HANDLE || gbuffer_layout == VK_NULL_HANDLE) {
+            utility::log("GI spatial filter disabled (screen-space GI will stay off): the owner has no layout for the shared sets this pass binds");
+            return;
+        }
+        auto built = pipelines::build_ssgi_spatial(context.device, scene_layout, gbuffer_layout, static_cast<uint32_t>(sizeof(push_constants)), spirv);
+        if (!built) {
+            utility::log("GI spatial filter disabled (screen-space GI will stay off): {}", built.error());
+            this->release_owned();
+            return;
+        }
+        this->pipeline_layout_ = built->pipeline_layout;
+        this->pipeline_ = std::move(built->trace);
+        utility::log("SUCCESS: GI spatial filter created (joint-bilateral, depth + normal edge stops)");
     }
 
     void ssgi_spatial_pass::on_swapchain_recreated(pass_host const&) {

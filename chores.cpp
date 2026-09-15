@@ -277,14 +277,12 @@ namespace chores {
             }
             // ... and the spatial half: the joint-bilateral filter that removes the grain the temporal
             // clamp leaves behind, which is the last GI pass (its output is what the composite reads).
+            // IT IS A PASS: the app loads the shader and registers it, and the pass builds its own pipeline
+            // layout and compute pipeline from it (see vulkan.pass.ssgi_spatial) - create_passes() below runs
+            // that step, and the pass logs its own outcome.
             std::vector<unsigned char> spatial_code;
             load_shader(shaders_dir, "ssgi_spatial.comp.spv", spatial_code);
-            auto const spatial_result = runtime.make_ssgi_spatial_pipeline(spatial_code);
-            if (!spatial_result) {
-                utility::log("GI spatial filter disabled (screen-space GI will stay off): {}", spatial_result.error());
-            } else {
-                utility::log("SUCCESS: GI spatial filter created (joint-bilateral, depth + normal edge stops)");
-            }
+            runtime.register_shader("ssgi_spatial.comp.spv", spatial_code);
             // The glossy lobe (shaders/ssgi_spec.comp). OPTIONAL, like the probe cache and for the same
             // reason: without it the lighting stage's split-sum specular ambient stands, which is what
             // every frame before this feature existed looked like - and runtime::ssgi_specular_active()
