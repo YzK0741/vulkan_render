@@ -1,8 +1,9 @@
 // The diffuse temporal resolve's implementation: the barriers, the dispatch, the push lanes that describe this
-// pass's own state, the copy that becomes the next frame's history, and the hand-backs. Moved out of
-// `runtime::record_ssgi_resolve_pass`'s mode-0 path UNCHANGED in behaviour - the same barrier order, the same
-// bind, the same 48-byte push, the same copy and the same two last barriers - so the capture gate decides the
-// move on the four GI scenarios.
+// pass's own state, the copy that becomes the next frame's history, and the hand-backs. The recording was moved
+// out of `runtime::record_ssgi_resolve_pass`'s mode-0 path UNCHANGED in behaviour - the same barrier order, the
+// same bind, the same 48-byte push, the same copy and the same two last barriers - so the capture gate decides
+// the move on the four GI scenarios. Its set layout, pipeline layout and pipeline are the pass's as well now:
+// built here from its own declaration and its own shader (the runtime's `make_ssgi_temporal_pipeline` is gone).
 
 module;
 
@@ -10,15 +11,33 @@ module;
 #include <cstdint>
 #include <cstring>
 #include <span>
+#include <string>
 #include <vulkan/vulkan.h>
 
 module vulkan.pass.ssgi_temporal;
 
 import vulkan.render_resource;
 import vulkan.constant_init;
+import vulkan.pipelines; // build_ssgi_temporal: the compute pipeline this pass owns
 import utility;
 
 namespace vulkan::pass {
+
+    ssgi_temporal_pass::~ssgi_temporal_pass() {
+        this->release_owned();
+    }
+
+    void ssgi_temporal_pass::release_owned() noexcept {
+        this->pipeline_.reset();
+        if (this->pipeline_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(this->device_, this->pipeline_layout_, nullptr);
+            this->pipeline_layout_ = VK_NULL_HANDLE;
+        }
+        if (this->set_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(this->device_, this->set_layout_, nullptr);
+            this->set_layout_ = VK_NULL_HANDLE;
+        }
+    }
 
     render_resource::pass_io const& ssgi_temporal_pass::io() const noexcept {
         return render_resource::ssgi_temporal_io;
@@ -34,9 +53,58 @@ namespace vulkan::pass {
         return "ssgi";
     }
 
-    void ssgi_temporal_pass::create(pass_context const&) {
-        // Nothing to build YET: the set layout, the pipeline and the per-image family are still the renderer's
-        // (see the header). What the pass reads arrives through `resolved_io`.
+    bool ssgi_temporal_pass::pipeline_ready() const noexcept {
+        return this->pipeline_.has_value() && this->set_layout_ != VK_NULL_HANDLE;
+    }
+
+    VkPipeline ssgi_temporal_pass::pipeline() const noexcept {
+        return this->pipeline_.has_value() ? this->pipeline_->get_pipeline() : VK_NULL_HANDLE;
+    }
+
+    VkPipelineLayout ssgi_temporal_pass::pipeline_layout() const noexcept {
+        return this->pipeline_layout_;
+    }
+
+    VkDescriptorSetLayout ssgi_temporal_pass::set_layout() const noexcept {
+        return this->set_layout_;
+    }
+
+    void ssgi_temporal_pass::create(pass_context const& context) {
+        if (context.device == VK_NULL_HANDLE) {
+            return;
+        }
+        if (this->device_ != VK_NULL_HANDLE && this->device_ != context.device) {
+            this->release_owned();
+        }
+        this->device_ = context.device;
+        if (this->pipeline_ready()) {
+            return; // already built for this device
+        }
+        std::span<unsigned char const> const spirv = context.shader != nullptr ? context.shader(context.owner, shader_name) : std::span<unsigned char const>{};
+        if (spirv.empty()) {
+            utility::log("GI temporal denoiser disabled (screen-space GI will stay off): the owner has no {}", shader_name);
+            return;
+        }
+        // THE SET LAYOUT IS GENERATED FROM THE DECLARATION - the whole reason `render_resource::ssgi_temporal_io`
+        // exists: the seven bindings and the family's pool count were two hand-written lists once, and the
+        // validation layer named the mismatch between them. `descriptor_counts_for` (the pool) and this call (the
+        // layout) now read the same declaration, and they are read on opposite sides of the ownership line: the
+        // layout here, the pool in the renderer's family, which takes this layout through `set_layout()`.
+        std::expected<VkDescriptorSetLayout, std::string> const layout = bindings::make_set_layout(context.device, render_resource::ssgi_temporal_io, render_resource::ssgi_temporal_io.own_set);
+        if (!layout.has_value()) {
+            utility::log("GI temporal denoiser disabled (screen-space GI will stay off): {}", layout.error());
+            return;
+        }
+        this->set_layout_ = *layout;
+        auto built = pipelines::build_ssgi_temporal(context.device, this->set_layout_, render_resource::ssgi_temporal_io.push->size, spirv);
+        if (!built) {
+            utility::log("GI temporal denoiser disabled (screen-space GI will stay off): {}", built.error());
+            this->release_owned();
+            return;
+        }
+        this->pipeline_layout_ = built->pipeline_layout;
+        this->pipeline_ = std::move(built->resolve);
+        utility::log("SUCCESS: GI temporal denoiser created (history accumulation)");
     }
 
     void ssgi_temporal_pass::on_swapchain_recreated(pass_host const&) {

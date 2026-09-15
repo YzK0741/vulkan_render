@@ -279,16 +279,10 @@ namespace vulkan {
         }
         // ... and the GI tracer is NOT here any more: its pipeline layout and its pipeline are the PASS's (see
         // vulkan.pass.ssgi_trace::release_owned), which is what the create/record split is for. The SPATIAL
-        // FILTER's left the same way (vulkan.pass.ssgi_spatial), so the only denoiser handle still kept here is
-        // the temporal resolve's set layout and pipeline layout - the pass that owns those is the next step.
-        if (this->ssgi_temporal_set_layout != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->ssgi_temporal_set_layout, nullptr);
-            this->ssgi_temporal_set_layout = VK_NULL_HANDLE;
-        }
-        if (this->ssgi_temporal_pipeline_layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->vulkan_core.device, this->ssgi_temporal_pipeline_layout, nullptr);
-            this->ssgi_temporal_pipeline_layout = VK_NULL_HANDLE;
-        }
+        // FILTER's left the same way (vulkan.pass.ssgi_spatial), and so did the TEMPORAL resolve's set layout,
+        // pipeline layout and pipeline (vulkan.pass.ssgi_temporal) - so no SSGI pipeline handle is torn down in
+        // this destructor at all now, and the only GI object still the renderer's is the denoiser's two
+        // descriptor FAMILIES (the diffuse and the reflection), which one declaration cannot describe.
         if (this->rt_shadow_pipeline_layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(this->vulkan_core.device, this->rt_shadow_pipeline_layout, nullptr);
             this->rt_shadow_pipeline_layout = VK_NULL_HANDLE;
@@ -2755,7 +2749,7 @@ namespace vulkan {
         // passes missing has nothing to composite. Treating that as "GI off" keeps the composite's
         // weight at 0 - the alternative is a full-resolution frame of whatever the last image happens
         // to contain.
-        return this->ssgi_on && this->ssgi_trace.pipeline_ready() && this->ssgi_temporal_pipeline.has_value() &&
+        return this->ssgi_on && this->ssgi_trace.pipeline_ready() && this->ssgi_temporal.pipeline_ready() &&
                this->ssgi_spatial.pipeline_ready() && this->deferred_lit_active() && !this->unlit_active;
     }
 
@@ -2768,7 +2762,7 @@ namespace vulkan {
         this->ssgi_steps = std::clamp(steps, 0u, 64u);
         if (enabled && !this->ssgi_trace.pipeline_ready()) {
             this->warn_missing_feature("ssgi", "screen-space GI has no effect: its compute pipeline was not created (see the startup log)");
-        } else if (enabled && !this->ssgi_temporal_pipeline.has_value()) {
+        } else if (enabled && !this->ssgi_temporal.pipeline_ready()) {
             this->warn_missing_feature("ssgi", "screen-space GI has no effect: its temporal resolve was not created (see the startup log)");
         } else if (enabled && !this->ssgi_spatial.pipeline_ready()) {
             this->warn_missing_feature("ssgi", "screen-space GI has no effect: its spatial filter was not created (see the startup log)");
@@ -2910,30 +2904,10 @@ namespace vulkan {
         }
     }
 
-    std::expected<void, std::string> runtime::make_ssgi_temporal_pipeline(std::span<unsigned char const> const compute_shader_code) {
-        using fail = std::unexpected<std::string>;
-        // THE LAYOUT IS GENERATED FROM THE DECLARATION, not written by hand - which is the whole reason
-        // `render_resource::ssgi_temporal_io` exists: the seven bindings and the descriptor family's pool count
-        // were two hand-written lists once, and the validation layer named the mismatch between them. The
-        // declaration is now the single source for both (the family's count comes from
-        // `descriptor_counts_for` in ensure_ssgi_denoise_descriptors, the layout from here).
-        std::expected<VkDescriptorSetLayout, std::string> const layout = bindings::make_set_layout(this->vulkan_core.device, render_resource::ssgi_temporal_io, render_resource::ssgi_temporal_io.own_set);
-        if (!layout.has_value()) {
-            return fail(layout.error());
-        }
-        this->ssgi_temporal_set_layout = *layout;
-        auto built = pipelines::build_ssgi_temporal(this->vulkan_core.device, this->ssgi_temporal_set_layout, render_resource::ssgi_temporal_io.push->size, compute_shader_code);
-        if (!built) {
-            return fail(built.error());
-        }
-        this->ssgi_temporal_pipeline_layout = built->pipeline_layout;
-        this->ssgi_temporal_pipeline = std::move(built->resolve);
-        return {};
-    }
-
     void runtime::ensure_ssgi_denoise_descriptors() {
         core& vk = this->vulkan_core;
-        if (this->ssgi_temporal_pipeline == std::nullopt || this->ssgi_temporal_set_layout == VK_NULL_HANDLE) {
+        VkDescriptorSetLayout const set_layout = this->ssgi_temporal.set_layout();
+        if (!this->ssgi_temporal.pipeline_ready() || set_layout == VK_NULL_HANDLE) {
             return;
         }
         std::size_t const image_count = vk.gi_images.size();
@@ -2991,10 +2965,10 @@ namespace vulkan {
             vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         };
         // THE COUNT COMES FROM THE DECLARATION, which is what makes it impossible for the pool and the layout to
-        // disagree: this number and the layout `make_ssgi_temporal_pipeline` generated are both derived from
+        // disagree: this number and the layout the PASS generated in its create are both derived from
         // `ssgi_temporal_io` now. (They were two hand-written lists once, and the layer named the mismatch.)
         uint32_t const descriptors_per_set = render_resource::descriptor_counts_for(render_resource::ssgi_temporal_io, render_resource::ssgi_temporal_io.own_set).total();
-        if (!this->ssgi_temporal_family.ensure(vk.device, this->ssgi_temporal_set_layout, static_cast<uint32_t>(image_count), 1u, descriptors_per_set, signature, write_sets)) {
+        if (!this->ssgi_temporal_family.ensure(vk.device, set_layout, static_cast<uint32_t>(image_count), 1u, descriptors_per_set, signature, write_sets)) {
             utility::log("runtime: GI denoiser descriptor sets unavailable - this frame has no GI (its weight stays 0)");
         }
         // ... and the reflection's own resolve: the SAME layout with a different list of images, which is what
@@ -3030,7 +3004,7 @@ namespace vulkan {
             }
             vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         };
-        if (!this->ssgi_spec_temporal_family.ensure(vk.device, this->ssgi_temporal_set_layout, static_cast<uint32_t>(image_count), 1u, descriptors_per_set, spec_signature, write_spec_sets)) {
+        if (!this->ssgi_spec_temporal_family.ensure(vk.device, set_layout, static_cast<uint32_t>(image_count), 1u, descriptors_per_set, spec_signature, write_spec_sets)) {
             utility::log("runtime: GI reflection descriptor sets unavailable - this frame's reflection is not resolved");
         }
     }
@@ -3057,11 +3031,13 @@ namespace vulkan {
             vk.gi_history_images[index] == VK_NULL_HANDLE) {
             return false; // no accumulation to write into: this frame has no GI (its weight stays 0)
         }
-        // The set and the pipeline are the renderer's for now (step 1a): both signals share one layout, and the
-        // set is the diffuse family's, ensured exactly where it was ensured before the move.
+        // The set the reflection's resolve binds, and the pipeline and layout BOTH resolves run through: the
+        // pipeline and its layout are the diffuse pass's (this step), and the two families - one per signal -
+        // are still the renderer's, because one declaration cannot describe two signals' images (see
+        // vulkan.pass.ssgi_temporal's header). The family is ensured exactly where it was ensured before.
         this->ensure_ssgi_denoise_descriptors();
         VkDescriptorSet const set = this->ssgi_temporal_family.set(static_cast<uint32_t>(index), 0);
-        if (set == VK_NULL_HANDLE || !this->ssgi_temporal_pipeline.has_value() || this->ssgi_temporal_pipeline_layout == VK_NULL_HANDLE) {
+        if (set == VK_NULL_HANDLE || !this->ssgi_temporal.pipeline_ready() || this->ssgi_temporal.pipeline_layout() == VK_NULL_HANDLE) {
             return false;
         }
         out.frame = this->pass_frame();
@@ -3073,9 +3049,9 @@ namespace vulkan {
         out.barrier_storage[0] = {.view = vk.gi_resolve_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_resolve_images[index]};
         out.barrier_storage[1] = {.view = vk.gi_history_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_history_images[index]};
         out.barrier_images = std::span<pass::resolved_binding const>(out.barrier_storage.data(), render_resource::ssgi_temporal_barriers.size());
-        out.pipeline_storage[0] = this->ssgi_temporal_pipeline->get_pipeline();
+        out.pipeline_storage[0] = this->ssgi_temporal.pipeline();
         out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
-        out.pipeline_layout = this->ssgi_temporal_pipeline_layout;
+        out.pipeline_layout = this->ssgi_temporal.pipeline_layout();
         // The push block: the two blend weights, the two projection terms and the two extents are the renderer's.
         // The two lanes that describe the PASS's own state - `history_valid` and `mode` - are written by the pass
         // itself (see its record), which is the split the block's own comment describes.
@@ -3185,8 +3161,8 @@ namespace vulkan {
             this->ensure_velocity_sampled(command_buffer, static_cast<uint32_t>(index));
         }
 
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_temporal_pipeline_layout, 0, 1, &set, 0, nullptr);
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_temporal_pipeline->get_pipeline());
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_temporal.pipeline_layout(), 0, 1, &set, 0, nullptr);
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_temporal.pipeline());
 
         ssgi_temporal_push_constants const push = {
             .history_valid = history_valid ? 1.0f : 0.0f,
@@ -3201,7 +3177,7 @@ namespace vulkan {
             .unused2 = 0.0f,
             .gi_size = glm::vec4(static_cast<float>(gi_width), static_cast<float>(gi_height),
                                  static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height))};
-        vkCmdPushConstants(command_buffer, this->ssgi_temporal_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+        vkCmdPushConstants(command_buffer, this->ssgi_temporal.pipeline_layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
 
         constexpr uint32_t group_size = 8; // shaders/ssgi_temporal.comp's local_size_x/y
         vkCmdDispatch(command_buffer, (gi_width + group_size - 1) / group_size, (gi_height + group_size - 1) / group_size, 1);

@@ -267,14 +267,12 @@ namespace chores {
             // The denoiser's temporal resolve, next to the tracer it denoises. Required, not optional:
             // the composite samples the FILTERED image, so GI with any pass of the chain missing has
             // nothing to show and runtime::ssgi_active() stays false.
+            // IT IS A PASS: the app registers the shader and the pass builds its own set layout (from its
+            // declaration), pipeline layout and compute pipeline from it (see vulkan.pass.ssgi_temporal) -
+            // create_passes() below runs that step, and the pass logs its own outcome.
             std::vector<unsigned char> temporal_code;
             load_shader(shaders_dir, "ssgi_temporal.comp.spv", temporal_code);
-            auto const temporal_result = runtime.make_ssgi_temporal_pipeline(temporal_code);
-            if (!temporal_result) {
-                utility::log("GI temporal denoiser disabled (screen-space GI will stay off): {}", temporal_result.error());
-            } else {
-                utility::log("SUCCESS: GI temporal denoiser created (history accumulation)");
-            }
+            runtime.register_shader("ssgi_temporal.comp.spv", temporal_code);
             // ... and the spatial half: the joint-bilateral filter that removes the grain the temporal
             // clamp leaves behind, which is the last GI pass (its output is what the composite reads).
             // IT IS A PASS: the app loads the shader and registers it, and the pass builds its own pipeline

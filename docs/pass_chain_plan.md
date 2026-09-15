@@ -608,7 +608,36 @@ working pipeline at create time. A create that silently failed would have turned
 Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0, gate 12 x 2 with **0
 changed and 0 flaky**.
 
+## THE TEMPORAL RESOLVE OWNS ITS LAYOUT AND ITS PIPELINE - AND THE FAMILY IS WHAT IS LEFT
 
+Step 1a made the diffuse temporal resolve a pass that RECORDS; its set layout, its pipeline layout, its pipeline
+and both descriptor families stayed the renderer's, which was the honest state of a step whose acceptance was "0
+changed". This step takes the three handles:
+
+* `ssgi_temporal_pass::create` builds the SET LAYOUT from `render_resource::ssgi_temporal_io` (the same
+  declaration that already generated the family's pool count) and the PIPELINE LAYOUT and PIPELINE from
+  `build_ssgi_temporal`, and releases all three in its own destructor;
+* `runtime::make_ssgi_temporal_pipeline` and the runtime's `ssgi_temporal_set_layout`,
+  `ssgi_temporal_pipeline_layout` and `ssgi_temporal_pipeline` members are DELETED, as are the two destroys they
+  needed; the app only registers `ssgi_temporal.comp.spv`, and the pass logs its own
+  `SUCCESS: GI temporal denoiser created (history accumulation)`;
+* `ensure_ssgi_denoise_descriptors`, `resolve_ssgi_temporal`, `record_ssgi_resolve_pass` (the reflection's mode-1
+  path) and `ssgi_active()` / `set_ssgi`'s warning all read the pass now.
+
+**THE ONE THING THAT DID NOT MOVE, and the reason is a framework gap rather than an oversight: the two descriptor
+FAMILIES.** One layout and one pipeline resolve TWO signals - the diffuse bounce (this pass) and the reflection
+(the renderer's mode-1 recording) - and each signal needs its own list of images in the same seven slots. The pass
+owns the layout; the renderer builds both families on it, taking it through the new
+`ssgi_temporal_pass::set_layout()` accessor. That accessor is the shape of the remaining gap: a declaration cannot
+say "these two lists are the same slots", so the second family cannot be declared, and `resolved_io::own_per_image`
+- added for exactly this - is what closing it needs.
+
+Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0, gate 12 x 2 with **0
+changed and 0 flaky**, and the gate's `render-check/debug.log` carries the pass's own create line. As with the
+spatial filter, the four GI scenarios matching is the evidence that the create really built a working pipeline: the
+chain's predicate now requires the TEMPORAL pass's, so a create that failed would have turned GI off in all four.
+
+## WHAT THE INVENTORY ALREADY FOUND (RE-AUDITED AGAINST THE CURRENT TREE)
 
 The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought `master`'s files over, so most
 of these were FIXED by that - and a stale finding is its own defect in the record, which is why each entry now
@@ -673,8 +702,11 @@ says what a re-audit of the current tree found.
   gone. See the section above for the measurement.
 * **The spatial filter builds its own pipeline** (see the section above): `runtime::make_ssgi_spatial_pipeline`
   and the runtime's two `ssgi_spatial_pipeline*` members are deleted, the app only registers the shader, and the
-  four GI scenarios matching is what proves the pass's own create produced a working pipeline. The temporal
-  resolve's set layout and pipeline layout are the last denoiser handles still held by the runtime.
+  four GI scenarios matching is what proves the pass's own create produced a working pipeline.
+* **The temporal resolve owns its set layout, pipeline layout and pipeline** (see the section above), so
+  `runtime::make_ssgi_temporal_pipeline` and its three members are gone too. **No SSGI pipeline handle is the
+  runtime's any more**; what remains of the denoiser in the renderer is the two descriptor FAMILIES (diffuse and
+  reflection), which share the pass's layout through `ssgi_temporal_pass::set_layout()`.
 
 **NOT DONE, with the reason and the exact next step.**
 

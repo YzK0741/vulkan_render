@@ -525,9 +525,10 @@ namespace vulkan {
         // descriptor family, so all that is left here is the pass member and the stage the runner is handed.
         vk_sampler taa_sampler = {};
         // ---- the GI denoiser's temporal resolve (see shaders/ssgi_temporal.comp) ----
-        std::optional<vk_pipeline> ssgi_temporal_pipeline = std::nullopt;
-        VkDescriptorSetLayout ssgi_temporal_set_layout = VK_NULL_HANDLE;
-        VkPipelineLayout ssgi_temporal_pipeline_layout = VK_NULL_HANDLE;
+        // The pipeline, its layout and the set layout its declaration generates are the PASS's now
+        // (vulkan.pass.ssgi_temporal). What stays here is the pair of descriptor FAMILIES built on that
+        // layout: one for the diffuse accumulation and one for the reflection, because two signals are
+        // resolved through one pipeline and a single declaration cannot describe both lists of images.
         bindings::image_set_family ssgi_temporal_family;
         // ... and the reflection's own resolve, which is the same pipeline with a set of its own: the same
         // layout, the lobe's images instead of the diffuse ones (see the two write lambdas in
@@ -2433,16 +2434,6 @@ namespace vulkan {
          *       the ambient was removed and nothing replaced it).
          */
         [[nodiscard]] bool ssgi_traced_active() const noexcept;
-
-        /**
-         * @brief create the GI denoiser's temporal resolve pipeline from shaders/ssgi_temporal.comp
-         * @param compute_shader_code raw SPIR-V of the resolve
-         * @return success, or an error message on failure
-         * @note required, not optional: the composite samples the image the resolve's successor
-         *       writes, so a build without this pass has no GI to show at all (ssgi_active() stays
-         *       false and the composite's weight is 0)
-         */
-        std::expected<void, std::string> make_ssgi_temporal_pipeline(std::span<unsigned char const> compute_shader_code);
 
         /**
          * @ingroup vulkan_runtime
