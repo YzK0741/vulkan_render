@@ -1202,7 +1202,7 @@ namespace vulkan {
         // generation it fingerprinted).
         // ... and the GI denoiser's, which binds five per-image views (trace, history, motion, depth,
         // resolve) and is therefore the one family here with the most stale pointers in it.
-        this->ssgi_temporal_family.retire_all();
+        this->ssgi_spec_temporal_family.retire_all();
         // AND THE PASSES ARE TOLD, by the runner rather than by this list. That is the hazard this layer was
         // built to remove: the retires above are a hand-kept list and it covered four of the six families -
         // the probe cache's and the reflection denoiser's survived only because `ensure` re-detects changed
@@ -2905,6 +2905,10 @@ namespace vulkan {
     }
 
     void runtime::ensure_ssgi_denoise_descriptors() {
+        // ONE FAMILY IS LEFT HERE: the REFLECTION's. The diffuse one is the pass's now
+        // (vulkan.pass.ssgi_temporal::record writes it from `resolved_io::own_per_image`), and this family shares
+        // that pass's set layout because two signals are resolved through one pipeline - which is exactly why a
+        // single declaration cannot describe both lists of images, and why this one is still the renderer's.
         core& vk = this->vulkan_core;
         VkDescriptorSetLayout const set_layout = this->ssgi_temporal.set_layout();
         if (!this->ssgi_temporal.pipeline_ready() || set_layout == VK_NULL_HANDLE) {
@@ -2918,69 +2922,19 @@ namespace vulkan {
             vk.gi_spec_history_image_views.size() != image_count || vk.gi_spec_resolve_image_views.size() != image_count) {
             return;
         }
-        // Six fingerprints, because six images feed one set - and the count has to match the LAYOUT,
-        // not only the images that change independently, because it is also what sizes this family's
-        // descriptor pool (see vulkan.bindings). This array held four, omitting the resolve image that
-        // binding 4 points at, so the pool was built for four descriptors per set while the allocation
-        // asked for five. The validation layer reported it - "Trying to allocate 15 of
-        // VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER descriptors from VkDescriptorPool ..., but this pool
-        // only has a total of 12 descriptors for this type" (3 images x 5 against 3 x 4) - and the
-        // message is right that a stricter driver answers VK_ERROR_OUT_OF_POOL_MEMORY, which this
-        // function's own failure path would turn into "this session has no GI" rather than a frame that
-        // is merely missing a descriptor.
-        std::array<VkImageView, 7> const signature = {vk.gi_image_views[0], vk.gi_history_image_views[0], vk.velocity_image_views[0],
-                                                      vk.gbuffer_depth_image_views[0], vk.gi_resolve_image_views[0], vk.gbuffer_image_views[1][0],
-                                                      vk.gbuffer_depth_image_views[0]};
-        auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            std::array<VkDescriptorImageInfo, 7> image_infos = {};
-            std::array<VkImageView, 7> const views = {
-                this->vulkan_core.gi_image_views[image_index],
-                this->vulkan_core.gi_history_image_views[image_index],
-                this->vulkan_core.velocity_image_views[image_index],
-                this->vulkan_core.gbuffer_depth_image_views[image_index],
-                this->vulkan_core.gi_resolve_image_views[image_index],
-                this->vulkan_core.gbuffer_image_views[1][image_index],
-                // Binding 6 is the REFLECTION's reprojection, which only mode 1 reads. The diffuse dispatch
-                // still has to name a valid view there (a shader that samples it in a branch leaves the
-                // access in the SPIR-V, so validation checks the descriptor whether or not the branch is
-                // taken), and binding the lobe's image would make the diffuse resolve require a layout that
-                // only the lobe maintains - which fails on exactly the frames the lobe is OFF. The depth
-                // target is always readable on a frame that resolves anything, and mode 0 ignores the value.
-                this->vulkan_core.gbuffer_depth_image_views[image_index]};
-            std::array<VkWriteDescriptorSet, 7> writes = {};
-            for (uint32_t b = 0; b < views.size(); ++b) {
-                // 4 is the STORAGE image the resolve writes: no sampler, and GENERAL rather than
-                // SHADER_READ (a compute stage writes it, it does not sample it).
-                bool const storage = b == 4u;
-                image_infos[b].sampler = storage ? VK_NULL_HANDLE : *this->gbuffer_sampler;
-                image_infos[b].imageView = views[b];
-                image_infos[b].imageLayout = storage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[b].dstSet = sets[0];
-                writes[b].dstBinding = b;
-                writes[b].descriptorCount = 1;
-                writes[b].descriptorType = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                writes[b].pImageInfo = &image_infos[b];
-            }
-            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-        };
         // THE COUNT COMES FROM THE DECLARATION, which is what makes it impossible for the pool and the layout to
         // disagree: this number and the layout the PASS generated in its create are both derived from
         // `ssgi_temporal_io` now. (They were two hand-written lists once, and the layer named the mismatch.)
         uint32_t const descriptors_per_set = render_resource::descriptor_counts_for(render_resource::ssgi_temporal_io, render_resource::ssgi_temporal_io.own_set).total();
-        if (!this->ssgi_temporal_family.ensure(vk.device, set_layout, static_cast<uint32_t>(image_count), 1u, descriptors_per_set, signature, write_sets)) {
-            utility::log("runtime: GI denoiser descriptor sets unavailable - this frame has no GI (its weight stays 0)");
-        }
-        // ... and the reflection's own resolve: the SAME layout with a different list of images, which is what
-        // makes it a second family. Bindings 2 and 3 (the surface's motion vectors and depth) are unused in
-        // mode 1 - its reprojection carries its own depth - but every binding of the layout has to name a real
-        // view, so they are filled with the same ones the diffuse set uses. Binding 6 is the lobe's
-        // reprojection, which is what mode 1 actually reprojects by.
+        // ... and the REFLECTION's resolve, which is the SAME layout with a different list of images - which is
+        // what makes it a second family and what a single declaration cannot express. Bindings 2 and 3 (the
+        // surface's motion vectors and depth) are unused in mode 1 - its reprojection carries its own depth - but
+        // every binding of the layout has to name a real view, so they carry the same ones the diffuse set uses;
+        // binding 6 is the lobe's reprojection, which is what mode 1 actually reprojects by.
         std::array<VkImageView, 7> const spec_signature = {vk.gi_spec_image_views[0], vk.gi_spec_history_image_views[0], vk.velocity_image_views[0],
                                                            vk.gbuffer_depth_image_views[0], vk.gi_spec_resolve_image_views[0], vk.gbuffer_image_views[1][0],
                                                            vk.gi_spec_reproject_image_views[0]};
         auto const write_spec_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            std::array<VkDescriptorImageInfo, 7> image_infos = {};
             std::array<VkImageView, 7> const views = {
                 this->vulkan_core.gi_spec_image_views[image_index],
                 this->vulkan_core.gi_spec_history_image_views[image_index],
@@ -2989,20 +2943,14 @@ namespace vulkan {
                 this->vulkan_core.gi_spec_resolve_image_views[image_index],
                 this->vulkan_core.gbuffer_image_views[1][image_index],
                 this->vulkan_core.gi_spec_reproject_image_views[image_index]};
-            std::array<VkWriteDescriptorSet, 7> writes = {};
-            for (uint32_t b = 0; b < views.size(); ++b) {
-                bool const storage = b == 4u;
-                image_infos[b].sampler = storage ? VK_NULL_HANDLE : *this->gbuffer_sampler;
-                image_infos[b].imageView = views[b];
-                image_infos[b].imageLayout = storage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[b].dstSet = sets[0];
-                writes[b].dstBinding = b;
-                writes[b].descriptorCount = 1;
-                writes[b].descriptorType = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                writes[b].pImageInfo = &image_infos[b];
+            // The write itself is GENERATED from the pass's declaration, exactly as the pass's own family does
+            // it: the binding numbers, the descriptor types, the layouts and the sampler are the declaration's,
+            // so this family cannot drift from the layout it shares with the pass.
+            auto const written = bindings::write_set(this->vulkan_core.device, render_resource::ssgi_temporal_io, render_resource::ssgi_temporal_io.own_set, sets[0], views, {},
+                                                     this->shared_samplers());
+            if (!written) {
+                utility::log("runtime: GI reflection descriptor set: {}", written.error());
             }
-            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         };
         if (!this->ssgi_spec_temporal_family.ensure(vk.device, set_layout, static_cast<uint32_t>(image_count), 1u, descriptors_per_set, spec_signature, write_spec_sets)) {
             utility::log("runtime: GI reflection descriptor sets unavailable - this frame's reflection is not resolved");
@@ -3031,18 +2979,26 @@ namespace vulkan {
             vk.gi_history_images[index] == VK_NULL_HANDLE) {
             return false; // no accumulation to write into: this frame has no GI (its weight stays 0)
         }
-        // The set the reflection's resolve binds, and the pipeline and layout BOTH resolves run through: the
-        // pipeline and its layout are the diffuse pass's (this step), and the two families - one per signal -
-        // are still the renderer's, because one declaration cannot describe two signals' images (see
-        // vulkan.pass.ssgi_temporal's header). The family is ensured exactly where it was ensured before.
-        this->ensure_ssgi_denoise_descriptors();
-        VkDescriptorSet const set = this->ssgi_temporal_family.set(static_cast<uint32_t>(index), 0);
-        if (set == VK_NULL_HANDLE || !this->ssgi_temporal.pipeline_ready() || this->ssgi_temporal.pipeline_layout() == VK_NULL_HANDLE) {
+        // The set is the PASS's now (it writes its own family from the per-image views below), so what is left
+        // here is the pipeline check: a GI frame whose resolve has no pipeline must not record.
+        if (!this->ssgi_temporal.pipeline_ready() || this->ssgi_temporal.pipeline_layout() == VK_NULL_HANDLE ||
+            this->ssgi_temporal.set_layout() == VK_NULL_HANDLE) {
             return false;
         }
         out.frame = this->pass_frame();
         out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
-        out.own_set = set;
+        // THE PER-IMAGE VIEWS, in the order the pass's declaration names its bindings: this is what
+        // `resolved_io::own_per_image` is for, and it is the one thing the pass cannot reach for itself. The
+        // first entry doubles as the family's generation fingerprint (stable for as long as the target
+        // generation lives, unlike the current frame's handles).
+        out.own_per_image[0] = vk.gi_image_views;
+        out.own_per_image[1] = vk.gi_history_image_views;
+        out.own_per_image[2] = vk.velocity_image_views;
+        out.own_per_image[3] = vk.gbuffer_depth_image_views;
+        out.own_per_image[4] = vk.gi_resolve_image_views;
+        out.own_per_image[5] = vk.gbuffer_image_views[1];
+        out.own_per_image[6] = vk.gi_spec_reproject_image_views;
+        out.own_set = VK_NULL_HANDLE; // the pass owns its family, so it owns the set that goes in it
         // The two images the pass transitions: the accumulation it writes and the history it reads, which are
         // also two of its own bindings - declared separately because a barrier takes an image and a descriptor a
         // view.
@@ -3076,11 +3032,8 @@ namespace vulkan {
         if (index >= vk.gi_resolve_images.size() || vk.gi_history_images.size() != vk.gi_resolve_images.size()) {
             return false;
         }
+        // The REFLECTION's family (the diffuse one is the pass's now, and the pass reports whether it recorded).
         this->ensure_ssgi_denoise_descriptors();
-        VkDescriptorSet const set = this->ssgi_temporal_family.set(static_cast<uint32_t>(index), 0);
-        if (set == VK_NULL_HANDLE) {
-            return false; // no set: the composite's GI weight stays 0 for this frame (see gi_resolved)
-        }
         // The history-validity flag is read ONCE and set ONCE, around both dispatches: the two accumulations
         // share it, and a flag read after the first dispatch would tell the reflection its history exists on
         // the very frame that created it - which is the one frame it must not blend with.

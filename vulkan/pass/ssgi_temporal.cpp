@@ -77,6 +77,7 @@ namespace vulkan::pass {
             this->release_owned();
         }
         this->device_ = context.device;
+        this->samplers_ = context.samplers;
         if (this->pipeline_ready()) {
             return; // already built for this device
         }
@@ -108,7 +109,12 @@ namespace vulkan::pass {
     }
 
     void ssgi_temporal_pass::on_swapchain_recreated(pass_host const&) {
-        this->resolved_ = false; // the renderer retires the family and clears the history flags it owns
+        this->resolved_ = false; // the renderer clears the history flags it owns
+        // ... and the family is OURS to retire: its sets name that generation's images, so they are stale the
+        // moment the swapchain is rebuilt, and the runner calls this for every pass in a stage - which is what
+        // makes the reset unforgettable rather than something the host has to remember about someone else's
+        // object.
+        this->family_.retire_all();
     }
 
     bool ssgi_temporal_pass::resolved() const noexcept {
@@ -121,17 +127,73 @@ namespace vulkan::pass {
 
     void ssgi_temporal_pass::record(resolved_io const& io) {
         this->resolved_ = false;
-        // NOT `io.own`: this pass does not read its own binding handles (its set is ensured by the renderer and
-        // handed over whole), so requiring them would be a guard on something it never uses - and it was: the
+        // NOT `io.own`: this pass does not read the CURRENT frame's binding handles (it writes its sets from the
+        // PER-IMAGE views below), so requiring them would be a guard on something it never uses - and it was: the
         // first version of this guard made the pass silently record nothing, which showed up one step later as
         // the reflection's dispatch sampling a motion-vector image still in its attachment layout.
-        if (io.barrier_images.size() < render_resource::ssgi_temporal_barriers.size() ||
-            io.own_set == VK_NULL_HANDLE || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE ||
+        if (io.barrier_images.size() < render_resource::ssgi_temporal_barriers.size() || io.frame.image_count == 0 ||
+            io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE ||
             io.push.size() < sizeof(push_constants) || io.extent.width == 0 || io.extent.height == 0) {
             return; // the runner resolves all of this or skips the pass (see runtime::resolve_ssgi_temporal)
         }
         VkImage const resolve_image = io.barrier_images[barrier_resolve].image;
         VkImage const history_image = io.barrier_images[barrier_history].image;
+
+        // ---- the set this dispatch binds: OURS, and written from the per-image views ----
+        // Every set the family holds belongs to one swapchain image and must name THAT image's seven views; that
+        // is the whole reason `resolved_io::own_per_image` exists, and the two failed extractions this pass's
+        // history records are what it cost to learn. NOTE THE INDEX ORDER: `own_per_image[binding][image]`, one
+        // span per BINDING whose length is the generation's image count. `bindings::write_set` decides everything
+        // else - the binding numbers, the types, the layouts and the sampler each binding's hint chose - from the
+        // pass's own declaration, so what is written cannot drift from what `set_layout_` was generated from.
+        constexpr std::size_t own_binding_count = render_resource::ssgi_temporal_io.bindings.size();
+        auto const views_for = [&io](uint32_t const image, std::array<VkImageView, own_binding_count>& out) {
+            for (std::size_t b = 0; b < out.size(); ++b) {
+                if (io.own_per_image[b].size() <= image) {
+                    return false;
+                }
+                out[b] = io.own_per_image[b][image];
+            }
+            return true;
+        };
+        auto const write_sets = [&views_for, this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
+            std::array<VkImageView, own_binding_count> views = {};
+            if (!views_for(image_index, views)) {
+                utility::log("ssgi_temporal: no per-image views for image {} - this frame has no GI", image_index);
+                return;
+            }
+            // ONE SUBSTITUTION, and it is the same one the renderer made before this family was the pass's:
+            // binding 6 is the REFLECTION's reprojection, which only mode 1 reads and only the lobe's frame
+            // maintains. The diffuse dispatch still has to name a VALID view there (a shader that samples it in a
+            // branch leaves the access in the SPIR-V, so validation checks the descriptor whether or not the
+            // branch is taken), and naming the lobe's image would make this resolve require a layout that only
+            // the lobe establishes - which is UNDEFINED on exactly the frames the lobe is OFF. The depth target is
+            // readable on every frame that resolves anything, and mode 0 ignores the value. So the declaration
+            // keeps naming the resource the REFLECTION's set binds, and this pass, which alone knows it is mode 0,
+            // puts the depth there.
+            views[binding_spec_reproject] = views[binding_gbuffer_depth];
+            auto const written = bindings::write_set(this->device_, render_resource::ssgi_temporal_io, render_resource::ssgi_temporal_io.own_set, sets[0], views, {}, this->samplers_);
+            if (!written) {
+                utility::log("ssgi_temporal: {}", written.error());
+            }
+        };
+        // The fingerprint is image 0's views, which are stable for as long as the target generation lives
+        // (unlike the frame's own handles, which change image every frame): a recreation rebinds every set, and
+        // `on_swapchain_recreated` is what makes that rewrite safe rather than a set a pending frame still names.
+        std::array<VkImageView, own_binding_count> signature = {};
+        if (!views_for(0u, signature)) {
+            return; // the host filled nothing: not a frame this pass can resolve
+        }
+        uint32_t const descriptors_per_set = render_resource::descriptor_counts_for(render_resource::ssgi_temporal_io, render_resource::ssgi_temporal_io.own_set).total();
+        if (!this->family_.ensure(this->device_, this->set_layout_, io.frame.image_count, 1u, descriptors_per_set, signature, write_sets)) {
+            utility::log("ssgi_temporal: descriptor sets unavailable - this frame has no GI (its weight stays 0)");
+            return;
+        }
+        VkDescriptorSet const set = this->family_.set(io.frame.image_index, 0);
+        if (set == VK_NULL_HANDLE) {
+            utility::log("ssgi_temporal: no descriptor set for image {} - this frame has no GI", io.frame.image_index);
+            return;
+        }
 
         // Layouts, all before the dispatch (a compute pass may barrier anywhere, but keeping them together is
         // what makes the set of states one image passes through readable):
@@ -166,7 +228,6 @@ namespace vulkan::pass {
             this->frame_.ensure_inputs(this->frame_.owner, io.cmd, io.frame.image_index);
         }
 
-        VkDescriptorSet const set = io.own_set;
         vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, io.pipeline_layout, 0, 1, &set, 0, nullptr);
         // The two lanes that describe THIS pass's state are written here rather than by the renderer: whether the
         // history may be trusted, and which signal this dispatch resolves (always the diffuse bounce).

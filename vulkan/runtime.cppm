@@ -525,15 +525,14 @@ namespace vulkan {
         // descriptor family, so all that is left here is the pass member and the stage the runner is handed.
         vk_sampler taa_sampler = {};
         // ---- the GI denoiser's temporal resolve (see shaders/ssgi_temporal.comp) ----
-        // The pipeline, its layout and the set layout its declaration generates are the PASS's now
-        // (vulkan.pass.ssgi_temporal). What stays here is the pair of descriptor FAMILIES built on that
-        // layout: one for the diffuse accumulation and one for the reflection, because two signals are
-        // resolved through one pipeline and a single declaration cannot describe both lists of images.
-        bindings::image_set_family ssgi_temporal_family;
-        // ... and the reflection's own resolve, which is the same pipeline with a set of its own: the same
-        // layout, the lobe's images instead of the diffuse ones (see the two write lambdas in
-        // ensure_ssgi_denoise_descriptors). A second family rather than two sets in one, because the
-        // fingerprint that decides when to rewrite them is a different list of images.
+        // The pipeline, its layout, the set layout its declaration generates AND the diffuse family that
+        // layout's per-image sets need are the PASS's now (vulkan.pass.ssgi_temporal). What stays here is the
+        // REFLECTION's family: two signals are resolved through one pipeline and a single declaration cannot
+        // describe both lists of images, so this one is built on the pass's layout (through `set_layout()`).
+        // ... and this is the reflection's own resolve, the same pipeline with a set of its own: the lobe's
+        // images instead of the diffuse ones (see the write lambda in ensure_ssgi_denoise_descriptors). A
+        // second family rather than two sets in one, because the fingerprint that decides when to rewrite
+        // them is a different list of images.
         bindings::image_set_family ssgi_spec_temporal_family;
         // Whether THIS frame's reflection was resolved, i.e. whether the spatial filter may sum the
         // reflection's accumulation in. It is false whenever the lobe did not run, and the filter scales the

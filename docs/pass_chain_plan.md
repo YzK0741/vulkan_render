@@ -637,6 +637,47 @@ changed and 0 flaky**, and the gate's `render-check/debug.log` carries the pass'
 spatial filter, the four GI scenarios matching is the evidence that the create really built a working pipeline: the
 chain's predicate now requires the TEMPORAL pass's, so a create that failed would have turned GI off in all four.
 
+## THE TEMPORAL RESOLVE'S DIFFUSE FAMILY IS THE PASS'S - AND WHAT `own_per_image` ACTUALLY INDEXES
+
+This is step 1b, the one `resolved_io::own_per_image` was added for: the pass now writes the per-image sets its
+declaration describes, so the renderer no longer touches them. Three things came out of it, and the first is a
+correction to the record rather than to the code.
+
+**1. THE CHANNEL IS INDEXED BY BINDING FIRST: `own_per_image[binding][image]`, one span PER BINDING whose length
+is the generation's image count.** The channel's own doc comment says so ("`own_per_image[k][image]` is the view
+binding `k` has for swapchain image `image`"), and it is easy to read the other way round - the first version of
+this pass's write callback did, and it wrote nothing: the family's callback is handed an image index and the
+callback then asked for `own_per_image[image_index]`, which is binding `image_index`'s list of ALL images. The sets
+were created and never updated, so validation said exactly that - "the descriptor ... is being used in dispatch but
+has never been updated via vkUpdateDescriptorSets()" - on the first gate run. The fix is a `views_for` helper that
+gathers the seven `own_per_image[b][image]` handles, and the same helper's image-0 list is the family's generation
+fingerprint.
+
+**2. THE WRITES ARE GENERATED NOW, on both sides of the ownership line.** The pass writes its own sets with
+`bindings::write_set(device, ssgi_temporal_io, own_set, set, views, {}, samplers)` - the binding numbers, the
+descriptor types, the image layouts and the sampler each hint chose all come from the declaration that also
+generated the layout - and the reflection's family in the renderer was converted to the same call in the same step,
+which deleted the second hand-written `VkWriteDescriptorSet` loop (~40 lines). The pass caches the six samplers at
+create time (`pass_context::samplers`), which is what lets it write a descriptor at all.
+
+**3. THE DECLARATION CANNOT DESCRIBE BOTH SIGNALS, and this step paid for that again - measured, not predicted.**
+Binding 6 is `gi_spec_reproject`: the REFLECTION's reprojection, which only mode 1 reads and only the lobe's frame
+maintains. The hand-written diffuse writes had quietly put the G-BUFFER DEPTH there instead, and the comment said
+why (a shader that samples a binding in a branch still leaves the access in the SPIR-V, so validation checks the
+descriptor whether the branch is taken - and the lobe's image is UNDEFINED on exactly the frames the lobe is off).
+The first gate run after this move, with the declaration's own resource at binding 6, reproduced that as
+"expects ... SHADER_READ_ONLY_OPTIMAL--instead, current layout is VK_IMAGE_LAYOUT_UNDEFINED" plus 2 changed
+scenarios. So the pass substitutes `views[6] = views[3]` and says why, named by constant rather than by literal.
+It is the SAME fact as the framework gap - one declaration, two signals - seen from the descriptor's side.
+
+**AND THE GENERATION RESET MOVED WITH THE FAMILY**: `on_swapchain_recreated` now retires it, which is the
+framework's own contract for per-generation state (the runner calls it for every pass in a stage), instead of the
+host reaching into the pass's object to retire it.
+
+Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0, gate 12 x 2 with **0
+changed and 0 flaky**. What is still the renderer's: the reflection's family, and the mode-1 recording that uses
+it - the two things a declaration cannot express.
+
 ## WHAT THE INVENTORY ALREADY FOUND (RE-AUDITED AGAINST THE CURRENT TREE)
 
 The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought `master`'s files over, so most
@@ -705,8 +746,13 @@ says what a re-audit of the current tree found.
   four GI scenarios matching is what proves the pass's own create produced a working pipeline.
 * **The temporal resolve owns its set layout, pipeline layout and pipeline** (see the section above), so
   `runtime::make_ssgi_temporal_pipeline` and its three members are gone too. **No SSGI pipeline handle is the
-  runtime's any more**; what remains of the denoiser in the renderer is the two descriptor FAMILIES (diffuse and
-  reflection), which share the pass's layout through `ssgi_temporal_pass::set_layout()`.
+  runtime's any more**; what remains of the denoiser in the renderer is the reflection's family and the mode-1
+  recording that uses it.
+* **Step 1b: the temporal resolve's DIFFUSE descriptor family is the pass's**, written in `record` from
+  `resolved_io::own_per_image[binding][image]` through `bindings::write_set` (so the writes are generated from the
+  same declaration as the layout), retired by its own `on_swapchain_recreated`, and with one deliberate
+  substitution at binding 6 that the section above records. The reflection's family in the renderer uses the same
+  generated writes now.
 
 **NOT DONE, with the reason and the exact next step.**
 
@@ -728,6 +774,11 @@ says what a re-audit of the current tree found.
    * **(1b) the pass-owned FAMILY**, which is what `own_per_image` was added for: the pass then ensures its own
      set from the declaration, writes each image's set from that image's views, and keeps its own history flags
      (the tracer reading them through an accessor). This is the step that measured the channel.
+     **STEP 1b IS LANDED**: the DIFFUSE family is the pass's, written from `own_per_image[binding][image]` with
+     `bindings::write_set` and retired by `on_swapchain_recreated`; the REFLECTION's family and the mode-1
+     recording are still the renderer's, which is the framework gap this document keeps naming (one declaration
+     cannot describe two signals' images). The history flags are still the renderer's - they are read before the
+     edge, not by the pass.
 2. **The spatial filter**, after (1): it reads the temporal resolve's output and binds both of its sets, so it is
    the second reader of the same channel.
 3. **The TAA pass's per-image defect** (recorded above): it writes the current frame's views into every set, so

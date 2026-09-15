@@ -1,4 +1,4 @@
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/ssgi_temporal.cppm
@@ -7,18 +7,19 @@
  *
  * WHAT IT OWNS: the frame's RECORDING - the two barrier batches, the dispatch, the push lanes that describe its
  * own state, the history copy and the hand-backs - which is the part that was buried in
- * `runtime::record_ssgi_resolve_pass`; and, since this step, the SET LAYOUT its declaration generates, the
- * PIPELINE LAYOUT and the COMPUTE PIPELINE built from them and from its own shader. The renderer used to build
- * all three (`runtime::make_ssgi_temporal_pipeline`), which is why they left: a handle only this pass names is
- * this pass's to build and to release.
+ * `runtime::record_ssgi_resolve_pass`; the SET LAYOUT its declaration generates and the PIPELINE LAYOUT and
+ * COMPUTE PIPELINE built from it; and the DESCRIPTOR FAMILY that set layout's per-image sets need, written from
+ * `resolved_io::own_per_image` (the channel that was added for exactly this pass). The renderer used to build all
+ * of them, which is why they left: a handle only this pass names is this pass's to build, to write and to
+ * release - and the family is the one that proves the point, because writing image k's set needs image k's views
+ * and only the pass may reach for them (`bindings::write_set` generates the writes from the declaration, so the
+ * pass decides the views and nothing else).
  *
- * WHAT IT STILL DOES NOT OWN, and the reason is a framework gap rather than an oversight: its per-image
- * DESCRIPTOR FAMILY. Two signals are resolved through this one layout and pipeline - the diffuse bounce (this
- * pass) and the reflection (the renderer's `record_ssgi_resolve_pass`, mode 1) - and each needs its own list of
- * images in the same seven slots. So the renderer goes on building BOTH families, taking this pass's set layout
- * through `set_layout()`, which is the honest half of the split: the layout is the pass's, the family that a
- * second signal also uses is not. `resolved_io::own_per_image` (added for exactly this) is what the rest of the
- * move needs - see docs/pass_chain_plan.md.
+ * WHAT IT STILL DOES NOT OWN, and the reason is a framework gap rather than an oversight: the REFLECTION's
+ * family and the mode-1 recording that uses it. Two signals are resolved through this one layout and pipeline -
+ * the diffuse bounce (this pass) and the reflection (the renderer's `record_ssgi_resolve_pass`) - and each needs
+ * its own list of images in the same seven slots, which a single declaration cannot describe. The renderer builds
+ * that second family on this pass's layout, taken through `set_layout()`; see docs/pass_chain_plan.md.
  *
  * WHY THE SPLIT IS WORTH TAKING ANYWAY: the recording is where the ORDER lives - the resolve must run after the
  * tracer and the lobe (both write the raw trace it reads) and before the spatial filter (which consumes its
@@ -41,8 +42,9 @@ export module vulkan.pass.ssgi_temporal;
 
 import vulkan.pass;
 import vulkan.render_resource;
-import vulkan.bindings;     // make_set_layout: a declaration generates this pass's own set layout
-import vulkan.core.handles; // vk_pipeline: the RAII owner of the compute pipeline this pass builds
+import vulkan.render_resource.shared; // sampler_set: the handles bindings::write_set binds
+import vulkan.bindings;               // make_set_layout / write_set / image_set_family: this pass's own set
+import vulkan.core.handles;           // vk_pipeline: the RAII owner of the compute pipeline this pass builds
 
 export namespace vulkan::pass {
 
@@ -124,6 +126,12 @@ export namespace vulkan::pass {
         static_assert(barrier_history + 1 == render_resource::ssgi_temporal_barriers.size(),
                       "the resolve's barrier slots must match the declaration it indexes");
 
+        /// the two declared bindings this pass has to know by name (see the substitution in record)
+        static constexpr std::size_t binding_gbuffer_depth = 3;
+        static constexpr std::size_t binding_spec_reproject = 6;
+        static_assert(binding_spec_reproject + 1 == render_resource::ssgi_temporal_io.bindings.size(),
+                      "the resolve's named bindings must match the declaration it indexes");
+
         static constexpr std::array<std::string_view, 1> pipeline_names = {"ssgi_temporal"};
         inline static constexpr vulkan::pass::behaviour behaviour_ = {
             .kind = behaviour_kind::compute,
@@ -139,9 +147,12 @@ export namespace vulkan::pass {
 
         bool resolved_ = false;
         VkDevice device_ = VK_NULL_HANDLE;
+        render_resource::shared::sampler_set samplers_ = {};
         VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
         VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
+        /// the per-image sets this pass writes itself, one set per swapchain image (see the header)
+        bindings::image_set_family family_ = {};
         ssgi_temporal_frame frame_ = {};
     };
 
