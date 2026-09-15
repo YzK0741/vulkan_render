@@ -1508,42 +1508,43 @@ with the existing tooling (`-Extra "gbuffer_debug=true"`, plus a channel), again
 that is the verification this step needs; the ordinary 12 x 2 still has to stay at 0 changed, because every step's
 acceptance includes it.
 
-## THE ④ WIRING: WHAT THE FIRST ATTEMPT MEASURED, AND WHY IT WAS REVERTED
+## THE ④ WIRING, BISECTED: THE OWNERSHIP MOVE IS LANDED, AND THE RECORDING MOVE IS THE REMAINING SUSPECT
 
-The wiring was attempted and **REVERTED UNVERIFIED**. It compiled, `ctest` stayed 8/8 in Release, Debug and ASan,
-doxygen stayed clean, the `deferred` scenario reproduced its reference exactly (2DD1D13857322C0F) and the
-**knob-on A/B for the debug view itself PASSED**: with `gbuffer_debug = true` (the config key app_config already
-has) the new binary and a Release build of the parent commit both produced `A3B5950475956BE8` - the step's own
-acceptance test, byte for byte. But the ordinary gate came back **11 passed, 1 changed**, and the changed scenario
-is `deferred_taa_fxaa`: new `B0CA38A929E0...`, reference `6999D01E5FBA...`, both DETERMINISTIC (the gate re-runs
-every scenario and reported CHANGED, not FLAKY) and both validation-clean, and the PARENT binary reproduces the
-reference on that scenario - so the difference is this wiring's and its cause is NOT yet known. It is not the debug
-view's own recording (the A/B above ran it and matched).
+The full wiring was attempted, came back with the gate at **11 passed, 1 changed** (`deferred_taa_fxaa`), and was
+REVERTED rather than landed - the section below keeps that measurement. Following the bisect it recommended, the
+wiring was then split in two and the FIRST half was landed on its own:
 
-So the tree went back to `60db6b6` - declaration and module landed and gated, wiring not - rather than leave a
-one-scenario regression in a branch whose whole verification rests on byte-identical frames.
+* **THE OWNERSHIP + CREATE-ORDER HALF IS LANDED AND VERIFIED.** The debug view's PASS now owns the G-buffer set
+  layout, its pipeline layout and the view pipeline; `make_gbuffer_debug_pipeline` is gone and its two SAMPLERS
+  became `ensure_gbuffer_samplers()` (called in chores before `create_passes()`); the pass is emplaced FIRST,
+  because six other passes reach that layout through `shared_set_layout(1)` WHILE THEY ARE CREATED. The runtime
+  still RECORDS the debug view (`record_gbuffer_debug_pass`, using the pass's handles): this half is about who owns
+  what and in which order, not about who records.
+  **MEASURED**: the gate is 12 x 2 with **0 changed / 0 flaky** - including `deferred_taa_fxaa`, which the full
+  wiring had broken - and the knob-on A/B (`gbuffer_debug = true`) matches the parent commit's Release build byte
+  for byte (`A3B5950475956BE8`). So THE OWNERSHIP AND THE ORDER ARE INNOCENT.
+* **THE RECORDING MOVE IS THE SUSPECT, and it is the only difference left.** It is the half that deletes
+  `record_gbuffer_debug_pass` in favour of `resolve_gbuffer_debug` + a stage + the `recorded == 0` fallback. It is
+  also the half that SHOULD be invisible to `deferred_taa_fxaa` (the view is off in every gate scenario, so the
+  pass is never resolved or recorded there) - which is exactly why the next attempt has to look for an unintended
+  edit inside that change rather than for a mechanism: the revert-and-split is what turned "one scenario differs"
+  into "this half differs", and the same method narrows it again (the resolver alone, then the call site, then the
+  fallback).
 
-**THE THREE THINGS THE ATTEMPT DID ESTABLISH, each measured, and each of which the next attempt must handle:**
+**THE THREE THINGS THE FIRST ATTEMPT ESTABLISHED, each measured, and each of which the next attempt must handle:**
 
 1. **THE DEBUG VIEW MUST BE EMPLACED BEFORE EVERY PASS THAT ASKS FOR THE SHARED G-BUFFER SET.** Its create step
    builds the G-buffer set layout, and the tracer, the lobe, the temporal resolve, the spatial filter, the traced
    shadow and the deferred lighting stage all reach it through `shared_set_layout(1)` WHILE THEY ARE BEING CREATED.
    With the debug view emplaced last, the first run's log said exactly that, once per pass: "the owner has no layout
    for the shared sets this pass binds" - six passes built nothing and the frame came out with the G-buffer depth
-   still in its attachment layout. The emplace order is therefore a create-order constraint, not tidiness.
+   still in its attachment layout. The emplace order is therefore a create-order constraint, not tidiness. LANDED.
 2. **`ensure_gbuffer_samplers()` HAS TO BE CALLED, and forgetting it is silent until recording.** The samplers were
    created inside `make_gbuffer_debug_pipeline`, which the wiring deletes - so the first run had a null probe
    sampler, `ensure_gbuffer_descriptors` bailed out (by design: a null sampler is a validation error, not a skipped
    fetch), the family had no set, the deferred pass's resolver refused the frame and the composite then sampled the
-   G-buffer depth and normal in the wrong layouts (two `VUID-vkCmdDraw-imageLayout-00344` lines per frame). The
-   samplers are the RENDERER's and have to be created in chores before `create_passes()`, next to the post chain's.
-3. **THE `deferred_taa_fxaa` REGRESSION IS THE OPEN QUESTION.** Everything above is fixed and the covered path
-   reproduces its reference; this one scenario does not, deterministically. The next attempt should bisect it by
-   landing the wiring in TWO steps that are each gate-checked - the resolver/stage/predicates with the deletions
-   (the debug view recorded by its pass) first, and the create-order/ownership changes (the layout moving to the
-   pass, the samplers' function, the emplace order) second - because the two halves are exactly the difference
-   between "the pass records" and "the pass owns", and the second is where a G-buffer layout identity change would
-   show up in a TAA+FAA frame that keeps a history.
+   G-buffer depth and normal in the wrong layouts (two `VUID-vkCmdDraw-imageLayout-00344` lines per frame). LANDED.
+3. **THE `deferred_taa_fxaa` REGRESSION IS THE OPEN QUESTION** (see above): the recording move, nothing else.
 
 ## HANDOFF: WHERE THIS STANDS AND WHAT IS LEFT, EXACTLY
 

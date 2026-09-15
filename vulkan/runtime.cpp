@@ -258,16 +258,10 @@ namespace vulkan {
         // comment line above it, which commented the destroy calls out and leaked them (validation: "VkDevice has
         // 18 leaked objects ... VkPipelineLayout, VkDescriptorSetLayout"). The pool belongs to post_family now and
         // those layouts to the pass, so what is left of the post chain in this destructor is nothing at all.
-        // the same objects for the G-buffer debug view, minus the pool: that one belongs to
-        // gbuffer_family, whose destructor destroys it (and the generations it retired)
-        if (this->gbuffer_pipeline_layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->vulkan_core.device, this->gbuffer_pipeline_layout, nullptr);
-            this->gbuffer_pipeline_layout = VK_NULL_HANDLE;
-        }
-        if (this->gbuffer_set_layout != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->gbuffer_set_layout, nullptr);
-            this->gbuffer_set_layout = VK_NULL_HANDLE;
-        }
+        // ... and the G-buffer debug view's set layout and pipeline layout are NOT here any more: they are the
+        // PASS's (vulkan.pass.gbuffer_debug::release_owned), which built them - and which the deferred lighting
+        // stage now asks for the layout through shared_set_layout(1). The FAMILY's pool is still gbuffer_family's,
+        // whose destructor destroys it (and the generations it retired).
         // ... and the deferred lighting stage's pipeline layout is NOT here any more: it is the PASS's
         // (vulkan.pass.deferred::release_owned), built by the pass from the two shared set layouts its owner
         // hands it at create time.
@@ -2088,10 +2082,8 @@ namespace vulkan {
             this->gbuffer_pipeline->viewport = full_viewport;
             this->gbuffer_pipeline->scissor = full_scissor;
         }
-        if (this->gbuffer_debug_pipeline) {
-            this->gbuffer_debug_pipeline->viewport = full_viewport;
-            this->gbuffer_debug_pipeline->scissor = full_scissor;
-        }
+        // ... and the debug view's pipeline is not resynced here either: it is its PASS's now (vulkan.pass.
+        // gbuffer_debug), which declares resync_viewport like every other fullscreen pass in this chain.
         // ... and the deferred lighting stage's is not here either, for a stronger reason than the TAA
         // resolve's below: it is a PASS (vulkan.pass.deferred), it declares `resync_viewport = true`, so the
         // runner sets the viewport and scissor from the extent its own declaration produced. The old
@@ -2439,40 +2431,27 @@ namespace vulkan {
         vkCmdEndRendering(command_buffer);
     }
 
-    std::expected<void, std::string> runtime::make_gbuffer_debug_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+    // The G-buffer declarations' SAMPLERS: what is left of make_gbuffer_debug_pipeline in the renderer, because the
+    // set layout, its pipeline layout and the view pipeline are the debug view's PASS's now. They have to exist
+    // before create_passes(), since the pass context hands every pass the six a declaration may choose between.
+    std::expected<void, std::string> runtime::ensure_gbuffer_samplers() {
         core& vk = this->vulkan_core;
-        // the G-buffer set layout is owned here (vulkan.pipelines) because deferred reuses it
-        auto built = pipelines::build_gbuffer_debug(vk.device, sizeof(gbuffer_debug_push_constants), vertex_shader_code, fragment_shader_code);
-        if (!built) {
-            return std::unexpected(std::move(built.error()));
-        }
-        this->gbuffer_set_layout = built->set_layout;
-        this->gbuffer_pipeline_layout = built->pipeline_layout;
-        this->gbuffer_debug_pipeline = std::move(built->debug);
-
-        // nearest, clamp: the debug view reads the G-buffer at exact texel centers
         VkSamplerCreateInfo sampler_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
         sampler_info.magFilter = VK_FILTER_NEAREST;
         sampler_info.minFilter = VK_FILTER_NEAREST;
         VkSampler sampler = VK_NULL_HANDLE;
         if (vkCreateSampler(vk.device, &sampler_info, nullptr, &sampler) != VK_SUCCESS) {
-            return std::unexpected(std::string("gbuffer debug: sampler creation failed"));
+            return std::unexpected(std::string("gbuffer: sampler creation failed"));
         }
         this->gbuffer_sampler = vk_sampler(sampler, vk.device);
-
-        // ... and the probe cache's, which is the same thing with LINEAR filtering: the grid is sampled
-        // to interpolate between cells (see the member's comment). Created HERE rather than with the
-        // probe pipeline because the tracer's descriptor set writes it whether or not that optional
-        // pipeline exists - a null sampler in a set is a validation error, not a skipped fetch.
         VkSamplerCreateInfo probe_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
         VkSampler probe_sampler = VK_NULL_HANDLE;
         if (vkCreateSampler(vk.device, &probe_info, nullptr, &probe_sampler) != VK_SUCCESS) {
-            return std::unexpected(std::string("gbuffer debug: probe sampler creation failed"));
+            return std::unexpected(std::string("gbuffer: probe sampler creation failed"));
         }
         this->gi_probe_sampler = vk_sampler(probe_sampler, vk.device);
         return {};
     }
-
     // The deferred path's transparent pass. Everything about its position is load-bearing:
     //  - after the lighting stage, because a blended surface composites over SHADED pixels, and the
     //    G-buffer instance has no shaded image to composite over;
@@ -2609,7 +2588,7 @@ namespace vulkan {
             return false;
         }
         if (this->gbuffer_debug) {
-            return this->gbuffer_debug_pipeline.has_value();
+            return this->gbuffer_debug_view.pipeline_ready();
         }
         return this->deferred.pipeline_ready();
     }
@@ -2626,7 +2605,7 @@ namespace vulkan {
 
     void runtime::ensure_gbuffer_descriptors() {
         core& vk = this->vulkan_core;
-        if (this->gbuffer_debug_pipeline == std::nullopt || this->gbuffer_set_layout == VK_NULL_HANDLE) {
+        if (!this->gbuffer_debug_view.pipeline_ready()) {
             return;
         }
         std::size_t const image_count = vk.gbuffer_image_views[0].size();
@@ -2717,7 +2696,7 @@ namespace vulkan {
             }
             vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         };
-        if (!this->gbuffer_family.ensure(vk.device, this->gbuffer_set_layout, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
+        if (!this->gbuffer_family.ensure(vk.device, this->gbuffer_debug_view.set_layout(), static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
             utility::log("runtime: gbuffer debug descriptor sets unavailable - debug view skipped");
         }
     }
@@ -3358,7 +3337,7 @@ namespace vulkan {
                     return self->vulkan_core.scene_descriptor_set_layout;
                 }
                 if (set == 1u) {
-                    return self->gbuffer_set_layout;
+                    return self->gbuffer_debug_view.set_layout();
                 }
                 return set == 2u ? self->post_composite.set_layout() : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
             .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
@@ -4003,7 +3982,7 @@ namespace vulkan {
 
     void runtime::record_gbuffer_debug_pass(VkCommandBuffer const command_buffer) {
         core const& vk = this->vulkan_core;
-        if (this->gbuffer_debug_pipeline == std::nullopt) {
+        if (!this->gbuffer_debug_view.pipeline_ready()) {
             return;
         }
         std::size_t const index = this->current_image_index;
@@ -4052,14 +4031,14 @@ namespace vulkan {
         vkCmdBeginRendering(command_buffer, &rendering_info);
         bool const can_draw = this->gbuffer_family.set(static_cast<uint32_t>(index), 0) != VK_NULL_HANDLE;
         if (can_draw) {
-            this->gbuffer_debug_pipeline->begin_pipeline(command_buffer);
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->gbuffer_debug_view.pipeline());
             VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height), 0.0f, 1.0f};
             VkRect2D const scissor = {{0, 0}, vk.swap_chain_extent};
             vkCmdSetViewport(command_buffer, 0, 1, &viewport);
             vkCmdSetScissor(command_buffer, 0, 1, &scissor);
             vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
             VkDescriptorSet const set = this->gbuffer_family.set(static_cast<uint32_t>(index), 0);
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->gbuffer_pipeline_layout, 0, 1, &set, 0, nullptr);
+            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->gbuffer_debug_view.pipeline_layout(), 0, 1, &set, 0, nullptr);
             gbuffer_debug_push_constants const push = {
                 .channel = static_cast<float>(this->gbuffer_channel_index),
                 .proj_22 = this->current_ubo.proj[2][2],
@@ -4067,7 +4046,7 @@ namespace vulkan {
                 // Four pixels of motion saturate the motion channel (see the field's docs): derived
                 // from the width so it means the same thing at any resolution.
                 .motion_gain = static_cast<float>(vk.swap_chain_extent.width) * 0.25f};
-            vkCmdPushConstants(command_buffer, this->gbuffer_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+            vkCmdPushConstants(command_buffer, this->gbuffer_debug_view.pipeline_layout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
             vkCmdDraw(command_buffer, 3, 1, 0, 0);
         } else {
             utility::log("runtime: gbuffer debug pass has no descriptor set - showing a cleared frame");
@@ -4735,7 +4714,7 @@ namespace vulkan {
         // the overlay's visibility predicates and the log all read THIS, so they cannot drift apart.
         render_features f;
         f.unlit = this->unlit_active;
-        f.gbuffer_debug = this->gbuffer_debug && this->gbuffer_pipeline.has_value() && this->gbuffer_debug_pipeline.has_value();
+        f.gbuffer_debug = this->gbuffer_debug && this->gbuffer_pipeline.has_value() && this->gbuffer_debug_view.pipeline_ready();
         f.ssgi = this->ssgi_active();
         // The probe cache is a pass of its own, so its activity is a feature of its own: the tracer asks
         // whether the cache is READY (probe_ready below), and the runner asks whether the pass RUNS.
@@ -4857,7 +4836,7 @@ namespace vulkan {
 
     void runtime::set_gbuffer_debug(bool const enabled) noexcept {
         this->gbuffer_debug = enabled;
-        if (enabled && (!this->gbuffer_pipeline.has_value() || !this->gbuffer_debug_pipeline.has_value())) {
+        if (enabled && (!this->gbuffer_pipeline.has_value() || !this->gbuffer_debug_view.pipeline_ready())) {
             this->warn_missing_feature("gbuffer-debug", "the G-buffer debug view has no effect: its pipelines were not created (see the startup log)");
         }
     }
@@ -4866,7 +4845,7 @@ namespace vulkan {
         // The single source of truth for "can this feature run at all this session": the overlay asks
         // it to decide what to offer, log_feature_status() prints it, and both therefore agree.
         if (name == "gbuffer-debug") {
-            return this->gbuffer_pipeline.has_value() && this->gbuffer_debug_pipeline.has_value();
+            return this->gbuffer_pipeline.has_value() && this->gbuffer_debug_view.pipeline_ready();
         }
         if (name == "deferred") {
             // AVAILABILITY, not activity: "the pass built its pipeline" (whether it RUNS this frame is

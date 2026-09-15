@@ -218,16 +218,19 @@ namespace chores {
             if (!gbuffer_result) {
                 utility::log("gbuffer pipeline disabled: {}", gbuffer_result.error());
             } else {
-                // the debug view is a FULLSCREEN pass: it needs post.vert's synthetic triangle, not
-                // the scene vertex stage (which declares vertex inputs, instancing/skin/morph
-                // descriptors and the scene push block - all of which the debug pass has no use for)
+                // The G-buffer declarations' SAMPLERS are the renderer's (they belong to the descriptor sets it
+                // writes) and must exist before create_passes(); this is what is left of make_gbuffer_debug_pipeline
+                // here. The debug view itself is a PASS (vulkan.pass.gbuffer_debug): the app registers its two
+                // shaders and the pass builds the G-buffer set LAYOUT, its pipeline layout and its pipeline.
+                auto const gbuffer_samplers = runtime.ensure_gbuffer_samplers();
+                if (!gbuffer_samplers) {
+                    utility::panic(std::source_location::current(), "failed to create the G-buffer samplers: {}", gbuffer_samplers.error());
+                }
                 load_shader(shaders_dir, "post.vert.spv", vertex_code);
                 load_shader(shaders_dir, "gbuffer_debug.frag.spv", fragment_code);
-                auto const debug_result = runtime.make_gbuffer_debug_pipeline(vertex_code, fragment_code);
-                if (!debug_result) {
-                    utility::log("gbuffer debug view disabled: {}", debug_result.error());
-                } else {
-                    // The deferred lighting stage is a PASS (vulkan.pass.deferred): the app REGISTERS the two
+                runtime.register_shader("post.vert.spv", vertex_code);
+                runtime.register_shader("gbuffer_debug.frag.spv", fragment_code);
+                // The deferred lighting stage is a PASS (vulkan.pass.deferred): the app REGISTERS the two
                     // shaders it builds from and the pass builds its own pipeline layout and pipeline - from the
                     // two shared set LAYOUTS the context hands it, which is why one register call for each
                     // replaces the old `make_deferred_pipeline(vertex_code, fragment_code)` call here.
@@ -247,7 +250,6 @@ namespace chores {
                     load_shader(shaders_dir, "taa.frag.spv", fragment_code);
                     runtime.register_shader("taa.frag.spv", fragment_code);
                     utility::log("SUCCESS: gbuffer pipelines created (surface write, debug view)");
-                }
             }
         }
 

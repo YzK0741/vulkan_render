@@ -42,6 +42,7 @@ import vulkan.pass.cluster;           // the tenth: the clustered-light sort, th
 import vulkan.pass.deferred;          // the eleventh: the deferred lighting stage, the deferred path's shading work
 import vulkan.pass.post;              // the twelfth and thirteenth: the post chain (the composite + the bloom levels)
 import vulkan.pass.fxaa;              // the fourteenth: the FXAA resolve, the frame's last writer when it runs
+import vulkan.pass.gbuffer_debug;     // the fifteenth: the G-buffer debug view (and the G-buffer set layout's owner)
 import vulkan.pass.chain;             // the chain container: what holds a run of passes and its ORDER
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
@@ -356,9 +357,6 @@ namespace vulkan {
         // id/AO/flags go into core::gbuffer_* (1x targets + the pass's own 1x depth), so the opaque
         // pass runs at 1x.
         std::optional<vk_pipeline> gbuffer_pipeline = std::nullopt;
-        // fullscreen debug view of the G-buffer (reads the three targets + depth, writes the HDR
-        // target so the ordinary post chain still runs)
-        std::optional<vk_pipeline> gbuffer_debug_pipeline = std::nullopt;
         // whether the opaque pass writes the G-buffer this frame (see set_gbuffer_debug). Only
         // takes effect once the needed pipelines exist, so the flags can be set before setup ends.
         bool gbuffer_debug = false;
@@ -370,8 +368,6 @@ namespace vulkan {
         // cells - a nearest fetch would turn the cache into 32^3 blocks - and CLAMP_TO_EDGE, because the
         // grid's edge IS the scene's bounds and there is nothing beyond them to repeat or mirror.
         vk_sampler gi_probe_sampler = {};
-        VkDescriptorSetLayout gbuffer_set_layout = VK_NULL_HANDLE;
-        VkPipelineLayout gbuffer_pipeline_layout = VK_NULL_HANDLE;
         // The debug view's sets, one per swapchain image, allocated from a pool this family owns and
         // retires itself (see vulkan.bindings: the pool lifetime rule is only about the pools).
         bindings::image_set_family gbuffer_family;
@@ -408,6 +404,10 @@ namespace vulkan {
 
         // the order of these declarations IS the order the chain builds them in, and today it is the order the
         // renderer used to spell out in `create_passes()`.
+        /// THE G-BUFFER DEBUG VIEW (vulkan.pass.gbuffer_debug): it owns the G-buffer set LAYOUT, which six other
+        /// passes reach through pass_context::shared_set_layout(1) while THEY are being created - so this emplace is
+        /// a CREATE-ORDER constraint and not tidiness. Its pipeline layout and pipeline are its own too.
+        pass::gbuffer_debug_pass& gbuffer_debug_view = this->passes.emplace<pass::gbuffer_debug_pass>();
         pass::scene_pass& scene = this->passes.emplace<pass::scene_pass>();
         pass::transparent_pass& transparent = this->passes.emplace<pass::transparent_pass>();
         /// THE SSGI TRACER (vulkan.pass.ssgi_trace): it owns its pipeline layout, its compute pipeline and the
@@ -475,6 +475,7 @@ namespace vulkan {
         /// the composite's own stage: one pass, the frame's display work (and the frame's LAST writer whenever
         /// FXAA is off, which is why its frame carries the overlay)
         std::array<pass::frame_pass*, 1> post_composite_stage = {&this->post_composite};
+        std::array<pass::frame_pass*, 1> gbuffer_debug_stage = {&this->gbuffer_debug_view};
         /// THE FXAA RESOLVE (vulkan.pass.fxaa): the frame's LAST writer whenever it runs. It owns its pipeline
         /// layout (built around the post set layout the composite owns) and its pipeline; it is the pass that owns
         /// the OVERLAY on the frames it runs, through its own frame callback - and the reason the composite's frame
@@ -2551,14 +2552,15 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief create the G-buffer debug-view pipeline (fullscreen: the three targets + the depth
-         *        image -> the HDR scene target, so the ordinary post chain still runs)
+         * @brief create the two samplers the G-buffer declarations choose between (the debug view's NEAREST one and
+         *        the probe cache's LINEAR one, which the tracer's set writes whether or not that pipeline exists)
          * @return success, or an error message on failure
-         * @note optional but required for set_gbuffer_debug(true) to take effect; on its own it
-         *       changes nothing
+         * @note THIS IS THE WHOLE OF WHAT `make_gbuffer_debug_pipeline` DID THAT IS STILL THE RENDERER'S: the
+         *       set layout, its pipeline layout and the view pipeline are the debug view's PASS's now. The
+         *       samplers stay here because they belong to the descriptor sets this class writes, and they must
+         *       exist before create_passes() - the pass context hands every pass the six a declaration may pick.
          */
-        std::expected<void, std::string> make_gbuffer_debug_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
-
+        std::expected<void, std::string> ensure_gbuffer_samplers();
         /** @brief how many jitter positions the Halton(2,3) TAA sequence cycles through */
         static constexpr uint32_t taa_jitter_count = 8;
 
