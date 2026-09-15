@@ -139,6 +139,7 @@ target_sources(vulkancorekit
         vulkan/pass/cluster.cppm
         vulkan/pass/deferred.cppm
         vulkan/pass/post.cppm
+        vulkan/pass/fxaa.cppm
         vulkan/pass/chain.cppm
         vulkan/profiling/profiling.cppm
         vulkan/shadow_fit/shadow_fit.cppm
@@ -174,6 +175,7 @@ target_sources(vulkancorekit
         vulkan/pass/cluster.cpp
         vulkan/pass/deferred.cpp
         vulkan/pass/post.cpp
+        vulkan/pass/fxaa.cpp
         vulkan/shadow_fit/shadow_fit.cpp
         vulkan/readback/readback.cpp
         vulkan/acceleration_structure/acceleration_structure.cpp

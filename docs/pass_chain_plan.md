@@ -1588,6 +1588,17 @@ own until step ③ owns it) and of `runtime::post_push_constants`.
    `pipelines::build_fxaa_owned` + `fxaa_owned`: the pass-shaped entry point that creates ITS OWN pipeline layout
    from the SET layout it is handed (`build_taa`'s shape). Both are inert - the runtime still calls the old
    `build_fxaa` - and both are exactly what the module slice needs.
+   **SLICE 2 IS LANDED**: `vulkan/pass/fxaa.{cppm,cpp}` - `fxaa_pass` is declared AND implemented, complete and
+   compiling, and still inert (nothing constructs it, which the gate proves: 12 x 2 with 0 changed). It owns its
+   pipeline layout (built around the post set layout the context answers for index 2) and its pipeline, and it
+   records the LDR image's transition, the clear instance over the swapchain, the set bind, the mode-3 push, the
+   draw and the overlay inside the same instance. Its push block's shape is IMPORTED from `vulkan.pass.post`
+   rather than copied - FXAA is mode 3 of the same shader's block, and a second copy of those thirteen lanes is a
+   second thing that can drift - and its `feature()` is `"fxaa"`, which the runtime already answers through
+   `post_fxaa_active()`, so the runner's gate, the composite's target choice and the overlay's owner are one
+   definition. What is left of step ③ is the WIRING: the pass in the chain, its resolver, its stage, the
+   deletion of `runtime::make_fxaa_pipeline` / `record_fxaa` / the `post_fxaa_pipeline` member, and - with them -
+   `record_fullscreen_triangle` and the two `barrier_image_to_*` helpers, whose last caller `record_fxaa` was.
 3. **④ the G-buffer debug view**. It shares the G-buffer set layout with the lighting stage, and that layout is
    currently built by `make_gbuffer_debug_pipeline` (`pipelines::build_gbuffer_debug` returns it) because the
    deferred pass needed it first. Once BOTH are passes, the layout has to belong to one of them or to the
