@@ -2885,9 +2885,13 @@ namespace vulkan {
         static_assert(sizeof(push) <= pass::max_push_bytes, "the tracer's push block must fit the guaranteed minimum");
         std::memcpy(out.push_storage.data(), &push, sizeof(push));
         out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
-        // The declaration's rule is `half`, applied by the runner from the frame's extent - the same
-        // max(1, axis / 2) the images themselves are created with (see core::create_render_targets).
-        out.extent = vk.swap_chain_extent;
+        // The declaration's rule is `half`, and the RESOLVER applies it: `pass_extent` is the one place that
+        // maps `behaviour::extent` to a size, and it is the same max(1, axis / 2) the images themselves are
+        // created with (see core::create_render_targets). This line used to hand the pass the FRAME's extent,
+        // which the shader survived only because it clips against `imageSize(gi_output)` - so the frames were
+        // identical while the dispatch was four times the work, which is exactly the kind of wrong that a
+        // capture gate cannot see and a reader of the declaration can.
+        out.extent = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->ssgi_trace));
         return true;
     }
 
@@ -3747,23 +3751,11 @@ namespace vulkan {
         static_assert(sizeof(push) <= pass::max_push_bytes, "the probe cache's push block must fit the guaranteed minimum");
         std::memcpy(out.push_storage.data(), &push, sizeof(push));
         out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
-        // The extent, from the declaration's rule: `resource` and the probe grid is 32 cells on a side. The
-        // rule is applied HERE because it is a mapping from the declaration to a number the renderer owns.
-        VkExtent2D extent = {};
-        switch (pass.behaviour().extent) {
-        case pass::extent_rule::full:
-            extent = vk.swap_chain_extent;
-            break;
-        case pass::extent_rule::half:
-            extent = VkExtent2D{std::max(1u, vk.swap_chain_extent.width / 2u), std::max(1u, vk.swap_chain_extent.height / 2u)};
-            break;
-        case pass::extent_rule::resource:
-            if (pass.behaviour().extent_of == pass::resource_id::probe_grid) {
-                extent = VkExtent2D{vulkan::gi_probe_grid_extent, vulkan::gi_probe_grid_extent};
-            }
-            break;
-        }
-        out.extent = extent;
+        // The extent, from the declaration's rule - and this block IS `pass_extent`, which is why it is now a
+        // call to it: the mapping from a declaration to a size the renderer owns belongs in exactly one place,
+        // or a new rule gets implemented twice and the second copy is the one that is wrong. (`resource` here
+        // is the probe grid: 32 cells on a side, not the frame's size.)
+        out.extent = this->pass_extent(pass);
         return true;
     }
 
@@ -4189,7 +4181,9 @@ namespace vulkan {
         static_assert(sizeof(push) <= pass::max_push_bytes, "the lobe's push block must fit the guaranteed minimum");
         std::memcpy(out.push_storage.data(), &push, sizeof(push));
         out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
-        out.extent = vk.swap_chain_extent; // the declaration's rule is `half`
+        // The declaration's rule is `half` - see the tracer's line for why the frame's extent looked harmless
+        // here (the shader's `imageSize` clip) and why it was still wrong.
+        out.extent = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->ssgi_spec));
         return true;
     }
 

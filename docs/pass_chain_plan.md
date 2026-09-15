@@ -554,6 +554,30 @@ Each of the two failed attempts is preserved in this document rather than in the
 `b7633e0`, whose code is `f117f29` (fully verified: Release/Debug/ASan, ctest, doxygen, gate 12 x 2 with 0
 changed and 0 flaky), because a half-wired pass is worse than an unimplemented one.
 
+## THE EXTENT RULE: TWO RESOLVERS WERE NOT APPLYING THEIR OWN DECLARATION
+
+A declaration says what a pass works at (`behaviour::extent`: `full`, `half`, or a resource's size), and
+`resolved_io::extent` is "the extent THIS pass works at ... per `behaviour::extent`". So the RESOLVER has to apply
+the rule, and `runtime::pass_extent` is the one place that maps it to a number. **Two of the eight resolvers did
+not:** the tracer and the glossy lobe both declared `half` and both handed the pass `vk.swap_chain_extent` - the
+FULL frame - and the tracer's comment even claimed "applied by the runner", which was never true.
+
+Why it survived every measurement until now: both shaders open with
+`const ivec2 gi_extent = imageSize(<their output>); if (pixel >= gi_extent) return;`, so the extra invocations
+returned immediately and wrote nothing. **The frames were byte-identical and the dispatch was four times the
+work** - 1920x1080 of workgroups for a 960x540 image, in each of the chain's first two stages. That is exactly the
+class of defect a capture gate cannot see: it needs a reader who compares the declaration to the number, which is
+why both resolvers now say `this->pass_extent(*static_cast<pass::frame_pass const*>(&this->ssgi_trace))` and the
+tracer's comment records the old line and why it looked harmless.
+
+The same step removed the LAST copy of the mapping: `resolve_pass` (the probe cache's fallback) carried its own
+17-line `switch` over the three rules, written to the same numbers. It is now a call to `pass_extent`, so a fourth
+rule cannot be implemented twice with the second copy wrong.
+
+Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen exit 0, gate 12 x 2 with **0
+changed and 0 flaky** - the gate's verdict here is the *proof of the invisibility claim* (the shaders' clips made
+the extra work unobservable), not evidence that the change is inert.
+
 ## WHAT THE INVENTORY ALREADY FOUND (RE-AUDITED AGAINST THE CURRENT TREE)
 
 The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought `master`'s files over, so most
@@ -613,6 +637,10 @@ says what a re-audit of the current tree found.
 * The denoiser's set layout is generated from its declaration (`f117f29`), closing a drift the code's own
   comments record as having happened once.
 * The per-image view channel exists (`4e89078`), with a contract test.
+* **Every resolver applies its own declaration's extent rule, through the one function that maps it**
+  (`pass_extent`): the tracer and the lobe had been dispatching the full frame at a half-size image and were
+  invisible only because both shaders clip against `imageSize`, and `resolve_pass`'s second copy of the mapping is
+  gone. See the section above for the measurement.
 
 **NOT DONE, with the reason and the exact next step.**
 
