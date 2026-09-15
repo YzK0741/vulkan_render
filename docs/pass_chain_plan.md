@@ -4,9 +4,9 @@
 > RECORD: each section was written as its step landed and describes the tree AS IT WAS THEN, including steps that
 > later steps superseded (the pre-GI sections speak of a branch with no GI in it, of a `pass_context::shader` that
 > is null, and of samplers nothing backs - all of which the GI attach changed). The **HANDOFF** section at the
-> end is the only part that describes the tree as it IS, and `docs/drafts/README.md` carries the one piece of
-> work that is designed but not installed. Read the record for why things are the way they are; read the handoff
-> to act.
+> end is the only part that describes the tree as it IS. (The one piece of work that was designed here but not
+> installed - the temporal pass - LANDED as `bc2dc1d`; the drafts directory that carried it is gone with it.)
+> Read the record for why things are the way they are; read the handoff to act.
 
 This branch (`pass-chain`, forked at `281ab06` - the commit immediately before the first GI commit) exists to do
 one thing the later work could not do in place: let the PBR rendering be **built** as passes rather than
@@ -423,7 +423,16 @@ ONE HARNESS NOTE, the same intermittent one recorded earlier: this step's FIRST 
 scenario FLAKY (`changed: 0` in every run, and the tail I captured did not name it); the immediate re-run was
 12 x 2 clean with all twelve hashes matching. Nothing about the renderer changed between the two runs.
 
-## THE GI DENOISER: MEASURED TWICE, AND WHAT IT ACTUALLY NEEDS
+## THE GI DENOISER: MEASURED TWICE, THEN TAKEN IN TWO STEPS
+
+**STEP 1a LANDED** (`bc2dc1d`): the diffuse temporal resolve's RECORDING is a pass - the two barrier batches, the
+dispatch, the two push lanes that describe its own state (`history_valid`, `mode`), the history copy and the
+hand-backs. Its set layout, its pipeline and both per-image families stay the renderer's, arriving through
+`resolved_io::own_set` and `resolved_io::pipelines`, which is inside the framework's contract rather than a
+shortcut. Gate 12 x 2, 0 changed, 0 flaky.
+
+The two failures below are kept because they are what produced the split, and the second one is what produced
+`resolved_io::own_per_image` - the channel step 1b uses.
 
 Two attempts at extracting the temporal resolve failed, both with a validation error that names the missing
 piece precisely, and the second one is the finding worth keeping. Neither attempt was landed (the tree was
@@ -559,10 +568,10 @@ says what a re-audit of the current tree found.
      state (`history_valid`, `mode`), the history copy and the hand-backs while the set layout, the pipeline and
      both per-image families stay the renderer's. That is the part where the ORDER lives (after the tracer and
      the lobe, before the spatial filter), and it is worth taking on its own.
-     **THE DRAFT IS IN THE REPOSITORY**: `docs/drafts/ssgi_temporal.cppm.txt` and `.cpp.txt` are that module,
-     written and read through, with `docs/drafts/README.md` listing the exact host-side remainder (the resolver,
-     the `resolve_pass` branch, the driver's `record_stage`, the two stage registrations, and how `resolved_` is
-     reported back). They are `.txt` on purpose: not compiled, not formatted, not doxygen-scanned.
+     **STEP 1a IS LANDED** (`bc2dc1d`): that module is in the tree as `vulkan/pass/ssgi_temporal.{cppm,cpp}` and it
+     records the resolve, with its set and its pipeline arriving through `resolved_io::own_set` and
+     `resolved_io::pipelines` - a shape the framework allows, which is why 1a needed no new framework at all. What
+     is left of this bullet is 1b.
    * **(1b) the pass-owned FAMILY**, which is what `own_per_image` was added for: the pass then ensures its own
      set from the declaration, writes each image's set from that image's views, and keeps its own history flags
      (the tracer reading them through an accessor). This is the step that measured the channel.
