@@ -8,10 +8,14 @@
  *        pipeline looks like - formats, sample counts, blend state, push-constant ranges).
  *
  * Extracted from vulkan.runtime, whose implementation had grown past 4900 lines. The builders are
- * stateless: the caller passes the core and the set layouts the pass reuses and gets the created
- * handles back. Ownership stays with the runtime, which keeps the members and the call ORDER - the
- * order matters because the set layout a pass needs is owned by the pass that creates it (fxaa needs
- * the post layout, deferred the G-buffer layout, and both say so in their error messages).
+ * stateless, and EVERY ONE OF THEM NOW TAKES A `VkDevice` rather than the whole core: a device is what a
+ * caller that owns one has (a pass's create step gets exactly that, see vulkan.pass::pass_context), and the
+ * two builders that also need the surface's format - the composite and FXAA, which write the swapchain image -
+ * are handed it as a parameter. That is the whole of what they used to reach into the core for. The caller
+ * passes the set layouts the pass reuses and gets the created handles back. Ownership stays with whoever asked
+ * for the build (the runtime today, a pass once its three-piece has moved), which keeps the members and the
+ * call ORDER - the order matters because the set layout a pass needs is owned by the pass that creates it
+ * (fxaa needs the post layout, deferred the G-buffer layout, and both say so in their error messages).
  *
  * The pipeline handles are std::optional because vk_pipeline is an RAII owner with no default
  * constructor, which is also how the runtime holds them.
@@ -67,28 +71,28 @@ namespace vulkan::pipelines {
         std::optional<vk_pipeline> trace;
     };
 
-    export std::expected<post_owned, std::string> build_post(core& vk, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
-    export std::expected<gbuffer_owned, std::string> build_gbuffer_debug(core& vk, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export std::expected<post_owned, std::string> build_post(VkDevice device, VkFormat swap_chain_format, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export std::expected<gbuffer_owned, std::string> build_gbuffer_debug(VkDevice device, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     export std::expected<taa_owned, std::string> build_taa(VkDevice device, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code,
                                                            std::span<unsigned char const> fragment_shader_code);
     export std::expected<ssgi_owned, std::string> build_ssgi(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size,
                                                              std::span<unsigned char const> compute_shader_code);
     /// the spatial half of the same denoiser: same two set layouts, same shape, its own push block
-    export std::expected<ssgi_owned, std::string> build_ssgi_spatial(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    export std::expected<ssgi_owned, std::string> build_ssgi_spatial(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
     /// the glossy lobe (see shaders/ssgi_spec.comp) - the tracer's set layouts and its own push block
     export std::expected<ssgi_owned, std::string> build_ssgi_spec(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size,
                                                                   std::span<unsigned char const> compute_shader_code);
     /// the ray-traced sun shadow: the same two set layouts as the GI tracer (the scene set carries the
     /// camera, the light UBO and - when the device has ray tracing - the top level structure; the
     /// G-buffer set carries the surface the ray starts from)
-    export std::expected<ssgi_owned, std::string> build_rt_shadow(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    export std::expected<ssgi_owned, std::string> build_rt_shadow(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
     /// the mask bake: a compute pass over the shared scene set only (the material table and the texture
     /// array), which collapses the triangles a material's alphaMode MASK cuts out and writes the expanded
     /// vertices a bottom level structure is then built from - see shaders/mask_bake.comp
-    export std::expected<ssgi_owned, std::string> build_mask_bake(core& vk, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    export std::expected<ssgi_owned, std::string> build_mask_bake(VkDevice device, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
     /// the compute skinning pass: the same shape again, over the scene set's per-joint matrices - see
     /// shaders/compute_skin.comp
-    export std::expected<ssgi_owned, std::string> build_compute_skin(core& vk, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    export std::expected<ssgi_owned, std::string> build_compute_skin(VkDevice device, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
 
     /// what build_ssgi_temporal() creates: the pipeline layout and the resolve pipeline. The SET layout comes IN
     /// as a parameter now - it is generated from the denoiser's own DECLARATION (see
@@ -117,7 +121,7 @@ namespace vulkan::pipelines {
                                                                      std::span<unsigned char const> compute_shader_code);
 
     /// the passes that reuse a layout someone else owns, so theirs comes in as a parameter
-    export std::expected<vk_pipeline, std::string> build_fxaa(core& vk, VkPipelineLayout post_pipeline_layout, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export std::expected<vk_pipeline, std::string> build_fxaa(VkDevice device, VkFormat swap_chain_format, VkPipelineLayout post_pipeline_layout, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     export struct deferred_owned {
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> lighting;
@@ -125,12 +129,12 @@ namespace vulkan::pipelines {
 
     /// the additive blend state comes in as a parameter: the helper that builds it is a local of the
     /// runtime, next to the passes whose blend modes it describes
-    export std::expected<deferred_owned, std::string> build_deferred(core& vk, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<VkPipelineColorBlendAttachmentState const> color_blend, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export std::expected<deferred_owned, std::string> build_deferred(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<VkPipelineColorBlendAttachmentState const> color_blend, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     // post: the composite chain's owner. The set layout, its pipeline layout and the two fullscreen
     // pipelines (one per color format the chain renders into) are created here; the sampler stays with
     // the runtime, which owns the descriptor sets that use it. The caller passes the size of its push
     // constant block because that structure is the runtime's (it must match post.frag).
-    std::expected<post_owned, std::string> build_post(core& vk, uint32_t const push_constant_size, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+    std::expected<post_owned, std::string> build_post(VkDevice device, VkFormat const swap_chain_format, uint32_t const push_constant_size, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;
         post_owned out;
 
@@ -153,7 +157,7 @@ namespace vulkan::pipelines {
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
         layout_info.pBindings = bindings.data();
-        if (vkCreateDescriptorSetLayout(vk.device, &layout_info, nullptr, &out.set_layout) != VK_SUCCESS) {
+        if (vkCreateDescriptorSetLayout(device, &layout_info, nullptr, &out.set_layout) != VK_SUCCESS) {
             return fail("post: descriptor set layout creation failed");
         }
 
@@ -168,7 +172,7 @@ namespace vulkan::pipelines {
         pipeline_layout_info.pSetLayouts = &out.set_layout;
         pipeline_layout_info.pushConstantRangeCount = 1;
         pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
             return fail("post: pipeline layout creation failed");
         }
 
@@ -178,14 +182,14 @@ namespace vulkan::pipelines {
         // was a validation error for the HDR passes.
         auto const make_post_variant = [&](VkFormat const color_format) -> std::expected<vk_pipeline, std::string> {
             auto pipeline_result = vulkan::make_pipeline(
-                vk.device, out.pipeline_layout, color_format, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
+                device, out.pipeline_layout, color_format, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
             if (!pipeline_result) {
                 return std::unexpected(std::string(pipeline_result.error()));
             }
             return std::move(pipeline_result).value();
         };
 
-        auto composite_pipeline = make_post_variant(vk.swap_chain_image_format);
+        auto composite_pipeline = make_post_variant(swap_chain_format);
         if (!composite_pipeline) {
             return fail(std::move(composite_pipeline.error()));
         }
@@ -201,7 +205,7 @@ namespace vulkan::pipelines {
     // gbuffer debug: the owner of the G-buffer set layout. deferred reuses that layout, which is why
     // the runtime creates this pipeline first and says so in deferred's error message. The nearest
     // sampler the debug view needs stays with the runtime, next to the descriptor sets that use it.
-    std::expected<gbuffer_owned, std::string> build_gbuffer_debug(core& vk, uint32_t const push_constant_size, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+    std::expected<gbuffer_owned, std::string> build_gbuffer_debug(VkDevice device, uint32_t const push_constant_size, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;
         gbuffer_owned out;
 
@@ -251,7 +255,7 @@ namespace vulkan::pipelines {
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
         layout_info.pBindings = bindings.data();
-        if (vkCreateDescriptorSetLayout(vk.device, &layout_info, nullptr, &out.set_layout) != VK_SUCCESS) {
+        if (vkCreateDescriptorSetLayout(device, &layout_info, nullptr, &out.set_layout) != VK_SUCCESS) {
             return fail("gbuffer debug: descriptor set layout creation failed");
         }
 
@@ -266,13 +270,13 @@ namespace vulkan::pipelines {
         pipeline_layout_info.pSetLayouts = &out.set_layout;
         pipeline_layout_info.pushConstantRangeCount = 1;
         pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
             return fail("gbuffer debug: pipeline layout creation failed");
         }
 
         VkFormat const hdr_format_only = vulkan::hdr_format;
         auto pipeline_result = vulkan::make_pipeline(
-            vk.device, out.pipeline_layout, hdr_format_only, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
+            device, out.pipeline_layout, hdr_format_only, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
         if (!pipeline_result) {
             return fail(std::string(pipeline_result.error()));
         }
@@ -373,7 +377,7 @@ namespace vulkan::pipelines {
     // bindless texture array to sample it. It owns no set layout, like the tracer, and it is the only compute
     // pass here whose output is not an image: it writes vertices into a buffer the acceleration structure is
     // then built from.
-    std::expected<ssgi_owned, std::string> build_mask_bake(core& vk, VkDescriptorSetLayout const scene_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    std::expected<ssgi_owned, std::string> build_mask_bake(VkDevice device, VkDescriptorSetLayout const scene_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         ssgi_owned out;
 
@@ -388,11 +392,11 @@ namespace vulkan::pipelines {
         pipeline_layout_info.pSetLayouts = &scene_layout;
         pipeline_layout_info.pushConstantRangeCount = 1;
         pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
             return fail("mask bake: pipeline layout creation failed");
         }
 
-        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, vk.device);
+        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
         if (!module.has_value()) {
             return fail("mask bake: compute shader module creation failed");
         }
@@ -408,17 +412,17 @@ namespace vulkan::pipelines {
         pipeline_info.layout = out.pipeline_layout;
 
         VkPipeline pipeline = VK_NULL_HANDLE;
-        if (vkCreateComputePipelines(vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+        if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("mask bake: vkCreateComputePipelines failed");
         }
-        out.trace = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
+        out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
         return out;
     }
 
     // The compute skinning pass (see shaders/compute_skin.comp): the same shape as the mask bake above and
     // for the same reason - it reads only the shared scene set (here the per-joint matrices at binding 9)
     // and owns no set layout of its own.
-    std::expected<ssgi_owned, std::string> build_compute_skin(core& vk, VkDescriptorSetLayout const scene_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    std::expected<ssgi_owned, std::string> build_compute_skin(VkDevice device, VkDescriptorSetLayout const scene_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         ssgi_owned out;
 
@@ -433,11 +437,11 @@ namespace vulkan::pipelines {
         pipeline_layout_info.pSetLayouts = &scene_layout;
         pipeline_layout_info.pushConstantRangeCount = 1;
         pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
             return fail("compute skin: pipeline layout creation failed");
         }
 
-        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, vk.device);
+        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
         if (!module.has_value()) {
             return fail("compute skin: compute shader module creation failed");
         }
@@ -453,10 +457,10 @@ namespace vulkan::pipelines {
         pipeline_info.layout = out.pipeline_layout;
 
         VkPipeline pipeline = VK_NULL_HANDLE;
-        if (vkCreateComputePipelines(vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+        if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("compute skin: vkCreateComputePipelines failed");
         }
-        out.trace = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
+        out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
         return out;
     }
 
@@ -464,7 +468,7 @@ namespace vulkan::pipelines {
     // because its inputs are in the same places (the camera block and the light UBO in the scene set,
     // the stored surface in the G-buffer set) plus the top level structure, which lives in the scene set
     // as binding 16 when the device has ray tracing. Nothing new is created here beyond the layout.
-    std::expected<ssgi_owned, std::string> build_rt_shadow(core& vk, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    std::expected<ssgi_owned, std::string> build_rt_shadow(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         ssgi_owned out;
 
@@ -480,11 +484,11 @@ namespace vulkan::pipelines {
         pipeline_layout_info.pSetLayouts = set_layouts.data();
         pipeline_layout_info.pushConstantRangeCount = 1;
         pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
             return fail("rt shadow: pipeline layout creation failed");
         }
 
-        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, vk.device);
+        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
         if (!module.has_value()) {
             return fail("rt shadow: compute shader module creation failed");
         }
@@ -500,16 +504,16 @@ namespace vulkan::pipelines {
         pipeline_info.layout = out.pipeline_layout;
 
         VkPipeline pipeline = VK_NULL_HANDLE;
-        if (vkCreateComputePipelines(vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+        if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("rt shadow: vkCreateComputePipelines failed");
         }
-        out.trace = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
+        out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
         return out;
     }
     // The GI spatial filter: the same two set layouts the tracer binds (the shared scene set and the
     // G-buffer set, which carries the normal, the depth, the accumulated image it reads and the
     // filtered image it writes), so only the pipeline layout and the push block are new.
-    std::expected<ssgi_owned, std::string> build_ssgi_spatial(core& vk, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    std::expected<ssgi_owned, std::string> build_ssgi_spatial(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         ssgi_owned out;
 
@@ -525,11 +529,11 @@ namespace vulkan::pipelines {
         pipeline_layout_info.pSetLayouts = set_layouts.data();
         pipeline_layout_info.pushConstantRangeCount = 1;
         pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
             return fail("ssgi spatial: pipeline layout creation failed");
         }
 
-        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, vk.device);
+        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
         if (!module.has_value()) {
             return fail("ssgi spatial: compute shader module creation failed");
         }
@@ -545,10 +549,10 @@ namespace vulkan::pipelines {
         pipeline_info.layout = out.pipeline_layout;
 
         VkPipeline pipeline = VK_NULL_HANDLE;
-        if (vkCreateComputePipelines(vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+        if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("ssgi spatial: vkCreateComputePipelines failed");
         }
-        out.trace = vk_pipeline(pipeline, out.pipeline_layout, vk.device);
+        out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
         return out;
     }
 
@@ -718,7 +722,7 @@ namespace vulkan::pipelines {
         out.pass = vk_pipeline(pipeline, out.pipeline_layout, device);
         return out;
     }
-    std::expected<deferred_owned, std::string> build_deferred(core& vk, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<VkPipelineColorBlendAttachmentState const> const color_blend, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+    std::expected<deferred_owned, std::string> build_deferred(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<VkPipelineColorBlendAttachmentState const> const color_blend, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;
         deferred_owned out;
         std::array<VkDescriptorSetLayout, 2> const set_layouts = {scene_layout, gbuffer_layout};
@@ -732,12 +736,12 @@ namespace vulkan::pipelines {
         pipeline_layout_info.pSetLayouts = set_layouts.data();
         pipeline_layout_info.pushConstantRangeCount = 1;
         pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(vk.device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
             return fail("deferred: pipeline layout creation failed");
         }
         std::array<VkFormat, 1> const color_formats = {vulkan::hdr_format};
         auto pipeline_result = vulkan::make_pipeline(
-            vk.device, out.pipeline_layout, std::span<VkFormat const>(color_formats), VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, 0.0f, 0.0f, 0.0f, color_blend);
+            device, out.pipeline_layout, std::span<VkFormat const>(color_formats), VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, 0.0f, 0.0f, 0.0f, color_blend);
         if (!pipeline_result) {
             return fail(std::string(pipeline_result.error()));
         }
@@ -745,10 +749,10 @@ namespace vulkan::pipelines {
         return out;
     }
 
-    std::expected<vk_pipeline, std::string> build_fxaa(core& vk, VkPipelineLayout const post_pipeline_layout, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+    std::expected<vk_pipeline, std::string> build_fxaa(VkDevice device, VkFormat const swap_chain_format, VkPipelineLayout const post_pipeline_layout, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;
         auto pipeline_result = vulkan::make_pipeline(
-            vk.device, post_pipeline_layout, vk.swap_chain_image_format, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
+            device, post_pipeline_layout, swap_chain_format, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
         if (!pipeline_result) {
             return fail(std::string(pipeline_result.error()));
         }

@@ -2223,7 +2223,7 @@ namespace vulkan {
 
         // the layout and both composites come from vulkan.pipelines; the push constant block stays here
         // (it must match post.frag, so it lives next to the code that fills it)
-        auto built = pipelines::build_post(vk, sizeof(post_push_constants), vertex_shader_code, fragment_shader_code);
+        auto built = pipelines::build_post(vk.device, vk.swap_chain_image_format, sizeof(post_push_constants), vertex_shader_code, fragment_shader_code);
         if (!built) {
             return std::unexpected(std::move(built.error()));
         }
@@ -2240,7 +2240,7 @@ namespace vulkan {
         if (this->post_pipeline_layout == VK_NULL_HANDLE) {
             return fail(std::string("fxaa: create the post-process pipeline first (it owns the set layout)"));
         }
-        auto built = pipelines::build_fxaa(vk, this->post_pipeline_layout, vertex_shader_code, fragment_shader_code);
+        auto built = pipelines::build_fxaa(vk.device, vk.swap_chain_image_format, this->post_pipeline_layout, vertex_shader_code, fragment_shader_code);
         if (!built) {
             return std::unexpected(std::move(built.error()));
         }
@@ -2357,7 +2357,7 @@ namespace vulkan {
             return fail(std::string("deferred: the shared scene descriptor set layout is missing"));
         }
         std::array<VkPipelineColorBlendAttachmentState, 1> const blend = {make_color_blend_attachment_additive()};
-        auto built = pipelines::build_deferred(vk, vk.scene_descriptor_set_layout, this->gbuffer_set_layout, sizeof(deferred_push_constants), std::span<VkPipelineColorBlendAttachmentState const>(blend), vertex_shader_code, fragment_shader_code);
+        auto built = pipelines::build_deferred(vk.device, vk.scene_descriptor_set_layout, this->gbuffer_set_layout, sizeof(deferred_push_constants), std::span<VkPipelineColorBlendAttachmentState const>(blend), vertex_shader_code, fragment_shader_code);
         if (!built) {
             return std::unexpected(std::move(built.error()));
         }
@@ -2369,7 +2369,7 @@ namespace vulkan {
     std::expected<void, std::string> runtime::make_gbuffer_debug_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
         core& vk = this->vulkan_core;
         // the G-buffer set layout is owned here (vulkan.pipelines) because deferred reuses it
-        auto built = pipelines::build_gbuffer_debug(vk, sizeof(gbuffer_debug_push_constants), vertex_shader_code, fragment_shader_code);
+        auto built = pipelines::build_gbuffer_debug(vk.device, sizeof(gbuffer_debug_push_constants), vertex_shader_code, fragment_shader_code);
         if (!built) {
             return std::unexpected(std::move(built.error()));
         }
@@ -3248,7 +3248,7 @@ namespace vulkan {
         if (!this->deferred_pipeline.has_value()) {
             return fail(std::string("ssgi spatial: create the deferred lighting pipeline first (it owns the G-buffer set layout)"));
         }
-        auto built = pipelines::build_ssgi_spatial(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, this->gbuffer_set_layout,
+        auto built = pipelines::build_ssgi_spatial(this->vulkan_core.device, this->vulkan_core.scene_descriptor_set_layout, this->gbuffer_set_layout,
                                                    static_cast<uint32_t>(sizeof(pass::ssgi_spatial_pass::push_constants)), compute_shader_code);
         if (!built) {
             return fail(built.error());
@@ -3847,7 +3847,7 @@ namespace vulkan {
         }
         // The scene set ALONE, because everything the bake reads is in it: the material table (the alpha
         // texture's index, the base colour factor's alpha, the cutoff) and the bindless texture array.
-        auto built = pipelines::build_mask_bake(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, sizeof(mask_bake_push_constants), compute_shader_code);
+        auto built = pipelines::build_mask_bake(this->vulkan_core.device, this->vulkan_core.scene_descriptor_set_layout, sizeof(mask_bake_push_constants), compute_shader_code);
         if (!built) {
             return std::unexpected(std::move(built.error()));
         }
@@ -3889,7 +3889,7 @@ namespace vulkan {
         }
         // The scene set alone, because the pass reads exactly one thing from it: the per-joint matrices at
         // binding 9. The vertices come through push-constant device addresses, like every other traced pass.
-        auto built = pipelines::build_compute_skin(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, sizeof(compute_skin_push_constants), compute_shader_code);
+        auto built = pipelines::build_compute_skin(this->vulkan_core.device, this->vulkan_core.scene_descriptor_set_layout, sizeof(compute_skin_push_constants), compute_shader_code);
         if (!built) {
             return std::unexpected(std::move(built.error()));
         }
@@ -3994,7 +3994,7 @@ namespace vulkan {
         if (!this->deferred_pipeline.has_value()) {
             return fail(std::string("rt shadow: create the deferred lighting pipeline first (it owns the G-buffer set layout)"));
         }
-        auto built = pipelines::build_rt_shadow(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, this->gbuffer_set_layout, sizeof(rt_shadow_push_constants), compute_shader_code);
+        auto built = pipelines::build_rt_shadow(this->vulkan_core.device, this->vulkan_core.scene_descriptor_set_layout, this->gbuffer_set_layout, sizeof(rt_shadow_push_constants), compute_shader_code);
         if (!built) {
             return fail(built.error());
         }
