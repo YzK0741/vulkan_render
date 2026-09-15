@@ -171,6 +171,7 @@ target_sources(vulkancorekit
         vulkan/pass/mask_bake.cpp
         vulkan/pass/compute_skin.cpp
         vulkan/pass/cluster.cpp
+        vulkan/pass/deferred.cpp
         vulkan/shadow_fit/shadow_fit.cpp
         vulkan/readback/readback.cpp
         vulkan/acceleration_structure/acceleration_structure.cpp
