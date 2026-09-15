@@ -1028,23 +1028,19 @@ export namespace vulkan::render_resource {
     }};
 
     /**
-     * @brief the images the temporal resolve transitions beyond its own bindings
+     * @brief the images the temporal resolve transitions
      *
-     * Four, because the pass resolves TWO signals with ONE layout: the diffuse pair is also in its own set
-     * (bindings 1 and 4), but the reflection's pair is not - the same seven slots hold the reflection's images
-     * in the second family - so both pairs are declared here and the host hands over all four. The order is the
-     * pass's interface:
+     * The DIFFUSE signal's pair, and only those: this declaration belongs to the pass that resolves the diffuse
+     * bounce. The reflection's accumulation and history are the second family's, resolved by the renderer today
+     * because the two signals share ONE layout and one pipeline - which is exactly why a single declaration can
+     * only ever describe one of them (the reasoning is in docs/pass_chain_plan.md).
      *
-     *   0: `gi_resolve`         the diffuse accumulation this dispatch WRITES (also binding 4)
-     *   1: `gi_history`         the diffuse history it reads and then copies into (also binding 1)
-     *   2: `gi_spec_resolve`    the reflection's accumulation, mode 1 only
-     *   3: `gi_spec_history`    the reflection's history, mode 1 only
+     *   0: `gi_resolve`   the diffuse accumulation this dispatch WRITES (also binding 4)
+     *   1: `gi_history`   the diffuse history it reads and then copies into (also binding 1)
      */
-    inline constexpr std::array<barrier_image, 4> ssgi_temporal_barriers = {{
+    inline constexpr std::array<barrier_image, 2> ssgi_temporal_barriers = {{
         {.resource = resource_id::gi_resolve, .element = 0},
         {.resource = resource_id::gi_history, .element = 0},
-        {.resource = resource_id::gi_spec_resolve, .element = 0},
-        {.resource = resource_id::gi_spec_history, .element = 0},
     }};
 
     /**

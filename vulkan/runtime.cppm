@@ -33,6 +33,7 @@ import vulkan.pass.scene;             // the third: the scene itself, whose work
 import vulkan.pass.transparent;       // the fourth: the blended geometry, over the shaded frame
 import vulkan.pass.ssgi_trace;        // the fifth, and the GI chain's first stage: the half-resolution tracer
 import vulkan.pass.ssgi_spec;         // the sixth: the glossy lobe, which corrects the tracer's own image
+import vulkan.pass.ssgi_temporal;     // the seventh: the diffuse temporal resolve's recording (see its header)
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
@@ -385,6 +386,12 @@ namespace vulkan {
         /// and writes the SAME image the tracer wrote - which is why the tracer asks whether it will run.
         pass::ssgi_spec_pass ssgi_spec;
         std::array<pass::frame_pass*, 1> ssgi_spec_stage = {&this->ssgi_spec};
+        /// THE DIFFUSE TEMPORAL RESOLVE (vulkan.pass.ssgi_temporal): step 1a - it owns the RECORDING (the two
+        /// barrier batches, the dispatch, the two push lanes that describe its own state, the history copy and
+        /// the hand-backs) while its set and its pipeline arrive through `resolved_io`, because the two signals
+        /// share one layout and one pipeline. The pass-owned family is step 1b (see docs/pass_chain_plan.md).
+        pass::ssgi_temporal_pass ssgi_temporal;
+        std::array<pass::frame_pass*, 1> ssgi_temporal_stage = {&this->ssgi_temporal};
         bool ssgi_on = false;
         float ssgi_intensity = 0.7f; // scales the traced indirect against the IBL probe it overlaps
         float ssgi_radius = 3.0f;    // ray length, view units
@@ -2447,6 +2454,30 @@ namespace vulkan {
          *         skips the pass WITHOUT recording anything - the same early returns the moved body made
          */
         [[nodiscard]] bool resolve_ssgi_spec(pass::resolved_io& out);
+        /**
+         * @brief this frame's input for the diffuse temporal resolve
+         * @param history_valid the flag AS READ BEFORE the stage, so the reflection's resolve (which runs after
+         *        it, in the same frame) blends exactly as this one did
+         * @note `ensure_inputs` is the renderer's two shared per-image transitions: their "was it written this
+         *       frame" flags belong to the passes that wrote those images, so the pass calls back for them
+         */
+        [[nodiscard]] pass::ssgi_temporal_frame make_ssgi_denoise_frame(bool history_valid) noexcept;
+        /// @brief the renderer's two shared per-image transitions, as a callback the resolve calls (see above)
+        static void ensure_denoise_inputs(void* owner, VkCommandBuffer command_buffer, uint32_t image_index);
+        /**
+         * @brief resolve the diffuse temporal resolve: the set and pipeline the renderer owns, the two images it
+         *        transitions, and the push block it composes
+         * @return false when the generation or the pipeline is not there, which skips the pass WITHOUT recording
+         */
+        [[nodiscard]] bool resolve_ssgi_temporal(pass::resolved_io& out);
+        /**
+         * @brief the extent a pass's declaration asks for (see `pass::behaviour::extent`)
+         * @note the rule is a MAPPING from the declaration to a number the renderer owns, so it is applied here
+         *       - in ONE place, because a pass handed the full extent where its declaration says `half` would
+         *       dispatch twice the groups it should (the shaders guard their writes with `imageSize`, which is
+         *       why that is invisible until something else, like a copy region, uses the same number)
+         */
+        [[nodiscard]] VkExtent2D pass_extent(pass::frame_pass const& pass) const noexcept;
 
         /**
          * @brief create the ray-traced sun shadow pipeline from shaders/rt_shadow.comp

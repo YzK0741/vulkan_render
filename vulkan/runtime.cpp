@@ -1224,6 +1224,8 @@ namespace vulkan {
             [[maybe_unused]] pass::run_report const trace_recreated = pass::recreate_stage(ssgi_trace_stage, this->make_pass_host());
             pass::stage const ssgi_spec_stage = {.name = "ssgi_spec", .passes = this->ssgi_spec_stage, .marks = false};
             [[maybe_unused]] pass::run_report const spec_recreated = pass::recreate_stage(ssgi_spec_stage, this->make_pass_host());
+            pass::stage const ssgi_temporal_stage = {.name = "ssgi_temporal", .passes = this->ssgi_temporal_stage, .marks = false};
+            [[maybe_unused]] pass::run_report const temporal_recreated = pass::recreate_stage(ssgi_temporal_stage, this->make_pass_host());
         }
         // Every swapchain image's history died with the old generation (and its size may have
         // changed): forget the matrices, so the next frame for each image starts a new accumulation
@@ -3022,6 +3024,65 @@ namespace vulkan {
         }
     }
 
+    void runtime::ensure_denoise_inputs(void* owner, VkCommandBuffer const command_buffer, uint32_t const image_index) {
+        // The two shared per-image transitions the diffuse temporal resolve needs. They are the RENDERER's
+        // because the "was it written this frame" flags behind them belong to the passes that WROTE those images,
+        // so the pass calls back for them instead of owning them (see vulkan.pass.ssgi_temporal's header). Called
+        // in the same place the moved code called the two accessors: after the resolve's own barriers, before its
+        // dispatch.
+        runtime& self = *static_cast<runtime*>(owner);
+        static_cast<void>(self.ensure_gbuffer_depth_sampled(command_buffer, image_index));
+        static_cast<void>(self.ensure_velocity_sampled(command_buffer, image_index));
+    }
+
+    pass::ssgi_temporal_frame runtime::make_ssgi_denoise_frame(bool const history_valid) noexcept {
+        return pass::ssgi_temporal_frame{.history_valid = history_valid, .ensure_inputs = &runtime::ensure_denoise_inputs, .owner = this};
+    }
+
+    bool runtime::resolve_ssgi_temporal(pass::resolved_io& out) {
+        core const& vk = this->vulkan_core;
+        std::size_t const index = this->current_image_index;
+        if (index >= vk.gi_resolve_images.size() || vk.gi_history_images.size() != vk.gi_resolve_images.size() || vk.gi_resolve_images[index] == VK_NULL_HANDLE ||
+            vk.gi_history_images[index] == VK_NULL_HANDLE) {
+            return false; // no accumulation to write into: this frame has no GI (its weight stays 0)
+        }
+        // The set and the pipeline are the renderer's for now (step 1a): both signals share one layout, and the
+        // set is the diffuse family's, ensured exactly where it was ensured before the move.
+        this->ensure_ssgi_denoise_descriptors();
+        VkDescriptorSet const set = this->ssgi_temporal_family.set(static_cast<uint32_t>(index), 0);
+        if (set == VK_NULL_HANDLE || !this->ssgi_temporal_pipeline.has_value() || this->ssgi_temporal_pipeline_layout == VK_NULL_HANDLE) {
+            return false;
+        }
+        out.frame = this->pass_frame();
+        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
+        out.own_set = set;
+        // The two images the pass transitions: the accumulation it writes and the history it reads, which are
+        // also two of its own bindings - declared separately because a barrier takes an image and a descriptor a
+        // view.
+        out.barrier_storage[0] = {.view = vk.gi_resolve_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_resolve_images[index]};
+        out.barrier_storage[1] = {.view = vk.gi_history_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_history_images[index]};
+        out.barrier_images = std::span<pass::resolved_binding const>(out.barrier_storage.data(), render_resource::ssgi_temporal_barriers.size());
+        out.pipeline_storage[0] = this->ssgi_temporal_pipeline->get_pipeline();
+        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
+        out.pipeline_layout = this->ssgi_temporal_pipeline_layout;
+        // The push block: the two blend weights, the two projection terms and the two extents are the renderer's.
+        // The two lanes that describe the PASS's own state - `history_valid` and `mode` - are written by the pass
+        // itself (see its record), which is the split the block's own comment describes.
+        VkExtent2D const gi = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->ssgi_temporal));
+        pass::ssgi_temporal_pass::push_constants push = {};
+        push.blend_static = this->gi_blend_static;
+        push.blend_min = this->gi_blend_min;
+        push.depth_scale = this->current_ubo.proj[2][2];
+        push.depth_offset = this->current_ubo.proj[3][2];
+        push.gi_size = glm::vec4(static_cast<float>(gi.width), static_cast<float>(gi.height),
+                                 static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height));
+        static_assert(sizeof(push) <= pass::max_push_bytes, "the resolve's push block must fit the guaranteed minimum");
+        std::memcpy(out.push_storage.data(), &push, sizeof(push));
+        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
+        out.extent = gi;
+        return true;
+    }
+
     bool runtime::record_ssgi_denoise_pass(VkCommandBuffer const command_buffer) {
         core& vk = this->vulkan_core;
         std::size_t const index = this->current_image_index;
@@ -3037,7 +3098,14 @@ namespace vulkan {
         // share it, and a flag read after the first dispatch would tell the reflection its history exists on
         // the very frame that created it - which is the one frame it must not blend with.
         bool const history_valid = index < this->gi_history_valid.size() && this->gi_history_valid[index];
-        bool const resolved = this->record_ssgi_resolve_pass(command_buffer, set, vk.gi_resolve_images[index], vk.gi_history_images[index], history_valid, 0.0f);
+        // THE DIFFUSE RESOLVE is the PASS's now (vulkan.pass.ssgi_temporal): the two barrier batches, the
+        // dispatch, the push lanes that describe its own state, the history copy and the hand-backs. The frame is
+        // set up here because the flag it carries has to be the value read BEFORE the stage - the reflection's
+        // resolve below uses the same value, so the two signals agree about the frame that created the history.
+        this->ssgi_temporal.set_frame(this->make_ssgi_denoise_frame(history_valid));
+        pass::stage const temporal_stage = {.name = "ssgi_temporal", .passes = this->ssgi_temporal_stage, .marks = false};
+        [[maybe_unused]] pass::run_report const temporal_report = pass::record_stage(temporal_stage, this->make_pass_host());
+        bool const resolved = this->ssgi_temporal.resolved();
         // ... and the reflection's own accumulation, when this frame's lobe produced one. Its reprojection
         // is the one the lobe published, its history is its own, and the spatial filter's spec_weight lane is
         // what keeps a stale accumulation out of a frame whose lobe did not run.
@@ -3339,6 +3407,11 @@ namespace vulkan {
         if (!spec_created.rejected.empty()) {
             utility::log("pass '{}': its declaration was refused by the validator, so it does not run", spec_created.rejected);
         }
+        pass::stage const temporal_stage = {.name = "ssgi_temporal", .passes = this->ssgi_temporal_stage, .marks = false};
+        pass::run_report const temporal_created = pass::create_stage(temporal_stage, build);
+        if (!temporal_created.rejected.empty()) {
+            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", temporal_created.rejected);
+        }
         pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
         pass::run_report const created = pass::create_stage(probe_stage, build);
         if (!created.rejected.empty()) {
@@ -3534,6 +3607,23 @@ namespace vulkan {
         return true;
     }
 
+    VkExtent2D runtime::pass_extent(pass::frame_pass const& pass) const noexcept {
+        // The three rules the framework defines, applied from the pass's own declaration. `half` is the GI
+        // chain's resolution and the SAME max(1, axis / 2) the images are created with (see
+        // core::create_render_targets), so a pass cannot disagree with the image it writes.
+        core const& vk = this->vulkan_core;
+        switch (pass.behaviour().extent) {
+        case pass::extent_rule::full:
+            return vk.swap_chain_extent;
+        case pass::extent_rule::half:
+            return VkExtent2D{std::max(1u, vk.swap_chain_extent.width / 2u), std::max(1u, vk.swap_chain_extent.height / 2u)};
+        case pass::extent_rule::resource:
+            // The one resource-shaped extent this renderer has: the probe cache's grid.
+            return pass.behaviour().extent_of == pass::resource_id::probe_grid ? VkExtent2D{vulkan::gi_probe_grid_extent, vulkan::gi_probe_grid_extent} : VkExtent2D{};
+        }
+        return {};
+    }
+
     pass::frame_identity runtime::pass_frame() const noexcept {
         core const& vk = this->vulkan_core;
         return pass::frame_identity{
@@ -3581,6 +3671,9 @@ namespace vulkan {
         }
         if (&pass == static_cast<pass::frame_pass const*>(&this->ssgi_spec)) {
             return this->resolve_ssgi_spec(out);
+        }
+        if (&pass == static_cast<pass::frame_pass const*>(&this->ssgi_temporal)) {
+            return this->resolve_ssgi_temporal(out);
         }
         if (&pass == static_cast<pass::frame_pass const*>(&this->taa_resolve)) {
             return this->resolve_taa_pass(out);

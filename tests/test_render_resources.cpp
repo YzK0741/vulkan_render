@@ -367,12 +367,11 @@ int main() {
         CHECK(rr::ssgi_temporal_io.bindings[4].layout == rr::image_layout::general); // a storage image must say so
         CHECK(rr::ssgi_temporal_io.bindings[5].resource == rr::resource_id::gbuffer_targets);
         CHECK(rr::ssgi_temporal_io.bindings[5].element == 1); // the normal/roughness target, for roughness
-        // the four images it transitions: both signals' accumulations and histories
-        CHECK(rr::ssgi_temporal_io.barrier_images.size() == 4);
+        // the two images it transitions: the DIFFUSE signal's pair (the reflection's resolve is the renderer's
+        // for now, from the same layout - see the declaration's note)
+        CHECK(rr::ssgi_temporal_io.barrier_images.size() == 2);
         CHECK(rr::ssgi_temporal_io.barrier_images[0].resource == rr::resource_id::gi_resolve);
         CHECK(rr::ssgi_temporal_io.barrier_images[1].resource == rr::resource_id::gi_history);
-        CHECK(rr::ssgi_temporal_io.barrier_images[2].resource == rr::resource_id::gi_spec_resolve);
-        CHECK(rr::ssgi_temporal_io.barrier_images[3].resource == rr::resource_id::gi_spec_history);
         CHECK(rr::ssgi_temporal_io.push.has_value());
         CHECK(rr::ssgi_temporal_io.push->size == 48); // eight floats and the two extents
         CHECK(rr::ssgi_temporal_io.push->stages == rr::stage_flag::compute);
