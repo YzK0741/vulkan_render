@@ -495,16 +495,33 @@ namespace vulkan {
         void create_color_resources();
 
         VkCommandPool command_pool = {};
-        std::vector<VkCommandBuffer> command_buffers = {};
         void create_command_pool() noexcept;
 
         VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
         void create_descriptor_pool() noexcept;
+        /** @brief create the shared samplers above: device-level, reference-counted by nobody, destroyed with core */
+        void create_samplers();
 
         // shared scene layouts (see the scene_texture_capacity / scene_push_constant_size docs above);
         // all pipelines are created against scene_pipeline_layout, so one descriptor set works for all
         VkDescriptorSetLayout scene_descriptor_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout scene_pipeline_layout = VK_NULL_HANDLE;
+        // ---- the SHARED samplers, created once with the device (see create_samplers) ----
+        //
+        // THEY LIVE HERE because a sampler is a device-level object with no per-frame state and no owner among the
+        // passes: a pass DECLARES one by hint (see render_resource::shared::sampler_set) and the renderer hands over
+        // the handles, so the object's owner has to be the device root - the same argument every image in this class
+        // answers. Before this they were scattered across the runtime's scene setup, a pipeline builder and two
+        // ensure_* functions, which is the "naming accident" docs/runtime_split.md records.
+        //
+        // `env_sampler` is deliberately NOT here: its max_lod is the app's environment mip count, not a device fact.
+        vk_sampler texture_sampler = {};      // the bindless texture array: REPEAT, and all its mip levels
+        vk_sampler gbuffer_sampler = {};      // the G-buffer's stored surface: NEAREST, clamp (exact texel centres)
+        vk_sampler gi_probe_sampler = {};     // the world-space probe grid: LINEAR, clamp (interpolating between cells)
+        vk_sampler taa_sampler = {};          // the TAA resolve: LINEAR magnification, NEAREST minification
+        vk_sampler post_sampler = {};         // the post chain and the FXAA filter: LINEAR, clamp
+        vk_sampler post_nearest_sampler = {}; // the composite's GI upsample: NEAREST, clamp (depths are not colours)
+        vk_sampler shadow_sampler = {};       // the cascaded map: depth-compare + LINEAR (hardware PCF), clamp
         void init_scene_layouts() noexcept;
 
         vma_allocator vma = {};

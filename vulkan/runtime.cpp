@@ -335,7 +335,6 @@ namespace vulkan {
         // maxLod 12 covers mip chains up to 4096x4096 (13 levels); images with fewer mips simply
         // clamp to their last level. Sampled with a LINEAR mip filter, so far/small surfaces
         // use the pre-generated mips instead of aliasing mip0.
-        this->texture_sampler = this->vulkan_core.make_sampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 12.0f);
 
         // GPU material table: fixed capacity, host-visible (direct mapping); records are appended
         // at registration and read-only for the GPU (set 0 binding 5)
@@ -484,7 +483,6 @@ namespace vulkan {
             this->shadow_layer_views.push_back(std::move(layers));
         }
         this->shadow_allocated_layers = this->shadow_cascades;
-        this->shadow_sampler = this->vulkan_core.make_shadow_sampler();
 
         // Light UBO (scene set binding 7): one buffer PER FRAME SLOT (host-visible, mapped), so
         // a frame being rendered never shares the buffer the next frame rewrites. CPU-side
@@ -647,7 +645,7 @@ namespace vulkan {
                 // sampler2D read is not what the descriptor declares. post_sampler exists by the time any
                 // primitive is created (main.cpp loads the scene after setup_pipeline), which is what
                 // every caller of this function is.
-                visibility_infos[0].sampler = *this->post_sampler;
+                visibility_infos[0].sampler = *this->vulkan_core.post_sampler;
                 visibility_infos[0].imageView = this->vulkan_core.rt_shadow_image_views[static_cast<std::size_t>(slot)];
                 visibility_infos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 visibility_infos[1].sampler = VK_NULL_HANDLE; // a storage image has no sampler
@@ -726,7 +724,7 @@ namespace vulkan {
                 utility::panic("failed to get shadow map image detail");
             }
             VkDescriptorImageInfo const shadow_info{
-                .sampler = *this->shadow_sampler,
+                .sampler = *this->vulkan_core.shadow_sampler,
                 .imageView = *this->shadow_array_views[static_cast<std::size_t>(slot)],
                 .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             };
@@ -781,7 +779,7 @@ namespace vulkan {
             views[1] = this->vulkan_core.furnace_cube_views[0];
         }
         std::span<VkImageView const> const view_span = have_ibl_views ? std::span<VkImageView const>(views) : std::span<VkImageView const>{};
-        this->scene_sets.write_ibl(this->vulkan_core, this->ibl_ready, view_span, *this->env_sampler, *this->owned_texture_views[0], *this->texture_sampler);
+        this->scene_sets.write_ibl(this->vulkan_core, this->ibl_ready, view_span, *this->env_sampler, *this->owned_texture_views[0], *this->vulkan_core.texture_sampler);
     }
 
     void runtime::set_ibl(ibl_input const& info) {
@@ -870,7 +868,7 @@ namespace vulkan {
         std::array<VkWriteDescriptorSet, 5> writes = {};
         uint32_t write_count = 0;
         bool white_needed = false;
-        VkSampler const sampler = *this->texture_sampler;
+        VkSampler const sampler = *this->vulkan_core.texture_sampler;
         for (int i = 0; i < 5; ++i) {
             texture_input const& tex = *slots[i].first;
             if (!tex.valid || tex.data.empty()) {
@@ -2177,24 +2175,6 @@ namespace vulkan {
     // renderer's for the reason `build_post`'s own comment gives: they belong to the descriptor SETS, which this
     // class still writes (post_family). They have to exist before `create_passes()`, because the pass context
     // hands every pass the six samplers a declaration may choose between.
-    std::expected<void, std::string> runtime::ensure_post_samplers() {
-        core& vk = this->vulkan_core;
-        // sampler for the HDR scene target (linear, clamp) - the descriptor sets use it
-        this->post_sampler = vk.make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
-        // ... and the nearest one the composite's GI upsample needs (see post_nearest_sampler)
-        {
-            VkSamplerCreateInfo nearest_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
-            nearest_info.magFilter = VK_FILTER_NEAREST;
-            nearest_info.minFilter = VK_FILTER_NEAREST;
-            VkSampler nearest = VK_NULL_HANDLE;
-            if (vkCreateSampler(vk.device, &nearest_info, nullptr, &nearest) != VK_SUCCESS) {
-                return std::unexpected(std::string("post: nearest sampler creation failed"));
-            }
-            this->post_nearest_sampler = vk_sampler(nearest, vk.device);
-        }
-        return {};
-    }
-
     // THE FXAA PASS'S FRAME (vulkan.pass.fxaa). What the pass cannot know is which image it reads and which it
     // writes (the LDR image the composite produced, and the swapchain), which variant of the post family's set is
     // the one it reads that image through (set 4, the composite's), and the push block's values.
@@ -2278,7 +2258,7 @@ namespace vulkan {
                     // the upsample existed - with a nearest sampler it would be a much blurrier
                     // comparison and the A/B would be measuring two differences at once.
                     bool const nearest = b == 7u || b == 8u;
-                    image_infos[b].sampler = nearest ? *this->post_nearest_sampler : *this->post_sampler;
+                    image_infos[b].sampler = nearest ? *this->vulkan_core.post_nearest_sampler : *this->vulkan_core.post_sampler;
                     image_infos[b].imageView = views[b];
                     image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 }
@@ -2445,24 +2425,6 @@ namespace vulkan {
     // The G-buffer declarations' SAMPLERS: what is left of make_gbuffer_debug_pipeline in the renderer, because the
     // set layout, its pipeline layout and the view pipeline are the debug view's PASS's now. They have to exist
     // before create_passes(), since the pass context hands every pass the six a declaration may choose between.
-    std::expected<void, std::string> runtime::ensure_gbuffer_samplers() {
-        core& vk = this->vulkan_core;
-        VkSamplerCreateInfo sampler_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
-        sampler_info.magFilter = VK_FILTER_NEAREST;
-        sampler_info.minFilter = VK_FILTER_NEAREST;
-        VkSampler sampler = VK_NULL_HANDLE;
-        if (vkCreateSampler(vk.device, &sampler_info, nullptr, &sampler) != VK_SUCCESS) {
-            return std::unexpected(std::string("gbuffer: sampler creation failed"));
-        }
-        this->gbuffer_sampler = vk_sampler(sampler, vk.device);
-        VkSamplerCreateInfo probe_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
-        VkSampler probe_sampler = VK_NULL_HANDLE;
-        if (vkCreateSampler(vk.device, &probe_info, nullptr, &probe_sampler) != VK_SUCCESS) {
-            return std::unexpected(std::string("gbuffer: probe sampler creation failed"));
-        }
-        this->gi_probe_sampler = vk_sampler(probe_sampler, vk.device);
-        return {};
-    }
     // The deferred path's transparent pass. Everything about its position is load-bearing:
     //  - after the lighting stage, because a blended surface composites over SHADED pixels, and the
     //    G-buffer instance has no shaded image to composite over;
@@ -2480,7 +2442,6 @@ namespace vulkan {
         pass::stage const transparent_stage = {.name = "transparent", .passes = this->transparent_stage, .marks = false};
         [[maybe_unused]] pass::run_report const transparent_report = pass::record_stage(transparent_stage, this->make_pass_host());
     }
-
     // ---- temporal anti-aliasing (M3) ----
     glm::vec2 runtime::taa_jitter_offset(uint32_t const index) noexcept {
         // Halton(2,3): the two-radical sequence has the low-discrepancy property that matters here -
@@ -2623,7 +2584,7 @@ namespace vulkan {
         if (image_count == 0 || vk.gbuffer_depth_image_views.size() != image_count || vk.hdr_image_views.size() != image_count || vk.gi_image_views.size() != image_count ||
             vk.gi_spec_image_views.size() != image_count || vk.gi_spec_reproject_image_views.size() != image_count ||
             vk.gi_spec_resolve_image_views.size() != image_count ||
-            vk.gi_probe_image_views.empty() || this->gi_probe_sampler.get() == VK_NULL_HANDLE) {
+            vk.gi_probe_image_views.empty() || vk.gi_probe_sampler.get() == VK_NULL_HANDLE) {
             return;
         }
         // The family owns the rebinding rule now (see vulkan.bindings): the sets stay allocated, their
@@ -2695,7 +2656,7 @@ namespace vulkan {
                 bool const storage = b == 6u || b == 8u || b == 13u || b == 14u;
                 // The probe cache is a 3D texture read with LINEAR filtering: the whole point of sampling
                 // it is interpolating between cells, so it cannot borrow the G-buffer's NEAREST sampler.
-                image_infos[b].sampler = storage ? VK_NULL_HANDLE : (b >= 9u && b <= 12u ? *this->gi_probe_sampler : *this->gbuffer_sampler);
+                image_infos[b].sampler = storage ? VK_NULL_HANDLE : (b >= 9u && b <= 12u ? *this->vulkan_core.gi_probe_sampler : *this->vulkan_core.gbuffer_sampler);
                 image_infos[b].imageView = views[b];
                 image_infos[b].imageLayout = storage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -3252,7 +3213,6 @@ namespace vulkan {
         // builders that first needed them - `make_gbuffer_debug_pipeline` makes the G-buffer pair's and the
         // probe grid's - which is the naming accident `docs/runtime_split.md` records; the TAA resolve's is
         // made here because the pass that declares it is what needs it now.
-        this->ensure_taa_sampler();
         // ... and what the passes may NAME, before any of them is created: the registry the pass filter answers
         // `resource()` from (see publish_pass_resources). It is the renderer's half of the channel; the passes'
         // half is that they ask for what their own declaration lists instead of being handed it.
@@ -3286,37 +3246,22 @@ namespace vulkan {
         }
     }
 
-    void runtime::ensure_taa_sampler() {
-        // The resolve upsamples the scene colour but must not average neighbouring history texels: linear
-        // magnification, nearest minification. It was created inside `make_taa_pipeline` before this pass owned
-        // that pipeline; the sampler is a SHARED handle (a declaration chooses it by hint) so it stays the
-        // renderer's, and it has to exist before the pass caches the six it may choose between.
-        if (this->taa_sampler.get() != VK_NULL_HANDLE) {
-            return;
-        }
-        VkSamplerCreateInfo sampler_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
-        sampler_info.magFilter = VK_FILTER_LINEAR;
-        sampler_info.minFilter = VK_FILTER_NEAREST;
-        VkSampler sampler = VK_NULL_HANDLE;
-        if (vkCreateSampler(this->vulkan_core.device, &sampler_info, nullptr, &sampler) != VK_SUCCESS) {
-            utility::log("runtime: the TAA resolve's sampler could not be created - the resolve will have no descriptor to write");
-            return;
-        }
-        this->taa_sampler = vk_sampler(sampler, this->vulkan_core.device);
-    }
-
     render_resource::shared::sampler_set runtime::shared_samplers() const noexcept {
         // The six samplers a declaration chooses between, as handles. One place, so that two passes cannot end
         // up with two different ideas of "the post sampler".
-        return {.gbuffer = *this->gbuffer_sampler,
-                .probe_grid = *this->gi_probe_sampler,
-                .taa = *this->taa_sampler,
-                .post = *this->post_sampler,
-                .nearest = *this->post_nearest_sampler,
-                .shadow = *this->shadow_sampler,
+        // THE SAMPLERS ARE THE DEVICE ROOT'S (core::create_samplers): a sampler has no per-frame state and no owner
+        // among the passes, so this function is now a READ of the handles rather than the place that made them - and
+        // it stays the single place the renderer maps them onto the declaration layer's hints.
+        core const& vk = this->vulkan_core;
+        return {.gbuffer = *vk.gbuffer_sampler,
+                .probe_grid = *vk.gi_probe_sampler,
+                .taa = *vk.taa_sampler,
+                .post = *vk.post_sampler,
+                .nearest = *vk.post_nearest_sampler,
+                .shadow = *vk.shadow_sampler,
                 // The bindless texture array's sampler, which only hand-written set code used until the MASK
                 // bake had to write the scene layout's binding 1 itself (see sampler_set's doc).
-                .textures = this->texture_sampler.get() == VK_NULL_HANDLE ? VK_NULL_HANDLE : *this->texture_sampler};
+                .textures = *vk.texture_sampler};
     }
 
     std::span<unsigned char const> runtime::registered_shader(std::string_view const name) const noexcept {

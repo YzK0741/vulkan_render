@@ -154,17 +154,12 @@ namespace chores {
             // app REGISTERS the two shaders the pass builds from (post.vert's synthetic triangle and post.frag,
             // whose `mode` lane selects the stage) and the pass does the rest in create_passes() below.
             //
-            // WHAT IS LEFT OF `make_post_pipeline` HERE is the SAMPLER pair: it belongs to the descriptor SETS,
-            // which the runtime still writes (post_family), and it has to exist before create_passes() because the
-            // pass context hands every pass the six samplers a declaration may choose between.
+            // THE SAMPLERS ARE THE DEVICE ROOT'S (`core::create_samplers`), so there is nothing to create here any
+            // more - the app registers the two shaders the post chain's passes build from.
             std::vector<unsigned char> vertex_code;
             std::vector<unsigned char> fragment_code;
             load_shader(shaders_dir, "post.vert.spv", vertex_code);
             load_shader(shaders_dir, "post.frag.spv", fragment_code);
-            auto const samplers = runtime.ensure_post_samplers();
-            if (!samplers) {
-                utility::panic(std::source_location::current(), "failed to create the post chain's samplers: {}", samplers.error());
-            }
             runtime.register_shader("post.vert.spv", vertex_code);
             runtime.register_shader("post.frag.spv", fragment_code);
             // ... and FXAA's, whose pass builds its own pipeline layout around the post set layout the composite
@@ -215,14 +210,9 @@ namespace chores {
             if (!gbuffer_result) {
                 utility::log("gbuffer pipeline disabled: {}", gbuffer_result.error());
             } else {
-                // The G-buffer declarations' SAMPLERS are the renderer's (they belong to the descriptor sets it
-                // writes) and must exist before create_passes(); this is what is left of make_gbuffer_debug_pipeline
-                // here. The debug view itself is a PASS (vulkan.pass.gbuffer_debug): the app registers its two
-                // shaders and the pass builds the G-buffer set LAYOUT, its pipeline layout and its pipeline.
-                auto const gbuffer_samplers = runtime.ensure_gbuffer_samplers();
-                if (!gbuffer_samplers) {
-                    utility::panic(std::source_location::current(), "failed to create the G-buffer samplers: {}", gbuffer_samplers.error());
-                }
+                // The debug view is a PASS (vulkan.pass.gbuffer_debug): the app registers its two shaders and the
+                // pass builds the G-buffer set LAYOUT, its pipeline layout and its pipeline. The samplers those
+                // declarations choose between are the device root's now (`core::create_samplers`).
                 load_shader(shaders_dir, "post.vert.spv", vertex_code);
                 load_shader(shaders_dir, "gbuffer_debug.frag.spv", fragment_code);
                 runtime.register_shader("post.vert.spv", vertex_code);

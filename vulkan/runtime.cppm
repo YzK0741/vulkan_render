@@ -196,7 +196,6 @@ namespace vulkan {
         // scene-wide IBL (bindings 2-4): prefiltered env / irradiance / BRDF LUT, uploaded once
         std::vector<vk_image_view> ibl_views = {};
         std::vector<vk_image> ibl_images = {};
-        vk_sampler texture_sampler = {};
         vk_sampler env_sampler = {};
         // GPU material table (set 0 binding 5): one material_record per entry (texture indices +
         // factors + flags); primitives only push their material_index. Host-visible, written at
@@ -363,12 +362,10 @@ namespace vulkan {
         bool gbuffer_debug = false;
         // which channel the debug view shows (see gbuffer_debug.frag / set_gbuffer_channel)
         int gbuffer_channel_index = 1;
-        vk_sampler gbuffer_sampler = {};
         // The world-space probe cache's sampler (G-buffer set binding 9): LINEAR rather than the
         // G-buffer sampler's NEAREST, because a 3D fetch's whole purpose here is interpolating between
         // cells - a nearest fetch would turn the cache into 32^3 blocks - and CLAMP_TO_EDGE, because the
         // grid's edge IS the scene's bounds and there is nothing beyond them to repeat or mirror.
-        vk_sampler gi_probe_sampler = {};
         // The debug view's sets, one per swapchain image, allocated from a pool this family owns and
         // retires itself (see vulkan.bindings: the pool lifetime rule is only about the pools).
         bindings::image_set_family gbuffer_family;
@@ -622,7 +619,6 @@ namespace vulkan {
         // next frame's history (no ping-pong, hence no per-frame descriptor rewrites).
         // The TAA resolve is a PASS (vulkan.pass.taa): it owns its set layout, pipeline layout, pipeline and
         // descriptor family, so all that is left here is the pass member and the stage the runner is handed.
-        vk_sampler taa_sampler = {};
         // ---- the GI denoiser's temporal resolve (see shaders/ssgi_temporal.comp) ----
         // The pipeline, its layout, the set layout its declaration generates AND the diffuse family that
         // layout's per-image sets need are the PASS's now (vulkan.pass.ssgi_temporal). What stays here is the
@@ -833,7 +829,6 @@ namespace vulkan {
         [[nodiscard]] render_resource::shared::sampler_set shared_samplers() const noexcept;
         /// create the TAA resolve's shared sampler if it does not exist (see create_passes for why it is
         /// made here rather than in a pipeline builder)
-        void ensure_taa_sampler();
         /**
          * @brief resolve a pass's declaration into this frame's handles (the runner's `resolve` callback)
          * @return false when this frame cannot run the pass, which skips it WITHOUT recording anything
@@ -940,12 +935,10 @@ namespace vulkan {
         bool fxaa_on = false;
         float fxaa_subpixel = 0.75f;
         float fxaa_edge_threshold = 0.166f;
-        vk_sampler post_sampler = {};
         // A second sampler for the composite's GI upsample: the GI image, the G-buffer depth and the
         // G-buffer normal are all read AT exact texel centres and must not be interpolated (averaging
         // two depths invents a surface between them, which is exactly what an edge-aware test must not
         // see). Everything else in the post chain wants the linear one above.
-        vk_sampler post_nearest_sampler = {};
         // Whether the composite upsamples the GI bilaterally or with the plain bilinear fetch (see
         // pass::post_push_constants::gi_upsample). On by default; false exists for measurement.
         bool gi_upsample = true;
@@ -988,7 +981,6 @@ namespace vulkan {
         uint32_t shadow_cascades = 1;
         float shadow_cascade_blend = 0.1f;
         bool shadow_cascade_logged = false; // one-time per-cascade texel-density log
-        vk_sampler shadow_sampler = {};     // linear depth-compare (hardware PCF) + clamp-to-edge
         // one-time log for the shadow-caster switch (see begin_recording): scenes over
         // full_scene_shadow_leaf_limit draw a culled subset instead of every leaf - say so once
         // instead of silently changing behavior
@@ -1948,7 +1940,6 @@ namespace vulkan {
          *       before create_passes(): the pass context hands every pass the six samplers a declaration may
          *       choose between, and a null one in a set is a validation error rather than a skipped fetch.
          */
-        std::expected<void, std::string> ensure_post_samplers();
 
         /**
          * @ingroup vulkan_runtime
@@ -2478,7 +2469,6 @@ namespace vulkan {
          *       samplers stay here because they belong to the descriptor sets this class writes, and they must
          *       exist before create_passes() - the pass context hands every pass the six a declaration may pick.
          */
-        std::expected<void, std::string> ensure_gbuffer_samplers();
         /** @brief how many jitter positions the Halton(2,3) TAA sequence cycles through */
         static constexpr uint32_t taa_jitter_count = 8;
 

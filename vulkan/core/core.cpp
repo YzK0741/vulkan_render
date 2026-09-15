@@ -35,6 +35,7 @@ namespace vulkan {
         create_render_targets(); // the scene's render targets: the post-process pass input
         create_command_pool();
         create_descriptor_pool();
+        create_samplers(); // the shared samplers a declaration picks by hint
         init_scene_layouts();
         create_sync_objects();
         create_timestamp_query_pool(); // GPU pass timings (a no-op on devices that cannot timestamp)
@@ -1825,6 +1826,58 @@ namespace vulkan {
         return vk_sampler(sampler, this->device);
     }
 
+    void core::create_samplers() {
+        // THEY ARE TORN DOWN BY A CLEANUP LAMBDA, not by their members' destructors, and the ordering is the whole
+        // reason: cleanup runs LIFO from the destructor BODY, and the device's own cleanup is registered before this
+        // one - while a MEMBER's destructor runs after that body, i.e. after vkDestroyDevice. The first version of
+        // this move left the samplers to their destructors and validation named exactly seven leaked objects.
+        this->register_cleanup([this] {
+            this->texture_sampler.release();
+            this->gbuffer_sampler.release();
+            this->gi_probe_sampler.release();
+            this->taa_sampler.release();
+            this->post_sampler.release();
+            this->post_nearest_sampler.release();
+            this->shadow_sampler.release();
+        });
+        // The seven shared samplers, in one place: each is a device-level object a pass DECLARES by hint, so their
+        // creation belongs with the device rather than with whichever subsystem happened to need one first (see
+        // core.cppm's block for why, and for the one sampler that deliberately stays out).
+        this->texture_sampler = this->make_sampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 12.0f);
+        this->post_sampler = this->make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
+        this->shadow_sampler = this->make_shadow_sampler();
+
+        // NEAREST, clamp: the G-buffer's stored surface is read at exact texel centres - an interpolated normal or a
+        // filterable material id is a different surface, not a smoother one.
+        VkSamplerCreateInfo gbuffer_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
+        gbuffer_info.magFilter = VK_FILTER_NEAREST;
+        gbuffer_info.minFilter = VK_FILTER_NEAREST;
+        VkSampler gbuffer = VK_NULL_HANDLE;
+        if (vkCreateSampler(this->device, &gbuffer_info, nullptr, &gbuffer) == VK_SUCCESS) {
+            this->gbuffer_sampler = vk_sampler(gbuffer, this->device);
+        }
+
+        // ... and the same thing for the composite's GI upsample: it taps the depth and the normal at centres, and an
+        // averaged depth invents a surface between two samples, which is exactly what an edge-aware test must not see.
+        VkSampler nearest = VK_NULL_HANDLE;
+        if (vkCreateSampler(this->device, &gbuffer_info, nullptr, &nearest) == VK_SUCCESS) {
+            this->post_nearest_sampler = vk_sampler(nearest, this->device);
+        }
+
+        // LINEAR, clamp: the probe grid's whole purpose is interpolating between cells - a nearest fetch would turn
+        // the cache into blocks - and the grid's edge IS the scene's bounds, so there is nothing to repeat or mirror.
+        this->gi_probe_sampler = this->make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
+
+        // The resolve upsamples the scene colour but must NOT average neighbouring history texels: linear
+        // magnification, nearest minification.
+        VkSamplerCreateInfo taa_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
+        taa_info.magFilter = VK_FILTER_LINEAR;
+        taa_info.minFilter = VK_FILTER_NEAREST;
+        VkSampler taa = VK_NULL_HANDLE;
+        if (vkCreateSampler(this->device, &taa_info, nullptr, &taa) == VK_SUCCESS) {
+            this->taa_sampler = vk_sampler(taa, this->device);
+        }
+    }
     std::expected<vk_pipeline, std::string_view> core::make_gbuffer_pipeline(
         std::span<unsigned char const> const vertex_shader_code,
         std::span<unsigned char const> const fragment_shader_code) const {
