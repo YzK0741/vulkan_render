@@ -1454,6 +1454,60 @@ deletion of `record_bloom_chain` / `record_composite` (with the FXAA half of the
 own until step ③ owns it) and of `runtime::post_push_constants`.
 
 
+## THE NEXT STEP, EXACTLY: ④ THE G-BUFFER DEBUG VIEW (recipe, read out of the tree at `51fd535`)
+
+**WHAT IT IS, by line**: `runtime::record_gbuffer_debug_pass` (runtime.cpp 4004-4076) is the recording;
+`runtime::make_gbuffer_debug_pipeline` (2442) builds the G-buffer set layout, its pipeline layout, the debug
+pipeline AND two samplers; `ensure_gbuffer_descriptors` (2627) writes the per-image sets; the members are
+`gbuffer_debug_pipeline`, `gbuffer_set_layout`, `gbuffer_pipeline_layout`, `gbuffer_sampler`, `gi_probe_sampler`
+and `bindings::image_set_family gbuffer_family`; the push struct is `gbuffer_debug_push_constants` (4 floats =
+16 bytes); the knob is `gbuffer_debug` + `gbuffer_channel_index`, mirrored from the config every frame
+(main.cpp:748-749); the feature name is `"gbuffer-debug"`, which the runtime ALREADY answers (`f.gbuffer_debug`),
+so no new feature branch is needed - the trap the deferred step hit twice does not exist here.
+
+**WHAT THE RECORDING DOES, in order**: ONE dependency info carrying five barriers (the HDR target into
+COLOR_ATTACHMENT, the three G-buffer targets and the velocity target into SHADER_READ) -> the velocity
+"handed to a sampler" flag cleared -> `ensure_gbuffer_depth_sampled` (the flag-based one, which is why the depth is
+NOT in that batch) -> `ensure_gbuffer_descriptors` -> a CLEAR instance over the HDR target -> bind, viewport,
+scissor, cull NONE, the G-buffer family's set 0, the 16-byte push (channel, the two projection terms, and the
+motion gain = `width * 0.25`) and the triangle -> if the set is missing, the instance is still opened and closed
+(the "showing a cleared frame" log line) and nothing is drawn.
+
+**THE THREE OWNERSHIP QUESTIONS, and the answers are the post chain's pattern read one step further**:
+
+1. `gbuffer_set_layout` is SHARED WITH THE DEFERRED LIGHTING PASS, which asks `shared_set_layout(1)`. So the
+   DEBUG pass owns it (it is the one that builds it, through `pipelines::build_gbuffer_debug`, exactly as the
+   composite owns the post layout the FXAA pass asks for) and `shared_set_layout(1)` answers
+   `gbuffer_debug.set_layout()`.
+2. `gbuffer_family` is shared by SIX consumers (the debug view, the deferred lighting stage, the tracer, the
+   lobe, the spatial filter and the traced shadow), so the FAMILY stays the runtime's and
+   `ensure_gbuffer_descriptors` stays with it - the same "one owner writes the sets, the passes bind them" split
+   the post family has. What moves to the pass is the LAYOUT (see 1), because that is what the pipeline needs.
+3. The two SAMPLERS are created inside `make_gbuffer_debug_pipeline` today - the naming accident
+   `docs/runtime_split.md` records - and they are SHARED (a declaration picks one by hint), so they become
+   `ensure_gbuffer_samplers()` next to `ensure_post_samplers()`, called before `create_passes()`. The debug pass
+   does not need them itself: a sampler belongs to the SET, which the host writes.
+
+**THE DECLARATION** (`gbuffer_debug_io`): `shared_sets = {1}` (the G-buffer set, which is what it displays),
+`targets = {hdr}` - the declaration names the image it actually writes, so THIS step has no target deviation -
+`barrier_images = {gbuffer_targets element 0, 1, 2, velocity}` (the four images it moves to a sampled layout),
+`bindings = {}`, `own_set = 0`, `push = {0, 16, fragment}`.
+
+**WHAT STAYS THE HOST'S, each for a reason**: the HDR target's transition to COLOR_ATTACHMENT (it has to happen
+even on the frame the set is missing, because the post chain samples that image - the same argument as the post
+chain's HDR transition, and it is why this one is the frame loop's rather than a declared barrier image); the
+velocity flag's clearing and `ensure_gbuffer_depth_sampled` (shared per-image bookkeeping, so the frame carries an
+`ensure_inputs`-style callback - `deferred_frame`'s shape); the no-set fallback (the pass opens and closes the
+cleared instance itself, and the "no descriptor set" log line is the pass's); the marks; and the channel/projection
+VALUES, which are the frame's.
+
+**ACCEPTANCE, and this is the step's real finding**: **the gate cannot decide it.** `gbuffer_debug` IS a config key
+(`[render] gbuffer_debug`, app_config.cpp:293, exercised by `test_app_config`'s fixture), but NO gate scenario sets
+it, so the pass's frame path runs in zero of the twelve - the rt_shadow coverage gap again. The A/B is available
+with the existing tooling (`-Extra "gbuffer_debug=true"`, plus a channel), against the IMMEDIATE PARENT commit, and
+that is the verification this step needs; the ordinary 12 x 2 still has to stay at 0 changed, because every step's
+acceptance includes it.
+
 ## HANDOFF: WHERE THIS STANDS AND WHAT IS LEFT, EXACTLY
 
 **DONE, and each step verified byte-for-byte against the capture gate as it landed.**
