@@ -1840,78 +1840,32 @@ namespace vulkan {
                 // primary), and a buffer without SIMULTANEOUS_USE may not be executed twice in one
                 // primary anyway. The content is only the leaves/pipelines; the per-cascade difference
                 // is that single push.
+                // ---- THE SHADOW PASS RECORDS IT (vulkan.pass.shadow) ----
+                // Its frame carries the per-cascade secondaries, the map's edge and the two callbacks (the content
+                // and the scheduler); the pass owns the layer order - each layer's transition to a depth attachment,
+                // the depth-only instance, the pre-recorded secondary's execution and the instance's end. What stays
+                // HERE is what the pass cannot know: the reuse test above (which is why this whole block is inside
+                // it), the map's OWN image and its layer count (the hand-back below covers every allocated layer,
+                // including the spare ones), and the bookkeeping that makes the next frame's reuse test true.
                 uint32_t const cascades = std::clamp(this->shadow_cascades, 1u, vulkan::max_shadow_cascades);
-                VkCommandBufferInheritanceRenderingInfo const shadow_inheritance = make_inheritance_rendering_info(false, nullptr, vk.depth_format, VK_SAMPLE_COUNT_1_BIT);
-                VkCommandBufferInheritanceInfo const shadow_sec_inherit = make_inheritance_info(&shadow_inheritance);
-                VkCommandBufferBeginInfo const shadow_sec_begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &shadow_sec_inherit);
-                std::array<bool, vulkan::max_shadow_cascades> shadow_recorded = {};
-                // One task per cascade on the task pool (M9): each records into its OWN {pool, buffer}
-                // pair (see shadow_recording), because a VkCommandPool is not thread safe - the same
-                // rule the main-pass workers follow. Only the CONTENT recording moves off the primary
-                // thread; the barriers, the per-cascade rendering instances and the executions below
-                // stay here, in the layer order the attachments require, so the recorded commands are
-                // identical to the sequential version.
-                {
-                    std::vector<std::function<void()>> cascade_tasks;
-                    cascade_tasks.reserve(cascades);
-                    for (uint32_t cascade = 0; cascade < cascades; ++cascade) {
-                        cascade_tasks.emplace_back([this, frame_slot, cascade, &shadow_sec_begin, &shadow_recorded] {
-                            VkCommandBuffer const cascade_secondary = *this->shadow_recording[frame_slot][cascade].second;
-                            if (vkBeginCommandBuffer(cascade_secondary, &shadow_sec_begin) != VK_SUCCESS) {
-                                utility::log("runtime: shadow secondary command buffer begin failed - cascade {} skipped this frame", cascade);
-                                return;
-                            }
-                            // which cascade these casters are projected into (the vertex stage indexes
-                            // the light UBO's matrix array with it)
-                            vkCmdPushConstants(cascade_secondary, this->vulkan_core.scene_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, vulkan::scene_cascade_push_offset, sizeof(uint32_t), &cascade);
-                            this->record_shadow_content(cascade_secondary);
-                            vkEndCommandBuffer(cascade_secondary);
-                            shadow_recorded[cascade] = true;
-                        });
-                    }
-                    this->run_tasks(cascade_tasks, vulkan::task_priority::recording);
-                }
-
-                // ---- one instance per cascade ----
+                std::array<VkCommandBuffer, vulkan::max_shadow_cascades> shadow_secondaries = {};
                 for (uint32_t cascade = 0; cascade < cascades; ++cascade) {
-                    // Transition THIS layer to a renderable depth attachment (loadOp CLEAR discards the
-                    // previous frame's contents, so UNDEFINED as the old layout is valid). One barrier
-                    // per layer: the transition constant's subresource range is single-layer, and each
-                    // layer is a separate attachment here.
-                    VkImageMemoryBarrier2 shadow_barrier = depth_attachment_transition;
-                    shadow_barrier.image = shadow_detail->image;
-                    shadow_barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, cascade, 1};
-                    VkDependencyInfo const shadow_dependency = make_image_dependency_info(1, &shadow_barrier);
-                    vkCmdPipelineBarrier2(*command_buffer, &shadow_dependency);
-
-                    // Depth-only rendering into this cascade (no color attachment): loadOp CLEAR
-                    // (far plane) + storeOp STORE - the map must survive for the lighting pass
-                    VkRenderingAttachmentInfo const shadow_depth_attachment = make_depth_attachment_info(*this->shadow_layer_views[frame_slot][cascade], VK_ATTACHMENT_STORE_OP_STORE);
-
-                    VkRenderingInfo const shadow_rendering_info = make_rendering_info(VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT, {{0, 0}, {this->shadow_map_size, this->shadow_map_size}}, false, nullptr, &shadow_depth_attachment);
-                    vkCmdBeginRendering(*command_buffer, &shadow_rendering_info);
-
-                    // Run this cascade's pre-recorded secondary (the whole scene casts shadows). Never
-                    // execute a secondary whose begin failed - executing an unrecorded command
-                    // buffer is a VUID and can wedge the frame slot.
-                    if (shadow_recorded[cascade]) {
-                        VkCommandBuffer const cascade_secondary = *this->shadow_recording[frame_slot][cascade].second;
-                        vkCmdExecuteCommands(*command_buffer, 1, &cascade_secondary);
-                    }
-                    vkCmdEndRendering(*command_buffer);
+                    shadow_secondaries[cascade] = *this->shadow_recording[frame_slot][cascade].second;
                 }
-
-                // Hand the cascades back to the lighting stage as a sampled array texture: the layers
-                // just rendered go depth-attachment -> shader-read (the src masks publish the
-                // attachment write, so the sampled contents are the ones the pass produced).
-                //
-                // The spare layers - present only after set_shadow_cascades() SHRANK the count, which
-                // deliberately keeps the layers it already owns - are covered here too, by ONE range
-                // over every allocated layer. That is deliberate rather than a second barrier: the
-                // descriptor's array view spans all of them, so a spare layer left in the attachment
-                // layout would be a layout mismatch the moment the shader sampled it, and this range
-                // is what makes "one barrier, whole array" the invariant. It is a no-op for the
-                // rendered layers, whose range this already covers.
+                this->shadow.set_frame(pass::shadow_frame{.record_cascade = &runtime::record_shadow_cascade,
+                                                          .run_tasks = &runtime::run_shadow_tasks,
+                                                          .owner = this,
+                                                          .cascades = std::span<VkCommandBuffer const>(shadow_secondaries.data(), cascades),
+                                                          .map_size = this->shadow_map_size});
+                {
+                    pass::stage const shadow_stage = {.name = "shadow", .passes = this->shadow_stage, .marks = false};
+                    [[maybe_unused]] pass::run_report const shadow_report = pass::record_stage(shadow_stage, this->make_pass_host());
+                }
+                // Hand the cascades back to the shading stages as a sampled array texture: the layers just rendered go
+                // depth-attachment -> shader-read (the src masks publish the attachment write), and the SPARE layers a
+                // shrank cascade count left behind are covered by the same range - the descriptor's array view spans
+                // every allocated layer, so "one barrier, whole array" is the invariant. That count is the IMAGE's,
+                // which is why this is the host's and not the pass's.
                 std::array<VkImageMemoryBarrier2, 1> shadow_read_barrier = {shadow_map_sampling_transition};
                 shadow_read_barrier[0].image = shadow_detail->image;
                 shadow_read_barrier[0].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, this->shadow_allocated_layers};
@@ -1957,6 +1911,81 @@ namespace vulkan {
         this->record_scene(*command_buffer);
     }
 
+    // =============================================================================================
+    // THE SHADOW PASS's frame, its content callback and its scheduler (vulkan.pass.shadow)
+    // =============================================================================================
+    //
+    // What the pass cannot know: which LAYERS this frame renders (they come from a layered image the RENDERER
+    // created and keeps - `ensure_shadow_resources`), and what a caster's draw state is (the scene set, the live
+    // depth-bias state, the two-sided policy, the secondary's own begin info) - so that arrives as a callback. What
+    // the pass owns is the layer order: the transition, the instance, the execution and the end.
+    bool runtime::resolve_shadow_pass(pass::resolved_io& out) {
+        core const& vk = this->vulkan_core;
+        uint32_t const slot = static_cast<uint32_t>(vk.current_frame);
+        if (!this->shadow.pipeline_ready() || this->shadow_images.size() <= slot || this->shadow_layer_views.size() <= slot || !this->scene_sets.created()) {
+            return false;
+        }
+        auto const* const shadow_detail = this->vulkan_core.vma.get_image_detail(this->shadow_images[slot].handle());
+        if (shadow_detail == nullptr) {
+            return false;
+        }
+        // The number of layers this frame renders is the KNOB's, and the pass's own declaration names ONE (the
+        // validator refuses a second depth target) - so the host is what turns "how many cascades" into "how many
+        // targets", which is the deviation render_resource::shadow_io records.
+        uint32_t const cascades = std::clamp(this->shadow_cascades, 1u, vulkan::max_shadow_cascades);
+        if (cascades == 0u || this->shadow_layer_views[slot].size() < cascades) {
+            return false;
+        }
+        VkDescriptorSet const scene_set = this->scene_sets.set(slot);
+        if (scene_set == VK_NULL_HANDLE) {
+            return false;
+        }
+        out.frame = this->pass_frame();
+        out.cmd = *this->command_buffers[slot];
+        out.shared.scene = scene_set;
+        for (uint32_t cascade = 0; cascade < cascades; ++cascade) {
+            // one target per cascade, in cascade order: the layer's VIEW for the instance, the image for the layer's
+            // own barrier (the pass transitions each layer with a single-layer subresource range)
+            out.target_storage[cascade] = {.view = *this->shadow_layer_views[slot][cascade], .buffer = VK_NULL_HANDLE, .image = shadow_detail->image};
+        }
+        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), cascades);
+        out.pipeline_storage[0] = this->shadow.pipeline();
+        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
+        out.pipeline_layout = this->shadow.pipeline_layout();
+        // NO PUSH BLOCK IS RESOLVED: the cascade index is pushed by the CONTENT callback (it is per cascade, and the
+        // pass never sees the index as data - see shadow_frame::record_cascade).
+        out.push = {};
+        // No extent either: the pass sizes its own work (`extent_rule::none`) and the map's edge travels in its frame.
+        out.extent = VkExtent2D{};
+        return true;
+    }
+
+    bool runtime::record_shadow_cascade(void* const owner, VkCommandBuffer const secondary, uint32_t const cascade_index, VkPipeline const pipeline, VkPipelineLayout const pipeline_layout) {
+        runtime* const self = static_cast<runtime*>(owner);
+        core const& vk = self->vulkan_core;
+        // The secondary inherits ONLY the depth attachment (no colour one): dynamic rendering 1.3, single-sampled,
+        // viewMask 0. The inheritance struct hangs off VkCommandBufferInheritanceInfo::pNext (NOT the begin info's),
+        // and a secondary buffer must always provide inheritance info.
+        VkCommandBufferInheritanceRenderingInfo const inheritance = make_inheritance_rendering_info(false, nullptr, vk.depth_format, VK_SAMPLE_COUNT_1_BIT);
+        VkCommandBufferInheritanceInfo const inherit = make_inheritance_info(&inheritance);
+        VkCommandBufferBeginInfo const begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &inherit);
+        if (vkBeginCommandBuffer(secondary, &begin) != VK_SUCCESS) {
+            utility::log("runtime: shadow secondary command buffer begin failed - cascade {} skipped this frame", cascade_index);
+            return false;
+        }
+        // which cascade these casters are projected into: the vertex stage indexes the light UBO's matrix array with
+        // it, and a secondary records that itself (state is not inherited from the primary). The offset is the
+        // declaration's own - where the scene's push block ends.
+        uint32_t const index = cascade_index;
+        vkCmdPushConstants(secondary, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, render_resource::shadow_io.push->offset, sizeof(index), &index);
+        self->record_shadow_content(secondary, pipeline, pipeline_layout);
+        vkEndCommandBuffer(secondary);
+        return true;
+    }
+
+    void runtime::run_shadow_tasks(void* const owner, std::span<std::function<void()>> const tasks) {
+        static_cast<runtime*>(owner)->run_tasks(tasks, vulkan::task_priority::recording);
+    }
     void runtime::record_scene(VkCommandBuffer const command_buffer) {
         this->record_scene_attachments(command_buffer);
         this->update_pass_geometry();
@@ -2100,14 +2129,14 @@ namespace vulkan {
     // scene casts shadows). Pure bind/push/draw commands - the caller owns the barriers and
     // the depth-only rendering instance around it. Recorded inline today; stage 2 records the
     // same content into a per-slot secondary command buffer for parallel pass recording.
-    void runtime::record_shadow_content(VkCommandBuffer const command_buffer) const {
+    void runtime::record_shadow_content(VkCommandBuffer const command_buffer, VkPipeline const pipeline, VkPipelineLayout const pipeline_layout) const {
         core const& vk = this->vulkan_core;
         uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
         if (this->scene_sets.created()) {
             VkDescriptorSet const scene_set_handle = this->scene_sets.set(static_cast<uint32_t>(frame_slot));
             vkCmdBindDescriptorSets(command_buffer,
                                     VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    vk.scene_pipeline_layout,
+                                    pipeline_layout,
                                     0,
                                     1,
                                     &scene_set_handle,
@@ -2124,8 +2153,8 @@ namespace vulkan {
         render_environment env;
         env.command_buffer = command_buffer;
         env.default_name = "shadow"; // binder ignores the name; kept for in_default_pipeline()
-        env.bind = [this](VkCommandBuffer const cb, std::string_view const /*name*/) {
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, this->shadow.pipeline());
+        env.bind = [this, pipeline](VkCommandBuffer const cb, std::string_view const /*name*/) {
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             VkViewport const shadow_viewport = {0.0f, 0.0f, static_cast<float>(this->shadow_map_size), static_cast<float>(this->shadow_map_size), 0.0f, 1.0f};
             VkRect2D const shadow_scissor = {{0, 0}, {this->shadow_map_size, this->shadow_map_size}};
             vkCmdSetViewport(cb, 0, 1, &shadow_viewport);
@@ -3650,6 +3679,9 @@ namespace vulkan {
         }
         if (&pass == static_cast<pass::frame_pass const*>(&this->gbuffer_debug_view)) {
             return this->resolve_gbuffer_debug(out);
+        }
+        if (&pass == static_cast<pass::frame_pass const*>(&this->shadow)) {
+            return this->resolve_shadow_pass(out);
         }
         if (&pass != static_cast<pass::frame_pass const*>(&this->gi_probe)) {
             return false; // no other pass is wired into a stage yet

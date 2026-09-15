@@ -62,7 +62,9 @@ export namespace vulkan::pass {
          * viewport and scissor, pushes @p cascade_index at the offset this pass's declaration names, binds the
          * shared scene set and draws the frame's casters with @p pipeline - then ends the buffer.
          */
-        void (*record_cascade)(void* owner, VkCommandBuffer secondary, uint32_t cascade_index, VkPipeline pipeline, VkPipelineLayout pipeline_layout) = nullptr;
+        /// @return whether the secondary was recorded: a begin that FAILED must not be executed (that is a VUID
+        ///         and can wedge the frame slot), so the answer travels back rather than being assumed
+        bool (*record_cascade)(void* owner, VkCommandBuffer secondary, uint32_t cascade_index, VkPipeline pipeline, VkPipelineLayout pipeline_layout) = nullptr;
         /// the frame loop's scheduler: one task per cascade, each recording into its own secondary
         void (*run_tasks)(void* owner, std::span<std::function<void()>> tasks) = nullptr;
         void* owner = nullptr;

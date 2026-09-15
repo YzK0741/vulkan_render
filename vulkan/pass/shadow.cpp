@@ -136,8 +136,7 @@ namespace vulkan::pass {
                 if (secondary == VK_NULL_HANDLE) {
                     return;
                 }
-                this->frame_.record_cascade(this->frame_.owner, secondary, cascade, pipeline, layout);
-                recorded[cascade] = true;
+                recorded[cascade] = this->frame_.record_cascade(this->frame_.owner, secondary, cascade, pipeline, layout);
             });
         }
         this->frame_.run_tasks(this->frame_.owner, tasks);

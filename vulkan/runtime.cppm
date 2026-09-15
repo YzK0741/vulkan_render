@@ -481,6 +481,9 @@ namespace vulkan {
         /// the composite's own stage: one pass, the frame's display work (and the frame's LAST writer whenever
         /// FXAA is off, which is why its frame carries the overlay)
         std::array<pass::frame_pass*, 1> post_composite_stage = {&this->post_composite};
+        /// the shadow pass's stage: it runs BEFORE the scene pass (the maps have to exist before the surfaces that
+        /// sample them are shaded), and the frame loop records it only on a frame the maps are not reused.
+        std::array<pass::frame_pass*, 1> shadow_stage = {&this->shadow};
         std::array<pass::frame_pass*, 1> gbuffer_debug_stage = {&this->gbuffer_debug_view};
         /// THE FXAA RESOLVE (vulkan.pass.fxaa): the frame's LAST writer whenever it runs. It owns its pipeline
         /// layout (built around the post set layout the composite owns) and its pipeline; it is the pass that owns
@@ -1707,7 +1710,17 @@ namespace vulkan {
          *         instance slice cannot be read - the caller then has to fall back to a coarser bound
          */
         [[nodiscard]] bool instanced_world_aabb(primitive const& leaf, glm::vec3& wmin, glm::vec3& wmax) const;
-        void record_shadow_content(VkCommandBuffer command_buffer) const;
+        /// @brief resolve the shadow pass's frame: the LAYERS this frame renders (one target per cascade, taken
+        ///        from the layered map the renderer created), the shared scene set and the pass's pipeline
+        /// @return false when this frame cannot run it (no pipeline, no map generation, or no scene set)
+        [[nodiscard]] bool resolve_shadow_pass(pass::resolved_io& out);
+        /// @brief record ONE cascade's content into its secondary: the begin (with the depth-only inheritance), the
+        ///        cascade index's push, the scene set, the live bias state and every caster - the frame's callback
+        /// @return whether the secondary was recorded (a failed begin must not be executed)
+        static bool record_shadow_cascade(void* owner, VkCommandBuffer secondary, uint32_t cascade_index, VkPipeline pipeline, VkPipelineLayout pipeline_layout);
+        /// @brief the frame loop's scheduler, handed to the pass so one task per cascade records a secondary
+        static void run_shadow_tasks(void* owner, std::span<std::function<void()>> tasks);
+        void record_shadow_content(VkCommandBuffer command_buffer, VkPipeline pipeline, VkPipelineLayout pipeline_layout) const;
 
         /**
          * @ingroup vulkan_runtime
