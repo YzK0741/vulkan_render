@@ -225,10 +225,6 @@ namespace vulkan::pass {
         return this->level_;
     }
 
-    void post_bloom_pass::set_frame(bloom_frame const& frame) noexcept {
-        this->frame_ = frame;
-    }
-
     void post_bloom_pass::record(resolved_io const& io) {
         if (io.targets.empty() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE || io.shared.post == VK_NULL_HANDLE ||
             io.push.size() < sizeof(post_push_constants) || io.extent.width == 0 || io.extent.height == 0) {
@@ -254,13 +250,12 @@ namespace vulkan::pass {
         to_attachment.image = target;
         VkDependencyInfo const attachment_dependency = make_image_dependency_info(1, &to_attachment);
         vkCmdPipelineBarrier2(io.cmd, &attachment_dependency);
-        // The push block: the host's three values, the struct's defaults for every lane this stage does not read
-        // (which is what the renderer pushed before the move), and the stage's own lane - 0 for the bright-pass
-        // prefilter, 1 for every downsample, because the bright-pass test runs on the first level only.
+        // The push block: the host's three values (exposure, the bloom weight and the bright-pass threshold), the
+        // struct's defaults for every lane this stage does not read - which is what the renderer pushed before the
+        // move - and the stage's own lane: 0 for the bright-pass prefilter, 1 for every downsample, because the
+        // bright-pass test runs on the first level only.
         post_push_constants push = {};
-        push.exposure = this->frame_.exposure;
-        push.bloom_intensity = this->frame_.bloom_intensity;
-        push.bloom_threshold = this->frame_.bloom_threshold;
+        std::memcpy(&push, io.push.data(), sizeof(push));
         push.mode = this->level_ == 0u ? 0.0f : 1.0f;
         VkClearValue clear = {};
         VkRenderingAttachmentInfo const attachment = make_color_attachment_info(target_view, clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);

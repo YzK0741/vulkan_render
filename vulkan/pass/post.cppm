@@ -99,15 +99,14 @@ export namespace vulkan::pass {
                   "the post chain's declared push block must be the size of the struct its passes push");
 
     /**
-     * @brief what the renderer hands the composite: the frame's VALUES, and the overlay's draw
+     * @brief what the renderer hands the composite: the overlay's draw, and nothing else
      *
-     * The push block arrives FILLED (this is the pass's own struct, so the shape cannot drift) and the pass
-     * writes only the lane that is its own stage's identity. `encode_gamma` is the frame's rather than the
-     * pass's even though it describes the target: the host picks the target, so it is the host that knows
-     * whether the attachment or the shader does the sRGB transfer.
+     * The push block does NOT travel here: it travels through `resolved_io::push`, exactly as every other pass's
+     * does - the host composes a VALUE of this module's `post_push_constants` (so the shape is still the passes',
+     * which is what the static_assert above is for) and the pass writes only the lane that is its own stage's
+     * identity.
      */
     struct composite_frame {
-        post_push_constants push = {};
         /**
          * The debug overlay's draw, recorded INSIDE this pass's rendering instance between its draw and
          * `vkCmdEndRendering`.
@@ -121,13 +120,6 @@ export namespace vulkan::pass {
          */
         void (*after_draw)(void* owner, VkCommandBuffer command_buffer) = nullptr;
         void* owner = nullptr;
-    };
-
-    /// @brief what the renderer hands each bloom level: the three values its stage reads
-    struct bloom_frame {
-        float exposure = 1.0f;
-        float bloom_intensity = 0.0f;
-        float bloom_threshold = 0.0f;
     };
 
     /**
@@ -218,8 +210,6 @@ export namespace vulkan::pass {
         /// @brief which level of the bloom chain this instance is
         [[nodiscard]] uint32_t level() const noexcept;
 
-        void set_frame(bloom_frame const& frame) noexcept;
-
     private:
         /// the pipeline the runner binds: the chain's R16F variant, which the COMPOSITE owns and the host
         /// resolves through `resolved_io::pipelines` (this pass builds nothing - see the module's header)
@@ -228,7 +218,6 @@ export namespace vulkan::pass {
         uint32_t level_ = 0;
         render_resource::pass_io const* io_ = nullptr;
         vulkan::pass::behaviour behaviour_ = {};
-        bloom_frame frame_ = {};
     };
 
 } // namespace vulkan::pass

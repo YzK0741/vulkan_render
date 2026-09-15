@@ -458,6 +458,22 @@ namespace vulkan {
         /// frame loop still records the composite and the bloom chain with these pipelines, which is the next
         /// slice of this step.
         pass::post_composite_pass& post_composite = this->passes.emplace<pass::post_composite_pass>();
+        /// THE BLOOM CHAIN (vulkan.pass.post): FOUR instances of ONE class, one per level. The LEVEL is what
+        /// differs - the target it writes (element `level` of the bloom family), the input it declares a
+        /// transition for (level `level - 1`, and nothing at level 0, whose input is the HDR target), the extent
+        /// its declaration derives from `extent_of_element`, and the `mode` lane of its push block. They build
+        /// nothing (the composite owns the pipeline they record with). The order IS the chain: each level reads
+        /// the one before it, so it is the order of these calls and the order of the stage array below.
+        std::array<pass::post_bloom_pass*, 4> bloom = {&this->passes.emplace<pass::post_bloom_pass>(0u),
+                                                       &this->passes.emplace<pass::post_bloom_pass>(1u),
+                                                       &this->passes.emplace<pass::post_bloom_pass>(2u),
+                                                       &this->passes.emplace<pass::post_bloom_pass>(3u)};
+        /// the bloom chain's stage, in level order (the runner walks the array; a stage IS the order, which is why
+        /// it is an array of pointers and never a container whose iteration order is an accident)
+        std::array<pass::frame_pass*, 4> bloom_stage = {this->bloom[0], this->bloom[1], this->bloom[2], this->bloom[3]};
+        /// the composite's own stage: one pass, the frame's display work (and the frame's LAST writer whenever
+        /// FXAA is off, which is why its frame carries the overlay)
+        std::array<pass::frame_pass*, 1> post_composite_stage = {&this->post_composite};
 
         /**
          * THE GI CHAIN (vulkan.pass.chain): the four GI stages, in the order that makes them a chain - each one
@@ -889,58 +905,18 @@ namespace vulkan {
         void on_swapchain_recreated();
 
         // ---- post-processing: HDR scene target -> exposure + ACES + gamma -> swapchain ----
-        // The SHAPE of this block is `vulkan.pass.post::post_push_constants`'s now (the passes push it, and the
-        // module static_asserts it against the declaration's 52 bytes); it stays here as well while the frame loop
-        // is still what composes the VALUES into it - the same "two copies, one size" situation the deferred
-        // stage's block was in for exactly one slice. The descriptor sets rebind lazily whenever the swapchain
-        // (and with it the per-image HDR resolve targets) is recreated.
-        struct post_push_constants {
-            float exposure = 1.0f;        // linear exposure scale (see set_exposure)
-            float bloom_intensity = 0.0f; // bloom blend weight (see set_bloom)
-            float bloom_threshold = 0.0f; // bloom bright-pass threshold (see set_bloom)
-            float mode = 0.0f;            // 0 = prefilter, 1 = downsample, 2 = composite
-            // composite only: 1 = the shader encodes to sRGB itself, 0 = the target is an sRGB
-            // attachment and the hardware encodes on write. Filled from the swapchain format every
-            // frame - hard-coding either way double-encodes (sRGB attachment) or under-encodes
-            // (UNORM attachment) gamma. The FXAA pass also forces it to 1: it renders into the R16F
-            // LDR image, which must hold gamma-encoded values for FXAA's luma thresholds.
-            float encode_gamma = 0.0f;
-            // composite only: the weight on the screen-space GI image (1 = GI is on and full strength,
-            // 0 = the added term is exactly zero, which is what keeps GI-off frames byte-identical).
-            // The tracer scales the signal itself; this is the on/off switch folded into the push block
-            // rather than a shader branch on a feature flag it cannot see.
-            float gi_intensity = 0.0f;
-            // composite only: the joint-bilateral UPSAMPLE of the half-resolution GI (see post.frag).
-            // A plain bilinear fetch of a half-resolution image mixes in the neighbouring texels across
-            // a silhouette, which darkens the geometry side and spills light onto the background side;
-            // these four terms are the same edge criterion the spatial filter uses, so a silhouette
-            // that survives one pass is not re-blurred by the next. The two projection terms linearize
-            // depth (a relative tolerance needs a view distance), sigma_depth is that tolerance as a
-            // fraction of it, and normal_power is the exponent on the normal agreement term.
-            float gi_depth_scale = 0.0f;  // projection[2][2]
-            float gi_depth_offset = 0.0f; // projection[3][2]
-            float gi_depth_sigma = 0.02f;
-            float gi_normal_power = 16.0f;
-            // 1 = the bilateral gather, 0 = the plain bilinear fetch. The off switch exists to make the
-            // upsample measurable (the same reason ssgi_spatial_sigma can be 0); it is not a quality
-            // knob, and 0 is not a state to ship.
-            float gi_upsample = 1.0f;
-            // FXAA lanes (fxaa.frag): the sub-pixel term strength (0 = pure directional blend) and
-            // the relative luma contrast below which a pixel counts as flat.
-            float fxaa_subpixel = 0.75f;
-            float fxaa_edge_threshold = 0.166f;
-        };
-        // THE POST CHAIN'S GPU MATERIAL IS A PASS's NOW (vulkan.pass.post): the set layout, the pipeline layout
-        // the composite and FXAA bind through, and the two pipelines the chain records with (the swapchain's
-        // format and the R16F one). `post_composite` below owns all four; what is left here is the FXAA pipeline
-        // (its own step), the two samplers the descriptor sets use, and the VALUES the push block carries.
+        // BOTH THE CHAIN'S GPU MATERIAL AND THE PUSH BLOCK'S SHAPE ARE THE PASSES' NOW (vulkan.pass.post): the
+        // composite owns the set layout, the pipeline layout and the two pipelines the chain records with, and the
+        // push block's type (static_asserted against the declaration's 52 bytes) lives with the passes that push
+        // it - this class fills a VALUE of it per frame, in the resolvers. What is left here is the FXAA pipeline
+        // (its own step), the two samplers the descriptor sets use, and the values themselves.
         // FXAA pass (fxaa.frag + post.vert): reads the LDR image and writes the swapchain, so it
         // shares the composite's color format - but it is a separate pipeline because its shader
         // statically uses a different binding (5, the LDR image), and descriptor validation is per
         // statically-used binding: putting FXAA into post.frag would make the composite's own set
         // (which points binding 5 at the image it is currently writing) invalid.
         std::optional<vk_pipeline> post_fxaa_pipeline = std::nullopt;
-        // FXAA state: enabled + the two knobs the shader takes (see post_push_constants)
+        // FXAA state: enabled + the two knobs the shader takes (see pass::post_push_constants)
         bool fxaa_on = false;
         float fxaa_subpixel = 0.75f;
         float fxaa_edge_threshold = 0.166f;
@@ -951,7 +927,7 @@ namespace vulkan {
         // see). Everything else in the post chain wants the linear one above.
         vk_sampler post_nearest_sampler = {};
         // Whether the composite upsamples the GI bilaterally or with the plain bilinear fetch (see
-        // post_push_constants::gi_upsample). On by default; false exists for measurement.
+        // pass::post_push_constants::gi_upsample). On by default; false exists for measurement.
         bool gi_upsample = true;
         // The post chain's sets: five per swapchain image (prefilter, three downsample inputs and the
         // composite), the only family whose rebind depends on three fingerprints. It is also the last
@@ -1848,11 +1824,11 @@ namespace vulkan {
          *          result); false when the pass was skipped (no pipeline/descriptors), in which case
          *          the swapchain image was never transitioned and the caller must not pretend
          *          otherwise to the present barrier or the screenshot copy
-         *  @note this function only SEQUENCES the frame's back half: the scene-side tail, the bloom
-         *        chain and the composite/FXAA are recorded by record_scene_tail, record_bloom_chain
-         *        and record_composite. It used to be all three in one 209-line body, whose real
-         *        problem was not its length but that a change to any one of them had to be located
-         *        inside the other two. */
+         *  @note this function only SEQUENCES the frame's back half: the scene-side tail is recorded by
+         *        record_scene_tail, and the bloom chain and the composite are two STAGES of passes
+         *        (vulkan.pass.post) whose frames this function sets and resolves - the renderer no longer records
+         *        them. It used to be all of that in one 209-line body, whose real problem was not its length but
+         *        that a change to any one of them had to be located inside the other two. */
         [[nodiscard]] bool record_post_process(VkCommandBuffer command_buffer);
         /** @brief (re)bind the post descriptor sets to the current per-image HDR targets */
         void ensure_post_descriptors();
@@ -1866,26 +1842,42 @@ namespace vulkan {
          */
         void record_scene_tail(VkCommandBuffer command_buffer);
         /**
-         * @brief record the bloom chain: bright-pass prefilter into level 0, then one downsample per
-         *        level, plus the layout fixups that keep the levels sampleable when it is disabled
-         * @param command_buffer the frame's command buffer
-         * @param image_index the swapchain image whose bloom levels this is
-         * @param bloom_intensity the weight the composite will apply; 0 disables the passes (the
-         *        levels are still transitioned, because the composite samples those bindings
-         *        statically and a descriptor must name a valid layout)
+         * @brief resolve the post COMPOSITE pass's frame: its target (the swapchain, or the LDR image on the
+         *        frames FXAA will finish the frame), the pipeline variant that target's FORMAT needs, the post
+         *        set's composite variant and the push block's values
+         * @return false when this frame cannot run it (the chain's pipelines are missing, or the frame has no
+         *         composite descriptor set)
          */
-        void record_bloom_chain(VkCommandBuffer command_buffer, uint32_t image_index, float bloom_intensity);
+        [[nodiscard]] bool resolve_post_composite(pass::resolved_io& out);
         /**
-         * @brief record the composite (HDR + weighted bloom -> exposure -> ACES -> display) and,
-         *        when it is enabled, the FXAA pass over its result
+         * @brief resolve ONE bloom level's frame: the level it writes, the level it reads (nothing at level 0),
+         *        that level's variant of the post set, the chain's R16F pipeline and the level's extent
+         * @param level which level of the chain (0..3), which selects all of the above
+         * @return false when this frame cannot run it (same conditions as the composite)
+         */
+        [[nodiscard]] bool resolve_post_bloom(uint32_t level, pass::resolved_io& out);
+        /**
+         * @brief whether the FXAA pass is this frame's LAST writer (the frame's own question: the composite's
+         *        target and pipeline variant, the overlay's owner and the feature registry all ask it)
+         */
+        [[nodiscard]] bool post_fxaa_active() const noexcept;
+        /**
+         * @brief the debug overlay, drawn INSIDE the composite's rendering instance (its `after_draw` callback)
+         *
+         * A static thunk because the pass's frame takes a plain function pointer and a context: what it calls is
+         * this class's `record_overlay_if_enabled`, which is a member.
+         */
+        static void draw_overlay_after(void* owner, VkCommandBuffer command_buffer);
+        /**
+         * @brief record the FXAA pass over the LDR image the composite just wrote
          * @param command_buffer the frame's command buffer
          * @param image_index the swapchain image being presented
-         * @param bloom_intensity the weighted bloom sum the composite adds; 0 while the G-buffer
-         *        debug view is up
-         * @return true when a swapchain write happened (the composite without FXAA, or the FXAA
-         *         pass) - the caller uses it to know whether the image is in the expected layout
+         *
+         * It is still the renderer's, and the reason is that a pass cannot yet carry the overlay (see
+         * composite_frame::after_draw): the FXAA pass is the frame's LAST writer whenever it runs, so the overlay
+         * has to be drawn inside ITS instance - which is what step ③ of this extraction is for.
          */
-        [[nodiscard]] bool record_composite(VkCommandBuffer command_buffer, uint32_t image_index, float bloom_intensity);
+        void record_fxaa(VkCommandBuffer command_buffer, uint32_t image_index);
         /**
          * @brief bind the shared render state of every fullscreen post pass and draw the triangle
          * @param command_buffer the frame's command buffer
@@ -1912,7 +1904,7 @@ namespace vulkan {
          *       vkCmdBeginRendering / vkCmdEndRendering and the layout barriers around it
          */
         void record_fullscreen_triangle(VkCommandBuffer command_buffer, VkPipeline pipeline, VkPipelineLayout pipeline_layout, VkImageView target_view, VkExtent2D extent, VkDescriptorSet set,
-                                        post_push_constants const& push, bool overlay_after = false);
+                                        pass::post_push_constants const& push, bool overlay_after = false);
         /** @brief the overlay, when it should draw into @p command_buffer (inside the caller's instance) */
         void record_overlay_if_enabled(VkCommandBuffer command_buffer);
         /** @brief transition @p image to SHADER_READ_ONLY (a barrier must not be recorded inside a

@@ -1399,6 +1399,36 @@ SAMPLERS, which belong to the descriptor sets this class still writes (`post_fam
 predicted - chores registers `post.vert.spv` and `post.frag.spv` for the pass and calls the samplers' creator,
 exactly where the post block used to be.
 
+**SLICE 6 IS LANDED, AND STEP ② IS DONE: THE POST CHAIN'S RECORDING IS THE PASSES'.** Two stages now record what
+`record_bloom_chain` and `record_composite` used to: the bloom chain as FOUR passes in level order, and the
+composite as one - so `runtime::record_bloom_chain` and `runtime::record_composite` are deleted, along with
+`runtime::post_push_constants` (the module's struct is the only copy, and the host fills a value of it). What the
+renderer keeps, each for a stated reason: the two RESOLVERS (the frame's target and the pipeline variant its format
+needs, the post family's five sets, the level's extent, the push block's values), the bloom chain's OFF path (four
+`undefined -> sampling` transitions, because the composite's set declares all four levels as inputs whether or not
+the chain ran - and it now hangs on "the stage recorded nothing" rather than on the knob, so a frame whose sets
+could not be had takes it too), the HDR target's transition, the three marks, and the FXAA recording
+(`record_fxaa`), which is step ③'s.
+
+**THE OVERLAY'S OWNERSHIP IS THE MEASURED HALF OF THIS SLICE, and it moved to the composite's frame.** The
+callback (`composite_frame::after_draw`) is invoked between the composite's draw and its `vkCmdEndRendering`, and
+the host leaves it NULL on the frames FXAA is the frame's last writer. THE GATE CANNOT DECIDE THIS - every
+scenario pins `[gui] show = false`, and with the overlay up the frame is not deterministic (a live fps label) - so
+it was measured the way the gate avoids needing: one run with `[gui] show = true` in the `deferred` scenario (FXAA
+off, so the composite is the last writer). Its frame hash is `F1A17272C96943A7` against the overlay-off reference
+`2DD1D13857322C0F` - the overlay is IN the frame, which can only have come through the callback now - and the run
+is validation-clean and exits 0. That is a coverage gap of the same shape `rt_shadow`'s was, and it is recorded
+here rather than papered over: the gate proves the overlay-OFF paths byte-for-byte, and this run proves the
+overlay-ON path is reached and legal.
+
+**A DUPLICATED DERIVATION THAT WAS COLLAPSED RATHER THAN COPIED**: the old `record_post_process` computed the bloom
+weight once (`debug_view ? 0 : this->bloom_intensity`) and used it for BOTH the chain's branch and the composite's
+push. Now the chain's gate is `feature_active("bloom")` (the member, plus the pipeline and the debug view, which is
+what `f.bloom` already was) and the composite's weight zeroes itself on `active_features().gbuffer_debug` - and the
+two are equal by construction rather than by inspection: `active_features().gbuffer_debug` IS
+`gbuffer_pass_active() && gbuffer_debug`, which is exactly the old local's `debug_view`. The gate's 12 x 2 with 0
+changed is what makes that claim checkable rather than plausible.
+
 **ACCEPTANCE FOR EVERY SLICE**: Release/Debug/ASan clean, `ctest` 8/8, a clean doxygen, and the gate 12 x 2 with
 0 changed and 0 flaky - which covers the composite in every scenario and the bloom chain in every scenario
 (measured above). No knob-on A/B is needed for this step, and the reason it is not is the first paragraph here.
@@ -1529,13 +1559,13 @@ own until step ③ owns it) and of `runtime::post_push_constants`.
    RECIPE NOW** (the section above, with the framework changes it needs and the measurement that the gate covers
    both halves - which is the fact that decides its acceptance). Five passes: one per bloom level (the level IS the
    pass boundary, because each stage binds a different one of the five post sets) plus the composite.
-   **SLICES 1 TO 5 ARE LANDED**: the `bloom` family's `count` and the framework's `extent_of_element` + the host's
-   level formula, the five declarations, the module (`post_composite_pass` + four `post_bloom_pass` instances,
-   complete and compiling), and the GPU MATERIAL - `make_post_pipeline` and its four raw members are gone, the
-   composite pass owns the set layout, the pipeline layout and both pipelines, and the FXAA pipeline is built after
-   `create_passes()` as the ordering note predicted. What is left is the RECORDING: the two stages and their
-   resolvers, the composite's frame, the bloom-off path, and the deletion of `record_bloom_chain` /
-   `record_composite`.
+   **STEP ② IS DONE (slices 1 to 6)**: the bloom family's `count` and the framework's `extent_of_element` + the
+   host's level formula; the five declarations; the module (`post_composite_pass` + four `post_bloom_pass`
+   instances); the GPU material (the composite owns the set layout, the pipeline layout and both pipelines -
+   `make_post_pipeline` and its four raw members are gone); and the RECORDING (`record_bloom_chain` and
+   `record_composite` deleted, the composite's frame carrying the overlay through `after_draw`). What is left of it
+   is nothing the objective names; only the FXAA pass (step ③) still records from the renderer, deliberately, and
+   the overlay's ON path is the one frame the gate cannot cover (measured separately, see the section above).
 2. **③ FXAA**, including the decision the post header records: the FXAA pass is the frame's LAST writer and it
    currently carries the overlay (`record_fullscreen_triangle(..., /*overlay_after=*/true)` at the end of
    `runtime::record_post_process`), so the overlay's ownership has to be decided - the preferred shape is an
