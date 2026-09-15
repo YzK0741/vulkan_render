@@ -3346,16 +3346,24 @@ namespace vulkan {
             .device = this->vulkan_core.device,
             .samplers = this->shared_samplers(),
             .shared_set_layout = [](void* owner, uint32_t const set) {
-                // TWO shared sets, and the GI tracer is why there are two: it binds the scene set (0) and the
-                // G-buffer set (1) and owns no layout of its own, so the pipeline layout it builds needs both
-                // of their owners' layouts. A pass asking for any other set gets "none", which makes it build
-                // nothing and say so.
+                // THREE shared sets now, and each one is there because a pass needs a layout it does not own:
+                // 0 = the scene set (the tracer, the lobe, the spatial filter and the raytraced shadow bind it),
+                // 1 = the G-buffer set (the same four, plus the debug view) and 2 = the POST set (the composite,
+                // the bloom chain and the FXAA pass). A pass asking for any other index gets "none", which makes
+                // it build nothing and say so.
                 runtime* const self = static_cast<runtime*>(owner);
                 if (set == 0u) {
                     return self->vulkan_core.scene_descriptor_set_layout;
                 }
-                return set == 1u ? self->gbuffer_set_layout : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
+                if (set == 1u) {
+                    return self->gbuffer_set_layout;
+                }
+                return set == 2u ? self->post_set_layout : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
             .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
+            // The surface's format: a SESSION-STABLE device fact a pipeline that renders into the swapchain must
+            // be created with (see pass_context). The post chain needs it today; the graphics passes being
+            // extracted need it tomorrow.
+            .swap_chain_image_format = this->vulkan_core.swap_chain_image_format,
             // The two channels a pass uses to build what it owns over resources the RENDERER holds: the handles
             // of the resources this runtime published (`pass_resources`), and a set from the core's pool for a
             // layout it handed out above. Both forward to the filter, which is the object that knows what a pass

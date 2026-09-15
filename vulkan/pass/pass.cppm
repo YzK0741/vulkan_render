@@ -1,4 +1,4 @@
-// module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/pass.cppm
@@ -330,6 +330,21 @@ export namespace vulkan::pass {
          * this framework.
          */
         std::span<unsigned char const> (*shader)(void* owner, std::string_view name) = nullptr;
+        /**
+         * The SURFACE's format, which is a session-stable device fact rather than a frame's.
+         *
+         * WHY A PASS NEEDS IT: a pipeline that renders into the swapchain has to be created with the format that
+         * image actually has, and that format is not a compile-time constant (it is whatever the surface reports;
+         * `vulkan.core` finds it at startup, and `hdr_format`/`gbuffer_formats` are the constants the passes can
+         * already name). The post chain's pipeline builders take it as a parameter for exactly this reason, and
+         * before this field the only way to hand it over was for the runtime to build those pipelines itself -
+         * which is the per-stage ownership this framework has been removing.
+         *
+         * The EXTENT is deliberately not here: it changes with a resize, and a pass that bakes one into an object
+         * rebuilds that object in `on_swapchain_recreated` - the hook that exists for it. A format never changes
+         * for a given surface, so a pass may cache this at create time.
+         */
+        VkFormat swap_chain_image_format = VK_FORMAT_UNDEFINED;
         /**
          * One of THIS pass's declared resources, at CREATE time: the handles its own resources are, or all-null
          * when the owner has none.

@@ -152,6 +152,7 @@ namespace {
             .samplers = {.probe_grid = fake_probe_sampler},
             .shared_set_layout = fake_shared_layout,
             .shader = fake_shader,
+            .swap_chain_image_format = VK_FORMAT_B8G8R8A8_SRGB,
             .owner = nullptr,
         };
     }
@@ -359,6 +360,10 @@ int main() {
         CHECK(context.shared_set_layout(context.owner, 1) == VK_NULL_HANDLE);
         CHECK(context.shader(context.owner, "fake.comp.spv").size() == 3);
         CHECK(context.shader(context.owner, "missing.comp.spv").empty());
+        // ... and the SURFACE's format, which a pipeline that renders into the swapchain must be created with:
+        // a session-stable device fact the host hands over rather than one a pass could guess (the extent, which
+        // DOES change, is deliberately not here - a pass that bakes one rebuilds in on_swapchain_recreated)
+        CHECK(context.swap_chain_image_format == VK_FORMAT_B8G8R8A8_SRGB);
     }
 
     // ---- what a pass is given at CREATE time: a device, the six samplers, and two lookups - and nothing that

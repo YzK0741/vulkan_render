@@ -1033,6 +1033,34 @@ Measured on this step: Release/Debug/ASan clean, ctest 8/8 in all three, doxygen
 stream, gate 12 x 2 with **0 changed and 0 flaky** - a pure ownership move, which is exactly what that gate result
 should look like.
 
+## STEP 1 OF THE GRAPHICS EXTRACTION: THE TWO CHANNELS A GRAPHICS PASS NEEDS
+
+Three measurements opened this work, one per remaining graphics stage, and each is an entanglement rather than a
+move: **deferred** renders into `scene_target_image()`, which is `taa_active() ? scene_color : hdr` (a
+frame-dependent target); **fxaa** records the OVERLAY inside its own rendering instance
+(`record_fullscreen_triangle(..., overlay_after=true)`, so the GUI draws between its draw and `vkCmdEndRendering`);
+and **gbuffer_debug**'s set layout is returned by its pipeline builder because deferred reuses it.
+
+This step lands the two channels those passes need, both INERT until their user arrives (the pattern this branch
+has used for `own_per_image` and `barrier_buffers`):
+
+* **`pass_context::swap_chain_image_format`** - the surface's format, a session-stable device fact. A pipeline
+  that renders into the swapchain must be created with it (`build_fxaa` and the post builders already take it as
+  a parameter), and before this field the only way to hand it over was for the runtime to build those pipelines
+  itself. The EXTENT is deliberately NOT added: it changes with a resize, and a pass that bakes one rebuilds in
+  `on_swapchain_recreated`.
+* **the third SHARED SET**: `resolved_io::shared` already had a `post` field, and the runtime's
+  `shared_set_layout(owner, set)` now answers `2` with the post set layout - so a pass may declare
+  `shared_sets = {2}`, which is what the composite, the bloom chain and the FXAA pass all need.
+
+The overlay contract stays a DECISION for the step that uses it (fxaa/composite): the shape is a frame callback
+(`after_draw`), the same one the temporal pass already uses for the reflection's recording, and its whole point is
+that the recorded COMMAND ORDER does not change. Writing that pointer before its user exists would be dead
+machinery; the decision is recorded here instead.
+
+Measured on this step: Release/Debug/ASan clean, ctest 8/8 (test_pass checks the format reaches a pass's create
+context), doxygen exit 0, gate 12 x 2 with 0 changed and 0 flaky.
+
 ## WHAT THE INVENTORY ALREADY FOUND (RE-AUDITED AGAINST THE CURRENT TREE)
 
 The list below was written on the pre-GI state. Attaching GI (`5036a01`) brought `master`'s files over, so most
