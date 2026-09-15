@@ -61,7 +61,14 @@ export namespace vulkan::pass {
             glm::mat4 inv_view_proj = glm::mat4(1.0f);           // clip -> world, reconstructed per pixel
             glm::vec4 ssao = glm::vec4(0.5f, 0.0f, 8.0f, 0.02f); // radius, intensity (0 = off), samples, bias
             float unlit = 0.0f;                                  // 1.0 = write the stored albedo, unshaded
-            float gi_replaces_ambient = 0.0f;                    // 1.0 = the traced chain replaces the ambient
+            /// 1.0 = the traced GI chain is replacing BOTH ambient terms this frame (the diffuse one always, the
+            /// specular one when the glossy lobe runs), so SSAO must not scale them: the chain's subtraction
+            /// takes back the UN-occluded ambient, and an SSAO-darkened one left an `ambient * (ssao - 1)` term
+            /// behind. Measured on the reference scene: -1.90 of mean green with 37.6% of pixels differing and
+            /// 13.7% off by more than 4/255, on a frame where SSAO is supposed to do NOTHING because the rays ARE
+            /// the occlusion (see shaders/deferred.frag and shaders/ssgi_spatial.comp). 0.0 everywhere else, which
+            /// is what keeps the marched and the GI-off frames byte-identical.
+            float gi_replaces_ambient = 0.0f;
         };
 
         deferred_pass() = default;

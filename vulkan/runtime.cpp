@@ -273,11 +273,9 @@ namespace vulkan {
             vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->gbuffer_set_layout, nullptr);
             this->gbuffer_set_layout = VK_NULL_HANDLE;
         }
-        // ... and the deferred lighting stage's pipeline layout (its own: two sets, scene + G-buffer)
-        if (this->deferred_pipeline_layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->vulkan_core.device, this->deferred_pipeline_layout, nullptr);
-            this->deferred_pipeline_layout = VK_NULL_HANDLE;
-        }
+        // ... and the deferred lighting stage's pipeline layout is NOT here any more: it is the PASS's
+        // (vulkan.pass.deferred::release_owned), built by the pass from the two shared set layouts its owner
+        // hands it at create time.
         // ... and the GI tracer is NOT here any more: its pipeline layout and its pipeline are the PASS's (see
         // vulkan.pass.ssgi_trace::release_owned), which is what the create/record split is for. The SPATIAL
         // FILTER's left the same way (vulkan.pass.ssgi_spatial), and so did the TEMPORAL resolve's set layout,
@@ -2105,10 +2103,11 @@ namespace vulkan {
             this->gbuffer_debug_pipeline->viewport = full_viewport;
             this->gbuffer_debug_pipeline->scissor = full_scissor;
         }
-        if (this->deferred_pipeline) {
-            this->deferred_pipeline->viewport = full_viewport;
-            this->deferred_pipeline->scissor = full_scissor;
-        }
+        // ... and the deferred lighting stage's is not here either, for a stronger reason than the TAA
+        // resolve's below: it is a PASS (vulkan.pass.deferred), it declares `resync_viewport = true`, so the
+        // runner sets the viewport and scissor from the extent its own declaration produced. The old
+        // `deferred_pipeline->viewport = ...` line existed because a pipeline object caches what
+        // begin_pipeline() applies; the pass never calls begin_pipeline, the runner binds the pipeline.
         // The TAA resolve's pipeline and viewport are NOT resynced here: the runner sets a fullscreen pass's
         // viewport and scissor from the extent its declaration produced, which is what `resync_viewport`
         // means once a pass states it (see vulkan.pass's behaviour). The hazard this list used to guard - a
@@ -2321,26 +2320,106 @@ namespace vulkan {
         return {};
     }
 
-    // The deferred lighting stage: a fullscreen pass that shades every pixel from the G-buffer with
-    // the same lighting code the forward path runs per fragment (shaders/shading.glsl), added into
-    // the HDR target on top of the sky and the emissive the earlier passes wrote.
-    std::expected<void, std::string> runtime::make_deferred_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
-        using fail = std::unexpected<std::string>;
-        core& vk = this->vulkan_core;
-        if (this->gbuffer_set_layout == VK_NULL_HANDLE) {
-            return fail(std::string("deferred: create the G-buffer debug pipeline first (it owns the G-buffer set layout)"));
+    // THE DEFERRED LIGHTING PASS'S FRAME (vulkan.pass.deferred). The pass owns the barrier, the two per-image
+    // input transitions, the LOAD instance, the two binds, the push and the draw; what the host resolves is the
+    // FRAME - which image is lit, which two sets are bound (the shared scene set's frame slot and the G-buffer
+    // set's swapchain image) and the values the push carries - plus deciding that this frame cannot run at all.
+    //
+    // It was `record_lighting_pass`'s prologue, unchanged, including the order of the two checks: the pipeline
+    // first, then the G-buffer set. The second one is why this returns false instead of recording something, and
+    // the caller is what clears the target in that case (the fallback is about the renderer's own pool).
+    bool runtime::resolve_deferred_pass(pass::resolved_io& out) {
+        core const& vk = this->vulkan_core;
+        uint32_t const index = this->current_image_index;
+        if (!this->deferred.pipeline_ready()) {
+            return false;
         }
-        if (vk.scene_descriptor_set_layout == VK_NULL_HANDLE) {
-            return fail(std::string("deferred: the shared scene descriptor set layout is missing"));
+        // The G-buffer family is written on demand by the accessor the GI passes, the debug view and the
+        // ray-traced shadow share: this pass can be the first to need it on a frame where none of them ran.
+        this->ensure_gbuffer_descriptors();
+        VkDescriptorSet const gbuffer_set = this->gbuffer_family.set(index, 0);
+        if (gbuffer_set == VK_NULL_HANDLE) {
+            return false; // nothing can be shaded - see clear_scene_color_for_missing_gbuffer()
         }
-        std::array<VkPipelineColorBlendAttachmentState, 1> const blend = {make_color_blend_attachment_additive()};
-        auto built = pipelines::build_deferred(vk.device, vk.scene_descriptor_set_layout, this->gbuffer_set_layout, sizeof(deferred_push_constants), std::span<VkPipelineColorBlendAttachmentState const>(blend), vertex_shader_code, fragment_shader_code);
-        if (!built) {
-            return std::unexpected(std::move(built.error()));
+        out.frame = this->pass_frame();
+        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
+        // set 0 = the shared scene set (camera / IBL / light UBO / shadow map), set 1 = the G-buffer inputs
+        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
+        out.shared.gbuffer = gbuffer_set;
+        // THE TARGET IS THE FRAME'S, NOT THE DECLARATION'S: the declaration names `scene_color`, which is the
+        // image the TAA resolve reads - but on a frame TAA is off the lighting is written straight into `hdr` and
+        // there is no resolve to feed. This is the accessor pair the opaque pass's own attachment uses, so the
+        // two cannot disagree about which image the frame lights, and the deviation is recorded in
+        // render_resource::deferred_io (one `render_target` names one resource today).
+        out.target_storage[0] = {.view = this->scene_target_view(index), .buffer = VK_NULL_HANDLE, .image = this->scene_target_image(index)};
+        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), render_resource::deferred_targets.size());
+        // The pipeline and its layout are the PASS's, and the runner binds the pipeline from `pipelines` before
+        // calling record (see apply_pass_behaviour) - which is why the pass does not call begin_pipeline itself.
+        out.pipeline_storage[0] = this->deferred.pipeline();
+        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
+        out.pipeline_layout = this->deferred.pipeline_layout();
+        // The push block: its SHAPE is the pass's (pass::deferred_pass::push_constants, checked against the
+        // declaration's 88 bytes by the pass's own static_assert) and its VALUES are the frame's - SSAO rides the
+        // same block as four numbers, and an intensity of 0 when the feature is off makes ssao_occlusion() return
+        // exactly 1.0, so the shaded result is the pre-M6 value bit for bit.
+        pass::deferred_pass::push_constants push = {
+            .inv_view_proj = this->current_inv_view_proj,
+            .ssao = glm::vec4(this->ssao_radius,
+                              this->ssao_enabled ? this->ssao_intensity : 0.0f,
+                              static_cast<float>(this->ssao_samples),
+                              this->ssao_bias),
+            // render mode: the flat "unlit" default pipeline becomes "write the stored albedo" here
+            .unlit = this->unlit_active ? 1.0f : 0.0f,
+            // ... and whether the traced chain is replacing the ambient this frame, which the lighting stage needs
+            // so it does not scale a term that is about to be taken back out. The SAME predicate the spatial
+            // filter's subtraction uses, so the two cannot disagree about whether the ambient the chain replaces
+            // is the occluded one or the plain one.
+            .gi_replaces_ambient = this->ssgi_traced_active() ? 1.0f : 0.0f,
+        };
+        static_assert(sizeof(push) == render_resource::deferred_io.push->size, "the resolved push block must be the size the declaration promises");
+        std::memcpy(out.push_storage.data(), &push, sizeof(push));
+        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
+        out.extent = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->deferred));
+        return true;
+    }
+
+    void runtime::ensure_deferred_inputs(void* const owner, VkCommandBuffer const command_buffer, uint32_t const image_index) {
+        // The two transitions the lighting stage's descriptor declares, in the moved code's order: the three
+        // stored targets first, then the depth. What makes them the RENDERER's rather than the pass's is their
+        // state: each is a no-op once an earlier stage (the ray-traced shadow, which samples the same surface)
+        // has already published the G-buffer instance's attachment writes, and "was it written this frame" is the
+        // G-buffer pass's bookkeeping. The depth uses ensure_gbuffer_depth_sampled(), NOT a bare transition: the
+        // G-buffer pass rendered that depth earlier in THIS command buffer, so its old layout is known to be
+        // DEPTH_STENCIL_ATTACHMENT_OPTIMAL and the src masks have to publish the attachment write - declaring
+        // UNDEFINED would let the implementation discard precisely the contents the lighting reconstructs world
+        // positions from.
+        runtime* const self = static_cast<runtime*>(owner);
+        static_cast<void>(self->ensure_gbuffer_targets_sampled(command_buffer, image_index));
+        static_cast<void>(self->ensure_gbuffer_depth_sampled(command_buffer, image_index));
+    }
+
+    void runtime::clear_scene_color_for_missing_gbuffer(VkCommandBuffer const command_buffer) {
+        // The deferred lighting pass did not record because the G-buffer family had no descriptor set for this
+        // image (its pool could not give one). The pass cannot do this itself - it never sees the family's pool,
+        // and "the owner has no set" is a failure of the owner's pool - so the frame's answer lives here: clear
+        // the target so the frame is DEFINED (the post chain samples it) instead of leaving whatever the
+        // background/emissive wrote mixed with garbage, and say so once per frame, because a silent black frame
+        // is worse than a log line.
+        core const& vk = this->vulkan_core;
+        uint32_t const index = this->current_image_index;
+        if (index >= vk.scene_color_images.size()) {
+            return;
         }
-        this->deferred_pipeline_layout = built->pipeline_layout;
-        this->deferred_pipeline = std::move(built->lighting);
-        return {};
+        utility::log("runtime: deferred lighting has no descriptor set - clearing the scene target");
+        std::array<VkImageMemoryBarrier2, 1> clear_barrier = {vulkan::color_attachment_transition};
+        clear_barrier[0].image = vk.scene_color_images[index];
+        VkDependencyInfo const clear_dependency = make_image_dependency_info(1, clear_barrier.data());
+        vkCmdPipelineBarrier2(command_buffer, &clear_dependency);
+        VkClearValue clear = {};
+        VkRenderingAttachmentInfo const attachment = make_color_attachment_info(vk.scene_color_image_views[index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
+        VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &attachment, nullptr);
+        vkCmdBeginRendering(command_buffer, &rendering_info);
+        vkCmdEndRendering(command_buffer);
     }
 
     std::expected<void, std::string> runtime::make_gbuffer_debug_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
@@ -2375,100 +2454,6 @@ namespace vulkan {
         }
         this->gi_probe_sampler = vk_sampler(probe_sampler, vk.device);
         return {};
-    }
-
-    void runtime::record_lighting_pass(VkCommandBuffer const command_buffer) {
-        core const& vk = this->vulkan_core;
-        if (this->deferred_pipeline == std::nullopt) {
-            return;
-        }
-        std::size_t const index = this->current_image_index;
-
-        // Transitions, all before vkCmdBeginRendering (a pipeline barrier may not be recorded inside
-        // a dynamic rendering instance): the three surface targets and the G-buffer depth become
-        // shader inputs, and the scene color - which the G-buffer pass already filled with the
-        // emissive - stays a color attachment with its contents LOADed, because the lighting is
-        // added on top of them.
-        //
-        // The depth uses ensure_gbuffer_depth_sampled(), NOT a bare transition: the G-buffer pass
-        // rendered that depth earlier in THIS command buffer, so its old layout is known to be
-        // DEPTH_STENCIL_ATTACHMENT_OPTIMAL and the src masks have to publish the attachment write.
-        // Declaring UNDEFINED would let the implementation discard precisely the contents the
-        // lighting stage reconstructs world positions from (see the accessor).
-        //
-        // The scene-color dependency is separate and cannot be folded into those three: it does not
-        // change layout, and its consumer is the second instance's LOAD of the attachment, which is
-        // a color-attachment access rather than the FRAGMENT_SHADER read the sampling transitions
-        // publish. Dynamic rendering inserts no dependency of its own between two instances, so
-        // without it the load is not ordered after (nor made visible from) the G-buffer pass's store.
-        // The image comes from scene_target_image(), the same accessor the attachment below uses, so
-        // the barrier always names the image this instance actually LOADs.
-        VkImage const scene_target = this->scene_target_image(static_cast<uint32_t>(index));
-        std::array<VkImageMemoryBarrier2, 1> barriers = {};
-        barriers[0] = vulkan::color_attachment_dependency; // G-buffer store -> this instance's LOAD
-        barriers[0].image = scene_target;
-        VkDependencyInfo const dependency = make_image_dependency_info(static_cast<uint32_t>(barriers.size()), barriers.data());
-        vkCmdPipelineBarrier2(command_buffer, &dependency);
-        // The three stored targets become samples HERE, but only if an earlier stage (the ray-traced
-        // shadow pass, which runs between the G-buffer instance and this one) has not already published
-        // them - the flag is what keeps the second transition from claiming a layout they are not in.
-        this->ensure_gbuffer_targets_sampled(command_buffer, static_cast<uint32_t>(index));
-        this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(index));
-
-        this->ensure_gbuffer_descriptors();
-        if (this->gbuffer_family.set(static_cast<uint32_t>(index), 0) == VK_NULL_HANDLE) {
-            // No descriptor set: nothing can be shaded. Clear the HDR target so the frame is defined
-            // (the post chain samples it) instead of leaving whatever the background/emissive wrote
-            // mixed with garbage - and say so once per frame, because a silent black frame is worse
-            // than a log line.
-            utility::log("runtime: deferred lighting has no descriptor set - clearing the scene target");
-            std::array<VkImageMemoryBarrier2, 1> clear_barrier = {vulkan::color_attachment_transition};
-            clear_barrier[0].image = vk.scene_color_images[index];
-            VkDependencyInfo const clear_dependency = make_image_dependency_info(1, clear_barrier.data());
-            vkCmdPipelineBarrier2(command_buffer, &clear_dependency);
-            VkClearValue clear = {};
-            VkRenderingAttachmentInfo const attachment = make_color_attachment_info(vk.scene_color_image_views[index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
-            VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &attachment, nullptr);
-            vkCmdBeginRendering(command_buffer, &rendering_info);
-            vkCmdEndRendering(command_buffer);
-            return;
-        }
-
-        // The G-buffer pass left the scene color in COLOR_ATTACHMENT_OPTIMAL, and the dependency
-        // barrier above ordered its store before this instance's LOAD, so the attachment needs no
-        // layout change of its own: a load-op LOAD instance adds the lighting on top of the emissive
-        VkImageView const target_view = this->scene_target_view(static_cast<uint32_t>(index));
-        VkRenderingAttachmentInfo const color_attachment = make_load_color_attachment_info(target_view);
-        VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &color_attachment, nullptr);
-        vkCmdBeginRendering(command_buffer, &rendering_info);
-        this->deferred_pipeline->begin_pipeline(command_buffer);
-        VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height), 0.0f, 1.0f};
-        VkRect2D const scissor = {{0, 0}, vk.swap_chain_extent};
-        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
-        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
-        vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
-        // set 0 = the shared scene set (camera / IBL / light UBO / shadow map), set 1 = the G-buffer
-        std::array<VkDescriptorSet, 2> const sets = {this->scene_sets.set(static_cast<uint32_t>(vk.current_frame)), this->gbuffer_family.set(static_cast<uint32_t>(index), 0)};
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->deferred_pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
-        // SSAO (M6) rides the same block: an intensity of 0 when the feature is off, which makes
-        // ssao_occlusion() return exactly 1.0 - the shaded result is then the pre-M6 value bit for bit
-        deferred_push_constants const push = {
-            .inv_view_proj = this->current_inv_view_proj,
-            .ssao = glm::vec4(this->ssao_radius,
-                              this->ssao_enabled ? this->ssao_intensity : 0.0f,
-                              static_cast<float>(this->ssao_samples),
-                              this->ssao_bias),
-            // render mode: the flat "unlit" default pipeline becomes "write the stored albedo" here
-            .unlit = this->unlit_active ? 1.0f : 0.0f,
-            // ... and whether the traced chain is replacing the ambient this frame, which the lighting stage
-            // needs so it does not scale a term that is about to be taken back out (see the field's comment).
-            // The SAME predicate the spatial filter's subtraction uses, so the two cannot disagree about
-            // whether the ambient the chain replaces is the occluded one or the plain one.
-            .gi_replaces_ambient = this->ssgi_traced_active() ? 1.0f : 0.0f,
-        };
-        vkCmdPushConstants(command_buffer, this->deferred_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
-        vkCmdDraw(command_buffer, 3, 1, 0, 0);
-        vkCmdEndRendering(command_buffer);
     }
 
     // The deferred path's transparent pass. Everything about its position is load-bearing:
@@ -2609,7 +2594,7 @@ namespace vulkan {
         if (this->gbuffer_debug) {
             return this->gbuffer_debug_pipeline.has_value();
         }
-        return this->deferred_pipeline.has_value();
+        return this->deferred.pipeline_ready();
     }
 
     bool runtime::deferred_lit_active() const noexcept {
@@ -3630,6 +3615,9 @@ namespace vulkan {
         if (&pass == static_cast<pass::frame_pass const*>(&this->cluster)) {
             return this->resolve_cluster_pass(out);
         }
+        if (&pass == static_cast<pass::frame_pass const*>(&this->deferred)) {
+            return this->resolve_deferred_pass(out);
+        }
         if (&pass != static_cast<pass::frame_pass const*>(&this->gi_probe)) {
             return false; // no other pass is wired into a stage yet
         }
@@ -4083,7 +4071,20 @@ namespace vulkan {
             // lighting interval look four times more expensive with rays on (measured 0.32 -> 1.18 ms
             // while the rays themselves were ~0.85 of that).
             this->gpu_mark(command_buffer, gpu_mark_id::rt_shadow_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-            this->record_lighting_pass(command_buffer);
+            // THE LIGHTING STAGE IS A PASS (vulkan.pass.deferred): the frame carries the two per-image input
+            // transitions (their "was it written this frame" flags are the G-buffer pass's bookkeeping, so the
+            // pass cannot own them) and the pass's own record does the rest - the scene-colour dependency, the
+            // LOAD instance over the frame's target, the two binds, the push and the draw.
+            this->deferred.set_frame(pass::deferred_frame{.ensure_inputs = &runtime::ensure_deferred_inputs, .owner = this});
+            pass::stage const deferred_stage = {.name = "deferred", .passes = this->deferred_stage, .marks = false};
+            pass::run_report const deferred_report = pass::record_stage(deferred_stage, this->make_pass_host());
+            if (deferred_report.recorded == 0) {
+                // The pass could not resolve a frame. Inside this branch the only remaining cause is the G-buffer
+                // family having no set for this image (the pipeline and the target generation are what
+                // deferred_lit_active() just checked), and the frame then has to be cleared rather than left
+                // half-written - see the fallback's own comment.
+                this->clear_scene_color_for_missing_gbuffer(command_buffer);
+            }
             this->record_transparent_pass(command_buffer);
         } else {
             // The pass does not run (the debug view replaces the lighting stage, and the forward path has
@@ -4680,7 +4681,7 @@ namespace vulkan {
         // The G-buffer pass and its lighting stage are the engine's only scene path, so there is no
         // flag for them: taa/ssao below ask this instead, and the debug view stands in for the
         // lighting stage rather than running alongside it (the two write the HDR target differently).
-        bool const shaded_scene = !f.gbuffer_debug && this->deferred_pipeline.has_value() && this->gbuffer_pipeline.has_value();
+        bool const shaded_scene = !f.gbuffer_debug && this->deferred.pipeline_ready() && this->gbuffer_pipeline.has_value();
         // The shadow map is only read by the shading stages. The flat render mode samples nothing
         // (unlit.frag has no lighting include; the lighting stage returns the albedo before any
         // shading), so recording the pass would be pure waste - it measured 0.22 ms of a 0.5 ms frame.
@@ -4757,6 +4758,14 @@ namespace vulkan {
         if (name == "bloom") {
             return f.bloom;
         }
+        if (name == "deferred") {
+            // THE LIGHTING STAGE'S OWN GATE, and it is deliberately the SAME predicate the frame loop's branch
+            // uses (`deferred_lit_active()`): the runner asks this before resolving the pass, and the frame loop
+            // asks it before recording the stage, so one answer means the two cannot disagree about whether the
+            // lighting runs this frame. A pass's feature name with NO branch here would record nothing at all
+            // (`skipped_inactive 1` every frame) - the trap the ssgi_spatial note above records.
+            return this->deferred_lit_active();
+        }
         if (name == "unlit") {
             return f.unlit;
         }
@@ -4797,6 +4806,14 @@ namespace vulkan {
         if (name == "gbuffer-debug") {
             return this->gbuffer_pipeline.has_value() && this->gbuffer_debug_pipeline.has_value();
         }
+        if (name == "deferred") {
+            // AVAILABILITY, not activity: "the pass built its pipeline" (whether it RUNS this frame is
+            // `feature_active`'s answer above). This branch did not exist before the lighting stage was a PASS,
+            // so it answered false - and chores.cpp's SSAO group, whose visibility asks exactly this question
+            // (`feature_available("deferred") && feature_active("ssao")`), was never offered. Found by the
+            // extraction, recorded, and the gate is what proves the fix changes no frame.
+            return this->deferred.pipeline_ready();
+        }
         if (name == "taa") {
             return this->taa_resolve.pipeline_ready();
         }
@@ -4834,7 +4851,7 @@ namespace vulkan {
                      this->feature_available("fxaa") ? "on" : "UNAVAILABLE",
                      this->feature_available("shadow") ? "on" : "UNAVAILABLE",
                      this->feature_available("clustered") ? "on" : "UNAVAILABLE");
-        if (!this->gbuffer_pipeline.has_value() || !this->deferred_pipeline.has_value()) {
+        if (!this->gbuffer_pipeline.has_value() || !this->deferred.pipeline_ready()) {
             utility::log("features: the G-buffer pass or its lighting stage was not created, so NO SCENE IS DRAWN this session (see the startup log's 'deferred lighting disabled' line)");
         }
     }

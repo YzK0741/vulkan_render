@@ -1112,7 +1112,77 @@ says what a re-audit of the current tree found.
   (the overlay's own comments and the `gui` import read correctly), so it is neither confirmed nor denied here
   rather than being repeated as fact.
 
+## THE DEFERRED LIGHTING PASS IS A PASS: the wiring, and what it found that the recipe did not
+
+**LANDED.** `vulkan.pass.deferred` (the eleventh pass) records the deferred path's shading stage, and the renderer no
+longer holds a single handle of it: `runtime::make_deferred_pipeline`, `runtime::record_lighting_pass`, the
+`deferred_pipeline` and `deferred_pipeline_layout` members and the `deferred_push_constants` struct are all deleted.
+The step was landed in four verified slices - the declaration (`3983343`), the interface (`f16b637`, with the
+`static_assert` on the push size), the implementation (`29f5304`) and this wiring - each one inert until the last,
+so a session that ran out of budget could not leave a half-wired frame loop behind (which is what happened twice
+while this step was a single attempt; see the recipe section below).
+
+**WHAT THE PASS OWNS NOW**: its pipeline layout and pipeline (built at create time from the two shared set LAYOUTS
+the owner hands it - the scene set's and the G-buffer set's - and its own shader, with the additive blend the stage
+needs), the scene-colour dependency barrier, the LOAD instance over the frame's scene target, the two binds in
+their original order, the 88-byte push and the 3-vertex draw. Its header carries the push struct, so the shape and
+the declaration cannot drift: `static_assert(sizeof(push_constants) == render_resource::deferred_io.push->size)`.
+
+**WHAT THE RENDERER KEEPS, and each is a fact about the frame rather than about the stage**:
+`resolve_deferred_pass` (the two sets, the frame's target, the push's VALUES, the extent from `pass_extent`),
+`ensure_deferred_inputs` (the two per-image transitions, carried by the frame because their "was it written this
+frame" flags are the G-buffer pass's bookkeeping - the same shape as the temporal resolve's `ensure_inputs`),
+`clear_scene_color_for_missing_gbuffer` (the no-set fallback, which is about this class's own descriptor pool) and
+the stage's POSITION in `record_scene_tail`.
+
+**FOUR THINGS THIS WIRING FOUND, all by doing it rather than by planning it:**
+
+1. **`feature_active("deferred")` had no branch, and the runner asks it.** A pass's `feature()` name is a gate:
+   `record_stage` skips a pass whose name answers false, and `"deferred"` answered false (grep at the parent
+   commit: no branch in either feature function, both ending in `return false`). So without the branch this step
+   adds, the pass would have been skipped on every frame (`skipped_inactive 1`) and the frame would have gone
+   unlit - the same defect the `ssgi_spatial` extraction hit from the other side (that one wrote the activity
+   predicate into `feature_available`). WHAT IS READ versus WHAT IS MEASURED: the missing branch and the runner's
+   contract are the read; that the pass now RUNS is measured - the gate's 12 x 2 with 0 changed (an unlit frame
+   cannot match), plus the pass's own create line in the gate log. The branch returns `deferred_lit_active()`, the
+   SAME predicate the frame loop's branch uses, so the runner's question and the frame loop's question cannot
+   disagree.
+2. **`feature_available("deferred")` had no branch EITHER, and that one was a pre-existing defect.** chores.cpp's
+   SSAO group is `visible_when = feature_available("deferred") && feature_active("ssao")`, and the first half had
+   never been answerable, so the group was never offered in the overlay. The extraction is what made that visible
+   (the name now belongs to a pass); the branch returns `deferred.pipeline_ready()`, and the gate is what proves
+   the fix changes no frame - every scenario pins `[gui] show = false`, so an overlay-visibility change cannot
+   reach a hash, and 12 x 2 with 0 changed is the measurement.
+3. **The app-side block was a trap with two halves, and the recipe named only one of them.** The recipe's half: the
+   old
+   `make_deferred_pipeline` block's `else` branch also registered `post.vert.spv` and `taa.frag.spv`, so removing
+   the block would have silently taken TAA away. The half the recipe did not name: the pass needs its OWN two
+   shaders REGISTERED now (`post.vert.spv` and `deferred.frag.spv`) - it builds inside `create_passes()` and asks
+   the context for them by name, and an unregistered shader makes a pass build nothing and say so. Both are in the
+   log: `SUCCESS: deferred lighting pipeline created (shades the stored surface, additive over the emissive)` and,
+   immediately above it, `SUCCESS: TAA resolve pipeline created (history reprojection over the deferred path)`.
+4. **The fallback had to become a call-site decision.** The old code did the two per-image transitions BEFORE the
+   "is there a G-buffer set" check, so the fallback frame still published the surface's attachment writes. Now the
+   pass is skipped entirely when the resolver fails, so those transitions do not happen on a fallback frame - and
+   the frame is CLEARED anyway (`clear_scene_color_for_missing_gbuffer`), so what the post chain samples is defined
+   either way. This is a difference in an error path the gate cannot reach (the family always has a set here), and
+   it is recorded rather than hidden.
+
+**MEASURED ON THIS STEP**: Release, Debug and ASan builds clean; `ctest` 8/8 in Release **and** Debug **and** ASan;
+`doxygen Doxyfile` exit 0 with no diagnostics; **gate 12 x 2 = 0 changed, 0 flaky, 0 unseeded** against
+`%LOCALAPPDATA%\vulkan_render\baseline`. The gate is the WHOLE verification for this step, not a partial one: the
+deferred stage runs in all twelve scenarios (it is the shading stage of the only scene path), so a byte-identical
+frame is only possible if the pass recorded the moved code's commands. And the pass's own create line in the
+gate's `render-check/debug.log` says which code did it: `SUCCESS: deferred lighting pipeline created (shades the
+stored surface, additive over the emissive)` - a line `record_lighting_pass`'s era never printed, because the
+pipeline used to be built by the renderer.
+
 ## THE NEXT STEP, EXACTLY: THE DEFERRED LIGHTING PASS (recipe, measured twice)
+
+**STATUS: LANDED.** This recipe is what the four slices were built from, and the wiring's own findings - the two
+feature-name branches, the app-side half the recipe's item 5 does not name, and the fallback's changed position -
+are the section above. It is kept, unedited below, because it is the measurement that made the step landable at
+all.
 
 Two attempts at this step ran out of a session's budget before they could be verified, and both were reverted
 rather than left half-wired; what they produced is this recipe, which is now the whole of what a fresh attempt
@@ -1260,38 +1330,47 @@ verification (12 x 2, 0 changed / 0 flaky) - plus Release/Debug/ASan, ctest 8/8 
   between, and the renderer has exactly one frame order today (`gbuffer_debug`/`unlit` are per-pass feature
   gates, not alternative chains). The candidates arrive with the graphics stages: the deferred tail
   (lighting + transparent) versus the debug view is the first pair that would be two real chains.
+* **THE DEFERRED LIGHTING STAGE IS A PASS** (`vulkan.pass.deferred`, the eleventh), landed in four verified slices
+  and completed by the wiring (see the two sections above). The pass owns its pipeline layout, its pipeline, the
+  scene-colour dependency barrier, the LOAD instance, the push and the draw; the renderer keeps the frame - the
+  two shared sets, the frame's target, the push's values, the two per-image input transitions as a frame callback,
+  and the no-G-buffer-set fallback - plus the stage's position. `make_deferred_pipeline`, `record_lighting_pass`,
+  `deferred_pipeline`, `deferred_pipeline_layout` and `deferred_push_constants` are all gone from `vulkan.runtime`.
+  The ordinary gate IS the verification here (the stage runs in all twelve scenarios): **12 x 2 = 0 changed,
+  0 flaky**, with Release/Debug/ASan clean, `ctest` 8/8 in all three, and a clean doxygen. The step is also where
+  two dead feature-name branches were found: `feature_active("deferred")` (without which the runner would have
+  skipped the pass on every frame) and `feature_available("deferred")` (whose absence had hidden the SSAO group in
+  the overlay since the group was written).
 
-**NOT DONE, with the reason and the exact next step.**
+**WHAT IS LEFT OF THE OBJECTIVE, in the order it is being taken.**
 
-1. **The diffuse temporal resolve as a pass - and it is TWO steps, not one.** Every piece is ready:
-   `render_resource::ssgi_temporal_io` is declared, generated and tested; `build_ssgi_temporal` already takes a
-   device and the pass's layout; `resolved_io::own_per_image` is the channel its family needs. But the extraction
-   splits cleanly, and taking the first half first is both smaller and honest:
-   * **(1a) the RECORDING, which needs no new framework at all.** A pass whose set and pipeline arrive through
-     `resolved_io::own_set` and `resolved_io::pipelines` is WITHIN the framework's contract - those fields exist
-     for exactly that, and the scene pass's leaves already get their pipelines from the owner. So a
-     `vulkan.pass.ssgi_temporal` can own the barriers, the dispatch, the two push lanes that describe its own
-     state (`history_valid`, `mode`), the history copy and the hand-backs while the set layout, the pipeline and
-     both per-image families stay the renderer's. That is the part where the ORDER lives (after the tracer and
-     the lobe, before the spatial filter), and it is worth taking on its own.
-     **STEP 1a IS LANDED** (`bc2dc1d`): that module is in the tree as `vulkan/pass/ssgi_temporal.{cppm,cpp}` and it
-     records the resolve, with its set and its pipeline arriving through `resolved_io::own_set` and
-     `resolved_io::pipelines` - a shape the framework allows, which is why 1a needed no new framework at all. What
-     is left of this bullet is 1b.
-   * **(1b) the pass-owned FAMILY**, which is what `own_per_image` was added for: the pass then ensures its own
-     set from the declaration, writes each image's set from that image's views, and keeps its own history flags
-     (the tracer reading them through an accessor). This is the step that measured the channel.
-     **STEP 1b IS LANDED**: the DIFFUSE family is the pass's, written from `own_per_image[binding][image]` with
-     `bindings::write_set` and retired by `on_swapchain_recreated`; the REFLECTION's family and the mode-1
-     recording are still the renderer's, which is the framework gap this document keeps naming (one declaration
-     cannot describe two signals' images). The history flags are still the renderer's - they are read before the
-     edge, not by the pass.
-2. **The spatial filter**, after (1): it reads the temporal resolve's output and binds both of its sets, so it is
-   the second reader of the same channel.
-3. **The TAA pass's per-image defect** (recorded above): it writes the current frame's views into every set, so
-   with more than one swapchain image (this machine: `minImageCount + 1`, mailbox) every set points at one
-   image's history. Fixing it uses `own_per_image` and **changes frames**, so it is a deliberate change with a
-   reference update - it must not be folded into an extraction whose acceptance is "0 changed".
+1. **② the post composite + the bloom chain as passes, on the `post` shared set** (`shared_sets {2}`): the framework
+   side is ready - `set_owner::post` exists in the declaration layer, `shared_set_layout(2)` answers the post set's
+   layout, and `pass_context::swap_chain_image_format` was added for exactly this pass - so the work is a resolver
+   per pass (the post family's per-image sets, the push values) plus the decision the code's comments say is
+   load-bearing. The measured shape to split: `post_family` holds FIVE sets per swapchain image (the bright-pass
+   prefilter, the three downsample inputs and the composite), `runtime` holds THREE post pipelines (the composite to
+   the swapchain, the same shader pair again for the R16F bloom levels, and FXAA's - a separate pipeline because it
+   statically uses a different binding), and the recordings are five fullscreen triangles plus FXAA in one function.
+   So the split has to follow the IMAGES and the SETS (the HDR/LDR ping-pong, which set each stage binds) rather
+   than the pipeline count.
+2. **③ FXAA**, including the decision the post header records: the FXAA pass is the frame's LAST writer and it
+   currently carries the overlay (`record_fullscreen_triangle(..., /*overlay_after=*/true)` at the end of
+   `runtime::record_post_process`), so the overlay's ownership has to be decided - the preferred shape is an
+   `after_draw` callback on the pass's frame that keeps the recorded command order byte-identical, rather than a
+   second instance.
+3. **④ the G-buffer debug view**. It shares the G-buffer set layout with the lighting stage, and that layout is
+   currently built by `make_gbuffer_debug_pipeline` (`pipelines::build_gbuffer_debug` returns it) because the
+   deferred pass needed it first. Once BOTH are passes, the layout has to belong to one of them or to the
+   declaration layer - and its knob is a genuine A/B (the debug view replaces the lighting stage), so it is
+   verified by the knob-on A/B the rt_shadow/mask_bake/compute_skin steps used.
+4. **⑤ the shadow pass** (the cascaded maps, the per-cascade cache and the parallel secondary recording): the last
+   graphics stage that is still the renderer's, and the one with the most renderer state behind it (the fit cache,
+   the caster gather, the per-slot secondaries).
+5. **The TAA pass's per-image defect** (recorded above), which is NOT an extraction: it writes the current frame's
+   views into every set, so with more than one swapchain image every set points at one image's history. Fixing it
+   uses `own_per_image` and **changes frames**, so it is a deliberate change with a reference update - it must not
+   be folded into an extraction whose acceptance is "0 changed".
 
 **AND THE TWO ANCHORS AGREE, which is the strongest statement this branch can make about "the rest is
 unchanged".** The seven pre-GI scenarios were re-run against the branch's OWN origin baselines

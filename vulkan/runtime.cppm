@@ -39,6 +39,7 @@ import vulkan.pass.rt_shadow;         // the ninth, and the first one OUTSIDE th
 import vulkan.pass.mask_bake;         // ... and the one-shot MASK bake, which is a JOB rather than a frame pass
 import vulkan.pass.compute_skin;      // ... and the compute-skinning job, which is a job for the same reason
 import vulkan.pass.cluster;           // the tenth: the clustered-light sort, the first pass with BUFFER barriers
+import vulkan.pass.deferred;          // the eleventh: the deferred lighting stage, the deferred path's shading work
 import vulkan.pass.chain;             // the chain container: what holds a run of passes and its ORDER
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
@@ -356,9 +357,6 @@ namespace vulkan {
         // fullscreen debug view of the G-buffer (reads the three targets + depth, writes the HDR
         // target so the ordinary post chain still runs)
         std::optional<vk_pipeline> gbuffer_debug_pipeline = std::nullopt;
-        // fullscreen deferred lighting stage: reads the same inputs and ADDS the shading into the
-        // HDR target, on top of the sky and the emissive the earlier passes left there
-        std::optional<vk_pipeline> deferred_pipeline = std::nullopt;
         // whether the opaque pass writes the G-buffer this frame (see set_gbuffer_debug). Only
         // takes effect once the needed pipelines exist, so the flags can be set before setup ends.
         bool gbuffer_debug = false;
@@ -372,10 +370,6 @@ namespace vulkan {
         vk_sampler gi_probe_sampler = {};
         VkDescriptorSetLayout gbuffer_set_layout = VK_NULL_HANDLE;
         VkPipelineLayout gbuffer_pipeline_layout = VK_NULL_HANDLE;
-        // the deferred lighting stage needs BOTH sets: set 0 = the shared scene set (camera, IBL,
-        // light UBO, shadow map), set 1 = the G-buffer inputs. A set layout is index-agnostic, so the
-        // debug view keeps using the same layout object as its set 0.
-        VkPipelineLayout deferred_pipeline_layout = VK_NULL_HANDLE;
         // The debug view's sets, one per swapchain image, allocated from a pool this family owns and
         // retires itself (see vulkan.bindings: the pool lifetime rule is only about the pools).
         bindings::image_set_family gbuffer_family;
@@ -445,6 +439,15 @@ namespace vulkan {
         /// THE CLUSTERED-LIGHT SORT (vulkan.pass.cluster): it owns its pipeline, its layout, the shared scene
         /// set's bind AND the two buffer barriers its own writes need.
         pass::cluster_pass& cluster = this->passes.emplace<pass::cluster_pass>();
+        /// THE DEFERRED LIGHTING STAGE (vulkan.pass.deferred): the ELEVENTH pass and the graphics stage the
+        /// extraction was aimed at - the one that reads the stored surface back and shades it. It owns its
+        /// pipeline layout and its pipeline (built from the two shared set LAYOUTS the owner hands it: the
+        /// scene set's and the G-buffer set's), the scene-colour dependency barrier, the LOAD instance over the
+        /// frame's scene target, the 88-byte push and the 3-vertex draw. The renderer keeps the push block's
+        /// VALUES (the camera, the SSAO knobs, the unlit and GI flags), the choice of target (the declaration
+        /// names `scene_color`; a frame with TAA off lights `hdr` - the recorded deviation) and the
+        /// no-G-buffer-set fallback, which is about its own descriptor pool.
+        pass::deferred_pass& deferred = this->passes.emplace<pass::deferred_pass>();
 
         /**
          * THE GI CHAIN (vulkan.pass.chain): the four GI stages, in the order that makes them a chain - each one
@@ -457,6 +460,10 @@ namespace vulkan {
          */
         pass::pass_chain gi_chain{"gi"};
         std::array<pass::frame_pass*, 1> rt_shadow_stage = {&this->rt_shadow};
+        /// the deferred lighting stage's own stage: it sits between the ray-traced shadow (whose output its
+        /// descriptor samples) and the transparent pass (which composites over the image it shades), which is
+        /// where the frame loop records it and the only fact about it the renderer still spells out.
+        std::array<pass::frame_pass*, 1> deferred_stage = {&this->deferred};
         bool ssgi_on = false;
         float ssgi_intensity = 0.7f; // scales the traced indirect against the IBL probe it overlaps
         float ssgi_radius = 3.0f;    // ray length, view units
@@ -516,26 +523,10 @@ namespace vulkan {
         // THE PUSH BLOCK ITSELF IS THE PASS'S NOW (pass::ssgi_spec_pass::push_constants): its shape belongs to
         // the pass that pushes it, and the host only fills the values in.
 
-        struct deferred_push_constants {
-            glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip (xy from the pixel, z = depth, w = 1) -> world
-            // screen-space ambient occlusion (M6): x = radius, y = intensity (0 = off), z = samples,
-            // w = depth bias. It rides the SAME push block because both are per-frame constants of
-            // the lighting stage, and the shared range (100 bytes) already covers 80.
-            glm::vec4 ssao = glm::vec4(0.5f, 0.0f, 8.0f, 0.02f);
-            // 1.0 = the app's default pipeline is the flat "unlit" pass: the deferred lighting stage
-            // then writes the G-buffer's albedo instead of shading it, so the render-mode switch
-            // means the same thing on both paths (a flat surface has no lighting to defer).
-            float unlit = 0.0f;
-            // 1.0 = the traced GI chain is replacing BOTH ambient terms this frame (the diffuse one always,
-            // the specular one when the glossy lobe runs), so SSAO must not scale them: the chain's
-            // subtraction takes back the UN-occluded ambient, and an SSAO-darkened one left an
-            // `ambient * (ssao - 1)` term behind. Measured on the reference scene: -1.90 of mean green with
-            // 37.6% of pixels differing and 13.7% off by more than 4/255, on a frame where SSAO is supposed
-            // to do NOTHING because the rays ARE the occlusion (see shaders/deferred.frag and
-            // shaders/ssgi_spatial.comp). 0.0 everywhere else, which is what keeps the marched and the
-            // GI-off frames byte-identical.
-            float gi_replaces_ambient = 0.0f;
-        };
+        // THE DEFERRED LIGHTING STAGE'S PUSH BLOCK IS THE PASS'S NOW (pass::deferred_pass::push_constants): its
+        // shape belongs to the pass that pushes it (and the pass's own static_assert checks it against the 88
+        // bytes its declaration promises), so what is left here is the VALUES - the SSAO state below, the
+        // unlit and GI-replaces-ambient flags and the frame's inverse view-projection.
         // SSAO state (runtime::set_ssao / [render] ssao*): the deferred lighting stage computes the
         // occlusion from the G-buffer depth + normal and folds it into the shade_input's ao, which
         // scales the IBL ambient only. Deferred-only: the forward path has no G-buffer to trace.
@@ -556,7 +547,19 @@ namespace vulkan {
         glm::mat4 current_proj_unjittered = glm::mat4(1.0f);
         void ensure_gbuffer_descriptors();
         void record_gbuffer_debug_pass(VkCommandBuffer command_buffer);
-        void record_lighting_pass(VkCommandBuffer command_buffer);
+        /// @brief resolve the deferred lighting pass's frame: the two shared sets, the frame's scene target,
+        ///        the pass's own 88-byte push block and the extent its declaration's rule produces
+        /// @return false when this frame cannot run it (no target generation, no G-buffer set, no pipeline)
+        [[nodiscard]] bool resolve_deferred_pass(pass::resolved_io& out);
+        /// @brief the two per-image input transitions the lighting stage's descriptor declares (the three
+        ///        stored targets and the G-buffer depth): their "was it written this frame" flags belong to the
+        ///        pass that WROTE those images, so the pass cannot own them and the frame carries the callback
+        static void ensure_deferred_inputs(void* owner, VkCommandBuffer command_buffer, uint32_t image_index);
+        /// @brief the frame's answer when the lighting pass did NOT record: clear the scene colour target, so
+        ///        the frame the post chain samples is defined instead of half-written
+        /// @note this is the renderer's and not the pass's because its cause - the G-buffer DESCRIPTOR FAMILY
+        ///       having no set for this image - is a failure of a pool this class owns; the pass never sees it
+        void clear_scene_color_for_missing_gbuffer(VkCommandBuffer command_buffer);
 
         // ---- temporal anti-aliasing (M3, deferred path only) ----
         // TAA is the engine's anti-aliasing: the projection is jittered per frame (a Halton
@@ -1750,8 +1753,8 @@ namespace vulkan {
          * forward skybox pass used). Alpha-blended geometry is recorded by
          * record_transparent_pass() after the lighting stage, because a blended surface has to
          * compose over the SHADED image - a G-buffer cannot hold a surface that does not exist yet.
-         * record_scene_tail() turns the G-buffer into the frame afterwards through
-         * record_lighting_pass().
+         * record_scene_tail() turns the G-buffer into the frame afterwards through the deferred
+         * lighting PASS (vulkan.pass.deferred, resolved by resolve_deferred_pass()).
          */
         void record_scene(VkCommandBuffer command_buffer);
 
@@ -1762,7 +1765,8 @@ namespace vulkan {
          *        depth-testing against the G-buffer depth
          * @param command_buffer the frame's primary command buffer
          *
-         * Runs AFTER record_lighting_pass(), in an instance of its own, and that order is the whole
+         * Runs AFTER the lighting stage (vulkan.pass.deferred, the stage recorded just before it), in an
+         * instance of its own, and that order is the whole
          * reason it is separate. Blending needs a shaded image underneath, and the lighting stage
          * needs the G-buffer depth as a SAMPLED texture - an image cannot be sampled and used as a
          * depth attachment in the same instance, so the depth is handed back to attachment layout in
@@ -2588,22 +2592,6 @@ namespace vulkan {
          *       changes nothing
          */
         std::expected<void, std::string> make_gbuffer_debug_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief create the deferred lighting pipeline (fullscreen: the three G-buffer targets + the
-         *        depth image -> the HDR target, added on top of the background and the emissive)
-         * @param vertex_shader_code raw SPIR-V of post.vert (the fullscreen triangle; the lighting
-         *        stage has no vertex input of its own)
-         * @param fragment_shader_code raw SPIR-V of deferred.frag
-         * @return success, or an error message on failure
-         * @note optional, and required for anything to be shaded at all: without it (or without the
-         *       pipelines from make_gbuffer_pipeline() + make_gbuffer_debug_pipeline()) the G-buffer
-         *       pass cannot run and gbuffer_pass_active() is false. It shares the G-buffer input set
-         *       layout with the debug view (bound as set 1 here, as set 0 there) and the shared scene
-         *       set as set 0.
-         */
-        std::expected<void, std::string> make_deferred_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
 
         /** @brief how many jitter positions the Halton(2,3) TAA sequence cycles through */
         static constexpr uint32_t taa_jitter_count = 8;

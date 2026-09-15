@@ -230,24 +230,26 @@ namespace chores {
                 if (!debug_result) {
                     utility::log("gbuffer debug view disabled: {}", debug_result.error());
                 } else {
-                    // the deferred lighting stage reads the G-buffer through the debug view's set
-                    // layout, so it must be created after it
+                    // The deferred lighting stage is a PASS (vulkan.pass.deferred): the app REGISTERS the two
+                    // shaders it builds from and the pass builds its own pipeline layout and pipeline - from the
+                    // two shared set LAYOUTS the context hands it, which is why one register call for each
+                    // replaces the old `make_deferred_pipeline(vertex_code, fragment_code)` call here.
+                    load_shader(shaders_dir, "post.vert.spv", vertex_code);
                     load_shader(shaders_dir, "deferred.frag.spv", fragment_code);
-                    auto const deferred_result = runtime.make_deferred_pipeline(vertex_code, fragment_code);
-                    if (!deferred_result) {
-                        utility::log("deferred lighting disabled: {}", deferred_result.error());
-                    } else {
-                        // TAA resolve (deferred-only). IT IS A PASS: the app registers the two shaders and
-                        // the pass builds its own set layout, pipeline layout and pipeline (see
-                        // vulkan.pass.taa) - the create_passes() call below is what runs that step, for
-                        // every pass at once. The vertex stage is post.vert's synthetic triangle, the same
-                        // one the debug view and the post chain use.
-                        load_shader(shaders_dir, "post.vert.spv", vertex_code);
-                        load_shader(shaders_dir, "taa.frag.spv", fragment_code);
-                        runtime.register_shader("post.vert.spv", vertex_code);
-                        runtime.register_shader("taa.frag.spv", fragment_code);
-                        utility::log("SUCCESS: gbuffer + deferred pipelines created (surface write, debug view, deferred lighting)");
-                    }
+                    runtime.register_shader("post.vert.spv", vertex_code);
+                    runtime.register_shader("deferred.frag.spv", fragment_code);
+                    // TAA resolve (deferred-only). IT IS A PASS TOO: the app registers the two shaders and the
+                    // pass builds its own set layout, pipeline layout and pipeline (see vulkan.pass.taa) - the
+                    // create_passes() call below is what runs that step, for every pass at once. The vertex
+                    // stage is post.vert's synthetic triangle, the same one the debug view and the post chain use.
+                    //
+                    // NOTE WHERE THESE TWO REGISTRATIONS SIT: they used to be in the ELSE branch of the deferred
+                    // pipeline's creation, so a machine where that failed silently lost TAA as well. They are
+                    // gated on the DEBUG pipeline now, which is what they actually need (post.vert), and the
+                    // lighting stage's own shaders are registered above it.
+                    load_shader(shaders_dir, "taa.frag.spv", fragment_code);
+                    runtime.register_shader("taa.frag.spv", fragment_code);
+                    utility::log("SUCCESS: gbuffer pipelines created (surface write, debug view)");
                 }
             }
         }
