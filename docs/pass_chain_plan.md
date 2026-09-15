@@ -1243,6 +1243,89 @@ and `taa.frag.spv` (the TAA resolve's shaders). Removing the block without keepi
 **6. Acceptance**: the deferred stage runs in every one of the twelve scenarios, so the ordinary gate is the whole
 verification (12 x 2, 0 changed / 0 flaky) - plus Release/Debug/ASan, ctest 8/8 and a clean doxygen.
 
+## THE NEXT STEP, EXACTLY: ② THE POST COMPOSITE AND THE BLOOM CHAIN (recipe, measured in the tree)
+
+**MEASURED FIRST, because it decides the acceptance: the gate DOES cover the bloom chain.** `record_bloom_chain`
+records nothing when its `bloom_intensity` argument is 0, and no gate scenario sets a bloom key - there IS none in
+the config, bloom is a GUI-only knob (`chores::gui_bindings::bloom_enabled` + `bloom_intensity`). But those
+defaults are `true` and `0.8f`, `main.cpp:741` mirrors them into `runtime::set_bloom` on every frame of the loop
+including a capture, and the SAME `this->bloom_intensity` is what both the chain's branch and the composite's push
+block read. So the four bloom recordings run in all twelve scenarios - and that was MEASURED rather than reasoned,
+the way the rt_shadow step's coverage gap was: `chores.cppm`'s `bloom_enabled` was flipped to `false`, the Release
+build rebuilt, and the `deferred` scenario re-run with the gate's own config, camera and frame count. Its frame
+hash came back `F9D3C8C9569CD334` against the gate's `2DD1D13857322C0F` - the bloom chain's output reaches the
+captured frame, so the ordinary 12 x 2 IS the acceptance for step ② (the composite runs in all twelve scenarios
+whether or not bloom does). The one-line change was then reverted, rebuilt, and the re-run reproduced
+`2DD1D13857322C0F` byte for byte, which is what makes the measurement trustworthy rather than a claim about a
+binary that no longer exists.
+
+**THE SHAPE, read from the tree at `3ff299e`** (the pre-extraction inventory's line numbers are stale; these are
+current):
+
+* `record_post_process` (runtime.cpp 4308) is the sequence: scene tail -> `ensure_post_descriptors` -> HDR to
+  `sampling` -> the no-G-buffer fixups -> the GI chain -> the probe cache -> `record_bloom_chain` ->
+  `record_composite`. Its bail-out (`post_pipeline`, `post_hdr_pipeline` or the composite set missing) returns
+  false, which is what `end_recording` reads as "no fullscreen pass wrote the swapchain".
+* `record_bloom_chain` (4185): FOUR fullscreen recordings on `post_hdr_pipeline` (R16F). The prefilter writes level
+  0 from `post_family.set(image, 0)` with `mode = 0`; the three downsamples write level `L` from set `L` with
+  `mode = 1`, each after a `color_attachment` transition of its target and a `sampling` transition of its source.
+  The off path is four `undefined -> sampling` transitions of the levels (their contents are dead but the
+  composite's descriptor declares them as inputs), and the stage ends with the `bloom_end` mark.
+* `record_composite` (4230): the target is `ldr_images[image]` when FXAA runs and `swap_chain_images[image]`
+  otherwise, and the pipeline AND `encode_gamma` are chosen to match that target; push `mode = 2` with the GI lanes
+  (the bilateral upsample's depth terms from `current_ubo`, the same sigma/power the spatial filter uses, and
+  `gi_intensity` from `gi_resolved`); `composite_end`; then FXAA (step ③) in the same function.
+* `post_family` is FIVE sets per image, written by `ensure_post_descriptors` (2227): set 0 = the prefilter's input
+  (HDR), sets 1..3 = the downsample inputs (bloom levels 0..2), set 4 = the composite (HDR + all four levels + the
+  filtered GI + the G-buffer depth + the normal). NINE bindings each, all `COMBINED_IMAGE_SAMPLER`; bindings 7 and
+  8 (depth, normal) get the NEAREST sampler and the rest the linear one.
+* The push block is `runtime::post_push_constants`: 13 floats = 52 bytes, `mode` selecting the stage (0 prefilter,
+  1 downsample, 2 composite, 3 FXAA), and the lanes the bloom modes do not read are part of the bytes the old code
+  pushed with their DEFAULTS (gi_depth_sigma 0.02, gi_normal_power 16, gi_upsample 1, fxaa_subpixel 0.75,
+  fxaa_edge_threshold 0.166, the rest zero).
+
+**THE SPLIT, and the framework changes each part needs. Every numbered item is a slice of its own - the deferred
+step's lesson was that a slice which cannot leave the tree half-wired is worth more than a bigger step.**
+
+1. **FIVE passes: one per bloom level plus the composite.** WHY NOT ONE: the framework hands a pass ONE handle per
+   shared set (`resolved_io::shared`), and each bloom stage binds a DIFFERENT one of the five post sets, so the
+   LEVEL is the pass boundary. A `bloom_pass` class parameterized by its level is one class with four instances -
+   `pass_chain::emplace` forwards constructor arguments (chain.cppm:108), and each instance returns its own
+   declaration (`pass_io const* io_`) from `io()`.
+2. **A DECLARATION PER BLOOM LEVEL, which needs `resource_id::bloom` to be the 4-element family it IS.** The schema
+   declares it with the default `count = 1` while `core::bloom_images` is `std::array<std::vector<VkImage>, 4>`.
+   `count = 4` is both the correction and what makes `element = level` legal: `validate` checks
+   `element >= info->count` for targets (617), barrier images (642) and bindings (691).
+3. **THE EXTENT RULE for a level is `max(1, swap >> (level + 1))`** - the SAME formula `core` creates the images
+   with, which is the property `extent_rule::half`'s comment already relies on for the GI chain.
+   `extent_rule::resource` + `extent_of` names a resource but not an ELEMENT, so the framework needs
+   `behaviour::extent_of_element` (an additive change: a test for it, and a MINOR bump of `vulkan.pass`), and the
+   runtime's `pass_extent` maps `bloom` + element to the formula. The alternative - `extent_rule::none` with the
+   resolver filling `io.extent` - is rejected on the framework's own terms: `none` means "the pass sizes its own
+   work and `io.extent` stays empty", so using it here would be a declaration that lies about where the extent
+   came from.
+4. **THE PUSH BLOCK'S HOME.** Five passes and one shader share it, so it becomes one struct in one module (the
+   composite's module, imported by the bloom passes - or a small shared post module) and
+   `runtime::post_push_constants` is DELETED, exactly as `deferred_push_constants` was. It must keep the defaults
+   list above: they are the bytes the old code pushed for every stage.
+5. **THE OVERLAY'S `after_draw`.** The composite carries the overlay whenever FXAA is off
+   (`record_fullscreen_triangle(..., overlay_after = !fxaa)`), so the composite's frame needs a callback the pass
+   invokes INSIDE its instance, between the draw and `vkCmdEndRendering` - the hook step ③ needs too, taken here
+   because the FXAA-off case is the composite's.
+6. **WHAT STAYS THE RUNTIME'S, and each is not the pass's for a stated reason**: `post_family` +
+   `post_set_layout` + `ensure_post_descriptors` (five passes share the five sets, so no ONE pass can own them -
+   the G-buffer family's argument), the bloom-off path's four transitions (the composite's descriptor declares the
+   levels as inputs whether or not the chain ran), the no-G-buffer fixups, the `bloom_intensity` mirroring (the GUI
+   binding is main's), and the three marks (`bloom_end`, `composite_end`, `fxaa_end`), which the stages keep
+   writing from the frame loop the way `rt_shadow`'s and `deferred`'s do.
+7. **THE TARGET DEVIATION, recorded rather than hidden**: the composite's target is the frame's (LDR when FXAA
+   runs, the swapchain otherwise) and a `render_target` names one resource - the same deviation `deferred_io`
+   already records for `scene_color`.
+
+**ACCEPTANCE FOR EVERY SLICE**: Release/Debug/ASan clean, `ctest` 8/8, a clean doxygen, and the gate 12 x 2 with
+0 changed and 0 flaky - which covers the composite in every scenario and the bloom chain in every scenario
+(measured above). No knob-on A/B is needed for this step, and the reason it is not is the first paragraph here.
+
 ## HANDOFF: WHERE THIS STANDS AND WHAT IS LEFT, EXACTLY
 
 **DONE, and each step verified byte-for-byte against the capture gate as it landed.**
@@ -1344,16 +1427,10 @@ verification (12 x 2, 0 changed / 0 flaky) - plus Release/Debug/ASan, ctest 8/8 
 
 **WHAT IS LEFT OF THE OBJECTIVE, in the order it is being taken.**
 
-1. **② the post composite + the bloom chain as passes, on the `post` shared set** (`shared_sets {2}`): the framework
-   side is ready - `set_owner::post` exists in the declaration layer, `shared_set_layout(2)` answers the post set's
-   layout, and `pass_context::swap_chain_image_format` was added for exactly this pass - so the work is a resolver
-   per pass (the post family's per-image sets, the push values) plus the decision the code's comments say is
-   load-bearing. The measured shape to split: `post_family` holds FIVE sets per swapchain image (the bright-pass
-   prefilter, the three downsample inputs and the composite), `runtime` holds THREE post pipelines (the composite to
-   the swapchain, the same shader pair again for the R16F bloom levels, and FXAA's - a separate pipeline because it
-   statically uses a different binding), and the recordings are five fullscreen triangles plus FXAA in one function.
-   So the split has to follow the IMAGES and the SETS (the HDR/LDR ping-pong, which set each stage binds) rather
-   than the pipeline count.
+1. **② the post composite + the bloom chain as passes, on the `post` shared set** (`shared_sets {2}`). **IT HAS A
+   RECIPE NOW** (the section above, with the framework changes it needs and the measurement that the gate covers
+   both halves - which is the fact that decides its acceptance). Five passes: one per bloom level (the level IS the
+   pass boundary, because each stage binds a different one of the five post sets) plus the composite.
 2. **③ FXAA**, including the decision the post header records: the FXAA pass is the frame's LAST writer and it
    currently carries the overlay (`record_fullscreen_triangle(..., /*overlay_after=*/true)` at the end of
    `runtime::record_post_process`), so the overlay's ownership has to be decided - the preferred shape is an
