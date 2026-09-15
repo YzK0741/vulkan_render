@@ -1112,6 +1112,67 @@ says what a re-audit of the current tree found.
   (the overlay's own comments and the `gui` import read correctly), so it is neither confirmed nor denied here
   rather than being repeated as fact.
 
+## THE NEXT STEP, EXACTLY: THE DEFERRED LIGHTING PASS (recipe, measured twice)
+
+Two attempts at this step ran out of a session's budget before they could be verified, and both were reverted
+rather than left half-wired; what they produced is this recipe, which is now the whole of what a fresh attempt
+needs. Every fact below was MEASURED in the tree, not recalled.
+
+**1. The declaration** (in `render_resource.cppm`, next to `cluster_io`):
+
+```cpp
+inline constexpr std::array<uint32_t, 2> deferred_shared_sets = {0, 1};
+inline constexpr std::array<render_target, 1> deferred_targets = {{
+    {.resource = resource_id::scene_color, .element = 0, .kind = target_kind::color},
+}};
+inline constexpr pass_io deferred_io = {
+    .name = "deferred", .own_set = 2, .bindings = {}, .shared_sets = deferred_shared_sets,
+    .targets = deferred_targets, .barrier_images = {}, .barrier_buffers = {},
+    .push = push_block{.offset = 0, .size = 88, .stages = stage_flag::fragment},
+};
+```
+
+The push size is 88 (mat4 64 + vec4 16 + unlit 4 + gi_replaces_ambient 4) and the module's static_assert must
+match. The target is a RECORDED DEVIATION: the declaration names `scene_color` and the resolver hands over whatever
+`scene_target_image/view()` returns for the frame (`scene_color` with TAA on, `hdr` with it off) - `render_target`
+names one resource today, and this is the honest alternative to inventing a "frame-dependent target" field for one
+caller.
+
+**2. The module** `vulkan/pass/deferred.{cppm,cpp}`: shaders `post.vert.spv` + `deferred.frag.spv`; behaviour
+`{kind = fullscreen, extent = full, pipelines = {"deferred"}, resync_viewport = true}`; `create` builds
+`pipelines::build_deferred(device, scene_layout /*0*/, gbuffer_layout /*1*/, sizeof(push_constants),
+std::span{make_color_blend_attachment_additive()}, vert, frag)` and takes `built->lighting`; `record` does, in this
+order: the `color_attachment_dependency` barrier on `io.targets[0].image`, the frame's `ensure_inputs` callback, the
+LOAD instance over `io.targets[0].view`, `vkCmdSetCullMode(NONE)`, the two shared sets in order, the push, and
+`vkCmdDraw(3, 1, 0, 0)`. The frame is `{void (*ensure_inputs)(void*, VkCommandBuffer, uint32_t); void* owner;}`.
+Viewport/scissor are the RUNNER's (`resync_viewport = true`), which is why the pass sets only the cull mode.
+
+**3. The runtime wiring**: `resolve_deferred_pass` (ensures the G-buffer family, returns FALSE when the set or the
+pipeline is missing, fills `shared.scene/gbuffer`, `targets[0]` from `scene_target_image/view()`, the 88-byte push
+from the values `record_lighting_pass` used, and `extent` from `pass_extent`); `ensure_deferred_inputs` (the two
+accessors); `clear_scene_color_for_missing_gbuffer` - the no-set fallback STAYS the renderer's (it is about the
+renderer's own pool) and the call site triggers it with `record_stage(...).recorded == 0`.
+
+**4. The deletions must be TEXT-anchored** (a line-range delete that forgets a closing brace cost two attempts;
+these four regexes were verified to leave the file balanced):
+
+```powershell
+$c = $c -replace "(?s)        if \(this->deferred_pipeline_layout != VK_NULL_HANDLE\) \{.*?\r?\n        \}\r?\n", "<comment>`r`n"
+$c = $c -replace "(?s)        if \(this->deferred_pipeline\) \{.*?\r?\n        \}\r?\n", ""
+$c = $c -replace "(?s)    std::expected<void, std::string> runtime::make_deferred_pipeline\(.*?\r?\n    \}\r?\n\r?\n", ""
+$c = $c -replace "(?s)    void runtime::record_lighting_pass\(VkCommandBuffer const command_buffer\) \{.*?\r?\n    \}\r?\n\r?\n    // The deferred path's transparent pass\.", "    // The deferred path's transparent pass."
+```
+
+after which only three `this->deferred_pipeline.has_value()` predicates and the one `record_lighting_pass` call site
+remain; the predicates become `this->deferred.pipeline_ready()`.
+
+**5. THE TRAP IN `chores.cpp`**: the `make_deferred_pipeline` block's `else` branch ALSO registers `post.vert.spv`
+and `taa.frag.spv` (the TAA resolve's shaders). Removing the block without keeping those two
+`runtime.register_shader` calls makes TAA silently unavailable.
+
+**6. Acceptance**: the deferred stage runs in every one of the twelve scenarios, so the ordinary gate is the whole
+verification (12 x 2, 0 changed / 0 flaky) - plus Release/Debug/ASan, ctest 8/8 and a clean doxygen.
+
 ## HANDOFF: WHERE THIS STANDS AND WHAT IS LEFT, EXACTLY
 
 **DONE, and each step verified byte-for-byte against the capture gate as it landed.**
