@@ -1,5 +1,30 @@
 # The pass chain, rebuilt on the pre-GI state
 
+## THE OWNERSHIP MODEL (decided after the pass work, and it is what "small runtime" is built on)
+
+The device root is `std::shared_ptr<core>`, and everything else holds a VIEW of it, not a share of it:
+
+| layer | holder | what it holds | why |
+|---|---|---|---|
+| root | `runtime`; and any owner that must keep the device alive (a second viewport, an editor, a test host) | `shared_ptr<core>` | the core owns the device, the allocator and every resource created on them, so its lifetime is the frame's outermost fact - and a reference-counted root lets two owners share ONE device without an artificial "who owns whom" order |
+| ambiguous | task-pool jobs, GUI callbacks, animation callbacks, readback | `weak_ptr<core>` + `lock()` at use | their lifetime leaves the call, so it cannot be a scope contract |
+| scoped view | the summary a pass is handed at create/record | **non-owning** (a `core_filter`-style view, or plain references) | valid for the call; a view must not extend anything's lifetime, which is why filters hold a POINTER, not a share |
+
+`runtime` holds the root as `core_owner` and an alias `core& vulkan_core = *core_owner`, declared in that order so
+the device is still held while every other member (the pipelines a pass has not taken over, the descriptor
+families, the readback staging buffer, the filter) is destroyed. It also has a constructor that takes a finished
+`shared_ptr<core>`, which is what makes sharing expressible at all.
+
+TWO THINGS REFERENCE COUNTING DOES NOT SOLVE, and they stay explicit:
+
+* **generation invalidation** - per-image images and descriptor families live and die with the swapchain
+  generation, so `on_swapchain_recreated` / `recreate_stage` stay the mechanism. A shared root guarantees "not
+  destroyed too early", never "not stale" (this codebase's own comment calls it the per-image-lifetime trap).
+* **the teardown window** - a `weak_ptr::lock()` SUCCEEDS while a runtime is running its destructor (the device
+  is still referenced), so "the lock succeeded" does not mean "the sibling resources are usable". Use is gated by
+  the lock; RELEASE belongs to the destructor's order, in one place.
+
+
 > **READ THIS FIRST - THE TENSE OF THIS DOCUMENT.** Everything above the "HANDOFF" section is a CHRONOLOGICAL
 > RECORD: each section was written as its step landed and describes the tree AS IT WAS THEN, including steps that
 > later steps superseded (the pre-GI sections speak of a branch with no GI in it, of a `pass_context::shader` that

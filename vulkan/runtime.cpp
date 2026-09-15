@@ -140,7 +140,14 @@ namespace vulkan {
     }
 
     runtime::runtime(core_create_info const& options)
-        : vulkan_core{options}
+        : runtime(std::make_shared<core>(options)) {
+        // The device root is built here and owned by this runtime; the constructor below is the one that does the
+        // work, so a caller that ALREADY has a core takes the same path (see its doc note).
+    }
+
+    runtime::runtime(std::shared_ptr<core> shared_core)
+        : core_owner{std::move(shared_core)}
+        , vulkan_core{*this->core_owner}
         // readback owns GPU resources and is deliberately neither copyable nor movable (two owners of
         // one staging buffer is the bug its deletion prevents), so it must be constructed here - which
         // is why its member declaration sits ABOVE filtered_core's, matching this order. Both only need

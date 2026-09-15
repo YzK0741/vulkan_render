@@ -14,6 +14,7 @@ module;
 
 #include <GLFW/glfw3.h>
 #include <array>
+#include <memory>
 #include <vulkan/vulkan.h>
 
 export module vulkan.core;
@@ -199,7 +200,15 @@ namespace vulkan {
         std::optional<GLFWwindow*> window = std::nullopt;
     };
 
-    export struct core : utility::enable_stack_destruct {
+    /**
+     * @brief the device, its allocator and every resource created on it - the renderer's lifetime ROOT
+     *
+     * `std::enable_shared_from_this` is here because the core is the one object that can be SHARED: a caller may
+     * hold it (see `runtime`'s constructor that takes a `shared_ptr<core>`), and the resources it owns are
+     * created through it, so a creation site can hand out a reference-counted handle to the device it is
+     * building on. It does NOT mean a `core` must be heap-allocated: nothing calls `shared_from_this()` yet.
+     */
+    export struct core : utility::enable_stack_destruct, std::enable_shared_from_this<core> {
         // creation options this core was built with (window size, vsync); the window and the
         // swap chain honor them
         core_create_info create_options = {};

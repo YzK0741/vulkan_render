@@ -131,7 +131,21 @@ namespace vulkan {
      *        and registers the orbit camera mouse callbacks on the window
      */
     export class runtime {
-        core vulkan_core;
+        /**
+         * THE DEVICE ROOT, and the reason it is a `shared_ptr`: the core is the one object every other device
+         * resource depends on, so its lifetime is the frame's OUTERMOST fact. A caller may hand in a finished one
+         * (see the constructor that takes a `shared_ptr<core>`), which is what lets two owners - a second
+         * viewport, an editor, a test host - share one device without an artificial "who owns whom" order.
+         *
+         * DECLARED FIRST so it is released LAST: every member below (the pipelines a pass has not taken over,
+         * the descriptor families, the readback staging buffer, the filter view) is destroyed while this
+         * reference still holds the device alive. The destructor used to spell that ordering out by hand; a
+         * reference-counted root states it instead, and the device may now outlive this runtime when the caller
+         * kept its own reference - which is the point of sharing it.
+         */
+        std::shared_ptr<core> core_owner;
+        /// the alias every method and member keeps using: it IS `*core_owner`, and owns nothing of its own
+        core& vulkan_core;
 
         /**
          * @ingroup vulkan_runtime
@@ -1492,9 +1506,23 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief construct the runtime over a FINISHED core the caller already owns a reference to
+         * @param shared_core the device root; must not be null (nothing can be created without a device, and
+         *        with exceptions off there is no way to report it afterwards). The runtime takes a reference and
+         *        KEEPS the device alive for as long as it lives; the caller's own reference is what lets the
+         *        device outlive this runtime, which is the whole reason to share one.
+         * @note the runtime's own objects (the pipelines a pass has not taken over, the descriptor families, the
+         *       readback staging buffer) are still created and destroyed by this runtime, in that order - the
+         *       shared root only changes WHO owns the device, not who owns those
+         */
+        explicit runtime(std::shared_ptr<core> shared_core);
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief construct the runtime: performs the full core initialization (window / instance /
          *        device / swapchain / resources) from @p options (window size, vsync), and
          *        registers the orbit camera mouse callbacks on the window
+         * @note it creates its OWN core (see the constructor above for the sharing variant)
          */
         explicit runtime(core_create_info const& options);
 
@@ -1507,10 +1535,12 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief destroy cached pipelines before the inner core (and thus the VkDevice) is destroyed
-         * @note explicit destructor: member destruction order is reverse declaration order, which
-         *      currently already destroys pipelines before vulkan_core; making it explicit keeps
-         *      that guarantee even if members are reordered later
+         * @brief destroy the runtime's own device objects while the device is still alive
+         * @note explicit destructor: the members that hold device objects (pipelines a pass has not taken over,
+         *      descriptor families, the readback staging buffer) are released here, and `core_owner` is declared
+         *      ABOVE them so the device is still held while they go. The DEVICE itself may outlive this runtime
+         *      when the caller kept a reference to the shared core - that is what sharing it means - so nothing
+         *      here may assume it is the last user.
          */
         ~runtime();
 
