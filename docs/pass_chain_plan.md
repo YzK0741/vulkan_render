@@ -1639,6 +1639,38 @@ the cascade count, and `unlit` exercises the no-shadow path - so the cascades, t
 40-frame capture exercises: a static scene reuses the maps from frame 2 on).
 
 
+## THE ⑤ MODULE'S TWO PREREQUISITES, read out of the tree before writing it (at `5af8cd9`)
+
+The module is not a transcription yet, and these are the reasons - each is something `pass_context` cannot answer,
+found by reading the two functions the pass has to absorb:
+
+1. **THE DEPTH FORMAT AND A DEVICE-TAKING DEPTH-ONLY BUILDER.** `runtime::make_shadow_pipeline` calls
+   `core::make_depth_pipeline(vertex, fragment, depth_format, 0.0f, 1.5f, 0.0f)` - a method ON the core object, and
+   `depth_format` is the core's field, not the surface's (`pass_context::swap_chain_image_format` is the OTHER
+   format). The rules this branch already follows say what to do: every pipeline builder takes a `VkDevice` and
+   lives in `vulkan.pipelines` (that is why `core::make_cluster_pipeline` and the old `core::make_pipeline` entry
+   points were deleted), so the shadow pass needs a `pipelines::build_shadow(device, depth_format, pipeline_layout,
+   vert, frag)`-shaped entry point AND the depth format in the context (a second session-stable format, beside the
+   surface's - the same class of fact and the same reason).
+2. **THE CONTENT RECORDING CHANNEL, which is the SCENE pass's, not a new one.** `record_shadow_content` binds the
+   shared scene set through `core::scene_pipeline_layout`, sets the live depth-bias dynamic state, builds a
+   `render_environment` whose binder always binds the SHADOW pipeline (whatever pipeline a leaf asks for), whose
+   depth-write function forces `VK_TRUE`, and which sets `two_sided`, and then walks the frame's leaves. That is
+   `scene_frame`'s shape one pipeline over: the pass's frame should carry the SAME things the scene pass's does
+   (`leaves`, `make_environment`, `run_tasks`, `owner`) and the pass builds ITS environment from them - which keeps
+   "who schedules the workers" where it already is (the frame loop's task pool).
+   The frame ALSO carries what the recipe lists: the per-cascade secondary command buffers, the cascade count, the
+   layer handles (the resolver's `targets`, one per cascade - see the deviation `shadow_io` records) and the frame
+   slot for the scene set.
+3. **WHAT DOES NOT MOVE**: the depth-bias VALUES (the GUI's live knobs - the frame's), the shadow map images and
+   the reuse bookkeeping (the recipe's item 4), and the scene-set handle itself (the host resolves it like every
+   other shared set).
+
+So the next round's first action is those two additive pieces (the builder + the depth format in the context, each
+with a test), and the module after them - the order this document's own lesson prescribes: the prerequisites are
+written down before the thing that needs them.
+
+## HANDOFF: WHERE THIS STANDS AND WHAT IS LEFT, EXACTLY
 **DONE, and each step verified byte-for-byte against the capture gate as it landed.**
 
 * **EVERY STAGE OF THE GI CHAIN IS A PASS** (as of `fa8c1c0`): `gi_probe` (the cache), `ssgi_trace` (`b62c4b3`),
