@@ -1825,37 +1825,6 @@ namespace vulkan {
         return vk_sampler(sampler, this->device);
     }
 
-    std::expected<vk_pipeline, std::string_view> core::make_pipeline(
-        std::span<unsigned char const> vertex_shader_code,
-        std::span<unsigned char const> const fragment_shader_code,
-        bool const depth_test_enabled) const {
-        auto result = vulkan::make_pipeline(
-            this->device,
-            this->scene_pipeline_layout,
-            this->swap_chain_image_format,
-            this->depth_format,
-            vertex_shader_code,
-            fragment_shader_code,
-            // 1x, always: the scene renders into a single-sampled G-buffer, so no pipeline this
-            // engine builds can rasterize multisampled. The builders keep the parameter (it is a
-            // pipeline property, not an engine setting), and this is the only value passed.
-            VK_SAMPLE_COUNT_1_BIT,
-            depth_test_enabled);
-        if (result) {
-            // Save the fullscreen viewport/scissor for the current swapchain size, used directly before draw
-            result->viewport = {
-                0.0f,
-                0.0f,
-                static_cast<float>(this->swap_chain_extent.width),
-                static_cast<float>(this->swap_chain_extent.height),
-                0.0f,
-                1.0f,
-            };
-            result->scissor = {{0, 0}, this->swap_chain_extent};
-        }
-        return result;
-    }
-
     std::expected<vk_pipeline, std::string_view> core::make_gbuffer_pipeline(
         std::span<unsigned char const> const vertex_shader_code,
         std::span<unsigned char const> const fragment_shader_code) const {

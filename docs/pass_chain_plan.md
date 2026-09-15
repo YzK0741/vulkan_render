@@ -24,6 +24,35 @@ TWO THINGS REFERENCE COUNTING DOES NOT SOLVE, and they stay explicit:
   is still referenced), so "the lock succeeded" does not mean "the sibling resources are usable". Use is gated by
   the lock; RELEASE belongs to the destructor's order, in one place.
 
+**AND THE OLD STYLE IS GONE, in four steps that were each verified on their own.** The model above was installed
+by deleting the old entry points rather than by adding new ones, which is why every step is small and every step's
+acceptance is the same gate:
+
+1. `8409bf6` - **the device root is a `shared_ptr`.** `core` derives `std::enable_shared_from_this` and the runtime
+   holds `shared_ptr<core> core_owner` plus the `core&` alias declared after it, so the device outlives every
+   member that was created on it; `runtime(std::shared_ptr<core>)` is the constructor that lets a second owner
+   share one device. The `enable_shared_from_this` is deliberately UNUSED so far: it is what a creation site will
+   use when a reference-counted device handle has to be minted from inside `core` itself.
+2. `a7b1d02` - **nothing in `vulkan.pipelines` needs a whole `core`.** All eight remaining builders
+   (`build_post`, `build_fxaa`, `build_deferred`, `build_gbuffer_debug`, `build_ssgi_spatial`, `build_rt_shadow`,
+   `build_mask_bake`, `build_compute_skin`) take a `VkDevice` (and a `VkFormat` where they need the surface's),
+   so a pipeline builder names exactly the two things it reads instead of importing the device root.
+3. `fe96e64` - **the named scene pipelines are built from the device.** The one builder that genuinely needed the
+   surface's format now goes through `vulkan::make_pipeline(device, scene_pipeline_layout, {swap_chain_image_format},
+   depth_format, vert, frag, VK_SAMPLE_COUNT_1_BIT, true, 0, 0, 0, blend_attachments)`. This is the ONE step of
+   the four that could have changed a frame, and it did twice while it was being written: the named entry point
+   needs an explicit cached viewport/scissor (the hand-rolled one set them itself) and
+   `make_color_blend_attachment()`'s src-alpha blend, and the gate caught each omission as `changed: 1` before the
+   pair was restored to `changed: 0`.
+4. **the dead overload is deleted** (this commit): `core::make_pipeline(vert, frag, depth_test_enabled)` had no
+   caller left once the runtime's pipelines were named, so its declaration and its 31-line definition are gone.
+   `make_gbuffer_pipeline` and the single-format convenience overload in `vulkan/core/pipeline/pipeline.cpp` STAY:
+   they still have callers, and "unused" is a measurement, not a guess.
+
+The consequence for the pass work that follows is the point of doing this first: a pass's `create` now has nothing
+to reach for except a `VkDevice` and the declarations, so moving a pass's three pieces (its `make_*`, its
+`ensure_*` and its hand-written descriptors) out of the runtime is a move, not a redesign.
+
 
 > **READ THIS FIRST - THE TENSE OF THIS DOCUMENT.** Everything above the "HANDOFF" section is a CHRONOLOGICAL
 > RECORD: each section was written as its step landed and describes the tree AS IT WAS THEN, including steps that

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.core
-// module version: 0.21.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.22.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -749,11 +749,6 @@ namespace vulkan {
          * @return the result of vkQueuePresentKHR
          */
         VkResult present(uint32_t image_index) const;
-
-        std::expected<vk_pipeline, std::string_view> make_pipeline(
-            std::span<unsigned char const> vertex_shader_code,
-            std::span<unsigned char const> fragment_shader_code,
-            bool depth_test_enabled = true) const;
 
         /**
          * @ingroup vulkan_core
