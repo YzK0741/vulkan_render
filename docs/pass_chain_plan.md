@@ -1322,14 +1322,35 @@ step's lesson was that a slice which cannot leave the tree half-wired is worth m
    invokes INSIDE its instance, between the draw and `vkCmdEndRendering` - the hook step ③ needs too, taken here
    because the FXAA-off case is the composite's.
 6. **WHAT STAYS THE RUNTIME'S, and each is not the pass's for a stated reason**: `post_family` +
-   `post_set_layout` + `ensure_post_descriptors` (five passes share the five sets, so no ONE pass can own them -
-   the G-buffer family's argument), the bloom-off path's four transitions (the composite's descriptor declares the
+   `ensure_post_descriptors` (five passes share the five sets, so no ONE pass can write them - the G-buffer
+   family's argument; NOTE that `post_set_layout` does NOT stay - see the measured correction below), the
+   bloom-off path's four transitions (the composite's descriptor declares the
    levels as inputs whether or not the chain ran), the no-G-buffer fixups, the `bloom_intensity` mirroring (the GUI
    binding is main's), and the three marks (`bloom_end`, `composite_end`, `fxaa_end`), which the stages keep
    writing from the frame loop the way `rt_shadow`'s and `deferred`'s do.
 7. **THE TARGET DEVIATION, recorded rather than hidden**: the composite's target is the frame's (LDR when FXAA
    runs, the swapchain otherwise) and a `render_target` names one resource - the same deviation `deferred_io`
    already records for `scene_color`.
+
+**SLICE 2 IS LANDED**: the five declarations (`post_bloom_io[0..3]`, `post_composite_io`, and `post_push_bytes`
+= 52), inert like slice 1, with tests that assert the shape the wiring will rely on: each level's target element
+IS its index, the level it reads is declared exactly when the pass owns that transition (level 0's input is the
+HDR target, whose transition stays the frame loop's because the composite reads HDR too AND a bloom-off frame has
+no other owner), the deepest level's hand-back comes from its own target (it has no successor), and the
+composite's declared target is the swapchain with the LDR deviation recorded beside it. Two things these
+declarations record rather than hide: the push block is the chain's ONE 52-byte block for all five passes (the
+lanes the bloom modes never read are pushed with the old defaults), and no list is brace-initialized inline - a
+`pass_io` holds SPANS, so every array it names is a named `constexpr` that outlives it.
+
+**WHAT THE NEXT SLICE MUST DECIDE FIRST, measured while writing slice 2**: `pipelines::build_post` CREATES the
+post set layout and its pipeline layout itself (9 COMBINED_IMAGE_SAMPLER bindings, one 52-byte fragment push range)
+and returns both pipelines - so "the post set layout is `vulkan.core`'s" is not true and cannot be made true by
+asking a shared lookup. Five passes share ONE layout, so exactly one pass has to own it and the other four have to
+reach it through that pass: the **composite** is the one whose targets need BOTH pipeline variants (the swapchain
+format and the LDR image's R16F), which is the `gbuffer_debug`-owns-the-G-buffer-layout pattern this renderer
+already has - `shared_set_layout(2)` then answers `post_composite.set_layout()`, and the bloom passes get the HDR
+variant through `resolved_io::pipelines`. What stays the runtime's is unchanged by this: `post_family` and
+`ensure_post_descriptors` (five passes share the five sets, so no one pass can write them).
 
 **ACCEPTANCE FOR EVERY SLICE**: Release/Debug/ASan clean, `ctest` 8/8, a clean doxygen, and the gate 12 x 2 with
 0 changed and 0 flaky - which covers the composite in every scenario and the bloom chain in every scenario

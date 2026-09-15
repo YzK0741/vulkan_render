@@ -1253,4 +1253,109 @@ export namespace vulkan::render_resource {
         .barrier_buffers = {},
         .push = push_block{.offset = 0, .size = 88, .stages = stage_flag::fragment},
     };
+
+    // =============================================================================================
+    // THE POST CHAIN - the composite and the bloom chain's four levels
+    // =============================================================================================
+
+    /// @brief the post chain's ONE shared set, by the framework's owner index: the post set (2), not scene (0) or G-buffer (1)
+    inline constexpr std::array<uint32_t, 1> post_shared_sets = {2};
+
+    /// @brief the push block the whole post chain shares, in bytes; its shape is `vulkan.pass.post`'s
+    inline constexpr uint32_t post_push_bytes = 52;
+
+    /**
+     * @brief the bloom chain's four levels, as ONE declaration per level
+     *
+     * WHY FOUR DECLARATIONS AND NOT ONE PARAMETERIZED PASS: the framework hands a pass ONE descriptor set per
+     * shared owner (`resolved_io::shared`), and each of the four stages binds a DIFFERENT one of the post family's
+     * five sets (set `level` reads level `level - 1` as its input), so the LEVEL is the pass boundary. Each entry
+     * here is one pass's whole I/O:
+     *
+     *  * `targets` is the level it writes (element `level` of the `bloom` family, which the schema declares with
+     *    four elements - see its `count`);
+     *  * `barrier_images` is the level it READS, which is also the image the pass has to move to a sampled layout
+     *    before it renders. Level 0 reads the HDR target instead, and that transition is deliberately NOT here:
+     *    the host owns it, because the composite reads HDR too and because it is needed on the frames the whole
+     *    bloom chain is skipped (see `post_composite_io`);
+     *  * the LAST level's pass also hands its own output back to a sampled layout, from its target - the
+     *    composite samples all four levels, and level 3 has no successor to do it (the writer's hand-back the GI
+     *    chain's passes also use).
+     *
+     * The push block is the post chain's ONE block (`post_push_bytes`): the shader declares it whole, every stage
+     * writes a different `mode` into it, and the bytes the stages do not read are pushed with the same defaults
+     * they always were - the prefilter passes `mode = 0`, the three downsamples `mode = 1`.
+     */
+    /// the levels' named target and source lists: a `pass_io` holds SPANS, so every list it names has to outlive
+    /// it (a brace-initialized array inside the initializer would be a temporary the span dangles on)
+    inline constexpr std::array<render_target, 1> post_bloom_0_target = {{render_target{.resource = resource_id::bloom, .element = 0, .kind = target_kind::color}}};
+    inline constexpr std::array<render_target, 1> post_bloom_1_target = {{render_target{.resource = resource_id::bloom, .element = 1, .kind = target_kind::color}}};
+    inline constexpr std::array<render_target, 1> post_bloom_2_target = {{render_target{.resource = resource_id::bloom, .element = 2, .kind = target_kind::color}}};
+    inline constexpr std::array<render_target, 1> post_bloom_3_target = {{render_target{.resource = resource_id::bloom, .element = 3, .kind = target_kind::color}}};
+    inline constexpr std::array<barrier_image, 1> post_bloom_1_source = {{barrier_image{.resource = resource_id::bloom, .element = 0}}};
+    inline constexpr std::array<barrier_image, 1> post_bloom_2_source = {{barrier_image{.resource = resource_id::bloom, .element = 1}}};
+    inline constexpr std::array<barrier_image, 1> post_bloom_3_source = {{barrier_image{.resource = resource_id::bloom, .element = 2}}};
+
+    inline constexpr std::array<pass_io, 4> post_bloom_io = {{
+        {.name = "post_bloom_0",
+         .own_set = 0, // unused: no own bindings (everything it reads is in the post set)
+         .bindings = {},
+         .shared_sets = post_shared_sets,
+         .targets = post_bloom_0_target,
+         .barrier_images = {},
+         .barrier_buffers = {},
+         .push = push_block{.offset = 0, .size = post_push_bytes, .stages = stage_flag::fragment}},
+        {.name = "post_bloom_1",
+         .own_set = 0,
+         .bindings = {},
+         .shared_sets = post_shared_sets,
+         .targets = post_bloom_1_target,
+         .barrier_images = post_bloom_1_source,
+         .barrier_buffers = {},
+         .push = push_block{.offset = 0, .size = post_push_bytes, .stages = stage_flag::fragment}},
+        {.name = "post_bloom_2",
+         .own_set = 0,
+         .bindings = {},
+         .shared_sets = post_shared_sets,
+         .targets = post_bloom_2_target,
+         .barrier_images = post_bloom_2_source,
+         .barrier_buffers = {},
+         .push = push_block{.offset = 0, .size = post_push_bytes, .stages = stage_flag::fragment}},
+        {.name = "post_bloom_3",
+         .own_set = 0,
+         .bindings = {},
+         .shared_sets = post_shared_sets,
+         .targets = post_bloom_3_target,
+         .barrier_images = post_bloom_3_source,
+         .barrier_buffers = {},
+         .push = push_block{.offset = 0, .size = post_push_bytes, .stages = stage_flag::fragment}},
+    }};
+
+    /// @brief what the composite RENDERS INTO by declaration: the swapchain (the FXAA-off case; see its comment)
+    inline constexpr std::array<render_target, 1> post_composite_targets = {{render_target{.resource = resource_id::swapchain_image, .element = 0, .kind = target_kind::color}}};
+
+    /**
+     * @brief the composite's declaration: HDR plus the weighted bloom levels, tonemapped to the display
+     *
+     * It renders into the SWAPCHAIN by declaration and into the LDR image on the frames FXAA runs - a RECORDED
+     * DEVIATION, the same one `deferred_io` records for `scene_color` and for the same reason: `render_target`
+     * names one resource, and the composite's target decides its PIPELINE too (the swapchain's format against the
+     * LDR image's R16F), so the host hands over both together.
+     *
+     * NO BARRIER IMAGE IS DECLARED, and that is the host's half rather than an omission: the HDR target's
+     * transition to a sampled layout happens before the chain on EVERY frame (the composite reads it whether or
+     * not bloom runs, and the bloom chain's prefilter reads it as well), so it has exactly one owner and that
+     * owner has to be the frame loop. The four bloom levels arrive already sampled - the levels' own passes
+     * moved them, or the host's off path did on a frame the chain was skipped.
+     */
+    inline constexpr pass_io post_composite_io = {
+        .name = "post_composite",
+        .own_set = 0, // unused: no own bindings (everything it reads is in the post set)
+        .bindings = {},
+        .shared_sets = post_shared_sets,
+        .targets = post_composite_targets,
+        .barrier_images = {},
+        .barrier_buffers = {},
+        .push = push_block{.offset = 0, .size = post_push_bytes, .stages = stage_flag::fragment},
+    };
 } // namespace vulkan::render_resource

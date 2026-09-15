@@ -478,5 +478,47 @@ int main() {
         CHECK(rr::deferred_io.push->stages == rr::stage_flag::fragment); // the vertex stage pushes nothing
         CHECK(rr::descriptor_counts_for(rr::deferred_io, rr::deferred_io.own_set).total() == 0);
     }
+
+    // ---- the post chain's FIVE declarations: the bloom chain's four levels and the composite, all on the post
+    //      shared set, with the level IS the pass boundary and the chain's edges declared where they are not the
+    //      frame loop's ----
+    {
+        CHECK(rr::post_bloom_io.size() == 4);
+        for (std::size_t level = 0; level < rr::post_bloom_io.size(); ++level) {
+            rr::pass_io const& io = rr::post_bloom_io[level];
+            auto const valid = rr::validate(io);
+            CHECK_MSG(valid.has_value(), valid.has_value() ? "" : valid.error().c_str());
+            CHECK(io.bindings.empty()); // everything it reads belongs to the post set
+            CHECK(io.shared_sets.size() == 1);
+            CHECK(io.shared_sets[0] == 2); // the POST set (2), not the scene's or the G-buffer's
+            CHECK(io.targets.size() == 1);
+            CHECK(io.targets[0].resource == rr::resource_id::bloom); // the level it writes...
+            CHECK(io.targets[0].element == level);                   // ... which IS the pass boundary
+            CHECK(io.targets[0].kind == rr::target_kind::color);
+            // the level it READS is declared exactly when it has to move it: level 0's input is the HDR target,
+            // whose transition is the frame loop's (the composite reads it too, and on a bloom-off frame nobody
+            // else does), and levels 1..3 own the transition of the level before them
+            CHECK((level == 0 ? io.barrier_images.empty() : io.barrier_images.size() == 1));
+            if (level > 0) {
+                CHECK(io.barrier_images[0].resource == rr::resource_id::bloom);
+                CHECK(io.barrier_images[0].element == level - 1);
+            }
+            CHECK(io.push.has_value());
+            CHECK(io.push->size == rr::post_push_bytes); // the chain's ONE block, all 52 bytes of it
+            CHECK(io.push->stages == rr::stage_flag::fragment);
+        }
+
+        auto const composite = rr::validate(rr::post_composite_io);
+        CHECK_MSG(composite.has_value(), composite.has_value() ? "" : composite.error().c_str());
+        CHECK(rr::post_composite_io.shared_sets.size() == 1);
+        CHECK(rr::post_composite_io.shared_sets[0] == 2);
+        CHECK(rr::post_composite_io.targets.size() == 1);
+        // the RECORDED DEVIATION: the declaration names the swapchain, and the host hands over the LDR image (and
+        // the R16F pipeline that goes with it) on the frames FXAA runs
+        CHECK(rr::post_composite_io.targets[0].resource == rr::resource_id::swapchain_image);
+        CHECK(rr::post_composite_io.barrier_images.empty()); // the HDR transition is the frame loop's, on every frame
+        CHECK(rr::post_composite_io.push.has_value());
+        CHECK(rr::post_composite_io.push->size == rr::post_push_bytes);
+    }
     return vk_test::finish("test_render_resources");
 }
