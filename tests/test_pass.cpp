@@ -513,5 +513,32 @@ int main() {
         CHECK(!has(state.log, "record:gated"));
     }
 
+    // ---- the chain also KEEPS objects that are not passes (the renderer's two jobs are the users), and what
+    //      `keep` promises is exactly two things: the chain OWNS and destroys them, and they are NOT stages ----
+    {
+        struct kept_job {
+            int* destroyed = nullptr;
+            ~kept_job() {
+                if (this->destroyed != nullptr) {
+                    *this->destroyed += 1;
+                }
+            }
+        };
+        int destroyed = 0;
+        {
+            pass_chain chain{"render"};
+            chain.add(probe);
+            kept_job& job = chain.keep<kept_job>();
+            job.destroyed = &destroyed;
+            // NOT a stage: the chain's list and the stage it hands the runner are unchanged by `keep`
+            CHECK(chain.size() == 1);
+            CHECK(chain.as_stage().passes.size() == 1);
+            state.log.clear();
+            CHECK(chain.record(host).recorded == 1);
+            CHECK(!has(state.log, "record:kept_job"));
+        }
+        CHECK(destroyed == 1); // ... and the CHAIN is what destroys it, at its own scope's end
+    }
+
     return vk_test::finish("test_pass");
 }
