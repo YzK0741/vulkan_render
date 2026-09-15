@@ -132,6 +132,7 @@ target_sources(vulkancorekit
         vulkan/pass/ssgi_trace.cppm
         vulkan/pass/ssgi_spec.cppm
         vulkan/pass/ssgi_temporal.cppm
+        vulkan/pass/ssgi_spatial.cppm
         vulkan/profiling/profiling.cppm
         vulkan/shadow_fit/shadow_fit.cppm
         vulkan/readback/readback.cppm
@@ -159,6 +160,7 @@ target_sources(vulkancorekit
         vulkan/pass/ssgi_trace.cpp
         vulkan/pass/ssgi_spec.cpp
         vulkan/pass/ssgi_temporal.cpp
+        vulkan/pass/ssgi_spatial.cpp
         vulkan/shadow_fit/shadow_fit.cpp
         vulkan/readback/readback.cpp
         vulkan/acceleration_structure/acceleration_structure.cpp
@@ -691,3 +693,4 @@ add_custom_command(
 add_custom_target(shaders ALL DEPENDS ${VR_SHADER_OUTPUTS} "${VR_SHADER_OUT_DIR}/.sources-copied")
 add_dependencies(vulkan_render shaders)
 message(STATUS "glslc: ${Vulkan_GLSLC_EXECUTABLE} - every build compiles shaders/*.spv into ${VR_SHADER_OUT_DIR}")
+

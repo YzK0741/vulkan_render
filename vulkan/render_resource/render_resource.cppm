@@ -1060,4 +1060,37 @@ export namespace vulkan::render_resource {
         .push = push_block{.offset = 0, .size = 48, .stages = stage_flag::compute},
     };
 
+    /**
+     * @brief the image the spatial filter transitions
+     *
+     * One entry, and it is the filter's OUTPUT: `gi_spatial` lives in the G-buffer set as a storage image, so the
+     * pass needs its handle for the two barriers (UNDEFINED -> GENERAL, then GENERAL -> SHADER_READ for the
+     * composite) and no descriptor of its own. Its INPUT needs nothing - the temporal resolve handed it to
+     * SHADER_READ with a transition that names COMPUTE as well as FRAGMENT - which is why this list is one entry
+     * where the tracer's is twelve.
+     */
+    inline constexpr std::array<barrier_image, 1> ssgi_spatial_barriers = {{
+        {.resource = resource_id::gi_spatial, .element = 0},
+    }};
+
+    /**
+     * @brief the spatial filter's declaration: the joint-bilateral filter that ENDS the GI chain
+     *
+     * The third pass on the shared-sets + barrier-images shape (the tracer and the lobe are the others): it binds
+     * the shared scene set and the shared G-buffer set - which already carries every binding it uses, the normal,
+     * the depth, the accumulation it reads and the image it writes - and owns no descriptor at all. What the
+     * composite samples is ITS output, which is why the renderer's `gi_resolved` is set from whether this pass
+     * recorded: a frame whose filter did not run has nothing to add and must weigh 0 rather than show whatever
+     * that image happens to hold.
+     */
+    inline constexpr pass_io ssgi_spatial_io = {
+        .name = "ssgi_spatial",
+        .own_set = 2, // unused: no own bindings, like the tracer and the lobe
+        .bindings = {},
+        .shared_sets = ssgi_trace_shared_sets, // the same two: the scene set (0) and the G-buffer set (1)
+        .targets = {},
+        .barrier_images = ssgi_spatial_barriers,
+        .push = push_block{.offset = 0, .size = 48, .stages = stage_flag::compute},
+    };
+
 } // namespace vulkan::render_resource

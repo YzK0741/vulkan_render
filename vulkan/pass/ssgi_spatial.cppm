@@ -1,0 +1,98 @@
+// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+
+/**
+ * @file vulkan/pass/ssgi_spatial.cppm
+ * @brief The eighth real pass, and the LAST stage of the GI chain: the joint-bilateral spatial filter.
+ * @defgroup vulkan_pass_ssgi_spatial SSGI Spatial Filter Pass
+ *
+ * WHAT IT OWNS: the frame's recording - the two barriers around its storage output, the two shared sets it
+ * binds, the push block's values (composed by the renderer) and the dispatch - and the fact that the frame's GI
+ * became usable, which is what the composite's weight is read from.
+ *
+ * WHAT IT DOES NOT OWN, in the same shape as the tracer and the glossy lobe: no descriptor set of its own. Every
+ * binding it uses - the normal, the depth, the accumulation it reads and the image it writes - is in the shared
+ * G-buffer set, whose contents its owner writes, so the only handles it needs are the IMAGE it transitions, and
+ * those arrive through `pass_io::barrier_images` (the channel the tracer's extraction added).
+ */
+
+module;
+
+#include <array>
+#include <cstdint>
+#include <cstring>
+#include <glm/glm.hpp>
+#include <span>
+#include <string_view>
+#include <vulkan/vulkan.h>
+
+export module vulkan.pass.ssgi_spatial;
+
+import vulkan.pass;
+import vulkan.render_resource;
+
+export namespace vulkan::pass {
+
+    /**
+     * @brief the joint-bilateral filter over the temporal accumulation: the chain's last stage
+     *
+     * It runs after the temporal resolve - filtering a stale accumulation would only make the staleness smoother
+     * - and its output is what the composite samples, so `feature()` is the CHAIN's feature and the renderer sets
+     * `gi_resolved` from whether this pass recorded.
+     */
+    class ssgi_spatial_pass final : public frame_pass {
+    public:
+        /// @brief the push block, which is also `ssgi_spatial.comp`'s
+        struct push_constants {
+            float depth_scale = 0.0f;   // proj[2][2]
+            float depth_offset = 0.0f;  // proj[3][2]
+            float sigma_spatial = 2.0f; // in GI texels; 0 = pass-through
+            float sigma_depth = 0.02f;  // relative view-depth tolerance
+            float normal_power = 16.0f; // exponent on the normal agreement term
+            /// 1.0 = remove the probe's ambient from the filtered result (the traced path only: the marched one
+            /// is an ADDITION to that ambient, so it must not remove anything)
+            float subtract_ambient = 0.0f;
+            /// 1.0 while this frame's lobe produced a reflection, 0.0 otherwise: the lane that keeps a STALE
+            /// accumulation out of a frame whose reflection was not resolved
+            float spec_weight = 0.0f;
+            float unused2 = 0.0f;
+            glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent
+        };
+
+        ssgi_spatial_pass() = default;
+        ~ssgi_spatial_pass() override = default;
+
+        [[nodiscard]] render_resource::pass_io const& io() const noexcept override;
+        [[nodiscard]] vulkan::pass::behaviour const& behaviour() const noexcept override;
+        [[nodiscard]] std::string_view feature() const noexcept override;
+        void create(pass_context const& context) override;
+        void on_swapchain_recreated(pass_host const& host) override;
+        void record(resolved_io const& io) override;
+
+        /// @brief whether the filtered image was written this frame, i.e. whether the GI may be composited
+        [[nodiscard]] bool resolved() const noexcept;
+
+    private:
+        static constexpr uint32_t group_size = 8; // `ssgi_spatial.comp`'s local_size_x/y
+        static constexpr uint32_t barrier_output = 0;
+        static_assert(barrier_output + 1 == render_resource::ssgi_spatial_barriers.size(),
+                      "the filter's barrier slots must match the declaration it indexes");
+
+        static constexpr std::array<std::string_view, 1> pipeline_names = {"ssgi_spatial"};
+        inline static constexpr vulkan::pass::behaviour behaviour_ = {
+            .kind = behaviour_kind::compute,
+            .group_size_x = group_size,
+            .group_size_y = group_size,
+            .group_size_z = 1,
+            .extent = extent_rule::half, // the GI chain's resolution
+            .extent_of = resource_id::none,
+            .pipelines = pipeline_names,
+            .resync_viewport = false,
+        };
+
+        bool resolved_ = false;
+    };
+
+    static_assert(sizeof(ssgi_spatial_pass::push_constants) == render_resource::ssgi_spatial_io.push->size,
+                  "the filter's declared push block must be the size of the struct the renderer composes");
+
+} // namespace vulkan::pass

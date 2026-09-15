@@ -377,5 +377,22 @@ int main() {
         CHECK(rr::ssgi_temporal_io.push->stages == rr::stage_flag::compute);
     }
 
+    // ---- the SEVENTH declaration: the spatial filter, which ENDS the chain - the third pass on the shared-sets
+    //      shape, whose only handle of its own is the storage image it writes ----
+    {
+        CHECK(rr::validate(rr::ssgi_spatial_io).has_value());
+        CHECK(rr::ssgi_spatial_io.bindings.empty()); // everything it reads is in the shared G-buffer set
+        CHECK(rr::ssgi_spatial_io.targets.empty());  // a compute pass
+        CHECK(rr::ssgi_spatial_io.shared_sets.size() == 2);
+        CHECK(rr::ssgi_spatial_io.shared_sets[0] == 0); // the scene set
+        CHECK(rr::ssgi_spatial_io.shared_sets[1] == 1); // the G-buffer set: the image it writes lives there
+        CHECK(rr::ssgi_spatial_io.barrier_images.size() == 1);
+        CHECK(rr::ssgi_spatial_io.barrier_images[0].resource == rr::resource_id::gi_spatial); // its own output
+        CHECK(rr::ssgi_spatial_io.push.has_value());
+        CHECK(rr::ssgi_spatial_io.push->size == 48); // eight floats and the two extents
+        CHECK(rr::ssgi_spatial_io.push->stages == rr::stage_flag::compute);
+        CHECK(rr::descriptor_counts_for(rr::ssgi_spatial_io, rr::ssgi_spatial_io.own_set).total() == 0);
+    }
+
     return vk_test::finish("test_render_resources");
 }

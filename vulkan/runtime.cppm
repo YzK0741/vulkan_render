@@ -34,6 +34,7 @@ import vulkan.pass.transparent;       // the fourth: the blended geometry, over 
 import vulkan.pass.ssgi_trace;        // the fifth, and the GI chain's first stage: the half-resolution tracer
 import vulkan.pass.ssgi_spec;         // the sixth: the glossy lobe, which corrects the tracer's own image
 import vulkan.pass.ssgi_temporal;     // the seventh: the diffuse temporal resolve's recording (see its header)
+import vulkan.pass.ssgi_spatial;      // the eighth, and the GI chain's last stage: the spatial filter
 import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
@@ -392,6 +393,12 @@ namespace vulkan {
         /// share one layout and one pipeline. The pass-owned family is step 1b (see docs/pass_chain_plan.md).
         pass::ssgi_temporal_pass ssgi_temporal;
         std::array<pass::frame_pass*, 1> ssgi_temporal_stage = {&this->ssgi_temporal};
+        /// THE SPATIAL FILTER (vulkan.pass.ssgi_spatial): the GI chain's LAST stage, and the shape the tracer and
+        /// the lobe already have - the shared scene set, the shared G-buffer set, no descriptor of its own, and
+        /// the one image it transitions (its own storage output) declared through `barrier_images`. What the
+        /// composite samples is its output, so the renderer's `gi_resolved` is read from whether it recorded.
+        pass::ssgi_spatial_pass ssgi_spatial;
+        std::array<pass::frame_pass*, 1> ssgi_spatial_stage = {&this->ssgi_spatial};
         bool ssgi_on = false;
         float ssgi_intensity = 0.7f; // scales the traced indirect against the IBL probe it overlaps
         float ssgi_radius = 3.0f;    // ray length, view units
@@ -536,32 +543,9 @@ namespace vulkan {
         std::optional<vk_pipeline> ssgi_spatial_pipeline = std::nullopt;
         VkPipelineLayout ssgi_spatial_pipeline_layout = VK_NULL_HANDLE;
         // The glossy lobe is NOT here any more: its pipeline layout, its pipeline and its per-image first-use
-        // state are the PASS's (see vulkan.pass.ssgi_spec).
-        struct ssgi_spatial_push_constants {
-            float depth_scale = 0.0f;   // proj[2][2]
-            float depth_offset = 0.0f;  // proj[3][2]
-            float sigma_spatial = 2.0f; // in GI texels; 0 = pass-through
-            float sigma_depth = 0.02f;  // relative view-depth tolerance
-            float normal_power = 16.0f; // exponent on the normal agreement term
-            // 1.0 = remove the probe's ambient from the filtered result before writing it (see the
-            // subtraction in shaders/ssgi_spatial.comp). The traced GI estimates the whole diffuse indirect
-            // - its rays fall back to the probe off screen - while the lighting stage adds that same
-            // ambient for every pixel, so exactly one of the two has to go. It happens in the filter
-            // because that is the last pass that still knows which surface the ambient belongs to, which is
-            // also what lets the images upstream stay pure RADIANCE (a bounce has to re-emit them).
-            float subtract_ambient = 0.0f;
-            // The SPECULAR ambient is deliberately NOT here: the glossy pass takes the lighting stage's
-            // specular term off at the texel it adds its own, before this filter sees either, which is
-            // exact where a subtraction here could only approximate (see that shader's header and
-            // docs/gi_hit_shading.md's L2.3 section, where both were measured against each other).
-            // 1.0 while this frame's glossy lobe produced a reflection, 0.0 otherwise. The reflection's own
-            // accumulation is summed in by the filter (binding 15) and this lane is what scales it out on a
-            // frame that has none - scaling rather than clearing, so a stale accumulation cannot leak
-            // through, and so no extra image usage or barrier is needed to keep it clean.
-            float spec_weight = 1.0f;
-            float unused2 = 0.0f;
-            glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent
-        };
+        // state are the PASS's (see vulkan.pass.ssgi_spec). The spatial filter's push block left the same way:
+        // its SHAPE is the pass's now (pass::ssgi_spatial_pass::push_constants), and the renderer only fills the
+        // values in - which is the split every extracted pass settled on.
         // Whether THIS frame's GI chain ran far enough to produce the image the composite samples:
         // cleared once per frame before the GI passes and set by the SPATIAL FILTER, which is the last
         // of them. The composite can then push a weight of exactly 0 whenever there is no GI to add -
@@ -2470,6 +2454,13 @@ namespace vulkan {
          * @return false when the generation or the pipeline is not there, which skips the pass WITHOUT recording
          */
         [[nodiscard]] bool resolve_ssgi_temporal(pass::resolved_io& out);
+        /**
+         * @brief resolve the spatial filter: the shared sets it binds, the storage output it transitions, its
+         *        pipeline and the push block the renderer composes
+         * @return false when the generation or the pipeline is not there, which skips the pass WITHOUT recording -
+         *         and the frame's GI weight then stays 0 (see `gi_resolved`)
+         */
+        [[nodiscard]] bool resolve_ssgi_spatial(pass::resolved_io& out);
         /**
          * @brief the extent a pass's declaration asks for (see `pass::behaviour::extent`)
          * @note the rule is a MAPPING from the declaration to a number the renderer owns, so it is applied here

@@ -1226,6 +1226,8 @@ namespace vulkan {
             [[maybe_unused]] pass::run_report const spec_recreated = pass::recreate_stage(ssgi_spec_stage, this->make_pass_host());
             pass::stage const ssgi_temporal_stage = {.name = "ssgi_temporal", .passes = this->ssgi_temporal_stage, .marks = false};
             [[maybe_unused]] pass::run_report const temporal_recreated = pass::recreate_stage(ssgi_temporal_stage, this->make_pass_host());
+            pass::stage const ssgi_spatial_stage = {.name = "ssgi_spatial", .passes = this->ssgi_spatial_stage, .marks = false};
+            [[maybe_unused]] pass::run_report const spatial_recreated = pass::recreate_stage(ssgi_spatial_stage, this->make_pass_host());
         }
         // Every swapchain image's history died with the old generation (and its size may have
         // changed): forget the matrices, so the next frame for each image starts a new accumulation
@@ -3239,7 +3241,8 @@ namespace vulkan {
         if (!this->deferred_pipeline.has_value()) {
             return fail(std::string("ssgi spatial: create the deferred lighting pipeline first (it owns the G-buffer set layout)"));
         }
-        auto built = pipelines::build_ssgi_spatial(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, this->gbuffer_set_layout, sizeof(ssgi_spatial_push_constants), compute_shader_code);
+        auto built = pipelines::build_ssgi_spatial(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout, this->gbuffer_set_layout,
+                                                   static_cast<uint32_t>(sizeof(pass::ssgi_spatial_pass::push_constants)), compute_shader_code);
         if (!built) {
             return fail(built.error());
         }
@@ -3411,6 +3414,11 @@ namespace vulkan {
         pass::run_report const temporal_created = pass::create_stage(temporal_stage, build);
         if (!temporal_created.rejected.empty()) {
             utility::log("pass '{}': its declaration was refused by the validator, so it does not run", temporal_created.rejected);
+        }
+        pass::stage const spatial_stage = {.name = "ssgi_spatial", .passes = this->ssgi_spatial_stage, .marks = false};
+        pass::run_report const spatial_created = pass::create_stage(spatial_stage, build);
+        if (!spatial_created.rejected.empty()) {
+            utility::log("pass '{}': its declaration was refused by the validator, so it does not run", spatial_created.rejected);
         }
         pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
         pass::run_report const created = pass::create_stage(probe_stage, build);
@@ -3674,6 +3682,9 @@ namespace vulkan {
         }
         if (&pass == static_cast<pass::frame_pass const*>(&this->ssgi_temporal)) {
             return this->resolve_ssgi_temporal(out);
+        }
+        if (&pass == static_cast<pass::frame_pass const*>(&this->ssgi_spatial)) {
+            return this->resolve_ssgi_spatial(out);
         }
         if (&pass == static_cast<pass::frame_pass const*>(&this->taa_resolve)) {
             return this->resolve_taa_pass(out);
@@ -4043,77 +4054,65 @@ namespace vulkan {
         }
     }
 
-    bool runtime::record_ssgi_spatial_pass(VkCommandBuffer const command_buffer) {
-        core& vk = this->vulkan_core;
+    bool runtime::resolve_ssgi_spatial(pass::resolved_io& out) {
+        core const& vk = this->vulkan_core;
         std::size_t const index = this->current_image_index;
-        if (index >= vk.gi_spatial_images.size() || vk.gi_resolve_images.size() != vk.gi_spatial_images.size()) {
+        if (index >= vk.gi_spatial_images.size() || vk.gi_resolve_images.size() != vk.gi_spatial_images.size() || vk.gi_spatial_images[index] == VK_NULL_HANDLE ||
+            !this->ssgi_spatial_pipeline.has_value() || this->ssgi_spatial_pipeline_layout == VK_NULL_HANDLE) {
             return false;
         }
-        if (this->ssgi_spatial_pipeline == std::nullopt) {
-            return false;
-        }
-        // The G-buffer set carries every binding this pass uses (the normal, the depth, the image it
-        // reads and the one it writes), so it is written by the same accessor the tracer uses.
+        // The G-buffer set carries every binding this pass uses (the normal, the depth, the accumulation it reads
+        // and the image it writes), so it is written by the same accessor the tracer uses - and a frame without it
+        // has no filter, which keeps the composite's GI weight at 0.
         this->ensure_gbuffer_descriptors();
         VkDescriptorSet const gbuffer_set = this->gbuffer_family.set(static_cast<uint32_t>(index), 0);
         if (gbuffer_set == VK_NULL_HANDLE) {
-            return false; // no set: the composite's GI weight stays 0 for this frame (see gi_resolved)
+            return false;
         }
-
-        uint32_t const gi_width = std::max(1u, vk.swap_chain_extent.width / 2u);
-        uint32_t const gi_height = std::max(1u, vk.swap_chain_extent.height / 2u);
-
-        // The output is a storage image: UNDEFINED -> GENERAL here (its contents are fully overwritten)
-        // and GENERAL -> SHADER_READ below, for the composite. The input needs no barrier: the temporal
-        // resolve handed it to SHADER_READ through a transition that names COMPUTE as well as FRAGMENT.
-        VkImageMemoryBarrier2 to_general = vulkan::undefined_to_general_transition;
-        to_general.image = vk.gi_spatial_images[index];
-        VkDependencyInfo const general_dependency = make_image_dependency_info(1, &to_general);
-        vkCmdPipelineBarrier2(command_buffer, &general_dependency);
-
-        std::array<VkDescriptorSet, 2> const sets = {this->scene_sets.set(static_cast<uint32_t>(vk.current_frame)), gbuffer_set};
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_spatial_pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_spatial_pipeline->get_pipeline());
-
-        ssgi_spatial_push_constants const push = {
-            .depth_scale = this->current_ubo.proj[2][2],
-            .depth_offset = this->current_ubo.proj[3][2],
-            .sigma_spatial = this->gi_spatial_sigma,
-            .sigma_depth = this->gi_spatial_depth_sigma,
-            .normal_power = this->gi_spatial_normal_power,
-            // The subtraction belongs to the TRACED path only: the marched one is an ADDITION to the probe
-            // ambient, so it must not remove anything. Same predicate the tracer's push uses, evaluated in
-            // the same frame, so the two cannot disagree about which path ran.
-            .subtract_ambient = this->ssgi_traced_active() ? 1.0f : 0.0f,
-            // ... and the REFLECTION's own accumulation is summed in by the filter at binding 15. The
-            // SPECULAR AMBIENT is still not subtracted here: the glossy pass removes the lighting stage's
-            // specular term at its own texel, which is exact where a subtraction in this filter could only
-            // approximate (see shaders/ssgi_spatial.comp's binding comment and docs/gi_hit_shading.md's L2.3
-            // section for the measurement that chose it). This lane is only about how much of the
-            // reflection's own accumulation to include, and zero is what keeps a stale one out of a frame
-            // whose lobe did not run. The predicate is whether the reflection was actually RESOLVED this
-            // frame rather than whether the lobe is enabled: if its descriptor set could not be had, the
-            // accumulation holds an older frame and must not be summed in. The denoise pass runs before this
-            // one, so the flag is this frame's.
-            .spec_weight = this->gi_spec_resolved ? 1.0f : 0.0f,
-            .unused2 = 0.0f,
-            .gi_size = glm::vec4(static_cast<float>(gi_width), static_cast<float>(gi_height),
-                                 static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height))};
-        vkCmdPushConstants(command_buffer, this->ssgi_spatial_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-
-        constexpr uint32_t group_size = 8; // shaders/ssgi_spatial.comp's local_size_x/y
-        vkCmdDispatch(command_buffer, (gi_width + group_size - 1) / group_size, (gi_height + group_size - 1) / group_size, 1);
-
-        // Hand the filtered image to the composite. This is also where the frame's GI becomes usable:
-        // gi_resolved is what the composite's weight is read from, and only this pass writes the image
-        // that weight applies to.
-        VkImageMemoryBarrier2 to_sampling = vulkan::general_to_sampling_transition;
-        to_sampling.image = vk.gi_spatial_images[index];
-        VkDependencyInfo const sampling_dependency = make_image_dependency_info(1, &to_sampling);
-        vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
-
-        this->gi_resolved = true;
+        out.frame = this->pass_frame();
+        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
+        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
+        out.shared.gbuffer = gbuffer_set;
+        // The one image it transitions: its own storage output.
+        out.barrier_storage[0] = {.view = vk.gi_spatial_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_spatial_images[index]};
+        out.barrier_images = std::span<pass::resolved_binding const>(out.barrier_storage.data(), render_resource::ssgi_spatial_barriers.size());
+        out.pipeline_storage[0] = this->ssgi_spatial_pipeline->get_pipeline();
+        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
+        out.pipeline_layout = this->ssgi_spatial_pipeline_layout;
+        VkExtent2D const gi = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->ssgi_spatial));
+        pass::ssgi_spatial_pass::push_constants push = {};
+        push.depth_scale = this->current_ubo.proj[2][2];
+        push.depth_offset = this->current_ubo.proj[3][2];
+        push.sigma_spatial = this->gi_spatial_sigma;
+        push.sigma_depth = this->gi_spatial_depth_sigma;
+        push.normal_power = this->gi_spatial_normal_power;
+        // The subtraction belongs to the TRACED path only: the marched one is an ADDITION to the probe ambient, so
+        // it must not remove anything. Same predicate the tracer's push uses, evaluated in the same frame, so the
+        // two cannot disagree about which path ran.
+        push.subtract_ambient = this->ssgi_traced_active() ? 1.0f : 0.0f;
+        // ... and the reflection's own accumulation is summed in by the filter at binding 15. THIS lane is about
+        // how much of it to include, and it keys on whether the reflection was actually RESOLVED this frame rather
+        // than on whether the lobe is enabled: if its descriptor set could not be had, the accumulation holds an
+        // older frame and must not be summed in. The denoise pass runs before this one, so the flag is this frame's.
+        push.spec_weight = this->gi_spec_resolved ? 1.0f : 0.0f;
+        push.gi_size = glm::vec4(static_cast<float>(gi.width), static_cast<float>(gi.height),
+                                 static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height));
+        static_assert(sizeof(push) <= pass::max_push_bytes, "the filter's push block must fit the guaranteed minimum");
+        std::memcpy(out.push_storage.data(), &push, sizeof(push));
+        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
+        out.extent = gi;
         return true;
+    }
+
+    bool runtime::record_ssgi_spatial_pass(VkCommandBuffer const command_buffer) {
+        static_cast<void>(command_buffer); // the pass records into the frame's command buffer it is resolved with
+        // THE SPATIAL FILTER records the two barriers around its storage output, the two shared sets and the
+        // dispatch (see vulkan.pass.ssgi_spatial). It is the LAST stage: what the composite samples is its output,
+        // so the frame's GI becomes usable exactly when this pass recorded.
+        pass::stage const spatial_stage = {.name = "ssgi_spatial", .passes = this->ssgi_spatial_stage, .marks = false};
+        [[maybe_unused]] pass::run_report const spatial_report = pass::record_stage(spatial_stage, this->make_pass_host());
+        this->gi_resolved = this->ssgi_spatial.resolved();
+        return this->gi_resolved;
     }
 
     pass::ssgi_spec_frame runtime::make_ssgi_spec_frame() const noexcept {
