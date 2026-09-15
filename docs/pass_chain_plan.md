@@ -1508,7 +1508,24 @@ with the existing tooling (`-Extra "gbuffer_debug=true"`, plus a channel), again
 that is the verification this step needs; the ordinary 12 x 2 still has to stay at 0 changed, because every step's
 acceptance includes it.
 
-## THE ④ WIRING, BISECTED: THE OWNERSHIP MOVE IS LANDED, AND THE RECORDING MOVE IS THE REMAINING SUSPECT
+## THE ④ WIRING, BISECTED: BOTH HALVES ARE LANDED, AND STEP ④ IS DONE
+
+**THE RECORDING MOVE IS LANDED TOO, AND IT REPRODUCES EVERY REFERENCE.** `record_gbuffer_debug_pass` is deleted;
+`resolve_gbuffer_debug` + `ensure_gbuffer_debug_inputs` + `clear_hdr_for_missing_gbuffer_set` + a stage record
+replace it, exactly as the recipe specified. Measured: the gate is 12 x 2 with **0 changed / 0 flaky** - including
+`deferred_taa_fxaa`, the scenario the FIRST, monolithic attempt had broken - and the debug view's own frame (the
+knob-on A/B, `gbuffer_debug = true`) is `A3B5950475956BE8`, the same hash the parent commit's binary produced in
+the previous round's A/B.
+
+**SO WHAT WAS THE FIRST ATTEMPT'S `deferred_taa_fxaa` REGRESSION?** It does not reproduce in a clean
+reconstruction of the same three things (ownership + create order + recording), which is itself the finding: the
+difference was an UNINTENDED EDIT inside that batch, not a mechanism - the same class of accident this document
+already records twice (the two reverted deferred attempts, and the regex that swallowed the post resolvers while
+deleting two non-adjacent functions). What made it visible was the bisect: the ownership half alone was gate-clean
+and A/B-clean, so the surviving difference had to be in the recording half, and rebuilding that half from the
+recipe rather than re-applying the earlier edits produced a tree that matches everywhere. THE LESSON IS WORTH MORE
+THAN THE BUG: a reverted batch whose parts are not re-derived from a written recipe cannot be trusted to reproduce,
+so a slice that fails should be REBUILT from the recipe, not patched until it passes.
 
 The full wiring was attempted, came back with the gate at **11 passed, 1 changed** (`deferred_taa_fxaa`), and was
 REVERTED rather than landed - the section below keeps that measurement. Following the bisect it recommended, the

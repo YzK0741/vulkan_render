@@ -3639,6 +3639,9 @@ namespace vulkan {
         if (&pass == static_cast<pass::frame_pass const*>(&this->fxaa_resolve)) {
             return this->resolve_fxaa_pass(out);
         }
+        if (&pass == static_cast<pass::frame_pass const*>(&this->gbuffer_debug_view)) {
+            return this->resolve_gbuffer_debug(out);
+        }
         if (&pass != static_cast<pass::frame_pass const*>(&this->gi_probe)) {
             return false; // no other pass is wired into a stage yet
         }
@@ -3980,80 +3983,6 @@ namespace vulkan {
         return true;
     }
 
-    void runtime::record_gbuffer_debug_pass(VkCommandBuffer const command_buffer) {
-        core const& vk = this->vulkan_core;
-        if (!this->gbuffer_debug_view.pipeline_ready()) {
-            return;
-        }
-        std::size_t const index = this->current_image_index;
-
-        // Layout transitions FIRST, and outside the rendering instance: vkCmdPipelineBarrier2 may not
-        // be recorded inside a dynamic rendering instance (VUID-vkCmdPipelineBarrier2-None-09553,
-        // unless dynamic rendering local read is enabled, which the engine does not need). So all
-        // three steps happen before vkCmdBeginRendering:
-        //   1. the HDR target the debug view writes enters COLOR_ATTACHMENT_OPTIMAL (the G-buffer
-        //      pass wrote its own targets, so it was never an attachment this frame). This happens
-        //      even when the descriptor set below is missing, because the post chain that follows
-        //      samples that image: an undefined layout would be a lie, a cleared image is a valid
-        //      black frame.
-        //   2. the three G-buffer targets the pass just wrote become shader inputs.
-        //   3. the motion-vector target becomes a shader input as well. It needs its own transition
-        //      here because the TAA resolve is the only other stage that samples it, and the debug
-        //      view runs INSTEAD of the lighting stage - which is what the TAA resolve hangs off -
-        //      so without this the read happens against COLOR_ATTACHMENT_OPTIMAL, which is a
-        //      validation error and, on a driver that believes it, garbage.
-        //   4. the G-buffer depth image becomes a shader input too - through the same accessor the
-        //      other two sampling stages use, because its old layout depends on whether the G-buffer
-        //      instance rendered this frame (the aspect must be DEPTH; see the accessor).
-        std::array<VkImageMemoryBarrier2, 5> barriers = {};
-        barriers[0] = vulkan::color_attachment_transition;
-        barriers[0].image = vk.hdr_images[index];
-        for (uint32_t target = 0; target < vulkan::gbuffer_target_count; ++target) {
-            barriers[target + 1] = vulkan::hdr_sampling_transition; // COLOR_ATTACHMENT -> SHADER_READ
-            barriers[target + 1].image = vk.gbuffer_images[target][index];
-        }
-        barriers[4] = vulkan::hdr_sampling_transition; // same COLOR_ATTACHMENT -> SHADER_READ, color aspect
-        barriers[4].image = vk.velocity_images[index];
-        VkDependencyInfo const dependency = make_image_dependency_info(static_cast<uint32_t>(barriers.size()), barriers.data());
-        vkCmdPipelineBarrier2(command_buffer, &dependency);
-        // the debug view ran instead of the lighting stage, so it is the stage that hands the
-        // motion-vector target to a sampler this frame (see ensure_velocity_sampled)
-        if (index < this->velocity_written.size()) {
-            this->velocity_written[index] = false;
-        }
-        this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(index));
-
-        this->ensure_gbuffer_descriptors();
-
-        VkClearValue clear = {};
-        VkRenderingAttachmentInfo const color_attachment = make_color_attachment_info(vk.hdr_image_views[index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
-        VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &color_attachment, nullptr);
-        vkCmdBeginRendering(command_buffer, &rendering_info);
-        bool const can_draw = this->gbuffer_family.set(static_cast<uint32_t>(index), 0) != VK_NULL_HANDLE;
-        if (can_draw) {
-            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->gbuffer_debug_view.pipeline());
-            VkViewport const viewport = {0.0f, 0.0f, static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height), 0.0f, 1.0f};
-            VkRect2D const scissor = {{0, 0}, vk.swap_chain_extent};
-            vkCmdSetViewport(command_buffer, 0, 1, &viewport);
-            vkCmdSetScissor(command_buffer, 0, 1, &scissor);
-            vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
-            VkDescriptorSet const set = this->gbuffer_family.set(static_cast<uint32_t>(index), 0);
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->gbuffer_debug_view.pipeline_layout(), 0, 1, &set, 0, nullptr);
-            gbuffer_debug_push_constants const push = {
-                .channel = static_cast<float>(this->gbuffer_channel_index),
-                .proj_22 = this->current_ubo.proj[2][2],
-                .proj_32 = this->current_ubo.proj[3][2],
-                // Four pixels of motion saturate the motion channel (see the field's docs): derived
-                // from the width so it means the same thing at any resolution.
-                .motion_gain = static_cast<float>(vk.swap_chain_extent.width) * 0.25f};
-            vkCmdPushConstants(command_buffer, this->gbuffer_debug_view.pipeline_layout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
-            vkCmdDraw(command_buffer, 3, 1, 0, 0);
-        } else {
-            utility::log("runtime: gbuffer debug pass has no descriptor set - showing a cleared frame");
-        }
-        vkCmdEndRendering(command_buffer);
-    }
-
     void runtime::record_scene_tail(VkCommandBuffer const command_buffer) {
         // NO vkCmdEndRendering HERE ANY MORE: the scene PASS owns its instance and closes it at the end of its
         // own record (see vulkan.pass.scene). That line used to be the far half of a pair whose near half was
@@ -4149,9 +4078,26 @@ namespace vulkan {
         this->gpu_mark(command_buffer, gpu_mark_id::taa_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         // G-buffer debug mode (an inspection of the stored data, never combined with the lighting
-        // stage or TAA): turn one channel into a visible image in the HDR target.
+        // stage or TAA): turn one channel into a visible image in the HDR target. THE PASS owns the recording
+        // (vulkan.pass.gbuffer_debug); what stays here is the frame - the target's own transition (which has to
+        // happen even when the pass cannot draw, because the post chain samples that image), the two per-image
+        // hand-backs its frame carries, and the fallback that clears the target when there is no set to draw with.
         if (this->gbuffer_pass_active() && !this->deferred_lit_active()) {
-            this->record_gbuffer_debug_pass(command_buffer);
+            this->gbuffer_debug_view.set_frame(pass::gbuffer_debug_frame{.ensure_inputs = &runtime::ensure_gbuffer_debug_inputs, .owner = this});
+            // The HDR target becomes a colour attachment BEFORE the stage: the G-buffer pass wrote its own targets,
+            // so this image was never an attachment this frame, and the pass's instance CLEARs it.
+            std::array<VkImageMemoryBarrier2, 1> hdr_barrier = {vulkan::color_attachment_transition};
+            hdr_barrier[0].image = vk.hdr_images[this->current_image_index];
+            VkDependencyInfo const hdr_dependency = make_image_dependency_info(1, hdr_barrier.data());
+            vkCmdPipelineBarrier2(command_buffer, &hdr_dependency);
+            pass::stage const debug_stage = {.name = "gbuffer_debug", .passes = this->gbuffer_debug_stage, .marks = false};
+            pass::run_report const debug_report = pass::record_stage(debug_stage, this->make_pass_host());
+            if (debug_report.recorded == 0) {
+                // Inside this branch the only remaining cause is the G-buffer family having no set for this image
+                // (the pipeline is what gbuffer_pass_active() just checked), and the frame then has to be cleared -
+                // see the fallback's own comment. Its own transition is part of it.
+                this->clear_hdr_for_missing_gbuffer_set(command_buffer);
+            }
         }
         this->gpu_mark(command_buffer, gpu_mark_id::main_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
     }
@@ -4303,6 +4249,100 @@ namespace vulkan {
         static_cast<runtime*>(owner)->record_overlay_if_enabled(command_buffer);
     }
 
+    // =============================================================================================
+    // THE G-BUFFER DEBUG VIEW's resolver (vulkan.pass.gbuffer_debug)
+    // =============================================================================================
+    //
+    // What the pass cannot know: which image is the frame's display target (the HDR one), the four images it moves
+    // to a sampled layout, the G-buffer family's set and the push block's four values. What is NOT resolved: the
+    // HDR target's own transition to a colour attachment - it has to happen even on the frame the set is missing,
+    // because the post chain samples that image - so it stays the frame loop's, exactly like the post chain's.
+    bool runtime::resolve_gbuffer_debug(pass::resolved_io& out) {
+        core const& vk = this->vulkan_core;
+        uint32_t const index = this->current_image_index;
+        if (!this->gbuffer_debug_view.pipeline_ready()) {
+            return false;
+        }
+        // The family is written on demand by the accessor six consumers share - the debug view can be the first to
+        // need it on a frame where none of them ran.
+        this->ensure_gbuffer_descriptors();
+        VkDescriptorSet const set = this->gbuffer_family.set(index, 0);
+        if (set == VK_NULL_HANDLE) {
+            return false; // nothing to draw - see clear_hdr_for_missing_gbuffer_set()
+        }
+        out.frame = this->pass_frame();
+        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
+        out.shared.gbuffer = set;
+        out.target_storage[0] = {.view = vk.hdr_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.hdr_images[index]};
+        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), render_resource::gbuffer_debug_targets.size());
+        // The four images it READS, in the declaration's order: the three stored surface targets and the motion
+        // vectors. The DEPTH is deliberately not among them (its old layout depends on whether the G-buffer instance
+        // rendered this frame), which is why the frame carries the two bookkeeping callbacks below.
+        for (std::size_t b = 0; b < render_resource::gbuffer_debug_barriers.size(); ++b) {
+            render_resource::barrier_image const declared = render_resource::gbuffer_debug_barriers[b];
+            out.barrier_storage[b] = {.view = vk.gbuffer_image_views[declared.element][index],
+                                      .buffer = VK_NULL_HANDLE,
+                                      .image = vk.gbuffer_images[declared.element][index]};
+        }
+        // ... and the motion-vector target is the LAST of the four, which is the one entry that is not a G-buffer
+        // target element (the declaration says so; resolving it by its id rather than by position keeps the two in
+        // step if the list ever grows).
+        out.barrier_storage[3] = {.view = vk.velocity_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.velocity_images[index]};
+        out.barrier_images = std::span<pass::resolved_binding const>(out.barrier_storage.data(), render_resource::gbuffer_debug_barriers.size());
+        out.pipeline_storage[0] = this->gbuffer_debug_view.pipeline();
+        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
+        out.pipeline_layout = this->gbuffer_debug_view.pipeline_layout();
+        // The push block: the channel the knob selects, the two projection terms the depth channel linearizes with,
+        // and the motion gain (four pixels saturate the motion channel - derived from the width so it means the same
+        // thing at any resolution, see the pass's field comment).
+        pass::gbuffer_debug_pass::push_constants const push = {
+            .channel = static_cast<float>(this->gbuffer_channel_index),
+            .proj_22 = this->current_ubo.proj[2][2],
+            .proj_32 = this->current_ubo.proj[3][2],
+            .motion_gain = static_cast<float>(vk.swap_chain_extent.width) * 0.25f,
+        };
+        static_assert(sizeof(push) == render_resource::gbuffer_debug_io.push->size, "the resolved push block must be the size the declaration promises");
+        std::memcpy(out.push_storage.data(), &push, sizeof(push));
+        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
+        out.extent = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->gbuffer_debug_view));
+        return true;
+    }
+
+    void runtime::ensure_gbuffer_debug_inputs(void* const owner, VkCommandBuffer const command_buffer, uint32_t const image_index) {
+        // The two pieces of per-image bookkeeping the debug view's frame carries, in the moved code's order: the
+        // depth's hand-back (through the flag-based accessor, because the G-buffer instance rendered that depth
+        // earlier in this command buffer and its old layout depends on that) and the motion-vector flag's clearing
+        // (the debug view runs INSTEAD of the lighting stage, so it is the stage that hands that image to a sampler
+        // this frame - without the clear, the GI chain would transition it a second time and claim a layout it is
+        // not in).
+        runtime* const self = static_cast<runtime*>(owner);
+        if (image_index < self->velocity_written.size()) {
+            self->velocity_written[image_index] = false;
+        }
+        static_cast<void>(self->ensure_gbuffer_depth_sampled(command_buffer, image_index));
+    }
+
+    void runtime::clear_hdr_for_missing_gbuffer_set(VkCommandBuffer const command_buffer) {
+        // The debug view did not record because the G-buffer family had no descriptor set for this image (its pool
+        // could not give one). The pass cannot do this itself - it never sees the family's pool - so the frame's
+        // answer lives here: the target is CLEARED, which is what makes such a frame black rather than undefined
+        // (the post chain samples that image), and the log line says so once per frame.
+        core const& vk = this->vulkan_core;
+        uint32_t const index = this->current_image_index;
+        if (index >= vk.hdr_images.size()) {
+            return;
+        }
+        utility::log("runtime: gbuffer debug pass has no descriptor set - showing a cleared frame");
+        std::array<VkImageMemoryBarrier2, 1> clear_barrier = {vulkan::color_attachment_transition};
+        clear_barrier[0].image = vk.hdr_images[index];
+        VkDependencyInfo const clear_dependency = make_image_dependency_info(1, clear_barrier.data());
+        vkCmdPipelineBarrier2(command_buffer, &clear_dependency);
+        VkClearValue clear = {};
+        VkRenderingAttachmentInfo const attachment = make_color_attachment_info(vk.hdr_image_views[index], clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
+        VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, vk.swap_chain_extent}, true, &attachment, nullptr);
+        vkCmdBeginRendering(command_buffer, &rendering_info);
+        vkCmdEndRendering(command_buffer);
+    }
     bool runtime::record_post_process(VkCommandBuffer const command_buffer) {
         core const& vk = this->vulkan_core;
 

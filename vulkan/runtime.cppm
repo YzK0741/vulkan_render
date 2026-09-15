@@ -580,7 +580,16 @@ namespace vulkan {
         // rebuilds the sub-frustum corners from it.
         glm::mat4 current_proj_unjittered = glm::mat4(1.0f);
         void ensure_gbuffer_descriptors();
-        void record_gbuffer_debug_pass(VkCommandBuffer command_buffer);
+        /// @brief resolve the G-buffer debug view's frame: the HDR target it writes, the four images it moves to a
+        ///        sampled layout, the G-buffer family's set and the push block's values
+        /// @return false when this frame cannot run it (no pipeline, or no G-buffer descriptor set)
+        [[nodiscard]] bool resolve_gbuffer_debug(pass::resolved_io& out);
+        /// @brief the two per-image pieces of bookkeeping the debug view's frame carries (the depth's hand-back and
+        ///        the motion-vector flag's clearing): the pass's header says why they are not the pass's
+        static void ensure_gbuffer_debug_inputs(void* owner, VkCommandBuffer command_buffer, uint32_t image_index);
+        /// @brief the frame's answer when the debug view did NOT record: clear the HDR target, so the frame the post
+        ///        chain samples is defined (a black frame) instead of half-written
+        void clear_hdr_for_missing_gbuffer_set(VkCommandBuffer command_buffer);
         /// @brief resolve the deferred lighting pass's frame: the two shared sets, the frame's scene target,
         ///        the pass's own 88-byte push block and the extent its declaration's rule produces
         /// @return false when this frame cannot run it (no target generation, no G-buffer set, no pipeline)
