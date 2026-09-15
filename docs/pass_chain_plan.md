@@ -1380,6 +1380,14 @@ What the module settles, each as a decision rather than a transcription:
   which is the HDR target's and stays the frame loop's; and the DEEPEST level hands its own output back to a
   sampled layout, because it has no successor to do it and the composite samples all four.
 
+**THE WIRING'S FIRST ORDERING CONSTRAINT, found while landing this slice and written down before it can be
+forgotten**: `runtime::make_fxaa_pipeline` REQUIRES `post_pipeline_layout` to exist (`pipelines::build_fxaa` takes
+it as an argument, runtime.cpp:2216-2219), and `chores.cpp` calls it before `create_passes()` today only because
+`make_post_pipeline` created that layout earlier in the same block. After this step the layout is the COMPOSITE's,
+so it exists only once `passes.init(build)` has run - the FXAA pipeline therefore has to be built AFTER
+`create_passes()` (a block move in chores.cpp, not a redesign), and `record_fullscreen_triangle` - whose only
+remaining caller after this step is the FXAA recording - has to take that layout from the pass as well.
+
 **ACCEPTANCE FOR EVERY SLICE**: Release/Debug/ASan clean, `ctest` 8/8, a clean doxygen, and the gate 12 x 2 with
 0 changed and 0 flaky - which covers the composite in every scenario and the bloom chain in every scenario
 (measured above). No knob-on A/B is needed for this step, and the reason it is not is the first paragraph here.
