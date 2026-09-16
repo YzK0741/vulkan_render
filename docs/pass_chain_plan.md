@@ -3125,6 +3125,57 @@ byte-identical; Release, Debug and ASan clean with `ctest` 8/8 in all three; `do
 two doc blocks - the compiler said so immediately (`out-of-line definition ... does not match any declaration`), and
 the fix was to re-add it. A doc-comment-anchored deletion has to be checked against the diff, not trusted.
 
+## THE AUDIT'S SMALL BATCH: A CORRUPTED COMMENT AND THREE DEAD DECLARATIONS
+
+**THE FIRST BATCH OF THE MEMBER AUDIT IS THE ONE THAT NEEDS NO A/B, because not one byte of behaviour moves**: a
+comment that was CORRUPTED by a script, and three declarations nothing reads. Both halves were found by MEASURING -
+the corruption by scanning every source byte for control characters, the declarations by counting their references in
+the whole repository - and that is the reason they are in this document at all: neither is visible from reading the
+files they are in.
+
+**THE CORRUPTION WAS MINE, AND IT WAS IN 14 FILES.** The readiness question's doc line reads, in every pass that takes
+the default and in the runtime's note about the two jobs:
+
+    (a pass with nothing of its own to build keeps the interface's `true`; see `frame_pass::ready`)
+
+but the thirteen `vulkan/pass/*.cppm` files that carry it had a TAB where the backtick before `true` belongs and a FORM
+FEED where the one before `frame_pass` belongs, and `runtime.cppm` had a form feed before `frame_pass` and an ESCAPE
+before `emplace`. THE CAUSE IS POWERSHELL'S ESCAPE CHARACTER: those files were written from double-quoted here-strings
+in earlier slices, so `` `t `` / `` `f `` / `` `e `` became TAB / FF / ESC instead of the backticks the text needed.
+Nothing ever complained - a comment is a comment to both the compiler and doxygen, and the mangled words are still
+readable as words - which is exactly why it survived the eleven slices that followed. **It was found by scanning for
+control characters, not by reading the files**: every source file in the tree was scanned for bytes below 0x20 that are
+not TAB, CR or LF, the set that came back was these fourteen files and nothing else, and the repair is verified by the
+same scan coming back empty. `git diff --stat` is the proof of the scope - 14 files, **1 changed line each**, so no
+line-ending or whitespace churn came with it.
+
+**THE THREE DECLARATIONS WERE EACH VERIFIED DEAD BY COUNTING, not by reading their names.** In each case the count is
+one occurrence in the whole repository, and that occurrence is the declaration itself:
+
+* **`runtime::gi_probe_rounds`** - the propagation-rounds parameter is the PROBE PASS's (`gi_probe_pass::set_rounds`,
+  which `main.cpp` feeds the config value to directly), so the runtime's copy was a second source of truth that nothing
+  read. Its three-line doc comment went with it, and so did the three lines above those: prose about the blend RATE
+  whose member left in an earlier slice, so the sentence had lost its antecedent. Both parameters are documented where
+  they now live and where their reasoning is (`gi_probe.cppm`'s `set_rounds` and `set_rate`).
+* **`runtime::gbuffer_channel_count`** - an alias of `gbuffer_debug_pass::channel_count` that existed "for the
+  app-facing name", which nothing outside its own doc comment uses (the mentions inside the pass are the PASS's own
+  declaration). It was PUBLIC API, so `vulkan.runtime`'s module version is bumped: **0.68.0 -> 0.69.0**.
+* **`runtime::ssgi_temporal_push_constants`** - the block the temporal pass now composes for itself, since the push block moved
+  into it (`ssgi_temporal_pass` owns the block and its `blend_static` / `blend_min` constants), which left this copy
+  with no reader at all. The two-line note ABOVE it stays, because that is the statement a reader needs at exactly
+  that place in the class: "the MASK bake's push block is NOT here any more: its shape is the JOB's".
+
+**WHAT THE AUDIT SPLIT OFF, and why it is not in this batch**: the two STRUCTURAL leftovers - the two jobs the chain
+keeps alive, and the runtime's own (now empty) `passes` chain with the transitional `frame_passes()` accessor - are the
+next batch, because one of them changes WHEN a GPU-owning object is destroyed. That is a lifetime question, so it needs
+a knob-on A/B; this batch's evidence is the gate itself.
+
+**MEASURED**: Release, Debug and ASan build clean with `ctest` 8/8 in all three; `doxygen` exits 0 with **zero
+warnings** (counted rather than inferred from the exit code, which stays 0 when there are warnings); the capture gate is
+**12 x 2 = 0 changed / 0 flaky / 0 unseeded**, all twelve validation-clean and every reference unchanged
+(`deferred` `2DD1D13857322C0F`, `default_gi` `BF180E98ADB29E7E`, `sponza_gi` `58EC848DFABE654A`, `sponza_march`
+`EEFBBA2515803F46`, `glossy_motion` `98B06F2190B49519`).
+
 
 
 

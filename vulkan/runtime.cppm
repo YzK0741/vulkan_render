@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.68.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.69.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -594,14 +594,6 @@ namespace vulkan {
         bool gi_probe_enabled = false;
         // The grid's own blend rate ([render] ssgi_probe_rate) is the PROBE PASS's now (`set_ssgi_probes`
         // forwards to `gi_probe_pass::set_rate`): it is the injection's loop gain, and only that pass reads it.
-        // Small on purpose - this is the cache that is meant to survive the camera turning away, so it has to be
-        // slow, and it is also the loop gain of the tracer -> resolve -> grid -> tracer cycle (the grid feeds the
-        // tracer, which feeds the resolve, which is injected into the grid), so it is the number that decides
-        // whether that cycle settles.
-        // How many times the grid is propagated per frame ([render] ssgi_probe_rounds): each round is
-        // two ping-pong dispatches, so a round spreads trust one cell further and the trust halves each
-        // time (see the shader). 0 = injection only, which is what makes the propagation measurable.
-        uint32_t gi_probe_rounds = 2;
         // How much of the grid's answer the tracer adds on top of the environment probe for a hit it
         // cannot resolve on screen ([render] ssgi_probe_gain). 0 turns the contribution off while
         // leaving the cache running, which is the A/B that measures what the grid actually adds.
@@ -633,21 +625,6 @@ namespace vulkan {
         // set_ssgi), because those are the two moments the renderer knows and the pass cannot.
         // The alphaMode MASK bake's push block is NOT here any more: its shape is the JOB's
         // (pass::mask_bake_push_constants in vulkan.pass.mask_bake), because only that job composes it.
-        struct ssgi_temporal_push_constants {
-            float history_valid = 0.0f;
-            float blend_static = 0.9f;
-            float blend_min = 0.6f;
-            float depth_scale = 0.0f;  // proj[2][2]
-            float depth_offset = 0.0f; // proj[3][2]
-            // 1.0 = this dispatch resolves the REFLECTION (a history of its own, reprojected from the point
-            // the reflection found), 0.0 = the diffuse bounce (the surface's motion, as it has always been).
-            // See shaders/ssgi_temporal.comp's `glossy`.
-            float mode = 0.0f;
-            float unused1 = 0.0f;
-            float unused2 = 0.0f;
-            glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent
-        };
-
         // THE SCENE PASS (vulkan.pass.scene): it owns the surface instance, the segment strategy and the draw
         // loop; the renderer hands it the leaves through a typed frame (see make_scene_frame) and keeps the
         // pipeline registry, the secondary buffers and the scheduler.
@@ -1244,7 +1221,7 @@ namespace vulkan {
         // out) is what would remove these two members as well.
         // ... and the two jobs are kept alive by the SAME chain (its keep), for the same reason the passes are:
         // who constructs and destroys a GPU-owning object is the chain's business, and what the renderer holds is a
-        // view it configures. They are not rame_pass, so mplace cannot take them - see pass_chain::keep.
+        // view it configures. They are not `frame_pass`, so `emplace` cannot take them - see pass_chain::keep.
         pass::mask_bake_job& mask_bake = this->passes.keep<pass::mask_bake_job>();
         // Whether that bake runs at all ([render] rt_mask_bake). Off by default: the per-triangle rule
         // measured WORSE than the raster path (see the member comment above and docs/gi_hit_shading.md).
@@ -2521,13 +2498,6 @@ namespace vulkan {
 
         /** @brief whether the tracer runs this frame (see set_ssgi) */
         [[nodiscard]] bool ssgi_active() const noexcept;
-
-        /**
-         * @brief how many channels the G-buffer debug view offers (see set_gbuffer_channel)
-         * @note the count is the PASS's (`vulkan.pass.gbuffer_debug::gbuffer_debug_pass::channel_count`), because it
-         *       is the shader's own switch; this alias keeps the app-facing name while leaving one source of truth
-         */
-        static constexpr int gbuffer_channel_count = pass::gbuffer_debug_pass::channel_count;
 
         /**
          * @ingroup vulkan_runtime
