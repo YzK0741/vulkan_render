@@ -786,6 +786,11 @@ namespace vulkan {
          * normal), so owning it here is what stops "the composite's layout" from being a second copy of that fact.
          */
         VkDescriptorSetLayout post_set_layout_ = VK_NULL_HANDLE;
+        /// @brief the G-BUFFER set's layout, on the same terms as the post one above: the renderer writes every
+        ///        G-buffer set (the stored surface, the GI chain's images, the probe volumes, the lobe's outputs,
+        ///        the reflection's accumulation), so the layout is its own and the passes that bind the set ask for
+        ///        it through `pass_context::shared_set_layout(owner, 1)`
+        VkDescriptorSetLayout gbuffer_set_layout_ = VK_NULL_HANDLE;
         /**
          * @brief fill this frame's shared constants (`pass::resolved_io::constants`) from the camera/light state
          *

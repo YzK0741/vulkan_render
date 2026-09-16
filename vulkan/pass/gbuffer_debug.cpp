@@ -32,10 +32,9 @@ namespace vulkan::pass {
             vkDestroyPipelineLayout(this->device_, this->pipeline_layout_, nullptr);
             this->pipeline_layout_ = VK_NULL_HANDLE;
         }
-        if (this->set_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(this->device_, this->set_layout_, nullptr);
-            this->set_layout_ = VK_NULL_HANDLE;
-        }
+        // THE SET LAYOUT IS NOT DESTROYED HERE: it is the OWNER's (the runtime creates it from the same sixteen
+        // bindings and uses it for the family it writes - see make_gbuffer_set_layout), so this pass holds a view.
+        this->set_layout_ = VK_NULL_HANDLE;
     }
 
     render_resource::pass_io const& gbuffer_debug_pass::io() const noexcept {
@@ -70,9 +69,16 @@ namespace vulkan::pass {
             utility::log("gbuffer debug view disabled: the owner has no {} or {}", vertex_shader_name, fragment_shader_name);
             return;
         }
-        // THE G-BUFFER SET LAYOUT IS BUILT HERE, by the builder that needs it, and the deferred lighting stage binds
-        // it as its set 1 - which is why the host answers `shared_set_layout(1)` with THIS pass's layout.
-        auto built = pipelines::build_gbuffer_debug(context.device, static_cast<uint32_t>(sizeof(push_constants)), vertex_spirv, fragment_spirv);
+        // THE G-BUFFER SET LAYOUT COMES FROM THE CONTEXT, not from this pass: its sixteen bindings describe how the
+        // OWNER writes the sets (the stored surface, the GI chain's images, the probe volumes, the lobe's outputs,
+        // the reflection's accumulation), so the owner creates it and this pass builds a pipeline layout around it
+        // (see make_gbuffer_set_layout and pass_context::shared_set_layout).
+        VkDescriptorSetLayout const gbuffer_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 1) : VK_NULL_HANDLE;
+        if (gbuffer_layout == VK_NULL_HANDLE) {
+            utility::log("gbuffer debug view disabled: the owner has no G-buffer set layout");
+            return;
+        }
+        auto built = pipelines::build_gbuffer_debug(context.device, gbuffer_layout, static_cast<uint32_t>(sizeof(push_constants)), vertex_spirv, fragment_spirv);
         if (!built) {
             utility::log("gbuffer debug view disabled: {}", built.error());
             this->release_owned();
@@ -99,10 +105,6 @@ namespace vulkan::pass {
 
     VkPipelineLayout gbuffer_debug_pass::pipeline_layout() const noexcept {
         return this->pipeline_layout_;
-    }
-
-    VkDescriptorSetLayout gbuffer_debug_pass::set_layout() const noexcept {
-        return this->set_layout_;
     }
 
     void gbuffer_debug_pass::set_channel(int const channel) noexcept {

@@ -2996,6 +2996,26 @@ every one of the twelve scenarios runs the post chain and binds the post set; Re
 sites: 14 -> 12** (the post family's ensure and the context's answer). The G-buffer set's layout is the SAME accident
 one pass over, and it gets its own slice because its A/B needs the knob-on debug view.
 
+**... AND ITS SLICE IS THIS ONE.** The G-buffer set's sixteen bindings have the same story (the stored surface, the
+GI chain's images, the probe cache's coefficient volumes, the lobe's two outputs, the reflection's accumulation - all
+written by the renderer), so `pipelines::make_gbuffer_set_layout(device)` is now the layout on its own,
+`build_gbuffer_debug` takes it as a parameter, the runtime creates it lazily on the first ask, uses the same object for
+the family it writes and destroys it in its destructor, and the debug view holds a view (its `set_layout()` accessor
+and its destroy call are gone; the passes that bind the set ask `shared_set_layout(owner, 1)`).
+
+**THE FIRST RUN OF THIS SLICE WAS RED, and the marker was precise**: `vkDestroyDevice(): VkDevice ... has 1 leaked
+objects` - I had added the G-buffer layout's destroy to the destructor with a here-string `Replace`, which silently did
+nothing because the file's line endings did not match the pattern. The lesson is the one this document keeps
+re-learning in different clothes: **a silent `Replace` is not an edit**; the destroy call is there now (with the
+`edit` tool, which fails loudly), and the leak is gone.
+
+**MEASURED**: **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, validation-clean, references unchanged; the knob-on A/B
+for the path the gate cannot see (the debug view's own pipeline, built from the runtime's layout now) is
+**parent `2e11f8e` = child = `ACDBFC4BDBCE7DE9`** with `gbuffer_debug = true, gbuffer_channel = 6` (worktree build of
+the parent, same hand-written config, 40 frames); Release, Debug and ASan clean with `ctest` 8/8 in all three;
+`doxygen` exits 0 with zero warnings. **Typed pass sites: 12 -> 10** - what is left is the two jobs (7 sites, and they
+are NOT passes: they are the structure phase's own machinery, which the renderer keeps) and the construction.
+
 **A MECHANICAL NOTE worth keeping, because it cost a build**: removing the `set_layout()` declaration from
 `post.cppm` with a "walk back to the nearest `/**`" script swallowed the `named_pipeline` declaration that sat between
 two doc blocks - the compiler said so immediately (`out-of-line definition ... does not match any declaration`), and

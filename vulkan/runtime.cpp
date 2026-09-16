@@ -185,6 +185,12 @@ namespace vulkan {
             vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->post_set_layout_, nullptr);
             this->post_set_layout_ = VK_NULL_HANDLE;
         }
+        // ... and the G-BUFFER set's layout, on the same terms: the renderer creates it (lazily, on the passes'
+        // first ask) and every pass that binds the set holds a view of it.
+        if (this->gbuffer_set_layout_ != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->gbuffer_set_layout_, nullptr);
+            this->gbuffer_set_layout_ = VK_NULL_HANDLE;
+        }
 
         // post-process objects: the FXAA pipeline and the two samplers are RAII members, and the post chain's set
         // layout, pipeline layout and two pipelines are NOT here any more - they belong to the post composite PASS
@@ -2487,7 +2493,7 @@ namespace vulkan {
             }
             vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         };
-        if (!this->gbuffer_family.ensure(vk.device, this->gbuffer_debug_view.set_layout(), static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
+        if (!this->gbuffer_family.ensure(vk.device, this->gbuffer_set_layout_, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
             utility::log("runtime: gbuffer debug descriptor sets unavailable - debug view skipped");
         }
     }
@@ -2759,7 +2765,18 @@ namespace vulkan {
                     return self->vulkan_core.scene_descriptor_set_layout;
                 }
                 if (set == 1u) {
-                    return self->gbuffer_debug_view.set_layout();
+                    // The G-BUFFER set's layout is the renderer's for the same reason the post one is: it writes
+                    // every set (see the member). Everything that binds the set - the debug view, the lighting
+                    // stage, the tracer, the lobe and the spatial filter - gets it from here.
+                    if (self->gbuffer_set_layout_ == VK_NULL_HANDLE) {
+                        auto created = pipelines::make_gbuffer_set_layout(self->vulkan_core.device);
+                        if (!created) {
+                            utility::log("runtime: the G-buffer set layout could not be created - the deferred path is off");
+                            return VkDescriptorSetLayout{VK_NULL_HANDLE};
+                        }
+                        self->gbuffer_set_layout_ = *created;
+                    }
+                    return self->gbuffer_set_layout_;
                 }
                 if (set != 2u) {
                     return VkDescriptorSetLayout{VK_NULL_HANDLE};

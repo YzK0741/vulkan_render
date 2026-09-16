@@ -58,10 +58,20 @@ namespace vulkan::pipelines {
         std::optional<vk_pipeline> hdr;       // the same pass writing an HDR target instead (FXAA on)
     };
 
-    /// what build_gbuffer_debug() creates: the G-buffer set layout (owned here), its pipeline layout
-    /// and the debug view pipeline
+    /**
+     * @brief the G-BUFFER set's layout, on its own
+     *
+     * SEPARATE FROM `build_gbuffer_debug` FOR THE SAME REASON `make_post_set_layout` is separate from `build_post`:
+     * the sixteen bindings describe how the RENDERER writes the G-buffer sets (the stored surface, the GI chain's
+     * images, the probe cache's coefficient volumes, the lobe's two outputs and the reflection's accumulation), and
+     * the runtime owns that family - so the runtime creates the layout, hands it to every pass that binds the set
+     * (`pass_context::shared_set_layout(owner, 1)`) and uses the same object for the family it writes.
+     */
+    export std::expected<VkDescriptorSetLayout, std::string> make_gbuffer_set_layout(VkDevice device);
+
+    /// @brief what build_gbuffer_debug() creates: the pipeline layout and the debug view's pipeline
     export struct gbuffer_owned {
-        VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+        VkDescriptorSetLayout set_layout = VK_NULL_HANDLE; // the one it was handed, not one it made
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> debug;
     };
@@ -84,7 +94,7 @@ namespace vulkan::pipelines {
 
     export std::expected<post_owned, std::string> build_post(VkDevice device, VkDescriptorSetLayout post_set_layout, VkFormat swap_chain_format, uint32_t push_constant_size,
                                                              std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
-    export std::expected<gbuffer_owned, std::string> build_gbuffer_debug(VkDevice device, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export std::expected<gbuffer_owned, std::string> build_gbuffer_debug(VkDevice device, VkDescriptorSetLayout gbuffer_set_layout, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     export std::expected<taa_owned, std::string> build_taa(VkDevice device, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code,
                                                            std::span<unsigned char const> fragment_shader_code);
     export std::expected<ssgi_owned, std::string> build_ssgi(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size,
@@ -258,13 +268,10 @@ namespace vulkan::pipelines {
         out.hdr = std::move(hdr_pipeline).value();
         return out;
     }
-    // gbuffer debug: the owner of the G-buffer set layout. deferred reuses that layout, which is why
-    // the runtime creates this pipeline first and says so in deferred's error message. The nearest
-    // sampler the debug view needs stays with the runtime, next to the descriptor sets that use it.
-    std::expected<gbuffer_owned, std::string> build_gbuffer_debug(VkDevice device, uint32_t const push_constant_size, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
-        using fail = std::unexpected<std::string>;
-        gbuffer_owned out;
-
+    // gbuffer debug: a pass that binds the G-buffer set, whose LAYOUT the runtime owns (see
+    // make_gbuffer_set_layout) because the runtime writes every one of its sets. The nearest sampler the debug view
+    // needs stays with the runtime, next to the descriptor sets that use it.
+    std::expected<VkDescriptorSetLayout, std::string> make_gbuffer_set_layout(VkDevice const device) {
         // albedo, normal, material, depth, velocity: the four the debug view displays plus the
         // motion-vector target. The deferred lighting stage binds this SAME layout as its set 1
         // and its shader declares only the first four, which is legal - a binding a shader does
@@ -306,14 +313,29 @@ namespace vulkan::pipelines {
             bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
             bindings[b].pImmutableSamplers = nullptr;
         }
-
         VkDescriptorSetLayoutCreateInfo layout_info = {};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
         layout_info.pBindings = bindings.data();
-        if (vkCreateDescriptorSetLayout(device, &layout_info, nullptr, &out.set_layout) != VK_SUCCESS) {
-            return fail("gbuffer debug: descriptor set layout creation failed");
+        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+        if (vkCreateDescriptorSetLayout(device, &layout_info, nullptr, &layout) != VK_SUCCESS) {
+            return std::unexpected("gbuffer debug: descriptor set layout creation failed");
         }
+        return layout;
+    }
+
+    std::expected<gbuffer_owned, std::string> build_gbuffer_debug(VkDevice const device, VkDescriptorSetLayout const gbuffer_set_layout, uint32_t const push_constant_size,
+                                                                  std::span<unsigned char const> const vertex_shader_code,
+                                                                  std::span<unsigned char const> const fragment_shader_code) {
+        using fail = std::unexpected<std::string>;
+        gbuffer_owned out;
+
+        // THE LAYOUT IS HANDED IN (see make_gbuffer_set_layout): its sixteen bindings are how the OWNER fills the
+        // sets this pass and the four GI passes bind.
+        if (gbuffer_set_layout == VK_NULL_HANDLE) {
+            return fail("gbuffer debug: the G-buffer set layout was not provided");
+        }
+        out.set_layout = gbuffer_set_layout;
 
         VkPushConstantRange push_range = {};
         push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;

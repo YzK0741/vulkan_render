@@ -10,7 +10,8 @@
  * layout, its pipeline and its recording - the four images it moves to a sampled layout, the CLEAR instance, the
  * one-set bind, the 16-byte push and the draw. IT IS ALSO THE PASS THAT OWNS THE G-BUFFER SET LAYOUT, which the
  * deferred lighting stage asks for by index: one layout, built here because `build_gbuffer_debug` is what creates
- * it, and reached by the other pass through `pass_context::shared_set_layout(1)`.
+ * it, and reached by the other passes through `pass_context::shared_set_layout(1)` - the LAYOUT is the owner's,
+ * because the owner is what writes every one of its sets.
  *
  * WHAT IT DOES NOT OWN, and each is a shared thing rather than an omission: the per-image SETS
  * (`bindings::image_set_family`), which SIX consumers bind and the renderer therefore writes
@@ -99,9 +100,6 @@ export namespace vulkan::pass {
         [[nodiscard]] VkPipeline pipeline() const noexcept override;
         /// @brief the layout that pipeline binds its set and takes its push block through
         [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
-        /// @brief the G-BUFFER SET LAYOUT, which the deferred lighting stage also binds (it asks the context for
-        ///        index 1): one layout, built here, because this is the pass whose builder creates it
-        [[nodiscard]] VkDescriptorSetLayout set_layout() const noexcept;
 
         /**
          * @brief which stored channel the view shows, which is THIS pass's parameter
