@@ -39,6 +39,7 @@ import vulkan.pass.cluster;
 import vulkan.pass.deferred;
 import vulkan.pass.fxaa;
 import vulkan.pass.gbuffer_debug;
+import vulkan.pass.gi_probe;
 import vulkan.pass.post;
 import vulkan.pass.rt_shadow;
 import vulkan.pass.scene;
@@ -72,6 +73,38 @@ export namespace vulkan {
             return runtime::chain_wiring{.owner = this, .prepare = &render_start_demo::prepare, .collect = &render_start_demo::collect};
         }
 
+        // =============================================================================================
+        // THE APP'S KNOBS for the passes this demo owns.
+        //
+        // EACH OF THESE IS THE SPLIT THE HANDOVER FORCES, and it is a real one: the renderer needs some flags for its
+        // OWN policy (it jitters the projection for TAA, builds the structures for GI, picks the scene target), while
+        // the VALUES are read by one pass each. So the demo forwards the flag half to the runtime and keeps the value
+        // half on the pass - one owner per value, and the app calls one setter rather than two.
+        // =============================================================================================
+        /// @brief TAA on/off (`runtime::set_taa_enabled`) + the resolve's two blend weights (the pass's)
+        void set_taa(bool enabled, float blend_static, float blend_min) noexcept;
+        /// @brief GI on/off + the tracer's ray budget (intensity, reach as a fraction of the scene radius, rays, steps)
+        void set_ssgi(bool enabled, float intensity, float radius, uint32_t rays, uint32_t steps) noexcept;
+        /// @brief the spatial filter's width in GI texels (0 = a pass-through); the pass clamps it
+        void set_ssgi_spatial(float sigma) noexcept;
+        /// @brief the composite's joint-bilateral GI upsample switch
+        void set_ssgi_upsample(bool enabled) noexcept;
+        /// @brief the multi-bounce gain the tracer re-emits at a hit (the pass clamps it to [0, 1])
+        void set_ssgi_bounce(float gain) noexcept;
+        /// @brief the world-space cache: its flag (the runtime's), its rate and round count (the pass's) and the
+        ///        tracer's gain over it
+        void set_ssgi_probes(bool enabled, float rate, uint32_t rounds, float gain) noexcept;
+        /// @brief the glossy lobe: its flag (the runtime's) and its own reach and ray count (the pass's)
+        void set_ssgi_specular(bool enabled, uint32_t rays, float radius) noexcept;
+        /// @brief which G-buffer channel the debug view shows (the pass's own parameter)
+        void set_gbuffer_channel(int channel) noexcept;
+        /// @brief the flat render mode, which the lighting stage's own parameter decides
+        ///
+        /// NOTE the whole setter moved here rather than its value half, and that is the honest shape: the render mode
+        /// is a property of the LIGHTING STAGE (the shader returns the stored albedo), and the renderer's other
+        /// features ask that pass for it - so there was never a second copy in the runtime to keep.
+        void set_unlit(bool unlit) noexcept;
+
     private:
         /// give every pass of the named stage its frame, and run the frame's ordering rules for that stage
         static void prepare(void* owner, runtime::frame_services const& services, std::string_view stage);
@@ -85,6 +118,7 @@ export namespace vulkan {
         }
 
         pass::pass_chain* passes_ = nullptr;
+        runtime* runtime_ = nullptr; // the flag halves of the knobs above are the runtime's policy
         pass::cluster_pass* cluster_ = nullptr;
         pass::shadow_pass* shadow_ = nullptr;
         pass::scene_pass* scene_ = nullptr;
@@ -97,6 +131,7 @@ export namespace vulkan {
         pass::ssgi_spec_pass* ssgi_spec_ = nullptr;
         pass::ssgi_temporal_pass* ssgi_temporal_ = nullptr;
         pass::ssgi_spatial_pass* ssgi_spatial_ = nullptr;
+        pass::gi_probe_pass* gi_probe_ = nullptr;
         pass::post_composite_pass* composite_ = nullptr;
         pass::fxaa_pass* fxaa_ = nullptr;
     };

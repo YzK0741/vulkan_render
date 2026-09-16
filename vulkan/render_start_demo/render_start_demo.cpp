@@ -9,6 +9,7 @@
 
 module;
 
+#include <algorithm>
 #include <cstddef>
 #include <string_view>
 
@@ -20,6 +21,7 @@ namespace vulkan {
 
     std::size_t render_start_demo::attach(runtime& self) noexcept {
         this->passes_ = &self.frame_passes();
+        this->runtime_ = &self;
         // LOOKED UP BY THE NAME THE DECLARATION CARRIES, which is the only key a chain gives: the runtime holds no
         // reference to hand over, and a cast is what turns the declaration's owner into the type whose frame it
         // wants. A pass this build does not have (its declaration missing, or a variant of this app) stays null and
@@ -36,6 +38,7 @@ namespace vulkan {
         this->ssgi_spec_ = this->find<pass::ssgi_spec_pass>("ssgi_spec");
         this->ssgi_temporal_ = this->find<pass::ssgi_temporal_pass>("ssgi_temporal");
         this->ssgi_spatial_ = this->find<pass::ssgi_spatial_pass>("ssgi_spatial");
+        this->gi_probe_ = this->find<pass::gi_probe_pass>("gi_probe");
         this->composite_ = this->find<pass::post_composite_pass>("post_composite");
         this->fxaa_ = this->find<pass::fxaa_pass>("fxaa");
 
@@ -52,9 +55,10 @@ namespace vulkan {
         found += this->ssgi_spec_ != nullptr ? 1u : 0u;
         found += this->ssgi_temporal_ != nullptr ? 1u : 0u;
         found += this->ssgi_spatial_ != nullptr ? 1u : 0u;
+        found += this->gi_probe_ != nullptr ? 1u : 0u;
         found += this->composite_ != nullptr ? 1u : 0u;
         found += this->fxaa_ != nullptr ? 1u : 0u;
-        if (found != 14) {
+        if (found != 15) {
             // NOT a fatal error: this demo is one application's chain, and a build of it that lacks a pass (a
             // shader that did not compile is the usual reason - that pass's own create step says why) renders
             // without it. Saying so once at startup is what keeps "the pass did not run" from looking like a
@@ -159,6 +163,95 @@ namespace vulkan {
             // denoiser produced an accumulation this frame (the next frame's history flag is set from it).
             out.gi_resolved = self.ssgi_spatial_ != nullptr && self.ssgi_spatial_->resolved();
             out.gi_temporal_resolved = self.ssgi_temporal_ != nullptr && self.ssgi_temporal_->resolved();
+        }
+    }
+
+    // =================================================================================================
+    // THE APP'S KNOBS: the flag half goes to the runtime (its policy), the value half to the pass
+    // =================================================================================================
+    // The CLAMPS travel with the values (they are the same fact), which is why the argument for each of them now
+    // lives in the pass that owns it rather than in the setter below.
+
+    void render_start_demo::set_taa(bool const enabled, float const blend_static, float const blend_min) noexcept {
+        bool const turned_on = this->runtime_ != nullptr && this->runtime_->set_taa_enabled(enabled);
+        if (this->taa_ == nullptr) {
+            return;
+        }
+        this->taa_->set_blend(blend_static, blend_min);
+        if (turned_on) {
+            // THE PASS's HALF OF THE OFF -> ON EDGE: whether each image's history holds anything is the pass's own
+            // state, and the renderer's half (the matrix history and the jitter index) is what its setter just reset.
+            this->taa_->reset_history();
+        }
+    }
+
+    void render_start_demo::set_ssgi(bool const enabled, float const intensity, float const radius, uint32_t const rays, uint32_t const steps) noexcept {
+        bool const turned_on = this->runtime_ != nullptr && this->runtime_->set_ssgi_enabled(enabled);
+        if (this->ssgi_trace_ != nullptr) {
+            this->ssgi_trace_->set_reach(intensity, radius, rays, steps);
+        }
+        if (turned_on && this->ssgi_spec_ != nullptr) {
+            // ... and the same edge on the lobe's side: its two outputs are re-transitioned from UNDEFINED, which is
+            // what "switched on" means for a pass that has not run yet in this generation.
+            this->ssgi_spec_->reset_first_use();
+        }
+    }
+
+    void render_start_demo::set_ssgi_spatial(float const sigma) noexcept {
+        if (this->ssgi_spatial_ != nullptr) {
+            this->ssgi_spatial_->set_sigma(sigma);
+        }
+    }
+
+    void render_start_demo::set_ssgi_upsample(bool const enabled) noexcept {
+        if (this->composite_ != nullptr) {
+            this->composite_->set_gi_upsample(enabled);
+        }
+    }
+
+    void render_start_demo::set_ssgi_bounce(float const gain) noexcept {
+        if (this->ssgi_trace_ != nullptr) {
+            this->ssgi_trace_->set_bounce(gain);
+        }
+    }
+
+    void render_start_demo::set_ssgi_probes(bool const enabled, float const rate, uint32_t const rounds, float const gain) noexcept {
+        if (this->runtime_ != nullptr) {
+            this->runtime_->set_ssgi_probes_enabled(enabled);
+        }
+        if (this->gi_probe_ != nullptr) {
+            this->gi_probe_->set_rate(rate);
+            // The dispatch count is the pass's own update sequence, and the renderer's clamp (0..4 propagation
+            // rounds) travels with it: each round is two ping-pong dispatches, and beyond four the trust has already
+            // halved away.
+            this->gi_probe_->set_rounds(std::clamp(rounds, 0u, 4u));
+        }
+        if (this->ssgi_trace_ != nullptr) {
+            // The SIGN is the cache's direction A/B rather than a mistake: |gain| is the gain, and a negative value
+            // looks the cache up along the opposite direction of the ray - the same cell, the other side. The
+            // tracer's clamp keeps it in [-4, 4].
+            this->ssgi_trace_->set_probe_gain(gain);
+        }
+    }
+
+    void render_start_demo::set_ssgi_specular(bool const enabled, uint32_t const rays, float const radius) noexcept {
+        if (this->runtime_ != nullptr) {
+            this->runtime_->set_ssgi_specular_enabled(enabled);
+        }
+        if (this->ssgi_spec_ != nullptr) {
+            this->ssgi_spec_->set_reach(radius, rays);
+        }
+    }
+
+    void render_start_demo::set_gbuffer_channel(int const channel) noexcept {
+        if (this->gbuffer_debug_ != nullptr) {
+            this->gbuffer_debug_->set_channel(channel);
+        }
+    }
+
+    void render_start_demo::set_unlit(bool const unlit) noexcept {
+        if (this->deferred_ != nullptr) {
+            this->deferred_->set_unlit(unlit);
         }
     }
 

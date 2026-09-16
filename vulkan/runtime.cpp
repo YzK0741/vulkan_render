@@ -2282,7 +2282,10 @@ namespace vulkan {
         return this->taa_active() ? vk.scene_color_image_views[image_index] : vk.hdr_image_views[image_index];
     }
 
-    void runtime::set_taa(bool const enabled, float const blend_static, float const blend_min) noexcept {
+    bool runtime::set_taa_enabled(bool const enabled) noexcept {
+        // THE FLAG IS THE RENDERER'S and the two WEIGHTS are the pass's (the demo sets them): TAA is not only a
+        // pass here - the projection is jittered from `taa_active()` and the scene target is chosen with it - so the
+        // renderer has to know whether it is on, while the values only the pass reads.
         bool const was_on = this->taa_on;
         this->taa_on = enabled;
         if (enabled) {
@@ -2292,20 +2295,19 @@ namespace vulkan {
                 this->warn_missing_feature("taa", "TAA has no effect: the G-buffer pass or its lighting stage was not created (see the startup log)");
             }
         }
-        // THE TWO BLEND WEIGHTS ARE THE PASS'S PARAMETERS (S3), including their clamps: this setter forwards
-        // them and the pass owns what it does with them, the same way the push block it composes is the pass's.
-        // Nothing else in the renderer reads them, so there is no second copy to keep in step.
-        this->taa_resolve.set_blend(blend_static, blend_min);
-        if (enabled && !was_on) {
+        bool const turned_on = enabled && !was_on;
+        if (turned_on) {
             // A fresh history - but only on the off -> on EDGE. The caller mirrors the GUI/config state
             // into the runtime every frame (see main.cpp), so resetting unconditionally here would
             // invalidate the history on every frame: the resolve would fall back to the current
             // (jittered, aliased) frame forever, which looks like TAA running while doing nothing.
             std::size_t const image_count = this->vulkan_core.taa_history_images.size();
-            this->taa_resolve.reset_history(); // the pass owns whether each image's history holds anything
             this->image_view_proj.assign(image_count, this->current_ubo.view_proj_unjittered);
             this->taa_jitter_index = 0;
         }
+        // ... and the PASS's half of that edge (whether each image's history holds anything) is the caller's to
+        // apply, which is what the return value says: it is the one thing the flag's owner cannot do for the pass.
+        return turned_on;
     }
 
     // The TAA resolve's factory is gone: `vulkan.pass.taa` builds its own set layout, pipeline layout and
@@ -2377,11 +2379,9 @@ namespace vulkan {
         return this->gbuffer_pass_active() && !this->gbuffer_debug;
     }
 
-    void runtime::set_gbuffer_channel(int const channel) noexcept {
-        // The knob is the PASS's parameter now (with its clamp, which is the same fact as the value): the renderer
-        // forwards, the same rule set_taa's blend weights and the composite's GI upsample follow.
-        this->gbuffer_debug_view.set_channel(channel);
-    }
+    // `set_gbuffer_channel` IS GONE (the demo's now): it was a pure forwarder to the debug view's own parameter
+    // (which pass owns the channel and its clamp), and nothing in this file read it - the demo sets it on the pass
+    // it found by declaration name.
 
     void runtime::ensure_gbuffer_descriptors() {
         core& vk = this->vulkan_core;
@@ -2499,13 +2499,11 @@ namespace vulkan {
                this->pass_ready("ssgi_spatial") && this->deferred_lit_active() && !this->deferred.unlit();
     }
 
-    void runtime::set_ssgi(bool const enabled, float const intensity, float const radius, uint32_t const rays, uint32_t const steps) noexcept {
+    bool runtime::set_ssgi_enabled(bool const enabled) noexcept {
+        // Same split as TAA's: the FLAG is the renderer's (`ssgi_active` gates the chain, `rt_structures_wanted`
+        // asks it, and the frame's GI facts are built from it), the ray BUDGET is the tracer's and the demo sets it.
         bool const was_on = this->ssgi_on;
         this->ssgi_on = enabled;
-        // The ray budget is the PASS's from here on: it owns the values and their clamps (the intensity, the reach
-        // as a fraction of the scene radius, the rays and the steps), because it is the only reader - the same rule
-        // the TAA resolve's blend weights and the spatial filter's width follow.
-        this->ssgi_trace.set_reach(intensity, radius, rays, steps);
         if (enabled && !this->pass_ready("ssgi_trace")) {
             this->warn_missing_feature("ssgi", "screen-space GI has no effect: its compute pipeline was not created (see the startup log)");
         } else if (enabled && !this->pass_ready("ssgi_temporal")) {
@@ -2513,17 +2511,17 @@ namespace vulkan {
         } else if (enabled && !this->pass_ready("ssgi_spatial")) {
             this->warn_missing_feature("ssgi", "screen-space GI has no effect: its spatial filter was not created (see the startup log)");
         }
-        if (enabled && !was_on) {
+        bool const turned_on = enabled && !was_on;
+        if (turned_on) {
             // A fresh accumulation, on the off -> on EDGE only. Today the one caller is startup
             // (main.cpp applies the config once), so this is mostly a guard for the shape of the
             // setter: it mirrors set_taa, and a future overlay control that calls it every frame must
             // not have the history thrown away on each of those calls - the resolve would show the raw
             // trace forever, which looks like a denoiser running while doing nothing.
             this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
-            // ... and the lobe's outputs are re-transitioned from UNDEFINED, which is what "switched on" means
-            // for a pass that has not run yet this generation: the pass owns the flags, so the host asks it.
-            this->ssgi_spec.reset_first_use();
         }
+        // ... and the lobe's first-use flags are the PASS's half of that edge, which the caller applies.
+        return turned_on;
     }
 
     pass::ssgi_trace_frame runtime::make_ssgi_trace_frame() const noexcept {
@@ -2783,21 +2781,11 @@ namespace vulkan {
         return this->ssgi_specular && this->ssgi_hit_shading && this->ssgi_traced_active() && this->pass_ready("ssgi_spec");
     }
 
-    void runtime::set_ssgi_specular(bool const enabled, uint32_t const rays, float const radius) noexcept {
+    void runtime::set_ssgi_specular_enabled(bool const enabled) noexcept {
+        // The FLAG is the renderer's (`ssgi_specular_active` is read by the tracer's frame and by the features);
+        // the lobe's own reach and ray count are the PASS's and the demo sets them. The argument for those two
+        // values' clamps lives with the pass now, where the measurements that chose them are recorded.
         this->ssgi_specular = enabled;
-        // The two values are the PASS's (one reader each), so they are forwarded with their clamps - and the
-        // argument for those clamps stays here, where the measurements that chose them are recorded:
-        // One is the feature's definition and the low end of the noise/cost trade; the upper bound is a
-        // cost guard, not a quality claim - the pass shades every hit it finds, which is the expensive
-        // part of this chain.
-        // A reach, not a quality knob: below it the reflection falls back to the sky, and past the knee the
-        // curve is flat in BOTH effect and cost (measured: -0.907 / -2.126 / -2.350 at 0.12 / 0.5 / 2.0, and
-        // the `gi` interval 1.28 / 2.22 / 2.21 ms). The FLOOR is deliberately low enough to be useless: a
-        // reach whose ray length lands at or below the ray query's own tmin (a fixed 0.01 world units) makes
-        // every sample answer with the environment - the identity configuration the L2.3 acceptance is read
-        // in - and a floor above that would not be expressible on a small scene (0.01 scene radii of the
-        // helmet's 1.64 is 0.0164 units, i.e. just past tmin, which is why the floor is 0.001 and not 0.01).
-        this->ssgi_spec.set_reach(radius, rays);
         if (enabled && !this->ssgi_hit_shading) {
             this->warn_missing_feature("ssgi", "glossy reflections have no effect: without hit shading a reflection ray cannot be shaded where it lands");
         } else if (enabled && !this->ssgi_ray_tracing) {
@@ -2814,14 +2802,6 @@ namespace vulkan {
         }
     }
 
-    void runtime::set_ssgi_bounce(float const gain) noexcept {
-        // The knob stops at one: above it the geometric series a diffuse loop forms is not guaranteed to
-        // converge (the surfaces' albedos approach one), and the failure mode is a frame that gets
-        // brighter every frame rather than a visibly wrong one. The clamp lives with the value now (the
-        // TRACER's, which is the pass that pushes the gain).
-        this->ssgi_trace.set_bounce(gain);
-    }
-
     void runtime::set_furnace(bool const enabled) noexcept {
         this->furnace = enabled;
     }
@@ -2835,34 +2815,11 @@ namespace vulkan {
         }
     }
 
-    void runtime::set_ssgi_spatial(float const sigma) noexcept {
-        // The filter's width is the PASS's parameter and the clamp lives with it (the rule the TAA resolve's blend
-        // weights settled), so this setter forwards rather than keeping a second copy of the value.
-        this->ssgi_spatial.set_sigma(sigma);
-    }
-
-    void runtime::set_ssgi_upsample(bool const enabled) noexcept {
-        // A consequence of the composite's push block, which is the only place it is read - so the pass owns it and
-        // this setter forwards (the same rule as set_taa's two blend weights).
-        this->post_composite.set_gi_upsample(enabled);
-    }
-
     // ---- the world-space probe cache (see shaders/gi_probe.comp) ----
-    void runtime::set_ssgi_probes(bool const enabled, float const rate, uint32_t const rounds, float const gain) noexcept {
+    void runtime::set_ssgi_probes_enabled(bool const enabled) noexcept {
+        // The FLAG is the renderer's (`gi_probe_active` gates the pass and the tracer's frame asks it); its rate,
+        // its dispatch count and its gain are the PASSES' (the probe's and the tracer's) and the demo sets them.
         this->gi_probe_enabled = enabled;
-        // The rate is the loop gain of the grid's own cycle (tracer -> resolve -> grid -> tracer): a rate
-        // of 1 would make the grid an immediate echo of the frame that read it, so it stops below that. It is
-        // the PASS's value and the pass clamps it (see gi_probe_pass::set_rate).
-        this->gi_probe.set_rate(rate);
-        this->gi_probe_rounds = std::clamp(rounds, 0u, 4u);
-        // The dispatch count is the pass's: it owns the update sequence, so the renderer hands it the one
-        // number of that sequence that is configuration rather than structure.
-        this->gi_probe.set_rounds(this->gi_probe_rounds);
-        // The sign is the cache's DIRECTION A/B rather than a mistake: |gain| is the gain, and a negative
-        // value looks the cache up along the opposite direction of the ray - the same cell, the other side.
-        // It is clamped rather than rejected because it is a documented measurement setting. The value is the
-        // TRACER's (it is the lane that weighs the cache against the environment fallback), so it is forwarded.
-        this->ssgi_trace.set_probe_gain(gain);
         if (enabled && !this->ssgi_on) {
             this->warn_missing_feature("ssgi", "the probe cache has no effect: it is injected from the screen-space GI chain, which is off");
         } else if (enabled && !this->pass_ready("gi_probe")) {
@@ -4600,13 +4557,9 @@ namespace vulkan {
         return this->cpu_timings.summary();
     }
 
-    void runtime::set_unlit(bool const unlit) noexcept {
-        // CPU-side only, like the other render-mode flags: the value is pushed with the deferred lighting stage
-        // each frame (and the forward path does not need it at all - there the render mode IS the default
-        // pipeline). THE FLAG IS THE PASS'S now; the renderer's other features (shadow, clustered, bloom) ask the
-        // pass for it through `active_features`, so there is one copy.
-        this->deferred.set_unlit(unlit);
-    }
+    // `set_unlit` IS GONE (the demo's now): it was a pure forwarder to the lighting pass's own flag, and the
+    // renderer's features ask the PASS for it through `active_features` - so there was never a second copy here
+    // to keep, and nothing in this file read it.
 
     void runtime::set_clustered_lights(bool const enabled) noexcept {
         // CPU-side only, like set_brdf_model: the flag rides light_state's cluster_grid.w lane and

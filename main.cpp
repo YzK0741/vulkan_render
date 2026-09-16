@@ -209,20 +209,20 @@ int main(int argc, char** argv) {
     // is missing.
     // Startup-only knobs - the intensity and the ray budget are read here rather than per frame, so
     // changing the config value needs a restart (there is no overlay control for them).
-    runtime.set_ssgi(settings.render.ssgi,
-                     settings.render.ssgi_intensity,
-                     settings.render.ssgi_radius,
-                     static_cast<uint32_t>(settings.render.ssgi_rays),
-                     static_cast<uint32_t>(settings.render.ssgi_steps));
-    runtime.set_ssgi_spatial(settings.render.ssgi_spatial_sigma);
-    runtime.set_ssgi_upsample(settings.render.ssgi_upsample);
+    start_demo.set_ssgi(settings.render.ssgi,
+                        settings.render.ssgi_intensity,
+                        settings.render.ssgi_radius,
+                        static_cast<uint32_t>(settings.render.ssgi_rays),
+                        static_cast<uint32_t>(settings.render.ssgi_steps));
+    start_demo.set_ssgi_spatial(settings.render.ssgi_spatial_sigma);
+    start_demo.set_ssgi_upsample(settings.render.ssgi_upsample);
     // Same bargain as the ray-traced shadows: a request the runtime grants only on a device with ray
     // queries and a built top level structure - otherwise the GI rays keep marching the depth buffer.
     runtime.set_ssgi_ray_tracing(settings.render.ssgi_ray_tracing);
     // The multi-bounce gain: how much of the previous frame's accumulated indirect a GI hit re-emits.
     // 0 (the default) keeps the estimator single-bounce, and the runtime clamps the knob to [0, 1]
     // because above one the diffuse loop it closes is not guaranteed to converge.
-    runtime.set_ssgi_bounce(settings.render.ssgi_bounce);
+    start_demo.set_ssgi_bounce(settings.render.ssgi_bounce);
     // Shade the surface a GI ray hits from the geometry it landed on. A request: the runtime publishes the
     // acceleration structures' instance table to the tracer only when they exist, and a frame without it
     // samples the screen exactly as before.
@@ -233,14 +233,14 @@ int main(int argc, char** argv) {
     // frame or hits something hidden - the tracer reads a grid anchored to the scene instead of the
     // far-field environment probe. Optional at every level (no pipeline, no chain, or off: the tracer
     // keeps its fallback), and its gain is what makes the difference measurable.
-    runtime.set_ssgi_probes(settings.render.ssgi_probes,
-                            settings.render.ssgi_probe_rate,
-                            static_cast<uint32_t>(settings.render.ssgi_probe_rounds),
-                            settings.render.ssgi_probe_gain);
+    start_demo.set_ssgi_probes(settings.render.ssgi_probes,
+                               settings.render.ssgi_probe_rate,
+                               static_cast<uint32_t>(settings.render.ssgi_probe_rounds),
+                               settings.render.ssgi_probe_gain);
     // The glossy lobe: a traced reflection REPLACING the lighting stage's split-sum specular ambient, so a
     // metal panel inside a room stops reflecting the sky. It needs the traced GI path and hit shading, and
     // it does nothing where either is missing (the runtime says so in the log).
-    runtime.set_ssgi_specular(settings.render.ssgi_specular, static_cast<uint32_t>(settings.render.ssgi_specular_rays), settings.render.ssgi_specular_radius);
+    start_demo.set_ssgi_specular(settings.render.ssgi_specular, static_cast<uint32_t>(settings.render.ssgi_specular_rays), settings.render.ssgi_specular_radius);
     // Ray-traced sun shadows: a request, not a guarantee - the runtime grants it only on a device with
     // ray queries, and the acceleration structures are built by the first frame that records with it on
     // (the caster set they are built from is only complete once the scene is loaded and culled).
@@ -735,7 +735,7 @@ int main(int argc, char** argv) {
             // the lighting stage cannot switch pipelines per fragment, so tell it that the default
             // pipeline is the flat one - it then writes the stored albedo instead of shading, so
             // "unlit" means the same thing for the opaque scene and for the transparent pass
-            runtime.set_unlit(gui.render_mode == 1);
+            start_demo.set_unlit(gui.render_mode == 1);
             utility::log("render mode: {} ({})", mode_name, gui.render_mode == 0 ? "lit" : "unlit / flat");
         }
 
@@ -754,10 +754,10 @@ int main(int argc, char** argv) {
         // G-buffer debug view (the G-buffer's stored data): mirrored every frame like the FXAA state,
         // so the config, the overlay checkbox and the channel combo all take effect immediately
         runtime.set_gbuffer_debug(gui.gbuffer_debug);
-        runtime.set_gbuffer_channel(gui.gbuffer_channel);
+        start_demo.set_gbuffer_channel(gui.gbuffer_channel);
         // TAA (the engine's anti-aliasing): mirrored like the other render toggles. The jitter
         // follows automatically - it is applied to the projection when TAA is active.
-        runtime.set_taa(gui.taa_enabled, gui.taa_blend_static, gui.taa_blend_min);
+        start_demo.set_taa(gui.taa_enabled, gui.taa_blend_static, gui.taa_blend_min);
 
         // Order matters for the M5/M6 mirrors: their availability checks read the state the lines
         // above just set (the debug view replaces the lighting stage, clustered lighting only exists

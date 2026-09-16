@@ -2842,6 +2842,40 @@ that shares the temporal pass's pipeline; (5) the construction, the two chains a
 `set_pass_chain` replaces the transitional `runtime::frame_passes()` accessor.
 
 
+## THE HANDOVER, SLICE 3: THE KNOBS GO HOME - AND THE SPLIT THEY FORCE IS A REAL ONE
+
+**EACH KNOB HAD TWO OWNERS, AND THIS SLICE SAYS SO OUT LOUD.** The fifteen setter sites named a pass, but they were
+not all the same kind of thing: TAA's flag is read by the RENDERER (it jitters the projection and picks the scene
+target), GI's flag is read by the renderer too (it builds the acceleration structures from it and fills the frame's GI
+facts), the probe cache's flag gates a pass - while the VALUES behind them (the resolve's two blend weights, the ray
+budget, the lobe's reach, the probe's rate and round count, the filter's width, the composite's upsample switch, the
+tracer's bounce and probe gain, the debug view's channel) are read by exactly ONE pass each. So the setters became
+two things:
+
+* `runtime::set_taa_enabled`, `set_ssgi_enabled`, `set_ssgi_specular_enabled`, `set_ssgi_probes_enabled`: the FLAG,
+  its warnings, and - for the two that have one - the off -> on EDGE's renderer half (a fresh accumulation, the matrix
+  history, the jitter index). They return whether the edge happened, because the other half of that edge is the
+  PASS's own state and only the pass's owner may apply it;
+* `render_start_demo::set_taa / set_ssgi / set_ssgi_spatial / set_ssgi_upsample / set_ssgi_bounce / set_ssgi_probes /
+  set_ssgi_specular / set_gbuffer_channel / set_unlit`: the app's API, which forwards the flag half to the runtime and
+  sets the value half on the pass it found by declaration name - **the same signature the app already called**, so
+  main.cpp's thirty-two setter calls only changed TARGET (nine of them moved to the demo), and the values' clamps stay
+  where the values are. Three setters moved WHOLE because they were pure forwarders
+  (`set_ssgi_spatial`, `set_ssgi_upsample`, `set_ssgi_bounce`, `set_gbuffer_channel`, `set_unlit`), and `runtime.cpp`
+  no longer mentions those parameters at all.
+
+**MEASURED**: **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, validation-clean, every reference unchanged
+(`default_gi` `BF180E98ADB29E7E`, `sponza_gi` `58EC848DFABE654A`, `sponza_march` `EEFBBA2515803F46`,
+`metal_rough_glossy` `46F9851B7BC89872`, `glossy_motion` `98B06F2190B49519`); Release, Debug and ASan clean with
+`ctest` 8/8 in all three; `doxygen` exits 0. **Typed pass sites: 37 -> 24.**
+
+**WHAT IS LEFT, and it is now a short list**: the feature registry itself (its answers are composed from the
+renderer's flags plus the passes' own state, so it moves when the flags' owner does - or it moves with a small
+`feature_facts` the runtime fills); the three descriptor families the runtime still builds from a pass's set layout
+(`post_composite`, `gbuffer_debug_view`, `ssgi_temporal`) and the reflection's mode-1 recording that shares the
+temporal pass's pipeline; the two jobs; and the construction, the two chains and `set_pass_chain` itself.
+
+
 
 
 

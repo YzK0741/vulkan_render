@@ -2074,19 +2074,6 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief tell the runtime that its default pipeline is a flat/unlit one
-         * @param unlit true = the deferred lighting stage writes the stored albedo, unshaded
-         *
-         * The forward path switches pipelines, which the runtime default already covers; the deferred
-         * path cannot (its G-buffer and lighting stages bind their own pipelines), so its lighting
-         * stage needs to be told. Set it together with set_default_pipeline() when the render mode
-         * changes, and both paths then agree about what "unlit" means - a shading-free view of the
-         * geometry, with the sky still drawn behind it.
-         */
-        void set_unlit(bool unlit) noexcept;
-
-        /**
-         * @ingroup vulkan_runtime
          * @brief enable directional shadow mapping: fills the light UBO with an orthographic
          *        view-proj framing the given scene bounds (plus the light direction, matching
          *        the sky sun). Must be called after the models exist (the shadow pass draws them).
@@ -2302,18 +2289,19 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief enable screen-space GI and set its cost/quality knobs
+         * @brief turn screen-space GI on or off - the FLAG only
+         *
+         * THE SPLIT the handover forces, and it is a real one rather than a convenience: the renderer needs this
+         * flag for its OWN policy (`ssgi_active` gates the chain, `rt_structures_wanted` builds the acceleration
+         * structures from it, and the frame's GI facts are filled from it), while the ray BUDGET - intensity, reach,
+         * rays, steps - is read by the tracer alone and is set by whoever owns that pass
+         * (`vulkan.render_start_demo`). The same split is repeated for TAA's flag and weights, the lobe's flag and
+         * reach, and the probe cache's flag and rate, so each value has exactly one owner.
          * @param enabled trace one bounce of diffuse indirect from the G-buffer and add it
-         * @param intensity weight on the traced indirect. It exists because the IBL probe already
-         *        supplies some of this light and a screen-space trace only sees what is on screen:
-         *        the two overlap, and this is the reconciliation - not a taste knob
-         * @param radius ray length as a FRACTION of the scene radius, so one value means the same
-         *        thing on a 1.6-unit model and on Sponza's 18.5
-         * @param rays rays per pixel per frame (0..16); @param steps depth samples per ray (0..64)
-         * @note cost is the product of the two, at half resolution; GI is added by the post
-         *       composite, so it does not feed the bloom chain yet
+         * @return whether this call turned the feature ON (the off -> on edge), which is the one thing the pass's
+         *         owner has to act on too (a fresh accumulation on both sides) - see the definition
          */
-        void set_ssgi(bool enabled, float intensity, float radius, uint32_t rays, uint32_t steps) noexcept;
+        [[nodiscard]] bool set_ssgi_enabled(bool enabled) noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -2325,19 +2313,6 @@ namespace vulkan {
          *       or hidden contributes nothing in both and the IBL probe still owns the off-screen light.
          */
         void set_ssgi_ray_tracing(bool enabled) noexcept;
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief how much of the previous frame's accumulated indirect a GI ray re-emits at a hit
-         * @param gain the loop gain, clamped to [0, 1]
-         * @note the multi-bounce approximation: with a gain above zero a ray returns the light LEAVING
-         *       the surface it hit (indirect included) instead of the direct light alone, so the
-         *       estimator picks up the second, third, ... bounce. 0 - the default - is single-bounce.
-         *       The image being fed back already carries ssgi_intensity, so the effective loop gain is
-         *       this times that; 1.0 is where the geometric series stops being guaranteed to converge
-         *       (a diffuse albedo approaches one), which is why the knob stops there.
-         */
-        void set_ssgi_bounce(float gain) noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -2376,7 +2351,7 @@ namespace vulkan {
          *        0.12 (the marched default, i.e. 39% of what is available), -2.126 at 0.5 and -2.350 at
          *        2.0, the cost rising +0.94 ms from the first to the second and not at all after it.
          */
-        void set_ssgi_specular(bool enabled, uint32_t rays, float radius) noexcept;
+        void set_ssgi_specular_enabled(bool enabled) noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -2416,7 +2391,7 @@ namespace vulkan {
          *       (it is injected from that chain's result) and the deferred path, and it is a no-op on a
          *       device where either is missing: with the gain at 0 the tracer never samples it.
          */
-        void set_ssgi_probes(bool enabled, float rate, uint32_t rounds, float gain) noexcept;
+        void set_ssgi_probes_enabled(bool enabled) noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -2493,26 +2468,6 @@ namespace vulkan {
         bool record_compute_skin_pass(VkCommandBuffer command_buffer);
         /// @brief refill the job's request list from the skinned casters this frame's structure phase knows
         void fill_compute_skin_requests();
-
-        /**
-         * @brief set the spatial filter's strength
-         * @param sigma spatial Gaussian sigma in GI texels; 0 makes the filter a pass-through, which
-         *        is what its effect is measured against (same idea as the temporal blend weights)
-         * @note the depth and normal edge-stop strengths are runtime members rather than config keys:
-         *       they decide WHERE the filter stops, not how strong it is, and getting them wrong shows
-         *       up as bleeding across a silhouette rather than as a noisier image
-         */
-        void set_ssgi_spatial(float sigma) noexcept;
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief whether the composite upsamples the GI bilaterally (see post.frag)
-         * @param enabled true = joint-bilateral gather, false = the plain bilinear fetch
-         * @note a MEASUREMENT switch, not a quality knob: the bilinear fetch is what the chain used
-         *       before the upsample existed, and keeping it reachable is what makes the upsample's
-         *       effect separable from everything else in the frame
-         */
-        void set_ssgi_upsample(bool enabled) noexcept;
 
         /** @brief whether the tracer runs this frame (see set_ssgi) */
         [[nodiscard]] bool ssgi_active() const noexcept;
@@ -2654,7 +2609,7 @@ namespace vulkan {
          *       fix for it. The G-buffer motion vectors are camera-only at this milestone, so a
          *       deformed (skinned/morphed) object can ghost slightly - see gbuffer.frag.
          */
-        void set_taa(bool enabled, float blend_static = 0.9f, float blend_min = 0.5f) noexcept;
+        bool set_taa_enabled(bool enabled) noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -2804,15 +2759,6 @@ namespace vulkan {
          * startup log reports.
          */
         [[nodiscard]] bool feature_active(std::string_view name) const noexcept;
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief select the channel the G-buffer debug view shows
-         * @param channel 0 albedo, 1 world normal, 2 roughness, 3 metallic, 4 ambient occlusion,
-         *        5 material id (colorized), 6 linearized depth, 7 raw material flags; clamped into
-         *        [0, gbuffer_channel_count - 1]
-         */
-        void set_gbuffer_channel(int channel) noexcept;
 
         /** @brief the channel the G-buffer debug view shows (the PASS's own parameter - see set_gbuffer_channel) */
         [[nodiscard]] int gbuffer_channel() const noexcept {
