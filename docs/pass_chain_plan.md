@@ -2237,6 +2237,45 @@ headlessly: a pass's own pipeline beats a same-named registry entry, and an unfi
 the pass); `doxygen Doxyfile` exit 0 with zero warnings; the capture gate 12 x 2 = 0 changed / 0 flaky / 0 unseeded;
 and the knob-on A/B above - the only acceptance that can see this slice - matches the parent byte for byte.
 
+## S3, THIRD SLICE: taa - THE FIRST PASS WHOSE PARAMETERS MOVED, AND WHERE THE GATE CAN SEE IT
+
+**THE THIRD SLICE takes the first pass that needs its own PARAMETERS**, which is the S5 step inside S3: the TAA
+resolve's two blend weights were two members of the renderer (`taa_blend_static`, `taa_blend_min`) that `set_taa`
+clamped, cached and the resolver copied into the push block. They are the pass's now:
+
+* `taa_pass::set_blend(static_weight, min_weight)` owns BOTH the values and their clamps (static into [0, 0.99],
+  the floor into [0, static]), with the renderer's historical defaults (0.9 / 0.5) as the member defaults - so a
+  session that never calls `set_taa` resolves exactly as before;
+* `runtime::set_taa` forwards, and the two members are DELETED from `vulkan.runtime` (nothing else read them: the
+  app carries its own copies for the GUI sliders and pushes them back in every frame);
+* the pass composes its own push block - the second pass to do so, after `rt_shadow` - out of its two weights, the
+  texel size of the extent it was resolved at, the projection's two depth terms from `resolved_io::constants`, and
+  the history flag it maintains per image. The renderer used to compose all seven values and hand them over.
+
+What stayed in the runtime, deliberately: the ON/OFF switch and the jitter phase. Both are frame-loop state - the
+switch decides whether the projection is jittered at all and which target the scene side writes, and the jitter
+index is the Halton position the frame loop advances - which is the same line the ownership rule has drawn
+everywhere else (the pass owns what only it knows; the frame loop owns what the frame is).
+
+**THE CAPTURE GATE COVERS THIS ONE**, unlike `cluster` and `rt_shadow`: `deferred_taa_fxaa` runs TAA, and it came
+back `6999D01E5FBAB508` - the reference, byte for byte - so the pass-composed push with the pass-owned knobs is
+proven by the gate itself. `resolve_taa_pass` (46 lines) is deleted, the switch is down to eleven branches, and the
+runtime's header lost two members. Five of the sixteen resolvers are gone (scene, transparent, cluster, rt_shadow,
+taa).
+
+**WHAT IS LEFT, and why the next step is the two structural gaps rather than more passes**: eleven resolvers remain,
+and EIGHT of them (`post_bloom_0..3`, `post_composite`, `fxaa`, `gbuffer_debug`, and the three GI-chain passes plus
+`deferred`) are blocked on one of two framework gaps rather than on their own complexity:
+
+* **`resolve_shared_set(2)` cannot answer**, because the post family's five sets are one per STAGE - so the four
+  bloom passes, the composite and FXAA cannot be resolved from their declarations until a pass can name WHICH of its
+  owner's sets it binds;
+* **`own_per_image` is not in the generic path**, which the GI chain's per-image descriptor families need.
+
+Neither is a new idea - both are already recorded as the gaps this migration found - and taking them next turns
+eleven hand-written resolvers into a handful of small policy overrides.
+
+
 ## S3, FIRST SLICE: THE DECLARATION-DRIVEN RESOLVER, AND THE FIRST TWO PASSES OFF THE SWITCH
 
 **THE MECHANISM, which is what the whole migration runs on.** `resolve_pass_impl` is still the per-pass type switch,

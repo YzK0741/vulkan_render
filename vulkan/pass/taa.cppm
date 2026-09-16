@@ -70,10 +70,11 @@ export namespace vulkan::pass {
         /**
          * @brief the pass's push block, which is also the fragment shader's
          *
-         * Eight floats in the order taa.frag declares them. `history_valid` is the one lane the PASS sets and
-         * the rest are the renderer's values, which is the split the framework settled: the block's shape is
-         * the pass's (and `static_assert`ed against the declaration's size), the values are the owner's, and
-         * the lane that describes the pass's own state is the pass's to write.
+         * Eight floats in the order taa.frag declares them. EVERY value in it is now the pass's own: the blend
+         * weights are its parameters (see set_blend), the texel size comes from the extent it was resolved at,
+         * the two depth terms come from the frame's constants, and `history_valid` is the state it maintains per
+         * image. It used to be composed by the renderer and handed over as raw bytes; the block's shape is still
+         * the pass's, `static_assert`ed against the declaration's size.
          */
         struct push_constants {
             float history_valid = 0.0f; // 1 = trust the history, 0 = first frame for this image
@@ -110,6 +111,17 @@ export namespace vulkan::pass {
          * descriptor set) must not claim a history it did not write.
          */
         [[nodiscard]] bool wrote_history() const noexcept;
+        /**
+         * @brief the two blend weights, which are THIS PASS's parameters - and their clamps, which are its too
+         *
+         * They used to live in the renderer as two members its `set_taa` cached and its resolver copied into the
+         * push block. Now the renderer's public setter forwards them here, the pass clamps them once (static into
+         * [0, 0.99]; the floor into [0, static]), and the values exist in exactly one place - the same rule the
+         * block's other lanes already followed.
+         * @param static_weight the history weight for a pixel that did not move
+         * @param min_weight the history weight floor under motion (lower = less ghosting)
+         */
+        void set_blend(float static_weight, float min_weight) noexcept;
         /// @brief forget every image's history: the off -> on edge, when blending would resume against
         ///        frames that were never resolved
         void reset_history() noexcept;
@@ -143,6 +155,10 @@ export namespace vulkan::pass {
         bool generation_views_valid_ = false;
         /// whether the last record wrote the history (see wrote_history)
         bool wrote_history_ = false;
+        /// the two blend weights: this pass's own parameters (see set_blend), defaulted to the renderer's own
+        /// historical defaults so a session that never calls `set_taa` resolves exactly as it did before
+        float blend_static_ = 0.9f;
+        float blend_min_ = 0.5f;
     };
 
     /// THE DECLARATION'S NUMBER AND THE PASS'S STRUCT CANNOT DRIFT: the declared push block is what the

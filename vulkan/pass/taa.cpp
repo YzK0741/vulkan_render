@@ -66,6 +66,14 @@ namespace vulkan::pass {
         return this->wrote_history_;
     }
 
+    void taa_pass::set_blend(float const static_weight, float const min_weight) noexcept {
+        // The clamps came with the parameters, because they are the same fact: a static weight of 1 would never
+        // accept the current frame, and a floor above the static weight would make the moving case trust the
+        // history MORE than the still one, which is the opposite of what the two are for.
+        this->blend_static_ = std::clamp(static_weight, 0.0f, 0.99f);
+        this->blend_min_ = std::clamp(min_weight, 0.0f, this->blend_static_);
+    }
+
     void taa_pass::reset_history() noexcept {
         // The off -> on edge: the renderer calls this when TAA is switched on, because blending against
         // frames that were never resolved shows the alias instead of hiding it.
@@ -122,8 +130,8 @@ namespace vulkan::pass {
 
     void taa_pass::record(resolved_io const& io) {
         this->wrote_history_ = false;
-        if (io.own.size() < own_binding_count || io.targets.empty() || io.push.size() < sizeof(push_constants) || this->set_layout_ == VK_NULL_HANDLE) {
-            return; // the runner resolves all of this or skips the pass
+        if (io.own.size() < own_binding_count || io.targets.empty() || io.extent.width == 0 || io.extent.height == 0 || this->set_layout_ == VK_NULL_HANDLE) {
+            return; // the runner resolves all of this or skips the pass (see frame_pass::resolve)
         }
         uint32_t const index = io.frame.image_index;
         if (this->history_valid_.size() != io.frame.image_count) {
@@ -207,9 +215,18 @@ namespace vulkan::pass {
         vkCmdSetCullMode(io.cmd, VK_CULL_MODE_NONE);
         VkDescriptorSet const draw_set = set;
         vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, io.pipeline_layout, 0, 1, &draw_set, 0, nullptr);
+        // THE PUSH BLOCK IS THE PASS'S OWN (S3): every lane of it is a fact this pass has - its two blend
+        // weights, the texel size of the extent it was resolved at, the projection's two depth terms (which
+        // arrive as frame CONSTANTS, the channel that exists for exactly this) and the history flag it maintains
+        // per image. The renderer used to compose it and hand it over as raw bytes.
         push_constants push = {};
-        std::memcpy(&push, io.push.data(), sizeof(push));
-        push.history_valid = history_valid ? 1.0f : 0.0f; // the pass's own lane, not the owner's value
+        push.blend_static = this->blend_static_;
+        push.blend_min = this->blend_min_;
+        push.texel_size_x = 1.0f / static_cast<float>(io.extent.width);
+        push.texel_size_y = 1.0f / static_cast<float>(io.extent.height);
+        push.depth_scale = io.constants.proj[2][2];
+        push.depth_offset = io.constants.proj[3][2];
+        push.history_valid = history_valid ? 1.0f : 0.0f;
         vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
         vkCmdDraw(io.cmd, 3, 1, 0, 0);
         vkCmdEndRendering(io.cmd);

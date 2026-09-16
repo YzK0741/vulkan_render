@@ -2449,8 +2449,10 @@ namespace vulkan {
                 this->warn_missing_feature("taa", "TAA has no effect: the G-buffer pass or its lighting stage was not created (see the startup log)");
             }
         }
-        this->taa_blend_static = std::clamp(blend_static, 0.0f, 0.99f);
-        this->taa_blend_min = std::clamp(blend_min, 0.0f, this->taa_blend_static);
+        // THE TWO BLEND WEIGHTS ARE THE PASS'S PARAMETERS (S3), including their clamps: this setter forwards
+        // them and the pass owns what it does with them, the same way the push block it composes is the pass's.
+        // Nothing else in the renderer reads them, so there is no second copy to keep in step.
+        this->taa_resolve.set_blend(blend_static, blend_min);
         if (enabled && !was_on) {
             // A fresh history - but only on the off -> on EDGE. The caller mirrors the GUI/config state
             // into the runtime every frame (see main.cpp), so resetting unconditionally here would
@@ -3763,9 +3765,6 @@ namespace vulkan {
         if (&pass == static_cast<pass::frame_pass const*>(&this->ssgi_spatial)) {
             return this->resolve_ssgi_spatial(out);
         }
-        if (&pass == static_cast<pass::frame_pass const*>(&this->taa_resolve)) {
-            return this->resolve_taa_pass(out);
-        }
         if (&pass == static_cast<pass::frame_pass const*>(&this->deferred)) {
             return this->resolve_deferred_pass(out);
         }
@@ -3850,52 +3849,12 @@ namespace vulkan {
         return true;
     }
 
-    bool runtime::resolve_taa_pass(pass::resolved_io& out) {
-        core const& vk = this->vulkan_core;
-        std::size_t const image_count = vk.scene_color_image_views.size();
-        std::size_t const index = this->current_image_index;
-        // A frame whose targets are not there cannot run this pass at all: they are created and destroyed with
-        // the target generation (see core::create_render_targets).
-        if (image_count == 0 || index >= image_count || vk.taa_history_image_views.size() != image_count || vk.velocity_image_views.size() != image_count ||
-            vk.gbuffer_depth_image_views.size() != image_count || vk.hdr_image_views.size() != image_count || !this->taa_resolve.pipeline_ready()) {
-            return false;
-        }
-        out.frame = this->pass_frame();
-        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
-        // The four own bindings, resolved BY DECLARATION ELEMENT: the declaration names four per-swapchain-image
-        // resources, so the element selects within the family (all four are element 0) and the FRAME selects the
-        // image. The views are what the descriptor takes and the images are what the pass's barriers take.
-        out.own_storage[0] = {.view = vk.scene_color_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.scene_color_images[index]};
-        out.own_storage[1] = {.view = vk.taa_history_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.taa_history_images[index]};
-        out.own_storage[2] = {.view = vk.velocity_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.velocity_images[index]};
-        out.own_storage[3] = {.view = vk.gbuffer_depth_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_depth_images[index]};
-        out.own = std::span<pass::resolved_binding const>(out.own_storage.data(), 4);
-        // The declared render TARGET: the frame's HDR image, which the resolve writes as its colour attachment
-        // and then copies out of. Resolved the same way an own binding is, so the pass reaches nothing it did
-        // not declare - and the pass owns the rendering instance over it.
-        out.target_storage[0] = {.view = vk.hdr_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.hdr_images[index]};
-        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), 1);
-        out.own_set = VK_NULL_HANDLE;      // the pass owns its family and therefore its sets
-        out.shared.scene = VK_NULL_HANDLE; // the resolve reads nothing shared: its four inputs are its own
-        out.pipeline_storage[0] = this->taa_resolve.pipeline();
-        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
-        out.pipeline_layout = this->taa_resolve.pipeline_layout();
-        // The push block, composed HERE because its values are the renderer's: the two blend weights are the
-        // config's, the texel size is the target's, and the two depth terms come from this frame's projection.
-        // The lane that says whether the history may be trusted is the PASS's, and it writes that one itself.
-        pass::taa_pass::push_constants push = {};
-        push.blend_static = this->taa_blend_static;
-        push.blend_min = this->taa_blend_min;
-        push.texel_size_x = 1.0f / static_cast<float>(vk.swap_chain_extent.width);
-        push.texel_size_y = 1.0f / static_cast<float>(vk.swap_chain_extent.height);
-        push.depth_scale = this->current_ubo.proj[2][2];
-        push.depth_offset = this->current_ubo.proj[3][2];
-        static_assert(sizeof(push) <= pass::max_push_bytes, "the TAA resolve's push block must fit the guaranteed minimum");
-        std::memcpy(out.push_storage.data(), &push, sizeof(push));
-        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
-        out.extent = vk.swap_chain_extent; // the declaration's rule is `full`
-        return true;
-    }
+    // THE TAA RESOLVE'S RESOLVER IS GONE (S3), and it is the first pass whose PARAMETERS moved with it: its
+    // four own bindings and its HDR target come from the frame's resource table, its pipeline from the pass (it
+    // builds its own), its extent from the declaration's `full` rule, and its push block it composes itself out
+    // of `resolved_io::constants` (the projection's two depth terms), `io.extent` (the texel size) and its own
+    // two blend weights - which `set_taa` now forwards instead of caching them here. Its old gate is answered by
+    // the table (the images), the pass's own pipeline (a null one fails the resolution) and the feature "taa".
 
     void runtime::apply_pass_behaviour(pass::frame_pass const& pass, pass::resolved_io const& io) {
         // The mechanical part of "how this pass is called", done by the runner so that a pass cannot forget

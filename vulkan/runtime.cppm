@@ -756,9 +756,12 @@ namespace vulkan {
         /// the colour formats the scene pass's secondaries inherit, in attachment order
         std::array<VkFormat, vulkan::gbuffer_pass_attachment_count> scene_color_formats = {};
         std::array<pass::frame_pass*, 1> taa_stage = {&this->taa_resolve};
-        bool taa_on = false;           // [render] taa
-        float taa_blend_static = 0.9f; // history weight for a static pixel
-        float taa_blend_min = 0.5f;    // history weight floor under motion
+        bool taa_on = false; // [render] taa
+        // The two blend weights are NOT here any more: they are the TAA pass's own parameters now, set through
+        // `set_taa` (which forwards them) and clamped by the pass - see vulkan.pass.taa::set_blend. What stays
+        // here is the SWITCH and the jitter phase, because both are frame-loop state: the switch decides whether
+        // the projection is jittered at all and which target the scene side writes, and the jitter index is the
+        // Halton position the frame loop advances.
         uint32_t taa_jitter_index = 0; // position in the Halton sequence
         // The view-projection each swapchain image's history was rendered with. Remembered PER IMAGE on
         // purpose: with several swapchain images in rotation, "the previous frame's camera" is not what that
@@ -2530,14 +2533,6 @@ namespace vulkan {
          */
         /** @brief how many jitter positions the Halton(2,3) TAA sequence cycles through */
         static constexpr uint32_t taa_jitter_count = 8;
-
-        /**
-         * @brief resolve the TAA pass's declaration into this frame's handles (the runner's `resolve` callback)
-         * @return false when this frame cannot run it (no target generation, or the pass has no pipeline)
-         * @note the four per-swapchain-image inputs are the pass's own bindings and the HDR image it renders
-         *       into is a declared TARGET - resolved the same way, so the pass reaches nothing it did not name
-         */
-        bool resolve_taa_pass(pass::resolved_io& out);
 
         /**
          * @brief this frame's SCENE, as the scene pass needs it (see vulkan.pass.scene::scene_frame)
