@@ -2400,6 +2400,54 @@ now waits on a DECISION rather than on a missing channel:
 The first two rows are the next decision rather than the next migration: a shared settings block for a CHAIN (which
 is also where the demo's post defaults would live) and a way for a pass to name another pass's pipeline.
 
+## S3, FIFTH SLICE: THE POST CHAIN'S COMPOSITE AND FXAA - THE SHARED SETTINGS, AND AN OVERRIDE IN A PASS
+
+**THE FIRST DECISION FROM THE LAST SLICE IS TAKEN**: `vulkan.frame_constants` gains `render_settings` - the frame
+loop's renderer settings that MORE THAN ONE pass reads - and the rule that keeps it from becoming a bag of knobs is
+written next to it: **a setting one pass reads alone is that pass's own parameter** (the TAA resolve's blend
+weights, the debug view's channel, and now the composite's GI-upsample switch, which moved into that pass with
+`set_ssgi_upsample` forwarding); **a setting several passes read is the frame loop's**, because no single pass can
+own a value its siblings must agree on. What is in it: exposure, the bloom weight and threshold (the composite, the
+four bloom levels and FXAA all push them), FXAA's two thresholds (FXAA and the composite, which pushes the same
+block) and the GI upsample's silhouette criterion (the composite and the spatial filter, which must use ONE
+criterion or the filter's work is undone by the upsample). `set_exposure`/`set_bloom`/`set_fxaa` are unchanged -
+the members stay the app-facing targets and `update_frame_constants` copies them into the frame's facts.
+
+The same slice adds the ONE piece of state that cannot be known when the frame starts: `frame_constants::gi_resolved`
+is filled MID-FRAME, right after the GI chain records (the frame loop reads the answer back from the chain's last
+pass) and before the post stage - which is exactly the point where the composite's resolution can see it. The
+renderer's `gi_resolved` member is gone with it: one copy, in the frame.
+
+**AND THE COMPOSITE'S RESOLVE IS AN OVERRIDE IN THE PASS**, the first one in this migration. `post_composite_io`
+records a deviation - it names the swapchain, and on the frames FXAA finishes the frame the pass writes the R16F
+LDR image instead, because FXAA has to read what the composite produced and a pass may not read the image it
+renders into. The target and the pipeline variant are ONE decision (the target's format picks the pipeline), so
+`post_composite_pass::resolve` calls `resolve_declaration` and then makes that one choice from
+`composite_frame::write_ldr` - the frame's answer, set by the host from the same predicate that decides who carries
+the overlay. `write_ldr` and `suppress_bloom` are frame FIELDS rather than derivations: an earlier draft inferred
+the target choice from `after_draw != nullptr`, and a pass reading one decision out of another decision's nullness is
+exactly the coupling a frame struct exists to prevent.
+
+**FXAA NEEDED NO OVERRIDE AT ALL**, which is the other half of the proof: its target (the swapchain), the image it
+transitions (the LDR image the composite wrote), the post set it binds (`shared_set{2, 4}`) and its extent all
+resolve from its own declaration, and its pipeline is its own. Its push block it composes itself out of the frame's
+settings and the surface's format, which it cached at create - and `vulkan::is_srgb_format` moved from the
+renderer's anonymous namespace into `vulkan.constant_init`, because two PASSES now need that answer.
+
+**MEASURED**: eleven of the twelve scenarios run the composite and one runs FXAA (`deferred_taa_fxaa`), so the
+capture gate decides both: **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, `deferred_taa_fxaa` `6999D01E5FBAB508`
+among them. Seven of the sixteen resolvers are gone (scene, transparent, cluster, rt_shadow, taa, post_composite,
+fxaa); the per-pass switch is down to eight branches, and the renderer's header lost `gi_upsample` and `gi_resolved`.
+
+**WHAT IS LEFT, and the ONE remaining framework question**: seven resolvers (the four bloom levels, `shadow`,
+`deferred`, `gbuffer_debug`, the three GI-chain passes - eight branches counting the bloom loop). The bloom levels
+are the next ones the framework already supports EXCEPT for the pipeline they record with: they use the composite's
+HDR variant, and a copy per level is the "five identical pipelines" trap the post header records. The answer is the
+second decision from the last slice - a pass naming another pass's pipeline - and the shape it takes is a virtual
+`named_pipeline(name)` that the owner resolves by asking the CHAIN's passes, which keeps the renderer from knowing
+which pass owns what.
+
+
 
 
 

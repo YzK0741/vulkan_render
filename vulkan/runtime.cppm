@@ -662,7 +662,6 @@ namespace vulkan {
         // of them. The composite can then push a weight of exactly 0 whenever there is no GI to add -
         // GI off, but also GI on with a missing descriptor set or a filter that declined to run, which
         // are frames whose sampled image holds something else (or nothing at all).
-        bool gi_resolved = false;
 
         // ---- the world-space radiance probe cache (see shaders/gi_probe.comp) ----
         // Where the screen-space chain cannot answer: a ray that leaves the frame or hits something the
@@ -981,7 +980,6 @@ namespace vulkan {
         // see). Everything else in the post chain wants the linear one above.
         // Whether the composite upsamples the GI bilaterally or with the plain bilinear fetch (see
         // pass::post_push_constants::gi_upsample). On by default; false exists for measurement.
-        bool gi_upsample = true;
         // The post chain's sets: five per swapchain image (prefilter, three downsample inputs and the
         // composite), the only family whose rebind depends on three fingerprints. It is also the last
         // one to leave the runtime - with it, no pool is left in this class to retire by hand.
@@ -1860,24 +1858,12 @@ namespace vulkan {
          */
         void record_scene_tail(VkCommandBuffer command_buffer);
         /**
-         * @brief resolve the post COMPOSITE pass's frame: its target (the swapchain, or the LDR image on the
-         *        frames FXAA will finish the frame), the pipeline variant that target's FORMAT needs, the post
-         *        set's composite variant and the push block's values
-         * @return false when this frame cannot run it (the chain's pipelines are missing, or the frame has no
-         *         composite descriptor set)
-         */
-        [[nodiscard]] bool resolve_post_composite(pass::resolved_io& out);
-        /**
          * @brief resolve ONE bloom level's frame: the level it writes, the level it reads (nothing at level 0),
          *        that level's variant of the post set, the chain's R16F pipeline and the level's extent
          * @param level which level of the chain (0..3), which selects all of the above
          * @return false when this frame cannot run it (same conditions as the composite)
          */
         [[nodiscard]] bool resolve_post_bloom(uint32_t level, pass::resolved_io& out);
-        /// @brief resolve the FXAA pass's frame: the swapchain it writes, the LDR image it reads (and therefore
-        ///        moves to a sampled layout), the post set's FXAA variant and the push block's values
-        /// @return false when this frame cannot run it (no FXAA pipeline, or no post descriptor set)
-        [[nodiscard]] bool resolve_fxaa_pass(pass::resolved_io& out);
         /**
          * @brief whether the FXAA pass is this frame's LAST writer (the frame's own question: the composite's
          *        target and pipeline variant, the overlay's owner, set_fxaa() and the feature registry all ask it)

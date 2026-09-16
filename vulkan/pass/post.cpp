@@ -93,6 +93,9 @@ namespace vulkan::pass {
         this->pipeline_layout_ = built->pipeline_layout;
         this->composite_ = std::move(built->composite);
         this->hdr_ = std::move(built->hdr);
+        // The surface's format is cached here because the `encode_gamma` lane is a consequence of it (see
+        // resolve): a session-stable device fact, which is exactly what a create step may keep.
+        this->swap_chain_format_ = context.swap_chain_image_format;
         utility::log("SUCCESS: post chain pipelines created (the composite for the swapchain and the R16F variant)");
     }
 
@@ -105,6 +108,10 @@ namespace vulkan::pass {
 
     bool post_composite_pass::pipeline_ready() const noexcept {
         return this->composite_.has_value() && this->hdr_.has_value() && this->set_layout_ != VK_NULL_HANDLE;
+    }
+
+    VkPipeline post_composite_pass::pipeline() const noexcept {
+        return this->composite_pipeline();
     }
 
     VkPipeline post_composite_pass::composite_pipeline() const noexcept {
@@ -125,6 +132,66 @@ namespace vulkan::pass {
 
     void post_composite_pass::set_frame(composite_frame const& frame) noexcept {
         this->frame_ = frame;
+    }
+
+    void post_composite_pass::set_gi_upsample(bool const enabled) noexcept {
+        this->gi_upsample_ = enabled;
+    }
+
+    bool post_composite_pass::resolve(resolve_context const& context, resolved_io& out) const {
+        if (!resolve_declaration(*this, context, out)) {
+            return false;
+        }
+        // THE FRAME DECIDES THE TARGET AND THE PIPELINE TOGETHER (see this override's declaration note): with
+        // FXAA on, the composite writes the R16F LDR image with the R16F variant; otherwise it writes the
+        // declared swapchain image and the FXAA pass never runs. The LDR image is not in the declaration - one
+        // `render_target` names one resource - so it comes from the frame's table, in the declaration's own
+        // vocabulary, exactly as the declared one did.
+        if (!this->frame_.write_ldr) {
+            return this->fill_push(out, false);
+        }
+        render_resource::resource_info const* const ldr = render_resource::find(resource_id::ldr);
+        if (ldr == nullptr) {
+            return false;
+        }
+        resolved_binding const target = context.resources->find(resource_id::ldr, 0, instance_for(ldr->scope, out.frame));
+        if (target.view == VK_NULL_HANDLE || target.image == VK_NULL_HANDLE) {
+            return false; // no LDR image this generation: do not record a composite that cannot write anywhere
+        }
+        out.target_storage[0] = target;
+        out.pipeline_storage[0] = this->hdr_pipeline();
+        return this->fill_push(out, true);
+    }
+
+    bool post_composite_pass::fill_push(resolved_io& out, bool const writing_ldr) const {
+        // The lanes are the frame's settings (more than one pass reads them - see
+        // vulkan.frame_constants::render_settings), this pass's own GI upsample switch, and the TWO that follow
+        // from the target choice: `encode_gamma` (an R16F target needs the shader to encode, an sRGB swapchain
+        // attachment does the transfer in hardware) and the GI weight, which is the frame's answer to whether the
+        // chain resolved.
+        render_settings const& settings = out.constants.settings;
+        post_push_constants const push = {
+            .exposure = settings.exposure,
+            // Zero while the G-buffer debug view is up (the frame says so - see composite_frame::suppress_bloom),
+            // for the reason that field records.
+            .bloom_intensity = this->frame_.suppress_bloom ? 0.0f : settings.bloom_intensity,
+            .bloom_threshold = settings.bloom_threshold,
+            .encode_gamma = writing_ldr ? 1.0f : (vulkan::is_srgb_format(this->swap_chain_format_) ? 0.0f : 1.0f),
+            .gi_intensity = out.constants.gi_resolved ? 1.0f : 0.0f,
+            .gi_depth_scale = out.constants.proj[2][2],
+            .gi_depth_offset = out.constants.proj[3][2],
+            // The SAME edge criterion the spatial filter uses: one silhouette test for the whole chain, so what
+            // survives the filter is not undone by the upsample.
+            .gi_depth_sigma = settings.gi_depth_sigma,
+            .gi_normal_power = settings.gi_normal_power,
+            .gi_upsample = this->gi_upsample_ ? 1.0f : 0.0f,
+            .fxaa_subpixel = settings.fxaa_subpixel,
+            .fxaa_edge_threshold = settings.fxaa_edge_threshold,
+        };
+        static_assert(sizeof(push) == render_resource::post_push_bytes, "the composed push block must be the size the declaration promises");
+        std::memcpy(out.push_storage.data(), &push, sizeof(push));
+        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
+        return true;
     }
 
     void post_composite_pass::record(resolved_io const& io) {

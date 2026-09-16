@@ -44,6 +44,29 @@ export namespace vulkan {
     // ---- Object create infos (one line per object; fields fixed by engine convention) ----
 
     /**
+     * @brief whether a colour format's attachment write path encodes linear -> sRGB in HARDWARE
+     *
+     * WHY IT IS HERE rather than in the renderer that used to own it: two PASSES need the answer (the composite
+     * and FXAA, which push the same block's `encode_gamma` lane) and a third thing needs it for the same reason
+     * (the swapchain's own format decides whether the display transfer function is hardware's or the shader's).
+     * Writing a gamma-encoded value into one of these formats double-encodes it, and writing it into a UNORM
+     * target under-encodes it - so the question is asked on every post frame, and a second copy of the switch is a
+     * second place for the list of formats to fall behind.
+     */
+    [[nodiscard]] constexpr bool is_srgb_format(VkFormat const format) noexcept {
+        switch (format) {
+        case VK_FORMAT_B8G8R8A8_SRGB:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
+        case VK_FORMAT_R8G8B8_SRGB:
+        case VK_FORMAT_B8G8R8_SRGB:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    /**
      * @brief command pool that allows per-buffer reset (the engine resets/re-records buffers)
      */
     constexpr VkCommandPoolCreateInfo make_command_pool_info(uint32_t const queue_family) noexcept {

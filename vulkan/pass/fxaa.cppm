@@ -107,6 +107,10 @@ export namespace vulkan::pass {
         VkDevice device_ = VK_NULL_HANDLE;
         VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
+        /// the surface's format, cached at create: the push block's `encode_gamma` lane follows from it, and a
+        /// session-stable device fact is exactly what a create step may keep (see the composite, which does the
+        /// same for its own frame's target choice)
+        VkFormat swap_chain_format_ = VK_FORMAT_UNDEFINED;
         fxaa_frame frame_ = {};
     };
 

@@ -57,6 +57,32 @@ export import vstd;
 namespace vulkan {
     /**
      * @ingroup vulkan_frame_constants
+     * @brief the frame loop's RENDERER SETTINGS, for the ones more than one pass reads
+     *
+     * THE RULE THAT DECIDES WHAT IS HERE, and it is what keeps this from becoming a bag of knobs: a setting a pass
+     * reads ALONE is that pass's own parameter (the TAA resolve's two blend weights, the debug view's channel -
+     * they live in those passes, and the renderer's public setters forward to them); a setting SEVERAL passes read
+     * is the frame loop's, because no single pass can own a value its siblings must agree on. The post chain is
+     * what made the distinction necessary: the composite, the four bloom levels and FXAA all push the exposure and
+     * the bloom weights, and the composite and the GI spatial filter share one silhouette criterion.
+     */
+    export struct render_settings {
+        /// the tonemap's exposure scale (the composite, the bloom levels and FXAA all push it)
+        float exposure = 1.0f;
+        /// the bloom sum's weight and the prefilter's threshold (the same three)
+        float bloom_intensity = 0.0f;
+        float bloom_threshold = 0.6f;
+        /// FXAA's two thresholds (its own pass, and the composite, which pushes the same block)
+        float fxaa_subpixel = 0.75f;
+        float fxaa_edge_threshold = 0.166f;
+        /// the GI upsample's silhouette test: the composite and the spatial filter must use ONE criterion, or what
+        /// the filter keeps is undone by the upsample
+        float gi_depth_sigma = 0.02f;
+        float gi_normal_power = 16.0f;
+    };
+
+    /**
+     * @ingroup vulkan_frame_constants
      * @brief one frame's shared constants, as the frame loop produced them
      *
      * @note every matrix here is the SAME one the camera UBO carries for this frame, so a pass that composes a
@@ -81,6 +107,16 @@ namespace vulkan {
         float scene_radius = 0.0f;
         /// the sun's direction, normalized here; the `w` lane is unused
         glm::vec4 light_dir = glm::vec4(0.0f);
+        /// the renderer settings more than one pass reads (see render_settings for the rule that decides)
+        render_settings settings = {};
+        /**
+         * Whether THIS frame's GI resolve ran, which is what weighs the composite's added indirect term.
+         *
+         * THE ONE FIELD FILLED MID-FRAME, and it has to be: the frame loop knows the answer only after the GI
+         * chain has recorded (it reads it back from the chain's last pass) and the composite records after that,
+         * so a pass reading it reads the value as of its OWN resolution - the only point where the answer exists.
+         */
+        bool gi_resolved = false;
     };
 
 } // namespace vulkan

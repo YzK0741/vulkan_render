@@ -85,6 +85,7 @@ namespace vulkan::pass {
         }
         this->pipeline_layout_ = built->pipeline_layout;
         this->pipeline_ = std::move(built->antialias);
+        this->swap_chain_format_ = context.swap_chain_image_format;
         utility::log("SUCCESS: fxaa pipeline created (LDR -> anti-aliased swapchain)");
     }
 
@@ -111,8 +112,8 @@ namespace vulkan::pass {
 
     void fxaa_pass::record(resolved_io const& io) {
         if (!this->pipeline_ready() || io.targets.empty() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE ||
-            io.shared.post == VK_NULL_HANDLE || io.push.size() < sizeof(post_push_constants) || io.extent.width == 0 || io.extent.height == 0) {
-            return; // the runner resolves all of this or skips the pass (see runtime::resolve_fxaa_pass)
+            io.shared.post == VK_NULL_HANDLE || io.extent.width == 0 || io.extent.height == 0) {
+            return; // the runner resolves all of this or skips the pass (see frame_pass::resolve)
         }
         VkImage const target = io.targets[0].image;
         VkImageView const target_view = io.targets[0].view;
@@ -136,11 +137,24 @@ namespace vulkan::pass {
         to_attachment.image = target;
         VkDependencyInfo const attachment_dependency = make_image_dependency_info(1, &to_attachment);
         vkCmdPipelineBarrier2(io.cmd, &attachment_dependency);
-        // The push block: the host's values (exposure, the bloom weight/threshold and the two FXAA knobs), the
-        // struct's defaults for the lanes this mode does not read, and the pass's own stage lane - FXAA is mode 3.
-        post_push_constants push = {};
-        std::memcpy(&push, io.push.data(), sizeof(push));
-        push.mode = 3.0f;
+        // The push block is composed HERE (S3): the frame's settings (exposure, the bloom weight/threshold and
+        // this pass's two thresholds - all of them lanes the composite pushes too, which is why they are frame
+        // settings rather than one pass's parameters), the struct's defaults for the lanes this mode does not
+        // read, the `encode_gamma` lane (this pass always writes the swapchain, so the answer is the surface's
+        // own format), and the pass's own stage lane - FXAA is mode 3.
+        render_settings const& settings = io.constants.settings;
+        post_push_constants push = {
+            .exposure = settings.exposure,
+            .bloom_intensity = settings.bloom_intensity,
+            .bloom_threshold = settings.bloom_threshold,
+            .mode = 3.0f, // the pass's own stage lane: FXAA
+            // Same meaning as in the composite: 0 = the swapchain attachment encodes to display values in
+            // hardware, so FXAA must hand it LINEAR values; 1 = the target is a UNORM format and FXAA's own
+            // display-encoded result is what should be stored.
+            .encode_gamma = vulkan::is_srgb_format(this->swap_chain_format_) ? 0.0f : 1.0f,
+            .fxaa_subpixel = settings.fxaa_subpixel,
+            .fxaa_edge_threshold = settings.fxaa_edge_threshold,
+        };
         VkClearValue clear = {};
         VkRenderingAttachmentInfo const attachment = make_color_attachment_info(target_view, clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
         VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, io.extent}, true, &attachment, nullptr);

@@ -120,6 +120,25 @@ export namespace vulkan::pass {
          */
         void (*after_draw)(void* owner, VkCommandBuffer command_buffer) = nullptr;
         void* owner = nullptr;
+        /**
+         * Whether the FXAA pass finishes this frame, i.e. whether the composite must write the LDR image instead
+         * of the swapchain (see the target deviation in `render_resource::post_composite_io`).
+         *
+         * THE HOST'S ANSWER, and it is the SAME predicate that decides `after_draw`'s owner above: the frame's
+         * last writer carries the overlay and the other one writes the intermediate. It arrives as data rather
+         * than being derived from `after_draw != nullptr`, because a pass inferring one decision from another
+         * decision's nullness is exactly the kind of coupling a frame struct exists to prevent.
+         */
+        bool write_ldr = false;
+        /**
+         * Whether this frame must NOT add the bloom sum - true while the G-buffer debug view is up.
+         *
+         * Bloom is a display effect, and a glow smeared over the channel being inspected is the opposite of a debug
+         * view (it would also invent colours that are not in the G-buffer at all). The host owns the answer
+         * because it is the same "what runs this frame" struct that gates the bloom CHAIN (`feature_active("bloom")`),
+         * so the weight this pass adds and the chain's own gate cannot disagree about whether there is a sum.
+         */
+        bool suppress_bloom = false;
     };
 
     /**
@@ -140,6 +159,21 @@ export namespace vulkan::pass {
         [[nodiscard]] std::string_view feature() const noexcept override;
         void create(pass_context const& context) override;
         void on_swapchain_recreated(pass_host const& host) override;
+        /**
+         * @brief resolve the declaration, then let the FRAME decide the target and the pipeline variant
+         *
+         * THE ONE POST PASS THAT OVERRIDES `resolve`, and the reason is the deviation its declaration records:
+         * `render_target` names one resource, and this pass renders into the SWAPCHAIN when FXAA is off and into
+         * the R16F LDR image when it is on (FXAA has to READ what the composite produced, and a pass may not read
+         * the image it renders into). The two choices ARE one choice - the target decides the pipeline's format -
+         * so they are made together here, from `composite_frame::write_ldr`, which is the frame's answer (the same
+         * predicate that decides who draws the overlay).
+         *
+         * The PUSH BLOCK is composed here too rather than in `record`, because `encode_gamma` is a consequence of
+         * the same decision (with FXAA the target is R16F and the shader must encode; without it the swapchain
+         * attachment does the transfer in hardware when its format is sRGB).
+         */
+        [[nodiscard]] bool resolve(resolve_context const& context, resolved_io& out) const override;
         void record(resolved_io const& io) override;
 
         /// @brief whether the pass built everything it records with (the renderer gates the post chain on this)
@@ -148,11 +182,21 @@ export namespace vulkan::pass {
         [[nodiscard]] VkPipeline composite_pipeline() const noexcept;
         /// @brief the R16F pipeline: the bloom levels, and the LDR target FXAA will read
         [[nodiscard]] VkPipeline hdr_pipeline() const noexcept;
+        /// @brief the pipeline the runner binds by default: the SWAPCHAIN variant, which `resolve` replaces on
+        ///        the frames FXAA finishes (the declaration names ONE pipeline, and this pass owns both variants)
+        [[nodiscard]] VkPipeline pipeline() const noexcept override;
         /// @brief the post SET LAYOUT, which is the post chain's: five passes share it and the host writes their
         ///        descriptor sets with it (`ensure_post_descriptors`), so it is reachable from outside
         [[nodiscard]] VkDescriptorSetLayout set_layout() const noexcept;
         /// @brief the layout every post pipeline binds its set and takes its push block through
         [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
+        /**
+         * @brief the GI upsample's ON/OFF lane, which is THIS pass's parameter
+         *
+         * It is read by the composite alone (the spatial filter has its own criterion), so it lives here rather
+         * than in the frame's settings - the rule `vulkan.frame_constants::render_settings` states.
+         */
+        void set_gi_upsample(bool enabled) noexcept;
 
         void set_frame(composite_frame const& frame) noexcept;
 
@@ -172,12 +216,19 @@ export namespace vulkan::pass {
             .resync_viewport = true, // the runner sets the viewport and scissor from io.extent
         };
         void release_owned() noexcept;
+        /// @brief compose the chain's push block for this frame's target choice (see resolve)
+        [[nodiscard]] bool fill_push(resolved_io& out, bool writing_ldr) const;
 
         VkDevice device_ = VK_NULL_HANDLE;
         VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
         VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> composite_ = std::nullopt;
         std::optional<vk_pipeline> hdr_ = std::nullopt;
+        /// the surface's format, cached at create: the `encode_gamma` lane is a consequence of it (and of the
+        /// frame's target choice), and a session-stable device fact is exactly what a create step may cache
+        VkFormat swap_chain_format_ = VK_FORMAT_UNDEFINED;
+        /// the GI upsample's lane (see set_gi_upsample)
+        bool gi_upsample_ = true;
         composite_frame frame_ = {};
     };
 
