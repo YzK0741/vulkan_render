@@ -1,16 +1,17 @@
-// The spatial filter's implementation: the two barriers around its storage output, the two shared sets and the
-// dispatch, plus the one thing it owns outside a frame - its pipeline layout and its compute pipeline, built
-// from `ssgi_spatial.comp` and the two shared set layouts its owner hands over at create time (the runtime used
-// to build this pipeline and pass it in; that entry point is gone). The recording itself was moved out of
-// `runtime::record_ssgi_spatial_pass` UNCHANGED in behaviour - the same barrier pair, the same bind order (scene
-// set, then G-buffer set), the same 48-byte push and the same half-resolution dispatch - so the capture gate
-// decides the move on the four GI scenarios.
+// The spatial filter's implementation: the two barriers around its storage output, the two shared sets, its push
+// block and the dispatch, plus the two things it owns outside a frame - its pipeline layout and its compute pipeline,
+// built from `ssgi_spatial.comp` and the two shared set layouts its owner hands over at create time (the runtime used
+// to build this pipeline and pass it in; that entry point is gone), and its filter WIDTH (one pass reads it, so it is
+// this pass's parameter - see set_sigma). The recording itself was moved out of `runtime::record_ssgi_spatial_pass`
+// UNCHANGED in behaviour - the same barrier pair, the same bind order (scene set, then G-buffer set), the same 48-byte
+// push and the same half-resolution dispatch - so the capture gate decides the move on the five GI scenarios.
 
 module;
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
-#include <cstring>
+#include <glm/glm.hpp>
 #include <span>
 #include <string>
 #include <string_view>
@@ -110,12 +111,25 @@ namespace vulkan::pass {
         return this->resolved_;
     }
 
+    void ssgi_spatial_pass::set_sigma(float const sigma) noexcept {
+        // The clamp lives HERE, with the value: 0 is the shader's pass-through (a legal setting, and one the
+        // documentation names), and 8 is where the filter is wider than any GI texel neighbourhood it can read.
+        this->sigma_ = std::clamp(sigma, 0.0f, 8.0f);
+    }
+
+    float ssgi_spatial_pass::sigma() const noexcept {
+        return this->sigma_;
+    }
+
+    void ssgi_spatial_pass::set_frame(ssgi_spatial_frame const& frame) noexcept {
+        this->frame_ = frame;
+    }
+
     void ssgi_spatial_pass::record(resolved_io const& io) {
         this->resolved_ = false;
         if (io.barrier_images.size() < render_resource::ssgi_spatial_barriers.size() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE ||
-            io.pipeline_layout == VK_NULL_HANDLE || io.shared.scene == VK_NULL_HANDLE || io.shared.gbuffer == VK_NULL_HANDLE || io.push.size() < sizeof(push_constants) ||
-            io.extent.width == 0 || io.extent.height == 0) {
-            return; // the runner resolves all of this or skips the pass (see runtime::resolve_ssgi_spatial)
+            io.pipeline_layout == VK_NULL_HANDLE || io.shared.scene == VK_NULL_HANDLE || io.shared.gbuffer == VK_NULL_HANDLE || io.extent.width == 0 || io.extent.height == 0) {
+            return; // the runner resolves all of this or skips the pass (see the pass-level review in the header)
         }
         VkImage const output = io.barrier_images[barrier_output].image;
 
@@ -132,8 +146,28 @@ namespace vulkan::pass {
         std::array<VkDescriptorSet, 2> const sets = {io.shared.scene, io.shared.gbuffer};
         vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, io.pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
 
+        // THE PUSH BLOCK IS THE PASS'S NOW, and each lane comes from where its owner is: the two projection terms
+        // and the depth/normal criteria are the FRAME's (the same `proj` terms and the same `render_settings` pair
+        // the composite's upsample reads - they have to agree, which is why they are not here), the extents are the
+        // frame's and this pass's own, the filter width is this pass's, and the two flags are this frame's answers:
+        // which oracle ran, and whether the reflection's own accumulation was resolved before this dispatch.
+        render_settings const& settings = io.constants.settings;
         push_constants push = {};
-        std::memcpy(&push, io.push.data(), sizeof(push));
+        push.depth_scale = io.constants.proj[2][2];
+        push.depth_offset = io.constants.proj[3][2];
+        push.sigma_spatial = this->sigma_;
+        push.sigma_depth = settings.gi_depth_sigma;
+        push.normal_power = settings.gi_normal_power;
+        // The subtraction belongs to the TRACED path only: the marched one is an ADDITION to the probe ambient, so
+        // it must not remove anything (see ssgi_spatial_frame).
+        push.subtract_ambient = this->frame_.traced_oracle ? 1.0f : 0.0f;
+        // ... and the reflection's own accumulation is summed in by the filter at binding 15. THIS lane is about
+        // how much of it to include, and it keys on whether the reflection was actually RESOLVED this frame rather
+        // than on whether the lobe is enabled: if its descriptor set could not be had, the accumulation holds an
+        // older frame and must not be summed in. The denoise pass runs before this one, so the flag is this frame's.
+        push.spec_weight = io.constants.gi_spec_resolved ? 1.0f : 0.0f;
+        push.gi_size = glm::vec4(static_cast<float>(io.extent.width), static_cast<float>(io.extent.height),
+                                 static_cast<float>(io.frame.extent.width), static_cast<float>(io.frame.extent.height));
         vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
         vkCmdDispatch(io.cmd, (io.extent.width + group_size - 1u) / group_size, (io.extent.height + group_size - 1u) / group_size, 1);
 

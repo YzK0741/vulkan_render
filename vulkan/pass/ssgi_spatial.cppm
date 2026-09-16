@@ -1,4 +1,4 @@
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/ssgi_spatial.cppm
@@ -40,6 +40,19 @@ import vulkan.core.handles; // vk_pipeline: the RAII owner of the compute pipeli
 export namespace vulkan::pass {
 
     /**
+     * @brief what the renderer hands the filter: whether this frame's rays were TRACED or marched
+     *
+     * ONE BOOLEAN, and it is the frame's rather than the pass's because it is not a quality knob: the traced path
+     * REPLACES the probe's ambient (so the filter must subtract it) while the marched one ADDS to that ambient (so
+     * it must not). The answer is the renderer's - the ray-tracing knob, the device's ray queries and whether the
+     * acceleration structures exist - and the tracer is handed the same fact for its own push, so the two stages
+     * cannot disagree about which oracle produced the accumulation they are looking at.
+     */
+    struct ssgi_spatial_frame {
+        bool traced_oracle = false;
+    };
+
+    /**
      * @brief the joint-bilateral filter over the temporal accumulation: the chain's last stage
      *
      * It runs after the temporal resolve - filtering a stale accumulation would only make the staleness smoother
@@ -78,6 +91,18 @@ export namespace vulkan::pass {
         /// @brief whether the filtered image was written this frame, i.e. whether the GI may be composited
         [[nodiscard]] bool resolved() const noexcept;
 
+        /// @brief the filter's width in GI texels (0 = a pass-through), with its own clamp
+        ///
+        /// THE PASS'S OWN PARAMETER, by the rule the framework settled on: one pass reads it, so the pass owns it
+        /// and the renderer's `set_ssgi_spatial` forwards. The OTHER two criteria - the depth tolerance and the
+        /// normal exponent - are NOT here: the composite's joint-bilateral upsample uses the same pair, so they are
+        /// the frame's (`frame_constants::render_settings`) and this pass reads them from `io.constants`.
+        void set_sigma(float sigma) noexcept;
+        [[nodiscard]] float sigma() const noexcept;
+
+        /// @brief this frame's answer about which oracle produced the accumulation (see ssgi_spatial_frame)
+        void set_frame(ssgi_spatial_frame const& frame) noexcept;
+
         /// @brief whether the pass built what it records with (the renderer gates the GI chain on this)
         [[nodiscard]] bool pipeline_ready() const noexcept;
         /// @brief the pipeline the runner binds before this pass records
@@ -105,12 +130,15 @@ export namespace vulkan::pass {
         void release_owned() noexcept;
 
         bool resolved_ = false;
+        /// the filter's own width, clamped where it is set (0 = pass-through, which the shader's own branch reads)
+        float sigma_ = 2.0f;
+        ssgi_spatial_frame frame_ = {};
         VkDevice device_ = VK_NULL_HANDLE;
         VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
     };
 
     static_assert(sizeof(ssgi_spatial_pass::push_constants) == render_resource::ssgi_spatial_io.push->size,
-                  "the filter's declared push block must be the size of the struct the renderer composes");
+                  "the filter's declared push block must be the size of the struct the pass composes");
 
 } // namespace vulkan::pass

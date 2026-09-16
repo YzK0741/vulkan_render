@@ -2790,7 +2790,10 @@ namespace vulkan {
                 spec_resolved = self.record_ssgi_resolve_pass(command_buffer, spec_set, vk.gi_spec_resolve_images[index], vk.gi_spec_history_images[index], history_valid, 1.0f);
             }
         }
-        self.gi_spec_resolved = spec_resolved;
+        // THE FRAME'S ANSWER, not the renderer's: the spatial filter's `spec_weight` lane is read from it, and the
+        // filter resolves AFTER this callback (the temporal pass calls it at the end of its own recording), so the
+        // value it copies out of `frame_facts` is this frame's. See frame_constants::gi_spec_resolved.
+        self.frame_facts.gi_spec_resolved = spec_resolved;
     }
 
     bool runtime::record_ssgi_resolve_pass(VkCommandBuffer const command_buffer, VkDescriptorSet const set, VkImage const resolve_image, VkImage const history_image,
@@ -2967,7 +2970,9 @@ namespace vulkan {
     }
 
     void runtime::set_ssgi_spatial(float const sigma) noexcept {
-        this->gi_spatial_sigma = std::clamp(sigma, 0.0f, 8.0f);
+        // The filter's width is the PASS's parameter and the clamp lives with it (the rule the TAA resolve's blend
+        // weights settled), so this setter forwards rather than keeping a second copy of the value.
+        this->ssgi_spatial.set_sigma(sigma);
     }
 
     void runtime::set_ssgi_upsample(bool const enabled) noexcept {
@@ -3650,9 +3655,6 @@ namespace vulkan {
         if (&pass == static_cast<pass::frame_pass const*>(&this->ssgi_temporal)) {
             return this->resolve_ssgi_temporal(out);
         }
-        if (&pass == static_cast<pass::frame_pass const*>(&this->ssgi_spatial)) {
-            return this->resolve_ssgi_spatial(out);
-        }
         if (&pass != static_cast<pass::frame_pass const*>(&this->gi_probe)) {
             // NOT ONE OF THE PASSES STILL HAND-WRITTEN HERE, so the FRAMEWORK resolves its declaration: the
             // resource table for every own binding, target and barrier entry, the shared sets the declaration
@@ -3800,55 +3802,13 @@ namespace vulkan {
     // the command stream, because the stages carry no marks of their own (`make_pass_host` leaves the mark pair
     // null), so nothing is emitted between them.
 
-    bool runtime::resolve_ssgi_spatial(pass::resolved_io& out) {
-        core const& vk = this->vulkan_core;
-        std::size_t const index = this->current_image_index;
-        if (index >= vk.gi_spatial_images.size() || vk.gi_resolve_images.size() != vk.gi_spatial_images.size() || vk.gi_spatial_images[index] == VK_NULL_HANDLE ||
-            !this->ssgi_spatial.pipeline_ready() || this->ssgi_spatial.pipeline_layout() == VK_NULL_HANDLE) {
-            return false;
-        }
-        // The G-buffer set carries every binding this pass uses (the normal, the depth, the accumulation it reads
-        // and the image it writes), so it is written by the same accessor the tracer uses - and a frame without it
-        // has no filter, which keeps the composite's GI weight at 0.
-        this->ensure_gbuffer_descriptors();
-        VkDescriptorSet const gbuffer_set = this->gbuffer_family.set(static_cast<uint32_t>(index), 0);
-        if (gbuffer_set == VK_NULL_HANDLE) {
-            return false;
-        }
-        out.frame = this->pass_frame();
-        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
-        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
-        out.shared.gbuffer = gbuffer_set;
-        // The one image it transitions: its own storage output.
-        out.barrier_storage[0] = {.view = vk.gi_spatial_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_spatial_images[index]};
-        out.barrier_images = std::span<pass::resolved_binding const>(out.barrier_storage.data(), render_resource::ssgi_spatial_barriers.size());
-        out.pipeline_storage[0] = this->ssgi_spatial.pipeline();
-        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
-        out.pipeline_layout = this->ssgi_spatial.pipeline_layout();
-        VkExtent2D const gi = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->ssgi_spatial));
-        pass::ssgi_spatial_pass::push_constants push = {};
-        push.depth_scale = this->current_ubo.proj[2][2];
-        push.depth_offset = this->current_ubo.proj[3][2];
-        push.sigma_spatial = this->gi_spatial_sigma;
-        push.sigma_depth = this->gi_spatial_depth_sigma;
-        push.normal_power = this->gi_spatial_normal_power;
-        // The subtraction belongs to the TRACED path only: the marched one is an ADDITION to the probe ambient, so
-        // it must not remove anything. Same predicate the tracer's push uses, evaluated in the same frame, so the
-        // two cannot disagree about which path ran.
-        push.subtract_ambient = this->ssgi_traced_active() ? 1.0f : 0.0f;
-        // ... and the reflection's own accumulation is summed in by the filter at binding 15. THIS lane is about
-        // how much of it to include, and it keys on whether the reflection was actually RESOLVED this frame rather
-        // than on whether the lobe is enabled: if its descriptor set could not be had, the accumulation holds an
-        // older frame and must not be summed in. The denoise pass runs before this one, so the flag is this frame's.
-        push.spec_weight = this->gi_spec_resolved ? 1.0f : 0.0f;
-        push.gi_size = glm::vec4(static_cast<float>(gi.width), static_cast<float>(gi.height),
-                                 static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height));
-        static_assert(sizeof(push) <= pass::max_push_bytes, "the filter's push block must fit the guaranteed minimum");
-        std::memcpy(out.push_storage.data(), &push, sizeof(push));
-        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
-        out.extent = gi;
-        return true;
-    }
+    // THE SPATIAL FILTER'S RESOLVER IS GONE (S3.9), and it was the simplest of the four GI ones: its two shared sets,
+    // its one barrier image and its own pipeline are all its declaration, its extent is the declaration's `half`
+    // rule, and the push block it used to be handed is now composed by the PASS from `io.constants` (the projection
+    // terms and the two depth/normal criteria the composite's upsample shares), `io.extent`/`io.frame.extent`, its
+    // own filter width and two frame answers - which oracle ran, and whether the reflection's accumulation was
+    // resolved before this dispatch (`frame_constants::gi_spec_resolved`, the field the reflection writes). The one
+    // predicate the frame still owns is `ssgi_traced_active()`, and it arrives in the pass's frame.
 
     pass::ssgi_spec_frame runtime::make_ssgi_spec_frame() const noexcept {
         // One number: the pass's per-image first-use state is sized from the generation's image count, the same
@@ -4192,7 +4152,12 @@ namespace vulkan {
         // and must weigh 0 rather than show whatever that image happens to hold. The filter in turn
         // only runs when the temporal resolve ran, because filtering a stale accumulation would just
         // make the staleness smoother.
+        //
+        // `gi_spec_resolved` is cleared in the same place and for the same reason: the reflection writes it
+        // through the temporal pass's callback, and a frame whose reflection did not run must not leave the
+        // previous frame's answer for the filter's `spec_weight` lane to read.
         this->frame_facts.gi_resolved = false;
+        this->frame_facts.gi_spec_resolved = false;
         if (this->ssgi_active()) {
             // THE GI CHAIN, recorded as ONE call: its four stages and their order are the chain's (see
             // gi_chain in the header), and each pass's own feature gate and resolver still decide whether it
@@ -4211,6 +4176,11 @@ namespace vulkan {
             this->ssgi_trace.set_frame(this->make_ssgi_trace_frame());
             this->ssgi_spec.set_frame(this->make_ssgi_spec_frame());
             this->ssgi_temporal.set_frame(this->make_ssgi_denoise_frame(history_valid));
+            // The spatial filter's own frame: which ORACLE this frame's rays use, the one predicate that decides
+            // whether the filter removes the probe's ambient (the traced path replaces it) or leaves it alone (the
+            // marched path adds to it). It is the frame's answer rather than a knob - the ray-tracing knob, the
+            // device's ray queries and whether the structures exist - and the tracer is handed the same fact.
+            this->ssgi_spatial.set_frame(pass::ssgi_spatial_frame{.traced_oracle = this->ssgi_traced_active()});
             pass::run_report const gi_report = this->gi_chain.record(this->make_pass_host());
             static_cast<void>(gi_report);
             // The two answers the RENDERER needs from the chain, read from the passes that own them: whether the

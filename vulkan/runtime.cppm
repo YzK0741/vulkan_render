@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.64.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.65.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -429,8 +429,10 @@ namespace vulkan {
         pass::ssgi_temporal_pass& ssgi_temporal = this->passes.emplace<pass::ssgi_temporal_pass>();
         /// THE SPATIAL FILTER (vulkan.pass.ssgi_spatial): the GI chain's LAST stage, and the shape the tracer and
         /// the lobe already have - the shared scene set, the shared G-buffer set, no descriptor of its own, and
-        /// the one image it transitions (its own storage output) declared through `barrier_images`. What the
-        /// composite samples is its output, so the renderer's `gi_resolved` is read from whether it recorded.
+        /// the one image it transitions (its own storage output) declared through `barrier_images`. Its filter
+        /// width is its own parameter (`set_ssgi_spatial` forwards to it) and its push block is composed in its
+        /// own record from the frame's constants. What the composite samples is its output, so the renderer's
+        /// `gi_resolved` is read from whether it recorded.
         pass::ssgi_spatial_pass& ssgi_spatial = this->passes.emplace<pass::ssgi_spatial_pass>();
         /// THE PROBE CACHE (vulkan.pass.gi_probe): the world-space radiance cache, a pass in its own right.
         pass::gi_probe_pass& gi_probe = this->passes.emplace<pass::gi_probe_pass>();
@@ -616,22 +618,19 @@ namespace vulkan {
         // second family rather than two sets in one, because the fingerprint that decides when to rewrite
         // them is a different list of images.
         bindings::image_set_family ssgi_spec_temporal_family;
-        // Whether THIS frame's reflection was resolved, i.e. whether the spatial filter may sum the
-        // reflection's accumulation in. It is false whenever the lobe did not run, and the filter scales the
-        // accumulation out rather than reading a stale one.
-        bool gi_spec_resolved = false;
         // Per swapchain image: whether that image has a GI history yet. First frame after startup or
         // after a resize there is none, and the resolve then uses the current trace alone.
         std::vector<bool> gi_history_valid = {};
         // The GI history is accumulated with its OWN weights rather than TAA's: the signal is far
         // noisier than shading aliasing, so it wants a longer memory, and it must not be tuned by
-        // whatever the AA sliders are set to.
+        // whatever the AA sliders are set to. They are passed to the temporal pass through its frame.
         float gi_blend_static = 0.9f;
         float gi_blend_min = 0.6f;
-        // The spatial filter's knobs (see shaders/ssgi_spatial.comp). sigma_spatial is in GI texels and
-        // 0 makes the pass a pass-through, which is how its effect is measured; sigma_depth is a
-        // FRACTION of the view distance, so one value means the same thing near and far.
-        float gi_spatial_sigma = 2.0f;
+        // The spatial filter's two EDGE CRITERIA (see shaders/ssgi_spatial.comp): sigma_depth is a FRACTION of the
+        // view distance, so one value means the same thing near and far, and both are read by the composite's
+        // joint-bilateral upsample as well - which is why they are the FRAME's settings
+        // (`frame_constants::render_settings`) and not a member of either pass. The filter's WIDTH is not here:
+        // one pass reads it, so it is that pass's own parameter (`ssgi_spatial_pass::set_sigma`).
         float gi_spatial_depth_sigma = 0.02f;
         float gi_spatial_normal_power = 16.0f;
         // The GI spatial filter: a joint-bilateral pass over the temporal resolve's output, which is
@@ -2398,13 +2397,6 @@ namespace vulkan {
          * @return false when the generation or the pipeline is not there, which skips the pass WITHOUT recording
          */
         [[nodiscard]] bool resolve_ssgi_temporal(pass::resolved_io& out);
-        /**
-         * @brief resolve the spatial filter: the shared sets it binds, the storage output it transitions, its
-         *        pipeline and the push block the renderer composes
-         * @return false when the generation or the pipeline is not there, which skips the pass WITHOUT recording -
-         *         and the frame's GI weight then stays 0 (see `gi_resolved`)
-         */
-        [[nodiscard]] bool resolve_ssgi_spatial(pass::resolved_io& out);
         /**
          * @brief the extent a pass's declaration asks for (see `pass::behaviour::extent`)
          * @note the rule is a MAPPING from the declaration to a number the renderer owns, so it is applied here

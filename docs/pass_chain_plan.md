@@ -2578,6 +2578,45 @@ zero warnings. **Eleven of the sixteen resolvers are gone**; the per-pass switch
 the last one.
 
 
+## S3, NINTH SLICE: `ssgi_spatial` - THE GI CHAIN'S LAST STAGE, AND THE TWO FRAME FACTS IT NEEDED
+
+**TWELVE OF SIXTEEN RESOLVERS GONE.** The spatial filter's was the smallest of the GI four - two shared sets, one
+barrier image, its own pipeline, the declaration's `half` extent - but its push block was composed by the renderer
+because three of its lanes have owners elsewhere, and that is what this slice had to route rather than copy:
+
+* **its filter width is now the pass's** (`set_sigma`, with the 0..8 clamp moved onto the value and
+  `runtime::set_ssgi_spatial` forwarding): one pass reads `sigma_spatial`, so by the rule the TAA resolve's blend
+  weights settled it is a pass parameter. The OTHER two criteria are NOT: `sigma_depth` and `normal_power` are read by
+  the composite's joint-bilateral upsample as well, so they are the FRAME's (`render_settings`) and both passes read
+  the one copy - a divergence there is exactly the "what the filter keeps is undone by the upsample" failure mode
+  that put them in `render_settings` in the first place;
+* **which oracle ran is a FRAME field** (`ssgi_spatial_frame::traced_oracle`), the same shape and the same place as
+  `deferred_frame::gi_replaces_ambient`: the traced path replaces the probe's ambient so the filter must subtract it,
+  the marched one adds to it so it must not - one predicate, evaluated by the renderer, handed to the pass;
+* **whether the reflection resolved is a FRAME CONSTANT** (`frame_constants::gi_spec_resolved`), the second
+  mid-frame field after `gi_resolved`, and the reason is a timing one worth writing down: the reflection is recorded
+  by the renderer's callback INSIDE the temporal pass's recording, and the chain is recorded as ONE call
+  (`gi_chain.record`), so no pass frame set before the chain can carry an answer that does not exist yet - but
+  `resolve_pass` copies `frame_facts` per pass, so the filter (which resolves later in the same call) sees the value
+  the callback just wrote. **The renderer's member is deleted**: a member and a frame constant holding one frame's
+  answer is the second copy this framework keeps removing. It is cleared next to `gi_resolved` before the chain, so a
+  frame whose reflection did not run cannot leave the previous frame's answer for the `spec_weight` lane.
+
+**AND THE PUSH BLOCK MOVED INTO THE PASS**, composed in `record` from `io.constants` (the projection terms and the
+two shared criteria), `io.extent` (the GI extent from the declaration's `half` rule) and `io.frame.extent` (the
+full-resolution pair the shader's bilateral weights scale with) - every value now coming from its owner.
+
+**MEASURED, AND THIS SLICE NEEDED NO A/B EITHER.** The gate's five GI scenarios cover BOTH new flags in BOTH
+directions: `sponza_march` is the marched oracle (`subtract_ambient` 0) while `default_gi`, `sponza_gi`,
+`metal_rough_glossy` and `glossy_motion` are traced (1), and the reflection resolves in the two glossy scenarios
+(`spec_weight` 1) but not in `sponza_gi` (0). All twelve references came back unchanged - `default_gi`
+`BF180E98ADB29E7E`, `sponza_gi` `58EC848DFABE654A`, `sponza_march` `EEFBBA2515803F46`, `metal_rough_glossy`
+`46F9851B7BC89872`, `glossy_motion` `98B06F2190B49519` - with the gate at **12 x 2 = 0 changed / 0 flaky /
+0 unseeded**, all twelve validation-clean; Release, Debug and ASan build clean with `ctest` 8/8 in all three, and
+`doxygen` exits 0 with zero warnings. The per-pass switch is down to `ssgi_trace`, `ssgi_spec`, `ssgi_temporal` and
+the probe cache's inline tail.
+
+
 
 
 

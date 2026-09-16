@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.frame_constants
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // ONE FRAME'S SHARED CONSTANTS: the per-frame facts the frame loop produces and a
 // pass may read while it records.
@@ -117,6 +117,18 @@ namespace vulkan {
          * so a pass reading it reads the value as of its OWN resolution - the only point where the answer exists.
          */
         bool gi_resolved = false;
+        /**
+         * Whether THIS frame's REFLECTION accumulation was resolved, which the spatial filter's `spec_weight` lane
+         * is read from: a frame whose reflection's descriptor set could not be had must not sum an older
+         * accumulation in, and "the lobe is enabled" is not the same statement.
+         *
+         * THE SECOND MID-FRAME FIELD, and for the same reason `gi_resolved` is the first: the reflection is
+         * recorded by the renderer's own callback INSIDE the temporal pass's recording, so the answer exists only
+         * once the chain is halfway through - before the spatial filter, which is the one pass that reads it,
+         * resolves. (The renderer kept this in a member until the filter's own push block moved into the filter;
+         * a member is a second copy of a frame fact the moment the pass that reads it can read this one.)
+         */
+        bool gi_spec_resolved = false;
     };
 
 } // namespace vulkan
