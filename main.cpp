@@ -218,6 +218,14 @@ int main(int argc, char** argv) {
                         static_cast<uint32_t>(settings.render.ssgi_steps));
     start_demo.set_ssgi_spatial(settings.render.ssgi_spatial_sigma);
     start_demo.set_ssgi_upsample(settings.render.ssgi_upsample);
+    // Stochastic punctual lighting (docs/megalights.md): the switch and the sample count, with the two bias
+    // terms left at the pass's own defaults (they are self-intersection guards rather than look knobs, and the
+    // pass clamps them). OFF by default, so a stock config is the unshadowed path it always was.
+    start_demo.set_megalights(settings.render.megalights, static_cast<uint32_t>(settings.render.megalights_samples), 0.001f, 0.01f, 0.1f);
+    // ... and the chain's policy: UE's relative depth tolerance (0.03) and frame-count cap (12) for the temporal
+    // running mean, plus this chain's own spatial pre-filter width, which is the config's because it is the dial
+    // between grain and detail (see app_config's note and docs/megalights.md's measurement).
+    start_demo.set_megalights_accumulation(0.03f, 12.0f, settings.render.megalights_spatial_sigma);
     // Same bargain as the ray-traced shadows: a request the runtime grants only on a device with ray
     // queries and a built top level structure - otherwise the GI rays keep marching the depth buffer.
     runtime.set_ssgi_ray_tracing(settings.render.ssgi_ray_tracing);
@@ -392,13 +400,13 @@ int main(int argc, char** argv) {
         for (int i = 0; i < total; ++i) {
             float const t = static_cast<float>(i) / static_cast<float>(total);
             float const angle = t * 6.2831853f * 3.0f; // three turns around the scene
-            float const radius = scene_radius * 0.85f;
+            float const radius = scene_radius * settings.lighting.demo_light_radius;
             vulkan::punctual_light light = {};
             light.position = scene_sink + glm::vec3(std::cos(angle) * radius, scene_radius * (t - 0.5f), std::sin(angle) * radius);
             // hue cycle: a warm/cool strip of colors makes the per-cluster lists visible as color
             light.color = glm::vec3(0.5f + 0.5f * std::cos(angle), 0.5f + 0.5f * std::cos(angle + 2.094f), 0.5f + 0.5f * std::cos(angle + 4.188f));
             light.intensity = 12.0f;
-            light.range = scene_radius * 0.55f; // finite range: what the cluster sphere test culls on
+            light.range = scene_radius * settings.lighting.demo_light_range; // finite range: what the cluster sphere test culls on
             demo_lights.push_back(light);
         }
         utility::log("demo lights: {} procedural punctual lights around the scene (clustered light stress)", total);
@@ -531,8 +539,25 @@ int main(int argc, char** argv) {
     gui.fxaa_enabled = settings.render.fxaa;
     gui.gbuffer_debug = settings.render.gbuffer_debug; // gbuffer debug view initial state (M1)
     gui.gbuffer_channel = settings.render.gbuffer_channel;
-    gui.render_mode = settings.render.unlit ? 1 : 0;                 // render-mode combo (0 = pbr, 1 = unlit)
-    gui.taa_enabled = settings.render.taa;                           // temporal anti-aliasing (M3)
+    gui.render_mode = settings.render.unlit ? 1 : 0; // render-mode combo (0 = pbr, 1 = unlit)
+    gui.taa_enabled = settings.render.taa;           // temporal anti-aliasing (M3)
+    // ... and its TWO BLEND WEIGHTS, which the frame loop mirrors into the runtime every frame
+    // (start_demo.set_taa below). Without these two lines the config's values never reached the
+    // renderer: chores' gui_bindings defaults (0.9 / 0.5) are what set_taa received on every frame,
+    // so editing `[render] taa_blend_static` in the file changed NOTHING - measured, the flicker at a
+    // pinned close-up was byte-identical at 0.90, 0.95 and 0.98 (38.22% of pixels changing per frame
+    // in all three). `taa_enabled` alone happened to look wired because it IS copied here.
+    gui.taa_blend_static = settings.render.taa_blend_static;
+    gui.taa_blend_min = settings.render.taa_blend_min;
+    // screen-space GI: the overlay's ON/OFF fallback and its ray budget, the two controls the frame loop
+    // mirrors back into the tracer through start_demo.set_ssgi below (the rest of the chain's values -
+    // intensity, radius, steps - have no widget and stay as the config set them).
+    gui.ssgi_enabled = settings.render.ssgi;
+    gui.ssgi_rays = static_cast<float>(settings.render.ssgi_rays);
+    gui.ssgi_spatial_sigma = settings.render.ssgi_spatial_sigma;
+    gui.megalights_enabled = settings.render.megalights;
+    gui.megalights_samples = static_cast<float>(settings.render.megalights_samples);
+    gui.megalights_spatial_sigma = settings.render.megalights_spatial_sigma;
     gui.shadow_cascades = settings.render.shadow_cascades - 1;       // cascade combo index (0 = single map)
     gui.shadow_cascade_blend = settings.render.shadow_cascade_blend; // cascaded shadow maps (M4)
     gui.clustered_lights = settings.render.clustered_lights;         // clustered light culling (M5)
@@ -760,6 +785,23 @@ int main(int argc, char** argv) {
         // TAA (the engine's anti-aliasing): mirrored like the other render toggles. The jitter
         // follows automatically - it is applied to the projection when TAA is active.
         start_demo.set_taa(gui.taa_enabled, gui.taa_blend_static, gui.taa_blend_min);
+        // Screen-space GI: the overlay's ON/OFF fallback and its ray budget, mirrored every frame like the
+        // toggles above. Intensity, radius and steps are the config's and are passed through unchanged, so
+        // the first mirrored frame is exactly the startup call's. Mirroring is safe because `set_ssgi`
+        // throws the accumulation away on the off -> on EDGE only (see runtime::set_ssgi_enabled), which is
+        // what keeps the mirror from showing the raw trace forever; the tracer clamps the ray count.
+        start_demo.set_ssgi(gui.ssgi_enabled, settings.render.ssgi_intensity, settings.render.ssgi_radius,
+                            static_cast<uint32_t>(std::max(gui.ssgi_rays, 0.0f) + 0.5f), static_cast<uint32_t>(settings.render.ssgi_steps));
+        // ... and the denoiser's width, which the user's own comparison needs to be able to move: the same
+        // frame at sigma 0 / 1 / 2 is a visibly different trade between noise and how soft the dark parts
+        // look (see gui_bindings::ssgi_spatial_sigma). The pass clamps it to 0..8.
+        start_demo.set_ssgi_spatial(gui.ssgi_spatial_sigma);
+        // Stochastic punctual lighting: the overlay's switch and sample count, mirrored like the GI's - the two
+        // bias terms are the pass's constants and are passed through at their shipped values.
+        start_demo.set_megalights(gui.megalights_enabled, static_cast<uint32_t>(std::max(gui.megalights_samples, 1.0f) + 0.5f), 0.001f, 0.01f, 0.1f);
+        // ... and the chain's policy, so the overlay's own slider moves the spatial pre-filter live (0 = the
+        // temporal-only chain, which is also the A/B the measurement uses).
+        start_demo.set_megalights_accumulation(0.03f, gui.megalights_frames, gui.megalights_spatial_sigma);
 
         // Order matters for the M5/M6 mirrors: their availability checks read the state the lines
         // above just set (the debug view replaces the lighting stage, clustered lighting only exists

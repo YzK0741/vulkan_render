@@ -61,7 +61,10 @@ layout(push_constant) uniform GiTemporalPush {
     float depth_scale;   // projection[2][2]: the view-depth linearization pair, as in the tracer
     float depth_offset;  // projection[3][2]
     float mode;          // 1.0 = resolve the REFLECTION, 0.0 = the diffuse bounce (see main)
-    float unused1;
+    // How much the diffuse accumulation is still COLD: 1 = it restarted this frame (a generation change
+    // destroys the history images), 0 = converged. The renderer computes the ramp, so this lane carries the
+    // ANSWER rather than a threshold - see cold_start_mean below.
+    float cold_start;
     float unused2;
     vec4 gi_size; // xy = GI extent in texels, zw = the full-resolution extent
 } pc;
@@ -76,6 +79,44 @@ float view_depth(float z_ndc) {
     return pc.depth_offset / (z_ndc + pc.depth_scale);
 }
 
+/**
+ * @brief depth-guarded local mean of the raw trace, for the frames before the accumulation holds anything
+ * @param uv this pixel's uv
+ * @param view_here its view-space distance, the guard's reference
+ * @return the mean of the trace over the taps that are the SAME SURFACE, or this pixel's own trace value
+ *         when no tap qualifies
+ *
+ * WHY IT EXISTS: while the accumulation is empty - the frame after a generation change, because a resize or
+ * a minimize/restore destroys the history images - the half-resolution 2-ray trace IS the image, and
+ * upsampled it reads as a snowstorm exactly where nothing else lights the pixel, i.e. in the ambient-only
+ * (shadowed) regions. A local mean cuts that variance by the tap count. The depth guard is what keeps it
+ * from smearing one surface's indirect light into a neighbour's: at this resolution a geometry edge is one
+ * texel away, and those two surfaces routinely differ by more than the noise being removed.
+ *
+ * UE's spatial denoiser does the analogous thing from its own frames-accumulated texture
+ * (LumenReflectionDenoiserSpatial.usf:17/81-86: it widens its kernel while that count is low), and it is
+ * also why this is a WIDER MEAN rather than a blend toward the environment probe: on the traced path the GI
+ * REPLACES the lighting stage's ambient (see the file docs), so mixing the two estimators would count the
+ * same light twice instead of denoising one of them.
+ */
+vec3 cold_start_mean(vec2 uv, float view_here) {
+    const vec2 gi_texel = 1.0 / vec2(pc.gi_size.xy);
+    vec3 sum = vec3(0.0);
+    float taps = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            const vec2 tap_uv = uv + vec2(float(x), float(y)) * gi_texel;
+            const float tap_depth = texture(depth, tap_uv).r;
+            if (tap_depth >= 1.0 || abs(view_depth(tap_depth) - view_here) > 0.02 * view_here) {
+                continue; // background, or a different surface
+            }
+            sum += texture(gi_trace, tap_uv).rgb;
+            taps += 1.0;
+        }
+    }
+    return taps > 0.0 ? sum / taps : texture(gi_trace, uv).rgb;
+}
+
 void main() {
     const ivec2 gi_extent = ivec2(pc.gi_size.xy);
     const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -83,7 +124,10 @@ void main() {
         return; // the dispatch is rounded up to the workgroup size
     }
     const vec2 uv = (vec2(pixel) + 0.5) / vec2(gi_extent);
-    const vec3 current = texture(gi_trace, uv).rgb;
+    // This pixel's own trace value. `depth_here` is read HERE rather than below because the cold-start mean
+    // needs it as its guard's reference; the background test further down reuses it.
+    const vec3 traced = texture(gi_trace, uv).rgb;
+    const float depth_here = texture(depth, uv).r;
 
     // WHICH SIGNAL THIS DISPATCH RESOLVES. 0 is the diffuse bounce, reprojected by the SURFACE's motion and
     // disoccluded by comparing surface depths. 1 is the glossy reflection, and neither of those works for
@@ -102,12 +146,23 @@ void main() {
     // writes the 1.0 it always has.
     const float out_depth = glossy ? (hit_valid ? hit.z : -1.0) : 1.0;
 
+    // THE COLD-START WIDENING. Both of this pass's jobs are "average this frame's noisy estimate with the
+    // earlier frames'", and on the frames where there ARE no earlier frames - the first after a resize or a
+    // minimize/restore, which destroys the history images - the estimate is shown raw. That is the part a
+    // user sees: the 2-ray trace upsampled from half resolution, in the ambient-only regions where nothing
+    // else contributes. So those frames are smoothed locally instead, and the smoothing FADES OUT with the
+    // frame count: at cold_start == 0 (the accumulation has converged) `current` IS `traced`, which is what
+    // makes a converged frame byte-identical to what this pass produced before the widening existed.
+    vec3 current = traced;
+    if (pc.cold_start > 0.0 && !glossy && depth_here < 1.0) {
+        current = mix(cold_start_mean(uv, view_depth(depth_here)), traced, 1.0 - pc.cold_start);
+    }
+
     if (pc.history_valid < 0.5) {
         imageStore(gi_resolved, pixel, vec4(current, out_depth)); // nothing to blend with yet
         return;
     }
 
-    const float depth_here = texture(depth, uv).r;
     if (depth_here >= 1.0) {
         // Background: the tracer wrote 0 here anyway. This test comes BEFORE the reprojection is read on
         // purpose - the lobe skips background pixels entirely, so what `reproject` holds there is not a
@@ -163,9 +218,11 @@ void main() {
     }
 
     // Neighbourhood clamp over the RAW trace: wide, because the trace is noisy, which is the point -
-    // a tight box would cap how much history this pixel can average (see the file docs).
-    vec3 box_min = current;
-    vec3 box_max = current;
+    // a tight box would cap how much history this pixel can average (see the file docs). Seeded from
+    // `traced` and not from the widened `current`: the box means "the range this neighbourhood currently
+    // looks like", and a cold-start mean must not narrow it.
+    vec3 box_min = traced;
+    vec3 box_max = traced;
     const vec2 gi_texel = 1.0 / vec2(gi_extent);
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {

@@ -41,6 +41,7 @@ void main() {
     const surface_sample s = gather_surface(v_world_pos, v_normal, v_uv);
 
     shade_input si;
+    si.pixel = ivec2(gl_FragCoord.xy); // the cluster grid's tile coordinate (see shade_input)
     si.world_pos = v_world_pos;
     si.normal = s.normal;
     si.albedo = s.albedo;
@@ -48,6 +49,8 @@ void main() {
     si.metallic = s.metallic;
     si.roughness = s.roughness;
     si.ao = s.ao;
+    // The forward path has no GI chain behind it, so this stage always adds the diffuse ambient itself.
+    si.diffuse_ambient_scale = 1.0;
 
     const float out_alpha = ((s.flags & 32u) != 0u) ? s.alpha : 1.0;
     out_color = vec4(shade_surface(si), out_alpha);

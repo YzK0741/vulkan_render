@@ -340,6 +340,22 @@ namespace vulkan {
         std::vector<VkImage> gi_spatial_images = {};
         std::vector<VkDeviceMemory> gi_spatial_image_memories = {};
         std::vector<VkImageView> gi_spatial_image_views = {};
+        // The stochastic PUNCTUAL LIGHTING chain's first image (see docs/megalights.md): the raw estimate
+        // the trace writes, at half resolution like the GI chain's - STORAGE for the compute pass that
+        // writes it and SAMPLED for the lighting stage that adds it. One per swapchain image, because what
+        // it holds depends on the frame's jittered camera.
+        std::vector<VkImage> ml_images = {};
+        std::vector<VkDeviceMemory> ml_image_memories = {};
+        std::vector<VkImageView> ml_image_views = {};
+        // ... and the temporal resolve's two, the same half resolution: the ACCUMULATION it writes (what the
+        // lighting stage samples) and the history that becomes next frame's input - the latter written only by
+        // a copy, so TRANSFER_DST plus SAMPLED and nothing else, exactly like the GI history beside it.
+        std::vector<VkImage> ml_resolve_images = {};
+        std::vector<VkDeviceMemory> ml_resolve_image_memories = {};
+        std::vector<VkImageView> ml_resolve_image_views = {};
+        std::vector<VkImage> ml_history_images = {};
+        std::vector<VkDeviceMemory> ml_history_image_memories = {};
+        std::vector<VkImageView> ml_history_image_views = {};
         // ... and the GLOSSY pass's own two outputs, which exist so that a reflection can be accumulated
         // the way a reflection has to be rather than the way a diffuse bounce is (see the L2.3 motion
         // section of docs/gi_hit_shading.md). `gi_spec_images` is the lobe's correction for this frame -
@@ -724,7 +740,20 @@ namespace vulkan {
         // layout). `core::make_cluster_pipeline` built it against the core's own scene pipeline layout, which a
         // pass cannot own - and a pipeline only that pass names is that pass's to build and to release.
 
-        void recreate_swap_chain();
+        /**
+         * @ingroup vulkan_core
+         * @brief rebuild the swapchain and every per-generation target
+         * @return true when a NEW generation was actually built; false when the recreation was
+         *         DEFERRED because the window has no drawable size (a minimized window reports a 0x0
+         *         currentExtent, and vkCreateSwapchainKHR rejects that).
+         *
+         * THE RETURN VALUE IS NOT DECORATION. A caller that treats a deferred call as a rebuild
+         * invalidates all the per-image state - the temporal histories, the descriptor families, the
+         * layout flags - for a generation that still exists, and pays a full re-convergence for a
+         * non-event: a minimize/restore dropped the GI and TAA history twice, once for the deferred
+         * recreate and once for the real one.
+         */
+        [[nodiscard]] bool recreate_swap_chain();
         // one-time log for the "recreation deferred because the window has no drawable size" case
         // (see recreate_swap_chain); reset as soon as a recreation actually runs
         bool zero_extent_recreation_logged = false;

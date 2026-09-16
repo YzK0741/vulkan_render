@@ -289,7 +289,8 @@ namespace vulkan::bindings {
         void update_all(core const& vk, VkWriteDescriptorSet const* writes, uint32_t write_count) const;
 
         /// bindings 2-4: the three environment views, or the white placeholder while IBL is not loaded
-        void write_ibl(core const& vk, bool ibl_ready, std::span<VkImageView const> ibl_views, VkSampler env_sampler, VkImageView placeholder_view, VkSampler placeholder_sampler) const;
+        void write_ibl(core const& vk, bool ibl_ready, std::span<VkImageView const> ibl_views, VkSampler env_sampler, VkImageView cube_placeholder_view,
+                       VkImageView placeholder_view, VkSampler placeholder_sampler) const;
 
     private:
         std::array<vk_descriptor_set, core::MAX_FRAMES_IN_FLIGHT> sets = {};
@@ -414,16 +415,24 @@ namespace vulkan::bindings {
     }
 
     void scene_bindings::write_ibl(core const& vk, bool const ibl_ready, std::span<VkImageView const> const ibl_views, VkSampler const env_sampler,
-                                   VkImageView const placeholder_view, VkSampler const placeholder_sampler) const {
+                                   VkImageView const cube_placeholder_view, VkImageView const placeholder_view, VkSampler const placeholder_sampler) const {
         if (!this->created_flag) {
             return;
         }
         std::array<VkDescriptorImageInfo, 3> image_infos = {};
         for (std::size_t i = 0; i < image_infos.size(); ++i) {
             bool const use_env = ibl_ready && i < ibl_views.size();
+            // BINDINGS 2 AND 3 ARE CUBEMAPS, binding 4 is the 2D BRDF LUT: with no environment uploaded
+            // the three cannot all take the same 2D white view, because a 2D view in a cube binding is
+            // a viewType/Dim validation error. The cube slots therefore fall back to the core's neutral
+            // 1x1x6 cube (initialized to white for exactly this - see runtime::begin_recording), which
+            // keeps the fallback type-correct. VK_NULL_HANDLE means the core has no such cube, and then
+            // the 2D view is the only thing left to write.
+            bool const cube_slot = i < 2u;
+            bool const use_cube_placeholder = cube_slot && cube_placeholder_view != VK_NULL_HANDLE;
             image_infos[i] = {
-                .sampler = use_env ? env_sampler : placeholder_sampler,
-                .imageView = use_env ? ibl_views[i] : placeholder_view,
+                .sampler = (use_env || use_cube_placeholder) ? env_sampler : placeholder_sampler,
+                .imageView = use_env ? ibl_views[i] : (use_cube_placeholder ? cube_placeholder_view : placeholder_view),
                 .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             };
         }

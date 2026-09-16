@@ -183,9 +183,16 @@ namespace vulkan::pass {
         std::array<VkImageMemoryBarrier2, 4> barriers = {};
         barriers[0] = vulkan::hdr_sampling_transition; // scene_color: COLOR_ATTACHMENT -> SHADER_READ
         barriers[0].image = io.own[0].image;
-        barriers[1] = vulkan::hdr_sampling_transition; // velocity: the same transition, COLOR aspect
-        barriers[1].image = io.own[2].image;
-        uint32_t barrier_count = 2;
+        // THE MOTION VECTORS ARE NOT THIS PASS'S BARRIER ANY MORE, and they were the bug: this batch used to
+        // transition io.own[2] unconditionally, on the assumption that the TAA resolve is the frame's first
+        // sampler of the velocity (the assumption `require_velocity_publish`'s call site documents). Once an
+        // EARLIER stage publishes it - the stochastic punctual lighting chain's resolve samples it too, and its
+        // stage runs before this one - the unconditional transition claims a COLOR_ATTACHMENT old layout the
+        // image is no longer in, and the validation layer invalidates the command buffer
+        // (VUID-VkImageMemoryBarrier2-oldLayout-01197). The host now publishes it through
+        // `ensure_velocity_sampled`, which transitions only while the G-buffer's flag is still armed and
+        // consumes it, so the first sampler in the frame publishes and the rest are no-ops.
+        uint32_t barrier_count = 1;
         if (!history_valid) {
             barriers[barrier_count] = vulkan::undefined_to_sampling_transition;
             barriers[barrier_count].image = io.own[1].image;

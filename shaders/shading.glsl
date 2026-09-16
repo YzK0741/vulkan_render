@@ -450,12 +450,16 @@ int cluster_slice_of(float view_depth, int slices) {
 }
 
 /**
- * @brief cluster index of a fragment, or -1 when clustering is off (the brute-force path)
- * @param world_pos the shaded fragment's world position (its view depth picks the slice)
- * @note the tile comes from gl_FragCoord (pixels, y-down - the same convention the compute shader's
- *       dispatch uses), clamped to the active grid so an oversized screen reads a valid cluster
+ * @brief cluster index of a pixel, or -1 when clustering is off (the brute-force path)
+ * @param pixel the shaded pixel, in PIXELS from the top-left (y down - the same convention the compute
+ *        shader's dispatch uses); a fragment passes `ivec2(gl_FragCoord.xy)`
+ * @param world_pos the shaded point's world position (its view depth picks the slice)
+ * @note THE PIXEL IS A PARAMETER rather than read from gl_FragCoord, and that is what makes this file
+ *       usable from a COMPUTE shader: `shaders/megalights_trace.comp` includes it for the same BRDF and
+ *       the same cluster lists, and gl_FragCoord does not exist there. The fragment path's wrapper below
+ *       is the only place the builtin appears.
  */
-int cluster_index_of(vec3 world_pos) {
+int cluster_index_at(ivec2 pixel, vec3 world_pos) {
     if (light.cluster_grid.w < 0.5) {
         return -1;
     }
@@ -465,7 +469,7 @@ int cluster_index_of(vec3 world_pos) {
     if (tiles_x <= 0 || tiles_y <= 0 || slices <= 0) {
         return -1;
     }
-    const ivec2 tile = clamp(ivec2(gl_FragCoord.xy) / int(CLUSTER_TILE_SIZE), ivec2(0), ivec2(tiles_x - 1, tiles_y - 1));
+    const ivec2 tile = clamp(pixel / int(CLUSTER_TILE_SIZE), ivec2(0), ivec2(tiles_x - 1, tiles_y - 1));
     const float view_depth = -(camera.view * vec4(world_pos, 1.0)).z;
     return (cluster_slice_of(view_depth, slices) * tiles_y + tile.y) * tiles_x + tile.x;
 }
@@ -493,11 +497,52 @@ int cluster_light_index(int cluster, int i) {
 }
 
 /**
+ * @brief the radiance one punctual light delivers at a surface point, and where it comes from
+ * @param pl the light (the light UBO's entry)
+ * @param world_pos the receiving point
+ * @param out_to_light the unit direction from the point TOWARDS the light
+ * @param out_distance the distance to the light, in world units
+ * @return linear radiance arriving at the point, BEFORE the BRDF
+ *
+ * THE ONE DEFINITION OF A PUNCTUAL LIGHT'S ATTENUATION, extracted so that the stochastic lighting pass
+ * (`shaders/megalights_trace.comp`) and this shader's own loop cannot disagree about it: the trace pass
+ * has to evaluate a light's contribution to build its sampling PDF, and a second copy of inverse-square
+ * plus the range fade plus the spot cone is a second chance to pick different thresholds.
+ *
+ * The falloff is `1 / (1 + d^2)` rather than a physical `1 / d^2`: it is well behaved at zero distance,
+ * which is what an artist-facing intensity wants. `range` (0 = infinite) adds a smooth cutoff - the fade
+ * is SQUARED so the value and its slope both reach zero at the range boundary.
+ */
+vec3 punctual_light_radiance(const PunctualLight pl, vec3 world_pos, out vec3 out_to_light, out float out_distance) {
+    const vec3 to_light = pl.position.xyz - world_pos;
+    out_distance = length(to_light);
+    out_to_light = out_distance > 1e-6 ? to_light / out_distance : vec3(0.0, 1.0, 0.0);
+    vec3 radiance = pl.color.xyz / (1.0 + out_distance * out_distance);
+    const float range = pl.params.x;
+    if (range > 0.0) {
+        // smooth range cutoff (no hard pop at the boundary)
+        const float d = out_distance / range;
+        const float fade = clamp(1.0 - d * d, 0.0, 1.0);
+        radiance *= fade * fade;
+    }
+    if (pl.params.y > 0.5) { // spot light: cone around spot_dir
+        const float outer = pl.params.z;
+        // inner cone: cos of the inner half-angle (glTF KHR innerConeAngle, set by the CPU);
+        // w == 0 means the light did not specify one -> legacy soft-inner mix(outer, 1, 0.6)
+        const float inner = pl.params.w > 0.0 ? pl.params.w : mix(outer, 1.0, 0.6);
+        const float cone = smoothstep(outer, inner, dot(-out_to_light, normalize(pl.spot_dir.xyz)));
+        radiance *= cone;
+    }
+    return radiance;
+}
+
+/**
  * @brief everything the shading stage needs to know about one surface point
  * @note the forward path fills this from its interpolated fragment inputs, the deferred path from
  *       the G-buffer texels - which is the whole point: the lighting below cannot tell them apart
  */
 struct shade_input {
+    ivec2 pixel;    // the pixel being shaded, in PIXELS (y down); the cluster lookup's tile coordinate
     vec3 world_pos; // world-space position (view vector + shadow lookup)
     vec3 normal;    // world-space shading normal (normal-mapped, double-sided flipped)
     vec3 albedo;    // base color, linear
@@ -505,6 +550,38 @@ struct shade_input {
     float metallic; // 0 = dielectric, 1 = metal
     float roughness; // perceptual roughness
     float ao;       // ambient occlusion: scales the IBL ambient only, never the direct light
+    // 1 = this stage adds the IBL diffuse ambient, which is the normal case. 0 = the TRACED GI chain
+    // supplies the WHOLE diffuse indirect this frame, so adding it here as well counts the same light
+    // twice - the chain estimates it including the off-screen half (a ray that leaves the frame falls back
+    // to this same irradiance probe), which is why `[render] ssgi_intensity = 1.0` means "use the traced
+    // estimate" (see config.example.toml's note on the traced path).
+    //
+    // THE TERM HAS TO DISAPPEAR WHERE IT IS ADDED, and the reason is resolution rather than taste. The
+    // chain used to remove it one pass later instead (shaders/ssgi_spatial.comp's ambient_removed_at,
+    // since deleted), where the ambient it removed was evaluated at HALF resolution from the G-buffer
+    // while this line adds it per FULL-resolution pixel. The frame therefore kept the difference between
+    // the two samplings, and that difference is not a constant: the TAA jitter moves the G-buffer under
+    // both of them every frame, so it read as flicker. Measured on Sponza's interior at 1080x960 (traced
+    // GI, hit shading, 180 frames, two captures one frame apart, mean |difference| over the dark smooth
+    // surfaces): the frame moved 0.81/255 per frame with 22.8% of those pixels moving more than 1/255,
+    // against 0.07 and 0.2% with GI off - and 0.54 of the 0.81 SURVIVES with the chain's radiance estimate
+    // forced to exactly zero (`ssgi_intensity = 0`), i.e. two thirds of it was never ray noise and did not
+    // respond to the ray budget (16 rays: 0.63). Scaling the term here instead leaves nothing to
+    // disagree about, by construction.
+    float diffuse_ambient_scale;
+    /**
+     * 1 = the PUNCTUAL lights are somebody else's business this frame, so this stage must not add them.
+     *
+     * The somebody is `shaders/megalights_trace.comp` (docs/megalights.md): it samples a few of the pixel's
+     * lights, traces one visibility ray per sample and produces the shadowed estimate that the deferred
+     * lighting stage then adds back - so this loop, which knows nothing about occlusion, would double every
+     * punctual light in the frame.
+     *
+     * IT IS A RECORDED FACT RATHER THAN THE KNOB, and the difference matters: the renderer sets it from
+     * whether the stochastic pass actually recorded this frame, so a frame whose pass was gated off keeps
+     * this loop instead of losing its punctual lights entirely.
+     */
+    float punctual_replaced;
     // < 0 = no override: the shadow comes from calc_shadow() as it always did. >= 0 = use this factor
     // instead, which is how the deferred path hands in the RAY-TRACED visibility (it is a screen-space
     // lookup, so it cannot be recomputed from world_pos inside the shared lighting code). The forward
@@ -550,33 +627,19 @@ vec3 shade_surface(shade_input s) {
     // which is what makes a light count two orders of magnitude past the old four affordable. With
     // clustering off (cluster_grid.w == 0) the loop walks every active light instead, the
     // brute-force reference the clustered path is verified against.
-    const int frag_cluster = cluster_index_of(s.world_pos);
-    const int punctual_count = cluster_light_count_for(frag_cluster);
+    const int frag_cluster = cluster_index_at(s.pixel, s.world_pos);
+    const int punctual_count = s.punctual_replaced != 0.0 ? 0 : cluster_light_count_for(frag_cluster);
     for (int i = 0; i < MAX_PUNCTUAL_LIGHTS; ++i) {
         if (i >= punctual_count) {
             break;
         }
         const int light_index = cluster_light_index(frag_cluster, i);
         const PunctualLight pl = light.punctual_lights[light_index];
-        vec3 to_light = pl.position.xyz - s.world_pos;
-        const float dist = length(to_light);
-        const vec3 dir = dist > 1e-6 ? to_light / dist : vec3(0.0, 1.0, 0.0);
-        vec3 radiance = pl.color.xyz / (1.0 + dist * dist);
-        const float range = pl.params.x;
-        if (range > 0.0) {
-            // smooth range cutoff (no hard pop at the boundary)
-            const float d = dist / range;
-            const float fade = clamp(1.0 - d * d, 0.0, 1.0);
-            radiance *= fade * fade;
-        }
-        if (pl.params.y > 0.5) { // spot light: cone around spot_dir
-            const float outer = pl.params.z;
-            // inner cone: cos of the inner half-angle (glTF KHR innerConeAngle, set by the CPU);
-            // w == 0 means the light did not specify one -> legacy soft-inner mix(outer, 1, 0.6)
-            const float inner = pl.params.w > 0.0 ? pl.params.w : mix(outer, 1.0, 0.6);
-            const float cone = smoothstep(outer, inner, dot(-dir, normalize(pl.spot_dir.xyz)));
-            radiance *= cone;
-        }
+        // The attenuation is `punctual_light_radiance`'s (see its note): the stochastic lighting pass
+        // evaluates the same function to build its sampling PDF, so the two cannot drift.
+        vec3 dir;
+        float dist;
+        const vec3 radiance = punctual_light_radiance(pl, s.world_pos, dir, dist);
         if (radiance != vec3(0.0)) {
             direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, dir, radiance);
         }
@@ -590,6 +653,19 @@ vec3 shade_surface(shade_input s) {
     // Metals have no diffuse term: diffuse ambient is scaled by (1 - metallic),
     // metal color comes entirely from specular environment (matches the official mix(dielectric, metal, metallic))
     vec3 ambient = ibl_diffuse * s.albedo * s.ao * (1.0 - s.metallic);
+    // ... and dropped entirely on a frame the traced GI chain answers for the whole diffuse indirect (see
+    // shade_input). A BRANCH rather than a fifth factor, and it is not an optimisation: multiplying the
+    // finished term by 1.0 is algebraically the identity but NOT bit-identical - folding a fifth operand
+    // into the expression changes how the compiler contracts the chain, and it moved one 8-bit texel of
+    // 1036800 on the GI-off Sponza frame (blue, one step), which is the same class of change the temporal
+    // resolve's accumulation cap is guarded against in shaders/ssgi_temporal.comp. Zeroing the finished
+    // value leaves every frame that does not use the switch bit for bit what it was, and that is what makes
+    // "the GI-off and marched frames are unchanged" a check rather than a claim.
+    if (s.diffuse_ambient_scale == 0.0) {
+        ambient = vec3(0.0);
+    }
+    // The SPECULAR ambient is NOT gated: that half is removed exactly, one pass earlier, by the pass that
+    // replaces it (shaders/ssgi_spec.comp, at its own texel).
     vec3 specular_ibl = ibl_specular * fresnel_ibl * s.ao;
 
     vec3 color = ambient + direct + specular_ibl + s.emissive;

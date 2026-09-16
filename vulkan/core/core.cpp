@@ -437,7 +437,9 @@ namespace vulkan {
         image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         if (vkCreateImage(device, &image_info, nullptr, &image) != VK_SUCCESS) {
-            vkDestroyImage(device, image, nullptr);
+            // No vkDestroyImage on this path: `image` is the caller's out-parameter and vkCreateImage
+            // leaves it untouched when it fails, so destroying it here would pass a handle that was
+            // never created.
             utility::panic("failed to create depth image!");
         }
 
@@ -649,6 +651,61 @@ namespace vulkan {
                 gi_image_memories[i]);
 
             gi_image_views[i] = create_image_view(gi_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+        }
+
+        // The stochastic punctual lighting chain's raw estimate: the same allocation as the GI trace's
+        // (half resolution, STORAGE for its writer and SAMPLED for the lighting stage that adds it), and
+        // deliberately its own image rather than a reuse of the GI's - the two are different quantities
+        // produced by different passes, and the GI's is written later in the frame than this one.
+        ml_images.resize(swap_chain_image_views.size());
+        ml_image_memories.resize(swap_chain_image_views.size());
+        ml_image_views.resize(swap_chain_image_views.size());
+        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                ml_images[i],
+                ml_image_memories[i]);
+
+            ml_image_views[i] = create_image_view(ml_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+        }
+
+        // The stochastic chain's temporal resolve (docs/megalights.md): the accumulation - STORAGE for the
+        // compute pass that writes it, SAMPLED for the lighting stage that adds it, TRANSFER_SRC because it is
+        // what the next frame's history is copied FROM - and the history beside the GI chain's, written only by
+        // that copy (TRANSFER_DST | SAMPLED and nothing else).
+        ml_resolve_images.resize(swap_chain_image_views.size());
+        ml_resolve_image_memories.resize(swap_chain_image_views.size());
+        ml_resolve_image_views.resize(swap_chain_image_views.size());
+        ml_history_images.resize(swap_chain_image_views.size());
+        ml_history_image_memories.resize(swap_chain_image_views.size());
+        ml_history_image_views.resize(swap_chain_image_views.size());
+        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                ml_resolve_images[i],
+                ml_resolve_image_memories[i]);
+            ml_resolve_image_views[i] = create_image_view(ml_resolve_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+
+            create_target_image(
+                gi_width,
+                gi_height,
+                hdr_format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                ml_history_images[i],
+                ml_history_image_memories[i]);
+            ml_history_image_views[i] = create_image_view(ml_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
         }
 
         // The denoiser's resolve target (same use as the trace target: STORAGE for the compute pass
@@ -982,6 +1039,9 @@ namespace vulkan {
             destroy_images(scene_color_images, scene_color_image_memories, scene_color_image_views);
             destroy_images(taa_history_images, taa_history_image_memories, taa_history_image_views);
             destroy_images(gi_images, gi_image_memories, gi_image_views);
+            destroy_images(ml_images, ml_image_memories, ml_image_views);
+            destroy_images(ml_resolve_images, ml_resolve_image_memories, ml_resolve_image_views);
+            destroy_images(ml_history_images, ml_history_image_memories, ml_history_image_views);
             destroy_images(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
             destroy_images(gi_history_images, gi_history_image_memories, gi_history_image_views);
             destroy_images(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
@@ -1200,11 +1260,17 @@ namespace vulkan {
 
         VkDescriptorPoolCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        // No UPDATE_AFTER_BIND: the scene descriptor sets are static per frame slot (each slot's
-        // set always points at its own camera/shadow/skin/morph resources) and the shared
-        // bindings (textures/IBL/materials/instances/light) are written before the render loop
-        // starts. The texture array keeps PARTIALLY_BOUND so unwritten entries stay valid.
-        info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        // UPDATE_AFTER_BIND IS REQUIRED HERE, and the claim this comment used to make - that the scene sets are
+        // "static per frame slot" - is exactly what the top level structure's binding breaks: the structure phase
+        // REBUILDS the structure every frame (its instance list is frame data), so binding 16 is rewritten while
+        // the OTHER frame slot's command buffer is routinely still pending. Without the flag and the matching
+        // layout/binding flags the validation layer invalidates that command buffer
+        // (`VUID-vkUpdateDescriptorSets-None-03047`): measured, one root error followed by every later call on
+        // that buffer failing - 151 of them in a frame, and they appear only when a frame is still in flight,
+        // which is why a low frame rate (the demo lights) was what surfaced it. The remaining bindings stay
+        // written-once (textures/IBL/materials/instances/light are set before the render loop starts) and the
+        // texture array keeps PARTIALLY_BOUND so unwritten entries stay valid.
+        info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
         info.maxSets = 64;
         info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
         info.pPoolSizes = pool_sizes.data();
@@ -1287,6 +1353,15 @@ namespace vulkan {
         // texture array: only written entries are valid, appended before the render loop starts;
         // non-uniform indexing itself is a device feature, not a layout flag
         binding_flags[1] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+        // binding 16 is the ONE descriptor this renderer rewrites mid-flight (see the pool's comment): the
+        // structure's handle changes as the structure is rebuilt per frame, so the write cannot be avoided -
+        // only made legal. UPDATE_UNUSED_WHILE_PENDING is the second half of the pair: the frames that do not
+        // trace rays never read it, so a write during their submission is safe by construction. The flag is set
+        // only where the binding exists (a device without ray queries has no binding 16, and `flags_info`'s
+        // bindingCount follows `binding_count`).
+        if (this->ray_query_available) {
+            binding_flags[16] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
+        }
 
         VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info = {};
         flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
@@ -1295,10 +1370,10 @@ namespace vulkan {
 
         VkDescriptorSetLayoutCreateInfo layout_info = {};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        // No UPDATE_AFTER_BIND_POOL: the only binding flag left is PARTIALLY_BOUND (binding 1), which
-        // does not require the update-after-bind pool flag. The layout flag only means anything
-        // together with the pool flag - a set layout created with UPDATE_AFTER_BIND_POOL has to be
-        // allocated from a pool created with UPDATE_AFTER_BIND - and neither is needed here.
+        layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+        // The layout flag pairs with the pool flag AND with binding 16's own flag: a set layout carrying
+        // UPDATE_AFTER_BIND_POOL has to be allocated from a pool created with UPDATE_AFTER_BIND (both are set),
+        // and the flag is what makes the mid-flight rewrite of binding 16 legal.
         layout_info.bindingCount = binding_count;
         layout_info.pBindings = bindings.data();
         layout_info.pNext = &flags_info;
@@ -1561,8 +1636,11 @@ namespace vulkan {
         // Signal this frame slot's TIMELINE to the next value (GPU completion + host pacing,
         // see wait_frame_slot) and the image's binary present-ready semaphore (vkQueuePresentKHR
         // requires a binary wait; per-image so a separate present queue cannot race a re-signal).
-        // VUID-VkSubmitInfo-pNext-03241: with a timeline in the signal list the value count must
-        // equal the semaphore count (the value for the binary is ignored).
+        // VUID-VkSubmitInfo-pNext-03240 / -03241: with a VkTimelineSemaphoreSubmitInfo in the pNext
+        // chain BOTH counts must equal their semaphore counts - the wait side too, even though the
+        // semaphore being waited on is binary and its value is ignored. The count is what validation
+        // checks, so a zero waitSemaphoreValueCount next to waitSemaphoreCount = 1 is an error on
+        // every frame; only the signal side was handled before.
         uint32_t const slot = static_cast<uint32_t>(this->current_frame);
         // The value this submission asks the slot's timeline to take. It is recorded only once
         // vkQueueSubmit has accepted the submission (below): wait_frame_slot() waits on the RECORDED
@@ -1572,8 +1650,13 @@ namespace vulkan {
         constexpr VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSemaphore signal_semaphores[2] = {this->frame_done_semaphores[slot], this->present_ready_semaphores[image_index]};
         uint64_t signal_values[2] = {signal_value, 0};
+        // The wait side's value array, for the count rule above: the element is ignored (the semaphore
+        // is binary) but the count has to be there.
+        uint64_t const wait_value = 0;
         VkTimelineSemaphoreSubmitInfo timeline_info = {};
         timeline_info.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+        timeline_info.waitSemaphoreValueCount = 1;
+        timeline_info.pWaitSemaphoreValues = &wait_value;
         timeline_info.signalSemaphoreValueCount = 2;
         timeline_info.pSignalSemaphoreValues = signal_values;
 
@@ -1607,7 +1690,7 @@ namespace vulkan {
         return vkQueuePresentKHR(this->present_queue, &present_info);
     }
 
-    void core::recreate_swap_chain() {
+    bool core::recreate_swap_chain() {
         // 0. A minimized (or otherwise not-yet-sized) window reports currentExtent (0, 0). Building a
         //    swapchain and the per-image targets from that is invalid - vkCreateSwapchainKHR
         //    (VUID-VkSwapchainCreateInfoKHR-imageExtent-01689) and every vkCreateImage
@@ -1621,7 +1704,7 @@ namespace vulkan {
                 this->zero_extent_recreation_logged = true;
                 utility::log("swapchain recreation deferred: the window has no drawable size yet (minimized / live resize)");
             }
-            return;
+            return false; // NOTHING was rebuilt: the caller must not invalidate the generation's state
         }
         this->zero_extent_recreation_logged = false;
 
@@ -1707,6 +1790,9 @@ namespace vulkan {
         destroy_target_set(scene_color_images, scene_color_image_memories, scene_color_image_views);
         destroy_target_set(taa_history_images, taa_history_image_memories, taa_history_image_views);
         destroy_target_set(gi_images, gi_image_memories, gi_image_views);
+        destroy_target_set(ml_images, ml_image_memories, ml_image_views);
+        destroy_target_set(ml_resolve_images, ml_resolve_image_memories, ml_resolve_image_views);
+        destroy_target_set(ml_history_images, ml_history_image_memories, ml_history_image_views);
         destroy_target_set(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
         destroy_target_set(gi_history_images, gi_history_image_memories, gi_history_image_views);
         destroy_target_set(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
@@ -1786,6 +1872,7 @@ namespace vulkan {
                 utility::panic("failed to recreate present-ready semaphore!");
             }
         }
+        return true; // a new generation exists: every per-image target and its state must be rebuilt
     }
 
     vk_image_view core::make_depth_image_view(VkImage const image, VkFormat const format) const {

@@ -34,11 +34,17 @@ namespace utility {
      * @brief thread pool class
      */
     export class thread_pool { // NOLINT
+    public:
+        /// How the pool treats tasks still queued or running when it is destroyed. PUBLIC because the
+        /// constructor below takes one: a private type in a public signature compiles through the
+        /// default argument, but callers cannot name a non-default policy - which silently made
+        /// `discard` (implemented in thread_pool.cpp) unreachable from outside the class.
         enum class shutdown_policy : uint8_t {
             discard,
             wait,
         };
 
+    private:
         struct task {
             int priority = 0;
             std::function<void()> action;

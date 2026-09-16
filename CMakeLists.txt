@@ -31,13 +31,20 @@ endif()
 # per-config flags (Release already adds -O3 -DNDEBUG, Debug -g), so only the extras that the
 # defaults do not cover are listed here - keeping the flags duplicated here AND in the defaults
 # would put -O3 / -g on the command line twice.
+# Tuning target for Release. -march=native is right for a build on your own machine and wrong for an
+# artifact someone else downloads: a binary tuned for the building CPU can die with SIGILL on an older
+# one, which is the opposite of what the single-file Release build is for. CI publishes the executable
+# (see .github/workflows/ci.yml), so it configures with -DVR_NATIVE_ARCH=OFF to get a baseline.
+option(VR_NATIVE_ARCH "Tune Release builds for the building CPU (-march=native)" ON)
+set(VR_RELEASE_MARCH "$<IF:$<BOOL:${VR_NATIVE_ARCH}>,-march=native,-march=x86-64-v3>")
+
 set(COMPILE_OPTIONS
         $<$<CONFIG:Release>:
         -fno-rtti
         -ffunction-sections
         -fdata-sections
         -flto
-        -march=native
+        ${VR_RELEASE_MARCH}
         -fno-unwind-tables
         -fno-asynchronous-unwind-tables
         -fmerge-all-constants
@@ -132,6 +139,8 @@ target_sources(vulkancorekit
         vulkan/pass/scene.cppm
         vulkan/pass/transparent.cppm
         vulkan/pass/ssgi_trace.cppm
+        vulkan/pass/megalights_trace.cppm
+        vulkan/pass/megalights_temporal.cppm
         vulkan/pass/ssgi_spec.cppm
         vulkan/pass/ssgi_temporal.cppm
         vulkan/pass/ssgi_spatial.cppm
@@ -173,6 +182,8 @@ target_sources(vulkancorekit
         vulkan/pass/scene.cpp
         vulkan/pass/transparent.cpp
         vulkan/pass/ssgi_trace.cpp
+        vulkan/pass/megalights_trace.cpp
+        vulkan/pass/megalights_temporal.cpp
         vulkan/pass/ssgi_spec.cpp
         vulkan/pass/ssgi_temporal.cpp
         vulkan/pass/ssgi_spatial.cpp
@@ -674,6 +685,8 @@ set(VR_SHADER_SOURCES
     ssgi_spec.comp
     ssgi_temporal.comp
     ssgi_spatial.comp
+    megalights_trace.comp
+    megalights_temporal.comp
     gi_probe.comp
     rt_shadow.comp
     mask_bake.comp

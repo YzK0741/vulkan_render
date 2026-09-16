@@ -56,10 +56,20 @@ jobs:
             mingw-w64-clang-x86_64-shaderc
 
       - name: Configure (Release, Ninja)
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        # VR_NATIVE_ARCH=OFF: this job UPLOADS the executable as an artifact, and -march=native would
+        # tune it for the runner's CPU - a binary that can SIGILL on an older machine, which is the
+        # opposite of what a single-file Release build is for. Local builds keep the native default.
+        run: >-
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DVR_NATIVE_ARCH=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       - name: Build all targets (incl. tests + vulkan_render.exe)
         run: cmake --build build
+
+      # README claims this target exists "for CI"; until now nothing called it, so a formatting
+      # regression could only be caught by a human noticing the next auto-format diff.
+      - name: clang-format (dry run, warnings are errors)
+        run: cmake --build build --target clang-format-check
 
       - name: Run headless unit tests
         run: ctest --test-dir build --output-on-failure
@@ -150,9 +160,13 @@ jobs:
           -DVR_BUILD_TESTS=ON
 
       - name: Build the headless tests
+        # This list must stay equal to CMakeLists.txt's VR_TEST_TARGETS: ctest below runs every test
+        # that build registers (all eight), and a target missing here is a missing executable, which
+        # ctest reports as a failure - the job goes red for a reason that looks like a test bug.
         run: >-
           cmake --build build-asan --target
           test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit
+          test_render_resources test_pass
 
       - name: Run the headless tests under the sanitizers
         # ASAN_OPTIONS/UBSAN_OPTIONS: halt on the first finding and print a stack trace, so a report

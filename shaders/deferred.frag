@@ -53,6 +53,11 @@ layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;
 // sun term by when the light UBO says so. Written by shaders/rt_shadow.comp, which runs between the
 // G-buffer pass and this one.
 layout(set = 0, binding = 14) uniform sampler2D rt_shadow_visibility;    // the pass's single-sampled depth
+// The STOCHASTIC PUNCTUAL LIGHTING image (docs/megalights.md), through the G-buffer set's binding 17: the
+// same image the trace writes at binding 16, half resolution, added by this stage instead of by its own
+// composite pass. It is read with the G-buffer's NEAREST sampler, which is what the 2x2 gather below wants -
+// these are exact texel fetches, not a filtered read.
+layout(set = 1, binding = 17) uniform sampler2D ml_lighting;
 
 layout(push_constant) uniform DeferredPush {
     mat4 inv_view_proj; // clip (NDC xyz, w = 1) -> world position
@@ -62,16 +67,28 @@ layout(push_constant) uniform DeferredPush {
     vec4 ssao;
     // 1.0 = "unlit" render mode: write the stored albedo, unshaded (see runtime::set_unlit)
     float unlit;
-    // 1.0 = the traced GI chain replaces BOTH ambient terms this frame, so SSAO must not scale them: the
-    // chain subtracts the ambient the lighting stage added, and it subtracts the UN-occluded form (it
-    // evaluates `albedo * ao * irradiance * (1 - metallic)` from the G-buffer, where the material's baked AO
-    // is all it can see - the SSAO term is computed here and never stored). Scaling them here therefore left
-    // an `ambient * (ssao - 1)` term in the frame rather than occluding anything the chain does not already
-    // answer with real rays: measured, applying it cost -1.90 of mean green on the reference scene with 37.6%
-    // of pixels differing, on a frame whose documented intent is that SSAO does nothing at all there (see
-    // shaders/ssgi_spatial.comp's ambient_removed_at). 0.0 on the marched path and with GI off, so nothing
-    // else in the frame moves.
+    // 1.0 = the traced GI chain answers for BOTH ambient terms this frame. The DIFFUSE one is not added
+    // here at all (`si.diffuse_ambient_scale` below): the chain estimates the whole diffuse indirect -
+    // including the off-screen half, since a ray that leaves the frame falls back to this same irradiance
+    // probe - so adding it here would count that light twice, and removing it one pass later at half
+    // resolution left the frame with the difference between the two samplings (see
+    // shade_input::diffuse_ambient_scale for the measurement). The SPECULAR one IS still added here, and
+    // removed exactly by the pass that replaces it (shaders/ssgi_spec.comp, at its own texel).
+    //
+    // SSAO must not scale either of them, and that is this lane's other job: the chain's answer is
+    // UN-occluded (it evaluates `albedo * ao * irradiance * (1 - metallic)` from the G-buffer, where the
+    // material's baked AO is all it can see - the SSAO term is computed here and never stored), so scaling
+    // the ambient by SSAO here left an `ambient * (ssao - 1)` term in the frame rather than occluding
+    // anything the chain does not already answer with real rays: measured, applying it cost -1.90 of mean
+    // green on the reference scene with 37.6% of pixels differing, on a frame whose documented intent is
+    // that SSAO does nothing at all there. 0.0 on the marched path and with GI off, so nothing else in the
+    // frame moves.
     float gi_replaces_ambient;
+    // 1.0 = the stochastic punctual lighting pass ANSWERED this frame, so the cluster loop below must not add
+    // the punctual lights a second time (and this stage adds `ml_lighting` instead, see the end of main). It is
+    // set from whether that pass actually recorded, not from its knob - a frame whose pass was gated off keeps
+    // the raster loop, which is what makes the two paths exclusive rather than complementary.
+    float punctual_replaced;
 } pc;
 
 /**
@@ -194,6 +211,7 @@ void main() {
     const vec4 material = texture(gbuffer_material, v_uv);
 
     shade_input si;
+    si.pixel = ivec2(gl_FragCoord.xy); // the cluster grid's tile coordinate (see shade_input)
     si.world_pos = world_position_from_depth(v_uv, depth);
     si.normal = normal_roughness.xyz;
     si.albedo = albedo_metallic.rgb;
@@ -202,10 +220,17 @@ void main() {
     // ambient occlusion: the material's baked AO map times the screen-space term (M6). With SSAO
     // off ssao_occlusion() returns exactly 1.0, so this is the pre-M6 value bit for bit - and with the
     // traced chain running it is ALSO exactly 1.0, because that chain replaces both ambient terms and
-    // subtracts them un-occluded (see the push block's gi_replaces_ambient). Skipping the computation
-    // rather than multiplying by it is what makes an SSAO-on and an SSAO-off traced frame BIT-IDENTICAL,
-    // which is the acceptance for that: on a traced frame the rays are the occlusion.
+    // answers un-occluded (see the push block's gi_replaces_ambient). It now scales the SPECULAR ambient
+    // alone - the diffuse one is not added on this path at all (`diffuse_ambient_scale` below) - but it is
+    // still exactly 1.0 there, because the lobe's own subtraction evaluates that term un-occluded too.
+    // Skipping the computation rather than multiplying by it is what makes an SSAO-on and an SSAO-off
+    // traced frame BIT-IDENTICAL, which is the acceptance for that: on a traced frame the rays are the
+    // occlusion.
     si.ao = material.b * (pc.gi_replaces_ambient > 0.5 ? 1.0 : ssao_occlusion(v_uv, depth, si.normal));
+    // The diffuse ambient's own switch, and the ONE place the traced chain's replacement of that term is
+    // expressed on this side: 0 means the chain already carries it, so this stage adds none of it. Its own
+    // comment (shade_input::diffuse_ambient_scale) has the measurement that moved it here.
+    si.diffuse_ambient_scale = (pc.gi_replaces_ambient > 0.5) ? 0.0 : 1.0;
     // emissive is NOT re-evaluated here: the G-buffer pass already added it into the HDR target,
     // because it needs the material's emissive texture and the UVs - neither of which the G-buffer
     // stores (see gbuffer.frag). Adding it again would double it.
@@ -214,6 +239,54 @@ void main() {
     // UBO's, and it is only ever set when the pass ran and the device has ray queries - so a frame with
     // rt_shadows off samples nothing that does not exist and shades exactly as it did before.
     si.shadow_override = (light.rt_shadows > 0.5) ? texture(rt_shadow_visibility, v_uv).r : -1.0;
+    // ... and the punctual lights' own switch: with the stochastic pass having answered this frame, the cluster
+    // loop inside shade_surface adds nothing and what is added instead is `ml_lighting`, right below.
+    si.punctual_replaced = pc.punctual_replaced;
 
-    out_color = vec4(shade_surface(si), 1.0);
+    vec3 color = shade_surface(si);
+
+    // ---- the stochastic punctual lighting (docs/megalights.md) ----
+    // Added AFTER the surface is shaded, because it is a lighting term rather than a property of the surface:
+    // the stochastic pass evaluated the same BRDF from the same G-buffer, so this is the same quantity the
+    // cluster loop would have produced - with a visibility ray per sample instead of no shadow at all.
+    //
+    // THE UPSAMPLE IS A 2x2 JOINT-BILATERAL GATHER, the same shape (and the same two criteria) the composite's
+    // GI upsample uses: a half-resolution texel's value belongs to the surface it was computed FOR, so a tap
+    // only counts if it agrees on view depth and on normal. The relative depth tolerance and the normal
+    // exponent are literals here rather than push lanes - unlike the composite's, this gather has no
+    // A/B measurement behind it yet, and inventing knobs before the measurement is how a knob ends up with a
+    // value nobody can justify.
+    if (pc.punctual_replaced > 0.5) {
+        const vec2 ml_extent = vec2(textureSize(ml_lighting, 0));
+        const vec2 ml_texel = 1.0 / ml_extent;
+        const vec2 base = floor(v_uv * ml_extent - 0.5);
+        const float view_here = -length(si.world_pos - camera.camera_pos.xyz);
+        // The tolerance is relative to the pixel's own view distance: the same absolute depth error means far
+        // less at 5 units than at 50 (the argument the GI chain's filters make).
+        const float depth_tolerance = max(0.02 * abs(view_here), 1e-5);
+        vec3 ml_sum = vec3(0.0);
+        float ml_weight_sum = 0.0;
+        for (int y = 0; y <= 1; ++y) {
+            for (int x = 0; x <= 1; ++x) {
+                const vec2 tap_uv = (clamp(base + vec2(float(x), float(y)), vec2(0.0), ml_extent - 1.0) + 0.5) * ml_texel;
+                const float tap_depth = texture(gbuffer_depth, tap_uv).r;
+                if (tap_depth >= 1.0) {
+                    continue; // a background tap holds no lighting and has no view depth to compare
+                }
+                const vec3 tap_world = world_position_from_depth(tap_uv, tap_depth);
+                const float tap_view = -length(tap_world - camera.camera_pos.xyz);
+                const float depth_weight = exp(-abs(tap_view - view_here) / depth_tolerance);
+                const vec3 tap_normal = texture(gbuffer_normal, tap_uv).xyz;
+                const float normal_weight = pow(max(dot(si.normal, tap_normal), 0.0), 16.0);
+                const float weight = depth_weight * normal_weight;
+                ml_sum += texture(ml_lighting, tap_uv).rgb * weight;
+                ml_weight_sum += weight;
+            }
+        }
+        // The fallback is the filtered fetch at the pixel's own uv, which is what a sliver of geometry whose
+        // whole 2x2 block belongs to somebody else gets - the same answer the composite's upsample gives.
+        color += ml_weight_sum > 1e-5 ? ml_sum / ml_weight_sum : texture(ml_lighting, v_uv).rgb;
+    }
+
+    out_color = vec4(color, 1.0);
 }

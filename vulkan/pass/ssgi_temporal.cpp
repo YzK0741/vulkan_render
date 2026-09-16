@@ -141,6 +141,7 @@ namespace vulkan::pass {
         // ONE field, and the callback the owner installed above survives it: the frame is copied, not replaced.
         ssgi_temporal_frame frame = this->frame_;
         frame.history_valid = facts.gi_history_valid;
+        frame.cold_start = facts.gi_cold_start;
         this->set_frame(frame);
     }
 
@@ -255,6 +256,7 @@ namespace vulkan::pass {
         push.depth_scale = io.constants.proj[2][2];
         push.depth_offset = io.constants.proj[3][2];
         push.mode = 0.0f;
+        push.cold_start = this->frame_.cold_start;
         push.gi_size = glm::vec4(static_cast<float>(io.extent.width), static_cast<float>(io.extent.height),
                                  static_cast<float>(io.frame.extent.width), static_cast<float>(io.frame.extent.height));
         static_assert(sizeof(push) <= pass::max_push_bytes, "the resolve's push block must fit the guaranteed minimum");

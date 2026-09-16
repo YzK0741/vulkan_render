@@ -1,4 +1,4 @@
-// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/ssgi_spatial.cppm
@@ -40,24 +40,19 @@ import vulkan.core.handles; // vk_pipeline: the RAII owner of the compute pipeli
 export namespace vulkan::pass {
 
     /**
-     * @brief what the renderer hands the filter: whether this frame's rays were TRACED or marched
-     *
-     * ONE BOOLEAN, and it is the frame's rather than the pass's because it is not a quality knob: the traced path
-     * REPLACES the probe's ambient (so the filter must subtract it) while the marched one ADDS to that ambient (so
-     * it must not). The answer is the renderer's - the ray-tracing knob, the device's ray queries and whether the
-     * acceleration structures exist - and the tracer is handed the same fact for its own push, so the two stages
-     * cannot disagree about which oracle produced the accumulation they are looking at.
-     */
-    struct ssgi_spatial_frame {
-        bool traced_oracle = false;
-    };
-
-    /**
      * @brief the joint-bilateral filter over the temporal accumulation: the chain's last stage
      *
      * It runs after the temporal resolve - filtering a stale accumulation would only make the staleness smoother
      * - and its output is what the composite samples, so `feature()` is the CHAIN's feature and the renderer sets
      * `gi_resolved` from whether this pass recorded.
+     *
+     * IT NO LONGER TAKES A FRAME (`ssgi_spatial_frame` is gone). The one fact it carried was whether the
+     * frame's rays were traced or marched, and the only thing it decided was whether this pass had to
+     * SUBTRACT the lighting stage's diffuse ambient: the traced chain replaces that term, the marched one
+     * adds to it. That removal now happens where the term is added - `deferred_frame::gi_replaces_ambient`
+     * gates the ambient in `shaders/deferred.frag`, which is the resolution the ambient is added at - so
+     * there is nothing left for this pass to decide, and a frame built from no facts is a frame the base
+     * class's no-op `prepare_frame` already is.
      */
     class ssgi_spatial_pass final : public frame_pass {
     public:
@@ -68,8 +63,12 @@ export namespace vulkan::pass {
             float sigma_spatial = 2.0f; // in GI texels; 0 = pass-through
             float sigma_depth = 0.02f;  // relative view-depth tolerance
             float normal_power = 16.0f; // exponent on the normal agreement term
-            /// 1.0 = remove the probe's ambient from the filtered result (the traced path only: the marched one
-            /// is an ADDITION to that ambient, so it must not remove anything)
+            /// RETIRED LANE, and it stays 0.0: it used to ask the shader to remove the probe's ambient from
+            /// the filtered result (1.0 = remove, the traced path only), and that removal now happens where
+            /// the ambient is ADDED (`deferred_frame::gi_replaces_ambient` gates it in
+            /// `shaders/deferred.frag`). The lane is kept declared because the block's SHAPE is what the
+            /// declaration's pinned 48-byte push size and the test that reads it are about, and a change
+            /// about WHERE a term is removed should not move it.
             float subtract_ambient = 0.0f;
             /// 1.0 while this frame's lobe produced a reflection, 0.0 otherwise: the lane that keeps a STALE
             /// accumulation out of a frame whose reflection was not resolved
@@ -99,11 +98,6 @@ export namespace vulkan::pass {
         /// the frame's (`frame_constants::render_settings`) and this pass reads them from `io.constants`.
         void set_sigma(float sigma) noexcept;
         [[nodiscard]] float sigma() const noexcept;
-
-        /// @brief this frame's answer about which oracle produced the accumulation (see ssgi_spatial_frame)
-        void set_frame(ssgi_spatial_frame const& frame) noexcept;
-        /// @brief build this pass's frame from the published facts (see frame_pass::prepare_frame)
-        void prepare_frame(frame_facts const& facts) noexcept override;
 
         /// @brief whether the pass built what it records with (the renderer gates the GI chain on this)
         [[nodiscard]] bool pipeline_ready() const noexcept;
@@ -139,7 +133,6 @@ export namespace vulkan::pass {
         bool resolved_ = false;
         /// the filter's own width, clamped where it is set (0 = pass-through, which the shader's own branch reads)
         float sigma_ = 2.0f;
-        ssgi_spatial_frame frame_ = {};
         VkDevice device_ = VK_NULL_HANDLE;
         VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;

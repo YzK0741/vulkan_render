@@ -583,8 +583,45 @@ export namespace vulkan::pass {
         bool gi_traced = false;
         /// `ssgi_specular_active()`: the lobe's knob AND hit shading AND this frame's structure (see the note above)
         bool gi_specular = false;
+        /**
+         * `megalights_active()`: the stochastic punctual lighting knob AND its pass AND the deferred shading
+         * path. Published as a FRAME fact rather than read from the knob because the DEFERRED LIGHTING STAGE
+         * has to act on it too: when this is true the punctual lights are the stochastic pass's business and
+         * the lighting stage must not add them again (see its `punctual_replaced` lane) - the same
+         * one-predicate-two-readers arrangement `gi_traced` has with the ambient.
+         */
+        bool megalights = false;
+        /**
+         * Whether the stochastic lighting image holds THIS frame's estimate, which is a DIFFERENT fact from the
+         * one above and has to be: the lighting stage acts on it by NOT adding the punctual lights itself, and
+         * acting on the knob instead would lose them entirely on a frame where the pass was gated off (a
+         * descriptor set that could not be had, a pipeline that failed to build). The renderer sets this from
+         * the stage's own `run_report` after it records, so a frame either has the estimate or keeps the raster
+         * loop - never neither.
+         */
+        bool megalights_resolved = false;
+        /**
+         * Whether this IMAGE's stochastic accumulation may be read at all, which is the renderer's per-image
+         * bookkeeping: false on the first frame of a generation (a resize destroys the histories) and false for
+         * a frame the resolve did not record. The resolve then writes this frame's estimate with a frame count
+         * of 1 instead of averaging in whatever the allocation held.
+         */
+        bool megalights_history_valid = false;
         /// whether the accumulation the temporal resolve blends into exists FOR THIS IMAGE
         bool gi_history_valid = false;
+        /**
+         * How much the diffuse accumulation is still COLD: 1 = it restarted this frame, 0 = converged
+         * (`runtime::gi_cold_start_frames` is the ramp's length, `vulkan.pass.ssgi_temporal` applies it).
+         *
+         * WHY THE RENDERER COMPUTES IT: the accumulation restarts when the generation changes, because that
+         * is what destroys the history images (a resize, a minimize/restore). On the frames that follow there
+         * is nothing to average with, so the composite would show the RAW half-resolution 2-ray trace - which
+         * is what a user sees as a snowstorm in the shadowed, ambient-only regions. The resolve widens its
+         * estimate while this is above zero, and is byte-identical to its unwidened form once it reaches it.
+         * UE's spatial denoiser drives the same kind of widening from its frames-accumulated texture
+         * (LumenReflectionDenoiserSpatial.usf:81-86).
+         */
+        float gi_cold_start = 0.0f;
         /// `post_fxaa_active()`: the FXAA knob and the pass having built its pipeline, i.e. who writes the LDR image
         bool fxaa_resolves = false;
         /// the composed `gbuffer-debug` answer (see the note above), which is what suppresses the bloom sum

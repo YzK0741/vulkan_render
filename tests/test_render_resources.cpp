@@ -52,8 +52,8 @@ int main() {
     // ---- the schema describes itself, completely ----
     auto const schema = rr::validate_schema();
     CHECK_MSG(schema.has_value(), schema.has_value() ? "" : schema.error().c_str());
-    CHECK(rr::resource_schema.size() == 37);
-    CHECK(static_cast<uint32_t>(rr::resource_id::count_) == 38); // 37 families plus `none`
+    CHECK(rr::resource_schema.size() == 40);
+    CHECK(static_cast<uint32_t>(rr::resource_id::count_) == 41); // 40 families plus `none`
     CHECK(rr::find(rr::resource_id::none) == nullptr);
     CHECK(rr::find(rr::resource_id::probe_grid) != nullptr);
     CHECK(rr::find(rr::resource_id::probe_grid)->count == 8);      // side*4+coefficient, as core indexes it
@@ -498,7 +498,7 @@ int main() {
         CHECK(rr::deferred_io.targets[0].kind == rr::target_kind::color);
         CHECK(rr::deferred_io.barrier_images.empty()); // it moves no image of its own
         CHECK(rr::deferred_io.push.has_value());
-        CHECK(rr::deferred_io.push->size == 88);                         // mat4 + vec4 + two floats
+        CHECK(rr::deferred_io.push->size == 92);                         // mat4 + vec4 + two floats
         CHECK(rr::deferred_io.push->stages == rr::stage_flag::fragment); // the vertex stage pushes nothing
         CHECK(rr::descriptor_counts_for(rr::deferred_io, rr::deferred_io.own_set).total() == 0);
     }

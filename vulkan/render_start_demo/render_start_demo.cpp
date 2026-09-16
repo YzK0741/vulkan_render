@@ -36,6 +36,8 @@ namespace vulkan {
         this->chain_.emplace<pass::scene_pass>();
         this->chain_.emplace<pass::transparent_pass>();
         this->chain_.emplace<pass::ssgi_trace_pass>();
+        this->chain_.emplace<pass::megalights_trace_pass>();
+        this->chain_.emplace<pass::megalights_temporal_pass>();
         this->chain_.emplace<pass::ssgi_spec_pass>();
         this->chain_.emplace<pass::ssgi_temporal_pass>();
         this->chain_.emplace<pass::ssgi_spatial_pass>();
@@ -66,6 +68,8 @@ namespace vulkan {
         this->taa_ = this->find<pass::taa_pass>("taa");
         this->gbuffer_debug_ = this->find<pass::gbuffer_debug_pass>("gbuffer-debug");
         this->ssgi_trace_ = this->find<pass::ssgi_trace_pass>("ssgi_trace");
+        this->megalights_trace_ = this->find<pass::megalights_trace_pass>("megalights_trace");
+        this->megalights_temporal_ = this->find<pass::megalights_temporal_pass>("megalights_temporal");
         this->ssgi_spec_ = this->find<pass::ssgi_spec_pass>("ssgi_spec");
         this->ssgi_temporal_ = this->find<pass::ssgi_temporal_pass>("ssgi_temporal");
         this->ssgi_spatial_ = this->find<pass::ssgi_spatial_pass>("ssgi_spatial");
@@ -161,6 +165,24 @@ namespace vulkan {
                 static_cast<void>(services.ensure_gbuffer_targets_sampled(services.owner, services.cmd, services.image_index));
                 static_cast<void>(services.ensure_gbuffer_depth_sampled(services.owner, services.cmd, services.image_index));
             }
+        } else if (stage == "megalights") {
+            // THE SAME FRAME-ORDER DUTY as the ray-traced shadow's above, and it is the same constraint: this stage
+            // runs between the G-buffer pass and the lighting stage, so it may be the FIRST sampler of the stored
+            // surface this frame - the estimator reads the albedo, the normal, the material and the depth to evaluate
+            // its sampled lights, and the G-buffer instance's attachment writes have to be published before those
+            // reads. Gated on the same predicate the runner gates the stage on, so a frame that does not run it
+            // touches nothing. (Measured: without this the pass dispatched against images still in their attachment
+            // layout, which the validation layer reported as a descriptor/ layout mismatch and which left the
+            // estimate at zero.)
+            if (services.feature_active != nullptr && services.feature_active(services.owner, "megalights")) {
+                static_cast<void>(services.ensure_gbuffer_targets_sampled(services.owner, services.cmd, services.image_index));
+                static_cast<void>(services.ensure_gbuffer_depth_sampled(services.owner, services.cmd, services.image_index));
+                // ... AND THE MOTION-VECTOR TARGET, which this stage's second pass is the first sampler of: the
+                // resolve reprojects its history with it. This is the ordering rule the GI chain runs between its
+                // two halves; here both passes are in one stage, so the rule runs before either records - correct
+                // for the same reason, because nothing between them writes that target.
+                static_cast<void>(services.ensure_velocity_sampled(services.owner, services.cmd, services.image_index));
+            }
         } else if (stage == "deferred") {
             // ... and the same frame-order duty as the ray-traced shadow's above, for the same reason. Its frame is
             // the pass's own now (see pass::deferred_frame / frame_pass::prepare_frame).
@@ -172,7 +194,19 @@ namespace vulkan {
             // frame is what will publish that image, and clearing it here is what stops this stage's own accessor
             // from claiming it (and, on the debug view's path, from letting the GI chain transition it twice).
             if (services.feature_active != nullptr && services.feature_active(services.owner, stage == "taa" ? "taa" : "gbuffer-debug")) {
-                services.require_velocity_publish(services.owner, services.image_index);
+                if (stage == "taa") {
+                    // PUBLISHED, NOT CLEARED, for the TAA stage: its resolve samples the motion vectors and the
+                    // host owns that transition now (the pass used to record the barrier itself, unconditionally -
+                    // see vulkan/pass/taa.cpp). `ensure_velocity_sampled` does it only while the G-buffer's flag
+                    // is armed and consumes it, so whichever stage samples the velocity first publishes it and
+                    // the later ones are no-ops: the property that broke when the stochastic punctual lighting
+                    // chain started sampling it before this stage.
+                    static_cast<void>(services.ensure_velocity_sampled(services.owner, services.cmd, services.image_index));
+                } else {
+                    // The debug view only needs the flag out of its own accessor's way - its pass reads no motion
+                    // vector - so clearing stays right for it.
+                    services.require_velocity_publish(services.owner, services.image_index);
+                }
                 static_cast<void>(services.ensure_gbuffer_depth_sampled(services.owner, services.cmd, services.image_index));
             }
         } else if (stage == "gi_trace") {
@@ -213,6 +247,14 @@ namespace vulkan {
 
     void render_start_demo::collect(void* const owner, std::string_view const stage, runtime::frame_results& out) {
         render_start_demo& self = *static_cast<render_start_demo*>(owner);
+        if (stage == "megalights") {
+            // THE ONE ANSWER THIS STAGE GIVES THE FRAME LOOP: whether the temporal resolve wrote its accumulation,
+            // which is what sets this IMAGE's history flag for the next frame. The chain's other answer
+            // (`megalights_resolved`) is the run report's, because the lighting stage has to act on it in the SAME
+            // frame - a distinction the two names keep: this one is about the next frame, that one about this one.
+            out.megalights_temporal_resolved = self.megalights_temporal_ != nullptr && self.megalights_temporal_->resolved();
+            return;
+        }
         if (stage == "taa") {
             // The camera UBO's `prev_view_proj` is only advanced when the resolve actually wrote a history: a
             // resolve that bailed out (no descriptor set) must not claim one.
@@ -254,6 +296,28 @@ namespace vulkan {
             // ... and the same edge on the lobe's side: its two outputs are re-transitioned from UNDEFINED, which is
             // what "switched on" means for a pass that has not run yet in this generation.
             this->ssgi_spec_->reset_first_use();
+        }
+    }
+
+    void render_start_demo::set_megalights(bool const enabled, uint32_t const samples, float const min_weight, float const bias_floor, float const bias_grazing) noexcept {
+        // The same split `set_ssgi` makes: the FLAG is the runtime's (it decides whether the deferred lighting
+        // stage adds the punctual lights itself, so it is frame state the renderer publishes), the estimator's
+        // NUMBERS are the pass's and are clamped there. The return value (the off -> on edge) is ignored: there is
+        // no accumulation to restart until the temporal resolve lands.
+        if (this->runtime_ != nullptr) {
+            static_cast<void>(this->runtime_->set_megalights_enabled(enabled));
+        }
+        if (this->megalights_trace_ != nullptr) {
+            this->megalights_trace_->set_estimator(samples, min_weight, bias_floor, bias_grazing);
+        }
+    }
+
+    void render_start_demo::set_megalights_accumulation(float const depth_tolerance, float const max_frames, float const spatial_sigma) noexcept {
+        // The policy is the PASS's (see megalights_temporal_pass::set_accumulation), so this forwards the way the
+        // estimator's own setter does.
+        if (this->megalights_temporal_ != nullptr) {
+            this->megalights_temporal_->set_accumulation(depth_tolerance, max_frames);
+            this->megalights_temporal_->set_spatial(spatial_sigma);
         }
     }
 
@@ -367,6 +431,14 @@ namespace vulkan {
         if (name == "ssgi") {
             return facts.ssgi;
         }
+        if (name == "megalights") {
+            // THE STOCHASTIC PUNCTUAL LIGHTING PASS'S OWN GATE: the runtime's composed predicate (the knob, the
+            // deferred shading path, and the flat-render-mode exclusion - the pass evaluates the BRDF from the
+            // G-buffer, and the flat mode's lighting stage returns the stored albedo instead) AND the pass having
+            // built its pipeline. The same predicate is what the frame loop asks before recording the stage, so
+            // the runner and the loop cannot disagree about whether the punctual lights were handled this frame.
+            return facts.megalights && self.megalights_trace_ != nullptr && self.megalights_trace_->ready();
+        }
         if (name == "ssgi_spatial") {
             // THE CHAIN'S LAST STAGE, and the one pass whose gate is not just "the chain is on": the filter must not
             // filter a STALE accumulation, so it runs only when THIS frame's temporal resolve recorded. The answer
@@ -454,6 +526,14 @@ namespace vulkan {
         }
         if (name == "ssgi") {
             return self.ssgi_trace_ != nullptr && self.ssgi_trace_->ready();
+        }
+        if (name == "megalights") {
+            // BOTH passes, and not just the tracer, for the reason the `ssgi` answer above includes its whole
+            // chain: what the lighting stage adds is the temporal resolve's ACCUMULATION, so a chain whose
+            // resolve did not build has nothing to show and the overlay must not offer a switch that would do
+            // nothing. (This branch was MISSING when the widgets were added, which is why they were invisible:
+            // every `visible_when` on them was false.)
+            return self.megalights_trace_ != nullptr && self.megalights_trace_->ready() && self.megalights_temporal_ != nullptr && self.megalights_temporal_->ready();
         }
         if (name == "ssgi_spatial") {
             return self.ssgi_spatial_ != nullptr && self.ssgi_spatial_->ready();
@@ -600,7 +680,9 @@ namespace vulkan {
             // Which signal this dispatch resolves: 1.0 = the reflection (see the shader's `glossy`). One pipeline
             // serves both, each with a set and a history of its own.
             .mode = 1.0f,
-            .unused1 = 0.0f,
+            // The reflection keeps its own accumulation policy: the cold-start widening is the DIFFUSE
+            // signal's (its history is reprojected from the point the ray found - see ssgi_temporal.comp).
+            .cold_start = 0.0f,
             .unused2 = 0.0f,
             .gi_size = glm::vec4(static_cast<float>(gi_width), static_cast<float>(gi_height),
                                  static_cast<float>(services.frame.extent.width), static_cast<float>(services.frame.extent.height))};
@@ -630,8 +712,8 @@ namespace vulkan {
         };
         vkCmdCopyImage(services.cmd, resolve_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, history_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-        // Hand both on: the resolve to the composite, the history copy to the next frame's resolve (which finds it
-        // in TRANSFER_DST and transitions it from there).
+        // Hand both on: the resolve to the composite, the history copy to the next frame's resolve (which
+        // finds it in SHADER_READ_ONLY - the transition below already moved it out of TRANSFER_DST).
         std::array<VkImageMemoryBarrier2, 2> hand_back = {};
         hand_back[0] = vulkan::transfer_src_to_sampling_transition;
         hand_back[0].image = resolve_image;

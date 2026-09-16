@@ -411,6 +411,7 @@ namespace vulkan {
         // frame of the new generation takes the attachment -> sampled transition (see
         // ensure_velocity_sampled).
         this->velocity_written.assign(this->vulkan_core.velocity_images.size(), false);
+        this->rt_binding_written.assign(this->vulkan_core.velocity_images.size(), VK_NULL_HANDLE);
         this->gbuffer_targets_written.assign(this->vulkan_core.gbuffer_images[0].size(), false);
         // The GI accumulation starts empty for the same reason (see gi_history_valid): the first frame of
         // a generation has nothing to blend with, and it is reset HERE rather than only on the off -> on
@@ -418,6 +419,9 @@ namespace vulkan {
         // vector reads as "no history" for every frame, which silently turns the temporal resolve into a
         // pass-through of the raw trace).
         this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
+        // ... and its FRAME COUNT restarts with it: the cold-start widening is measured in frames since the
+        // accumulation restarted, and a new generation IS that restart (see frame_facts::gi_cold_start).
+        this->gi_frames_accumulated.assign(this->vulkan_core.gi_history_images.size(), 0);
         // ... and the furnace cube is a new image too, so its level has to be written again.
         this->furnace_cube_ready = false;
     }
@@ -749,7 +753,12 @@ namespace vulkan {
             views[1] = this->vulkan_core.furnace_cube_views[0];
         }
         std::span<VkImageView const> const view_span = have_ibl_views ? std::span<VkImageView const>(views) : std::span<VkImageView const>{};
-        this->scene_sets.write_ibl(this->vulkan_core, this->ibl_ready, view_span, *this->env_sampler, *this->owned_texture_views[0], *this->vulkan_core.texture_sampler);
+        // The fallback for the two CUBE slots has to BE a cube: the 2D white view below is the LUT
+        // slot's placeholder, and writing it into a samplerCube binding is the viewType/Dim validation
+        // error the comment above describes. The core's neutral 1x1x6 cube - initialized to white in
+        // begin_recording for both this and the furnace mode - is the type-correct fallback.
+        VkImageView const cube_placeholder = this->vulkan_core.furnace_cube_views.empty() ? VK_NULL_HANDLE : this->vulkan_core.furnace_cube_views[0];
+        this->scene_sets.write_ibl(this->vulkan_core, this->ibl_ready, view_span, *this->env_sampler, cube_placeholder, *this->owned_texture_views[0], *this->vulkan_core.texture_sampler);
     }
 
     void runtime::set_ibl(ibl_input const& info) {
@@ -1099,8 +1108,13 @@ namespace vulkan {
         if (this->was_minimized) {
             this->was_minimized = false;
             utility::log("window restored, recreating swapchain");
-            vk.recreate_swap_chain();
-            this->on_swapchain_recreated();
+            // Only a generation that was ACTUALLY rebuilt invalidates the per-image state. A deferred
+            // recreate (the window came back with a 0x0 drawable size) keeps every image the frame loop
+            // is holding, so resetting here would throw the temporal histories away for nothing - and a
+            // minimize/restore would then pay for two re-convergences instead of one.
+            if (vk.recreate_swap_chain()) {
+                this->on_swapchain_recreated();
+            }
         }
     }
 
@@ -1302,8 +1316,9 @@ namespace vulkan {
                                                               &this->current_image_index);
         if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
             utility::log("swapchain out of date, recreating");
-            vk.recreate_swap_chain();
-            this->on_swapchain_recreated();
+            if (vk.recreate_swap_chain()) {
+                this->on_swapchain_recreated();
+            }
             return frame_status::skipped;
         }
         if (acquire_result != VK_SUCCESS && acquire_result != VK_SUBOPTIMAL_KHR) {
@@ -1472,13 +1487,16 @@ namespace vulkan {
         vk.begin_gpu_timing(*command_buffer, static_cast<uint32_t>(vk.current_frame));
         this->gpu_mark(*command_buffer, gpu_mark_id::frame_begin, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
 
-        // The furnace verification mode's constant environment, written here and ONCE per target generation:
-        // this is the frame's first command buffer, and the environment is sampled by the SKYBOX - which runs
-        // long before the lighting stage and the GI chain - so any later point would leave the background of
-        // every frame reading the previous contents. The level is the same 1.0 the light UBO's furnace lane
-        // carries, so the analytic answer and the environment agree by construction; the IBL bindings point
-        // at this cube only while the mode is on.
-        if (this->furnace && !this->furnace_cube_ready && !vk.furnace_cube_images.empty() && vk.furnace_cube_images[0] != VK_NULL_HANDLE) {
+        // The constant 1x1x6 environment cube, written here and ONCE per target generation: this is the
+        // frame's first command buffer, and the cube is sampled by the SKYBOX - which runs long before
+        // the lighting stage and the GI chain - so any later point would leave the background of every
+        // frame reading the previous contents. Two features share it, which is why the clear is NOT
+        // gated on `furnace` any more: the furnace verification mode points the IBL bindings at it as
+        // the constant environment (level 1.0, the same value the light UBO's furnace lane carries, so
+        // the analytic answer and the environment agree by construction), and the unloaded-IBL path
+        // uses it as the type-correct CUBE placeholder (see write_ibl_bindings) - a descriptor pointing
+        // at an image nothing ever initialized is worse than one pointing at a neutral value.
+        if (!this->furnace_cube_ready && !vk.furnace_cube_images.empty() && vk.furnace_cube_images[0] != VK_NULL_HANDLE) {
             VkImageMemoryBarrier2 to_transfer = vulkan::undefined_to_transfer_dst_transition;
             to_transfer.image = vk.furnace_cube_images[0];
             to_transfer.subresourceRange.layerCount = 6; // all six faces, not the one the constant defaults to
@@ -1759,7 +1777,15 @@ namespace vulkan {
             // the pass that reads it: a null acceleration-structure descriptor is not legal without
             // nullDescriptor, so the binding becomes valid the moment a structure for that slot does.
             if (this->scene_sets.created()) {
-                this->write_rt_structure_binding(this->scene_sets.set(frame_slot), this->structures.handle(frame_slot));
+                // ONLY WHEN THE HANDLE CHANGES (see rt_binding_written): the unconditional write invalidated a
+                // frame that was still in flight, which the validation layer reports as "VkDescriptorSet ... was
+                // destroyed or updated without UPDATE_AFTER_BIND" followed by every later call on that command
+                // buffer failing.
+                VkAccelerationStructureKHR const tlas = this->structures.handle(frame_slot);
+                if (frame_slot < this->rt_binding_written.size() && this->rt_binding_written[frame_slot] != tlas) {
+                    this->write_rt_structure_binding(this->scene_sets.set(frame_slot), tlas);
+                    this->rt_binding_written[frame_slot] = tlas;
+                }
             }
         }
         // GPU timing: the structures' builds end here. Written UNCONDITIONALLY, like every other mark -
@@ -2439,7 +2465,7 @@ namespace vulkan {
         // name its sets. on_swapchain_recreated() retires the family, which is what forces the rewrite.
         // The signature is ALSO this family's descriptors-per-set (it sizes the pool - see vulkan.bindings),
         // so it has to list every binding the layout declares, not just the ones that can move together.
-        std::array<VkImageView, 16> const signature = {
+        std::array<VkImageView, 18> const signature = {
             vk.gbuffer_image_views[0][0],
             vk.gbuffer_image_views[1][0],
             vk.gbuffer_image_views[2][0],
@@ -2461,7 +2487,12 @@ namespace vulkan {
             // a reflection's correction and its reprojection belong to the frame that produced them.
             vk.gi_spec_image_views[0],
             vk.gi_spec_reproject_image_views[0],
-            vk.gi_spec_resolve_image_views[0]};
+            vk.gi_spec_resolve_image_views[0],
+            // 16 and 17: the stochastic punctual lighting chain. 16 is the storage image the TRACE writes; 17
+            // is the sampler the lighting stage adds the TEMPORAL RESOLVE's output through (the resolve's own
+            // output is written as a storage image through that pass's own set, so this set only reads it).
+            vk.ml_image_views[0],
+            vk.ml_resolve_image_views[0]};
         // One set per image with one descriptor per binding: the three stored targets, the depth, the
         // motion-vector target, the direct-radiance image the tracer samples at a hit, the raw trace it
         // writes, the accumulated image the spatial filter reads, the filtered image it writes, the four
@@ -2470,8 +2501,8 @@ namespace vulkan {
         // image_count is the generation's, signature is only the fingerprint of image 0 above - the two
         // are different things and the family needs both (see vulkan.bindings).
         auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            std::array<VkDescriptorImageInfo, 16> image_infos = {};
-            std::array<VkImageView, 16> const views = {
+            std::array<VkDescriptorImageInfo, 18> image_infos = {};
+            std::array<VkImageView, 18> const views = {
                 this->vulkan_core.gbuffer_image_views[0][image_index],
                 this->vulkan_core.gbuffer_image_views[1][image_index],
                 this->vulkan_core.gbuffer_image_views[2][image_index],
@@ -2493,13 +2524,17 @@ namespace vulkan {
                 this->vulkan_core.gi_spec_reproject_image_views[image_index],
                 // 15: the reflection's own accumulation, which the spatial filter samples and sums the
                 // diffuse one into (see shaders/ssgi_spatial.comp and ssgi_temporal.comp's mode 1).
-                this->vulkan_core.gi_spec_resolve_image_views[image_index]};
-            std::array<VkWriteDescriptorSet, 16> writes = {};
+                this->vulkan_core.gi_spec_resolve_image_views[image_index],
+                // 16 and 17: the stochastic punctual lighting chain - the trace's storage image, and the
+                // resolved lighting the lighting stage samples (see the signature above).
+                this->vulkan_core.ml_image_views[image_index],
+                this->vulkan_core.ml_resolve_image_views[image_index]};
+            std::array<VkWriteDescriptorSet, 18> writes = {};
             for (uint32_t b = 0; b < views.size(); ++b) {
-                // 6, 8, 13 and 14 are STORAGE images (a compute pass writes each) and therefore have no
+                // 6, 8, 13, 14 and 16 are STORAGE images (a compute pass writes each) and therefore have no
                 // sampler and live in GENERAL; the twelve sampler bindings are all SHADER_READ, including 15,
                 // which the spatial filter reads rather than writes.
-                bool const storage = b == 6u || b == 8u || b == 13u || b == 14u;
+                bool const storage = b == 6u || b == 8u || b == 13u || b == 14u || b == 16u;
                 // The probe cache is a 3D texture read with LINEAR filtering: the whole point of sampling
                 // it is interpolating between cells, so it cannot borrow the G-buffer's NEAREST sampler.
                 image_infos[b].sampler = storage ? VK_NULL_HANDLE : (b >= 9u && b <= 12u ? *this->vulkan_core.gi_probe_sampler : *this->vulkan_core.gbuffer_sampler);
@@ -2557,6 +2592,7 @@ namespace vulkan {
             // not have the history thrown away on each of those calls - the resolve would show the raw
             // trace forever, which looks like a denoiser running while doing nothing.
             this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
+            this->gi_frames_accumulated.assign(this->vulkan_core.gi_history_images.size(), 0);
         }
         // ... and the lobe's first-use flags are the PASS's half of that edge, which the caller applies.
         return turned_on;
@@ -2581,6 +2617,34 @@ namespace vulkan {
     // per-image transitions it was handed as a callback are the FRAME's ordering rule and run between the chain's
     // two halves (see record_main_drawcalls) - and the reflection's own recording, the last thing this file owned for
     // it, is the chain owner's now (see `chain_wiring::recreated` and vulkan.render_start_demo).
+
+    bool runtime::megalights_active() const noexcept {
+        // THE PASS'S OWN GATE, composed here for the same reason `ssgi_active` composes the GI chain's: the
+        // deferred lighting stage has to know whether to skip its raster punctual loop, and it has to give the
+        // same answer the runner gives when it decides whether to record the pass - one predicate, one answer.
+        // The flat render mode is excluded because this pass EVALUATES THE BRDF from the G-buffer and the flat
+        // mode's lighting stage returns the stored albedo instead (the same exclusion `ssgi_active` makes).
+        return this->megalights_on && this->pass_ready("megalights_trace") && this->deferred_lit_active() && !this->scene_unlit_;
+    }
+
+    bool runtime::set_megalights_enabled(bool const enabled) noexcept {
+        // Same split as `set_ssgi_enabled`: the FLAG is the renderer's (it decides whether the deferred stage
+        // adds the punctual lights itself, so it is a frame fact this renderer publishes), the sample count and
+        // the bias are the PASS's and the demo sets them. There is no history to reset on the off -> on edge
+        // yet - the chain is one pass until the temporal resolve lands (see docs/megalights.md's staging).
+        bool const was_on = this->megalights_on;
+        this->megalights_on = enabled;
+        if (enabled && !this->pass_ready("megalights_trace")) {
+            this->warn_missing_feature("megalights", "stochastic punctual lighting has no effect: its compute pipeline was not created (see the startup log)");
+        } else if (enabled && !this->clustered_lights) {
+            // Not a failure: the shader falls back to the brute-force list (cluster_index_at returns -1 and the
+            // loop walks every active light), which is the same reference path the raster shading has. Worth
+            // saying once because it is the difference between "a few samples over the pixel's lights" and "a
+            // few samples over ALL of them" in cost, not in correctness.
+            utility::log("stochastic punctual lighting: clustered culling is off, so every light is a candidate for every pixel");
+        }
+        return enabled && !was_on;
+    }
 
     bool runtime::ssgi_traced_active() const noexcept {
         return this->ssgi_active() && this->ssgi_ray_tracing && this->vulkan_core.ray_query_available && this->structures.ready();
@@ -2766,12 +2830,12 @@ namespace vulkan {
                     // every set (see the member). Everything that binds the set - the debug view, the lighting
                     // stage, the tracer, the lobe and the spatial filter - gets it from here.
                     if (self->gbuffer_set_layout_ == VK_NULL_HANDLE) {
-                        auto created = pipelines::make_gbuffer_set_layout(self->vulkan_core.device);
-                        if (!created) {
-                            utility::log("runtime: the G-buffer set layout could not be created - the deferred path is off");
-                            return VkDescriptorSetLayout{VK_NULL_HANDLE};
-                        }
-                        self->gbuffer_set_layout_ = *created;
+            auto created = pipelines::make_gbuffer_set_layout(self->vulkan_core.device);
+            if (!created) {
+            utility::log("runtime: the G-buffer set layout could not be created - the deferred path is off");
+            return VkDescriptorSetLayout{VK_NULL_HANDLE};
+            }
+            self->gbuffer_set_layout_ = *created;
                     }
                     return self->gbuffer_set_layout_;
                 }
@@ -2784,8 +2848,8 @@ namespace vulkan {
                 if (self->post_set_layout_ == VK_NULL_HANDLE) {
                     auto created = pipelines::make_post_set_layout(self->vulkan_core.device);
                     if (!created) {
-                        utility::log("runtime: the post set layout could not be created - the post chain is off");
-                        return VkDescriptorSetLayout{VK_NULL_HANDLE};
+            utility::log("runtime: the post set layout could not be created - the post chain is off");
+            return VkDescriptorSetLayout{VK_NULL_HANDLE};
                     }
                     self->post_set_layout_ = *created;
                 }
@@ -2904,6 +2968,9 @@ namespace vulkan {
         family(render_resource::resource_id::velocity, 0, vk.velocity_image_views, vk.velocity_images);
         family(render_resource::resource_id::taa_history, 0, vk.taa_history_image_views, vk.taa_history_images);
         family(render_resource::resource_id::gi_trace, 0, vk.gi_image_views, vk.gi_images);
+        family(render_resource::resource_id::ml_trace, 0, vk.ml_image_views, vk.ml_images);
+        family(render_resource::resource_id::ml_resolve, 0, vk.ml_resolve_image_views, vk.ml_resolve_images);
+        family(render_resource::resource_id::ml_history, 0, vk.ml_history_image_views, vk.ml_history_images);
         family(render_resource::resource_id::gi_resolve, 0, vk.gi_resolve_image_views, vk.gi_resolve_images);
         family(render_resource::resource_id::gi_history, 0, vk.gi_history_image_views, vk.gi_history_images);
         family(render_resource::resource_id::gi_spatial, 0, vk.gi_spatial_image_views, vk.gi_spatial_images);
@@ -3220,7 +3287,17 @@ namespace vulkan {
         return pass::frame_facts{
             .gi_traced = this->ssgi_traced_active(),
             .gi_specular = this->ssgi_specular_active(),
+            .megalights = this->megalights_active(),
+            .megalights_resolved = this->megalights_resolved,
+            .megalights_history_valid = index < this->megalights_history_valid.size() && this->megalights_history_valid[index],
             .gi_history_valid = index < this->gi_history_valid.size() && this->gi_history_valid[index],
+            // The cold-start amount the temporal resolve widens by: 1 while this image's accumulation has no
+            // frames in it, falling to 0 once `gi_cold_start_frames` frames have landed. A PIXEL's history can
+            // restart earlier than the image's (it was off screen, or its depth disagreed); those cases are the
+            // shader's own guards, and this is the image-wide part they cannot see.
+            .gi_cold_start = index < this->gi_frames_accumulated.size()
+                                 ? std::max(0.0f, 1.0f - static_cast<float>(this->gi_frames_accumulated[index]) / gi_cold_start_frames)
+                                 : 0.0f,
             .fxaa_resolves = this->post_fxaa_active(),
             .debug_view = this->active_features().gbuffer_debug,
             .cluster_count = this->cluster_tiles_x * this->cluster_tiles_y * vulkan::cluster_slice_count,
@@ -3268,6 +3345,7 @@ namespace vulkan {
         this->transparent_stage = {at("transparent")};
         this->gbuffer_debug_stage = {at("gbuffer-debug")};
         this->rt_shadow_stage = {at("rt_shadow")};
+        this->megalights_stage = {at("megalights_trace"), at("megalights_temporal")};
         this->deferred_stage = {at("deferred")};
         this->taa_stage = {at("taa")};
         this->gi_probe_stage = {at("gi_probe")};
@@ -3338,6 +3416,12 @@ namespace vulkan {
         }
         if (results.gi_temporal_resolved && this->current_image_index < this->gi_history_valid.size()) {
             this->gi_history_valid[this->current_image_index] = true;
+            // ... and that accumulation is one frame older, which is what fades the cold-start widening out
+            // (see frame_facts::gi_cold_start). Saturating: nothing reads past the ramp's end.
+            if (this->current_image_index < this->gi_frames_accumulated.size() &&
+                this->gi_frames_accumulated[this->current_image_index] < static_cast<uint32_t>(gi_cold_start_frames)) {
+                ++this->gi_frames_accumulated[this->current_image_index];
+            }
         }
         if (results.taa_wrote_history && this->current_image_index < this->image_view_proj.size()) {
             this->image_view_proj[this->current_image_index] = this->current_ubo.view_proj_unjittered;
@@ -3642,6 +3726,45 @@ namespace vulkan {
             // lighting interval look four times more expensive with rays on (measured 0.32 -> 1.18 ms
             // while the rays themselves were ~0.85 of that).
             this->gpu_mark(command_buffer, gpu_mark_id::rt_shadow_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+            // ---- the stochastic punctual lighting stage ----
+            // ITS POSITION IS THE WHOLE OF ITS CONTRACT, and it is the same constraint the ray-traced shadow
+            // stage above states: AFTER the G-buffer pass, whose stored surface is what the estimator evaluates
+            // its sampled lights against and which it traces its rays from, and BEFORE the lighting stage, which
+            // is what ADDS the result to the frame (the stochastic estimate is a lighting term, not a screen
+            // effect, so it belongs in the lit scene target where the GI chain's own input can see it).
+            //
+            // THE LIGHTING STAGE ACTS ON WHETHER THIS RECORDED, not on whether the feature is on: the run
+            // report is the answer pushed into the frame facts the lighting stage then reads, so a frame whose
+            // pass was gated off keeps the raster punctual loop instead of losing its lights. That is the same
+            // "one predicate, two readers" arrangement the traced GI chain has with the ambient, with the
+            // difference that here the predicate is a RECORDED FACT rather than a knob.
+            this->megalights_resolved = false;
+            if (this->megalights_active()) {
+                pass::stage const megalights_stage = {.name = "megalights", .passes = this->megalights_stage, .marks = false};
+                this->prepare_stage(megalights_stage, command_buffer);
+                pass::run_report const megalights_report = pass::record_stage(megalights_stage, this->make_pass_host());
+                this->megalights_resolved = megalights_report.recorded > 0;
+
+                // ... and the stage's own answer for the NEXT frame (this image's history flag), which is what
+
+                // makes the accumulation grow: without this call the resolve would restart at one frame forever.
+
+                this->collect_stage("megalights");
+            }
+            if (!this->megalights_resolved && static_cast<std::size_t>(this->current_image_index) < vk.ml_images.size() && vk.ml_images[this->current_image_index] != VK_NULL_HANDLE) {
+                // Nothing wrote the stochastic lighting image this frame, but the lighting stage's descriptor set
+                // still declares it as a shader input (binding 17) and its shader uses that binding - under a flag,
+                // but Vulkan requires a statically-used binding's descriptor to be in the layout the write declared
+                // whether or not the value ends up mattering. Nothing else touches the image here, so it would sit
+                // in UNDEFINED and every frame would be a layout error (measured: the gate's FIRST run of this
+                // change failed exactly so). UNDEFINED as the old layout asserts nothing - it discards contents
+                // rather than claiming a layout - so the transition is valid whether the image is untouched or
+                // already readable. The same answer the GI image's and the shadow map's spare layers' off paths give.
+                VkImageMemoryBarrier2 to_sampling = vulkan::undefined_to_sampling_transition;
+                to_sampling.image = vk.ml_resolve_images[this->current_image_index];
+                VkDependencyInfo const sampling_dependency = make_image_dependency_info(1, &to_sampling);
+                vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
+            }
             // THE LIGHTING STAGE IS A PASS (vulkan.pass.deferred), and what the frame still owes it is one answer
             // (whether the traced chain is replacing the ambient) plus the stage's own frame-order duty: it is a
             // sampler of the stored surface, and whoever samples it FIRST publishes the G-buffer instance's
@@ -4065,8 +4188,9 @@ namespace vulkan {
         this->cpu_timings.add(vulkan::profiling::cpu_phase::present, std::chrono::steady_clock::now() - present_started);
         if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
             utility::log("present out of date, recreating swapchain");
-            vk.recreate_swap_chain();
-            this->on_swapchain_recreated();
+            if (vk.recreate_swap_chain()) {
+                this->on_swapchain_recreated();
+            }
         } else if (present_result != VK_SUCCESS) {
             return frame_status::present_failed;
         }
@@ -4221,6 +4345,7 @@ namespace vulkan {
             .gbuffer_pass = this->gbuffer_pass_active(),
             .deferred_lit = this->deferred_lit_active(),
             .ssgi = this->ssgi_active(),
+            .megalights = this->megalights_active(),
             .ssgi_traced = this->ssgi_traced_active(),
             .ssgi_probes = this->gi_probe_active(),
             .rt_shadow = this->rt_shadows_active(),
@@ -4314,9 +4439,10 @@ namespace vulkan {
         // One line naming every optional feature, so "why does this switch do nothing?" is answerable
         // from the log alone. `on` means the pipeline exists and the feature CAN run; whether it is
         // currently switched on is the overlay's and the config's business.
-        utility::log("features: gbuffer-debug={} ssgi={} taa={} fxaa={} shadow={} clustered-lights={}",
+        utility::log("features: gbuffer-debug={} ssgi={} megalights={} taa={} fxaa={} shadow={} clustered-lights={}",
                      this->feature_available("gbuffer-debug") ? "on" : "UNAVAILABLE",
                      this->feature_available("ssgi") ? "on" : "UNAVAILABLE",
+                     this->feature_available("megalights") ? "on" : "UNAVAILABLE",
                      this->feature_available("taa") ? "on" : "UNAVAILABLE",
                      this->feature_available("fxaa") ? "on" : "UNAVAILABLE",
                      this->feature_available("shadow") ? "on" : "UNAVAILABLE",

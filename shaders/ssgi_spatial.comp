@@ -39,9 +39,18 @@
  * both but carry very different indirect light (a red wall touching a white one) still mix; and a tap
  * smaller than a texel of the GI grid is not represented at all, since the filter runs on the GI grid.
  *
- * It also owns the DIFFUSE half of the lighting stage's ambient removal - the traced estimate replaces
- * that term, so one of the two has to go (see ambient_removed_at, which also says why the specular half
- * is NOT removed here: it is removed exactly, one pass earlier).
+ * It USED to own the DIFFUSE half of the lighting stage's ambient removal: the traced estimate replaces
+ * that term, so one of the two had to go, and this pass removed it - at HALF resolution, from the
+ * G-buffer, which is the resolution this pass runs at. The SPECULAR half is removed exactly, one pass
+ * earlier, by the pass that replaces it (shaders/ssgi_spec.comp, at its own texel), and that is why this
+ * pass never touched it. The diffuse half now goes the same way, at the resolution it is ADDED at:
+ * shaders/deferred.frag does not add the diffuse ambient at all on a traced frame (see
+ * shade_input::diffuse_ambient_scale in shaders/shading.glsl). What that fixed is not tidiness - the
+ * half-resolution removal and the full-resolution addition were two samplings of the same field, and the
+ * difference between them was left in the frame as a full-resolution residual that the TAA jitter moved
+ * every frame: measured on Sponza's interior, 0.81/255 of dark-region flicker per frame against 0.07 with
+ * GI off, two thirds of which survived with the chain's radiance estimate forced to exactly zero. This
+ * pass's output is therefore a pure RADIANCE, which is what its consumers upstream always claimed it was.
  */
 
 layout(local_size_x = 8, local_size_y = 8) in;
@@ -65,20 +74,21 @@ layout(set = 1, binding = 8, rgba16f) uniform image2D gi_output;  // the filtere
 // are summed HERE rather than inside either resolve, because they are accumulated differently and only this
 // pass's work - one joint-bilateral filter over the whole indirect signal - is the same for both.
 layout(set = 1, binding = 15) uniform sampler2D gi_spec_input;
-// The surface this pass subtracts the probe's ambient for (see subtract_ambient below): the albedo and
-// metallic, the material's baked AO, and the probe itself - all of them at the pixel the filter is
-// centred on. They are in layouts this pass already binds, so declaring them costs no descriptor work.
+// The surface this pass USED to subtract the probe's ambient for (see the file header): the albedo and
+// metallic, the material's baked AO, and the probe itself, all of them read at the pixel the filter is
+// centred on. NONE of them is read any more - the removal moved to shaders/deferred.frag, where the term
+// is added - so the three declarations went with it. The bindings themselves are still in the sets this
+// pass binds, which it does not own and which other passes in the chain fill (see the pass's header).
 //
-// NOTE what is NOT here: the SPECULAR ambient. The glossy lobe (shaders/ssgi_spec.comp) takes the
-// lighting stage's specular term off at the texel it adds its own, before this filter sees either, and
-// that is deliberately not this pass's job - a subtraction here would remove the CENTRE pixel's value
+// NOTE what was NEVER here, and still is not: the SPECULAR ambient. The glossy lobe (shaders/ssgi_spec.comp)
+// takes the lighting stage's specular term off at the texel it adds its own, before this filter sees either,
+// and that is deliberately not this pass's job - a subtraction here would remove the CENTRE pixel's value
 // from a FILTERED one, which is an approximation, whereas taking it off before the filter is exact. It
 // was measured both ways (docs/gi_hit_shading.md's L2.3 section): subtracting here left a residual of
 // mean +0.0255 with 4.4% of pixels off by more than 4/255 on a frame where the lobe had nothing to add,
 // and doing it there made that frame BIT-IDENTICAL to the lobe being off - 0 pixels, same SHA256.
-layout(set = 1, binding = 0) uniform sampler2D gbuffer_albedo;    // RGBA8: albedo.rgb + metallic
-layout(set = 1, binding = 2) uniform sampler2D gbuffer_material;  // RGBA8: .b = the material's baked AO
-layout(set = 0, binding = 3) uniform samplerCube irradiance_sampler;
+// THE DIFFUSE HALF WAS THE SAME ARGUMENT, which is what eventually moved it: it was subtracted here (a
+// filtered value, at half resolution), and the exact place is where it is added.
 
 layout(push_constant) uniform SsgiSpatialPush {
     float depth_scale;   // projection[2][2]: the view-depth linearization pair, as in the tracer
@@ -86,11 +96,11 @@ layout(push_constant) uniform SsgiSpatialPush {
     float sigma_spatial; // spatial Gaussian sigma, in GI texels. 0 = the pass is a pass-through
     float sigma_depth;   // relative view-depth tolerance for the edge stop
     float normal_power;  // exponent on the normal agreement term
-    // 1.0 = remove the probe's ambient from the result before writing it (see the subtraction at the end
-    // of main). The traced GI estimates the whole diffuse indirect - its rays fall back to the probe off
-    // screen - while the lighting stage adds that same ambient for every pixel, so exactly one of the two
-    // has to go. It happens HERE because this is the last pass that still knows which surface the ambient
-    // belongs to, and because the images upstream stay radiance: that is what lets a bounce re-emit them.
+    // RETIRED, AND IT STAYS 0: this lane used to ask for the traced path's ambient removal (1.0 = remove).
+    // The removal now happens where the ambient is added (shaders/deferred.frag), so there is nothing left
+    // for this shader to subtract - and the lane is kept declared because the block's SHAPE is what the
+    // declaration's pinned 48-byte push size and its test are about, and a change about WHERE a term is
+    // removed should not move it.
     float subtract_ambient;
     // 1.0 while the glossy lobe produced this frame's reflection, 0.0 otherwise: the lane that sums its
     // accumulation in (binding 15) or scales it out entirely (see the binding's comment).
@@ -109,38 +119,20 @@ float view_depth(float z_ndc) {
     return pc.depth_offset / (z_ndc + pc.depth_scale);
 }
 
-/**
- * @brief the probe ambient the lighting stage adds for the surface at @p uv
- * @param uv the pixel (at GI resolution) whose surface the ambient belongs to
- * @return the ambient term to remove from this pass's output, or 0 when nothing is removed
- *
- * The traced GI estimates the WHOLE diffuse indirect - its rays fall back to the probe off screen - while
- * the lighting stage adds `ibl_diffuse(normal) * albedo * ao * (1 - metallic)` for every pixel, so exactly
- * one of the two has to go or the off-screen part is counted twice. It is removed HERE because this is the
- * last pass of the chain that still knows which surface the ambient belongs to - which is also what lets
- * the images upstream stay pure RADIANCE, and that is what a bounce has to re-emit.
- *
- * The diffuse term has to be removed here, and that is not an accident of history: the upsteam image has
- * to stay a radiance because the multi-bounce feedback re-emits it at a hit, and this is the last pass
- * before that image becomes a picture. The SPECULAR ambient is the case that CAN be handled exactly, and
- * is (see the binding comment above and shaders/ssgi_spec.comp): the glossy lobe takes the lighting
- * stage's term off at the texel it adds its own, before this filter sees either, which is why it costs
- * this pass nothing and why a frame where its rays find no geometry is bit-identical to the lobe being
- * off. The difference is what makes one of them safe pre-filter and the other not: the glossy lobe
- * requires hit shading, and hit shading is what makes the bounce feedback unreachable.
- *
- * SSAO is deliberately not part of it: it lives in the lighting stage and is never stored, so a traced
- * frame's occlusion answer is its rays rather than the depth heuristic.
- */
-vec3 ambient_removed_at(vec2 uv) {
-    if (pc.subtract_ambient < 0.5) {
-        return vec3(0.0); // the marched path is an ADDITION to that ambient, so nothing is removed
-    }
-    const vec4 albedo_metallic = texture(gbuffer_albedo, uv);
-    const vec3 normal = texture(gbuffer_normal, uv).xyz;
-    const float ao = texture(gbuffer_material, uv).b;
-    return albedo_metallic.rgb * ao * texture(irradiance_sampler, normal).rgb * (1.0 - albedo_metallic.a);
-}
+// WHERE `ambient_removed_at` WAS, and why it is not here any more - kept next to the deletion so the next
+// reader finds the reason rather than the gap. The traced GI estimates the WHOLE diffuse indirect (its rays
+// fall back to the probe off screen) while the lighting stage added `ibl_diffuse(normal) * albedo * ao *
+// (1 - metallic)` for every pixel, so exactly one of the two had to go. It was removed here, and the reason
+// given was that this is the last pass of the chain that still knows which surface the ambient belongs to.
+// The lighting stage knows the same surface - it is where the term is ADDED - and that is the placement that
+// costs nothing: the two samplings agree by construction, with no residual left in the frame. What the old
+// placement left is the measurement in the file header: a full-resolution residual that the TAA jitter moved
+// every frame, 0.81/255 of dark-region flicker against 0.07 with GI off, two thirds of it independent of the
+// ray budget. The upstream images stay radiance (the multi-bounce feedback re-emits them) - the other half of
+// the old argument, unchanged by the move: this pass's output is now a radiance too.
+//
+// SSAO was deliberately not part of it and still is not: it lives in the lighting stage and is never stored,
+// so a traced frame's occlusion answer is its rays rather than the depth heuristic.
 
 void main() {
     const ivec2 gi_extent = ivec2(pc.gi_size.xy);
@@ -164,11 +156,12 @@ void main() {
         imageStore(gi_output, pixel, vec4(0.0)); // background: nothing wrote GI here either
         return;
     }
-    // The probe ambient the lighting stage adds for THIS surface, removed from whatever this pass writes
-    // (see ambient_removed_at).
-    const vec3 ambient_removed = ambient_removed_at(uv);
+    // NOTHING IS SUBTRACTED HERE ANY MORE: what this pass writes is the radiance the accumulation holds,
+    // filtered - the traced chain's replacement of the lighting stage's diffuse ambient happens where that
+    // ambient is added (see the tombstone comment above `main`). The marched path is untouched by the move:
+    // it was always an ADDITION to that ambient, so it had nothing to remove.
     if (pc.sigma_spatial <= 0.0) {
-        imageStore(gi_output, pixel, vec4(center - ambient_removed, 1.0)); // the off switch, for A/B measurement
+        imageStore(gi_output, pixel, vec4(center, 1.0)); // the off switch, for A/B measurement
         return;
     }
 
@@ -207,5 +200,5 @@ void main() {
     // The centre tap (offset 0,0) is always taken - its three weights are all exactly 1 - so
     // weight_sum >= 1 and the division cannot blow up. That is also why a fully edge-rejected
     // neighbourhood degrades to "no filtering" instead of to black.
-    imageStore(gi_output, pixel, vec4((sum / weight_sum) - ambient_removed, 1.0));
+    imageStore(gi_output, pixel, vec4(sum / weight_sum, 1.0));
 }

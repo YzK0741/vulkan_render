@@ -112,7 +112,9 @@ export namespace vulkan {
         [[nodiscard]] vma_allocator& get_vma() noexcept;
 
         // ---- swapchain handling ----
-        void recreate_swap_chain() const;
+        /// @return true when a new generation was actually built; false when the recreate was deferred
+        ///         (0x0 window) and nothing died - see core::recreate_swap_chain's return value
+        [[nodiscard]] bool recreate_swap_chain() const;
     };
 
     /**

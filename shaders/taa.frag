@@ -70,6 +70,17 @@ vec2 texel_size() {
     return vec2(pc.texel_size_x, pc.texel_size_y);
 }
 
+/// @brief linear RGB -> YCoCg (the space the neighborhood clamp is computed in, see resolve)
+vec3 rgb_to_ycocg(vec3 c) {
+    return vec3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, -0.25 * c.r + 0.5 * c.g - 0.25 * c.b);
+}
+
+/// @brief YCoCg -> linear RGB
+vec3 ycocg_to_rgb(vec3 c) {
+    const float t = c.x - c.z;
+    return vec3(t + c.y, c.x + c.z, t - c.y);
+}
+
 /**
  * @brief view-space distance of a depth-buffer sample (same inversion as gbuffer_debug.frag)
  */
@@ -86,12 +97,16 @@ vec3 resolve(vec2 uv) {
     const vec3 center = texture(current_color, uv).rgb;
     const vec2 motion = texture(velocity, uv).rg;
 
-    // ---- the current frame's local range (a 3x3 cross of the resampled color) ----
-    vec3 neighborhood_min = center;
-    vec3 neighborhood_max = center;
+    // ---- the current frame's local range, computed in YCoCg (variant B) ----
+    // A per-channel RGB min/max box lets ONE channel's outlier widen the other two: on a surface whose
+    // luma is aliasing (a specular highlight, a normal-mapped edge) the chroma is dragged along with it,
+    // and the history is then clamped in a direction it never moved. YCoCg decorrelates luma from the
+    // two chroma axes, so the box is tight where the signal is quiet and wide only where it truly moves.
+    vec3 neighborhood_min = rgb_to_ycocg(center);
+    vec3 neighborhood_max = neighborhood_min;
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
-            const vec3 sample_color = texture(current_color, uv + vec2(float(x), float(y)) * texel_size()).rgb;
+            const vec3 sample_color = rgb_to_ycocg(texture(current_color, uv + vec2(float(x), float(y)) * texel_size()).rgb);
             neighborhood_min = min(neighborhood_min, sample_color);
             neighborhood_max = max(neighborhood_max, sample_color);
         }
@@ -118,7 +133,7 @@ vec3 resolve(vec2 uv) {
     }
 
     // ---- rejection: pull a stale history value into what this pixel looks like now ----
-    history = clamp(history, neighborhood_min, neighborhood_max);
+    history = ycocg_to_rgb(clamp(rgb_to_ycocg(history), neighborhood_min, neighborhood_max));
 
     // ---- blend, trusting the history less the faster the pixel moves ----
     const float speed = length(motion / texel_size()); // motion in pixels

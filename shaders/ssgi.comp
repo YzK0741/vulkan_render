@@ -129,12 +129,13 @@ layout(push_constant) uniform SsgiPush {
     // size's own scale rather than a scene's.
     vec4 params;
     // x = projection[2][2], y = [3][2] (the view-depth linearization pair).
-    // z/w are FREE LANES, deliberately: this block is exactly 128 bytes - the smallest push-constant
-    // range Vulkan guarantees - so a lane has to be freed before one can be spent. The GI extent used to
-    // live in z/w and does not need to: the storage image this pass writes knows its own size
-    // (imageSize(gi_output) below), which is a fact about the dispatch rather than about the frame.
-    // z is where the hit-shading mode will go (see rt_hit_radiance: today a hit's radiance is the
-    // screen's, and the step that makes it the hit surface's own needs a lane to be A/B-able).
+    // z/w carry the acceleration structure's instance table as two 32-bit halves, recombined into the
+    // 64-bit device address the hit shader dereferences (see the instance-table reconstruction below).
+    // They are no longer free lanes: this block is exactly 128 bytes - the smallest push-constant range
+    // Vulkan guarantees - so the address travels as two floats rather than one 64-bit lane precisely to
+    // stay inside it. The GI extent is NOT here and does not need to be: the storage image this pass
+    // writes knows its own size (imageSize(gi_output) below), a fact about the dispatch rather than
+    // about the frame.
     vec4 proj_terms;
     // x = a per-frame counter, so the ray sequence differs every frame. A temporal denoiser needs
     // that: a fixed sequence would keep making the same mistake in the same place.

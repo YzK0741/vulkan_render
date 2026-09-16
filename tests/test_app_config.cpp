@@ -1,6 +1,7 @@
 // Headless unit tests: app_config (pure CPU) ===================================
-// The test executable runs with the repository root as working directory (see
-// CMakeLists.txt VR_BUILD_TESTS block), so fixtures are referenced relative to it.
+// The test executable runs in the build's per-test scratch directory (see the CMakeLists.txt
+// VR_BUILD_TESTS block), so fixtures are addressed through the absolute VR_TEST_SOURCE_DIR the
+// build injects rather than relative to the working directory.
 #include "vk_test.h"
 
 #include <string_view>

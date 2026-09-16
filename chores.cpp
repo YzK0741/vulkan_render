@@ -88,7 +88,11 @@ namespace chores {
         std::filesystem::path current = std::filesystem::current_path();
         for (int depth = 0; depth < 4; ++depth) {
             std::filesystem::path candidate = current / "shaders";
-            if (std::filesystem::is_directory(candidate)) {
+            // The SAME probe as the executable-relative check above, deliberately: a directory named
+            // `shaders` that holds no compiled SPIR-V (the source tree's own, since the build writes
+            // the .spv into the build tree) is not the answer this function is looking for - returning
+            // it only moves the failure into a much less clear "cannot open shader file" panic.
+            if (std::filesystem::is_regular_file(candidate / "pbr.vert.spv")) {
                 return candidate;
             }
             std::filesystem::path const parent = current.parent_path();
@@ -251,6 +255,23 @@ namespace chores {
             std::vector<unsigned char> compute_code;
             load_shader(shaders_dir, "ssgi.comp.spv", compute_code);
             runtime.register_shader("ssgi.comp.spv", compute_code);
+            // Stochastic punctual lighting (docs/megalights.md): sample a few of each pixel's clustered lights
+            // and trace one visibility ray per sample. OPTIONAL - without it the lighting stage's raster
+            // punctual loop stands, which is the unshadowed path every frame before this feature existed had,
+            // and `runtime::megalights_active()` then keeps the frame from recording the pass (so the knob-off
+            // frame is byte-identical by construction: the gate's four scenarios were verified to that).
+            //
+            // IT IS A PASS: the app registers the shader and the pass builds its own pipeline layout and compute
+            // pipeline from it (see vulkan.pass.megalights_trace) - `create_passes()` below runs that step.
+            std::vector<unsigned char> megalights_code;
+            load_shader(shaders_dir, "megalights_trace.comp.spv", megalights_code);
+            runtime.register_shader("megalights_trace.comp.spv", megalights_code);
+            // ... and the chain's temporal resolve, required like the GI denoiser: what the lighting stage adds
+            // is the ACCUMULATION, so a chain whose resolve is missing has nothing to add and
+            // runtime::megalights_active() stays false - the rule the GI chain's three passes already follow.
+            std::vector<unsigned char> megalights_temporal_code;
+            load_shader(shaders_dir, "megalights_temporal.comp.spv", megalights_temporal_code);
+            runtime.register_shader("megalights_temporal.comp.spv", megalights_temporal_code);
             // The denoiser's temporal resolve, next to the tracer it denoises. Required, not optional:
             // the composite samples the FILTERED image, so GI with any pass of the chain missing has
             // nothing to show and runtime::ssgi_active() stays false.
@@ -410,6 +431,50 @@ namespace chores {
             make_ssao_slider("ssao radius", &bindings.ssao_radius, 0.05f, 3.0f);
             make_ssao_slider("ssao intensity", &bindings.ssao_intensity, 0.0f, 1.0f);
             make_ssao_slider("ssao samples", &bindings.ssao_samples, 1.0f, 16.0f);
+        }
+        // screen-space global illumination: the ON/OFF fallback and its ray budget, offered only when the
+        // chain exists (the same predicate the startup log reports as "ssgi=on/UNAVAILABLE"). No callback
+        // here - main mirrors both fields into the runtime every frame, exactly like TAA's, and
+        // `set_ssgi` is edge-triggered on the off -> on transition so the GI accumulation is discarded
+        // once rather than on every frame of the mirror.
+        //
+        // The RAY SLIDER is the second half of the fallback and not decoration: with the half-resolution
+        // ambient removal moved to where the ambient is added, the remaining dark-region flicker is the
+        // 2-ray estimate's own variance - 0.56/255 at the default against 0.28 at 16 rays (measured, same
+        // frame and scene as the checkbox's note) - so on a machine with headroom this is the knob that
+        // turns "noisy" into "converged" without giving up the indirect light. It costs what the config
+        // says it costs: `ssgi_rays` x `ssgi_steps` is the per-frame ray budget.
+        {
+            auto ssgi = std::make_unique<vulkan::gui::checkbox_widget>("ssgi", &bindings.ssgi_enabled);
+            ssgi->visible_when = [&runtime] { return runtime.feature_available("ssgi"); };
+            panel.push_back(std::move(ssgi));
+            auto ssgi_rays = std::make_unique<vulkan::gui::slider_widget>("ssgi rays", &bindings.ssgi_rays, 1.0f, 16.0f);
+            ssgi_rays->visible_when = [&runtime] { return runtime.feature_available("ssgi"); };
+            panel.push_back(std::move(ssgi_rays));
+            // ... and the denoiser's width, which is the "the dark parts went soft" knob rather than a
+            // quality dial: 0 makes the spatial filter a pass-through (the noisiest, sharpest setting) and
+            // 2 is the shipped compromise. See gui_bindings::ssgi_spatial_sigma for the measured curve.
+            auto ssgi_sigma = std::make_unique<vulkan::gui::slider_widget>("ssgi sigma", &bindings.ssgi_spatial_sigma, 0.0f, 8.0f);
+            ssgi_sigma->visible_when = [&runtime] { return runtime.feature_available("ssgi"); };
+            panel.push_back(std::move(ssgi_sigma));
+        }
+        // stochastic punctual lighting: the shadows the point and spot lights never had (docs/megalights.md).
+        // Offered only when the chain exists, and mirrored into the runtime every frame by main like the rest.
+        // The SAMPLE COUNT is the estimator's ray budget per half-resolution pixel: cost and noise both scale
+        // with it, which is why it sits next to the switch rather than in the config alone.
+        {
+            auto megalights = std::make_unique<vulkan::gui::checkbox_widget>("megalights", &bindings.megalights_enabled);
+            megalights->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
+            panel.push_back(std::move(megalights));
+            auto samples = std::make_unique<vulkan::gui::slider_widget>("ml samples", &bindings.megalights_samples, 1.0f, 4.0f);
+            auto ml_frames = std::make_unique<vulkan::gui::slider_widget>("ml history", &bindings.megalights_frames, 1.0f, 12.0f);
+            ml_frames->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
+            panel.push_back(std::move(ml_frames));
+            auto ml_sigma = std::make_unique<vulkan::gui::slider_widget>("ml sigma", &bindings.megalights_spatial_sigma, 0.0f, 4.0f);
+            ml_sigma->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
+            panel.push_back(std::move(ml_sigma));
+            samples->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
+            panel.push_back(std::move(samples));
         }
         // render mode: pbr (lit) vs unlit (flat base color, no shading). Default-semantics leaves
         // draw with the runtime's default pipeline, so this only records a combo selection here;

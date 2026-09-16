@@ -108,6 +108,14 @@ namespace vulkan::pipelines {
     /// camera, the light UBO and - when the device has ray tracing - the top level structure; the
     /// G-buffer set carries the surface the ray starts from)
     export std::expected<ssgi_owned, std::string> build_rt_shadow(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    /// the stochastic punctual lighting trace (shaders/megalights_trace.comp): the same two set layouts again,
+    /// with the estimator's own push block - see docs/megalights.md
+    export std::expected<ssgi_owned, std::string> build_megalights_trace(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size,
+                                                                         std::span<unsigned char const> compute_shader_code);
+    /// the stochastic chain's temporal resolve (shaders/megalights_temporal.comp): two set layouts again - the
+    /// shared G-buffer set at index 0 and the pass's own at index 1 - with the accumulation's own push block
+    export std::expected<ssgi_owned, std::string> build_megalights_temporal(VkDevice device, VkDescriptorSetLayout gbuffer_layout, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size,
+                                                                            std::span<unsigned char const> compute_shader_code);
     /// the mask bake: a compute pass over the shared scene set only (the material table and the texture
     /// array), which collapses the triangles a material's alphaMode MASK cuts out and writes the expanded
     /// vertices a bottom level structure is then built from - see shaders/mask_bake.comp
@@ -299,10 +307,14 @@ namespace vulkan::pipelines {
         // 15 is the reflection's own ACCUMULATION (shaders/ssgi_temporal.comp's mode 1), which the spatial
         // filter samples and sums the diffuse one into. A sampler, unlike its two inputs - the resolve
         // writes it, this set only reads it.
-        std::array<VkDescriptorSetLayoutBinding, 16> bindings = {};
+        // 16 and 17 are the STOCHASTIC PUNCTUAL LIGHTING image (docs/megalights.md), in the same image at two
+        // bindings because its writer and its reader are different passes: 16 is the storage image the trace
+        // writes (a compute pass writes a storage image) and 17 is the sampler the LIGHTING STAGE adds it
+        // through - the two ends of one half-resolution signal, exactly the arrangement 6/8 have for the GI.
+        std::array<VkDescriptorSetLayoutBinding, 18> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
-            bindings[b].descriptorType = (b == 6u || b == 8u || b == 13u || b == 14u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[b].descriptorType = (b == 6u || b == 8u || b == 13u || b == 14u || b == 16u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             bindings[b].descriptorCount = 1;
             // EVERY binding lists COMPUTE as well as FRAGMENT. The layout is shared by four consumers
             // and only the shaders know which binding each of them uses: the lighting stage and the
@@ -330,8 +342,8 @@ namespace vulkan::pipelines {
         using fail = std::unexpected<std::string>;
         gbuffer_owned out;
 
-        // THE LAYOUT IS HANDED IN (see make_gbuffer_set_layout): its sixteen bindings are how the OWNER fills the
-        // sets this pass and the four GI passes bind.
+        // THE LAYOUT IS HANDED IN (see make_gbuffer_set_layout): its eighteen bindings are how the OWNER fills the
+        // sets this pass and the GI passes bind.
         if (gbuffer_set_layout == VK_NULL_HANDLE) {
             return fail("gbuffer debug: the G-buffer set layout was not provided");
         }
@@ -630,6 +642,22 @@ namespace vulkan::pipelines {
         }
         out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
         return out;
+    }
+    // The stochastic punctual lighting trace (shaders/megalights_trace.comp): the same two set layouts and the
+    // same compute-pipeline shape as the passes above, with a push block of its own. It FORWARDS to the ray-traced
+    // shadow's builder rather than repeating twenty lines of Vulkan, and it exists as its own name because a
+    // caller reading `build_rt_shadow` inside this pass's create() would have to check that the two are still the
+    // same shape - which is exactly the kind of coupling a name is for.
+    std::expected<ssgi_owned, std::string> build_megalights_trace(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size,
+                                                                  std::span<unsigned char const> const compute_shader_code) {
+        return build_rt_shadow(device, scene_layout, gbuffer_layout, push_constant_size, compute_shader_code);
+    }
+    // ... and the chain's temporal resolve: the same two-layout shape, with the shared G-buffer set FIRST
+    // because that is index 0 in its declaration (its own bindings are set 1) - the order of the arguments IS
+    // the set numbering, which is why this forwarder takes them in that order rather than reusing the one above.
+    std::expected<ssgi_owned, std::string> build_megalights_temporal(VkDevice device, VkDescriptorSetLayout const gbuffer_layout, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size,
+                                                                     std::span<unsigned char const> const compute_shader_code) {
+        return build_rt_shadow(device, gbuffer_layout, pass_set_layout, push_constant_size, compute_shader_code);
     }
     // The GI spatial filter: the same two set layouts the tracer binds (the shared scene set and the
     // G-buffer set, which carries the normal, the depth, the accumulated image it reads and the

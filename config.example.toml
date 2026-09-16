@@ -136,14 +136,15 @@ clustered_lights = true
 # `ssao_samples` trades cost for smoothness (1..16, the shader maximum). `ssao = false` (or an
 # intensity of 0) makes the term return exactly 1.0, so the frame is bit for bit the pre-M6 frame.
 # ON A TRACED GI FRAME THIS KNOB DOES NOTHING, and that is a fix rather than an accident: the traced chain
-# subtracts the ambient the lighting stage added and replaces it with an estimate whose occlusion is real
-# rays, so scaling it here only left `ambient * (ssao - 1)` in the frame - the ambient darkened twice. It
-# measured -1.90 of mean green with 13.7% of its pixels off by more than 4/255 on the reference scene, and
-# the lighting stage now skips the term entirely whenever the traced path is replacing the ambient, which
-# makes an SSAO-on and an SSAO-off traced frame BIT-IDENTICAL. Where the marched chain runs there is no
-# subtraction, so SSAO keeps working there, and the GI-off frame is untouched either way. The one thing it
-# costs: a traced frame WITHOUT the glossy lobe keeps no SSAO on its specular ambient either (that term is
-# only replaced when the lobe runs) - which is the alternative to leaving an SSAO-darkened term in a frame
+# answers for the whole of that ambient (its rays fall back to the same probe off screen) and the lighting
+# stage does not add it at all there, so scaling it here only left `ambient * (ssao - 1)` in the frame - the
+# ambient darkened twice. It measured -1.90 of mean green with 13.7% of its pixels off by more than 4/255 on
+# the reference scene, and the lighting stage now skips the term entirely whenever the traced path is
+# answering for the ambient, which makes an SSAO-on and an SSAO-off traced frame BIT-IDENTICAL. Where the
+# marched chain runs nothing is replaced, so SSAO keeps working there, and the GI-off frame is untouched
+# either way. The one thing it costs: a traced frame WITHOUT the glossy lobe keeps no SSAO on its specular
+# ambient either (that term is only replaced when the lobe runs) - which is the alternative to leaving an
+# SSAO-darkened term in a frame
 # the chain cannot subtract back. See docs/gi_hit_shading.md's L2.3 SSAO section.
 ssao = true
 ssao_radius = 0.5
@@ -186,7 +187,12 @@ ssao_samples = 8
 # in GI texels (0 = the filter is a pass-through, i.e. the temporal-only result). `ssgi = false` makes
 # the frame bit for bit the pre-GI frame (the composite's GI weight is 0 and no GI pass is recorded) -
 # the gate's non-GI scenarios pin exactly that.
-# There are no overlay controls: these are read once at startup, so changing them needs a restart.
+# THE OVERLAY HAS TWO OF THESE LIVE, and only two: an `ssgi` checkbox (the chain on/off) and an `ssgi
+# rays` slider (1..16), both mirrored into the runtime every frame, so a noisy interior can be dealt with
+# without editing this file and restarting. `ssgi_intensity` deliberately has NO widget: on the traced path
+# it is not a strength dial - the lighting stage does not add the ambient the estimate stands in for, so
+# 1.0 means "use the estimate" and a lower value darkens the frame rather than fading the noise. Everything
+# else here (intensity, radius, steps, sigma, upsample, the traced keys) is read once at startup.
 ssgi = true
 ssgi_intensity = 1.0
 ssgi_radius = 0.12
@@ -293,8 +299,10 @@ ssgi_hit_shading = true
 # Measured, on an isolated model with a ray length short enough that nothing is reachable: the feature on and
 # off produce the SAME SHA256, 0 pixels differing, with the filter in the loop and with it bypassed. That is a
 # bit-exact invariant, not a tolerance. The first version of this step subtracted the lighting stage's term in
-# the spatial filter instead (where the DIFFUSE ambient is removed), which subtracts a centre-pixel value from
-# a filtered one: the same control read mean +0.0255 with 4.4% of pixels beyond 4/255 and a worst pixel of 103,
+# the spatial filter instead - the half-resolution pass, which removes a centre-pixel value from a filtered
+# one, and which is also where the DIFFUSE ambient used to be removed before that moved to the lighting stage
+# (see the ssgi note above): the same control read mean +0.0255 with 4.4% of pixels beyond 4/255 and a worst
+# pixel of 103,
 # and on Sponza's short-ray test it read 12.45% of pixels against 4.78% now - the old number was partly the
 # artifact and partly it CANCELLING the residual from rays that found touching geometry.
 # MEASURED EFFECT, Sponza interior, 120 frames, the traced-hit-shading config, A/B on this key alone:
@@ -314,8 +322,14 @@ ssgi_hit_shading = true
 # correction), so the multi-bounce feedback would re-emit the correction at a hit. That is safe HERE and only
 # here, for a structural reason: the lobe requires `ssgi_hit_shading`, and with hit shading on every hit is
 # answered by the hit's own shading before the feedback is reached - measured, `ssgi_bounce` 0 against 0.5 is a
-# byte-exact no-op on the material sweep. The diffuse term cannot use this mechanism (its bounce is live
-# whenever hit shading is off), which is why it keeps its approximate subtraction in the spatial filter.
+# byte-exact no-op on the material sweep. The diffuse term cannot use THIS mechanism (its bounce is live
+# whenever hit shading is off) and does not need one: it is removed where it is ADDED - the lighting stage
+# simply does not add it on a frame the traced chain answers for (shaders/shading.glsl's
+# `diffuse_ambient_scale`) - which is exact rather than approximate, and it is what the measured dark-region
+# flicker forced: removing it one pass later at half resolution left a full-resolution residual that the TAA
+# jitter moved every frame (0.81/255 per frame over the dark smooth surfaces on Sponza's interior, against
+# 0.07 with GI off - and two thirds of it survived with the chain's radiance estimate forced to exactly zero,
+# so it was never ray noise; 0.56 and 0.03 now).
 # THE RAY ORIGIN AND THE SHADOW RAY'S BIAS ARE BOTH EXPLICIT WORLD LENGTHS NOW, in every traced lobe this
 # file's keys can reach, and the reason is a measurement rather than tidiness: both used to be a fraction of
 # the RAY LENGTH, which made them scale with a knob that means REACH - so the same config meant a different

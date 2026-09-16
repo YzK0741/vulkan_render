@@ -121,16 +121,6 @@ namespace vulkan::pass {
         return this->sigma_;
     }
 
-    void ssgi_spatial_pass::set_frame(ssgi_spatial_frame const& frame) noexcept {
-        this->frame_ = frame;
-    }
-
-    void ssgi_spatial_pass::prepare_frame(frame_facts const& facts) noexcept {
-        // The filter must know which oracle produced the accumulation it is filtering (the marched one has no
-        // instance table behind it), and that is the host's composed predicate - see frame_facts.
-        this->set_frame(ssgi_spatial_frame{.traced_oracle = facts.gi_traced});
-    }
-
     void ssgi_spatial_pass::record(resolved_io const& io) {
         this->resolved_ = false;
         if (io.barrier_images.size() < render_resource::ssgi_spatial_barriers.size() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE ||
@@ -152,11 +142,13 @@ namespace vulkan::pass {
         std::array<VkDescriptorSet, 2> const sets = {io.shared.scene, io.shared.gbuffer};
         vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, io.pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
 
-        // THE PUSH BLOCK IS THE PASS'S NOW, and each lane comes from where its owner is: the two projection terms
-        // and the depth/normal criteria are the FRAME's (the same `proj` terms and the same `render_settings` pair
-        // the composite's upsample reads - they have to agree, which is why they are not here), the extents are the
-        // frame's and this pass's own, the filter width is this pass's, and the two flags are this frame's answers:
-        // which oracle ran, and whether the reflection's own accumulation was resolved before this dispatch.
+        // THE PUSH BLOCK, and each lane comes from where its owner is: the two projection terms and the
+        // depth/normal criteria are the FRAME's (the same `proj` terms and the same `render_settings` pair the
+        // composite's upsample reads - they have to agree, which is why they are not here), and the extents are
+        // the frame's and this pass's own. `subtract_ambient` is NOT written: it is a RETIRED lane that stays 0
+        // (see the struct), because the removal it used to request now happens in `shaders/deferred.frag`,
+        // where the ambient it removed is added. The one flag left is this frame's answer about the
+        // REFLECTION's accumulation - not about the diffuse one, which needs no answer from this pass.
         render_settings const& settings = io.constants.settings;
         push_constants push = {};
         push.depth_scale = io.constants.proj[2][2];
@@ -164,10 +156,7 @@ namespace vulkan::pass {
         push.sigma_spatial = this->sigma_;
         push.sigma_depth = settings.gi_depth_sigma;
         push.normal_power = settings.gi_normal_power;
-        // The subtraction belongs to the TRACED path only: the marched one is an ADDITION to the probe ambient, so
-        // it must not remove anything (see ssgi_spatial_frame).
-        push.subtract_ambient = this->frame_.traced_oracle ? 1.0f : 0.0f;
-        // ... and the reflection's own accumulation is summed in by the filter at binding 15. THIS lane is about
+        // The reflection's own accumulation is summed in by the filter at binding 15. THIS lane is about
         // how much of it to include, and it keys on whether the reflection was actually RESOLVED this frame rather
         // than on whether the lobe is enabled: if its descriptor set could not be had, the accumulation holds an
         // older frame and must not be summed in. The denoise pass runs before this one, so the flag is this frame's.

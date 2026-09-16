@@ -64,6 +64,17 @@ export namespace vulkan::pass {
          */
         bool history_valid = false;
         /**
+         * How much the DIFFUSE accumulation is still cold, 1 = it restarted this frame, 0 = converged
+         * (`frame_facts::gi_cold_start`). The shader mixes a depth-guarded local mean of the raw trace in by
+         * this amount - on the frames where there is nothing to accumulate with, the raw half-resolution
+         * 2-ray trace is what the composite would show, which reads as a snowstorm in the ambient-only
+         * (shadowed) regions.
+         *
+         * The REFLECTION's resolve pushes 0 through the same lane and keeps its own policy: its history is
+         * fetched from the point the ray found, so the surface-wide ramp below has no meaning for it.
+         */
+        float cold_start = 0.0f;
+        /**
          * The REFLECTION's recording, which is the renderer's because a declaration cannot describe two signals
          * in the same seven slots (see the file's header): the pass calls this at the END of its own recording -
          * after mode 0's hand-backs, before the spatial filter that reads both accumulations - so that the GI
@@ -94,7 +105,10 @@ export namespace vulkan::pass {
             float depth_offset = 0.0f;
             /// 1.0 = the reflection, 0.0 = the diffuse bounce (the shader's `glossy`); this pass pushes 0
             float mode = 0.0f;
-            float unused1 = 0.0f;
+            /// 1.0 = the accumulation just restarted: the shader widens its estimate by this much. This
+            /// occupies the lane the block used to declare `unused1` - the size is a contract (see the
+            /// static_assert at the end of this file) and the shader's own push struct must match it.
+            float cold_start = 0.0f;
             float unused2 = 0.0f;
             glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent
         };

@@ -95,6 +95,10 @@ export namespace vulkan::render_resource {
         gi_spec_reproject,
         gi_spec_resolve,
         gi_spec_history,
+        // ---- the stochastic punctual lighting chain (one per swapchain image) ----
+        ml_trace,
+        ml_resolve,
+        ml_history,
         // ---- one per frame slot ----
         shadow_map,
         rt_shadow_visibility,
@@ -184,7 +188,7 @@ export namespace vulkan::render_resource {
      * `core.cpp` would be a second copy of a fact - the thing this file's header warns about.
      * @ingroup vulkan_render_resource
      */
-    inline constexpr std::array<resource_info, 37> resource_schema = {{
+    inline constexpr std::array<resource_info, 40> resource_schema = {{
         {.id = resource_id::swapchain_image, .name = "swapchain_image", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::imported},
         {.id = resource_id::hdr, .name = "hdr", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
         // FOUR LEVELS, not one: `core::bloom_images` is `std::array<std::vector<VkImage>, bloom_level_count>`
@@ -207,6 +211,17 @@ export namespace vulkan::render_resource {
         {.id = resource_id::gi_spec_reproject, .name = "gi_spec_reproject", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::gi_spec_resolve, .name = "gi_spec_resolve", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::gi_spec_history, .name = "gi_spec_history", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::persistent},
+        // The stochastic punctual lighting chain's raw estimate: written as a storage image by the trace,
+        // read as a sampled image by the lighting stage that adds it (and, from the next stage, by the
+        // temporal resolve). HALF resolution, like the GI chain's images, because the signal is a
+        // light-level quantity rather than a shaded surface.
+        {.id = resource_id::ml_trace, .name = "ml_trace", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
+        // The temporal resolve's output - what the lighting stage actually samples - and the accumulation it
+        // reads back next frame. The history holds the radiance in rgb and the FRAME COUNT in alpha (an
+        // integer up to 12 fits exactly in a float16), which is the per-pixel "how many frames of samples is
+        // this": UE keeps it in an R8_UINT image of its own, and the alpha lane is the free one here.
+        {.id = resource_id::ml_resolve, .name = "ml_resolve", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
+        {.id = resource_id::ml_history, .name = "ml_history", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::persistent},
         // FOUR LAYERS, not one: the runtime creates the shadow map as ONE layered image (`max_shadow_cascades` layers, one per cascade, plus the spare layers a shrank count leaves behind - see ensure_shadow_resources), and the shadow pass renders into them one at a time. The count was 1 (the default) until that pass was declared, which made `element = cascade` illegal for every cascade but the first - the same correction the bloom family needed, and the validator`s element check is what says so.
         {.id = resource_id::shadow_map, .name = "shadow_map", .kind = resource_kind::image2d, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::per_frame, .count = 4},
         {.id = resource_id::rt_shadow_visibility, .name = "rt_shadow_visibility", .kind = resource_kind::image2d, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::per_frame},
@@ -1221,6 +1236,92 @@ export namespace vulkan::render_resource {
     };
 
     /**
+     * @brief the image the stochastic punctual lighting pass rewrites, and the only resource it names
+     *
+     * It reaches the image through the SHARED G-buffer set (bindings 16 and 17, see
+     * `pipelines::make_gbuffer_set_layout`), so - like the tracer - this pass owns no descriptor at all and
+     * declares no binding: what it has to say is which image it moves, because only the writer can place the
+     * transitions (UNDEFINED -> GENERAL to write it as a storage image, GENERAL -> SHADER_READ to hand it to
+     * the lighting stage that adds it, both recorded by this pass).
+     */
+    inline constexpr std::array<barrier_image, 1> megalights_trace_barriers = {{
+        {.resource = resource_id::ml_trace, .element = 0},
+    }};
+
+    /**
+     * @brief the stochastic punctual lighting pass's declaration: a half-resolution compute dispatch
+     *
+     * The tracer's shape exactly - two shared sets, no own binding, one image named through
+     * `barrier_images` - because its inputs (the camera, the light UBO, the cluster lists, the G-buffer
+     * surface) and its output (a half-resolution storage image) are all reached through those two sets.
+     *
+     * The push block is 96 bytes: the camera's inverse view-projection, the estimator's parameters (samples
+     * per pixel, the minimum sample weight, the ray tmin, the frame counter) and the two origin-bias terms.
+     */
+    inline constexpr pass_io megalights_trace_io = {
+        .name = "megalights_trace",
+        .own_set = 2, // unused: no own bindings (everything it reads and writes is in the shared sets)
+        .bindings = {},
+        .shared_sets = ssgi_trace_shared_sets, // the scene set (0) and the G-buffer set (1), like the tracer
+        .targets = {},
+        .barrier_images = megalights_trace_barriers,
+        .push = push_block{.offset = 0, .size = 96, .stages = stage_flag::compute},
+    };
+
+    /**
+     * @brief the temporal resolve's own bindings, in the order its shader declares them
+     *
+     * THREE, and the depth and the velocity it also needs come from the SHARED G-buffer set (bindings 3 and 4)
+     * instead - which is the difference from `ssgi_temporal_io`'s seven own bindings and it is a deliberate
+     * simplification: a pass that reaches the G-buffer through the shared set has its depth and velocity
+     * transitions published by the STAGE's prepare (the same two calls the GI denoise stage makes), so this
+     * chain needs no second stage of its own for that ordering rule. What has to be per-image views is only
+     * what lives in the stochastic chain's own families.
+     *
+     *   0: `ml_trace`   this frame's raw estimate (the temporal pass's input)
+     *   1: `ml_history` last frame's accumulation, radiance in rgb and the frame count in alpha
+     *   2: `ml_resolve` the accumulation this dispatch WRITES (a storage image)
+     */
+    inline constexpr std::array<pass_binding, 5> megalights_temporal_bindings = {{
+        {.set = 0, .binding = 0, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::ml_trace, .access = binding_access::read, .sampler = sampler_hint::gbuffer},
+        {.set = 0, .binding = 1, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::ml_history, .access = binding_access::read, .sampler = sampler_hint::gbuffer},
+        {.set = 0, .binding = 2, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::velocity, .access = binding_access::read, .sampler = sampler_hint::gbuffer},
+        {.set = 0, .binding = 3, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gbuffer_depth, .access = binding_access::read, .sampler = sampler_hint::gbuffer},
+        {.set = 0, .binding = 4, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::ml_resolve, .access = binding_access::write, .layout = image_layout::general},
+    }};
+
+    /// @brief the images the temporal resolve moves, in the order its record() indexes them
+    ///
+    /// Its five OWN bindings include the two G-buffer targets it reads, so those are its transitions too: the
+    /// pass is the first sampler of this image's depth and velocity this frame (see the stage's prepare).
+    inline constexpr std::array<barrier_image, 4> megalights_temporal_barriers = {{
+        {.resource = resource_id::ml_resolve, .element = 0},
+        {.resource = resource_id::ml_history, .element = 0},
+        {.resource = resource_id::gbuffer_depth, .element = 0},
+        {.resource = resource_id::velocity, .element = 0},
+    }};
+
+    /**
+     * @brief the temporal resolve's declaration: a half-resolution compute dispatch over its own set
+     *
+     * Its own set is index 1 and the SHARED G-buffer set is index 0 - the `gi_probe` shape, and the reason is
+     * mechanical rather than aesthetic: a pipeline layout needs a descriptor set layout for every index up to
+     * the highest one used, so a pass whose own bindings sit at set 2 would have to declare something at set 1
+     * as well. Set 0 carries the depth it rejects on and the velocity it reprojects with; set 1 carries the
+     * three images of its own chain. Its push block is the projection's linearization pair, the three accumulation bounds
+     * and the extents.
+     */
+    inline constexpr pass_io megalights_temporal_io = {
+        .name = "megalights_temporal",
+        .own_set = 0,
+        .bindings = megalights_temporal_bindings,
+        .shared_sets = {},
+        .targets = {},
+        .barrier_images = megalights_temporal_barriers,
+        .push = push_block{.offset = 0, .size = 32, .stages = stage_flag::compute},
+    };
+
+    /**
      * @brief the image the ray-traced shadow pass rewrites, and the only resource it has to name
      *
      * `rt_shadow` is per FRAME SLOT rather than per swapchain image (the rays are traced once per frame, not once
@@ -1312,10 +1413,10 @@ export namespace vulkan::render_resource {
      * framework decision this pass does not get to make on its own; the deviation is written down here and in
      * docs/pass_chain_plan.md rather than hidden.
      *
-     * The push block is 88 bytes - a mat4, a vec4 (the SSAO knobs) and two floats (the render mode, and whether the
-     * traced chain replaces the ambient this frame) - and the attachment is LOADed, because the lighting ADDS to
-     * the emissive the G-buffer pass already wrote (which is also why the pass builds its pipeline with the
-     * additive blend).
+     * The push block is 92 bytes - a mat4, a vec4 (the SSAO knobs) and three floats (the render mode, whether the
+     * traced chain replaces the ambient this frame, and whether the stochastic punctual lighting pass answered it) -
+     * and the attachment is LOADed, because the lighting ADDS to the emissive the G-buffer pass already wrote (which
+     * is also why the pass builds its pipeline with the additive blend).
      */
     inline constexpr pass_io deferred_io = {
         .name = "deferred",
@@ -1325,7 +1426,7 @@ export namespace vulkan::render_resource {
         .targets = deferred_targets,
         .barrier_images = {},
         .barrier_buffers = {},
-        .push = push_block{.offset = 0, .size = 88, .stages = stage_flag::fragment},
+        .push = push_block{.offset = 0, .size = 92, .stages = stage_flag::fragment},
     };
 
     // =============================================================================================

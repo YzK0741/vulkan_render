@@ -162,13 +162,27 @@ namespace app_config {
         // its shading stage outputs the stored albedo, so the image the tracer would average is not
         // radiance.
         bool ssgi = true;
+        // Stochastic PUNCTUAL lighting (docs/megalights.md): sample a few of each pixel's clustered lights, trace
+        // one visibility ray per sample and add the shadowed estimate where the raster loop would have added an
+        // unshadowed one. OFF by default, and deliberately: the estimator is the first stage of a chain whose
+        // denoiser is not built yet, so a stock config must not inherit its raw noise.
+        bool megalights = false;
+        // How many samples per HALF-RESOLUTION pixel (1..4, the shader's compile-time bound). This is the knob the
+        // cost and the noise both scale with, and it is the one the overlay exposes next to the switch.
+        int megalights_samples = 4;
+        // The chain's SPATIAL pre-filter width in GI texels (0 = off, which is the temporal-only chain). It is
+        // the "detail versus grain" dial the SSGI work measured the hard way: a filter that removes signal and
+        // noise at the same rate is worse than none, so this one is configurable and its own measurement is in
+        // docs/megalights.md.
+        float megalights_spatial_sigma = 1.5f;
         // 1.0, NOT the 0.7 a MARCHED chain wants: the traced path estimates the WHOLE diffuse indirect (its
-        // rays fall back to the probe inside the ray) and the spatial filter subtracts the ambient the
-        // lighting stage added, so this intensity multiplies the ambient itself and 1.0 is the value that
-        // means "use the traced estimate". At 0.7 the subtracted term would be 30% larger than the estimate
-        // replacing it - a systematic darkening - which is why this default moved WITH `ssgi_ray_tracing`
-        // rather than after it. A machine that ends up marching should set ~0.7, where the chain ADDS to the
-        // probe and the two overlap.
+        // rays fall back to the probe inside the ray) and the lighting stage does not add that ambient at all
+        // on this path (see shaders/shading.glsl's `diffuse_ambient_scale` - the removal is exact because it
+        // happens where the term is added), so this intensity multiplies the ambient itself and 1.0 is the
+        // value that means "use the traced estimate". At 0.7 the term the chain carries is 30% smaller than
+        // the ambient it stands in for - a systematic darkening - which is why this default moved WITH
+        // `ssgi_ray_tracing` rather than after it. A machine that ends up marching should set ~0.7, where the
+        // chain ADDS to the probe and the two overlap.
         float ssgi_intensity = 1.0f;
         float ssgi_radius = 0.12f;
         int ssgi_rays = 2;
@@ -329,6 +343,20 @@ namespace app_config {
         // Capped at max_demo_lights: the light UBO holds max_punctual_lights lights in total, and the
         // overlay's own slots share that array.
         int demo_lights = 0;
+        /**
+         * WHERE the generated lights sit and how far they reach, both as FRACTIONS of the scene radius.
+         *
+         * They default to the helix the clustered-light stress mode has always used (0.85 of the scene radius
+         * out, 0.55 of it as the range), so a config that does not set them renders exactly what it did
+         * before. They are configurable because the two USES of this set pull in opposite directions: the
+         * cluster stress wants lights AROUND the scene, where a light count the brute-force loop could not
+         * afford is what shows, while measuring what a punctual light does to a frame (its shadows, and the
+         * noise of a stochastic estimate of it - see docs/megalights.md) needs lights INSIDE the view, close
+         * enough to matter. A radius near 0 puts them at the scene centre with a range that reaches the
+         * camera's neighbourhood.
+         */
+        float demo_light_radius = 0.85f; // helix radius, as a fraction of the scene radius
+        float demo_light_range = 0.55f;  // the lights' range, as the same fraction (0 = no cutoff)
     };
 
     /** @brief upper bound for [lighting] demo_lights (the UBO's light array is vulkan::max_punctual_lights) */

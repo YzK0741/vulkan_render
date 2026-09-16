@@ -80,8 +80,8 @@ namespace vulkan {
         return this->vk_core->vma;
     }
 
-    void user_filter::recreate_swap_chain() const {
-        this->vk_core->recreate_swap_chain();
+    bool user_filter::recreate_swap_chain() const {
+        return this->vk_core->recreate_swap_chain();
     }
 
     // =============================================================================================

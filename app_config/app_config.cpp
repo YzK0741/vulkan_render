@@ -110,6 +110,21 @@ namespace app_config {
                     settings.render.ssgi = *value;
                 }
             }
+            if (toml::node const* node = render->get("megalights")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.megalights = *value;
+                }
+            }
+            if (toml::node const* node = render->get("megalights_samples")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.render.megalights_samples = static_cast<int>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("megalights_spatial_sigma")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.megalights_spatial_sigma = static_cast<float>(*value);
+                }
+            }
             if (toml::node const* node = render->get("ssgi_intensity")) {
                 if (std::optional<double> const value = node->value<double>()) {
                     settings.render.ssgi_intensity = static_cast<float>(*value);
@@ -338,6 +353,16 @@ namespace app_config {
                     settings.lighting.demo_lights = static_cast<int>(*value);
                 }
             }
+            // The generated lights' geometry (see the struct's own note): a radius and a range, both as
+            // fractions of the scene radius, whose defaults are the helix this mode has always used.
+            for (auto const& [key, target] : {std::pair{"demo_light_radius", &settings.lighting.demo_light_radius},
+                                              std::pair{"demo_light_range", &settings.lighting.demo_light_range}}) {
+                if (toml::node const* node = lighting->get(key)) {
+                    if (std::optional<double> const value = node->value<double>()) {
+                        *target = static_cast<float>(*value);
+                    }
+                }
+            }
         }
 
         if (toml::table const* gui = table.get_as<toml::table>("gui")) {
@@ -416,6 +441,13 @@ namespace app_config {
         settings.render.ssgi_rays = std::clamp(settings.render.ssgi_rays, 0, 16);
         settings.render.ssgi_steps = std::clamp(settings.render.ssgi_steps, 0, 64);
         settings.render.ssgi_spatial_sigma = std::clamp(settings.render.ssgi_spatial_sigma, 0.0f, 8.0f);
+        // The stochastic punctual lighting's sample count, clamped to the shader's own compile-time bound (see
+        // vulkan.pass.megalights_trace::max_samples): the shader's loop is bounded by that constant, so a larger
+        // value here would silently do nothing rather than cost more.
+        settings.render.megalights_samples = std::clamp(settings.render.megalights_samples, 1, 4);
+        // 0..4: the same bound the pass clamps to, and for the same reason (past a few texels it is wider than
+        // the neighbourhood it can read).
+        settings.render.megalights_spatial_sigma = std::clamp(settings.render.megalights_spatial_sigma, 0.0f, 4.0f);
         if (settings.render.camera_fit != "exterior" && settings.render.camera_fit != "interior") {
             utility::log("app_config: invalid camera_fit '{}' (use exterior/interior), falling back to exterior", settings.render.camera_fit);
             settings.render.camera_fit = "exterior";

@@ -452,6 +452,25 @@ namespace vulkan {
         /// where the frame loop records it and the only fact about it the renderer still spells out.
         std::array<pass::frame_pass*, 1> deferred_stage = {};
         bool ssgi_on = false;
+        // The stochastic PUNCTUAL LIGHTING chain ([render] megalights, docs/megalights.md): the pass's own
+        // stage, which runs between the G-buffer and the deferred lighting stage - the lighting stage is what
+        // ADDS its result, so it has to have it, and the G-buffer is what it evaluates its lights against.
+        /// TWO passes, the tracer then its temporal resolve - the GI chain's two-halves split without the
+        /// second STAGE, because the ordering rule the resolve needs (the G-buffer's depth and the motion-vector
+        /// target have to be published for it) runs in this stage's own prepare before either pass records.
+        std::array<pass::frame_pass*, 2> megalights_stage = {};
+        // Whether the punctual lights are the stochastic pass's business this frame. When it is, the deferred
+        // lighting stage skips its own raster punctual loop (the `punctual_replaced` lane) rather than adding
+        // the same lights twice - a REPLACE, like the traced GI chain's relation to the ambient.
+        bool megalights_on = false;
+        /// Whether the stochastic pass RECORDED this frame (see `frame_facts::megalights_resolved`): cleared
+        /// immediately before the stage is recorded and set from its report, so the lighting stage's lane can
+        /// never disagree with what actually ran.
+        bool megalights_resolved = false;
+        /// Per swapchain image: whether that image's stochastic accumulation holds a frame yet. The counterpart
+        /// of `gi_history_valid` for this chain, and reset in the same two places (a new generation, and the
+        /// feature's off -> on edge).
+        std::vector<bool> megalights_history_valid = {};
         // The tracer's ray sequence has to change every frame: a fixed one would feed a temporal
         // denoiser the same error in the same place every frame instead of an average. The COUNTER is the frame
         // loop's (it paces the chain), and both tracing stages read the frame's copy of it
@@ -473,8 +492,9 @@ namespace vulkan {
         // The glossy lobe ([render] ssgi_specular): a GGX-sampled reflection ray per pixel whose hit is
         // shaded from its geometry, so a reflection shows the room instead of the sky. It is a REPLACEMENT
         // for the specular ambient the lighting stage adds - the estimate falls back to exactly that term
-        // when a ray finds nothing - which is what the spatial filter's second subtraction takes back out
-        // (see shaders/ssgi_spec.comp and shaders/ssgi_spatial.comp's ambient_removed_at). ON by default:
+        // when a ray finds nothing - which is what the lobe's own subtraction takes back out, at the texel
+        // it adds its own (see shaders/ssgi_spec.comp; the DIFFUSE half of the same argument now lives in
+        // shaders/shading.glsl's `diffuse_ambient_scale`, where that term is added). ON by default:
         // the objection that kept it off was its denoiser item, and the reflection now has an accumulation
         // of its own, reprojected from the point it found (see the L2.3 motion sections).
         // Its REACH and its RAY COUNT are the pass's own parameters (`set_ssgi_specular` forwards), and they are
@@ -545,6 +565,25 @@ namespace vulkan {
         // Per swapchain image: whether that image has a GI history yet. First frame after startup or
         // after a resize there is none, and the resolve then uses the current trace alone.
         std::vector<bool> gi_history_valid = {};
+        /**
+         * How many frames a restarted GI accumulation takes to be trusted again: the temporal resolve's
+         * COLD-START widening fades out over this many frames (see `frame_facts::gi_cold_start`).
+         *
+         * 32 IS THE MEASURED KNEE, not a guess: on Sponza's interior at 1080x960 the composite's dark-region
+         * grain (mean |I - 3x3 mean| over the darkest surfaces) falls from 2.48 on frame 4 to 2.16 by frame 64
+         * and is flat after that, so the widening has to be gone well before then or it would be a permanent
+         * blur rather than a cold-start transient.
+         */
+        static constexpr float gi_cold_start_frames = 32.0f;
+        /**
+         * Per swapchain image: how many frames its current GI accumulation has had.
+         *
+         * Reset with the generation - the history images die with it - and incremented by the temporal
+         * resolve. It exists because the resolve's blend WEIGHT is not the count: a still pixel's weight is
+         * the asymptote (`1 - 1/N`), which says nothing about how far along the ramp is (see
+         * `frame_facts::gi_cold_start`).
+         */
+        std::vector<uint32_t> gi_frames_accumulated = {};
         // The GI history is accumulated with its OWN weights rather than TAA's, and they are the temporal PASS's
         // constants now (`ssgi_temporal_pass::blend_static` / `blend_min`): the signal is far noisier than shading
         // aliasing, so it wants a longer memory, and it must not be tuned by whatever the AA sliders are set to.
@@ -840,6 +879,25 @@ namespace vulkan {
         // Per-swapchain-image flag: set by the G-buffer instance, cleared by whichever stage first
         // hands the motion-vector target to a sampler (see ensure_velocity_sampled).
         std::vector<bool> velocity_written = {};
+        /**
+         * Per frame slot: the acceleration structure handle that slot's scene set was last WRITTEN with.
+         *
+         * WHY IT EXISTS, and it is a validation error rather than tidiness: the scene set's binding 16 is a
+         * descriptor this renderer rewrote EVERY frame (the structure phase rebuilds the top level structure
+         * per frame), and a descriptor set must not be updated while a command buffer that bound it is still
+         * pending (`VUID-vkUpdateDescriptorSets-None-03047` - the same rule this file's
+         * `on_swapchain_recreated` documents for the per-image families). With two frames in flight the other
+         * slot's frame is routinely still running, so the write invalidated it: measured, 151 validation
+         * errors in a frame - the first one naming this set, the rest the cascade of calls on a command buffer
+         * the layer had already invalidated - and they appeared only when the frame rate was low enough for a
+         * frame to still be in flight (which is why turning the demo lights on was what surfaced them).
+         *
+         * The guard is exact rather than a heuristic: the handle is what the descriptor HAS to name, so
+         * rewriting it with the same value is a no-op that costs an illegal update, and rewriting it with a
+         * different one is required. A structure REBUILT into a different buffer still writes here, which is
+         * the rare case the project's other families also accept.
+         */
+        std::vector<VkAccelerationStructureKHR> rt_binding_written = {};
 
         /** @brief the swapchain was rebuilt: drop everything that pointed at the old generation
          *         (the debug overlay's backend + the G-buffer descriptor sets, whose views are gone) */
@@ -1418,6 +1476,9 @@ namespace vulkan {
          * wrote a history (the camera UBO's `prev_view_proj` is only advanced when it did).
          */
         struct frame_results {
+            /// the stochastic punctual lighting chain's resolve wrote its accumulation this frame: the next frame's
+            /// history flag for THIS image is set from it, exactly as `gi_temporal_resolved` sets the GI's
+            bool megalights_temporal_resolved = false;
             bool gi_resolved = false;
             bool gi_temporal_resolved = false;
             bool taa_wrote_history = false;
@@ -1444,6 +1505,7 @@ namespace vulkan {
             bool gbuffer_pass = false; // gbuffer_pass_active(): the surface pipeline exists and this frame shades
             bool deferred_lit = false; // deferred_lit_active(): the lighting stage is this frame's shading path
             bool ssgi = false;         // ssgi_active(): the knob, all three GI pipelines, the deferred path
+            bool megalights = false;   // megalights_active(): the knob, the pass, and the deferred shading path
             bool ssgi_traced = false;  // ssgi_traced_active(): the above plus ray queries and this frame's structure
             bool ssgi_probes = false;  // gi_probe_active(): the cache's knob, its pipeline and the chain
             bool rt_shadow = false;    // rt_shadows_active(): the knob and the device
@@ -2300,6 +2362,21 @@ namespace vulkan {
          *         owner has to act on too (a fresh accumulation on both sides) - see the definition
          */
         [[nodiscard]] bool set_ssgi_enabled(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief stochastic punctual lighting: sample a few lights per pixel and trace one shadow ray each
+         * @param enabled true = the punctual lights are the stochastic pass's business (and the deferred
+         *        stage stops adding them raster-style), false = the engine's historic unshadowed loop
+         * @return whether this call turned the feature ON (the off -> on edge)
+         * @note the SAMPLE COUNT, the minimum sample weight and the origin bias are the PASS's parameters and
+         *       are set by whoever owns that pass (`vulkan.render_start_demo::set_megalights`), by the same
+         *       split `set_ssgi_enabled` and the tracer's ray budget already have.
+         */
+        [[nodiscard]] bool set_megalights_enabled(bool enabled) noexcept;
+
+        /// @brief whether the stochastic punctual lighting chain runs this frame (its own composed predicate)
+        [[nodiscard]] bool megalights_active() const noexcept;
 
         /**
          * @ingroup vulkan_runtime

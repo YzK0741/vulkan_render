@@ -118,7 +118,12 @@ namespace {
         case VK_FORMAT_D32_SFLOAT:
             return 4;
         case VK_FORMAT_D32_SFLOAT_S8_UINT:
+            return 8;
+        // Stencil-only: one byte per texel. It used to fall through into the BC1 group below and be
+        // reported as 8.
         case VK_FORMAT_S8_UINT:
+            return 1;
+
         // BC compressed formats
         case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
         case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
@@ -183,7 +188,12 @@ namespace {
             return 8;
 
         default:
-            return 0;
+            // Deliberately not 0: a 0 would zero every mip's bufferOffset in staging_image_upload()
+            // and make the size check below compare against nothing, i.e. a silently wrong upload
+            // (or a meaningless region layout) instead of a failure. Every format this engine uploads
+            // is listed above, so a miss here is a bug in the table, not a caller error.
+            utility::error("sizeof_vk_format: unsupported VkFormat {}", static_cast<int>(format));
+            utility::panic("sizeof_vk_format: unsupported VkFormat");
         }
     }
 
@@ -933,16 +943,30 @@ namespace vulkan {
         VkDeviceSize const image_size = size_byte;
 
         // Expected size = array_layers * sum of all mip sizes * bytes per pixel; only meaningful
-        // for images that carry uploaded data (empty render-target images have no payload)
-        VkDeviceSize expected_size = 0;
-        for (uint32_t mip = 0; mip < create_info.mip_levels; ++mip) {
-            expected_size += static_cast<VkDeviceSize>(std::max(1u, create_info.width >> mip)) *
-                             std::max(1u, create_info.height >> mip) *
-                             sizeof_vk_format(create_info.format);
-        }
-        expected_size *= create_info.array_layers;
-        if (data != nullptr && expected_size != image_size) {
-            utility::log("incorrect image size [{}], expected [{}]", image_size, expected_size);
+        // for images that carry uploaded data (empty render-target images have no payload), which is
+        // why the whole computation - format lookup included - is skipped for them.
+        if (data != nullptr) {
+            VkDeviceSize expected_size = 0;
+            for (uint32_t mip = 0; mip < create_info.mip_levels; ++mip) {
+                expected_size += static_cast<VkDeviceSize>(std::max(1u, create_info.width >> mip)) *
+                                 std::max(1u, create_info.height >> mip) *
+                                 sizeof_vk_format(create_info.format);
+            }
+            expected_size *= create_info.array_layers;
+            if (expected_size > image_size) {
+                // REFUSE, rather than log and carry on. staging_image_upload() below lays the per-mip
+                // copy regions out from `expected_size` (the bufferOffset accumulation) while the
+                // staging buffer holds `image_size` bytes, so continuing here turns a caller's size
+                // mistake into a vkCmdCopyBufferToImage that reads past the end of the staging buffer -
+                // a device-side out-of-range access, not a cosmetic log line. The other direction
+                // (expected < given) only leaves part of the staging buffer unread, so it stays a log.
+                utility::error("incorrect image size [{}], expected [{}] - refusing the upload", image_size, expected_size);
+                this->recycle(handle);
+                return vk_image{};
+            }
+            if (expected_size != image_size) {
+                utility::log("incorrect image size [{}], expected [{}]", image_size, expected_size);
+            }
         }
 
         auto const alloc_info = get_image_allocation_info_from_type(type);

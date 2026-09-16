@@ -50,6 +50,8 @@ import vulkan.pass.ssgi_spatial;
 import vulkan.pass.ssgi_spec;
 import vulkan.pass.ssgi_temporal;
 import vulkan.pass.ssgi_trace;
+import vulkan.pass.megalights_trace;
+import vulkan.pass.megalights_temporal;
 import vulkan.pass.taa;
 import vulkan.pass.transparent;
 
@@ -92,6 +94,19 @@ export namespace vulkan {
         void set_taa(bool enabled, float blend_static, float blend_min) noexcept;
         /// @brief GI on/off + the tracer's ray budget (intensity, reach as a fraction of the scene radius, rays, steps)
         void set_ssgi(bool enabled, float intensity, float radius, uint32_t rays, uint32_t steps) noexcept;
+        /**
+         * @brief stochastic punctual lighting: the flag goes to the runtime, the estimator's parameters to the pass
+         * @param enabled true = the punctual lights are sampled and ray-traced instead of added unshadowed
+         * @param samples samples per half-resolution pixel (the pass clamps to 1..4, its shader's bound)
+         * @param min_weight the minimum sample weight below which a light's sampling weight rolls to zero
+         * @param bias_floor / @param bias_grazing the ray origin's self-intersection offset at normal and at
+         *        grazing incidence (a world-space length, like every other bias in this engine)
+         * @note the split is `set_ssgi`'s: the FLAG is the runtime's policy (it is what tells the deferred
+         *       lighting stage whether the punctual lights were already handled), the numbers are the pass's.
+         */
+        void set_megalights(bool enabled, uint32_t samples, float min_weight, float bias_floor, float bias_grazing) noexcept;
+        /// @brief the resolve's accumulation policy: the history's relative depth tolerance and the frame-count cap
+        void set_megalights_accumulation(float depth_tolerance, float max_frames, float spatial_sigma) noexcept;
         /// @brief the spatial filter's width in GI texels (0 = a pass-through); the pass clamps it
         void set_ssgi_spatial(float sigma) noexcept;
         /// @brief the composite's joint-bilateral GI upsample switch
@@ -181,6 +196,11 @@ export namespace vulkan {
         pass::taa_pass* taa_ = nullptr;
         pass::gbuffer_debug_pass* gbuffer_debug_ = nullptr;
         pass::ssgi_trace_pass* ssgi_trace_ = nullptr;
+        /// the stochastic punctual lighting pass (docs/megalights.md): the estimator's parameters live on the
+        /// pass, and this owner is what forwards them
+        pass::megalights_trace_pass* megalights_trace_ = nullptr;
+        /// the chain's temporal resolve (docs/megalights.md): the accumulation policy is the pass's
+        pass::megalights_temporal_pass* megalights_temporal_ = nullptr;
         pass::ssgi_spec_pass* ssgi_spec_ = nullptr;
         pass::ssgi_temporal_pass* ssgi_temporal_ = nullptr;
         pass::ssgi_spatial_pass* ssgi_spatial_ = nullptr;
