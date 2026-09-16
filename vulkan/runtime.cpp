@@ -177,6 +177,15 @@ namespace vulkan {
 
         this->pipelines.clear();
 
+        // THE POST SET'S LAYOUT IS THE RENDERER'S NOW (see the member): it is the one object of the post chain that
+        // stays here, because it describes how THIS code fills the post sets - the passes hold a view of it and
+        // never destroy it. The DEVICE is still alive in this body: `core_owner` is the first member and is released
+        // last, which is the ordering that member's own comment records.
+        if (this->post_set_layout_ != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->post_set_layout_, nullptr);
+            this->post_set_layout_ = VK_NULL_HANDLE;
+        }
+
         // post-process objects: the FXAA pipeline and the two samplers are RAII members, and the post chain's set
         // layout, pipeline layout and two pipelines are NOT here any more - they belong to the post composite PASS
         // (vulkan.pass.post::release_owned), the same rule every extracted pass follows.
@@ -2169,7 +2178,7 @@ namespace vulkan {
                                                               normal};
             write_set(sets[4], composite_set);
         };
-        if (!this->post_family.ensure_all(vk.device, this->post_composite.set_layout(), static_cast<uint32_t>(image_count), 5u, 9u, fingerprints, write_sets)) {
+        if (!this->post_family.ensure_all(vk.device, this->post_set_layout_, static_cast<uint32_t>(image_count), 5u, 9u, fingerprints, write_sets)) {
             utility::log("runtime: post descriptor sets unavailable - post pass skipped");
         }
     }
@@ -2752,7 +2761,21 @@ namespace vulkan {
                 if (set == 1u) {
                     return self->gbuffer_debug_view.set_layout();
                 }
-                return set == 2u ? self->post_composite.set_layout() : VkDescriptorSetLayout{VK_NULL_HANDLE}; },
+                if (set != 2u) {
+                    return VkDescriptorSetLayout{VK_NULL_HANDLE};
+                }
+                // THE POST SET'S LAYOUT IS THE RENDERER'S (see the member): created on this first ask - the passes'
+                // create step - and reused for the family the renderer writes below, so the pipeline layouts the
+                // passes build and the sets this code fills cannot be two different layouts.
+                if (self->post_set_layout_ == VK_NULL_HANDLE) {
+                    auto created = pipelines::make_post_set_layout(self->vulkan_core.device);
+                    if (!created) {
+                        utility::log("runtime: the post set layout could not be created - the post chain is off");
+                        return VkDescriptorSetLayout{VK_NULL_HANDLE};
+                    }
+                    self->post_set_layout_ = *created;
+                }
+                return self->post_set_layout_; },
             // ... and the SCENE pipeline layout, which the shadow pass builds its pipeline against (its draw is a subset of the scene's and its per-cascade push goes through the same layout): .shader above is the shape, one callback per thing a pass cannot own.
             .shared_pipeline_layout = [](void* owner) { return static_cast<runtime*>(owner)->vulkan_core.scene_pipeline_layout; },
             .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },

@@ -201,9 +201,6 @@ export namespace vulkan::pass {
          * (see `frame_pass::named_pipeline`).
          */
         [[nodiscard]] owned_pipeline named_pipeline(std::string_view name) const noexcept override;
-        /// @brief the post SET LAYOUT, which is the post chain's: five passes share it and the host writes their
-        ///        descriptor sets with it (`ensure_post_descriptors`), so it is reachable from outside
-        [[nodiscard]] VkDescriptorSetLayout set_layout() const noexcept;
         /// @brief the layout every post pipeline binds its set and takes its push block through
         [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
         /**

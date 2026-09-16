@@ -777,6 +777,16 @@ namespace vulkan {
         /// the samplers a declaration chooses between, in one place (see pass_context::samplers)
         [[nodiscard]] render_resource::shared::sampler_set shared_samplers() const noexcept;
         /**
+         * The POST set's layout, created once by THIS renderer and used for two things: the pipeline layouts the post
+         * chain's passes need (handed to them through `pass_context::shared_set_layout(owner, 2)`) and the post
+         * family the renderer writes. It is lazily created on the first ask, which is the passes' create step.
+         *
+         * THE LAYOUT IS THE RENDERER'S BECAUSE THE SETS ARE: those nine bindings describe how THIS code fills the
+         * post sets (the HDR target, the four bloom levels, the LDR image, the filtered GI, the G-buffer's depth and
+         * normal), so owning it here is what stops "the composite's layout" from being a second copy of that fact.
+         */
+        VkDescriptorSetLayout post_set_layout_ = VK_NULL_HANDLE;
+        /**
          * @brief fill this frame's shared constants (`pass::resolved_io::constants`) from the camera/light state
          *
          * Called once per frame, after `pace_and_acquire` has computed the camera record, the light UBO and the

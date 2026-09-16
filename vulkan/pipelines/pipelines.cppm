@@ -39,9 +39,20 @@ import vulkan.bindings;      // make_set_layout: a declaration generates the lay
 import vulkan.render_resource;
 
 namespace vulkan::pipelines {
-    /// what build_post() creates: the post set layout, its pipeline layout and the two composites
+    /**
+     * @brief the POST set's layout, on its own
+     *
+     * SEPARATE FROM `build_post` BECAUSE THE LAYOUT IS NOT THE PASS'S: the nine bindings describe how the RENDERER
+     * writes the post sets (HDR, the four bloom levels, the LDR image, the filtered GI, the G-buffer's depth and
+     * normal), and the runtime owns that family - so it creates the layout, hands it to the passes that need a
+     * pipeline layout around it (`pass_context::shared_set_layout(owner, 2)`) and uses the same object for the
+     * family it writes. One layout, one owner.
+     */
+    export std::expected<VkDescriptorSetLayout, std::string> make_post_set_layout(VkDevice device);
+
+    /// what build_post() creates: the pipeline layout (around the post set layout it is handed) and the two composites
     export struct post_owned {
-        VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+        VkDescriptorSetLayout set_layout = VK_NULL_HANDLE; // the one it was handed, not one it made
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> composite; // tonemap + bloom sum, writes the swapchain
         std::optional<vk_pipeline> hdr;       // the same pass writing an HDR target instead (FXAA on)
@@ -71,7 +82,8 @@ namespace vulkan::pipelines {
         std::optional<vk_pipeline> trace;
     };
 
-    export std::expected<post_owned, std::string> build_post(VkDevice device, VkFormat swap_chain_format, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export std::expected<post_owned, std::string> build_post(VkDevice device, VkDescriptorSetLayout post_set_layout, VkFormat swap_chain_format, uint32_t push_constant_size,
+                                                             std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     export std::expected<gbuffer_owned, std::string> build_gbuffer_debug(VkDevice device, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     export std::expected<taa_owned, std::string> build_taa(VkDevice device, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code,
                                                            std::span<unsigned char const> fragment_shader_code);
@@ -166,10 +178,7 @@ namespace vulkan::pipelines {
     // pipelines (one per color format the chain renders into) are created here; the sampler stays with
     // the runtime, which owns the descriptor sets that use it. The caller passes the size of its push
     // constant block because that structure is the runtime's (it must match post.frag).
-    std::expected<post_owned, std::string> build_post(VkDevice device, VkFormat const swap_chain_format, uint32_t const push_constant_size, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
-        using fail = std::unexpected<std::string>;
-        post_owned out;
-
+    std::expected<VkDescriptorSetLayout, std::string> make_post_set_layout(VkDevice const device) {
         // binding 0 = the pass input (HDR for the prefilter, the previous bloom level for a
         // downsample), bindings 1..4 = the four bloom levels, binding 5 = the gamma-encoded LDR image
         // (the FXAA pass, which shares this layout), binding 6 = the screen-space GI image and 7/8 =
@@ -184,14 +193,29 @@ namespace vulkan::pipelines {
             bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
             bindings[b].pImmutableSamplers = nullptr;
         }
-
         VkDescriptorSetLayoutCreateInfo layout_info = {};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
         layout_info.pBindings = bindings.data();
-        if (vkCreateDescriptorSetLayout(device, &layout_info, nullptr, &out.set_layout) != VK_SUCCESS) {
-            return fail("post: descriptor set layout creation failed");
+        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+        if (vkCreateDescriptorSetLayout(device, &layout_info, nullptr, &layout) != VK_SUCCESS) {
+            return std::unexpected("post: descriptor set layout creation failed");
         }
+        return layout;
+    }
+
+    std::expected<post_owned, std::string> build_post(VkDevice const device, VkDescriptorSetLayout const post_set_layout, VkFormat const swap_chain_format,
+                                                      uint32_t const push_constant_size, std::span<unsigned char const> const vertex_shader_code,
+                                                      std::span<unsigned char const> const fragment_shader_code) {
+        using fail = std::unexpected<std::string>;
+        post_owned out;
+
+        // THE LAYOUT IS HANDED IN, not made here: it belongs to whoever WRITES the sets (the runtime owns the post
+        // family - see make_post_set_layout).
+        if (post_set_layout == VK_NULL_HANDLE) {
+            return fail("post: the post set layout was not provided");
+        }
+        out.set_layout = post_set_layout;
 
         VkPushConstantRange push_range = {};
         push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;

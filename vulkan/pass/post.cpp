@@ -40,10 +40,10 @@ namespace vulkan::pass {
             vkDestroyPipelineLayout(this->device_, this->pipeline_layout_, nullptr);
             this->pipeline_layout_ = VK_NULL_HANDLE;
         }
-        if (this->set_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(this->device_, this->set_layout_, nullptr);
-            this->set_layout_ = VK_NULL_HANDLE;
-        }
+        // THE SET LAYOUT IS NOT DESTROYED HERE: it is the OWNER's (the runtime creates it from the same nine
+        // bindings and uses it for the family it writes - see make_post_set_layout), so this pass only holds a view
+        // of it and clears that view.
+        this->set_layout_ = VK_NULL_HANDLE;
     }
 
     render_resource::pass_io const& post_composite_pass::io() const noexcept {
@@ -80,10 +80,18 @@ namespace vulkan::pass {
             utility::log("post chain disabled: the owner has no {} or {}", vertex_shader_name, fragment_shader_name);
             return;
         }
+        // THE POST SET LAYOUT COMES FROM THE CONTEXT, not from this pass: the nine bindings describe how the
+        // OWNER writes the post sets (see `pass_context::shared_set_layout` and make_post_set_layout), and this
+        // pass only needs a pipeline layout built around them.
+        VkDescriptorSetLayout const post_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 2) : VK_NULL_HANDLE;
+        if (post_layout == VK_NULL_HANDLE) {
+            utility::log("post chain disabled: the owner has no layout for the post set this pass binds");
+            return;
+        }
         // The SURFACE's format is one of the two pipelines' (the other renders into R16F bloom levels and into
         // the LDR image FXAA reads), and it is a session-stable device fact the context carries for exactly this
         // kind of reason (see pass_context::swap_chain_image_format).
-        auto built = pipelines::build_post(context.device, context.swap_chain_image_format, static_cast<uint32_t>(sizeof(post_push_constants)), vertex_spirv, fragment_spirv);
+        auto built = pipelines::build_post(context.device, post_layout, context.swap_chain_image_format, static_cast<uint32_t>(sizeof(post_push_constants)), vertex_spirv, fragment_spirv);
         if (!built) {
             utility::log("post chain disabled: {}", built.error());
             this->release_owned();
@@ -128,10 +136,6 @@ namespace vulkan::pass {
 
     VkPipeline post_composite_pass::hdr_pipeline() const noexcept {
         return this->hdr_.has_value() ? this->hdr_->get_pipeline() : VK_NULL_HANDLE;
-    }
-
-    VkDescriptorSetLayout post_composite_pass::set_layout() const noexcept {
-        return this->set_layout_;
     }
 
     VkPipelineLayout post_composite_pass::pipeline_layout() const noexcept {

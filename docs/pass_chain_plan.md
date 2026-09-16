@@ -2970,6 +2970,38 @@ the runtime writes from its own bindings, the two jobs, the two chain constructi
 last pass read.
 
 
+## THE HANDOVER, SLICE 7: THE POST SET'S LAYOUT GOES BACK TO THE CODE THAT WRITES THE SETS
+
+**A LAYOUT HAD THE WRONG OWNER, AND IT WAS A NAMING ACCIDENT RATHER THAN A DESIGN.** The post set's nine bindings
+describe how the RENDERER fills the post sets (the HDR target, the four bloom levels, the LDR image, the filtered GI,
+the G-buffer's depth and normal) - and the runtime writes every one of those sets. But the layout itself was created
+inside `pipelines::build_post`, so it belonged to whichever pass called that builder first (the composite), and the
+runtime had to ask that pass for it twice: once for the post family it writes and once to answer
+`pass_context::shared_set_layout(owner, 2)` for the other four passes.
+
+Now it is the renderer's:
+
+* `pipelines::make_post_set_layout(device)` is the layout on its own, and `build_post` takes it as a parameter instead
+  of making one - the same shape `build_taa`, `build_ssgi_temporal` and `build_gi_probe` already had (they have taken
+  a `pass_set_layout` since each was extracted);
+* the runtime creates it LAZILY on the first ask (the passes' create step, which is when they build their pipeline
+  layouts), keeps it as `runtime::post_set_layout_`, uses the same object for the family it writes, and destroys it in
+  its destructor - the device is still alive there because `core_owner` is the first member and is released last;
+* the composite holds a VIEW of it: `create` asks the context, `release_owned` clears the handle without destroying
+  it, and its `set_layout()` accessor is gone (there is no second caller).
+
+**MEASURED**: **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, validation-clean - and the gate is thorough here, because
+every one of the twelve scenarios runs the post chain and binds the post set; Release, Debug and ASan clean with
+`ctest` 8/8 in all three; `doxygen` exits 0 with **zero warnings** (counted, see the previous slice). **Typed pass
+sites: 14 -> 12** (the post family's ensure and the context's answer). The G-buffer set's layout is the SAME accident
+one pass over, and it gets its own slice because its A/B needs the knob-on debug view.
+
+**A MECHANICAL NOTE worth keeping, because it cost a build**: removing the `set_layout()` declaration from
+`post.cppm` with a "walk back to the nearest `/**`" script swallowed the `named_pipeline` declaration that sat between
+two doc blocks - the compiler said so immediately (`out-of-line definition ... does not match any declaration`), and
+the fix was to re-add it. A doc-comment-anchored deletion has to be checked against the diff, not trusted.
+
+
 
 
 
