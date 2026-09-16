@@ -664,15 +664,27 @@ int main() {
         /// invented: four own bindings (all per-swapchain-image), one render target, and a declared push size
         /// that the resolver must NOT fill.
         struct declared_pass final : vp::frame_pass {
+            rr::pass_io const* declaration = &rr::taa_io;
             vp::behaviour how = {.kind = vp::behaviour_kind::fullscreen, .extent = vp::extent_rule::full};
+            VkPipeline owned_pipeline = VK_NULL_HANDLE;
+            VkPipelineLayout owned_layout = VK_NULL_HANDLE;
             [[nodiscard]] rr::pass_io const& io() const noexcept override {
-                return rr::taa_io;
+                return *this->declaration;
             }
             [[nodiscard]] vp::behaviour const& behaviour() const noexcept override {
                 return this->how;
             }
             [[nodiscard]] std::string_view feature() const noexcept override {
                 return {};
+            }
+            // the twelve passes that build their OWN pipeline answer these two (their accessors already had
+            // exactly this signature), and the resolver must prefer them over a registry entry that happens to
+            // share a `behaviour::pipelines` name
+            [[nodiscard]] VkPipeline pipeline() const noexcept override {
+                return this->owned_pipeline;
+            }
+            [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override {
+                return this->owned_layout;
             }
             void create(vp::pass_context const&) override {
             }
@@ -761,6 +773,30 @@ int main() {
         owner.unknown_pipeline = "taa";
         CHECK(!pass.resolve(context, io));
         owner.unknown_pipeline = {};
+
+        // ... and a pass that BUILT its own pipeline is handed its own, never the same-named registry entry: that
+        // is the whole reason the interface asks the pass first
+        pass.owned_pipeline = reinterpret_cast<VkPipeline>(0x1234);
+        pass.owned_layout = fake_layout;
+        CHECK(pass.resolve(context, io));
+        CHECK(io.pipelines.size() == 1);
+        CHECK(io.pipelines[0] == pass.owned_pipeline);
+        CHECK(io.pipeline_layout == fake_layout);
+        pass.owned_pipeline = VK_NULL_HANDLE;
+        pass.owned_layout = VK_NULL_HANDLE;
+
+        // A DECLARED SHARED SET the owner cannot fill fails the pass: a pass binds a whole set, so recording with
+        // a null one is never right (the old resolvers each checked this by hand, and the rule is now one line)
+        constexpr std::array<uint32_t, 1> scene_only = {0};
+        rr::pass_io const shared_only = {.name = "shared", .own_set = 1, .bindings = {}, .shared_sets = scene_only, .targets = {}, .push = std::nullopt};
+        declared_pass shared_pass;
+        shared_pass.declaration = &shared_only;
+        CHECK(shared_pass.resolve(context, io));
+        CHECK(io.shared.scene == owner.scene);
+        VkDescriptorSet const saved_scene = owner.scene;
+        owner.scene = VK_NULL_HANDLE;
+        CHECK(!shared_pass.resolve(context, io));
+        owner.scene = saved_scene;
     }
 
     return vk_test::finish("test_pass");

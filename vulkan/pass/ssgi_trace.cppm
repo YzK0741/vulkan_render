@@ -106,8 +106,8 @@ export namespace vulkan::pass {
          */
         [[nodiscard]] bool probe_grid_seen() const noexcept;
         /// @brief the pipeline the runner binds before this pass records
-        [[nodiscard]] VkPipeline pipeline() const noexcept;
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept;
+        [[nodiscard]] VkPipeline pipeline() const noexcept override;
+        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
         void set_frame(ssgi_trace_frame const& frame) noexcept;
 

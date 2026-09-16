@@ -2179,6 +2179,64 @@ deleted and replaced by resolution driven by the declaration + the table, and th
 from `resolved_io::constants` and its own parameters. The check stays as the migration's net: it becomes vacuous for
 a pass whose resolver is gone, and it keeps naming the passes whose resolvers are still the oracle.
 
+## S3, SECOND SLICE: cluster AND rt_shadow - AND THE FIRST A/B THE GATE CANNOT DO
+
+**TWO MORE RESOLVERS DELETED** (`resolve_cluster_pass` 42 lines, `resolve_rt_shadow` 52), and between them they
+needed exactly two framework additions:
+
+* **`frame_pass::pipeline()` / `pipeline_layout()`**, virtual with a null default. THE TWELVE PASSES THAT BUILD
+  THEIR OWN PIPELINE ALREADY HAD THESE ACCESSORS with exactly this signature, so declaring them in the interface
+  cost those classes one `override` keyword each (13 headers, no behaviour) and gave the generic resolver the one
+  fact a declaration cannot carry: a pass that owns its pipeline must be handed ITS OWN, never a registry entry
+  that happens to share a `behaviour::pipelines` name. The renderer's resolvers were doing this relay by hand for
+  every one of them.
+* **a declared shared set the owner cannot fill FAILS the pass.** Each old resolver checked its set for null by
+  hand (cluster, deferred, the debug view, the post chain); the rule is now one line in
+  `resolve_declaration`, because a pass binds a WHOLE set and recording with a null one is never right.
+
+**cluster** needed nothing else: barrier buffers from the table, the scene set from the owner, the pipeline from
+the pass, `extent_rule::none` from the behaviour, no push block at all - and its "the grid was computed this frame"
+gate was already the pass's own `frame_.cluster_count == 0` guard inside `record`.
+
+**rt_shadow** is the first pass whose PUSH BLOCK crossed the line: the renderer used to compose 80 bytes and hand
+them over, and the pass now composes them itself out of `resolved_io::constants` (this frame's inverse
+view-projection) plus the three ray-offset terms, which are the shader's own constants and therefore the struct's
+defaults. Its old gate split in two: "this slot's visibility image exists" is the RESOURCE TABLE, and "the knob, the
+extension, the pipeline AND this slot's top level structure are ready" is the pass's FEATURE - an acceleration
+structure cannot be a table entry, because it has a device address and no view, buffer or image. The one thing that
+did NOT move is the pair of `ensure_gbuffer_*_sampled` calls: that is the frame's ORDERING rule ("whoever samples
+the G-buffer first publishes the instance's attachment writes"), so it now runs in the rt_shadow STAGE's preamble in
+`begin_recording` - the same position in the command stream, since those stages carry no marks of their own.
+
+**MEASURED - and both of these passes are INVISIBLE TO THE CAPTURE GATE.** No scenario in `check_render.ps1` sets
+`rt_shadows` (the compiled default is false) and none spawns a punctual light, so the clustered sort never runs
+either: the twelve hash-identical scenarios prove nothing about this slice. What proves it is the branch's own A/B
+method, run against the PARENT commit in a detached worktree with a Release build of its own
+(`vr_ab/parent_af982ad`), on a config the gate does not have - the gate's `deferred` scenario plus
+`rt_shadows = true` and `demo_lights = 8`:
+
+| build | hash |
+|---|---|
+| `af982ad` (before this slice) | `0338A372913DC450` |
+| this slice | `0338A372913DC450` |
+
+Byte-identical, so the ray-traced shadow dispatch and the clustered sort produce the same frame through the new
+path. Two findings from that run, recorded rather than fixed:
+
+* **A PRE-EXISTING VALIDATION ERROR on the ray-traced path**, in BOTH builds (so it is not this slice's):
+  `vkCmdWriteTimestamp(): was called in VkCommandBuffer ... which is now in an invalid state (instead of recording
+  state) because the following objects bound to the command buffer were invalidated`. It is the GPU-timing mark
+  written after something invalidated the command buffer's bound objects - a finding for the ray-traced path's own
+  slice, and invisible to the gate for the same reason this A/B was needed at all.
+* `cluster` and `rt_shadow` were the two passes the S1 differential check reported as NEVER verified by any
+  scenario. They are now off the switch, and the check's coverage table for them is vacuous by construction - so
+  the A/B above is their proof, not the table.
+
+**ACCEPTANCE**: Release, Debug and ASan build clean; `ctest` 8/8 in all three (the new framework rules are pinned
+headlessly: a pass's own pipeline beats a same-named registry entry, and an unfillable declared shared set fails
+the pass); `doxygen Doxyfile` exit 0 with zero warnings; the capture gate 12 x 2 = 0 changed / 0 flaky / 0 unseeded;
+and the knob-on A/B above - the only acceptance that can see this slice - matches the parent byte for byte.
+
 ## S3, FIRST SLICE: THE DECLARATION-DRIVEN RESOLVER, AND THE FIRST TWO PASSES OFF THE SWITCH
 
 **THE MECHANISM, which is what the whole migration runs on.** `resolve_pass_impl` is still the per-pass type switch,

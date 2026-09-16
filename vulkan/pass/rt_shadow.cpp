@@ -115,9 +115,9 @@ namespace vulkan::pass {
     void rt_shadow_pass::record(resolved_io const& io) {
         if (!this->pipeline_.has_value() || io.barrier_images.size() < render_resource::rt_shadow_barriers.size() ||
             io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE ||
-            io.shared.scene == VK_NULL_HANDLE || io.shared.gbuffer == VK_NULL_HANDLE || io.push.size() < sizeof(push_constants) ||
+            io.shared.scene == VK_NULL_HANDLE || io.shared.gbuffer == VK_NULL_HANDLE ||
             io.extent.width == 0 || io.extent.height == 0) {
-            return; // the runner resolves all of this or skips the pass (see runtime::resolve_rt_shadow)
+            return; // the runner resolves all of this or skips the pass (see frame_pass::resolve)
         }
         VkImage const visibility = io.barrier_images[barrier_visibility].image;
         if (visibility == VK_NULL_HANDLE) {
@@ -136,8 +136,13 @@ namespace vulkan::pass {
         std::array<VkDescriptorSet, 2> const sets = {io.shared.scene, io.shared.gbuffer};
         vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, io.pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
 
+        // THE PUSH BLOCK IS THE PASS'S OWN NOW (S3): the renderer used to compose it and hand it over as raw
+        // bytes, which was the last thing it knew about this pass's frame. What it carries is this frame's
+        // inverse view-projection - a frame CONSTANT, so it arrives through `resolved_io::constants`, the channel
+        // that exists for exactly this - and the three ray-offset terms, which are this shader's own constants and
+        // therefore the struct's defaults rather than values anybody has to pass in.
         push_constants push = {};
-        std::memcpy(&push, io.push.data(), sizeof(push));
+        push.inv_view_proj = io.constants.inv_view_proj;
         vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
         vkCmdDispatch(io.cmd, (io.extent.width + group_size - 1u) / group_size, (io.extent.height + group_size - 1u) / group_size, 1);
 

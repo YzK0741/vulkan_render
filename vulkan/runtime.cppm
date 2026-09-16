@@ -1380,8 +1380,6 @@ namespace vulkan {
         void record_top_level_structure(VkCommandBuffer command_buffer);
         /** @brief point a scene set's binding 16 at @p tlas (see the null-descriptor rule it avoids) */
         void write_rt_structure_binding(VkDescriptorSet set, VkAccelerationStructureKHR tlas);
-        /// @brief resolve the ray-traced shadow pass's frame: the two shared sets, the visibility image and the push
-        [[nodiscard]] bool resolve_rt_shadow(pass::resolved_io& out);
         // scene center handed to enable_shadows. The fit falls back to center +- scene_radius when a
         // shadow caster has no world AABB of its own AND is not an instanced draw whose instance
         // matrices we can read (see instanced_world_aabb).
@@ -1741,22 +1739,6 @@ namespace vulkan {
          * not a byte loop over the concatenation: this runs on every frame, the reused ones included.
          */
         [[nodiscard]] uint64_t shadow_geometry_signature() const;
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief resolve the clustered-light sort's frame: the shared scene set, the two cluster buffers and
-         *        the pipeline
-         * @param out the pass's resolved I/O, filled here
-         * @return whether the pass can record at all this frame
-         *
-         * The PASS records the dispatch and the two buffer barriers (vulkan.pass.cluster); what this resolver
-         * owns is the frame's data - the frame slot's scene set, the slot's two cluster buffers (declared
-         * through `pass_io::barrier_buffers`, because the pass orders them without binding them: they are the
-         * shared scene set's bindings 11 and 12) and the cluster count the pass dispatches over. No-op without
-         * the pipeline, with clustering off, or before the first paced frame - the grid comes from the
-         * swapchain extent.
-         */
-        [[nodiscard]] bool resolve_cluster_pass(pass::resolved_io& out);
 
         /**
          * @ingroup vulkan_runtime

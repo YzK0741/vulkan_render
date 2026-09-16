@@ -152,7 +152,7 @@ export namespace vulkan::pass {
         ///        descriptor sets with it (`ensure_post_descriptors`), so it is reachable from outside
         [[nodiscard]] VkDescriptorSetLayout set_layout() const noexcept;
         /// @brief the layout every post pipeline binds its set and takes its push block through
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept;
+        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
         void set_frame(composite_frame const& frame) noexcept;
 

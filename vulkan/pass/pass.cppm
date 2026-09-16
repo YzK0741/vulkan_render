@@ -574,6 +574,27 @@ export namespace vulkan::pass {
          */
         [[nodiscard]] virtual bool resolve(resolve_context const& context, resolved_io& out) const;
         /**
+         * @brief the pipeline this pass OWNS, when it built one in `create`; `VK_NULL_HANDLE` otherwise
+         *
+         * THE TWELVE PASSES THAT BUILD THEIR OWN PIPELINE ALREADY ANSWER THIS (their `pipeline()` accessor has had
+         * exactly this signature since each was extracted), so making it part of the interface costs them nothing
+         * and gives the declaration-driven resolver the one fact it cannot get from the declaration: a pass that
+         * owns its pipeline must be handed ITS OWN, never a registry entry that happens to share its
+         * `behaviour::pipelines` name. The runner binds what this returns (`apply_pass_behaviour`), which is the
+         * same relay the renderer's resolvers used to do by hand.
+         *
+         * A pass that owns TWO variants of one pipeline (the composite: the swapchain one and the HDR one) leaves
+         * this null and fills `resolved_io::pipelines` in its own `resolve` - choosing between them is its frame's
+         * decision, not the declaration's.
+         */
+        [[nodiscard]] virtual VkPipeline pipeline() const noexcept {
+            return VK_NULL_HANDLE;
+        }
+        /// @brief the layout that pipeline was created against (what the pass pushes its constants through)
+        [[nodiscard]] virtual VkPipelineLayout pipeline_layout() const noexcept {
+            return VK_NULL_HANDLE;
+        }
+        /**
          * @brief record into the frame, with the resources the declaration asked for already resolved
          *
          * NOT const, and this is a correction the first real pass forced rather than a convenience: a pass
@@ -1004,6 +1025,9 @@ export namespace vulkan::pass {
         // ---- the shared sets, by the index the declaration names ----
         for (uint32_t const set : declaration.shared_sets) {
             VkDescriptorSet const descriptor_set = context.descriptor_set == nullptr ? VK_NULL_HANDLE : context.descriptor_set(context.owner, set, context.frame.image_index);
+            if (descriptor_set == VK_NULL_HANDLE) {
+                return false; // a declared set the owner cannot fill: a pass that binds a whole set cannot run without it
+            }
             switch (set) {
             case 0:
                 out.shared.scene = descriptor_set;
@@ -1019,8 +1043,12 @@ export namespace vulkan::pass {
             }
         }
 
-        // ---- the pipelines the behaviour names ----
-        if (!declaration_pipelines_ok(pass, context, out)) {
+        // ---- the pipelines: the pass's OWN first, then the names the behaviour declares ----
+        if (pass.pipeline() != VK_NULL_HANDLE) {
+            out.pipeline_storage[0] = pass.pipeline();
+            out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
+            out.pipeline_layout = pass.pipeline_layout();
+        } else if (!declaration_pipelines_ok(pass, context, out)) {
             return false;
         }
 

@@ -74,8 +74,8 @@ export namespace vulkan::pass {
         /// @brief whether the pass built what it records with (the renderer gates the ray-traced path on this)
         [[nodiscard]] bool pipeline_ready() const noexcept;
         /// @brief the pipeline the runner binds before this pass records
-        [[nodiscard]] VkPipeline pipeline() const noexcept;
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept;
+        [[nodiscard]] VkPipeline pipeline() const noexcept override;
+        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
     private:
         static constexpr std::string_view shader_name = "rt_shadow.comp.spv";

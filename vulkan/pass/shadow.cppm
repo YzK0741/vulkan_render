@@ -97,9 +97,9 @@ export namespace vulkan::pass {
         /// @brief whether the pass built the pipeline it records with (the renderer gates its feature on this)
         [[nodiscard]] bool pipeline_ready() const noexcept;
         /// @brief the pipeline the runner binds before this pass records
-        [[nodiscard]] VkPipeline pipeline() const noexcept;
+        [[nodiscard]] VkPipeline pipeline() const noexcept override;
         /// @brief the layout that pipeline takes its push block through (the SCENE's, which the owner hands over)
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept;
+        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
         void set_frame(shadow_frame const& frame) noexcept;
 

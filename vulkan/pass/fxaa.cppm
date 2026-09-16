@@ -83,10 +83,10 @@ export namespace vulkan::pass {
         /// @brief whether the pass built everything it records with (the renderer gates the feature on this)
         [[nodiscard]] bool pipeline_ready() const noexcept;
         /// @brief the pipeline the runner binds before this pass records
-        [[nodiscard]] VkPipeline pipeline() const noexcept;
+        [[nodiscard]] VkPipeline pipeline() const noexcept override;
         /// @brief the layout that pipeline binds its set and takes its push block through (the pass's OWN, built
         ///        around the post set layout its owner hands it)
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept;
+        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
         void set_frame(fxaa_frame const& frame) noexcept;
 

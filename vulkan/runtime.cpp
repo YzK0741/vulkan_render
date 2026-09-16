@@ -3766,12 +3766,6 @@ namespace vulkan {
         if (&pass == static_cast<pass::frame_pass const*>(&this->taa_resolve)) {
             return this->resolve_taa_pass(out);
         }
-        if (&pass == static_cast<pass::frame_pass const*>(&this->rt_shadow)) {
-            return this->resolve_rt_shadow(out);
-        }
-        if (&pass == static_cast<pass::frame_pass const*>(&this->cluster)) {
-            return this->resolve_cluster_pass(out);
-        }
         if (&pass == static_cast<pass::frame_pass const*>(&this->deferred)) {
             return this->resolve_deferred_pass(out);
         }
@@ -3962,58 +3956,22 @@ namespace vulkan {
         return this->compute_skin.record(command_buffer, static_cast<uint32_t>(this->vulkan_core.current_frame), this->compute_skin_requests);
     }
 
-    bool runtime::resolve_rt_shadow(pass::resolved_io& out) {
-        core const& vk = this->vulkan_core;
-        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
-        // The visibility image is per FRAME SLOT, not per swapchain image: the rays are traced once per frame.
-        if (frame_slot >= vk.rt_shadow_images.size() || vk.rt_shadow_images[frame_slot] == VK_NULL_HANDLE) {
-            return false;
-        }
-        // Nothing to trace against, or this slot's structure is not built yet: the frame shades from the cascaded
-        // maps instead (the light UBO's flag is 0 - see set_rt_shadows and the frame loop). Gating on the SAME
-        // handle the binding-16 write is gated on is what keeps a dispatch from ever reading an unwritten
-        // descriptor.
-        if (!this->rt_top_levels.has_value() || this->rt_top_levels->handle(frame_slot) == VK_NULL_HANDLE) {
-            return false;
-        }
-        // The G-buffer set is written by the accessor the GI passes and the debug view share; this pass can be
-        // the first to need it on a frame where none of them ran.
-        this->ensure_gbuffer_descriptors();
-        VkDescriptorSet const gbuffer_set = this->gbuffer_family.set(static_cast<uint32_t>(this->current_image_index), 0);
-        VkDescriptorSet const scene_set = this->scene_sets.set(frame_slot);
-        if (gbuffer_set == VK_NULL_HANDLE || scene_set == VK_NULL_HANDLE) {
-            return false;
-        }
-        // ... and this pass is the FIRST sampler of the stored surface when it runs, so it is the one that has to
-        // publish the G-buffer instance's attachment writes (the lighting stage's identical call then finds the
-        // flags clear).
-        VkCommandBuffer const command_buffer = *this->command_buffers[frame_slot];
-        static_cast<void>(this->ensure_gbuffer_targets_sampled(command_buffer, static_cast<uint32_t>(this->current_image_index)));
-        static_cast<void>(this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(this->current_image_index)));
-
-        out.frame = this->pass_frame();
-        out.cmd = command_buffer;
-        out.shared.scene = scene_set;
-        out.shared.gbuffer = gbuffer_set;
-        // The one image it transitions, resolved by declaration element: the declaration names WHICH resource and
-        // the host resolves it from the frame's slot.
-        out.barrier_storage[0] = {.view = vk.rt_shadow_image_views[frame_slot], .buffer = VK_NULL_HANDLE, .image = vk.rt_shadow_images[frame_slot]};
-        out.barrier_images = std::span<pass::resolved_binding const>(out.barrier_storage.data(), render_resource::rt_shadow_barriers.size());
-        out.pipeline_storage[0] = this->rt_shadow.pipeline();
-        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
-        out.pipeline_layout = this->rt_shadow.pipeline_layout();
-        // The push block's values are the renderer's: the camera's inverse view-projection and the three ray-offset
-        // terms (which are the shader's own constants, written once here).
-        pass::rt_shadow_pass::push_constants push = {
-            .inv_view_proj = this->current_inv_view_proj,
-            .params = glm::vec4(0.01f, 0.002f, 0.0015f, 0.0f),
-        };
-        static_assert(sizeof(push) <= pass::max_push_bytes, "the shadow pass's push block must fit the guaranteed minimum");
-        std::memcpy(out.push_storage.data(), &push, sizeof(push));
-        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
-        out.extent = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->rt_shadow));
-        return true;
-    }
+    // THE RAY-TRACED SHADOW PASS'S RESOLVER IS GONE (S3): its one barrier image comes from the frame's resource
+    // table (per-frame-slot instance), its two shared sets from the owner, its pipeline from the PASS (which owns
+    // it) and its push block is composed by the pass itself out of `resolved_io::constants` - the first pass for
+    // which a push block crossed that line. The two halves of its old gate went where the scene pass's did:
+    //
+    //  * "this slot's visibility image exists" is the RESOURCE TABLE (no entry, no resolution);
+    //  * "this slot's top level structure is built, and the pipeline exists" is the pass's FEATURE
+    //    (`feature_active("rt_shadow")`), because an acceleration structure is not a `resolved_binding` - it has
+    //    no view, no buffer and no image, only a device address - so it cannot be a table entry at all.
+    //
+    // THE ONE THING THAT DID NOT MOVE INTO THE PASS is the pair of `ensure_gbuffer_*_sampled` calls it used to
+    // make: they are the frame's *ordering* rule ("whoever samples the G-buffer first publishes the G-buffer
+    // instance's attachment writes"), and the flags they read are the renderer's. They now run in the rt_shadow
+    // STAGE's preamble in `begin_recording`, immediately before the stage records - which is the same position in
+    // the command stream, because the stages carry no marks of their own (`make_pass_host` leaves the mark pair
+    // null), so nothing is emitted between them.
 
     bool runtime::resolve_ssgi_spatial(pass::resolved_io& out) {
         core const& vk = this->vulkan_core;
@@ -4157,6 +4115,16 @@ namespace vulkan {
             // surface, so the position is not a detail - it is the ordering constraint. The PASS owns the
             // recording (vulkan.pass.rt_shadow); what is this loop's is the position and the off path below.
             pass::stage const rt_shadow_stage = {.name = "rt_shadow", .passes = this->rt_shadow_stage, .marks = false};
+            // THIS STAGE'S ONE FRAME-ORDER DUTY, done here because it is the FRAME's rule rather than any pass's:
+            // this stage may be the first sampler of the stored surface this frame, and whoever samples it FIRST
+            // publishes the G-buffer instance's attachment writes (the flags are the renderer's, and the idempotent
+            // `ensure_*` pair is what makes "first" a fact rather than a promise). It used to be the ray-traced
+            // shadow pass's resolver that made these two calls; nothing is emitted between here and `record_stage`,
+            // so the command stream is the same - the stages carry no marks of their own.
+            if (this->feature_active("rt_shadow")) {
+                static_cast<void>(this->ensure_gbuffer_targets_sampled(command_buffer, this->current_image_index));
+                static_cast<void>(this->ensure_gbuffer_depth_sampled(command_buffer, this->current_image_index));
+            }
             pass::run_report const rt_shadow_report = pass::record_stage(rt_shadow_stage, this->make_pass_host());
             if (rt_shadow_report.recorded == 0 && static_cast<std::size_t>(vk.current_frame) < vk.rt_shadow_images.size() &&
                 vk.rt_shadow_images[vk.current_frame] != VK_NULL_HANDLE) {
@@ -4972,7 +4940,13 @@ namespace vulkan {
             return f.shadow;
         }
         if (name == "rt_shadow") {
-            return f.rt_shadow;
+            // THE PASS'S GATE, in full: the knob and the extension (`f.rt_shadow`, which is the same predicate
+            // the light UBO's flag and the startup log use) PLUS "this frame's structure is built for the slot".
+            // The second half is here rather than in the resource table because an acceleration structure is not
+            // a `resolved_binding` - it has a device address and no view, buffer or image - so the table cannot
+            // carry it. It is the same handle the scene set's binding 16 is written from, which is what keeps a
+            // dispatch from ever reading an unwritten descriptor.
+            return f.rt_shadow && this->rt_top_levels.has_value() && this->rt_top_levels->handle(static_cast<uint32_t>(this->vulkan_core.current_frame)) != VK_NULL_HANDLE;
         }
         if (name == "clustered") {
             return f.clustered;
@@ -5131,48 +5105,13 @@ namespace vulkan {
         }
     }
 
-    bool runtime::resolve_cluster_pass(pass::resolved_io& out) {
-        core& vk = this->vulkan_core; // not const: the two buffer details are read through the non-const VMA
-        // Feature registry: skipped when no shading stage reads a light list (flat render mode) or when no
-        // punctual light is active - there would be nothing to sort, and the shading stage then falls back to
-        // looping zero lights. The stage is gated on the same predicate (feature "clustered"), so this is the
-        // pass's own half of that answer.
-        uint32_t const tiles_x = this->cluster_tiles_x;
-        uint32_t const tiles_y = this->cluster_tiles_y;
-        uint32_t const cluster_count = tiles_x * tiles_y * vulkan::cluster_slice_count;
-        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
-        if (cluster_count == 0 || frame_slot >= this->cluster_count_buffers.size() || !this->cluster.pipeline_ready()) {
-            return false; // no paced frame yet (the grid comes from the swapchain extent), or no pipeline
-        }
-        if (!this->scene_sets.created()) {
-            return false;
-        }
-        VkDescriptorSet const scene_set = this->scene_sets.set(frame_slot);
-        if (scene_set == VK_NULL_HANDLE) {
-            return false;
-        }
-        // The two buffers the pass ORDERS but does not bind: they are the shared scene set's bindings 11 and
-        // 12, so the pass reaches them through the declaration's `barrier_buffers` channel - which is what that
-        // channel was added for. Resolved from the FRAME's slot, exactly as the scene set is.
-        auto const* const count_detail = vk.vma.get_buffer_detail(this->cluster_count_buffers[static_cast<std::size_t>(frame_slot)].handle());
-        auto const* const index_detail = vk.vma.get_buffer_detail(this->cluster_index_buffers[static_cast<std::size_t>(frame_slot)].handle());
-        if (count_detail == nullptr || index_detail == nullptr) {
-            return false;
-        }
-        out.frame = this->pass_frame();
-        out.cmd = *this->command_buffers[frame_slot];
-        out.shared.scene = scene_set;
-        out.barrier_buffer_storage[0] = {.view = VK_NULL_HANDLE, .buffer = count_detail->buffer, .image = VK_NULL_HANDLE};
-        out.barrier_buffer_storage[1] = {.view = VK_NULL_HANDLE, .buffer = index_detail->buffer, .image = VK_NULL_HANDLE};
-        out.barrier_buffers = std::span<pass::resolved_binding const>(out.barrier_buffer_storage.data(), render_resource::cluster_barriers.size());
-        out.pipeline_storage[0] = this->cluster.pipeline();
-        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
-        out.pipeline_layout = this->cluster.pipeline_layout();
-        // `extent_rule::none`: the dispatch is sized by the pass's own frame (the cluster count), so the extent
-        // stays empty here rather than being a number the host made up - see pass::extent_rule.
-        out.extent = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->cluster));
-        return true;
-    }
+    // THE CLUSTERED-LIGHT SORT'S RESOLVER IS GONE (S3), and it needed nothing but the mechanism: its two barrier
+    // BUFFERS come from the frame's resource table (per-frame-slot instance), its shared scene set from the owner,
+    // its pipeline from the PASS (which owns it), its extent from the declaration's `none` rule and its push block
+    // from nowhere - it has none. Its old gates are answered by the two mechanisms that own those questions: "the
+    // pipeline exists" is `pass.pipeline()` (a null pipeline is what the generic resolution fails on), "the
+    // buffers are there" is the resource table, "the scene set is there" is the shared-set rule, and "the grid was
+    // computed this frame" is the pass's own `frame_.cluster_count == 0` guard, which its `record` already had.
 
     // Tighten the directional shadow frustum to the camera's own view frustum every frame. One
     // 2048^2 map cannot cover a whole scene and still resolve a thin caster: the orthographic box

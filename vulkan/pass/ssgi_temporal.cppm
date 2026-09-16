@@ -116,8 +116,8 @@ export namespace vulkan::pass {
         /// @brief whether the pass built what it records with (the renderer gates the GI chain on this)
         [[nodiscard]] bool pipeline_ready() const noexcept;
         /// @brief the pipeline the runner binds before this pass records
-        [[nodiscard]] VkPipeline pipeline() const noexcept;
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept;
+        [[nodiscard]] VkPipeline pipeline() const noexcept override;
+        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
         /**
          * @brief the set layout this pass's declaration generates
          *

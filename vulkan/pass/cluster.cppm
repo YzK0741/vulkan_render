@@ -75,8 +75,8 @@ export namespace vulkan::pass {
 
         /// @brief whether the pass built what it records with (the renderer gates its feature on this)
         [[nodiscard]] bool pipeline_ready() const noexcept;
-        [[nodiscard]] VkPipeline pipeline() const noexcept;
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept;
+        [[nodiscard]] VkPipeline pipeline() const noexcept override;
+        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
         void set_frame(cluster_frame const& frame) noexcept;
 

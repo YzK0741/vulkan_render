@@ -89,9 +89,9 @@ export namespace vulkan::pass {
         /// @brief whether the pass built everything it records with (the renderer gates the feature on this)
         [[nodiscard]] bool pipeline_ready() const noexcept;
         /// @brief the pipeline the runner binds before this pass records
-        [[nodiscard]] VkPipeline pipeline() const noexcept;
+        [[nodiscard]] VkPipeline pipeline() const noexcept override;
         /// @brief the layout that pipeline binds its set and takes its push block through
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept;
+        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
         /// @brief the G-BUFFER SET LAYOUT, which the deferred lighting stage also binds (it asks the context for
         ///        index 1): one layout, built here, because this is the pass whose builder creates it
         [[nodiscard]] VkDescriptorSetLayout set_layout() const noexcept;
