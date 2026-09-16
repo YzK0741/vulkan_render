@@ -41,7 +41,8 @@ import vulkan.render_resource.shared; // the six samplers a pass's declaration c
 import vulkan.frame_constants;        // one frame's shared constants, filled by the frame loop and read by passes
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
-import vulkan.acceleration_structure; // the ray-tracing bottom level structures (built once, lazily)
+import vulkan.acceleration_structure; // build_input_usage: the usage bits a structure build reads a buffer through
+import vulkan.ray_tracing;            // THE STRUCTURE PHASE: the structures, the caster map and the copies (a value this class owns)
 import vulkan.init_utils;             // the resource-creation patterns the init functions below repeat
 export import vstd;
 export import vulkan.core;
@@ -1165,40 +1166,26 @@ namespace vulkan {
         // ray queries must run the cascaded maps exactly as before, silently, rather than fail or log
         // once per frame.
         bool rt_shadows = false;
-        // The scene's bottom level structures, built once - lazily, on the first frame the flag is on.
-        // Lazy rather than at load time because the caster set is what they are built from, and that
-        // is only known once the scene has been culled; once because a rebuild would be a second
-        // command against structures whose scratch has already been sized and freed.
-        std::optional<acceleration_structure::bottom_level_structures> rt_bottom_levels = {};
-        bool rt_structures_attempted = false; // built once, success or failure: no retry, no log spam
-        // The top level structure and the mapping from the bottom level indices back to the casters
-        // they were built from: the instance list walks THAT, not the caster set again, because a caster
-        // whose geometry could not be built (no buffer, no stride) has no bottom level and must not get
-        // an instance either - and the two walks have to agree about which index is which.
-        std::optional<acceleration_structure::top_level_structure> rt_top_levels = {};
-        // One built caster: its structure, and - when its material's alphaMode is MASK - the EXPANDED,
-        // non-indexed copy of its vertices the mask bake filled. The instance list uses that copy instead of
-        // the original buffers for such a caster, and its zero index address is what tells the hit shading
-        // the geometry is not indexed (see shaders/hit_shading.glsl). A caster that was skipped during the
-        // build has no entry here at all, which is what keeps the two walks in agreement.
-        struct rt_caster_level {
-            primitive const* caster = nullptr;
-            uint32_t blas_index = 0;
-            uint32_t mask_stride = 0;                // 0 = the original, indexed geometry is what was built
-            VkDeviceAddress mask_vertex_address = 0; // the expanded copy's base address, for the table
-            // ... and when the caster is SKINNED, what the per-frame pass needs to re-skin it into the
-            // buffer its structure was built from. skin_destination_address == 0 means "not skinned".
-            VkDeviceAddress skin_source_address = 0;
-            VkDeviceAddress skin_destination_address = 0;
-            uint32_t skin_source_stride = 0;
-            uint32_t skin_destination_stride = 0; // 32 (position, normal, uv)
-            uint32_t skin_vertex_count = 0;
-            uint32_t skin_base = 0;
-        };
-        std::vector<rt_caster_level> rt_caster_levels = {};
-        // The expanded buffers themselves, owned here for as long as the structures are: a build reads one,
-        // and the hit shading reads its vertices through the instance table's address.
-        std::vector<vk_buffer> rt_mask_buffers = {};
+        /**
+         * THE STRUCTURE PHASE ITSELF, which is one value now (see `vulkan.ray_tracing`): the bottom and top level
+         * structures, the map from their indices back to the casters they were built from, and the MASK/skin
+         * copies a hit's shading reads that geometry through. Built once (lazily, on the first frame the flag is
+         * on, because the caster set is only known once the scene has been culled), refitted and RE-INSTANCED
+         * every frame, from the casters this frame's culling produced and the two jobs below.
+         *
+         * WHY IT IS THIS RENDERER'S AND NOT A PASS'S: three consumers read it (the ray-traced shadow pass's
+         * binding, the GI tracer's and lobe's instance table, and the probe cache's world-space hits), so by the
+         * ownership rule it belongs to the shared owner - and the phase records BEFORE any rendering instance
+         * opens. What stays here beside it is the POLICY: the three knobs, the two predicates
+         * (`rt_structures_wanted` / `rt_shadows_active`), the caster set, the ORDER of the phase in the frame, and
+         * the scene-set binding the handle is published through.
+         *
+         * INITIALIZED HERE from the device root this class already holds, and that is not a style choice: the
+         * constructor's init list has to follow DECLARATION order, and this member is declared before
+         * `pass_resources` - so an entry there would be a reorder warning (`-Werror`) for a dependency that is
+         * real but does not need the list to express it (`vulkan_core` is declared above everything).
+         */
+        ray_tracing::structure_set structures{this->vulkan_core};
         // The alphaMode MASK bake (see shaders/mask_bake.comp): ONE JOB OBJECT owns its pipeline layout, its
         // pipeline and the set it writes (vulkan.pass.mask_bake_job), because it is not a frame pass at all -
         // it runs once, inside the same command buffer as the bottom level builds it feeds, and its input is
@@ -1243,24 +1230,29 @@ namespace vulkan {
         // does not allocate while recording. A member for the same measured reason as the MASK bake above.
         pass::compute_skin_job compute_skin = {};
         std::vector<pass::compute_skin_request> compute_skin_requests = {};
-        // The skinned vertex buffers (one per skinned caster, owned here for as long as the structures are)
-        // and the geometry indices that have to be refitted every frame.
-        std::vector<vk_buffer> rt_skin_buffers = {};
-        std::vector<uint32_t> rt_skin_levels = {};
         // Whether the skinning pass runs ([render] rt_skin_bake): a knob because it is the A/B that measures
         // whether a traced shadow now follows the pose, and because a device without ray queries has no
         // structures for it to feed.
         bool rt_skin_bake = false;
-        bool rt_top_level_logged = false;
         // The ray-traced sun shadow pass (see shaders/rt_shadow.comp): its pipeline, its pipeline layout, its
         // push block's shape and its one-shot log line are the PASS's now (vulkan.pass.rt_shadow), and its
         // member and stage are declared next to the other passes above. The renderer keeps two facts about it:
         // WHERE it sits (after the G-buffer pass, before the lighting stage - see the frame loop) and the
         // transition the lighting stage's descriptor needs on a frame where the pass does not run.
-        /** @brief record the one-time acceleration-structure build into the frame's command buffer */
-        void record_acceleration_structures(VkCommandBuffer command_buffer);
-        /** @brief record this frame's top level structure (the culled instance list) */
-        void record_top_level_structure(VkCommandBuffer command_buffer);
+        /**
+         * @brief WHAT THE STRUCTURE PHASE NEEDS FROM THIS RENDERER, as one value (see ray_tracing::build_inputs)
+         *
+         * The casters the culling produced, the material table the alphaMode MASK rule reads, the two knobs, and
+         * the two JOBS - which stay this class's members (they are GPU-owning objects built from a pass context)
+         * and are driven through `ray_tracing::bake_hooks`: the phase's module drives them without depending on
+         * the passes that implement them, and the slice that moves the jobs in changes one side only.
+         */
+        [[nodiscard]] ray_tracing::build_inputs make_structure_inputs() const noexcept;
+        /// @brief the four hooks above, as the function pointers the phase takes (each one casts `owner` back)
+        static bool structure_mask_ready(void* owner) noexcept;
+        static void structure_record_mask_bake(void* owner, VkCommandBuffer command_buffer, pass::mask_bake_request const& request);
+        static bool structure_skin_ready(void* owner) noexcept;
+        static bool structure_record_skin(void* owner, VkCommandBuffer command_buffer, std::span<ray_tracing::caster_level const> casters);
         /** @brief point a scene set's binding 16 at @p tlas (see the null-descriptor rule it avoids) */
         void write_rt_structure_binding(VkDescriptorSet set, VkAccelerationStructureKHR tlas);
         // scene center handed to enable_shadows. The fit falls back to center +- scene_radius when a
@@ -2445,15 +2437,17 @@ namespace vulkan {
         /**
          * @brief re-skin every skinned caster and REFIT its structure, for this frame
          * @param command_buffer where to record (the frame's structure phase, before the top level build)
+         * @param casters the structure set's own map, so the request list is built from the same walk that built
+         *        the structures (a caster that was skipped there has no entry here and is not skinned)
          * @return whether anything was recorded
          * @note the job writes the vertices the VERTEX shader would compute, into the buffer the structure
          *       was built from, and the refit then makes traversal see them. It has to run AFTER the
          *       animation uploaded this slot's per-joint matrices and BEFORE the frame writes the scene
          *       set's binding 16 - the ordering the mask bake's own-set comment explains.
          */
-        bool record_compute_skin_pass(VkCommandBuffer command_buffer);
-        /// @brief refill the job's request list from the skinned casters this frame's structure phase knows
-        void fill_compute_skin_requests();
+        bool record_compute_skin_pass(VkCommandBuffer command_buffer, std::span<ray_tracing::caster_level const> casters);
+        /// @brief refill the job's request list from the skinned casters the structure set built
+        void fill_compute_skin_requests(std::span<ray_tracing::caster_level const> casters);
 
         /** @brief whether the tracer runs this frame (see set_ssgi) */
         [[nodiscard]] bool ssgi_active() const noexcept;

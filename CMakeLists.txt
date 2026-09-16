@@ -150,6 +150,7 @@ target_sources(vulkancorekit
         vulkan/shadow_fit/shadow_fit.cppm
         vulkan/readback/readback.cppm
         vulkan/acceleration_structure/acceleration_structure.cppm
+        vulkan/ray_tracing/ray_tracing.cppm
         vulkan/core/pipeline/spirv_parser.cppm
         vulkan/scene_tree/scene_tree.cppm
         vulkan/primitive/primitive.cppm
@@ -188,6 +189,7 @@ target_sources(vulkancorekit
         vulkan/shadow_fit/shadow_fit.cpp
         vulkan/readback/readback.cpp
         vulkan/acceleration_structure/acceleration_structure.cpp
+        vulkan/ray_tracing/ray_tracing.cpp
         vulkan/scene_tree/scene_tree.cpp
         vulkan/primitive/primitive.cpp
         vulkan/gui/gui.cpp

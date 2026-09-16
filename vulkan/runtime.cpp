@@ -638,10 +638,10 @@ namespace vulkan {
             // acceleration-structure descriptor is not legal without the nullDescriptor feature
             // (VUID-VkWriteDescriptorSetAccelerationStructureKHR-pAccelerations-03580), and the structure
             // is created by the first frame that asks for ray-traced shadows - so the write happens there
-            // (record_top_level_structure) for the slot that just got one. Nothing reads the binding
-            // before that: the pass that uses it is gated on the same handle.
-            if (this->vulkan_core.ray_query_available && this->rt_top_levels.has_value()) {
-                VkAccelerationStructureKHR const tlas = this->rt_top_levels->handle(static_cast<uint32_t>(slot));
+            // (the structure phase's `update`, see the frame loop) for the slot that just got one. Nothing reads
+            // the binding before that: the pass that uses it is gated on the same handle.
+            if (this->vulkan_core.ray_query_available && this->structures.ready()) {
+                VkAccelerationStructureKHR const tlas = this->structures.handle(static_cast<uint32_t>(slot));
                 if (tlas != VK_NULL_HANDLE) {
                     this->write_rt_structure_binding(set, tlas);
                 }
@@ -1734,13 +1734,34 @@ namespace vulkan {
         //      now that the scene is loaded and culled. Nothing reads the structures yet, so a frame
         //      with the flag on renders exactly like one with it off - what this records is the input
         //      the ray-traced pass will need, not a change to the image.
-        this->record_acceleration_structures(*command_buffer);
-        // ... and the top level structure, which is rebuilt EVERY frame: the instance set is culled per
-        // frame and a caster's world matrix can change (animation, a moved node), so the instance list
-        // is frame data like any other. On the frame that builds the bottom levels it is a no-op for
-        // the reasons above (nothing to trace yet); from the next frame on it is the structure a shadow
-        // ray will traverse.
-        this->record_top_level_structure(*command_buffer);
+        //
+        // THE WORK IS THE STRUCTURE SET'S (vulkan.ray_tracing) and the POLICY is this loop's: WHETHER the
+        // structures are wanted at all (`rt_structures_wanted`), and that they are built and re-instanced HERE -
+        // before any rendering instance opens. What the set returns is why it gave up; what that means for a knob
+        // (the refit's own failure turns `rt_skin_bake` off) is decided here.
+        if (this->rt_structures_wanted()) {
+            ray_tracing::build_inputs const inputs = this->make_structure_inputs();
+            uint32_t const frame_slot = static_cast<uint32_t>(this->vulkan_core.current_frame);
+            if (auto const built = this->structures.build(*command_buffer, inputs); !built) {
+                utility::log("ray-traced shadows disabled: {}", built.error().message);
+            }
+            // ... and the top level structure, which is rebuilt EVERY frame: the instance set is culled per
+            // frame and a caster's world matrix can change (animation, a moved node), so the instance list
+            // is frame data like any other. On the frame that builds the bottom levels it runs right after them;
+            // from the next frame on it is the structure a shadow ray will traverse.
+            if (auto const updated = this->structures.update(*command_buffer, frame_slot, inputs); !updated) {
+                utility::log("runtime: {}", updated.error().message);
+                if (updated.error().disable_skin_bake) {
+                    this->rt_skin_bake = false;
+                }
+            }
+            // The scene set's binding 16 follows the slot's structure, which is why this write is here and not in
+            // the pass that reads it: a null acceleration-structure descriptor is not legal without
+            // nullDescriptor, so the binding becomes valid the moment a structure for that slot does.
+            if (this->scene_sets.created()) {
+                this->write_rt_structure_binding(this->scene_sets.set(frame_slot), this->structures.handle(frame_slot));
+            }
+        }
         // GPU timing: the structures' builds end here. Written UNCONDITIONALLY, like every other mark -
         // a frame that skips a pass still writes its mark next to the previous one (0 ms interval), and
         // the report's labels are positional: leaving a gap here relabeled the whole frame ("marks
@@ -2562,7 +2583,7 @@ namespace vulkan {
     // it, is the chain owner's now (see `chain_wiring::recreated` and vulkan.render_start_demo).
 
     bool runtime::ssgi_traced_active() const noexcept {
-        return this->ssgi_active() && this->ssgi_ray_tracing && this->vulkan_core.ray_query_available && this->rt_top_levels.has_value();
+        return this->ssgi_active() && this->ssgi_ray_tracing && this->vulkan_core.ray_query_available && this->structures.ready();
     }
 
     bool runtime::ssgi_specular_active() const noexcept {
@@ -3507,13 +3528,13 @@ namespace vulkan {
         return this->chain_ != nullptr && this->chain_->ready(name);
     }
 
-    void runtime::fill_compute_skin_requests() {
-        // The job's input, built from the casters this frame's structure phase knows: one request per SKINNED
-        // caster (a zero destination means "not skinned: its geometry is what the build read"). The list is a
-        // member so a frame does not allocate while recording, and the JOB decides what to do with it.
+    void runtime::fill_compute_skin_requests(std::span<ray_tracing::caster_level const> const casters) {
+        // The job's input, built from the map the STRUCTURE SET built: one request per SKINNED caster (a zero
+        // destination means "not skinned: its geometry is what the build read"). The list is a member so a frame
+        // does not allocate while recording, and the JOB decides what to do with it.
         this->compute_skin_requests.clear();
-        this->compute_skin_requests.reserve(this->rt_caster_levels.size());
-        for (auto const& built : this->rt_caster_levels) {
+        this->compute_skin_requests.reserve(casters.size());
+        for (auto const& built : casters) {
             if (built.skin_destination_address == 0) {
                 continue;
             }
@@ -3528,14 +3549,15 @@ namespace vulkan {
         }
     }
 
-    bool runtime::record_compute_skin_pass(VkCommandBuffer const command_buffer) {
-        // The knob, the caster list and the frame slot are the RENDERER's; the dispatches and the barrier the
-        // acceleration structure build needs after them are the JOB's (vulkan.pass.compute_skin_job). The gate
-        // is the moved code's, in the same order: the knob, the job, and whether anything is skinned at all.
-        if (!this->rt_skin_bake || !this->compute_skin.ready() || this->rt_skin_levels.empty()) {
+    bool runtime::record_compute_skin_pass(VkCommandBuffer const command_buffer, std::span<ray_tracing::caster_level const> const casters) {
+        // The knob and the frame slot are the RENDERER's; the dispatches and the barrier the acceleration
+        // structure build needs after them are the JOB's (vulkan.pass.compute_skin_job). "Is there anything
+        // skinned at all" is NOT asked here any more: the structure set owns that answer (its map), and it only
+        // calls this when it has skinned levels to refit.
+        if (!this->rt_skin_bake || !this->compute_skin.ready()) {
             return false;
         }
-        this->fill_compute_skin_requests();
+        this->fill_compute_skin_requests(casters);
         return this->compute_skin.record(command_buffer, static_cast<uint32_t>(this->vulkan_core.current_frame), this->compute_skin_requests);
     }
 
@@ -3838,8 +3860,8 @@ namespace vulkan {
         this->frame_facts.gi_resolved = false;
         this->frame_facts.gi_spec_resolved = false;
         uint64_t instance_table = 0;
-        if (this->rt_top_levels.has_value()) {
-            VkBuffer const table = this->rt_top_levels->instance_table(static_cast<uint32_t>(vk.current_frame));
+        if (this->structures.ready()) {
+            VkBuffer const table = this->structures.instance_table(static_cast<uint32_t>(vk.current_frame));
             if (table != VK_NULL_HANDLE) {
                 VkBufferDeviceAddressInfo const table_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};
                 instance_table = vkGetBufferDeviceAddress(vk.device, &table_info);
@@ -4212,7 +4234,7 @@ namespace vulkan {
             .ssgi_hit_shading = this->ssgi_hit_shading,
             .transparent_pending = !this->frame_transparent.empty(),
             .gbuffer_pipeline = this->gbuffer_pipeline.has_value(),
-            .structures_ready = this->rt_top_levels.has_value() && this->rt_top_levels->handle(static_cast<uint32_t>(vk.current_frame)) != VK_NULL_HANDLE,
+            .structures_ready = this->structures.ready() && this->structures.handle(static_cast<uint32_t>(vk.current_frame)) != VK_NULL_HANDLE,
             .furnace = this->furnace,
             .punctual_lights = this->light_state.light_count.x,
         };
@@ -4555,7 +4577,7 @@ namespace vulkan {
     }
 
     void runtime::set_rt_mask_bake(bool const enabled) noexcept {
-        // Read once, when the structures are built (see record_acceleration_structures): the bake is startup
+        // Read once, when the structures are built (see ray_tracing::structure_set::build): the bake is startup
         // work and the structures are built once, so this can only be settled before the first traced frame.
         this->rt_mask_bake = enabled;
     }
@@ -4581,394 +4603,44 @@ namespace vulkan {
         return this->rt_shadows && this->vulkan_core.ray_query_available;
     }
 
-    void runtime::record_acceleration_structures(VkCommandBuffer const command_buffer) {
-        core& vk = this->vulkan_core;
-        if (!this->rt_structures_wanted() || this->rt_structures_attempted) {
-            return; // off, unsupported, or already built (see rt_structures_attempted)
-        }
-        this->rt_structures_attempted = true;
+    // =============================================================================================
+    // THE STRUCTURE PHASE'S SEAM (see vulkan.ray_tracing): what this renderer hands the phase, and the four
+    // hooks that let the phase drive the two jobs this class still owns.
+    // =============================================================================================
 
-        auto const start = std::chrono::steady_clock::now();
-        this->rt_bottom_levels.emplace(vk);
-        // The top level structure is per FRAME SLOT (see its class docs): with frames in flight one
-        // buffer would be rewritten by the frame being recorded while the previous one still reads it.
-        this->rt_top_levels.emplace(vk, vulkan::core::MAX_FRAMES_IN_FLIGHT);
-        auto& structures = *this->rt_bottom_levels;
-
-        // One structure per SHADOW CASTER, which is the set the shadow pass itself draws (and the
-        // reason it is the right set: a caster can sit off screen and still throw a shadow into the
-        // view, so the visible set would be wrong). The geometry is the renderer's own: the build
-        // reads the vertex and index buffers through their DEVICE ADDRESSES, so nothing is copied and
-        // the structures follow whatever those buffers hold.
-        uint32_t skipped_no_address = 0;
-        uint32_t skipped_no_stride = 0;
-        // The mask bake: how many casters had an alphaMode MASK baked into their geometry, and how many
-        // could not be (an allocation failure falls back to the documented solid behaviour rather than
-        // failing the whole build).
-        uint32_t mask_baked = 0;
-        uint32_t skipped_mask_buffers = 0;
-        bool mask_bakes_recorded = false;
-        // ... and the same two counters for the skinned casters (see the SKINNED branch below).
-        uint32_t skinned_baked = 0;
-        uint32_t skipped_skin_buffers = 0;
-        for (primitive const* caster : this->shadow_casters) {
-            if (caster == nullptr) {
-                continue;
-            }
-            VkBufferDeviceAddressInfo vertex_address_info = {};
-            vertex_address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-            VkBufferDeviceAddressInfo index_address_info = vertex_address_info;
-
-            auto const* const vertex_detail = caster->vertex_detail;
-            auto const* const index_detail = caster->index_detail;
-            if (vertex_detail == nullptr || index_detail == nullptr || vertex_detail->buffer == VK_NULL_HANDLE || index_detail->buffer == VK_NULL_HANDLE) {
-                ++skipped_no_address;
-                continue;
-            }
-            // A buffer only has a device address when it was created with SHADER_DEVICE_ADDRESS_BIT,
-            // which the primitive uploads add when this device has the extensions - so this is a check
-            // on a device that has ray queries but whose buffers were uploaded before the flag... which
-            // cannot happen: the buffers are uploaded with the bits whenever the device supports them,
-            // regardless of the config. Kept as a guard because the alternative is a validation error
-            // per frame instead of one line in the log.
-            if (caster->vertex_stride == 0) {
-                ++skipped_no_stride;
-                continue;
-            }
-            vertex_address_info.buffer = vertex_detail->buffer;
-            index_address_info.buffer = index_detail->buffer;
-            VkDeviceAddress const source_vertex_address = vkGetBufferDeviceAddress(vk.device, &vertex_address_info);
-            VkDeviceAddress const source_index_address = vkGetBufferDeviceAddress(vk.device, &index_address_info);
-
-            // alphaMode MASK: bake the material's holes into an EXPANDED copy of this caster's vertices and
-            // build the structure from that. An inline ray query has no any-hit stage, so a traversal cannot
-            // run the material's discard - this bake is where the mask is applied instead, and it is startup
-            // work because the structures are built once and a MASK material is a property of the file (see
-            // shaders/mask_bake.comp for the rule and for what the mechanism cannot represent).
-            //
-            // WHAT IS STILL THE RENDERER'S HERE, and what is the JOB's: the policy is this loop's - which
-            // casters carry a MASK material, and the allocation of the expanded buffer each one is baked into
-            // (the buffer outlives the loop: the build below reads it, and hit shading reads its vertices
-            // through the instance table for as long as the structures live). The pipeline, its layout, the set
-            // it binds and the dispatch are `mask_bake`'s (vulkan.pass.mask_bake_job).
-            VkDeviceAddress mask_address = 0;
-            uint32_t mask_stride = 0;
-            if (this->rt_mask_bake && this->mask_bake.ready() && this->material_mapped != nullptr) {
-                // material_record::flags bit 4 is alphaMode MASK (see vulkan/primitive.cppm; the bits are
-                // literals in register_material, so they are literals here too).
-                uint32_t const material_index = caster->push.material_index.value;
-                material_record const* const material =
-                    material_index < this->material_count
-                        ? reinterpret_cast<material_record const*>(static_cast<unsigned char const*>(this->material_mapped) + static_cast<std::size_t>(material_index) * sizeof(material_record))
-                        : nullptr;
-                if (material != nullptr && (material->flags & 16u) != 0u && caster->index_count >= 3u) {
-                    // Three vertices per triangle, 32 bytes each: position(3) + normal(3) + uv(2), which is
-                    // what the hit shading reads (offsets 0, 3 and 6). GPU-only and never mapped - the bake
-                    // fills it and the build reads it.
-                    constexpr uint32_t mask_vertex_stride = 32u;
-                    uint64_t const expanded_bytes = static_cast<uint64_t>(caster->index_count) * mask_vertex_stride;
-                    vk_buffer expanded = vk.vma.create_buffer(nullptr, expanded_bytes, buffer_type::storage_gpu_only, acceleration_structure::build_input_usage);
-                    auto const* const expanded_detail = expanded.valid() ? vk.vma.get_buffer_detail(expanded.handle()) : nullptr;
-                    if (expanded_detail != nullptr) {
-                        VkBufferDeviceAddressInfo const expanded_info = {
-                            .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = expanded_detail->buffer};
-                        mask_address = vkGetBufferDeviceAddress(vk.device, &expanded_info);
-                        mask_stride = mask_vertex_stride;
-                        this->mask_bake.record(command_buffer,
-                                               pass::mask_bake_request{
-                                                   .source_vertices = source_vertex_address,
-                                                   .source_indices = source_index_address,
-                                                   .destination = mask_address,
-                                                   .source_stride = caster->vertex_stride,
-                                                   .destination_stride = mask_vertex_stride,
-                                                   .index_type = static_cast<uint32_t>(caster->index_type),
-                                                   .triangle_count = caster->index_count / 3u,
-                                                   .material_index = material_index,
-                                               });
-                        mask_bakes_recorded = true;
-                        ++mask_baked;
-                        // The buffer outlives this loop: the build below reads it, and a hit's shading reads
-                        // its vertices through the instance table for as long as the structures live.
-                        this->rt_mask_buffers.push_back(std::move(expanded));
-                    } else {
-                        ++skipped_mask_buffers;
-                    }
-                }
-            }
-
-            // SKINNED: the pass (below, once every caster is known) writes this caster's deformed vertices
-            // into a buffer of its own, the structure is built from that buffer, and every frame after it is
-            // REFITTED - which is legal because the vertex order, the index buffer and the triangle count are
-            // all the primitive's own: only the bytes change. `skin_base != 0` is the test for "skinned",
-            // because index 0 is the identity block every unskinned draw uses (see set_skin_matrices). The
-            // stride test is the shader's precondition, not a heuristic: shaders/compute_skin.comp reads the
-            // joints at byte 32 and the weights at byte 48 of the engine's 64-byte interleaved vertex, so a
-            // caster whose vertices are packed differently is REFUSED (it keeps its bind pose and is counted
-            // in the log) rather than skinned with the wrong words.
-            constexpr uint32_t skin_source_stride_expected = 64u;
-            VkDeviceAddress skin_address = 0;
-            uint32_t skin_stride = 0;
-            uint32_t skin_source_stride = 0;
-            uint32_t skin_vertex_count = 0;
-            uint32_t skin_base = 0;
-            if (mask_address == 0 && this->rt_skin_bake && this->compute_skin.ready() && caster->push.skin_base != 0 && caster->vertex_count != 0 &&
-                caster->vertex_stride == skin_source_stride_expected) {
-                constexpr uint32_t skin_vertex_stride = 32u; // position, normal, uv - what hit shading reads
-                uint64_t const skinned_bytes = static_cast<uint64_t>(caster->vertex_count) * skin_vertex_stride;
-                vk_buffer skinned_vertices = vk.vma.create_buffer(nullptr, skinned_bytes, buffer_type::storage_gpu_only, acceleration_structure::build_input_usage);
-                auto const* const skinned_detail = skinned_vertices.valid() ? vk.vma.get_buffer_detail(skinned_vertices.handle()) : nullptr;
-                if (skinned_detail != nullptr) {
-                    VkBufferDeviceAddressInfo const skinned_info = {
-                        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = skinned_detail->buffer};
-                    skin_address = vkGetBufferDeviceAddress(vk.device, &skinned_info);
-                    skin_stride = skin_vertex_stride;
-                    skin_source_stride = caster->vertex_stride;
-                    skin_vertex_count = caster->vertex_count;
-                    skin_base = caster->push.skin_base;
-                    this->rt_skin_buffers.push_back(std::move(skinned_vertices));
-                    ++skinned_baked;
-                } else {
-                    ++skipped_skin_buffers;
-                }
-            }
-
-            acceleration_structure::geometry_source const source =
-                mask_address != 0
-                    ? acceleration_structure::geometry_source{.vertex_address = mask_address,
-                                                              .vertex_stride = mask_stride,
-                                                              .vertex_count = caster->index_count,
-                                                              .index_address = 0,
-                                                              .index_type = caster->index_type,
-                                                              .index_count = caster->index_count}
-                : skin_address != 0
-                    ? acceleration_structure::geometry_source{.vertex_address = skin_address,
-                                                              .vertex_stride = skin_stride,
-                                                              .vertex_count = caster->vertex_count,
-                                                              .index_address = source_index_address,
-                                                              .index_type = caster->index_type,
-                                                              .index_count = caster->index_count}
-                    : acceleration_structure::geometry_source{.vertex_address = source_vertex_address,
-                                                              .vertex_stride = caster->vertex_stride,
-                                                              .vertex_count = caster->vertex_count,
-                                                              .index_address = source_index_address,
-                                                              .index_type = caster->index_type,
-                                                              .index_count = caster->index_count};
-            // A skinned structure is built ALLOW_UPDATE so the per-frame refit is legal; everything else is
-            // built once and never touched again.
-            auto const added = structures.add(source, skin_address != 0);
-            if (!added) {
-                utility::log("ray-traced shadows disabled: {}", added.error());
-                this->rt_bottom_levels.reset();
-                this->rt_top_levels.reset();
-                // The expansion buffers and the caster mapping go with the structures they belong to: a
-                // stale mapping would have the instance list read geometry no structure was built from.
-                this->rt_mask_buffers.clear();
-                this->rt_skin_buffers.clear();
-                this->rt_skin_levels.clear();
-                this->rt_caster_levels.clear();
-                return;
-            }
-            // Remember which caster got which index: the per-frame instance list walks THIS, so a
-            // caster that was skipped above is skipped there too and the two walks cannot disagree. The
-            // mask and skin addresses ride along, because that list is what a hit's shading reads the
-            // geometry through - a baked or skinned caster must be read from the copy it was built from.
-            this->rt_caster_levels.emplace_back(rt_caster_level{.caster = caster,
-                                                                .blas_index = added.value(),
-                                                                .mask_stride = mask_stride,
-                                                                .mask_vertex_address = mask_address,
-                                                                .skin_source_address = source_vertex_address,
-                                                                .skin_destination_address = skin_address,
-                                                                .skin_source_stride = skin_source_stride,
-                                                                .skin_destination_stride = skin_stride,
-                                                                .skin_vertex_count = skin_vertex_count,
-                                                                .skin_base = skin_base});
-        }
-
-        // The skinned casters' first skinning pass, recorded here because the BUILD below has to read skinned
-        // vertices - and every frame after this one re-skins and REFITS in record_top_level_structure. The
-        // refit is not recorded here: this is the frame the structures are created, and a refit against a
-        // structure that does not exist yet is illegal.
-        if (skinned_baked != 0) {
-            for (auto const& built : this->rt_caster_levels) {
-                if (built.skin_destination_address != 0) {
-                    this->rt_skin_levels.push_back(built.blas_index);
-                }
-            }
-            this->record_compute_skin_pass(command_buffer);
-        }
-
-        // Every bake wrote a buffer the build below reads: one barrier covers them all, because every
-        // dispatch is recorded before the first build (add() only sizes and allocates; record_build()
-        // records). A compute WRITE is not visible to an acceleration structure build without it, and the
-        // symptom would be a structure built from an empty buffer - i.e. geometry that stops casting.
-        if (mask_bakes_recorded) {
-            VkMemoryBarrier2 bake_order = {};
-            bake_order.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-            bake_order.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            bake_order.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-            bake_order.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-            bake_order.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-            VkDependencyInfo const bake_dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                                      .pNext = nullptr,
-                                                      .dependencyFlags = 0,
-                                                      .memoryBarrierCount = 1,
-                                                      .pMemoryBarriers = &bake_order,
-                                                      .bufferMemoryBarrierCount = 0,
-                                                      .pBufferMemoryBarriers = nullptr,
-                                                      .imageMemoryBarrierCount = 0,
-                                                      .pImageMemoryBarriers = nullptr};
-            vkCmdPipelineBarrier2(command_buffer, &bake_dependency);
-        }
-
-        if (auto const built = structures.record_build(command_buffer); !built) {
-            utility::log("ray-traced shadows disabled: {}", built.error());
-            this->rt_bottom_levels.reset();
-            this->rt_top_levels.reset();
-            return;
-        }
-
-        acceleration_structure::build_stats const& stats = structures.last_stats();
-        double const host_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-        utility::log("ray-traced shadows: built {} bottom level structures ({} triangles, {:.1f} MiB + {:.1f} MiB scratch) in {:.1f} ms",
-                     stats.geometry_count,
-                     stats.triangle_count,
-                     static_cast<double>(stats.structure_bytes) / (1024.0 * 1024.0),
-                     static_cast<double>(stats.scratch_bytes) / (1024.0 * 1024.0),
-                     host_ms);
-        if (skipped_no_stride != 0) {
-            utility::log("  {} casters skipped (no vertex stride recorded - a primitive not created by make_primitive)", skipped_no_stride);
-        }
-        if (skipped_no_address != 0) {
-            utility::log("  {} casters skipped (no vertex/index buffer)", skipped_no_address);
-        }
-        if (mask_baked != 0 || skipped_mask_buffers != 0) {
-            // The measurement this feature is read with: how much geometry the mask actually removed is a
-            // property of the asset (a two-quad MASK plane whose pattern is in the middle keeps every
-            // triangle; a vase of flowers loses 40% of them - see docs/gi_hit_shading.md).
-            utility::log("ray-traced shadows: {} MASK casters baked into their structures ({} could not be - those stay solid to a ray)", mask_baked, skipped_mask_buffers);
-        }
-        if (skinned_baked != 0 || skipped_skin_buffers != 0) {
-            // The skinned casters are re-skinned and REFITTED every frame (see record_top_level_structure),
-            // so this count is also the number of structures a frame's refit touches.
-            utility::log("ray-traced shadows: {} skinned casters re-skinned and REFITTED from their deformed vertices every frame ({} could not be - those keep their bind pose)", skinned_baked, skipped_skin_buffers);
-        }
+    ray_tracing::build_inputs runtime::make_structure_inputs() const noexcept {
+        // THE FIVE THINGS THE PHASE CANNOT GET ITSELF, and nothing else: the casters this frame's culling
+        // produced (the SHADOW caster set, because a caster can sit off screen and still throw a shadow into the
+        // view), the material table the alphaMode MASK rule reads - as a span, so an out-of-range index is a size
+        // check rather than arithmetic on a mapped pointer - the two knobs, and the two jobs.
+        auto const* const materials = static_cast<material_record const*>(this->material_mapped);
+        return ray_tracing::build_inputs{
+            .casters = this->shadow_casters,
+            .materials = materials != nullptr ? std::span<material_record const>(materials, this->material_count) : std::span<material_record const>{},
+            .mask_bake = this->rt_mask_bake,
+            .skin_bake = this->rt_skin_bake,
+            .hooks = ray_tracing::bake_hooks{.owner = const_cast<runtime*>(this),
+                                             .mask_ready = &runtime::structure_mask_ready,
+                                             .record_mask_bake = &runtime::structure_record_mask_bake,
+                                             .skin_ready = &runtime::structure_skin_ready,
+                                             .record_skin = &runtime::structure_record_skin},
+        };
     }
 
-    void runtime::record_top_level_structure(VkCommandBuffer const command_buffer) {
-        core& vk = this->vulkan_core;
-        if (!this->rt_structures_wanted() || !this->rt_bottom_levels.has_value() || !this->rt_top_levels.has_value()) {
-            return;
-        }
-        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
-        auto& levels = *this->rt_bottom_levels;
-        auto& top = *this->rt_top_levels;
+    bool runtime::structure_mask_ready(void* const owner) noexcept {
+        return static_cast<runtime*>(owner)->mask_bake.ready();
+    }
 
-        // The skinned casters are deformed and their structures REFITTED here, before the instance list is
-        // walked (the addresses do not change, so the order does not matter to correctness - but the refit
-        // has to be recorded before this frame writes the scene set's binding 16, the ordering the mask
-        // bake's own-set comment explains). The pass itself returns false when there is nothing skinned.
-        if (this->record_compute_skin_pass(command_buffer)) {
-            if (auto const updated = this->rt_bottom_levels->record_update(command_buffer, this->rt_skin_levels); !updated) {
-                // Once, and off: a failure here would otherwise log every frame, and a refit is not
-                // something to keep attempting against structures the device refused.
-                utility::log("runtime: skinned shadow refit disabled: {}", updated.error());
-                this->rt_skin_bake = false;
-            }
-        }
+    void runtime::structure_record_mask_bake(void* const owner, VkCommandBuffer const command_buffer, pass::mask_bake_request const& request) {
+        static_cast<runtime*>(owner)->mask_bake.record(command_buffer, request);
+    }
 
-        if (auto const begun = top.begin(frame_slot); !begun) {
-            utility::log("runtime: {}", begun.error());
-            return;
-        }
-        // The instance list is the caster set the shadow pass draws, with the world matrix the raster
-        // passes use for each caster - the same matrix shadow_geometry_signature() hashes, which is why
-        // an animated or moved caster is reflected here for free.
-        for (auto const& built : this->rt_caster_levels) {
-            primitive const* const caster = built.caster;
-            // The addresses a hit-shading path reads the hit triangle from: the same buffers, and the
-            // same vkGetBufferDeviceAddress calls, the bottom level build above already used for this
-            // caster - so the triangle a shader fetches with them IS the triangle the ray hit. They are
-            // the buffers' base addresses (the build applies no offset), which is also what makes them
-            // legal as a buffer reference: a buffer's address is aligned, an offset into one need not be.
-            //
-            // A baked or skinned caster is read from the copy its structure was built from: the mask bake's
-            // expanded, non-indexed one (zero index address = a flat vertex list), or the skinned one, which
-            // keeps the primitive's own index buffer because its vertex ORDER is unchanged.
-            VkDeviceAddress vertex_address = built.mask_vertex_address != 0 ? built.mask_vertex_address : built.skin_destination_address;
-            VkDeviceAddress index_address = 0;
-            uint32_t vertex_stride = built.mask_vertex_address != 0 ? built.mask_stride : built.skin_destination_stride;
-            if (vertex_address == 0) {
-                VkBufferDeviceAddressInfo const vertex_address_info = {
-                    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = caster->vertex_detail->buffer};
-                VkBufferDeviceAddressInfo const index_address_info = {
-                    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = caster->index_detail->buffer};
-                vertex_address = vkGetBufferDeviceAddress(vk.device, &vertex_address_info);
-                index_address = vkGetBufferDeviceAddress(vk.device, &index_address_info);
-                vertex_stride = caster->vertex_stride;
-            } else if (built.skin_destination_address != 0) {
-                VkBufferDeviceAddressInfo const index_address_info = {
-                    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = caster->index_detail->buffer};
-                index_address = vkGetBufferDeviceAddress(vk.device, &index_address_info);
-            }
-            acceleration_structure::instance_source const instance = {
-                .transform = caster->push.model,
-                .blas_index = built.blas_index,
-                .record = {.vertex_address = vertex_address,
-                           .index_address = index_address,
-                           .model = caster->push.model,
-                           .vertex_stride = vertex_stride,
-                           .index_type = static_cast<uint32_t>(caster->index_type),
-                           .material_index = caster->push.material_index.value,
-                           .primitive_index = built.blas_index},
-            };
-            if (auto const added = top.add(levels, instance); !added) {
-                utility::log("runtime: {}", added.error());
-                return;
-            }
-        }
+    bool runtime::structure_skin_ready(void* const owner) noexcept {
+        return static_cast<runtime*>(owner)->compute_skin.ready();
+    }
 
-        // The top level reads the BOTTOM levels, and on the frame that creates them the two builds are
-        // in the same command buffer with nothing between them: without this barrier the driver is free
-        // to run the second build's reads against writes the first one has not published. It costs a
-        // no-op on every later frame (nothing wrote a bottom level in this buffer), which is cheaper
-        // than a flag that would have to track "which frame built them".
-        VkMemoryBarrier2 build_order = {};
-        build_order.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-        build_order.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-        build_order.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-        build_order.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-        build_order.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
-        VkDependencyInfo const build_order_info = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                                   .pNext = nullptr,
-                                                   .dependencyFlags = 0,
-                                                   .memoryBarrierCount = 1,
-                                                   .pMemoryBarriers = &build_order,
-                                                   .bufferMemoryBarrierCount = 0,
-                                                   .pBufferMemoryBarriers = nullptr,
-                                                   .imageMemoryBarrierCount = 0,
-                                                   .pImageMemoryBarriers = nullptr};
-        vkCmdPipelineBarrier2(command_buffer, &build_order_info);
-
-        if (auto const built = top.record_build(command_buffer); !built) {
-            utility::log("runtime: {}", built.error());
-            return;
-        }
-
-        // Point this slot's binding 16 at the structure that was just built. The scene sets were written
-        // before any structure existed (a null acceleration-structure descriptor is not legal without
-        // nullDescriptor), so this is where the binding first becomes valid - and the pass that reads it
-        // is gated on the same handle.
-        if (this->scene_sets.created()) {
-            this->write_rt_structure_binding(this->scene_sets.set(frame_slot), top.handle(frame_slot));
-        }
-        if (!this->rt_top_level_logged) {
-            this->rt_top_level_logged = true;
-            // The class measured the host cost of the build itself (see build_stats); reporting that
-            // rather than a second timer around it keeps one definition of "what the build costs".
-            utility::log("ray-traced shadows: {} instances in the top level structure, one instance table entry each ({:.3f} ms host per frame)",
-                         top.instance_count(frame_slot),
-                         top.last_stats().build_ms);
-        }
+    bool runtime::structure_record_skin(void* const owner, VkCommandBuffer const command_buffer, std::span<ray_tracing::caster_level const> const casters) {
+        return static_cast<runtime*>(owner)->record_compute_skin_pass(command_buffer, casters);
     }
 
     void runtime::set_shadow_enabled(bool const enabled) {

@@ -3318,6 +3318,85 @@ scratch members), and the `frame_facts` struct's shape itself - seven values pub
 reading of "the pass owns its frame" would move two of them (the hit-shading knob and the cluster grid, both read by
 the renderer's own policy as well) into `frame_constants::render_settings` where the shared-knob rule puts them.
 
+## THE STRUCTURE PHASE LEAVES THE FRAME LOOP: `vulkan.ray_tracing`
+
+**THE LARGEST SELF-CONTAINED SUBSYSTEM LEFT IN THE RENDERER IS NOW A MODULE**, and the measurement that says so is
+a set of counts rather than a claim:
+
+| | before | after |
+|---|---|---|
+| `runtime.cpp` | 5421 | **5093** (-328) |
+| `runtime.cppm` | 3133 | **3127** (-6) |
+| the two functions | `record_acceleration_structures` 273 + `record_top_level_structure` 117 | gone |
+| the RT member block in the header | 88 lines (63 comment / 25 declarations) | the object's 12-line doc |
+| `vulkan/ray_tracing` | - | **638** (196 interface + 442 implementation) |
+
+Net repo lines go UP by about 300, and saying so is part of the record: what moved is a boundary, not a saving - the
+implementation of a module has to carry the same reasoning the members did, and the interface adds the seam's own
+docs. What is smaller is `runtime.cpp`, and what is GONE from it is the last policy-carrying algorithm it still
+implemented inline.
+
+**WHY IT IS NOT A PASS, in the project's own words.** Three consumers read the structures - the ray-traced shadow
+pass's binding 16, the GI tracer's and lobe's instance table, and the probe cache's world-space hits - so by the
+ownership rule they belong to the SHARED owner, not to a pass. The phase records BEFORE any rendering instance opens
+(a build is a transfer/compute-class command, and a caster set is only complete once the scene has been culled),
+which no pass's stage can express. And `pass_io` cannot describe the output at all: an acceleration structure has no
+view, no buffer and no image, which `docs/pass_chain_plan.md` already recorded when the ray-traced shadow pass's
+feature was written.
+
+**WHY A NEW MODULE RATHER THAN `vulkan.acceleration_structure`.** That module owns the GPU objects and states its own
+boundary in its header: "nothing in this module knows what a primitive, a material or a draw call is". What moved is
+exactly that knowledge - which casters, which material is alphaMode MASK, which primitive is skinned, which copy a
+hit has to be read from - so the two layers are now `add`/`record_build` there and the POLICY plus the GATHER here.
+
+**THE SEAM, and the one thing it does differently from the renderer's old shape.** `build_inputs` carries the frame's
+caster span, the material table as a SPAN (so the MASK rule's index is a size check rather than arithmetic on a
+mapped pointer), the two knobs, and `bake_hooks` - the two jobs, which stay the renderer's members and are driven
+through four function pointers, exactly the shape `frame_services` uses for the frames. `structure_set` exposes
+`build`/`update`/`attempted`/`ready`/`handle`/`instance_table`/`casters`. TWO BEHAVIOURS THAT WERE IMPLICIT ARE NOW
+EXPLICIT:
+
+* **a failure is RETURNED, not logged and swallowed**: `std::expected<void, failure>`, where `failure` carries the
+  message and the one decision that is the caller's (`disable_skin_bake` - a device that refused a refit is not asked
+  again, and turning that knob off is the renderer's business, not the phase's);
+* **the asymmetry on failure is kept and NAMED**: an `add` failure drops the copies with the structures (a stale map
+  would point at geometry no structure was built from) while a `record_build` failure keeps them. That was the old
+  code's behaviour, and it is now a comment rather than an accident.
+
+**WHAT THE RENDERER KEPT, and it is the policy half**: the three knobs, the two predicates
+(`rt_structures_wanted` / `rt_shadows_active`), the caster set, the ORDER of the phase in the frame, the scene-set
+binding 16 it publishes the handle through (two call sites, one of them the "a set created after the structures" case
+in `ensure_scene_set`), the two JOBS, and `acceleration_structure::build_input_usage` - which is why that import did
+NOT leave: the primitive upload still asks for the usage bits a build reads a buffer through. The new glue is
+`make_structure_inputs` plus four hooks: about 60 lines, one place, all of it a cast back to `runtime`.
+
+**AND THE "IS ANYTHING SKINNED AT ALL" DOUBLE GATE IS GONE**: that question used to be asked by the renderer's
+`record_compute_skin_pass` from `rt_skin_levels`, which meant two objects held one answer. The map that owns the
+answer asks it now, and the hook is only called when there is something to refit. `rt_structures_attempted` and
+`rt_top_level_logged` are the object's state for the same reason.
+
+**MEASURED**: the gate is **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, all twelve validation-clean and every
+reference unchanged - and the GI scenarios are what make that meaningful here, because they run the one-time build,
+the per-frame top level structure and the instance table the tracer pushes. Release, Debug and ASan build clean with
+`ctest` 8/8 in all three; `doxygen` exits 0 with zero warnings. **AND THE KNOB-ON A/B, because the three knobs no
+scenario sets are exactly the phase's own**: parent `ee8350d` against this change, two runs per side per path, with
+`rt_shadows = true` and the animation pinned:
+
+| path | pre-change | this change | what the logs proved ran |
+|---|---|---|---|
+| `AlphaBlendModeTest`, `rt_mask_bake` | `19F4B40CCEFE3421` x2 | `19F4B40CCEFE3421` x2 | 9 bottom levels, **3 MASK casters baked**, 9 instances in the top level |
+| `CesiumMan`, `rt_skin_bake` | `D256C360D45F1C92` x2 | `D256C360D45F1C92` x2 | 1 bottom level (4672 triangles), **1 caster re-skinned and REFITTED every frame**, 1 instance |
+
+Both sides also logged the ray-traced shadow pass itself ("tracing 1080x960 rays per frame"), and all eight runs were
+validation-clean - so the build, the per-frame refit, the instance table and the shader that reads the structure were
+all exercised rather than merely not-crashing.
+
+**WHAT IS LEFT OF THIS THREAD, stated rather than left open**: (5b) the two jobs move INTO the module - their only
+caller is the phase now, so the four hooks and `make_structure_inputs` would shrink to one `create(pass_context)` and
+one `build_inputs` with no callbacks; and (5c) the scene-set binding 16 could instead be published through the
+resource table, which is BLOCKED on the recorded decision that an acceleration structure is not a `resolved_binding`
+- that decision has to be revisited first, not worked around.
+
 
 
 
