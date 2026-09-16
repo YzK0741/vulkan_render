@@ -1,4 +1,4 @@
-// module version: 0.11.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.12.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/pass.cppm
@@ -185,7 +185,8 @@ export namespace vulkan::pass {
     inline constexpr uint32_t max_own_bindings = 16;
     /// @brief how many pipelines one pass may name (the post chain's five are the most today)
     inline constexpr uint32_t max_pass_pipelines = 8;
-    /// @brief how many images one pass may render into (one fullscreen pass has one; the deferred scene has five)
+    /// @brief how many images one pass may render into (one fullscreen pass has one; the deferred scene has five,
+    ///        and the shadow pass's cascade RUN is the widest single declaration at four)
     inline constexpr uint32_t max_render_targets = 8;
     /// @brief how many images one pass may declare for its own transitions (the SSGI tracer's twelve are the most)
     inline constexpr uint32_t max_barrier_images = 16;
@@ -242,6 +243,12 @@ export namespace vulkan::pass {
          * OPENS the rendering instance - the load op and the clear value are its business, since only it knows
          * whether the old contents matter - and the runner's job is to have the pipeline bound and the
          * viewport set before it does.
+         *
+         * ONE SLOT PER ELEMENT, not one per declaration entry: a target claiming a RUN of elements
+         * (`render_target::count`, i.e. the shadow map's cascades) lands here as one slot per element, so the
+         * span's length is the frame's answer to "how many of them exist". A pass whose run is a sequence of
+         * INSTANCES - each with its own attachment - opens one instance per slot, which is what the shadow pass
+         * does; a pass with one target per instance reads `targets[0]`.
          */
         std::array<resolved_binding, max_render_targets> target_storage = {};
         std::span<resolved_binding const> targets = {};
@@ -579,10 +586,11 @@ export namespace vulkan::pass {
          * A PASS OVERRIDES IT when its FRAME decides something the DECLARATION cannot express, and the override
          * starts by calling `resolve_declaration(*this, context, out)` so the declaration's half stays shared:
          * the composite writing the LDR image when FXAA runs (one `render_target` names one resource), the
-         * shadow pass handing over one target per cascade (a rendering instance has exactly one depth target),
-         * the debug view's channel, a pass that owns its own descriptor family. What an override must NOT do is
+         * debug view's channel, a pass that owns its own descriptor family. What an override must NOT do is
          * reach for a resource the declaration does not name - the context's lookups all take the declaration's
-         * own keys for exactly that reason.
+         * own keys for exactly that reason. ("The shadow pass handing over one target per cascade" used to be on
+         * this list: it is a RUN of elements now, which the declaration CAN express - see
+         * `render_target::count`.)
          *
          * @param context the resources that exist this frame + the owner's three lookups (see resolve_context)
          * @param out the struct to fill; the pass's `record` reads it immediately
@@ -1043,7 +1051,10 @@ export namespace vulkan::pass {
      *    schema's `scope` applied to the frame (see instance_for). A binding whose resource the owner does not
      *    have means THIS FRAME CANNOT RUN THE PASS - returning true with a null handle would record a
      *    descriptor pointing at nothing;
-     *  - the same rule for a render TARGET and for a BARRIER image or buffer, in declaration order;
+     *  - the same rule for a render TARGET and for a BARRIER image or buffer, in declaration order - except that a
+     *    target claiming a RUN of elements (`render_target::count`) expands to one slot PER ELEMENT, and the run
+     *    ENDS EARLY when the frame has fewer elements than the declaration allows (the shadow map's layers are the
+     *    cascade knob's, so `targets` is as long as the frame's own answer);
      *  - a SHARED set is asked for BY THE INDEX the declaration names - the pass binds it, its owner fills it;
      *  - a PIPELINE is asked for BY THE NAME `behaviour::pipelines` declares;
      *  - the EXTENT comes from the behaviour's rule (resolve_extent).
@@ -1102,22 +1113,32 @@ export namespace vulkan::pass {
             out.own_per_image[binding.binding] = context.resources->views_of(binding.resource, binding.element);
         }
 
-        // ---- the targets, in declaration order ----
-        if (declaration.targets.size() > out.target_storage.size()) {
-            return false;
-        }
-        for (std::size_t t = 0; t < declaration.targets.size(); ++t) {
-            render_resource::resource_info const* const info = render_resource::find(declaration.targets[t].resource);
+        // ---- the targets, in declaration order, a RUN expanding to one slot per element ----
+        uint32_t slot = 0;
+        for (render_resource::render_target const& target : declaration.targets) {
+            render_resource::resource_info const* const info = render_resource::find(target.resource);
             if (info == nullptr) {
                 return false;
             }
-            resolved_binding const handles = context.resources->find(declaration.targets[t].resource, declaration.targets[t].element, instance_for(info->scope, context.frame));
-            if (handles.view == VK_NULL_HANDLE && handles.image == VK_NULL_HANDLE) {
-                return false;
+            for (uint16_t i = 0; i < target.count; ++i) {
+                if (slot >= out.target_storage.size()) {
+                    return false; // more targets than the fixed storage: the declaration outgrew the framework
+                }
+                resolved_binding const handles = context.resources->find(target.resource, target.element + i, instance_for(info->scope, context.frame));
+                if (handles.view == VK_NULL_HANDLE && handles.image == VK_NULL_HANDLE) {
+                    if (i == 0u) {
+                        return false; // this frame does not have it: do not record the pass at all
+                    }
+                    // THE FRAME HAS FEWER ELEMENTS THAN THE DECLARATION ALLOWS, which is the ordinary case for a
+                    // run: the shadow map has exactly the layers the cascade knob asked for, and the string of
+                    // published elements is a PREFIX of the family (element 0 is created first). The run ends
+                    // here and the pass renders what it was given.
+                    break;
+                }
+                out.target_storage[slot++] = handles;
             }
-            out.target_storage[t] = handles;
         }
-        out.targets = std::span<resolved_binding const>(out.target_storage.data(), declaration.targets.size());
+        out.targets = std::span<resolved_binding const>(out.target_storage.data(), slot);
 
         // ---- the barrier images and buffers, in declaration order ----
         if (declaration.barrier_images.size() > out.barrier_storage.size() || declaration.barrier_buffers.size() > out.barrier_buffer_storage.size()) {

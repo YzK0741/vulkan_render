@@ -113,9 +113,10 @@ namespace vulkan::pass {
         if (this->frame_.record_cascade == nullptr || this->frame_.run_tasks == nullptr || this->frame_.map_size == 0u) {
             return;
         }
-        // ONE LAYER PER CASCADE, and never more than the map has: the DECLARATION names the map and its first layer
-        // and the FRAME hands over the layers this frame has (see render_resource::shadow_io), so the two counts meet
-        // here - and `cascades` (the secondaries) is the frame's own count.
+        // ONE LAYER PER CASCADE, and never more than the map has: the DECLARATION claims a RUN of cascade layers
+        // (render_resource::shadow_targets) and the FRAME caps it at the layers the image actually has - so the
+        // two counts meet here. The secondaries are the frame's own count, and they are what decides how many
+        // layers this frame renders: a cascade with no secondary to record into is not rendered at all.
         uint32_t const layers = static_cast<uint32_t>(std::min<std::size_t>(this->frame_.cascades.size(), io.targets.size()));
         if (layers == 0u) {
             return;

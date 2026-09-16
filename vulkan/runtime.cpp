@@ -1837,54 +1837,16 @@ namespace vulkan {
     }
 
     // =============================================================================================
-    // THE SHADOW PASS's frame, its content callback and its scheduler (vulkan.pass.shadow)
+    // THE SHADOW PASS's content callback and its scheduler (vulkan.pass.shadow)
     // =============================================================================================
     //
-    // What the pass cannot know: which LAYERS this frame renders (they come from a layered image the RENDERER
-    // created and keeps - `ensure_shadow_resources`), and what a caster's draw state is (the scene set, the live
-    // depth-bias state, the two-sided policy, the secondary's own begin info) - so that arrives as a callback. What
-    // the pass owns is the layer order: the transition, the instance, the execution and the end.
-    bool runtime::resolve_shadow_pass(pass::resolved_io& out) {
-        core const& vk = this->vulkan_core;
-        uint32_t const slot = static_cast<uint32_t>(vk.current_frame);
-        if (!this->shadow.pipeline_ready() || this->shadow_images.size() <= slot || this->shadow_layer_views.size() <= slot || !this->scene_sets.created()) {
-            return false;
-        }
-        auto const* const shadow_detail = this->vulkan_core.vma.get_image_detail(this->shadow_images[slot].handle());
-        if (shadow_detail == nullptr) {
-            return false;
-        }
-        // The number of layers this frame renders is the KNOB's, and the pass's own declaration names ONE (the
-        // validator refuses a second depth target) - so the host is what turns "how many cascades" into "how many
-        // targets", which is the deviation render_resource::shadow_io records.
-        uint32_t const cascades = std::clamp(this->shadow_cascades, 1u, vulkan::max_shadow_cascades);
-        if (cascades == 0u || this->shadow_layer_views[slot].size() < cascades) {
-            return false;
-        }
-        VkDescriptorSet const scene_set = this->scene_sets.set(slot);
-        if (scene_set == VK_NULL_HANDLE) {
-            return false;
-        }
-        out.frame = this->pass_frame();
-        out.cmd = *this->command_buffers[slot];
-        out.shared.scene = scene_set;
-        for (uint32_t cascade = 0; cascade < cascades; ++cascade) {
-            // one target per cascade, in cascade order: the layer's VIEW for the instance, the image for the layer's
-            // own barrier (the pass transitions each layer with a single-layer subresource range)
-            out.target_storage[cascade] = {.view = *this->shadow_layer_views[slot][cascade], .buffer = VK_NULL_HANDLE, .image = shadow_detail->image};
-        }
-        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), cascades);
-        out.pipeline_storage[0] = this->shadow.pipeline();
-        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
-        out.pipeline_layout = this->shadow.pipeline_layout();
-        // NO PUSH BLOCK IS RESOLVED: the cascade index is pushed by the CONTENT callback (it is per cascade, and the
-        // pass never sees the index as data - see shadow_frame::record_cascade).
-        out.push = {};
-        // No extent either: the pass sizes its own work (`extent_rule::none`) and the map's edge travels in its frame.
-        out.extent = VkExtent2D{};
-        return true;
-    }
-
+    // THE RESOLVER THAT USED TO BE HERE IS GONE (S3.8): the layers this frame renders were a hand-written
+    // `resolve_shadow_pass` because the declaration could name only ONE layer of the map, and the vocabulary that
+    // replaced it is a RUN of elements (`render_target::count`) - the declaration now claims every cascade layer
+    // the map can hold and the resource table answers how many it HAS this frame, which is the cascade knob's
+    // (`ensure_shadow_resources`). What is left here is what the pass genuinely cannot know: which secondaries to
+    // record into, and what a caster's draw state is (the scene set, the live depth-bias state, the two-sided
+    // policy, the secondary's own begin info) - so that arrives as a callback, and the map's edge with it.
     bool runtime::record_shadow_cascade(void* const owner, VkCommandBuffer const secondary, uint32_t const cascade_index, VkPipeline const pipeline, VkPipelineLayout const pipeline_layout) {
         runtime* const self = static_cast<runtime*>(owner);
         core const& vk = self->vulkan_core;
@@ -3414,8 +3376,14 @@ namespace vulkan {
             }
             check(binding.resource, binding.element, io.own[binding.binding], "own binding");
         }
-        for (std::size_t t = 0; t < decl.targets.size() && t < io.targets.size(); ++t) {
-            check(decl.targets[t].resource, decl.targets[t].element, io.targets[t], "render target");
+        // The targets, walked the way `resolve_declaration` walks them: a target claiming a RUN of elements
+        // (`render_target::count`) expands to one slot per element, so the declaration's t-th entry is NOT always
+        // the t-th slot in `io.targets` - the shadow pass's four cascade layers are one entry there and four here.
+        uint32_t target_slot = 0;
+        for (render_resource::render_target const& target : decl.targets) {
+            for (uint16_t i = 0; i < target.count && target_slot < io.targets.size(); ++i, ++target_slot) {
+                check(target.resource, static_cast<uint32_t>(target.element) + i, io.targets[target_slot], "render target");
+            }
         }
         for (std::size_t i = 0; i < decl.barrier_images.size() && i < io.barrier_images.size(); ++i) {
             check(decl.barrier_images[i].resource, decl.barrier_images[i].element, io.barrier_images[i], "barrier image");
@@ -3684,9 +3652,6 @@ namespace vulkan {
         }
         if (&pass == static_cast<pass::frame_pass const*>(&this->ssgi_spatial)) {
             return this->resolve_ssgi_spatial(out);
-        }
-        if (&pass == static_cast<pass::frame_pass const*>(&this->shadow)) {
-            return this->resolve_shadow_pass(out);
         }
         if (&pass != static_cast<pass::frame_pass const*>(&this->gi_probe)) {
             // NOT ONE OF THE PASSES STILL HAND-WRITTEN HERE, so the FRAMEWORK resolves its declaration: the

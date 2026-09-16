@@ -857,6 +857,37 @@ int main() {
         CHECK(post_io.shared.scene == VK_NULL_HANDLE); // a family the declaration did not name stays as it was
         post_pass.declaration = &post_other;
         CHECK(!post_pass.resolve(context, post_io)); // the owner has no such element: the pass does not run
+
+        // A RUN OF ELEMENTS: ONE target entry claiming `count` consecutive elements resolves to ONE SLOT PER
+        // ELEMENT - the shadow map's cascades are the case (`render_target::count`), and what makes it a
+        // declaration fact rather than a resolver's is that the FRAME CAPS THE RUN: the family has the elements the
+        // owner published (the layers the cascade knob asked for), and the pass renders what it is handed.
+        std::array<rr::render_target, 1> const run_decl = {rr::render_target{.resource = rr::resource_id::shadow_map, .element = 0, .kind = rr::target_kind::depth, .count = 4}};
+        rr::pass_io const run_io = {.name = "shadow", .own_set = 1, .bindings = {}, .shared_sets = scene_only, .targets = run_decl, .push = std::nullopt};
+        declared_pass run_pass;
+        run_pass.declaration = &run_io;
+        // a per-FRAME-SLOT family, which is why the instance is the frame's SLOT rather than its image
+        owner.table.clear();
+        for (uint32_t layer = 0; layer < 3; ++layer) {
+            owner.table.publish(rr::resource_id::shadow_map, layer, frame.slot,
+                                {.view = reinterpret_cast<VkImageView>(0xC0 + layer), .image = reinterpret_cast<VkImage>(0xD0)});
+        }
+        vp::resolved_io run_out = {};
+        CHECK(run_pass.resolve(context, run_out));
+        CHECK(run_out.targets.size() == 3); // the run ends where the FRAME's elements end, not at the declaration's count
+        CHECK(run_out.targets[0].view == reinterpret_cast<VkImageView>(0xC0));
+        CHECK(run_out.targets[1].view == reinterpret_cast<VkImageView>(0xC1));
+        CHECK(run_out.targets[2].view == reinterpret_cast<VkImageView>(0xC2));
+        CHECK(run_out.targets[0].image == reinterpret_cast<VkImage>(0xD0)); // ONE image behind every layer of the run
+        // ... a frame with ONE layer hands over one target (the single-shadow-map configuration: the same
+        // declaration, a different frame) ...
+        owner.table.clear();
+        owner.table.publish(rr::resource_id::shadow_map, 0, frame.slot, {.view = reinterpret_cast<VkImageView>(0xC0), .image = reinterpret_cast<VkImage>(0xD0)});
+        CHECK(run_pass.resolve(context, run_out));
+        CHECK(run_out.targets.size() == 1);
+        // ... and a frame with NONE does not run the pass at all, exactly like a missing single target
+        owner.table.clear();
+        CHECK(!run_pass.resolve(context, run_out));
     }
 
     return vk_test::finish("test_pass");

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.63.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.64.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -409,8 +409,9 @@ namespace vulkan {
         pass::gbuffer_debug_pass& gbuffer_debug_view = this->passes.emplace<pass::gbuffer_debug_pass>();
         /// THE DIRECTIONAL SHADOW MAP (vulkan.pass.shadow): it owns its depth-only pipeline, built against the
         /// SCENE pipeline layout (the context's shared_pipeline_layout) and the context's depth format. The map
-        /// IMAGES, the caster gather, the fit cache and the task pool stay the renderer's - the pass draws the scene
-        /// into the layers the frame hands it.
+        /// IMAGES, the caster gather, the fit cache and the task pool stay the renderer's, and the layers it draws
+        /// into come from the resource table, where its declaration's RUN of cascade elements meets the layers the
+        /// map actually has.
         pass::shadow_pass& shadow = this->passes.emplace<pass::shadow_pass>();
         pass::scene_pass& scene = this->passes.emplace<pass::scene_pass>();
         pass::transparent_pass& transparent = this->passes.emplace<pass::transparent_pass>();
@@ -1697,10 +1698,6 @@ namespace vulkan {
          *         instance slice cannot be read - the caller then has to fall back to a coarser bound
          */
         [[nodiscard]] bool instanced_world_aabb(primitive const& leaf, glm::vec3& wmin, glm::vec3& wmax) const;
-        /// @brief resolve the shadow pass's frame: the LAYERS this frame renders (one target per cascade, taken
-        ///        from the layered map the renderer created), the shared scene set and the pass's pipeline
-        /// @return false when this frame cannot run it (no pipeline, no map generation, or no scene set)
-        [[nodiscard]] bool resolve_shadow_pass(pass::resolved_io& out);
         /// @brief record ONE cascade's content into its secondary: the begin (with the depth-only inheritance), the
         ///        cascade index's push, the scene set, the live bias state and every caster - the frame's callback
         /// @return whether the secondary was recorded (a failed begin must not be executed)

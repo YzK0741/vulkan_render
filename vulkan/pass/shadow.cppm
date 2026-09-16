@@ -40,6 +40,7 @@ export module vulkan.pass.shadow;
 
 import vulkan.pass;
 import vulkan.render_resource;
+import vulkan.primitive;    // max_shadow_cascades: the run of layers this pass's declaration claims
 import vulkan.core.handles; // vk_pipeline: the RAII owner of the pipeline this pass builds
 
 export namespace vulkan::pass {
@@ -137,5 +138,9 @@ export namespace vulkan::pass {
     static_assert(render_resource::shadow_io.push->size == sizeof(uint32_t), "the shadow pass pushes one cascade index");
     static_assert(render_resource::shadow_io.push->stages == (render_resource::stage_flag::vertex | render_resource::stage_flag::fragment),
                   "the cascade index is read by both stages of the depth-only draw");
+    /// ... and so is the RUN of layers, because it is the same two-copies-one-fact rule: the declaration claims
+    /// every cascade the map can hold, and `vulkan.primitive` is where that count lives (the light UBO's matrix
+    /// array is the same number).
+    static_assert(static_cast<uint32_t>(render_resource::shadow_io.targets[0].count) == vulkan::max_shadow_cascades, "the shadow pass claims every cascade layer the map can have");
 
 } // namespace vulkan::pass

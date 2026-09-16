@@ -2523,6 +2523,61 @@ warnings. Ten of the sixteen resolvers are gone; the per-pass switch is down to 
 and the probe cache's inline tail.
 
 
+## S3, EIGHTH SLICE: `shadow` - THE DECLARATION LEARNS TO CLAIM A *RUN* OF ELEMENTS
+
+**THE LAST RECORDED DEVIATION IN THE DECLARATION LAYER IS GONE, AND THE FIX WAS A FIELD RATHER THAN A RESOLVER.** The
+shadow pass renders 1..4 LAYERS of ONE layered depth image, one rendering instance per cascade; the validator refuses
+a second DEPTH target ("an instance has one depth attachment") and it is right to - so the declaration could name only
+the map's first layer and `runtime::resolve_shadow_pass` handed the rest over every frame. That function is deleted.
+What the declaration says now is what the pass actually does:
+
+```cpp
+struct render_target {
+    resource_id resource; uint16_t element; target_kind kind;
+    uint16_t count = 1;   // a RUN: these consecutive elements, rendered ONE INSTANCE PER ELEMENT
+};
+```
+
+`count` is a claim about the SCHEMA and a CEILING about the frame, and the two halves are what make it honest:
+
+* **the schema half is validated**: `element + count` past the family's own count is a declaration error, `count == 0`
+  is a target that renders nothing, and two entries whose runs INTERSECT are "a pass rendering into one image twice"
+  one layer out (adjacent runs are legal: the rule is about the images, not about adjacency);
+* **the frame half is the table's**: how many layers the map HAS is the cascade knob's
+  (`ensure_shadow_resources` allocates exactly that many and publishes exactly those), so `resolve_declaration`
+  expands the run element by element and STOPS at the first element the frame does not have - the published elements
+  of a family are a prefix, because element 0 is created first. A one-cascade frame resolves one target and a
+  three-cascade frame three, from the same declaration and the same code path.
+
+**WHY THIS NEEDED NO A/B, WHICH IS THE MEASUREMENT WORTH KEEPING.** Every earlier slice had a path the gate could not
+see and paid for it with a worktree parent/child comparison. This one does not, and the reason is the compiled
+config: `app_config`'s `shadow_cascades = 3` means eleven of the twelve scenarios render a THREE-element run, and
+`shadow_single` pins `shadow_cascades = 1` for the historic one-layer path. Both ends of the run feature are gate
+references, and both came back unchanged (`deferred` `2DD1D13857322C0F`, `default_gi` `BF180E98ADB29E7E`,
+`sponza_gi` `58EC848DFABE654A`, `shadow_single` `0C9EBD7F895511A9`) - a run that produced the wrong NUMBER of targets,
+the wrong layers or the wrong order could not have matched either end.
+
+**ONE BEHAVIOUR DIFFERENCE, DOCUMENTED RATHER THAN HIDDEN, AND UNREACHABLE IN PRACTICE.** The old resolver returned
+false when the cascade KNOB asked for more layers than the image has (`shadow_layer_views[slot].size() < cascades`),
+so the pass was skipped entirely; now the run ends at the layers that exist and the pass renders those. The only way
+to reach the old branch is a FAILED reallocation in `set_shadow_cascades` (the knob is applied before the scene
+import and the image is rebuilt when the count grows), and rendering the layers the image actually has is the better
+of the two answers: the sampling descriptor's array view spans every allocated layer and the hand-back barrier
+already covers them all.
+
+**WHAT ELSE MOVED**: `verify_resource_table`'s target walk became run-aware (a declaration entry is no longer always
+one `targets` slot, which is the one place outside the resolver that indexes them); `resolved_io::targets` and
+`max_render_targets` now document one slot per ELEMENT; `frame_pass::resolve`'s list of "things a declaration cannot
+express" lost the shadow entry, leaving the composite's alias as the only target deviation; and `vulkan.pass.shadow`
+asserts its own run against `vulkan::max_shadow_cascades` (the same two-copies-one-fact rule its push block asserts).
+
+**MEASURED**: capture gate **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, all twelve scenarios validation-clean
+(`[WARNING]`/VUID included); Release, Debug and ASan build clean with `ctest` 8/8 in all three; `doxygen` exits 0 with
+zero warnings. **Eleven of the sixteen resolvers are gone**; the per-pass switch is down to the four GI-chain passes
+(`ssgi_trace`, `ssgi_spec`, `ssgi_temporal`, `ssgi_spatial`) and the probe cache's inline tail - the next slice, and
+the last one.
+
+
 
 
 

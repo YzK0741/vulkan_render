@@ -1,4 +1,4 @@
-// module version: 0.11.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.12.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/render_resource/render_resource.cppm
@@ -425,6 +425,23 @@ export namespace vulkan::render_resource {
         resource_id resource = resource_id::none;
         uint16_t element = 0; // which image of the resource's family (per-swapchain-image resources: the index)
         target_kind kind = target_kind::color;
+        /**
+         * HOW MANY CONSECUTIVE ELEMENTS of the family this ONE entry claims, rendered ONE INSTANCE PER ELEMENT.
+         *
+         * WHY IT IS NOT "several attachments of one instance", which is the obvious reading: a rendering instance
+         * has exactly ONE depth attachment, so the N layers of one depth array cannot be one instance's targets.
+         * The shadow pass renders its cascades layer by layer, each with its own transition, instance and
+         * secondary - and what its declaration could not say before was that all N of those layers are elements
+         * of ONE family, so the host had to hand them over itself (`runtime::resolve_shadow_pass`, now gone).
+         *
+         * A CEILING RATHER THAN A PROMISE: how many elements a family HAS this frame is the FRAME's fact (the
+         * shadow map allocates the layers the cascade knob asks for - one to four - and `ensure_shadow_resources`
+         * may keep spare layers a shrank count left behind), so resolution hands over the first @c count elements
+         * that EXIST and the pass renders what it is given. `element + count` past the family's own count is a
+         * declaration error the validator refuses, so this field is a claim about the SCHEMA, and the frame's
+         * answer is only ever a shorter run.
+         */
+        uint16_t count = 1;
     };
 
     /**
@@ -619,7 +636,8 @@ export namespace vulkan::render_resource {
      * and the pass's OWN bindings are exactly the set `own_set`, numbered contiguously from zero. A render
      * TARGET gets the same two checks a binding gets - the schema declares the resource, and the element is
      * inside its family - plus uniqueness, because two targets naming one image would be a pass rendering into
-     * itself twice.
+     * itself twice. A target that claims a RUN of elements (`render_target::count`) is checked as the run it
+     * is: the last element has to be inside the family, and two runs of one resource may not overlap.
      * @ingroup vulkan_render_resource
      */
     [[nodiscard]] inline std::expected<void, std::string> validate(pass_io const& io) {
@@ -642,13 +660,25 @@ export namespace vulkan::render_resource {
                 return std::unexpected(where + " names element " + std::to_string(t.element) + " of " + std::string(info->name) + ", which holds " +
                                        std::to_string(info->count));
             }
+            if (t.count == 0u) {
+                return std::unexpected(where + " claims no element of " + std::string(info->name) + ", so it renders nothing");
+            }
+            if (static_cast<uint32_t>(t.element) + t.count > info->count) {
+                // A RUN that reaches past the family: `count` is a claim about the SCHEMA, and the frame can only
+                // ever answer with a SHORTER run (see render_target::count).
+                return std::unexpected(where + " claims elements " + std::to_string(t.element) + ".." + std::to_string(static_cast<uint32_t>(t.element) + t.count - 1u) + " of " +
+                                       std::string(info->name) + ", which holds " + std::to_string(info->count));
+            }
             if (t.kind == target_kind::depth && ++depth_targets > 1u) {
-                // a rendering instance has exactly one depth attachment, so a second one cannot be recorded
+                // a rendering instance has exactly one depth attachment, so a second one cannot be recorded - and a
+                // RUN of depth elements is still ONE entry here, because each element gets its own instance
                 return std::unexpected(who + ": more than one DEPTH target is declared, and an instance has one");
             }
             for (render_target const& other : io.targets) {
-                if (&other != &t && other.resource == t.resource && other.element == t.element) {
-                    return std::unexpected(where + " is declared twice");
+                // Two entries whose element RUNS INTERSECT would have the pass render into one image twice - the
+                // same defect the exact-match check below reports, one resource class over.
+                if (&other != &t && other.resource == t.resource && t.element < static_cast<uint32_t>(other.element) + other.count && other.element < static_cast<uint32_t>(t.element) + t.count) {
+                    return std::unexpected(where + " overlaps the entries " + std::to_string(other.element) + ".." + std::to_string(static_cast<uint32_t>(other.element) + other.count - 1u) + " of the same resource");
                 }
             }
         }
@@ -1459,15 +1489,17 @@ export namespace vulkan::render_resource {
     ///        texture array its depth-only draw reads, through the same scene pipeline layout the leaves use
     inline constexpr std::array<shared_set, 1> shadow_shared_sets = {{{.family = 0}}};
 
-    /// @brief the layer the shadow pass renders into BY DECLARATION: element 0, the first cascade
+    /// @brief the layers the shadow pass renders into: a RUN of elements, one rendering instance per cascade
     ///
-    /// A RECORDED DEVIATION, and this one was FORCED by the framework rather than chosen: the pass renders
-    /// 1..`max_shadow_cascades` LAYERS of one array image, one per cascade, and the validator refuses a second
-    /// DEPTH target ("an instance has one depth attachment") - so the declaration names the image and its first
-    /// layer, and the FRAME hands over the layers this frame has (`resolved_io::targets` is a span the host sizes,
-    /// exactly as `resolved_io::own` is). The alternative - four declarations - was written first and refused by
-    /// the validator, which is how the rule was found.
-    inline constexpr std::array<render_target, 1> shadow_targets = {{render_target{.resource = resource_id::shadow_map, .element = 0, .kind = target_kind::depth}}};
+    /// THIS USED TO BE A RECORDED DEVIATION, and the vocabulary that closed it is `render_target::count`: the
+    /// declaration named the image's FIRST layer and the host handed over the layers this frame has
+    /// (`runtime::resolve_shadow_pass`). The deviation was forced by the framework - the validator refuses a
+    /// second DEPTH target, because a rendering instance has one depth attachment - but it was never a fact about
+    /// the shadow pass: that pass renders 1..`max_shadow_cascades` LAYERS of ONE array image, one instance per
+    /// cascade, which is exactly a run of elements. The count is the schema's own four (the family's count), and
+    /// the FRAME caps it: `ensure_shadow_resources` allocates the layers the cascade knob asks for, and only
+    /// those layers are published - so a one-cascade frame resolves one target and a three-cascade frame three.
+    inline constexpr std::array<render_target, 1> shadow_targets = {{render_target{.resource = resource_id::shadow_map, .element = 0, .kind = target_kind::depth, .count = 4}}};
     /**
      * @brief the shadow pass's declaration: the scene's depth from the light, one cascade at a time
      *
@@ -1479,7 +1511,8 @@ export namespace vulkan::render_resource {
      *
      * NO BARRIER IMAGES: each layer is transitioned to a depth attachment immediately before the instance that
      * renders it, so the pass reaches every image it moves through `targets` - the shape the composite and the
-     * debug view have.
+     * debug view have. The targets are a RUN (`shadow_targets`), which is what makes that reach enough: the run
+     * is however many layers this frame's map has, in cascade order.
      */
     inline constexpr pass_io shadow_io = {
         .name = "shadow",

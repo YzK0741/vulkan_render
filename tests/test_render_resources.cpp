@@ -577,23 +577,45 @@ int main() {
         CHECK(rr::shadow_io.bindings.empty()); // the scene set carries everything the depth-only draw reads
         CHECK(rr::shadow_io.shared_sets.size() == 1);
         CHECK(rr::shadow_io.shared_sets[0].family == 0); // the SCENE set (the light UBO, the material table, the textures)
-        // ONE TARGET BY DECLARATION, N BY FRAME - and this is the framework's own rule rather than a choice: the
-        // validator refuses a second DEPTH target ("an instance has one depth attachment"), so the declaration names
-        // the map and its FIRST layer and the frame hands over the layers this frame has (the host sizes
-        // `resolved_io::targets`, the same way it sizes `own`). The four-layer version was written first and
-        // refused, which is how the rule was found.
+        // ONE TARGET ENTRY, N ELEMENTS - the RUN of cascade layers, and this is what replaced "one target by
+        // declaration, N by frame": the validator refuses a second DEPTH target (a rendering instance has exactly
+        // one depth attachment), so the host used to hand the extra layers over itself. `render_target::count` is
+        // the vocabulary that says what that was trying to say - ONE family, rendered one INSTANCE per element -
+        // and the frame still caps it, because the map has exactly the layers the cascade knob asked for.
         CHECK(rr::shadow_io.targets.size() == 1);
         CHECK(rr::shadow_io.targets[0].resource == rr::resource_id::shadow_map);
-        CHECK(rr::shadow_io.targets[0].element == 0); // the first cascade; the rest arrive through the frame
+        CHECK(rr::shadow_io.targets[0].element == 0); // the first cascade; the run is consecutive from there
         CHECK(rr::shadow_io.targets[0].kind == rr::target_kind::depth);
-        // ... and the map family holds the layers that deviation needs: FOUR, like the image ensure_shadow_resources
-        // creates (the count was 1 until this declaration, which is the same correction the bloom family needed)
+        CHECK(rr::shadow_io.targets[0].count == 4); // every layer max_shadow_cascades allows
+        // ... and the map family holds exactly that many layers: FOUR, like the image ensure_shadow_resources
+        // creates (the count was 1 until this declaration, the same correction the bloom family needed)
         CHECK(rr::find(rr::resource_id::shadow_map)->count == 4);
         CHECK(rr::shadow_io.barrier_images.empty()); // each layer is moved through its own target
         CHECK(rr::shadow_io.push.has_value());
         CHECK(rr::shadow_io.push->size == 4);    // the cascade index
         CHECK(rr::shadow_io.push->offset == 96); // where the scene's own push block ends (scene_push_constant_size)
         CHECK(rr::shadow_io.push->stages == (rr::stage_flag::vertex | rr::stage_flag::fragment));
+
+        // THE RUN'S OWN CHECKS: a run that reaches past its family is a declaration error ...
+        std::array<rr::render_target, 1> const past_the_family = {rr::render_target{.resource = rr::resource_id::shadow_map, .element = 2, .kind = rr::target_kind::depth, .count = 4}};
+        rr::pass_io const bad_run = {.name = "shadow", .own_set = 0, .bindings = {}, .shared_sets = {}, .targets = past_the_family, .push = std::nullopt};
+        CHECK(!rr::validate(bad_run).has_value());
+        // ... and so is claiming NO element, which would be a target that renders nothing ...
+        std::array<rr::render_target, 1> const empty_run = {rr::render_target{.resource = rr::resource_id::shadow_map, .element = 0, .kind = rr::target_kind::depth, .count = 0}};
+        rr::pass_io const no_run = {.name = "shadow", .own_set = 0, .bindings = {}, .shared_sets = {}, .targets = empty_run, .push = std::nullopt};
+        CHECK(!rr::validate(no_run).has_value());
+        // ... and two runs of ONE resource may not overlap, which is "rendering into one image twice" one layer
+        // out. (Two depth runs would be refused by the one-depth rule first, so this case is a colour family's.)
+        std::array<rr::render_target, 2> const overlapping = {rr::render_target{.resource = rr::resource_id::bloom, .element = 0, .count = 3},
+                                                              rr::render_target{.resource = rr::resource_id::bloom, .element = 2, .count = 2}};
+        rr::pass_io const overlap = {.name = "post_hdr", .own_set = 0, .bindings = {}, .shared_sets = {}, .targets = overlapping, .push = std::nullopt};
+        CHECK(!rr::validate(overlap).has_value());
+        // ... while two runs that TOUCH but do not overlap are legal, which keeps the rule about the IMAGES a
+        // declaration claims rather than about adjacency
+        std::array<rr::render_target, 2> const adjacent = {rr::render_target{.resource = rr::resource_id::bloom, .element = 0, .count = 2},
+                                                           rr::render_target{.resource = rr::resource_id::bloom, .element = 2, .count = 2}};
+        rr::pass_io const touching = {.name = "post_hdr", .own_set = 0, .bindings = {}, .shared_sets = {}, .targets = adjacent, .push = std::nullopt};
+        CHECK(rr::validate(touching).has_value());
     }
     return vk_test::finish("test_render_resources");
 }
