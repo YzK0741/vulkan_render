@@ -1113,9 +1113,11 @@ namespace vulkan {
         // The TAA resolve's family is NOT retired here any more: the pass owns it, and the call below tells
         // the pass (vulkan.pass.taa::on_swapchain_recreated retires its own family and forgets the
         // generation it fingerprinted).
-        // ... and the GI denoiser's, which binds five per-image views (trace, history, motion, depth,
-        // resolve) and is therefore the one family here with the most stale pointers in it.
-        this->ssgi_spec_temporal_family.retire_all();
+        // ... and the REFLECTION's family is not here either: it is the chain owner's (it is built on the temporal
+        // pass's layout from the frame's table - see vulkan.render_start_demo), so the owner is told instead.
+        if (this->wiring_.recreated != nullptr) {
+            this->wiring_.recreated(this->wiring_.owner);
+        }
         // AND THE PASSES ARE TOLD, by the runner rather than by this list. That is the hazard this layer was
         // built to remove: the retires above are a hand-kept list and it covered four of the six families -
         // the probe cache's and the reflection denoiser's survived only because `ensure` re-detects changed
@@ -2559,69 +2561,14 @@ namespace vulkan {
     // the ray sequence), its own ray budget and the two answers its frame carries (which oracle, and whether the
     // probe cache has been written).
 
-    void runtime::ensure_ssgi_denoise_descriptors() {
-        // ONE FAMILY IS LEFT HERE: the REFLECTION's. The diffuse one is the pass's now
-        // (vulkan.pass.ssgi_temporal::record writes it from `resolved_io::own_per_image`), and this family shares
-        // that pass's set layout because two signals are resolved through one pipeline - which is exactly why a
-        // single declaration cannot describe both lists of images, and why this one is still the renderer's.
-        core& vk = this->vulkan_core;
-        VkDescriptorSetLayout const set_layout = this->ssgi_temporal.set_layout();
-        if (!this->pass_ready("ssgi_temporal") || set_layout == VK_NULL_HANDLE) {
-            return;
-        }
-        std::size_t const image_count = vk.gi_images.size();
-        if (image_count == 0 || vk.gi_history_image_views.size() != image_count || vk.gi_resolve_image_views.size() != image_count ||
-            vk.velocity_image_views.size() != image_count || vk.gbuffer_depth_image_views.size() != image_count ||
-            vk.gbuffer_image_views[1].size() != image_count ||
-            vk.gi_spec_image_views.size() != image_count || vk.gi_spec_reproject_image_views.size() != image_count ||
-            vk.gi_spec_history_image_views.size() != image_count || vk.gi_spec_resolve_image_views.size() != image_count) {
-            return;
-        }
-        // THE COUNT COMES FROM THE DECLARATION, which is what makes it impossible for the pool and the layout to
-        // disagree: this number and the layout the PASS generated in its create are both derived from
-        // `ssgi_temporal_io` now. (They were two hand-written lists once, and the layer named the mismatch.)
-        uint32_t const descriptors_per_set = render_resource::descriptor_counts_for(render_resource::ssgi_temporal_io, render_resource::ssgi_temporal_io.own_set).total();
-        // ... and the REFLECTION's resolve, which is the SAME layout with a different list of images - which is
-        // what makes it a second family and what a single declaration cannot express. Bindings 2 and 3 (the
-        // surface's motion vectors and depth) are unused in mode 1 - its reprojection carries its own depth - but
-        // every binding of the layout has to name a real view, so they carry the same ones the diffuse set uses;
-        // binding 6 is the lobe's reprojection, which is what mode 1 actually reprojects by.
-        std::array<VkImageView, 7> const spec_signature = {vk.gi_spec_image_views[0], vk.gi_spec_history_image_views[0], vk.velocity_image_views[0],
-                                                           vk.gbuffer_depth_image_views[0], vk.gi_spec_resolve_image_views[0], vk.gbuffer_image_views[1][0],
-                                                           vk.gi_spec_reproject_image_views[0]};
-        auto const write_spec_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            std::array<VkImageView, 7> const views = {
-                this->vulkan_core.gi_spec_image_views[image_index],
-                this->vulkan_core.gi_spec_history_image_views[image_index],
-                this->vulkan_core.velocity_image_views[image_index],
-                this->vulkan_core.gbuffer_depth_image_views[image_index],
-                this->vulkan_core.gi_spec_resolve_image_views[image_index],
-                this->vulkan_core.gbuffer_image_views[1][image_index],
-                this->vulkan_core.gi_spec_reproject_image_views[image_index]};
-            // The write itself is GENERATED from the pass's declaration, exactly as the pass's own family does
-            // it: the binding numbers, the descriptor types, the layouts and the sampler are the declaration's,
-            // so this family cannot drift from the layout it shares with the pass.
-            auto const written = bindings::write_set(this->vulkan_core.device, render_resource::ssgi_temporal_io, render_resource::ssgi_temporal_io.own_set, sets[0], views, {},
-                                                     this->shared_samplers());
-            if (!written) {
-                utility::log("runtime: GI reflection descriptor set: {}", written.error());
-            }
-        };
-        if (!this->ssgi_spec_temporal_family.ensure(vk.device, set_layout, static_cast<uint32_t>(image_count), 1u, descriptors_per_set, spec_signature, write_spec_sets)) {
-            utility::log("runtime: GI reflection descriptor sets unavailable - this frame's reflection is not resolved");
-        }
-    }
-
     pass::ssgi_temporal_frame runtime::make_ssgi_denoise_frame() noexcept {
-        // ONE field and ONE callback: the flag both signals blend by (read HERE, per image, so the owner does not
-        // need the renderer's array), and the reflection's own recording (the documented exception - a declaration
-        // cannot describe two signals in the same seven slots). The pass calls the callback at the END of its own
-        // recording, so the chain stays contiguous.
+        // ONE field: the flag both signals blend by, read HERE per image so the owner does not need the renderer's
+        // array. The frame's `record_reflection` is the OWNER's to fill (the reflection is this application's second
+        // signal through the pass's one pipeline - see vulkan.render_start_demo), which is why this builder leaves
+        // the callback and its context empty.
         std::size_t const index = this->current_image_index;
         bool const history_valid = index < this->gi_history_valid.size() && this->gi_history_valid[index];
-        return pass::ssgi_temporal_frame{.history_valid = history_valid,
-                                         .record_reflection = &runtime::record_reflection,
-                                         .owner = this};
+        return pass::ssgi_temporal_frame{.history_valid = history_valid};
     }
 
     // THE TEMPORAL RESOLVE'S RESOLVER IS GONE (S3.11) with the three before it: its seven own bindings (whose
@@ -2629,144 +2576,8 @@ namespace vulkan {
     // the declaration's `half` extent are all the framework's to resolve, and the push block it used to be handed is
     // composed by the PASS from `io.constants`, the two extents and its own two blend constants. The two shared
     // per-image transitions it was handed as a callback are the FRAME's ordering rule and run between the chain's
-    // two halves (see record_main_drawcalls); what is left of its frame is `record_reflection`, the one documented
-    // exception.
-
-    void runtime::record_reflection(void* const owner, VkCommandBuffer const command_buffer, bool const history_valid) {
-        // THE REFLECTION's own accumulation, recorded for the temporal PASS: it is the renderer's because a
-        // declaration cannot describe two signals in the same seven slots (see vulkan.pass.ssgi_temporal's
-        // header), so the pass calls back here at the end of its own recording - after mode 0's hand-backs and
-        // before the spatial filter's stage, which is exactly where this ran when the frame loop split the chain
-        // around it. Its reprojection is the one the lobe published, its history is its own, and the spatial
-        // filter's spec_weight lane is what keeps a stale accumulation out of a frame whose lobe did not run.
-        runtime& self = *static_cast<runtime*>(owner);
-        core& vk = self.vulkan_core;
-        std::size_t const index = self.current_image_index;
-        bool spec_resolved = false;
-        if (self.ssgi_specular_active() && index < vk.gi_spec_resolve_images.size() && vk.gi_spec_history_images.size() == vk.gi_spec_resolve_images.size()) {
-            VkDescriptorSet const spec_set = self.ssgi_spec_temporal_family.set(static_cast<uint32_t>(index), 0);
-            if (spec_set != VK_NULL_HANDLE) {
-                spec_resolved = self.record_ssgi_resolve_pass(command_buffer, spec_set, vk.gi_spec_resolve_images[index], vk.gi_spec_history_images[index], history_valid, 1.0f);
-            }
-        }
-        // THE FRAME'S ANSWER, not the renderer's: the spatial filter's `spec_weight` lane is read from it, and the
-        // filter resolves AFTER this callback (the temporal pass calls it at the end of its own recording), so the
-        // value it copies out of `frame_facts` is this frame's. See frame_constants::gi_spec_resolved.
-        self.frame_facts.gi_spec_resolved = spec_resolved;
-    }
-
-    bool runtime::record_ssgi_resolve_pass(VkCommandBuffer const command_buffer, VkDescriptorSet const set, VkImage const resolve_image, VkImage const history_image,
-                                           bool const history_valid, float const mode) {
-        core& vk = this->vulkan_core;
-        std::size_t const index = this->current_image_index;
-        bool const reflection = mode > 0.5f;
-
-        uint32_t const gi_width = std::max(1u, vk.swap_chain_extent.width / 2u);
-        uint32_t const gi_height = std::max(1u, vk.swap_chain_extent.height / 2u);
-
-        // Layouts, all before the dispatch (a compute pass may barrier anywhere, but keeping them
-        // together is what makes the set of states one image passes through readable):
-        //   resolve -> GENERAL (storage write). The old layout is SHADER_READ once the image has been
-        //   resolved before, and UNDEFINED on its first frame: the resolve is READ across frames (the
-        //   tracer samples the previous frame's copy at a hit, the multi-bounce feedback), so this write
-        //   has to keep its contents - claiming UNDEFINED every frame would discard exactly what the
-        //   feedback reads, which is why record_ssgi_pass's first-use barrier leaves it in SHADER_READ.
-        //   history -> SHADER_READ, and only on its FIRST use for this image: the previous frame's
-        //   copy left it readable (see the hand-back below), so a later frame needs no barrier at all
-        //   - claiming TRANSFER_DST as the old layout would be a layout the image is not in. Exactly
-        //   the TAA resolve's arrangement, for exactly the same reason.
-        //   The raw trace needs no barrier either: record_ssgi_pass handed it to SHADER_READ with a
-        //   barrier that names COMPUTE as well as FRAGMENT (see general_to_sampling_transition),
-        //   which is the read this dispatch does.
-        std::array<VkImageMemoryBarrier2, 2> barriers = {};
-        uint32_t barrier_count = 0;
-        barriers[barrier_count] = history_valid ? vulkan::sampling_to_general_transition : vulkan::undefined_to_general_transition;
-        barriers[barrier_count].image = resolve_image;
-        ++barrier_count;
-        if (!history_valid) {
-            barriers[barrier_count] = vulkan::undefined_to_sampling_transition;
-            barriers[barrier_count].image = history_image;
-            ++barrier_count;
-        }
-        VkDependencyInfo const dependency = make_image_dependency_info(barrier_count, barriers.data());
-        vkCmdPipelineBarrier2(command_buffer, &dependency);
-
-        // The depth guard samples the G-buffer depth: its own barrier, written only if the G-buffer
-        // pass actually rendered this frame (the lighting stage normally got here first). The
-        // motion-vector target the reprojection reads is the same story, through its own accessor:
-        // the G-buffer instance wrote it as a color attachment and the TAA resolve - the only other
-        // sampler of it - runs before this pass, so whether it still needs the transition depends on
-        // which of the two stages is the frame's first sampler.
-        if (!reflection) {
-            // Both are mode 0's inputs only: the reflection's own reprojection carries the depth its guard
-            // needs, so mode 1 samples neither of these. The diffuse dispatch runs first in every frame that
-            // resolves both, which is what leaves them readable here.
-            this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(index));
-            this->ensure_velocity_sampled(command_buffer, static_cast<uint32_t>(index));
-        }
-
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_temporal.pipeline_layout(), 0, 1, &set, 0, nullptr);
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_temporal.pipeline());
-
-        ssgi_temporal_push_constants const push = {
-            .history_valid = history_valid ? 1.0f : 0.0f,
-            // The two weights are the temporal PASS's constants (see its header): the reflection shares that
-            // pass's pipeline and shader, so both lanes have to be the same number or the two signals would be
-            // denoised differently.
-            .blend_static = pass::ssgi_temporal_pass::blend_static,
-            .blend_min = pass::ssgi_temporal_pass::blend_min,
-            .depth_scale = this->current_ubo.proj[2][2],
-            .depth_offset = this->current_ubo.proj[3][2],
-            // Which signal this dispatch resolves: 0.0 = the diffuse bounce, 1.0 = the reflection (see the
-            // shader's `glossy`). One pipeline serves both, each with a set and a history of its own.
-            .mode = mode,
-            .unused1 = 0.0f,
-            .unused2 = 0.0f,
-            .gi_size = glm::vec4(static_cast<float>(gi_width), static_cast<float>(gi_height),
-                                 static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height))};
-        vkCmdPushConstants(command_buffer, this->ssgi_temporal.pipeline_layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-
-        constexpr uint32_t group_size = 8; // shaders/ssgi_temporal.comp's local_size_x/y
-        vkCmdDispatch(command_buffer, (gi_width + group_size - 1) / group_size, (gi_height + group_size - 1) / group_size, 1);
-
-        // ---- the resolved image becomes the next frame's history ----
-        // A copy rather than a ping-pong, exactly like the TAA resolve: the resolve writes the image
-        // the composite reads, so the history has to be separate, and copying into it keeps every
-        // descriptor set in the frame stable. The resolve is a storage image (GENERAL), so it goes out
-        // through TRANSFER_SRC and comes back as a sample - the post chain still finds it in
-        // SHADER_READ, exactly where it expects it.
-        std::array<VkImageMemoryBarrier2, 2> copy_barriers = {};
-        copy_barriers[0] = vulkan::general_to_transfer_src_transition; // resolve: GENERAL -> TRANSFER_SRC
-        copy_barriers[0].image = resolve_image;
-        copy_barriers[1] = vulkan::sampling_to_transfer_dst_transition;
-        copy_barriers[1].image = history_image;
-        VkDependencyInfo const copy_dependency = make_image_dependency_info(static_cast<uint32_t>(copy_barriers.size()), copy_barriers.data());
-        vkCmdPipelineBarrier2(command_buffer, &copy_dependency);
-
-        VkImageCopy const region = {
-            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-            .srcOffset = {0, 0, 0},
-            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-            .dstOffset = {0, 0, 0},
-            .extent = {gi_width, gi_height, 1},
-        };
-        vkCmdCopyImage(command_buffer, resolve_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, history_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-        // Hand both on: the resolve to the composite, the history copy to the next frame's resolve
-        // (which will find it in TRANSFER_DST and transition it from there). The raw trace has been
-        // readable since record_ssgi_pass left it that way and nothing here touches it.
-        std::array<VkImageMemoryBarrier2, 2> hand_back = {};
-        hand_back[0] = vulkan::transfer_src_to_sampling_transition; // resolve -> SHADER_READ
-        hand_back[0].image = resolve_image;
-        hand_back[1] = vulkan::transfer_dst_to_sampling_transition; // history -> SHADER_READ
-        hand_back[1].image = history_image;
-        VkDependencyInfo const hand_back_dependency = make_image_dependency_info(static_cast<uint32_t>(hand_back.size()), hand_back.data());
-        vkCmdPipelineBarrier2(command_buffer, &hand_back_dependency);
-
-        // gi_history_valid is NOT touched here: record_ssgi_denoise_pass owns it, because it has to be set
-        // once for both signals (see the note there).
-        return true;
-    }
+    // two halves (see record_main_drawcalls) - and the reflection's own recording, the last thing this file owned for
+    // it, is the chain owner's now (see `chain_wiring::recreated` and vulkan.render_start_demo).
 
     bool runtime::ssgi_traced_active() const noexcept {
         return this->ssgi_active() && this->ssgi_ray_tracing && this->vulkan_core.ray_query_available && this->rt_top_levels.has_value();
@@ -3398,6 +3209,11 @@ namespace vulkan {
             .owner = this,
             .cmd = command_buffer,
             .image_index = static_cast<uint32_t>(this->current_image_index),
+            .device = this->vulkan_core.device,
+            .samplers = this->shared_samplers(),
+            .table = &this->frame_resources,
+            .frame = this->pass_frame(),
+            .constants = &this->frame_facts,
             .make_cluster_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_cluster_frame(); },
             .make_shadow_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_shadow_frame(); },
             .make_scene_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_scene_frame(); },
@@ -3986,10 +3802,10 @@ namespace vulkan {
             // reflection's callback is handed as well so the two signals agree about the frame that created the
             // history.
             //
-            // The REFLECTION's descriptor family is still the RENDERER's (the diffuse one is the temporal pass's
-            // own), so it is ensured HERE - once per frame, before the chain, exactly where the old
-            // `record_ssgi_denoise_pass` ensured it before running the temporal stage.
-            this->ensure_ssgi_denoise_descriptors();
+            // The REFLECTION's descriptor family and its recording are the CHAIN OWNER's now (it builds the family
+            // on this pass's layout from the frame's table, and the temporal frame's `record_reflection` is what
+            // calls it) - so the only thing left here is the prepare that gives the half its frames and runs the
+            // frame's rule between the halves.
             // ---- the trace half: the tracer, then the lobe (the two writers of the raw trace) ----
             this->prepare_stage("gi_trace", command_buffer);
             pass::run_report const gi_trace_report = this->gi_trace_chain.record(this->make_pass_host());

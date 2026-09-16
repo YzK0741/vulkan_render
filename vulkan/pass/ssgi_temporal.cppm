@@ -136,16 +136,25 @@ export namespace vulkan::pass {
         /**
          * @brief the set layout this pass's declaration generates
          *
-         * Handed out because a SECOND signal (the reflection) is resolved through the same layout by the
-         * renderer, which builds that family itself - see the header for why that family is not this pass's.
+         * Handed out because a SECOND signal (the reflection) is resolved through the same layout by whoever owns
+         * the passes for this application (`vulkan.render_start_demo` builds that family itself) - a declaration
+         * cannot describe two lists of images in the same seven slots, which is why it is not this pass's.
          */
         [[nodiscard]] VkDescriptorSetLayout set_layout() const noexcept;
+
+        /**
+         * @brief the dispatch's workgroup size, which must be `ssgi_temporal.comp`'s `local_size_x/y`
+         *
+         * PUBLIC because a second recording shares this pass's PIPELINE - the reflection's own resolve - and a
+         * dispatch through a pipeline is sized by the shader that pipeline was built from, so whoever records with
+         * it needs this number rather than a second copy of it.
+         */
+        static constexpr uint32_t group_size = 8;
 
         void set_frame(ssgi_temporal_frame const& frame) noexcept;
 
     private:
         static constexpr std::string_view shader_name = "ssgi_temporal.comp.spv";
-        static constexpr uint32_t group_size = 8; // `ssgi_temporal.comp`'s local_size_x/y
         /// the declared barrier images, by the position the declaration gives them
         static constexpr uint32_t barrier_resolve = 0;
         static constexpr uint32_t barrier_history = 1;

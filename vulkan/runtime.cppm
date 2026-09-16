@@ -604,15 +604,11 @@ namespace vulkan {
         // The TAA resolve is a PASS (vulkan.pass.taa): it owns its set layout, pipeline layout, pipeline and
         // descriptor family, so all that is left here is the pass member and the stage the runner is handed.
         // ---- the GI denoiser's temporal resolve (see shaders/ssgi_temporal.comp) ----
-        // The pipeline, its layout, the set layout its declaration generates AND the diffuse family that
-        // layout's per-image sets need are the PASS's now (vulkan.pass.ssgi_temporal). What stays here is the
-        // REFLECTION's family: two signals are resolved through one pipeline and a single declaration cannot
-        // describe both lists of images, so this one is built on the pass's layout (through `set_layout()`).
-        // ... and this is the reflection's own resolve, the same pipeline with a set of its own: the lobe's
-        // images instead of the diffuse ones (see the write lambda in ensure_ssgi_denoise_descriptors). A
-        // second family rather than two sets in one, because the fingerprint that decides when to rewrite
-        // them is a different list of images.
-        bindings::image_set_family ssgi_spec_temporal_family;
+        // The pipeline, its layout, the set layout its declaration generates, the diffuse family that layout's
+        // per-image sets need AND the reflection's second family over the same layout are the chain owner's now
+        // (vulkan.pass.ssgi_temporal for the first four, vulkan.render_start_demo for the reflection): two signals
+        // resolved through one pipeline is THIS application's choice, so the code that expresses it lives with the
+        // passes - see `chain_wiring::recreated` for the one lifecycle duty it left behind.
         // Per swapchain image: whether that image has a GI history yet. First frame after startup or
         // after a resize there is none, and the resolve then uses the current trace alone.
         std::vector<bool> gi_history_valid = {};
@@ -746,34 +742,6 @@ namespace vulkan {
         // as `prev_view_proj`, which is where the motion vectors come from - while the pass is what writes it
         // (through `taa_pass::wrote_history`, the renderer updates it only for a frame that really resolved).
         std::vector<glm::mat4> image_view_proj = {};
-        /**
-         * @ingroup vulkan_runtime
-         * @brief the REFLECTION's resolve, recorded for the temporal PASS at the end of its own recording
-         * @param owner the runtime (the callback's context; see `ssgi_temporal_frame::record_reflection`)
-         * @param command_buffer the frame's command buffer
-         * @param history_valid the flag the DIFFUSE dispatch used, so the two signals agree about the frame that
-         *        created the history
-         * @note it is the renderer's because a declaration cannot describe two signals in the same seven slots
-         *       (see vulkan.pass.ssgi_temporal's header). It used to be a block of `record_ssgi_denoise_pass`
-         *       between two `record_stage` calls; the temporal pass calls it now, which is what lets the GI chain
-         *       be one contiguous chain instead of being split around a runtime call.
-         */
-        static void record_reflection(void* owner, VkCommandBuffer command_buffer, bool history_valid);
-        /**
-         * @brief run one signal's temporal accumulation: barriers, one dispatch, the history copy, hand-back
-         * @param command_buffer the frame's command buffer
-         * @param set the descriptor set for this signal (its trace, history, resolve and inputs)
-         * @param resolve_image the image the resolve writes and the history is copied from
-         * @param history_image the image this frame's copy lands in
-         * @param history_valid whether that history holds a previous frame at all
-         * @param mode 0 = the diffuse bounce (surface-motion reprojection), 1 = the reflection (the hit's)
-         * @return false when a descriptor or an image was missing, which skips the frame's GI
-         * @note called twice per frame - once per signal - and it does NOT touch gi_history_valid, because
-         *       the two accumulations share that flag and it may only be set after BOTH have resolved
-         */
-        bool record_ssgi_resolve_pass(VkCommandBuffer command_buffer, VkDescriptorSet set, VkImage resolve_image, VkImage history_image, bool history_valid, float mode);
-        /** @brief allocate or rewrite the denoiser's per-image descriptor sets (see vulkan.bindings) */
-        void ensure_ssgi_denoise_descriptors();
         /**
          * @brief the host the pass runner talks to: the callbacks a stage needs, and the create-time facts
          * @note rebuilt per call (it is a struct of function pointers), so it holds no state of its own; the
@@ -1596,6 +1564,19 @@ namespace vulkan {
             /// which swapchain image this frame is recording (the per-image rules below take it, and a stage
             /// preamble that is gated on an image's own state needs it)
             uint32_t image_index = 0;
+            // ---- the frame's TOOLKIT: the device-level facts a family, a push block or a barrier needs, so that
+            //      an owner can do what the renderer's own resolvers used to do without reaching into it ----
+            VkDevice device = VK_NULL_HANDLE;
+            /// the six shared samplers a declaration chooses between by hint (see render_resource::shared)
+            render_resource::shared::sampler_set samplers = {};
+            /// THIS FRAME'S RESOURCES, in the declaration's own vocabulary: what a pass's declaration names, and
+            /// the handles behind it - the channel that lets an owner read any PUBLISHED family's views (its own
+            /// sets, or a second family over the same layout) without the renderer handing over its image arrays
+            pass::resource_table const* table = nullptr;
+            /// the frame's identity (image index, slot, count, extent), for a recording that sizes its own work
+            pass::frame_identity frame = {};
+            /// the frame's constants, for a push block an owner composes itself
+            frame_constants const* constants = nullptr;
             // ---- the frames, each built from the runtime's own data (see make_*_frame) ----
             pass::cluster_frame (*make_cluster_frame)(void* owner) = nullptr;
             pass::shadow_frame (*make_shadow_frame)(void* owner) = nullptr;
@@ -1644,6 +1625,12 @@ namespace vulkan {
             /// ... and the different question "could this feature ever run this SESSION", which the overlay's menu
             /// and `log_feature_status()` ask (see the note on the runtime's forwarding answer)
             bool (*feature_available)(void* owner, feature_facts const& facts, std::string_view name) = nullptr;
+            /**
+             * The swapchain was rebuilt, so every per-generation object the owner holds is stale - the same call the
+             * runner makes for a pass, for the GPU-owning things the owner keeps OUTSIDE the chain (this
+             * application's reflection descriptor family is the one today).
+             */
+            void (*recreated)(void* owner) = nullptr;
         };
 
         /**
@@ -1654,6 +1641,20 @@ namespace vulkan {
          * @note the owner must outlive this runtime's recording, which is the same contract the chain itself has
          */
         void set_chain_wiring(chain_wiring wiring) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief publish the ONE frame constant a chain owner produces mid-chain
+         *
+         * `frame_constants::gi_spec_resolved` is written by the reflection's recording - which this application runs
+         * INSIDE the temporal pass's recording - and read by the spatial filter later in the same chain, so it
+         * cannot travel through `collect` (that runs after the whole chain). The owner is the only one that knows the
+         * answer, so this is the narrow channel it writes it through rather than handing over the whole constants
+         * value to scribble on.
+         */
+        void set_gi_spec_resolved(bool resolved) noexcept {
+            this->frame_facts.gi_spec_resolved = resolved;
+        }
 
         /**
          * @ingroup vulkan_runtime

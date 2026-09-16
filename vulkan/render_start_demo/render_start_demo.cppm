@@ -33,6 +33,8 @@ module;
 export module vulkan.render_start_demo;
 
 import vulkan.runtime;
+import vulkan.bindings; // image_set_family: the reflection's per-image sets, which no declaration can describe
+import vulkan.constant_init;
 import vulkan.pass;
 import vulkan.pass.chain; // pass_chain: the chain the runtime owns its passes in, looked up by declaration name
 import vulkan.pass.cluster;
@@ -74,7 +76,8 @@ export namespace vulkan {
                                          .prepare = &render_start_demo::prepare,
                                          .collect = &render_start_demo::collect,
                                          .feature_active = &render_start_demo::feature_active,
-                                         .feature_available = &render_start_demo::feature_available};
+                                         .feature_available = &render_start_demo::feature_available,
+                                         .recreated = &render_start_demo::recreated};
         }
 
         // =============================================================================================
@@ -115,6 +118,20 @@ export namespace vulkan {
         /// report the stage's results back (see runtime::frame_results)
         static void collect(void* owner, std::string_view stage, runtime::frame_results& out);
         /**
+         * @brief the REFLECTION's own accumulation, recorded at the end of the temporal pass's recording
+         *
+         * THE APP'S ONE DELIBERATE EXCEPTION, and it lives here rather than in the pass for a reason a declaration
+         * cannot express: this application resolves TWO SIGNALS - the diffuse bounce and the glossy reflection -
+         * through the temporal pass's ONE pipeline and ONE set layout, and each needs its own list of images in the
+         * same seven slots. The pass does the first and calls back for the second (its frame's `record_reflection`),
+         * which is what keeps the chain contiguous.
+         */
+        static void record_reflection(void* owner, VkCommandBuffer command_buffer, bool history_valid);
+        /// @brief the reflection's per-image sets, on the temporal pass's layout (see record_reflection)
+        void ensure_reflection_descriptors(runtime::frame_services const& services);
+        /// one signal's accumulation: the barriers, the dispatch, the history copy and the hand-backs (mode 1)
+        bool record_resolve(runtime::frame_services const& services, VkDescriptorSet set, VkImage resolve_image, VkImage history_image, bool history_valid);
+        /**
          * @brief THE FEATURE TABLE: what runs this frame, composed from the runtime's facts and this demo's passes
          *
          * Moved out of `runtime::active_features` / `runtime::feature_active` UNCHANGED: the runtime reports the
@@ -124,6 +141,8 @@ export namespace vulkan {
         static bool feature_active(void* owner, runtime::feature_facts const& facts, std::string_view name);
         /// ... and the different question "could this feature ever run this SESSION" (the overlay's menu + the log)
         static bool feature_available(void* owner, runtime::feature_facts const& facts, std::string_view name);
+        /// the swapchain was rebuilt: retire the family this demo keeps outside the chain
+        static void recreated(void* owner);
 
         /// the typed references, looked up once by `attach` (a pass whose declaration is missing stays null)
         template <typename PassT>
@@ -133,6 +152,16 @@ export namespace vulkan {
 
         pass::pass_chain* passes_ = nullptr;
         runtime* runtime_ = nullptr; // the flag halves of the knobs above are the runtime's policy
+        /**
+         * The frame's services, as last handed to `prepare`, and the reflection's family.
+         *
+         * The SERVICES are cached because the reflection's callback is carried by a PASS's frame - whose signature
+         * the pass owns (`record_reflection(owner, cmd, history_valid)`) - so the toolkit it needs (the device, the
+         * frame's table, its constants) has to be reachable from the demo rather than passed through the pass. They
+         * are a value of pointers to the runtime, valid for the frame that set them.
+         */
+        runtime::frame_services services_ = {};
+        bindings::image_set_family reflection_family_ = {};
         pass::cluster_pass* cluster_ = nullptr;
         pass::shadow_pass* shadow_ = nullptr;
         pass::scene_pass* scene_ = nullptr;

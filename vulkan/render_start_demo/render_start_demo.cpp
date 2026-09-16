@@ -10,11 +10,16 @@
 module;
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
+#include <glm/glm.hpp>
+#include <span>
 #include <string_view>
+#include <vulkan/vulkan.h>
 
 module vulkan.render_start_demo;
 
+import vulkan.constant_init;
 import utility;
 
 namespace vulkan {
@@ -72,6 +77,9 @@ namespace vulkan {
 
     void render_start_demo::prepare(void* const owner, runtime::frame_services const& services, std::string_view const stage) {
         render_start_demo& self = *static_cast<render_start_demo*>(owner);
+        // THE FRAME'S TOOLKIT, cached for the callbacks that are carried by a PASS's frame and therefore cannot be
+        // handed it (the reflection's recording - see the member's own note).
+        self.services_ = services;
         // The stage names are the frame's own structure (the same names the runtime's stage structs carry), so this
         // switch is the frame ORDER written once, where the passes live.
         if (stage == "cluster") {
@@ -125,8 +133,17 @@ namespace vulkan {
                 self.ssgi_spec_->set_frame(services.make_ssgi_spec_frame(services.owner));
             }
         } else if (stage == "gi_denoise") {
+            // THE REFLECTION's family, on the temporal pass's own set layout: ensured here because this is the half
+            // whose recording (the pass's `record_reflection` callback, below) is what binds it.
+            self.ensure_reflection_descriptors(services);
             if (self.ssgi_temporal_ != nullptr) {
-                self.ssgi_temporal_->set_frame(services.make_ssgi_denoise_frame(services.owner));
+                // ... and its frame, with the callback THIS demo records: two signals through one pipeline is this
+                // application's choice, so the second one's recording is the application's code (see the file's
+                // header and `record_reflection`).
+                pass::ssgi_temporal_frame frame = services.make_ssgi_denoise_frame(services.owner);
+                frame.record_reflection = &render_start_demo::record_reflection;
+                frame.owner = &self;
+                self.ssgi_temporal_->set_frame(frame);
             }
             if (self.ssgi_spatial_ != nullptr) {
                 self.ssgi_spatial_->set_frame(services.make_ssgi_spatial_frame(services.owner));
@@ -381,6 +398,187 @@ namespace vulkan {
             return self.ssgi_spatial_ != nullptr && self.ssgi_spatial_->ready();
         }
         return false;
+    }
+
+    // =================================================================================================
+    // THE REFLECTION: this app's second signal through the temporal pass's one pipeline
+    // =================================================================================================
+    // MOVED VERBATIM out of `runtime::ensure_ssgi_denoise_descriptors` + `runtime::record_reflection` +
+    // `runtime::record_ssgi_resolve_pass`'s mode-1 path, with exactly two substitutions: the per-image views come
+    // from the frame's RESOURCE TABLE (the families the runtime publishes, in the declaration's vocabulary) instead
+    // of from the core's arrays, and the toolkit (device, samplers, frame, constants) comes from `frame_services`.
+    // What did NOT move is mode 0: that is the temporal PASS's own recording, which the pass does itself.
+
+    void render_start_demo::recreated(void* const owner) {
+        // The reflection's sets name this generation's images, so they are stale the moment the swapchain is
+        // rebuilt - the same duty the runner performs for every pass in a chain, for the one family this demo keeps
+        // outside it.
+        static_cast<render_start_demo*>(owner)->reflection_family_.retire_all();
+    }
+
+    void render_start_demo::ensure_reflection_descriptors(runtime::frame_services const& services) {
+        if (this->ssgi_temporal_ == nullptr || services.table == nullptr || services.device == VK_NULL_HANDLE) {
+            return;
+        }
+        VkDescriptorSetLayout const set_layout = this->ssgi_temporal_->set_layout();
+        if (!this->ssgi_temporal_->pipeline_ready() || set_layout == VK_NULL_HANDLE) {
+            return;
+        }
+        // THE VIEWS, ONE RUN PER BINDING, from the frame's table: this is what `resource_table::views_of` is for,
+        // and it is why the demo does not need the renderer's image arrays. The order is the declaration's own (the
+        // seven bindings of `ssgi_temporal_io`).
+        std::span<VkImageView const> const spec_trace = services.table->views_of(render_resource::resource_id::gi_spec_trace, 0);
+        std::span<VkImageView const> const spec_history = services.table->views_of(render_resource::resource_id::gi_spec_history, 0);
+        std::span<VkImageView const> const velocity = services.table->views_of(render_resource::resource_id::velocity, 0);
+        std::span<VkImageView const> const depth = services.table->views_of(render_resource::resource_id::gbuffer_depth, 0);
+        std::span<VkImageView const> const spec_resolve = services.table->views_of(render_resource::resource_id::gi_spec_resolve, 0);
+        std::span<VkImageView const> const normals = services.table->views_of(render_resource::resource_id::gbuffer_targets, 1);
+        std::span<VkImageView const> const spec_reproject = services.table->views_of(render_resource::resource_id::gi_spec_reproject, 0);
+        std::size_t const image_count = spec_trace.size();
+        if (image_count == 0 || spec_history.size() != image_count || velocity.size() != image_count || depth.size() != image_count ||
+            spec_resolve.size() != image_count || normals.size() != image_count || spec_reproject.size() != image_count) {
+            return; // a family this frame does not have: the reflection is not resolved this frame
+        }
+        // THE COUNT COMES FROM THE DECLARATION, which is what makes it impossible for the pool and the layout to
+        // disagree: this number and the layout the PASS generated in its create are both derived from
+        // `ssgi_temporal_io`.
+        uint32_t const descriptors_per_set = render_resource::descriptor_counts_for(render_resource::ssgi_temporal_io, render_resource::ssgi_temporal_io.own_set).total();
+        // Bindings 2 and 3 (the surface's motion vectors and depth) are unused in mode 1 - its reprojection carries
+        // its own depth - but every binding of the layout has to name a real view, so they carry the same ones the
+        // diffuse set uses; binding 6 is the lobe's reprojection, which is what mode 1 actually reprojects by.
+        std::array<VkImageView, 7> const signature = {spec_trace[0], spec_history[0], velocity[0], depth[0], spec_resolve[0], normals[0], spec_reproject[0]};
+        auto const write_sets = [&services, spec_trace, spec_history, velocity, depth, spec_resolve, normals, spec_reproject](uint32_t const image_index,
+                                                                                                                              std::span<VkDescriptorSet const> const sets) {
+            std::array<VkImageView, 7> const views = {
+                spec_trace[image_index], spec_history[image_index], velocity[image_index], depth[image_index], spec_resolve[image_index], normals[image_index], spec_reproject[image_index]};
+            // The write is GENERATED from the pass's declaration, exactly as the pass's own family does it: the
+            // binding numbers, the descriptor types, the layouts and the sampler are the declaration's, so this
+            // family cannot drift from the layout it shares with the pass.
+            auto const written = bindings::write_set(services.device, render_resource::ssgi_temporal_io, render_resource::ssgi_temporal_io.own_set, sets[0], views, {}, services.samplers);
+            if (!written) {
+                // NO FORMAT ARGUMENT: see the note on the log above (clang 22.1.8 crashes on a formatted one here).
+                utility::log("render_start_demo: the reflection's descriptor set could not be written");
+            }
+        };
+        if (!this->reflection_family_.ensure(services.device, set_layout, static_cast<uint32_t>(image_count), 1u, descriptors_per_set, signature, write_sets)) {
+            utility::log("render_start_demo: the reflection's descriptor sets are unavailable - this frame's reflection is not resolved");
+        }
+    }
+
+    void render_start_demo::record_reflection(void* const owner, VkCommandBuffer const command_buffer, [[maybe_unused]] bool const history_valid) {
+        render_start_demo& self = *static_cast<render_start_demo*>(owner);
+        runtime::frame_services const& services = self.services_;
+        // The command buffer the pass handed us IS the frame's (services.cmd was built for the same frame), so the
+        // recording below reads it from the toolkit rather than threading it through - and the parameter is kept
+        // because the pass's callback signature says what it passes.
+        static_cast<void>(command_buffer);
+        bool spec_resolved = false;
+        // THE SAME PREDICATE THE LOBE'S OWN FEATURE USES (`ssgi_specular`: the knob, hit shading, the traced path and
+        // the pass's pipeline): the reflection is resolved exactly when the lobe ran, which is what keeps the
+        // spatial filter's `spec_weight` lane and the accumulation in step. Asking the registry rather than the
+        // pass's readiness is the difference this line exists for - a lobe that is OFF must not have its
+        // accumulation advanced.
+        bool const lobe_runs = self.runtime_ != nullptr && self.runtime_->feature_active("ssgi_specular");
+        if (lobe_runs && services.table != nullptr) {
+            uint32_t const image_index = services.frame.image_index;
+            VkDescriptorSet const spec_set = self.reflection_family_.set(image_index, 0);
+            pass::resolved_binding const resolve = services.table->find(render_resource::resource_id::gi_spec_resolve, 0, image_index);
+            pass::resolved_binding const history = services.table->find(render_resource::resource_id::gi_spec_history, 0, image_index);
+            if (spec_set != VK_NULL_HANDLE && resolve.image != VK_NULL_HANDLE && history.image != VK_NULL_HANDLE) {
+                spec_resolved = self.record_resolve(services, spec_set, resolve.image, history.image, history_valid);
+            }
+        }
+        // THE FRAME'S ANSWER: the spatial filter's `spec_weight` lane is read from it, and the filter resolves AFTER
+        // this callback (the temporal pass calls it at the end of its own recording), so the value it copies out of
+        // the frame's constants is this frame's. See frame_constants::gi_spec_resolved.
+        if (self.runtime_ != nullptr) {
+            self.runtime_->set_gi_spec_resolved(spec_resolved);
+        }
+    }
+
+    bool render_start_demo::record_resolve(runtime::frame_services const& services, VkDescriptorSet const set, VkImage const resolve_image, VkImage const history_image,
+                                           bool const history_valid) {
+        // Everything here is mode 1's: the reflection's accumulation (mode 0 is the temporal pass's own recording).
+        uint32_t const gi_width = std::max(1u, services.frame.extent.width / 2u);
+        uint32_t const gi_height = std::max(1u, services.frame.extent.height / 2u);
+
+        // Layouts, all before the dispatch: resolve -> GENERAL (storage write), with SHADER_READ as the old layout
+        // once the image has been resolved before and UNDEFINED on its first frame (the resolve is READ across
+        // frames - the tracer samples the previous frame's copy at a hit - so this write has to KEEP its contents).
+        // history -> SHADER_READ, and only on its first use for this image: the previous frame's copy left it
+        // readable, so a later frame needs no barrier at all.
+        std::array<VkImageMemoryBarrier2, 2> barriers = {};
+        uint32_t barrier_count = 0;
+        barriers[barrier_count] = history_valid ? vulkan::sampling_to_general_transition : vulkan::undefined_to_general_transition;
+        barriers[barrier_count].image = resolve_image;
+        ++barrier_count;
+        if (!history_valid) {
+            barriers[barrier_count] = vulkan::undefined_to_sampling_transition;
+            barriers[barrier_count].image = history_image;
+            ++barrier_count;
+        }
+        VkDependencyInfo const dependency = make_image_dependency_info(barrier_count, barriers.data());
+        vkCmdPipelineBarrier2(services.cmd, &dependency);
+
+        // (Mode 0's two shared per-image transitions are NOT needed here: the reflection's own reprojection carries
+        // the depth its guard needs, and the diffuse dispatch - which runs first in every frame that resolves both -
+        // has already published the motion-vector target.)
+
+        VkPipelineLayout const layout = this->ssgi_temporal_->pipeline_layout();
+        vkCmdBindDescriptorSets(services.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, nullptr);
+        vkCmdBindPipeline(services.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this->ssgi_temporal_->pipeline());
+
+        pass::ssgi_temporal_pass::push_constants const push = {
+            .history_valid = history_valid ? 1.0f : 0.0f,
+            // The two weights are the temporal PASS's constants: the reflection shares that pass's pipeline and
+            // shader, so both lanes have to be the same number or the two signals would be denoised differently.
+            .blend_static = pass::ssgi_temporal_pass::blend_static,
+            .blend_min = pass::ssgi_temporal_pass::blend_min,
+            .depth_scale = services.constants->proj[2][2],
+            .depth_offset = services.constants->proj[3][2],
+            // Which signal this dispatch resolves: 1.0 = the reflection (see the shader's `glossy`). One pipeline
+            // serves both, each with a set and a history of its own.
+            .mode = 1.0f,
+            .unused1 = 0.0f,
+            .unused2 = 0.0f,
+            .gi_size = glm::vec4(static_cast<float>(gi_width), static_cast<float>(gi_height),
+                                 static_cast<float>(services.frame.extent.width), static_cast<float>(services.frame.extent.height))};
+        vkCmdPushConstants(services.cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+
+        // THE SHADER'S OWN WORKGROUP SIZE, taken from the pass that owns the pipeline this dispatch goes through.
+        constexpr uint32_t group_size = pass::ssgi_temporal_pass::group_size;
+        vkCmdDispatch(services.cmd, (gi_width + group_size - 1) / group_size, (gi_height + group_size - 1) / group_size, 1);
+
+        // ---- the resolved image becomes the next frame's history ---- (a copy rather than a ping-pong, exactly
+        // like the TAA resolve: the resolve writes the image the composite reads, so the history has to be separate,
+        // and copying into it keeps every descriptor set in the frame stable)
+        std::array<VkImageMemoryBarrier2, 2> copy_barriers = {};
+        copy_barriers[0] = vulkan::general_to_transfer_src_transition;
+        copy_barriers[0].image = resolve_image;
+        copy_barriers[1] = vulkan::sampling_to_transfer_dst_transition;
+        copy_barriers[1].image = history_image;
+        VkDependencyInfo const copy_dependency = make_image_dependency_info(static_cast<uint32_t>(copy_barriers.size()), copy_barriers.data());
+        vkCmdPipelineBarrier2(services.cmd, &copy_dependency);
+
+        VkImageCopy const region = {
+            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .srcOffset = {0, 0, 0},
+            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .dstOffset = {0, 0, 0},
+            .extent = {gi_width, gi_height, 1},
+        };
+        vkCmdCopyImage(services.cmd, resolve_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, history_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        // Hand both on: the resolve to the composite, the history copy to the next frame's resolve (which finds it
+        // in TRANSFER_DST and transitions it from there).
+        std::array<VkImageMemoryBarrier2, 2> hand_back = {};
+        hand_back[0] = vulkan::transfer_src_to_sampling_transition;
+        hand_back[0].image = resolve_image;
+        hand_back[1] = vulkan::transfer_dst_to_sampling_transition;
+        hand_back[1].image = history_image;
+        VkDependencyInfo const hand_back_dependency = make_image_dependency_info(static_cast<uint32_t>(hand_back.size()), hand_back.data());
+        vkCmdPipelineBarrier2(services.cmd, &hand_back_dependency);
+        return true;
     }
 
 } // namespace vulkan

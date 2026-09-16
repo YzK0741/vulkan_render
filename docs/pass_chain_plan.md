@@ -2911,6 +2911,41 @@ ASan clean with `ctest` 8/8 in all three; `doxygen` exits 0. **Typed pass sites:
 dominated by the CONSTRUCTION (the chains, the two jobs) rather than by anything the frame loop does.
 
 
+## THE HANDOVER, SLICE 5: THE LAST EXCEPTION LEAVES THE RUNTIME
+
+**"A DECLARATION CANNOT DESCRIBE TWO SIGNALS IN ONE SET LAYOUT" IS THIS APPLICATION'S CHOICE, NOT THE FRAMEWORK'S -
+so the code that expresses it moved to the application.** Four things left the runtime together, because they are one
+thing: `ensure_ssgi_denoise_descriptors` (the reflection's per-image family, built on the temporal pass's layout),
+`record_reflection` (its per-frame entry point, called from inside the temporal pass's recording), the mode-1 path of
+`record_ssgi_resolve_pass` (the barriers, the dispatch, the history copy, the hand-backs) and the family member
+itself. The temporal pass keeps exactly one hook for it (`ssgi_temporal_frame::record_reflection`), which the DEMO
+fills now - the pass's own `make_ssgi_denoise_frame` returns only the history flag.
+
+**THE TWO SUBSTITUTIONS, and both are the seam paying off**: the per-image views come from the frame's RESOURCE TABLE
+(`resource_table::views_of`, the families the runtime already publishes in the declaration's vocabulary) instead of
+from the core's arrays - which is why `frame_services` gained the frame's TOOLKIT (`device`, `samplers`, `table`,
+`frame`, `constants`); and mode 0 did not move at all, because it is the temporal PASS's own recording. The
+`recreated` hook was added for the one lifecycle duty the family left behind (a swapchain rebuild retires it - the
+runner's `recreate_stage` cannot reach an object outside a chain).
+
+**THE GATE FOUND A REAL DEFECT IN MY OWN TRANSCRIPTION, and it is worth writing down as a rule**: the reflection must
+be recorded when the LOBE's FEATURE runs (`ssgi_specular`: the knob, hit shading, the traced path, the pass's
+pipeline), not when the lobe's PASS is ready. My first version asked `ssgi_spec_->ready()`, which is true on every
+frame the pass has a pipeline - so `sponza_gi` and `sponza_march` (the two scenarios where the lobe is OFF while the
+acceleration structures exist) advanced a reflection that the parent left alone, and their two references changed.
+Asking the registry instead (`runtime::feature_active("ssgi_specular")`) restored them exactly. The trap is the one
+this document has recorded twice already from the other direction: **"the pass is ready" and "the pass runs this
+frame" are different questions**, and only the second one gates a signal that feeds another pass.
+
+**MEASURED**: **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, validation-clean, every reference unchanged
+(`default_gi` `BF180E98ADB29E7E`, `sponza_gi` `58EC848DFABE654A`, `sponza_march` `EEFBBA2515803F46`,
+`metal_rough_glossy` `46F9851B7BC89872`, `glossy_motion` `98B06F2190B49519`); Release, Debug and ASan clean with
+`ctest` 8/8 in all three; `doxygen` exits 0. **Typed pass sites: 21 -> 17**, and what is left is the construction
+(the two chains, `create_passes`), the two jobs, the two remaining descriptor families the runtime writes from its
+own bindings (`post_family`, `gbuffer_family` - whose LAYOUT still nominally belongs to the debug view), and
+`set_ssao`'s forward.
+
+
 
 
 
