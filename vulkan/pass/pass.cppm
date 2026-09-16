@@ -345,12 +345,15 @@ export namespace vulkan::pass {
         /// into what it is given and stores no device state between frames
         VkCommandBuffer cmd = VK_NULL_HANDLE;
         /**
-         * The set the declaration named, BY INDEX: `descriptor_set(owner, set, image_index)`.
+         * The set the declaration named, BY FAMILY AND ELEMENT: `descriptor_set(owner, family, element,
+         * image_index)`.
          *
          * The same vocabulary `pass_context::shared_set_layout` uses at create time, one lifetime later: the
-         * declaration says "set 1" and the owner is the one that knows what occupies it this frame.
+         * declaration says "family 2, element 4" and the owner is the one that knows what occupies it this frame.
+         * The ELEMENT is what makes a family that holds one set PER STAGE expressible - the post chain's five -
+         * and only the owner can interpret it, which is the same rule `behaviour::extent_of_element` follows.
          */
-        VkDescriptorSet (*descriptor_set)(void* owner, uint32_t set, uint32_t image_index) = nullptr;
+        VkDescriptorSet (*descriptor_set)(void* owner, uint32_t family, uint32_t element, uint32_t image_index) = nullptr;
         /// the extent of a resource element the behaviour named (`extent_rule::resource`), or {0,0} for an
         /// element the owner does not have - only the owner knows its own images' sizes
         VkExtent2D (*extent_of)(void* owner, render_resource::resource_id id, uint32_t element) = nullptr;
@@ -806,6 +809,36 @@ export namespace vulkan::pass {
         /// @brief forget everything: the caller is about to publish this frame's resources
         void clear() noexcept {
             this->entries_.clear();
+            this->families_.clear();
+        }
+
+        /**
+         * @brief publish a WHOLE family element at once: the per-image views and images, in instance order
+         *
+         * WHY THIS EXISTS ON TOP OF `publish`: a family the owner already holds as one contiguous array (every
+         * per-swapchain-image family `vulkan.core` creates) is both cheaper and MORE USEFUL published as the
+         * spans it already is - the per-image channel (`resolved_io::own_per_image`) needs exactly that contiguous
+         * run of views, and a per-instance copy would make the table the source of a second array that can drift
+         * from the first. The spans are stored, not copied: they point at the owner's own storage, which outlives
+         * the frame the table describes.
+         *
+         * @param id the resource, in the declaration's vocabulary
+         * @param element which image of the family (the G-buffer's second target, the bloom chain's level 1)
+         * @param views one view per instance, in instance order (an empty span publishes nothing)
+         * @param images the images behind them, in the same order (a buffer family passes an empty span)
+         */
+        void publish_family(render_resource::resource_id const id, uint32_t const element, std::span<VkImageView const> views, std::span<VkImage const> images) noexcept {
+            if (views.empty() && images.empty()) {
+                return;
+            }
+            for (family_entry& f : this->families_) {
+                if (f.id == id && f.element == element) {
+                    f.views = views;
+                    f.images = images;
+                    return;
+                }
+            }
+            this->families_.push_back(family_entry{.id = id, .element = element, .views = views, .images = images});
         }
 
         /**
@@ -832,6 +865,9 @@ export namespace vulkan::pass {
          * @param id the resource, in the declaration's vocabulary
          * @param element which image of the family
          * @param instance the swapchain image index or the frame slot (see instance_for)
+         * @note a single entry WINS over a family with the same key, which is what an alias needs: `scene_color`
+         *       is published per frame (the TAA input or the HDR image), while the families around it are
+         *       published once per frame from the owner's arrays
          */
         [[nodiscard]] resolved_binding find(render_resource::resource_id const id, uint32_t const element, uint32_t const instance) const noexcept {
             for (entry const& e : this->entries_) {
@@ -839,12 +875,34 @@ export namespace vulkan::pass {
                     return e.binding;
                 }
             }
+            for (family_entry const& f : this->families_) {
+                if (f.id == id && f.element == element && instance < f.views.size()) {
+                    VkImage const image = instance < f.images.size() ? f.images[instance] : VK_NULL_HANDLE;
+                    return resolved_binding{.view = f.views[instance], .buffer = VK_NULL_HANDLE, .image = image};
+                }
+            }
             return {};
         }
 
-        /// @brief how many entries are published (a diagnostic: the count a frame published, and what a test pins)
+        /**
+         * @brief EVERY instance's view of one family element, in instance order - the per-image channel
+         * @param id the resource, in the declaration's vocabulary
+         * @param element which image of the family
+         * @return the views the owner published as one run, or an EMPTY span when it published none (or published
+         *         the family instance by instance, which is what a single entry is for)
+         */
+        [[nodiscard]] std::span<VkImageView const> views_of(render_resource::resource_id const id, uint32_t const element) const noexcept {
+            for (family_entry const& f : this->families_) {
+                if (f.id == id && f.element == element) {
+                    return f.views;
+                }
+            }
+            return {};
+        }
+
+        /// @brief how many things are published (a diagnostic: what a frame published, and what a test pins)
         [[nodiscard]] uint32_t size() const noexcept {
-            return static_cast<uint32_t>(this->entries_.size());
+            return static_cast<uint32_t>(this->entries_.size() + this->families_.size());
         }
 
         /// @brief how many instances of one (resource, element) are published - 0 when the owner has none
@@ -853,6 +911,11 @@ export namespace vulkan::pass {
             for (entry const& e : this->entries_) {
                 if (e.id == id && e.element == element) {
                     ++count;
+                }
+            }
+            for (family_entry const& f : this->families_) {
+                if (f.id == id && f.element == element) {
+                    count += static_cast<uint32_t>(std::max(f.views.size(), f.images.size()));
                 }
             }
             return count;
@@ -865,12 +928,20 @@ export namespace vulkan::pass {
             uint32_t instance = 0;
             resolved_binding binding = {};
         };
+        /// one family element, held as the run of views and images the owner already has (see publish_family)
+        struct family_entry {
+            render_resource::resource_id id = render_resource::resource_id::none;
+            uint32_t element = 0;
+            std::span<VkImageView const> views = {};
+            std::span<VkImage const> images = {};
+        };
         /// A vector rather than a map: the table holds what one frame's chain can NAME, it is filled once per
         /// frame in one pass, and the lookups happen during resolution - so the smallest container that works is
         /// the honest one, and its order is the publishing order rather than a hash (this renderer's
         /// verification rests on byte-identical captures, and an iteration order that is an accident is exactly
         /// what the stage runner refuses to depend on).
         std::vector<entry> entries_ = {};
+        std::vector<family_entry> families_ = {};
     };
 
     // =============================================================================================
@@ -975,6 +1046,21 @@ export namespace vulkan::pass {
             own_count = std::max(own_count, static_cast<uint32_t>(binding.binding) + 1u);
         }
         out.own = std::span<resolved_binding const>(out.own_storage.data(), own_count);
+        // THE PER-IMAGE CHANNEL: for an own binding whose resource is per SWAPCHAIN IMAGE, every image's view -
+        // what a pass that owns a per-image descriptor family writes into each image's set (see
+        // resolved_io::own_per_image), and the only channel through which a pass can name a generation's views
+        // without the renderer building its sets for it. Empty for every other binding, which is the shape the
+        // one consumer (the GI temporal resolve) reads: it checks each span's length before indexing it.
+        for (render_resource::pass_binding const& binding : declaration.bindings) {
+            if (binding.owner != render_resource::set_owner::own || binding.binding >= out.own_per_image.size()) {
+                continue;
+            }
+            render_resource::resource_info const* const info = render_resource::find(binding.resource);
+            if (info == nullptr || info->scope != render_resource::resource_scope::per_swapchain_image) {
+                continue;
+            }
+            out.own_per_image[binding.binding] = context.resources->views_of(binding.resource, binding.element);
+        }
 
         // ---- the targets, in declaration order ----
         if (declaration.targets.size() > out.target_storage.size()) {
@@ -1022,13 +1108,14 @@ export namespace vulkan::pass {
         }
         out.barrier_buffers = std::span<resolved_binding const>(out.barrier_buffer_storage.data(), declaration.barrier_buffers.size());
 
-        // ---- the shared sets, by the index the declaration names ----
-        for (uint32_t const set : declaration.shared_sets) {
-            VkDescriptorSet const descriptor_set = context.descriptor_set == nullptr ? VK_NULL_HANDLE : context.descriptor_set(context.owner, set, context.frame.image_index);
+        // ---- the shared sets, by the family and element the declaration names ----
+        for (render_resource::shared_set const entry : declaration.shared_sets) {
+            VkDescriptorSet const descriptor_set =
+                context.descriptor_set == nullptr ? VK_NULL_HANDLE : context.descriptor_set(context.owner, entry.family, entry.element, context.frame.image_index);
             if (descriptor_set == VK_NULL_HANDLE) {
                 return false; // a declared set the owner cannot fill: a pass that binds a whole set cannot run without it
             }
-            switch (set) {
+            switch (entry.family) {
             case 0:
                 out.shared.scene = descriptor_set;
                 break;
@@ -1039,7 +1126,7 @@ export namespace vulkan::pass {
                 out.shared.post = descriptor_set;
                 break;
             default:
-                return false; // a set this framework has no field for: the declaration and the owner disagree
+                return false; // a set family this framework has no field for: the declaration and the owner disagree
             }
         }
 

@@ -2350,5 +2350,56 @@ Two gaps this slice found and did NOT paper over, both recorded in the code:
   rule (which bindings get a per-image span, and how long the span is) has to be read off the passes that use it
   before it can be generated. It is the next slice's first item.
 
+## S3, FOURTH SLICE: THE TWO FRAMEWORK GAPS - `shared_set{element}` AND PUBLISHED FAMILIES
+
+**BOTH GAPS ARE CLOSED**, and neither is a pass migration: they are the two pieces of vocabulary the remaining
+resolvers were waiting for.
+
+**GAP A - a shared set is now `{family, element}`, not a bare index.** The post chain binds ONE family whose five
+sets are one per STAGE (the four bloom levels and the composite/FXAA pair), so "set 2" could not say which of them
+a pass binds and six declarations were unresolvable from their own text because of it. `pass_io::shared_sets` is a
+span of `shared_set{family, element}`: the FAMILY is the index the framework and the owner already use (0 scene,
+1 G-buffer, 2 post - the same index `pass_context::shared_set_layout` is asked by), and the ELEMENT selects within
+it, interpreted by the OWNER because only it created the sets (the same rule as
+`behaviour::extent_of_element`). The six post declarations now say what they mean: each bloom level binds element
+`level` and the composite/FXAA pair binds element 4, which the test asserts per level rather than by a literal.
+`resolve_shared_set(family, element, image_index)` answers all three families now - the "cannot answer" note the
+last slice left in the code is gone, because the vocabulary it was waiting for exists.
+
+**GAP B - a family can be published as the run it already is, and the per-image channel is generated from it.**
+`resource_table::publish_family(id, element, views, images)` stores the SPANS the owner already holds (every
+per-swapchain-image family `vulkan.core` creates), so `find(id, element, instance)` answers from that run and
+`views_of(id, element)` hands the run itself to `resolved_io::own_per_image` - the per-image channel is now the
+owner's own array rather than a second copy of it. The generic resolver fills that channel for every own binding
+whose resource scope is `per_swapchain_image`, which is EXACTLY the set the one consumer filled by hand: the GI
+temporal resolve's seven bindings (checked against `resolve_ssgi_temporal`, which filled
+`gi_trace`/`gi_history`/`velocity`/`gbuffer_depth`/`gi_resolve`/`gbuffer_targets[1]`/`gi_spec_reproject` - the same
+seven, in the same order). Single entries still win over a family with the same key, which is what the per-frame
+`scene_color` alias needs, and `instances_of`/`size` count both.
+
+**MEASURED**: the fallback did not change a single frame - the capture gate is still 12 x 2 = 0 changed / 0 flaky /
+0 unseeded - and the framework's new contract is pinned headlessly in `tests/test_pass.cpp` (187 checks): a
+published family answers `find` per instance and `views_of` as the owner's own run, `own_per_image` is filled in
+instance order for a per-image binding and left empty for the others, the family/element pair reaches the right
+shared field, and an element the owner does not have fails the pass exactly like an unfillable set. The declaration
+layer's own test moved with the vocabulary (a bloom level's set element IS its level).
+
+**WHAT IS LEFT, precisely** - and it is no longer "the framework": eleven resolvers remain, and every one of them
+now waits on a DECISION rather than on a missing channel:
+
+| what it waits on | who |
+|---|---|
+| the post chain's SHARED settings (exposure, bloom intensity/threshold) - three passes read them, so they are neither one pass's parameters nor per-frame facts | `post_composite`, the four bloom levels, `fxaa` |
+| a pass that records with ANOTHER pass's pipeline (the bloom levels use the composite's HDR pipeline; a copy per level is the five-identical-pipelines trap the post header records) | the four bloom levels |
+| its own policy: which target and which of its two pipeline variants (the composite's LDR-vs-swapchain deviation), and the frame fact `gi_resolved` | `post_composite` |
+| the open `overlay`/`after_draw` question and the LDR barrier | `fxaa` |
+| the G-buffer "was it written this frame" bookkeeping (`ensure_inputs`) | `deferred`, `gbuffer_debug` |
+| N targets from one declared family (a rendering instance has one depth target) | `shadow` |
+| its own knobs and the reflection callback | the three remaining GI-chain passes |
+
+The first two rows are the next decision rather than the next migration: a shared settings block for a CHAIN (which
+is also where the demo's post defaults would live) and a way for a pass to name another pass's pipeline.
+
+
 
 

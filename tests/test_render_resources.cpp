@@ -271,7 +271,7 @@ int main() {
         CHECK(rr::validate(rr::scene_io).has_value());
         CHECK(rr::scene_io.bindings.empty()); // it owns no set: everything arrives through set 0
         CHECK(rr::scene_io.shared_sets.size() == 1);
-        CHECK(rr::scene_io.shared_sets[0] == 0); // the shared scene set
+        CHECK(rr::scene_io.shared_sets[0].family == 0); // the shared scene set
         CHECK(rr::scene_io.targets.size() == 6);
         CHECK(rr::scene_io.targets[0].resource == rr::resource_id::gbuffer_targets);
         CHECK(rr::scene_io.targets[2].element == 2); // all three stored surface targets
@@ -291,12 +291,12 @@ int main() {
     }
     {
         // a set cannot be both the pass's own and one it only binds
-        std::array<uint32_t, 1> const conflicting = {1};
+        std::array<rr::shared_set, 1> const conflicting = {{{.family = 1}}};
         rr::pass_io const io = {.name = "scene", .own_set = 1, .bindings = rr::gi_probe_bindings, .shared_sets = conflicting, .targets = {}, .push = std::nullopt};
         CHECK(!rr::validate(io).has_value());
     }
     {
-        std::array<uint32_t, 2> const twice = {0, 0};
+        std::array<rr::shared_set, 2> const twice = {rr::shared_set{.family = 0}, rr::shared_set{.family = 0}};
         rr::pass_io const io = {.name = "scene", .own_set = 1, .bindings = {}, .shared_sets = twice, .targets = {}, .push = std::nullopt};
         CHECK(!rr::validate(io).has_value()); // the same shared set twice
     }
@@ -309,9 +309,9 @@ int main() {
         CHECK(rr::ssgi_trace_io.bindings.empty());
         CHECK(rr::descriptor_counts_for(rr::ssgi_trace_io, rr::ssgi_trace_io.own_set).total() == 0); // nothing generated
         CHECK(rr::ssgi_trace_io.shared_sets.size() == 2);
-        CHECK(rr::ssgi_trace_io.shared_sets[0] == 0); // the scene set
-        CHECK(rr::ssgi_trace_io.shared_sets[1] == 1); // the G-buffer set: the second shared set any pass declares
-        CHECK(rr::ssgi_trace_io.targets.empty());     // it dispatches; it renders into nothing
+        CHECK(rr::ssgi_trace_io.shared_sets[0].family == 0); // the scene set
+        CHECK(rr::ssgi_trace_io.shared_sets[1].family == 1); // the G-buffer set: the second shared set any pass declares
+        CHECK(rr::ssgi_trace_io.targets.empty());            // it dispatches; it renders into nothing
         CHECK(rr::ssgi_trace_io.push.has_value());
         CHECK(rr::ssgi_trace_io.push->size == 128); // the full guaranteed range, five vectors
         CHECK(rr::ssgi_trace_io.push->stages == rr::stage_flag::compute);
@@ -396,8 +396,8 @@ int main() {
         CHECK(rr::ssgi_spatial_io.bindings.empty()); // everything it reads is in the shared G-buffer set
         CHECK(rr::ssgi_spatial_io.targets.empty());  // a compute pass
         CHECK(rr::ssgi_spatial_io.shared_sets.size() == 2);
-        CHECK(rr::ssgi_spatial_io.shared_sets[0] == 0); // the scene set
-        CHECK(rr::ssgi_spatial_io.shared_sets[1] == 1); // the G-buffer set: the image it writes lives there
+        CHECK(rr::ssgi_spatial_io.shared_sets[0].family == 0); // the scene set
+        CHECK(rr::ssgi_spatial_io.shared_sets[1].family == 1); // the G-buffer set: the image it writes lives there
         CHECK(rr::ssgi_spatial_io.barrier_images.size() == 1);
         CHECK(rr::ssgi_spatial_io.barrier_images[0].resource == rr::resource_id::gi_spatial); // its own output
         CHECK(rr::ssgi_spatial_io.push.has_value());
@@ -414,8 +414,8 @@ int main() {
         CHECK(rr::rt_shadow_io.bindings.empty()); // the camera, the light UBO and the TLAS are the scene set's
         CHECK(rr::rt_shadow_io.targets.empty());  // a compute pass
         CHECK(rr::rt_shadow_io.shared_sets.size() == 2);
-        CHECK(rr::rt_shadow_io.shared_sets[0] == 0); // the scene set: the top level structure lives at binding 16
-        CHECK(rr::rt_shadow_io.shared_sets[1] == 1); // the G-buffer set: the surface each ray starts from
+        CHECK(rr::rt_shadow_io.shared_sets[0].family == 0); // the scene set: the top level structure lives at binding 16
+        CHECK(rr::rt_shadow_io.shared_sets[1].family == 1); // the G-buffer set: the surface each ray starts from
         CHECK(rr::rt_shadow_io.barrier_images.size() == 1);
         CHECK(rr::rt_shadow_io.barrier_images[0].resource == rr::resource_id::rt_shadow_visibility);
         CHECK(rr::find(rr::resource_id::rt_shadow_visibility)->scope == rr::resource_scope::per_frame_slot);
@@ -435,7 +435,7 @@ int main() {
         CHECK(!rr::cluster_io.push.has_value());      // light_cluster.comp declares no push_constant block at all
         CHECK(rr::cluster_io.barrier_images.empty()); // it moves no image
         CHECK(rr::cluster_io.shared_sets.size() == 1);
-        CHECK(rr::cluster_io.shared_sets[0] == 0); // the scene set: the camera, the light UBO, the two buffers
+        CHECK(rr::cluster_io.shared_sets[0].family == 0); // the scene set: the camera, the light UBO, the two buffers
         CHECK(rr::cluster_io.barrier_buffers.size() == 2);
         CHECK(rr::cluster_io.barrier_buffers[0].resource == rr::resource_id::cluster_counts);
         CHECK(rr::cluster_io.barrier_buffers[1].resource == rr::resource_id::cluster_indices);
@@ -467,9 +467,9 @@ int main() {
         CHECK(rr::validate(rr::deferred_io).has_value());
         CHECK(rr::deferred_io.bindings.empty()); // every binding it uses is in one of the two shared sets
         CHECK(rr::deferred_io.shared_sets.size() == 2);
-        CHECK(rr::deferred_io.shared_sets[0] == 0); // the scene set: camera, IBL, light UBO, shadow map
-        CHECK(rr::deferred_io.shared_sets[1] == 1); // the G-buffer set: the surface it shades
-        CHECK(rr::deferred_io.targets.size() == 1); // the only resource of its own: what it renders into
+        CHECK(rr::deferred_io.shared_sets[0].family == 0); // the scene set: camera, IBL, light UBO, shadow map
+        CHECK(rr::deferred_io.shared_sets[1].family == 1); // the G-buffer set: the surface it shades
+        CHECK(rr::deferred_io.targets.size() == 1);        // the only resource of its own: what it renders into
         CHECK(rr::deferred_io.targets[0].resource == rr::resource_id::scene_color);
         CHECK(rr::deferred_io.targets[0].kind == rr::target_kind::color);
         CHECK(rr::deferred_io.barrier_images.empty()); // it moves no image of its own
@@ -490,7 +490,9 @@ int main() {
             CHECK_MSG(valid.has_value(), valid.has_value() ? "" : valid.error().c_str());
             CHECK(io.bindings.empty()); // everything it reads belongs to the post set
             CHECK(io.shared_sets.size() == 1);
-            CHECK(io.shared_sets[0] == 2); // the POST set (2), not the scene's or the G-buffer's
+            // EACH LEVEL'S OWN SET of the post family: family 2, and the element IS the level (the set that reads
+            // the level before it) - which is the fact six declarations could not express before `shared_set`
+            CHECK(io.shared_sets[0].family == 2 && io.shared_sets[0].element == level);
             CHECK(io.targets.size() == 1);
             CHECK(io.targets[0].resource == rr::resource_id::bloom); // the level it writes...
             CHECK(io.targets[0].element == level);                   // ... which IS the pass boundary
@@ -511,7 +513,7 @@ int main() {
         auto const composite = rr::validate(rr::post_composite_io);
         CHECK_MSG(composite.has_value(), composite.has_value() ? "" : composite.error().c_str());
         CHECK(rr::post_composite_io.shared_sets.size() == 1);
-        CHECK(rr::post_composite_io.shared_sets[0] == 2);
+        CHECK(rr::post_composite_io.shared_sets[0].family == 2 && rr::post_composite_io.shared_sets[0].element == 4);
         CHECK(rr::post_composite_io.targets.size() == 1);
         // the RECORDED DEVIATION: the declaration names the swapchain, and the host hands over the LDR image (and
         // the R16F pipeline that goes with it) on the frames FXAA runs
@@ -527,7 +529,7 @@ int main() {
         CHECK_MSG(fxaa.has_value(), fxaa.has_value() ? "" : fxaa.error().c_str());
         CHECK(rr::fxaa_io.bindings.empty()); // everything it reads belongs to the post set
         CHECK(rr::fxaa_io.shared_sets.size() == 1);
-        CHECK(rr::fxaa_io.shared_sets[0] == 2); // the SAME post set the composite binds (its set 4)
+        CHECK(rr::fxaa_io.shared_sets[0].family == 2 && rr::fxaa_io.shared_sets[0].element == 4); // the SAME post set the composite binds
         CHECK(rr::fxaa_io.targets.size() == 1);
         CHECK(rr::fxaa_io.targets[0].resource == rr::resource_id::swapchain_image); // it finishes the frame
         CHECK(rr::fxaa_io.targets[0].kind == rr::target_kind::color);
@@ -547,7 +549,7 @@ int main() {
         CHECK_MSG(debug.has_value(), debug.has_value() ? "" : debug.error().c_str());
         CHECK(rr::gbuffer_debug_io.bindings.empty()); // everything it reads is in the shared G-buffer set
         CHECK(rr::gbuffer_debug_io.shared_sets.size() == 1);
-        CHECK(rr::gbuffer_debug_io.shared_sets[0] == 1); // the G-buffer set (1), NOT the scene's or the post's
+        CHECK(rr::gbuffer_debug_io.shared_sets[0].family == 1); // the G-buffer set (1), NOT the scene's or the post's
         // THE HDR TARGET, declared as itself: this is the one graphics declaration in the chain with no deviation -
         // the image it writes is the image it names
         CHECK(rr::gbuffer_debug_io.targets.size() == 1);
@@ -574,7 +576,7 @@ int main() {
         CHECK_MSG(shadow.has_value(), shadow_error.c_str());
         CHECK(rr::shadow_io.bindings.empty()); // the scene set carries everything the depth-only draw reads
         CHECK(rr::shadow_io.shared_sets.size() == 1);
-        CHECK(rr::shadow_io.shared_sets[0] == 0); // the SCENE set (the light UBO, the material table, the textures)
+        CHECK(rr::shadow_io.shared_sets[0].family == 0); // the SCENE set (the light UBO, the material table, the textures)
         // ONE TARGET BY DECLARATION, N BY FRAME - and this is the framework's own rule rather than a choice: the
         // validator refuses a second DEPTH target ("an instance has one depth attachment"), so the declaration names
         // the map and its FIRST layer and the frame hands over the layers this frame has (the host sizes

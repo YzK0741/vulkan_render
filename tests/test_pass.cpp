@@ -698,6 +698,7 @@ int main() {
             vp::resource_table table;
             VkExtent2D resource_extent = {7, 9};
             VkDescriptorSet scene = reinterpret_cast<VkDescriptorSet>(0x5E);
+            VkDescriptorSet post = reinterpret_cast<VkDescriptorSet>(0x50);
             VkPipeline pipeline = reinterpret_cast<VkPipeline>(0x77);
             std::string_view unknown_pipeline = {};
         };
@@ -707,7 +708,15 @@ int main() {
             .resources = &owner.table,
             .frame = frame,
             .cmd = fake_cmd,
-            .descriptor_set = [](void* o, uint32_t const set, uint32_t) -> VkDescriptorSet { return set == 0 ? static_cast<resolver_owner*>(o)->scene : VK_NULL_HANDLE; },
+            .descriptor_set =
+                [](void* o, uint32_t const family, uint32_t const element, uint32_t) -> VkDescriptorSet {
+                // the fake owner answers the scene set for family 0 and the POST set for family 2 element 4,
+                // which is the pair the vocabulary now distinguishes
+                if (family == 0) {
+                    return static_cast<resolver_owner*>(o)->scene;
+                }
+                return family == 2 && element == 4 ? static_cast<resolver_owner*>(o)->post : VK_NULL_HANDLE;
+            },
             .extent_of = [](void* o, rr::resource_id, uint32_t) { return static_cast<resolver_owner*>(o)->resource_extent; },
             .pipeline = [](void* o, std::string_view const name) -> VkPipeline { return name == static_cast<resolver_owner*>(o)->unknown_pipeline ? VK_NULL_HANDLE : static_cast<resolver_owner*>(o)->pipeline; },
             .owner = &owner,
@@ -719,10 +728,13 @@ int main() {
         // the rule that replaced every resolver's `if (images.empty() || index >= count) return false;`
         CHECK(!pass.resolve(context, io));
 
-        // ... publish this frame's four bindings and its target, and the SAME declaration resolves
-        for (rr::resource_id const id : {rr::resource_id::scene_color, rr::resource_id::taa_history, rr::resource_id::velocity, rr::resource_id::gbuffer_depth}) {
-            uint64_t const tag = static_cast<uint64_t>(id);
-            owner.table.publish(id, 0, frame.image_index, {.view = reinterpret_cast<VkImageView>(0x8000 + tag), .image = reinterpret_cast<VkImage>(0x9000 + tag)});
+        // ... publish this frame's four bindings and its target AS FAMILIES (the run of views and images the owner
+        // already holds - the shape `publish_family` exists for), and the SAME declaration resolves
+        for (uint32_t image = 0; image < 2; ++image) {
+            for (rr::resource_id const id : {rr::resource_id::scene_color, rr::resource_id::taa_history, rr::resource_id::velocity, rr::resource_id::gbuffer_depth}) {
+                uint64_t const tag = static_cast<uint64_t>(id) + image;
+                owner.table.publish(id, 0, image, {.view = reinterpret_cast<VkImageView>(0x8000 + tag), .image = reinterpret_cast<VkImage>(0x9000 + tag)});
+            }
         }
         VkImageView const hdr_view = reinterpret_cast<VkImageView>(0xAA);
         owner.table.publish(rr::resource_id::hdr, 0, frame.image_index, {.view = hdr_view, .image = reinterpret_cast<VkImage>(0xBB)});
@@ -730,26 +742,46 @@ int main() {
         CHECK(io.cmd == fake_cmd);
         CHECK(io.frame.image_index == frame.image_index);
         CHECK(io.own.size() == 4); // the four own bindings, in their own binding order
-        CHECK(io.own[0].image == reinterpret_cast<VkImage>(0x9000 + static_cast<uint64_t>(rr::resource_id::scene_color)));
-        CHECK(io.own[3].image == reinterpret_cast<VkImage>(0x9000 + static_cast<uint64_t>(rr::resource_id::gbuffer_depth)));
+        CHECK(io.own[0].image == reinterpret_cast<VkImage>(0x9000 + static_cast<uint64_t>(rr::resource_id::scene_color) + frame.image_index));
+        CHECK(io.own[3].image == reinterpret_cast<VkImage>(0x9000 + static_cast<uint64_t>(rr::resource_id::gbuffer_depth) + frame.image_index));
         CHECK(io.targets.size() == 1);
         CHECK(io.targets[0].view == hdr_view);
         CHECK(io.extent.width == 64 && io.extent.height == 32); // the declaration's rule is `full`
         CHECK(io.own_set == VK_NULL_HANDLE);                    // a pass that owns a set fills it in its own resolve
         CHECK(io.push.empty());                                 // ... and composes its own push block
         CHECK(io.barrier_images.empty() && io.barrier_buffers.empty());
+        // THE PER-IMAGE CHANNEL is empty here (these were published instance by instance), which is the shape the
+        // one consumer reads: it checks each span's length before indexing it
+        CHECK(io.own_per_image[0].empty());
+
+        // ... and published AS A FAMILY, the same declaration also hands the pass every image's view - the run
+        // `views_of` returns, in the owner's own storage, which is what a per-image descriptor family writes from
+        std::array<VkImageView, 2> const family_views = {reinterpret_cast<VkImageView>(0xF0), reinterpret_cast<VkImageView>(0xF1)};
+        std::array<VkImage, 2> const family_images = {reinterpret_cast<VkImage>(0xE0), reinterpret_cast<VkImage>(0xE1)};
+        owner.table.clear();
+        for (rr::resource_id const id : {rr::resource_id::scene_color, rr::resource_id::taa_history, rr::resource_id::velocity, rr::resource_id::gbuffer_depth}) {
+            owner.table.publish_family(id, 0, family_views, family_images);
+        }
+        owner.table.publish_family(rr::resource_id::hdr, 0, family_views, family_images);
+        CHECK(pass.resolve(context, io));
+        CHECK(io.own_per_image[0].size() == 2);                                   // one view per image of the generation
+        CHECK(io.own_per_image[0][1] == family_views[1]);                         // ... in instance order
+        CHECK(io.own_per_image[3].data() == family_views.data());                 // and it is the OWNER's run, not a copy
+        CHECK(io.own[frame.image_index].view == family_views[frame.image_index]); // find() answers from the family too
+        CHECK(io.targets[0].image == family_images[frame.image_index]);
+        CHECK(owner.table.instances_of(rr::resource_id::hdr, 0) == 2);
+        CHECK(owner.table.size() == 5); // the four bindings' families + the target's, one entry each
 
         // A MISSING TARGET is the same statement as a missing binding: do not record the pass
         owner.table.clear();
         for (rr::resource_id const id : {rr::resource_id::scene_color, rr::resource_id::taa_history, rr::resource_id::velocity, rr::resource_id::gbuffer_depth}) {
-            uint64_t const tag = static_cast<uint64_t>(id);
-            owner.table.publish(id, 0, frame.image_index, {.view = reinterpret_cast<VkImageView>(0x8000 + tag), .image = reinterpret_cast<VkImage>(0x9000 + tag)});
+            owner.table.publish_family(id, 0, family_views, family_images);
         }
         CHECK(!pass.resolve(context, io));
 
         // THE EXTENT RULES, applied by the framework from the behaviour: half is the formula the half-size images
         // are created with, `resource` is the owner's answer, and `none` means the pass sizes its own work
-        owner.table.publish(rr::resource_id::hdr, 0, frame.image_index, {.view = hdr_view});
+        owner.table.publish_family(rr::resource_id::hdr, 0, family_views, family_images);
         pass.how.extent = vp::extent_rule::half;
         CHECK(pass.resolve(context, io));
         CHECK(io.extent.width == 32 && io.extent.height == 16);
@@ -787,7 +819,7 @@ int main() {
 
         // A DECLARED SHARED SET the owner cannot fill fails the pass: a pass binds a whole set, so recording with
         // a null one is never right (the old resolvers each checked this by hand, and the rule is now one line)
-        constexpr std::array<uint32_t, 1> scene_only = {0};
+        constexpr std::array<rr::shared_set, 1> scene_only = {{{.family = 0}}};
         rr::pass_io const shared_only = {.name = "shared", .own_set = 1, .bindings = {}, .shared_sets = scene_only, .targets = {}, .push = std::nullopt};
         declared_pass shared_pass;
         shared_pass.declaration = &shared_only;
@@ -797,6 +829,27 @@ int main() {
         owner.scene = VK_NULL_HANDLE;
         CHECK(!shared_pass.resolve(context, io));
         owner.scene = saved_scene;
+
+        // ... AND THE FAMILY/ELEMENT PAIR, which is the vocabulary this slice added: the post chain binds ONE
+        // family whose five sets are one per STAGE, so "family 2" alone cannot say which - the ELEMENT does, and
+        // the owner is the one that maps it. Element 4 is the composite/FXAA set; the fake owner answers nothing
+        // else, so the wrong element fails exactly like an unfillable set.
+        constexpr std::array<rr::shared_set, 1> post_composite_set = {{{.family = 2, .element = 4}}};
+        constexpr std::array<rr::shared_set, 1> post_wrong_element = {{{.family = 2, .element = 3}}};
+        rr::pass_io const post_only = {.name = "post", .own_set = 1, .bindings = {}, .shared_sets = post_composite_set, .targets = {}, .push = std::nullopt};
+        rr::pass_io const post_other = {.name = "post-other", .own_set = 1, .bindings = {}, .shared_sets = post_wrong_element, .targets = {}, .push = std::nullopt};
+        declared_pass post_pass;
+        // A FRESH resolved_io, because that is what the runner hands a pass per frame (`record_stage` value-
+        // initializes one): the resolver fills the families the declaration NAMES and leaves the others as the
+        // zero it was given, which is why the assertion below is about the runner's contract as much as the
+        // resolver's
+        vp::resolved_io post_io = {};
+        post_pass.declaration = &post_only;
+        CHECK(post_pass.resolve(context, post_io));
+        CHECK(post_io.shared.post == owner.post);
+        CHECK(post_io.shared.scene == VK_NULL_HANDLE); // a family the declaration did not name stays as it was
+        post_pass.declaration = &post_other;
+        CHECK(!post_pass.resolve(context, post_io)); // the owner has no such element: the pass does not run
     }
 
     return vk_test::finish("test_pass");

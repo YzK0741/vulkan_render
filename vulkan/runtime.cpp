@@ -3330,13 +3330,11 @@ namespace vulkan {
         pass::resource_table& table = this->frame_resources;
         table.clear();
 
-        // One per-swapchain-image family: one entry per image, instance = the image index. `element` is the
-        // family's own index (the G-buffer's third target, the bloom chain's level 2) and stays the caller's.
-        auto const family = [&table](render_resource::resource_id const id, uint32_t const element, std::vector<VkImageView> const& views, std::vector<VkImage> const& images) {
-            std::size_t const count = std::min(views.size(), images.size());
-            for (std::size_t i = 0; i < count; ++i) {
-                table.publish(id, element, static_cast<uint32_t>(i), pass::resolved_binding{.view = views[i], .buffer = VK_NULL_HANDLE, .image = images[i]});
-            }
+        // One per-swapchain-image family: published as the run of views and images the core already holds (see
+        // resource_table::publish_family), so the per-image channel is that same run rather than a second copy of
+        // it. `element` is the family's own index (the G-buffer's third target, the bloom chain's level 2).
+        auto const family = [&table](render_resource::resource_id const id, uint32_t const element, std::span<VkImageView const> views, std::span<VkImage const> images) {
+            table.publish_family(id, element, views, images);
         };
         // One resource that exists once (a device-wide image): the instance is still the schema's (0 for
         // device-wide, the slot for a per-frame-slot buffer that happens to exist once).
@@ -3670,20 +3668,19 @@ namespace vulkan {
         return pipeline == nullptr ? VK_NULL_HANDLE : pipeline->get_pipeline();
     }
 
-    VkDescriptorSet runtime::resolve_shared_set(uint32_t const set, uint32_t const image_index) {
+    VkDescriptorSet runtime::resolve_shared_set(uint32_t const family, uint32_t const element, uint32_t const image_index) {
         core const& vk = this->vulkan_core;
-        switch (set) {
+        switch (family) {
         case 0: // the scene set: one per frame SLOT (the camera and light UBOs live there)
             return this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
         case 1: // the G-buffer set: one per swapchain IMAGE, written on demand by the accessor its users share
             this->ensure_gbuffer_descriptors();
             return this->gbuffer_family.set(image_index, 0);
         case 2:
-            // THE POST SET IS NOT ANSWERED HERE, and that is a measured statement rather than an omission: the
-            // post family's five sets are one per STAGE (four bloom levels and the composite/FXAA pair), so "the
-            // set the declaration named" is not enough to pick one - the composite and FXAA take set 4 and a bloom
-            // level takes its own. The passes that need one keep their override until that vocabulary exists.
-            return VK_NULL_HANDLE;
+            // THE POST FAMILY, and the element is what makes it answerable: its five sets are one per STAGE, so
+            // the declaration names which one it binds (the four bloom levels are elements 0..3, the composite
+            // and FXAA share element 4 - the set the composite writes the LDR image through).
+            return this->post_family.set(image_index, element);
         default:
             return VK_NULL_HANDLE;
         }
@@ -3694,7 +3691,10 @@ namespace vulkan {
             .resources = &this->frame_resources,
             .frame = this->pass_frame(),
             .cmd = *this->command_buffers[static_cast<uint32_t>(this->vulkan_core.current_frame)],
-            .descriptor_set = [](void* owner, uint32_t const set, uint32_t const image_index) { return static_cast<runtime*>(owner)->resolve_shared_set(set, image_index); },
+            .descriptor_set =
+                [](void* owner, uint32_t const family, uint32_t const element, uint32_t const image_index) {
+                    return static_cast<runtime*>(owner)->resolve_shared_set(family, element, image_index);
+                },
             .extent_of = [](void* owner, render_resource::resource_id const id, uint32_t const element) { return static_cast<runtime*>(owner)->resolve_resource_extent(id, element); },
             .pipeline = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->resolve_pipeline(name); },
             .owner = this,

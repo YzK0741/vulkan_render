@@ -2553,8 +2553,8 @@ namespace vulkan {
          * element, a pipeline name. One function, because every pass is handed the same thing.
          */
         [[nodiscard]] pass::resolve_context make_resolve_context() noexcept;
-        /** @brief the descriptor set that occupies shared set @p set this frame, filled by its owner */
-        [[nodiscard]] VkDescriptorSet resolve_shared_set(uint32_t set, uint32_t image_index);
+        /** @brief the descriptor set that occupies shared set FAMILY @p family, ELEMENT @p element, this frame */
+        [[nodiscard]] VkDescriptorSet resolve_shared_set(uint32_t family, uint32_t element, uint32_t image_index);
         /** @brief the extent of a declared resource element (the bloom levels, the probe grid) - the rule that
          *         used to live in `pass_extent`, now shared with the framework's resolver */
         [[nodiscard]] VkExtent2D resolve_resource_extent(render_resource::resource_id id, uint32_t element) const noexcept;

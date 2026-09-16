@@ -474,6 +474,24 @@ export namespace vulkan::render_resource {
     };
 
     /**
+     * @brief one SHARED set a pass binds: the set FAMILY, and which element of that family
+     *
+     * WHY AN ELEMENT AND NOT JUST AN INDEX, measured rather than anticipated: the post chain binds ONE family
+     * whose five sets are one per STAGE - the four bloom levels and the composite/FXAA pair - so "set 2" does not
+     * say which of them a pass binds, and six declarations could not be resolved from their own text because of
+     * it. The FAMILY is the index the framework and the owner already use (0 the scene set, 1 the G-buffer set, 2
+     * the post set in this renderer, which is also what `pass_context::shared_set_layout` is asked by), and the
+     * ELEMENT selects within it: 0 for a family that holds one set, and the stage's own index in a family that
+     * holds several. Only the OWNER can say what an element means - it is the one that created the sets - so this
+     * field is carried, exactly like `behaviour::extent_of_element` is.
+     */
+    struct shared_set {
+        uint16_t family = 0;
+        uint16_t element = 0;
+        [[nodiscard]] constexpr bool operator==(shared_set const&) const noexcept = default;
+    };
+
+    /**
      * @brief one pass's declared I/O
      *
      * `own_set` is the set index of the `set_owner::own` bindings; the validator requires every `own` binding
@@ -500,7 +518,7 @@ export namespace vulkan::render_resource {
          * such a set declares it here and declares no `own` binding at all - which is what the scene pass
          * does: it writes attachments and binds the shared scene set.
          */
-        std::span<uint32_t const> shared_sets = {};
+        std::span<shared_set const> shared_sets = {};
         /// the images this pass renders into, in the order it uses them (a fullscreen pass has one)
         std::span<render_target const> targets = {};
         /**
@@ -728,13 +746,13 @@ export namespace vulkan::render_resource {
         // THE SHARED SETS, checked after the bindings are counted: a set cannot be both the pass's own (whose
         // layout it generates and whose bindings it describes) and one it merely binds.
         for (std::size_t i = 0; i < io.shared_sets.size(); ++i) {
-            uint32_t const set = io.shared_sets[i];
-            if (own_count != 0 && set == io.own_set) {
-                return std::unexpected(who + ": set " + std::to_string(set) + " is declared as both its own and a shared set");
+            shared_set const set = io.shared_sets[i];
+            if (own_count != 0 && set.family == io.own_set) {
+                return std::unexpected(who + ": set " + std::to_string(set.family) + " is declared as both its own and a shared set");
             }
             for (std::size_t j = i + 1; j < io.shared_sets.size(); ++j) {
                 if (io.shared_sets[j] == set) {
-                    return std::unexpected(who + ": shared set " + std::to_string(set) + " is declared twice");
+                    return std::unexpected(who + ": shared set " + std::to_string(set.family) + " element " + std::to_string(set.element) + " is declared twice");
                 }
             }
         }
@@ -920,7 +938,7 @@ export namespace vulkan::render_resource {
     }};
 
     /// @brief set 0 is the shared scene set: the scene pass binds it and owns nothing of it
-    inline constexpr std::array<uint32_t, 1> scene_shared_sets = {0};
+    inline constexpr std::array<shared_set, 1> scene_shared_sets = {{{.family = 0}}};
 
     /// @brief the scene pass's declaration
     /// @ingroup vulkan_render_resource
@@ -999,7 +1017,7 @@ export namespace vulkan::render_resource {
     }};
 
     /// @brief set 0 is the shared scene set and set 1 the shared G-buffer set: the tracer binds both
-    inline constexpr std::array<uint32_t, 2> ssgi_trace_shared_sets = {0, 1};
+    inline constexpr std::array<shared_set, 2> ssgi_trace_shared_sets = {{{.family = 0}, {.family = 1}}};
 
     /**
      * @brief the SSGI tracer's declaration: a half-resolution compute dispatch over two shared sets
@@ -1195,7 +1213,7 @@ export namespace vulkan::render_resource {
     }};
 
     /// @brief set 0 is the shared scene set: the camera, the light UBO and the two cluster buffers it writes
-    inline constexpr std::array<uint32_t, 1> cluster_shared_sets = {0};
+    inline constexpr std::array<shared_set, 1> cluster_shared_sets = {{{.family = 0}}};
 
     /**
      * @brief the clustered-light sort's declaration: a one-dimensional compute dispatch over the cluster grid
@@ -1218,7 +1236,7 @@ export namespace vulkan::render_resource {
     };
 
     /// @brief the deferred lighting stage's two shared sets: the scene set (0) and the G-buffer set (1)
-    inline constexpr std::array<uint32_t, 2> deferred_shared_sets = {0, 1};
+    inline constexpr std::array<shared_set, 2> deferred_shared_sets = {{{.family = 0}, {.family = 1}}};
 
     /// @brief the resource the deferred lighting stage RENDERS INTO, by declaration
     inline constexpr std::array<render_target, 1> deferred_targets = {{
@@ -1259,8 +1277,17 @@ export namespace vulkan::render_resource {
     // THE POST CHAIN - the composite and the bloom chain's four levels
     // =============================================================================================
 
-    /// @brief the post chain's ONE shared set, by the framework's owner index: the post set (2), not scene (0) or G-buffer (1)
-    inline constexpr std::array<uint32_t, 1> post_shared_sets = {2};
+    /// @brief the POST set the composite writes the LDR image through and FXAA reads it back from: family 2, its
+    ///        fifth set (element 4) - the one stage whose set is not a bloom level
+    inline constexpr std::array<shared_set, 1> post_composite_shared_sets = {{{.family = 2, .element = 4}}};
+
+    /// @brief each bloom level's OWN set of the post family: element == level (the set that reads the level before it)
+    inline constexpr std::array<std::array<shared_set, 1>, 4> post_bloom_shared_sets = {{
+        {{shared_set{.family = 2, .element = 0}}},
+        {{shared_set{.family = 2, .element = 1}}},
+        {{shared_set{.family = 2, .element = 2}}},
+        {{shared_set{.family = 2, .element = 3}}},
+    }};
 
     /// @brief the push block the whole post chain shares, in bytes; its shape is `vulkan.pass.post`'s
     inline constexpr uint32_t post_push_bytes = 52;
@@ -1301,7 +1328,7 @@ export namespace vulkan::render_resource {
         {.name = "post_bloom_0",
          .own_set = 0, // unused: no own bindings (everything it reads is in the post set)
          .bindings = {},
-         .shared_sets = post_shared_sets,
+         .shared_sets = post_bloom_shared_sets[0],
          .targets = post_bloom_0_target,
          .barrier_images = {},
          .barrier_buffers = {},
@@ -1309,7 +1336,7 @@ export namespace vulkan::render_resource {
         {.name = "post_bloom_1",
          .own_set = 0,
          .bindings = {},
-         .shared_sets = post_shared_sets,
+         .shared_sets = post_bloom_shared_sets[1],
          .targets = post_bloom_1_target,
          .barrier_images = post_bloom_1_source,
          .barrier_buffers = {},
@@ -1317,7 +1344,7 @@ export namespace vulkan::render_resource {
         {.name = "post_bloom_2",
          .own_set = 0,
          .bindings = {},
-         .shared_sets = post_shared_sets,
+         .shared_sets = post_bloom_shared_sets[2],
          .targets = post_bloom_2_target,
          .barrier_images = post_bloom_2_source,
          .barrier_buffers = {},
@@ -1325,7 +1352,7 @@ export namespace vulkan::render_resource {
         {.name = "post_bloom_3",
          .own_set = 0,
          .bindings = {},
-         .shared_sets = post_shared_sets,
+         .shared_sets = post_bloom_shared_sets[3],
          .targets = post_bloom_3_target,
          .barrier_images = post_bloom_3_source,
          .barrier_buffers = {},
@@ -1353,7 +1380,7 @@ export namespace vulkan::render_resource {
         .name = "post_composite",
         .own_set = 0, // unused: no own bindings (everything it reads is in the post set)
         .bindings = {},
-        .shared_sets = post_shared_sets,
+        .shared_sets = post_composite_shared_sets,
         .targets = post_composite_targets,
         .barrier_images = {},
         .barrier_buffers = {},
@@ -1384,7 +1411,7 @@ export namespace vulkan::render_resource {
         .name = "fxaa",
         .own_set = 0, // unused: no own bindings (everything it reads is in the post set)
         .bindings = {},
-        .shared_sets = post_shared_sets,
+        .shared_sets = post_composite_shared_sets,
         .targets = fxaa_targets,
         .barrier_images = fxaa_barriers,
         .barrier_buffers = {},
@@ -1393,7 +1420,7 @@ export namespace vulkan::render_resource {
 
     /// @brief set 1 is the shared G-buffer set, whose LAYOUT the debug view's pass owns (it is the one that
     ///        generates it) and whose per-image SETS the renderer writes (six consumers bind them)
-    inline constexpr std::array<uint32_t, 1> gbuffer_debug_shared_sets = {1};
+    inline constexpr std::array<shared_set, 1> gbuffer_debug_shared_sets = {{{.family = 1}}};
 
     /// @brief what the debug view RENDERS INTO: the HDR target, which is the image it actually writes - so unlike
     ///        the deferred stage's and the composite's, this declaration carries no deviation
@@ -1430,7 +1457,7 @@ export namespace vulkan::render_resource {
     };
     /// @brief set 0 is the shared scene set: the shadow pass binds it for the light UBO, the material table and the
     ///        texture array its depth-only draw reads, through the same scene pipeline layout the leaves use
-    inline constexpr std::array<uint32_t, 1> shadow_shared_sets = {0};
+    inline constexpr std::array<shared_set, 1> shadow_shared_sets = {{{.family = 0}}};
 
     /// @brief the layer the shadow pass renders into BY DECLARATION: element 0, the first cascade
     ///
