@@ -407,81 +407,11 @@ namespace vulkan {
          */
         pass::pass_chain* chain_ = nullptr;
 
-        // the order of these declarations IS the order the chain builds them in, and today it is the order the
-        // renderer used to spell out in `create_passes()`.
-        /// THE G-BUFFER DEBUG VIEW (vulkan.pass.gbuffer_debug): it owns the G-buffer set LAYOUT, which six other
-        /// passes reach through pass_context::shared_set_layout(1) while THEY are being created - so this emplace is
-        /// a CREATE-ORDER constraint and not tidiness. Its pipeline layout and pipeline are its own too.
-        pass::gbuffer_debug_pass& gbuffer_debug_view = this->passes.emplace<pass::gbuffer_debug_pass>();
-        /// THE DIRECTIONAL SHADOW MAP (vulkan.pass.shadow): it owns its depth-only pipeline, built against the
-        /// SCENE pipeline layout (the context's shared_pipeline_layout) and the context's depth format. The map
-        /// IMAGES, the caster gather, the fit cache and the task pool stay the renderer's, and the layers it draws
-        /// into come from the resource table, where its declaration's RUN of cascade elements meets the layers the
-        /// map actually has.
-        pass::shadow_pass& shadow = this->passes.emplace<pass::shadow_pass>();
-        pass::scene_pass& scene = this->passes.emplace<pass::scene_pass>();
-        pass::transparent_pass& transparent = this->passes.emplace<pass::transparent_pass>();
-        /// THE SSGI TRACER (vulkan.pass.ssgi_trace): it owns its pipeline layout, its compute pipeline and the
-        /// first-use barrier batch, so neither of those is a member here any more.
-        pass::ssgi_trace_pass& ssgi_trace = this->passes.emplace<pass::ssgi_trace_pass>();
-        /// THE GLOSSY LOBE (vulkan.pass.ssgi_spec): it owns its pipeline layout, its pipeline, the ordering
-        /// barrier, the hand-off and its per-image first-use state. It runs between the tracer and the denoiser
-        /// and writes the SAME image the tracer wrote - which is why the tracer asks whether it will run.
-        pass::ssgi_spec_pass& ssgi_spec = this->passes.emplace<pass::ssgi_spec_pass>();
-        /// THE DIFFUSE TEMPORAL RESOLVE (vulkan.pass.ssgi_temporal): it owns the RECORDING (the two barrier
-        /// batches, the dispatch, the two push lanes that describe its own state, the history copy and the
-        /// hand-backs), the set layout its declaration generates, the pipeline and its per-image family. Its
-        /// frame carries the REFLECTION's recording as a callback, so the GI chain stays contiguous.
-        pass::ssgi_temporal_pass& ssgi_temporal = this->passes.emplace<pass::ssgi_temporal_pass>();
-        /// THE SPATIAL FILTER (vulkan.pass.ssgi_spatial): the GI chain's LAST stage, and the shape the tracer and
-        /// the lobe already have - the shared scene set, the shared G-buffer set, no descriptor of its own, and
-        /// the one image it transitions (its own storage output) declared through `barrier_images`. Its filter
-        /// width is its own parameter (`set_ssgi_spatial` forwards to it) and its push block is composed in its
-        /// own record from the frame's constants. What the composite samples is its output, so the renderer's
-        /// `gi_resolved` is read from whether it recorded.
-        pass::ssgi_spatial_pass& ssgi_spatial = this->passes.emplace<pass::ssgi_spatial_pass>();
-        /// THE PROBE CACHE (vulkan.pass.gi_probe): the world-space radiance cache, a pass in its own right.
-        pass::gi_probe_pass& gi_probe = this->passes.emplace<pass::gi_probe_pass>();
-        /// THE TAA RESOLVE (vulkan.pass.taa): the first pass here that owns GPU objects - set layout, pipeline
-        /// layout, pipeline and the per-image history family.
-        pass::taa_pass& taa_resolve = this->passes.emplace<pass::taa_pass>();
-        /// THE RAY-TRACED SHADOW (vulkan.pass.rt_shadow): the first pass on this branch that is NOT part of the
-        /// GI chain. It owns its pipeline layout, its pipeline, the two barriers around the visibility image it
-        /// rewrites and the dispatch; the renderer keeps the STAGE's two facts - where it sits (after the
-        /// G-buffer pass, before the lighting stage) and the transition the lighting stage needs on a frame it
-        /// does not run. `light_state.rt_shadows` and the feature registry both ask it whether it is ready.
-        pass::rt_shadow_pass& rt_shadow = this->passes.emplace<pass::rt_shadow_pass>();
-        /// THE CLUSTERED-LIGHT SORT (vulkan.pass.cluster): it owns its pipeline, its layout, the shared scene
-        /// set's bind AND the two buffer barriers its own writes need.
-        pass::cluster_pass& cluster = this->passes.emplace<pass::cluster_pass>();
-        /// THE DEFERRED LIGHTING STAGE (vulkan.pass.deferred): the ELEVENTH pass and the graphics stage the
-        /// extraction was aimed at - the one that reads the stored surface back and shades it. It owns its
-        /// pipeline layout and its pipeline (built from the two shared set LAYOUTS the owner hands it: the
-        /// scene set's and the G-buffer set's), the scene-colour dependency barrier, the LOAD instance over the
-        /// frame's scene target, the 88-byte push and the 3-vertex draw. The renderer keeps the push block's
-        /// VALUES (the camera, the SSAO knobs, the unlit and GI flags), the choice of target (the declaration
-        /// names `scene_color`; a frame with TAA off lights `hdr` - the recorded deviation) and the
-        /// no-G-buffer-set fallback, which is about its own descriptor pool.
-        pass::deferred_pass& deferred = this->passes.emplace<pass::deferred_pass>();
-        /// THE POST CHAIN's MATERIAL (vulkan.pass.post): the composite pass owns the post set layout (nine
-        /// combined image samplers), the pipeline layout the whole chain binds through and takes its 52-byte push
-        /// block through, and the TWO pipelines the chain records with - one per colour format it renders into
-        /// (the swapchain's, and R16F for the bloom levels and for the LDR image FXAA reads). It is the
-        /// `gbuffer_debug`-owns-the-G-buffer-layout arrangement again: one owner, because five stages share one
-        /// layout and a copy per stage would be five chances to disagree. Its RECORDING is not here yet - the
-        /// frame loop still records the composite and the bloom chain with these pipelines, which is the next
-        /// slice of this step.
-        pass::post_composite_pass& post_composite = this->passes.emplace<pass::post_composite_pass>();
-        /// THE BLOOM CHAIN (vulkan.pass.post): FOUR instances of ONE class, one per level. The LEVEL is what
-        /// differs - the target it writes (element `level` of the bloom family), the input it declares a
-        /// transition for (level `level - 1`, and nothing at level 0, whose input is the HDR target), the extent
-        /// its declaration derives from `extent_of_element`, and the `mode` lane of its push block. They build
-        /// nothing (the composite owns the pipeline they record with). The order IS the chain: each level reads
-        /// the one before it, so it is the order of these calls and the order of the stage array below.
-        std::array<pass::post_bloom_pass*, 4> bloom = {&this->passes.emplace<pass::post_bloom_pass>(0u),
-                                                       &this->passes.emplace<pass::post_bloom_pass>(1u),
-                                                       &this->passes.emplace<pass::post_bloom_pass>(2u),
-                                                       &this->passes.emplace<pass::post_bloom_pass>(3u)};
+        // THE PASSES ARE NOT CONSTRUCTED HERE ANY MORE, and the stage arrays below are what is left of this class's
+        // knowledge of them: the APPLICATION builds its chain (vulkan.render_start_demo) and hands it over through
+        // `set_pass_chain`, which fills these arrays and the two GI halves BY DECLARATION NAME - the stage sequence,
+        // its order and the marks are the frame loop's and stay (see docs/pass_chain_plan.md). The two JOBS are not
+        // passes and are still created here, from the same context the passes are.
         /// the bloom chain's stage, in level order (the runner walks the array; a stage IS the order, which is why
         /// it is an array of pointers and never a container whose iteration order is an accident)
         std::array<pass::frame_pass*, 4> bloom_stage = {};
@@ -492,11 +422,6 @@ namespace vulkan {
         /// sample them are shaded), and the frame loop records it only on a frame the maps are not reused.
         std::array<pass::frame_pass*, 1> shadow_stage = {};
         std::array<pass::frame_pass*, 1> gbuffer_debug_stage = {};
-        /// THE FXAA RESOLVE (vulkan.pass.fxaa): the frame's LAST writer whenever it runs. It owns its pipeline
-        /// layout (built around the post set layout the composite owns) and its pipeline; it is the pass that owns
-        /// the OVERLAY on the frames it runs, through its own frame callback - and the reason the composite's frame
-        /// is handed a null one on exactly those frames.
-        pass::fxaa_pass& fxaa_resolve = this->passes.emplace<pass::fxaa_pass>();
         std::array<pass::frame_pass*, 1> fxaa_stage = {};
 
         /**
@@ -1719,6 +1644,11 @@ namespace vulkan {
         [[nodiscard]] pass::pass_chain& frame_passes() noexcept {
             return this->chain_ != nullptr ? *this->chain_ : this->passes;
         }
+        /// the same view from a CONST runtime, for the two questions a `const` method asks the chain: whether a pass
+        /// is ready, and which pass owns a pipeline name (both are reads of the chain, not of a pass)
+        [[nodiscard]] pass::pass_chain const& frame_passes() const noexcept {
+            return this->chain_ != nullptr ? *this->chain_ : this->passes;
+        }
 
         /**
          * @ingroup vulkan_runtime
@@ -2866,11 +2796,6 @@ namespace vulkan {
          * startup log reports.
          */
         [[nodiscard]] bool feature_active(std::string_view name) const noexcept;
-
-        /** @brief the channel the G-buffer debug view shows (the PASS's own parameter - see set_gbuffer_channel) */
-        [[nodiscard]] int gbuffer_channel() const noexcept {
-            return this->gbuffer_debug_view.channel();
-        }
 
         /**
          * @ingroup vulkan_runtime

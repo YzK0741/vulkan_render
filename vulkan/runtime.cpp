@@ -2690,13 +2690,14 @@ namespace vulkan {
         // bind_frame_chain). This runtime owns the passes today (`passes`), so this binds its own chain; the moment an
         // application hands one over (`set_pass_chain`), the same call binds THAT chain and this one stops being
         // recorded.
-        this->bind_frame_chain(this->passes);
+        this->bind_frame_chain(this->frame_passes());
         pass::pass_context const build = this->make_pass_context();
         // ONE CREATE STEP OVER EVERY PASS, in the order the OWNING chain holds them (see the member block in the
         // header): `passes` owns the ten passes this renderer has, so its `init` IS the whole create step. A pass
         // that could not build itself reports its own name in `rejected` and stays INACTIVE (its feature predicate
         // is false), which is what makes a startup failure a log line rather than a broken frame.
-        pass::run_report const created = this->passes.init(build);
+        pass::pass_chain& recorded = this->frame_passes(); // the chain the application handed over (see set_pass_chain)
+        pass::run_report const created = recorded.init(build);
         if (!created.rejected.empty()) {
             utility::log("pass '{}': its declaration was refused by the validator, so it does not run", created.rejected);
         }
@@ -3382,7 +3383,7 @@ namespace vulkan {
         // four bloom levels record with the composite's R16F variant, and a copy per level would be five identical
         // pipelines. Asking every pass by NAME is what keeps this chain-agnostic - the renderer does not know, and
         // does not need to know, which pass owns what; a pass answers for the names it publishes and nothing else.
-        for (pass::pass_chain const* const chain : {&this->passes, &this->gi_trace_chain, &this->gi_denoise_chain}) {
+        for (pass::pass_chain const* const chain : {&this->frame_passes(), &this->gi_trace_chain, &this->gi_denoise_chain}) {
             for (pass::frame_pass* const candidate : chain->as_stage().passes) {
                 if (candidate == nullptr) {
                     continue;
@@ -3520,7 +3521,7 @@ namespace vulkan {
         // asked whether it built what it records with (see frame_pass::ready). This is the first of the renderer's
         // questions moved into the declaration vocabulary - the direction the handover needs, because a renderer
         // handed a chain from outside holds no typed member to ask.
-        return this->passes.ready(name);
+        return this->frame_passes().ready(name);
     }
 
     void runtime::fill_compute_skin_requests() {

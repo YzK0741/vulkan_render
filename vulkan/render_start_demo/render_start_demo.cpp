@@ -25,12 +25,38 @@ import utility;
 namespace vulkan {
 
     std::size_t render_start_demo::attach(runtime& self) noexcept {
-        this->passes_ = &self.frame_passes();
         this->runtime_ = &self;
-        // LOOKED UP BY THE NAME THE DECLARATION CARRIES, which is the only key a chain gives: the runtime holds no
-        // reference to hand over, and a cast is what turns the declaration's owner into the type whose frame it
-        // wants. A pass this build does not have (its declaration missing, or a variant of this app) stays null and
-        // is simply never fed.
+        // ---- THE CHAIN, CONSTRUCTED HERE ----
+        // The same passes the renderer used to construct for itself, in the order their create step must run in (the
+        // chain's order IS that order). THE G-BUFFER DEBUG VIEW COMES FIRST because it is a CREATE-ORDER constraint:
+        // the passes that bind the G-buffer set ask the owner for that set's LAYOUT while they are being created,
+        // and the first one to ask is what makes the runtime create it.
+        this->chain_.emplace<pass::gbuffer_debug_pass>();
+        this->chain_.emplace<pass::shadow_pass>();
+        this->chain_.emplace<pass::scene_pass>();
+        this->chain_.emplace<pass::transparent_pass>();
+        this->chain_.emplace<pass::ssgi_trace_pass>();
+        this->chain_.emplace<pass::ssgi_spec_pass>();
+        this->chain_.emplace<pass::ssgi_temporal_pass>();
+        this->chain_.emplace<pass::ssgi_spatial_pass>();
+        this->chain_.emplace<pass::gi_probe_pass>();
+        this->chain_.emplace<pass::taa_pass>();
+        this->chain_.emplace<pass::rt_shadow_pass>();
+        this->chain_.emplace<pass::cluster_pass>();
+        this->chain_.emplace<pass::deferred_pass>();
+        this->chain_.emplace<pass::post_composite_pass>();
+        // ... the bloom chain: FOUR instances of ONE class, one per level. The LEVEL is what differs - the target it
+        // writes, the transition it declares, its extent and the `mode` lane of its push block - and the order IS
+        // the chain: each level reads the one before it.
+        this->chain_.emplace<pass::post_bloom_pass>(0u);
+        this->chain_.emplace<pass::post_bloom_pass>(1u);
+        this->chain_.emplace<pass::post_bloom_pass>(2u);
+        this->chain_.emplace<pass::post_bloom_pass>(3u);
+        this->chain_.emplace<pass::fxaa_pass>();
+        this->passes_ = &this->chain_;
+        // LOOKED UP BY THE NAME THE DECLARATION CARRIES, which is the only key a chain gives: a cast is what turns
+        // the declaration's owner into the type whose frame it wants. A pass this build does not have (its
+        // declaration missing, or a variant of this app) stays null and is simply never fed.
         this->cluster_ = this->find<pass::cluster_pass>("cluster");
         this->shadow_ = this->find<pass::shadow_pass>("shadow");
         this->scene_ = this->find<pass::scene_pass>("scene");
@@ -72,6 +98,11 @@ namespace vulkan {
             // this branch has now seen twice, see docs/pass_chain_plan.md).
             utility::log("render_start_demo: a pass this demo wires is missing from the chain - it is not fed a frame and will not record");
         }
+        // ---- AND HAND IT OVER ----
+        // `set_pass_chain` binds this chain into the runtime's own frame structure (the stage sequence, the marks,
+        // the renderer's work between the stages) and takes this demo's wiring for everything the runtime does not
+        // know about those passes: their frames, the stage preambles, the results, the feature table.
+        self.set_pass_chain(this->chain_, this->wiring());
         return found;
     }
 

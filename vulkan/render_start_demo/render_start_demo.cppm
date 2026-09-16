@@ -156,6 +156,11 @@ export namespace vulkan {
         }
 
         pass::pass_chain* passes_ = nullptr;
+        /**
+         * THIS APPLICATION'S CHAIN, which this demo OWNS: `attach` constructs the passes into it and hands it to the
+         * runtime (`set_pass_chain`), so the runtime holds no pass of its own and this object owns them all.
+         */
+        pass::pass_chain chain_{"render"};
         runtime* runtime_ = nullptr; // the flag halves of the knobs above are the runtime's policy
         /**
          * The frame's services, as last handed to `prepare`, and the reflection's family.

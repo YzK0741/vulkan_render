@@ -3094,6 +3094,32 @@ the handover API (`set_pass_chain`, with the structure filled by declaration nam
 only the frame loop, its shared resources and its two jobs. What is left is one mechanical move, with the caveat
 above.
 
+## THE HANDOVER, SLICE 11 (THE LAST ONE): THE CONSTRUCTION MOVES, AND THE RUNTIME HOLDS NO PASS
+
+**THE ATTEMPT THAT WAS REVERTED NOW LANDED, and the difference is the method rather than the intent.** The previous
+round tried to delete the `emplace` block with scripted anchors and lost interleaved declarations three times; this
+one replaced EXACT TEXT with the `edit` tool (which fails loudly when it does not match) and read the diff after every
+step. Two things were genuinely missing for it to work and are in this slice:
+
+* the runtime's three internal readers of its own chain (`create_passes`'s `init`, `pass_ready`, `resolve_pipeline`)
+  now go through `frame_passes()` - the chain the application handed over - plus a CONST overload of that accessor for
+  the two read-only callers;
+* `render_start_demo::attach` CONSTRUCTS the chain: the same passes in the same create order (the G-buffer debug view
+  first, because the passes that bind the G-buffer set ask for its LAYOUT while they are created), then finds them by
+  declaration name and calls `set_pass_chain`. `main.cpp` hands the chain over and only then calls
+  `runtime.create_passes()` - the create step now runs over the application's chain - and `chores::setup_pipeline`
+  stopped calling it, because the ordering (shaders → chain → create) is the application's to state.
+
+**WHAT THE RUNTIME HOLDS NOW**: the device and the pacing, the resource table's contents, the frame's constants, the
+record loop with its stage sequence and marks, the two descriptor families it writes with the two set layouts it owns,
+and the two JOBS - which are not passes (they run inside the structure phase's command buffer). It holds **no typed
+pass reference at all**: its twelve stage arrays are `frame_pass*` filled by declaration name, and that is the whole
+tie to this application.
+
+**MEASURED**: **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, validation-clean, every reference unchanged - the strongest
+statement this document can make, since the passes are now constructed outside the renderer and the frames are still
+byte-identical; Release, Debug and ASan clean with `ctest` 8/8 in all three; `doxygen` exits 0 with zero warnings.
+
 **A MECHANICAL NOTE worth keeping, because it cost a build**: removing the `set_layout()` declaration from
 `post.cppm` with a "walk back to the nearest `/**`" script swallowed the `named_pipeline` declaration that sat between
 two doc blocks - the compiler said so immediately (`out-of-line definition ... does not match any declaration`), and

@@ -202,8 +202,10 @@ int main(int argc, char** argv) {
     // runtime holds none of these references itself any more, which is what lets a second application hand it a
     // different chain - and the demo object outlives the frame loop because it lives here, in the app's own scope.
     vulkan::render_start_demo start_demo;
-    static_cast<void>(start_demo.attach(runtime));
-    runtime.set_chain_wiring(start_demo.wiring());
+    static_cast<void>(start_demo.attach(runtime)); // builds this app's chain and hands it over
+    // ... and the CREATE step runs over that chain (the shaders above are registered by now): every pass builds what
+    // it owns, and the renderer's two jobs - which are not passes - are created with them.
+    runtime.create_passes();
     // Screen-space GI has to be told AFTER the passes exist: its compute pipeline and its denoiser are
     // built by the passes' own create step inside setup_pipeline above, and set_ssgi() warns when either
     // is missing.

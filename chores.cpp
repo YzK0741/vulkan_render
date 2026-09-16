@@ -322,7 +322,7 @@ namespace chores {
             // layouts, pipelines and their own descriptor sets), and it happens here rather than inside each
             // block above because one of them must be created AFTER its shaders exist and the shared set
             // layouts do. Each object logs its own outcome.
-            runtime.create_passes();
+            // THE PASSES ARE CREATED BY THE APPLICATION NOW: main() hands the chain over (render_start_demo) and then calls
         }
     }
 
