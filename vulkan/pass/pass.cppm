@@ -322,6 +322,17 @@ export namespace vulkan::pass {
     // =============================================================================================
 
     /**
+     * @brief a pipeline a pass owns, together with the layout it was created against
+     * @note the two travel as ONE fact because a pipeline is never usable without its layout: the runner binds the
+     *       pipeline and the pass binds its sets and pushes its constants through the layout, so a lookup that
+     *       answered only the handle would leave every caller to find the other half somewhere else
+     */
+    struct owned_pipeline {
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        VkPipelineLayout layout = VK_NULL_HANDLE;
+    };
+
+    /**
      * @brief what a pass needs to turn its OWN declaration into this frame's handles
      *
      * WHY THIS IS NOT `pass_host`: the host is the RUNNER's interface (frame, feature gate, the resolve call
@@ -357,8 +368,10 @@ export namespace vulkan::pass {
         /// the extent of a resource element the behaviour named (`extent_rule::resource`), or {0,0} for an
         /// element the owner does not have - only the owner knows its own images' sizes
         VkExtent2D (*extent_of)(void* owner, render_resource::resource_id id, uint32_t element) = nullptr;
-        /// the pipeline a `behaviour::pipelines` NAME refers to, or `VK_NULL_HANDLE` when the owner has none
-        VkPipeline (*pipeline)(void* owner, std::string_view name) = nullptr;
+        /// the pipeline a `behaviour::pipelines` NAME refers to, WITH its layout, or all-null when the owner has
+        /// none. The layout is part of the answer (see owned_pipeline): a chain's stages may share one pipeline,
+        /// and whoever resolves the name must hand over both halves together.
+        owned_pipeline (*pipeline)(void* owner, std::string_view name) = nullptr;
         /// what every lookup above is called with
         void* owner = nullptr;
     };
@@ -596,6 +609,22 @@ export namespace vulkan::pass {
         /// @brief the layout that pipeline was created against (what the pass pushes its constants through)
         [[nodiscard]] virtual VkPipelineLayout pipeline_layout() const noexcept {
             return VK_NULL_HANDLE;
+        }
+        /**
+         * @brief a pipeline this pass owns under the NAME another pass's `behaviour::pipelines` declares
+         *
+         * WHY THIS EXISTS: a chain's stages can SHARE one pipeline. The post chain's four bloom levels record with
+         * the composite's R16F variant - one set layout and one pipeline layout serve all five stages, so a copy
+         * per level would be five identical pipelines and five chances to disagree about the push block (the post
+         * header records that decision). The declaration already carries the name a pass records with
+         * (`behaviour::pipelines`); what it cannot carry is WHOSE object that name is, so the OWNER resolves it and
+         * asks this on every pass of the chain, taking the first answer - which is what keeps the resolution
+         * chain-agnostic: the renderer does not know, and does not need to know, which pass owns what.
+         * @param name one of this pass's own `behaviour::pipelines` names, or a sibling's
+         * @return the pipeline, or VK_NULL_HANDLE when this pass owns nothing by that name
+         */
+        [[nodiscard]] virtual owned_pipeline named_pipeline([[maybe_unused]] std::string_view name) const noexcept {
+            return {};
         }
         /**
          * @brief record into the frame, with the resources the declaration asked for already resolved
@@ -985,9 +1014,20 @@ export namespace vulkan::pass {
             return false;
         }
         for (std::size_t i = 0; i < names.size(); ++i) {
-            out.pipeline_storage[i] = context.pipeline(context.owner, names[i]);
-            if (out.pipeline_storage[i] == VK_NULL_HANDLE) {
+            owned_pipeline const found = context.pipeline(context.owner, names[i]);
+            if (found.pipeline == VK_NULL_HANDLE) {
                 return false; // the frame cannot bind a pipeline the pass declared: do not record it
+            }
+            out.pipeline_storage[i] = found.pipeline;
+            // THE LAYOUT COMES WITH IT, and the FIRST name's is the one the pass records through - a pass that
+            // binds one set and pushes one block needs one layout, which is what this renderer's passes have
+            // (see resolved_io::pipeline_layout). A name whose owner cannot say which layout it was built against
+            // fails the resolution rather than recording a pass that would silently skip itself.
+            if (i == 0) {
+                out.pipeline_layout = found.layout;
+                if (out.pipeline_layout == VK_NULL_HANDLE) {
+                    return false;
+                }
             }
         }
         out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), names.size());

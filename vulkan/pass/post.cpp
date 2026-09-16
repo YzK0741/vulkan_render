@@ -114,6 +114,14 @@ namespace vulkan::pass {
         return this->composite_pipeline();
     }
 
+    owned_pipeline post_composite_pass::named_pipeline(std::string_view const name) const noexcept {
+        // THE ONE NAME THIS PASS PUBLISHES TO ITS SIBLINGS: the bloom levels' `post_hdr` (see the class note and
+        // frame_pass::named_pipeline). Its own name is answered by `pipeline()` above. The LAYOUT travels with the
+        // pipeline - the four levels bind their set and push the chain's block through it, and it is the one
+        // object all five stages were built against.
+        return name == bloom_pipeline_name ? owned_pipeline{.pipeline = this->hdr_pipeline(), .layout = this->pipeline_layout_} : owned_pipeline{};
+    }
+
     VkPipeline post_composite_pass::composite_pipeline() const noexcept {
         return this->composite_.has_value() ? this->composite_->get_pipeline() : VK_NULL_HANDLE;
     }
@@ -294,8 +302,8 @@ namespace vulkan::pass {
 
     void post_bloom_pass::record(resolved_io const& io) {
         if (io.targets.empty() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE || io.shared.post == VK_NULL_HANDLE ||
-            io.push.size() < sizeof(post_push_constants) || io.extent.width == 0 || io.extent.height == 0) {
-            return; // the runner resolves all of this or skips the pass (see runtime::resolve_post_bloom)
+            io.extent.width == 0 || io.extent.height == 0) {
+            return; // the runner resolves all of this or skips the pass (see frame_pass::resolve)
         }
         VkImage const target = io.targets[0].image;
         VkImageView const target_view = io.targets[0].view;
@@ -317,13 +325,18 @@ namespace vulkan::pass {
         to_attachment.image = target;
         VkDependencyInfo const attachment_dependency = make_image_dependency_info(1, &to_attachment);
         vkCmdPipelineBarrier2(io.cmd, &attachment_dependency);
-        // The push block: the host's three values (exposure, the bloom weight and the bright-pass threshold), the
-        // struct's defaults for every lane this stage does not read - which is what the renderer pushed before the
-        // move - and the stage's own lane: 0 for the bright-pass prefilter, 1 for every downsample, because the
-        // bright-pass test runs on the first level only.
-        post_push_constants push = {};
-        std::memcpy(&push, io.push.data(), sizeof(push));
-        push.mode = this->level_ == 0u ? 0.0f : 1.0f;
+        // The push block is composed HERE (S3): the frame's three settings (exposure, the bloom weight and the
+        // bright-pass threshold - all of them lanes more than one pass pushes, which is why they are frame
+        // settings), the struct's defaults for every lane this stage does not read - which is what the renderer
+        // pushed before the move - and the stage's own lane: 0 for the bright-pass prefilter, 1 for every
+        // downsample, because the bright-pass test runs on the first level only.
+        render_settings const& settings = io.constants.settings;
+        post_push_constants push = {
+            .exposure = settings.exposure,
+            .bloom_intensity = settings.bloom_intensity,
+            .bloom_threshold = settings.bloom_threshold,
+            .mode = this->level_ == 0u ? 0.0f : 1.0f,
+        };
         VkClearValue clear = {};
         VkRenderingAttachmentInfo const attachment = make_color_attachment_info(target_view, clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
         VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, io.extent}, true, &attachment, nullptr);

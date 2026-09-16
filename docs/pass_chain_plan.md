@@ -2447,6 +2447,47 @@ second decision from the last slice - a pass naming another pass's pipeline - an
 `named_pipeline(name)` that the owner resolves by asking the CHAIN's passes, which keeps the renderer from knowing
 which pass owns what.
 
+## S3, SIXTH SLICE: THE FOUR BLOOM LEVELS, AND A BUG THE A/B FOUND BEFORE THE GATE DID
+
+**THE SECOND DECISION IS TAKEN, AND IT IS ONE VIRTUAL.** `frame_pass::named_pipeline(name)` returns an
+`owned_pipeline{pipeline, layout}` - the two halves travel together on purpose, and that is the whole finding of this
+slice (below). The owner resolves a `behaviour::pipelines` NAME by asking its own registry first and then EVERY PASS
+OF THE CHAIN, taking the first answer: the renderer does not know, and does not need to know, which pass owns what,
+which is what keeps the resolution chain-agnostic (a demo chain's passes would be asked exactly the same way). The
+composite publishes one name, `post_composite_pass::bloom_pipeline_name == "post_hdr"`, and the four bloom levels
+declare THAT name in their behaviour - one shared object, not five identical copies of it.
+
+**AND THE FOUR BLOOM LEVELS NEEDED NOTHING ELSE**: their target (a `bloom` element), the level they read (the element
+before them, nothing at level 0), their own set of the post family (`shared_set{2, level}`), their extent (the bloom
+element's size, through the owner's `extent_of`) and their push block (the frame's settings plus their own `mode`
+lane, 0 for the prefilter and 1 for the downsamples) all come from their declarations and the frame's facts. The
+per-pass switch is down to THREE branches (`shadow`, `deferred`, `gbuffer_debug`) plus the probe tail and the GI
+chain's three, and eight of the sixteen resolvers are gone.
+
+**THE BUG, AND WHY THE A/B RAN FIRST.** The first version of this slice resolved the shared pipeline's HANDLE and
+nothing else, so `resolved_io::pipeline_layout` stayed null for the four levels - and each level's `record` guard
+(`io.pipeline_layout == VK_NULL_HANDLE`) then returned early, so the chain recorded NOTHING while the composite still
+sampled its four levels: a validation error about a layout the image was not in, and a different frame. The
+knob-on A/B (a detached worktree at the parent commit with its own Release build, on a config the gate does not have)
+showed it immediately - parent `BF180E98ADB29E7E`, first version `6EDD0FA2A5B1E068` - and the FIX is the shape the
+virtual now has: a lookup that answers a pipeline without the layout it was created against is not usable by any
+caller, so `owned_pipeline` carries both and the generic resolver FAILS the pass when the layout is missing rather
+than handing over half a fact. After the fix the same A/B config renders `BF180E98ADB29E7E`, matching the parent byte
+for byte.
+
+**A CORRECTION TO THE RECORD, measured while verifying this slice**: the four bloom levels ARE covered by the
+capture gate in every scenario - earlier notes in this document (and in the slice above) treated `bloom` as
+gate-invisible because NO SCENARIO SETS A BLOOM KEY, but the app's GUI bindings default to `bloom_enabled = true`,
+`bloom_intensity = 0.8f`, and `main.cpp` pushes them into the renderer every frame (`set_bloom`). The gate's
+`deferred_taa_fxaa` report already named `post_bloom_0..3` as verified in the S1 slice, which is the same fact seen
+from the other side. So bloom was never an uncovered path; `rt_shadows` (off by default) and the clustered sort
+(no punctual light) are.
+
+**MEASURED**: the capture gate - which runs the bloom chain in all twelve scenarios - is **12 x 2 = 0 changed /
+0 flaky / 0 unseeded**, the knob-on A/B above matches the parent, Release/Debug/ASan build clean with `ctest` 8/8 in
+all three, and `doxygen` exits 0 with zero warnings.
+
+
 
 
 

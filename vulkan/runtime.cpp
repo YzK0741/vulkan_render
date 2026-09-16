@@ -3626,9 +3626,25 @@ namespace vulkan {
         }
     }
 
-    VkPipeline runtime::resolve_pipeline(std::string_view const name) const noexcept {
-        vk_pipeline const* const pipeline = this->get_pipeline(name);
-        return pipeline == nullptr ? VK_NULL_HANDLE : pipeline->get_pipeline();
+    pass::owned_pipeline runtime::resolve_pipeline(std::string_view const name) const noexcept {
+        if (vk_pipeline const* const pipeline = this->get_pipeline(name); pipeline != nullptr) {
+            return pass::owned_pipeline{.pipeline = pipeline->get_pipeline(), .layout = pipeline->get_pipeline_layout()};
+        }
+        // ... AND THEN THE CHAIN'S OWN PASSES, because a chain's stages may SHARE one pipeline: the post chain's
+        // four bloom levels record with the composite's R16F variant, and a copy per level would be five identical
+        // pipelines. Asking every pass by NAME is what keeps this chain-agnostic - the renderer does not know, and
+        // does not need to know, which pass owns what; a pass answers for the names it publishes and nothing else.
+        for (pass::pass_chain const* const chain : {&this->passes, &this->gi_chain}) {
+            for (pass::frame_pass* const candidate : chain->as_stage().passes) {
+                if (candidate == nullptr) {
+                    continue;
+                }
+                if (pass::owned_pipeline const found = candidate->named_pipeline(name); found.pipeline != VK_NULL_HANDLE) {
+                    return found;
+                }
+            }
+        }
+        return {};
     }
 
     VkDescriptorSet runtime::resolve_shared_set(uint32_t const family, uint32_t const element, uint32_t const image_index) {
@@ -3730,11 +3746,6 @@ namespace vulkan {
         }
         if (&pass == static_cast<pass::frame_pass const*>(&this->deferred)) {
             return this->resolve_deferred_pass(out);
-        }
-        for (uint32_t level = 0; level < this->bloom.size(); ++level) {
-            if (&pass == static_cast<pass::frame_pass const*>(this->bloom[level])) {
-                return this->resolve_post_bloom(level, out);
-            }
         }
         if (&pass == static_cast<pass::frame_pass const*>(&this->gbuffer_debug_view)) {
             return this->resolve_gbuffer_debug(out);
@@ -4158,69 +4169,21 @@ namespace vulkan {
     }
 
     // =============================================================================================
-    // THE POST CHAIN's resolvers (vulkan.pass.post)
+    // THE POST CHAIN (vulkan.pass.post)
     // =============================================================================================
     //
-    // Between them they fill exactly what the frame's passes cannot know: which image is the display target THIS
-    // frame and which PIPELINE VARIANT its colour format needs, which variant of the post family's five sets a
-    // stage binds, which bloom level a stage writes and which one it reads, and the values of the chain's one push
-    // block (the SHAPE is the passes' - see vulkan.pass.post::post_push_constants).
+    // NO RESOLVER IS LEFT FOR IT (S3). The composite's declaration resolves generically except for the one
+    // frame-decided choice (which target and pipeline variant, and the push block that follows from it), which
+    // its own `resolve` override makes; its four bloom levels and FXAA resolve ENTIRELY from their declarations -
+    // the level they write (a `bloom` element), the level they read (the element before it, or nothing at level
+    // 0), their own set of the post family (`shared_set{2, level}`), their extent (the bloom element's size) and
+    // the pipeline they record with, which is the COMPOSITE's R16F variant published by name (`post_hdr`) and
+    // resolved by asking the chain's passes - see `resolve_pipeline`.
     //
     // WHAT IS NOT RESOLVED, and it is a decision rather than an omission: the HDR target's transition to a sampled
     // layout. The composite reads that image whether or not bloom runs and the bright-pass prefilter reads it too,
     // and on a frame the whole chain is skipped nobody else would move it - so it has exactly one owner and that
     // owner is the frame loop (see render_resource::post_composite_io).
-
-    bool runtime::resolve_post_bloom(uint32_t const level, pass::resolved_io& out) {
-        core const& vk = this->vulkan_core;
-        uint32_t const index = this->current_image_index;
-        if (!this->post_composite.pipeline_ready() || level >= this->bloom.size() || level >= vk.bloom_images.size() || index >= vk.bloom_images[level].size()) {
-            return false;
-        }
-        // THIS level's set of the post family: the five sets are the five stages, and which one a stage binds is
-        // the host's answer (the pass's declaration names the SET, never its bindings).
-        VkDescriptorSet const set = this->post_family.set(index, level);
-        if (set == VK_NULL_HANDLE) {
-            return false;
-        }
-        out.frame = this->pass_frame();
-        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
-        out.shared.post = set;
-        out.target_storage[0] = {.view = vk.bloom_image_views[level][index], .buffer = VK_NULL_HANDLE, .image = vk.bloom_images[level][index]};
-        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), render_resource::post_bloom_io[level].targets.size());
-        // THE LEVEL THIS STAGE READS, resolved exactly when the pass owns that transition: levels 1..3 declare the
-        // level before them, and level 0 declares nothing because its input is the HDR target - whose transition
-        // the frame loop owns, for the reason this file's section header gives.
-        if (level > 0u) {
-            out.barrier_storage[0] = {.view = vk.bloom_image_views[level - 1u][index], .buffer = VK_NULL_HANDLE, .image = vk.bloom_images[level - 1u][index]};
-            out.barrier_images = std::span<pass::resolved_binding const>(out.barrier_storage.data(), render_resource::post_bloom_io[level].barrier_images.size());
-        }
-        // The chain's R16F pipeline, which the COMPOSITE owns (the pass that builds nothing receives it here).
-        out.pipeline_storage[0] = this->post_composite.hdr_pipeline();
-        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
-        out.pipeline_layout = this->post_composite.pipeline_layout();
-        // The three values the stage reads; every other lane is the struct's default, which is what the renderer
-        // pushed for this mode before the move. The pass writes its own `mode` (0 for the prefilter, 1 for the
-        // downsamples) on top.
-        pass::post_push_constants const push = {
-            .exposure = this->exposure_scale,
-            .bloom_intensity = this->bloom_intensity,
-            .bloom_threshold = this->bloom_threshold,
-        };
-        std::memcpy(out.push_storage.data(), &push, sizeof(push));
-        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
-        // The LEVEL's extent, from the pass's own declaration (`extent_rule::resource` + `bloom` + the element),
-        // which is the same max(1, swap >> (level + 1)) core created the image with.
-        out.extent = this->pass_extent(*static_cast<pass::frame_pass const*>(this->bloom[level]));
-        return true;
-    }
-
-    // THE COMPOSITE'S RESOLVER IS GONE (S3), and it is the first pass whose resolve is an OVERRIDE in the pass
-    // itself: its declaration (the swapchain target, the shared post set, its own pipeline, a full-frame extent)
-    // resolves generically, and the one thing the declaration cannot say - which target and which pipeline variant
-    // THIS frame needs - is decided inside `post_composite_pass::resolve` from `composite_frame::write_ldr`, the
-    // frame's answer to whether FXAA finishes the frame. The push block went with it, because `encode_gamma` is a
-    // consequence of that same choice; `record` still reads the bytes the pass composed.
 
     bool runtime::post_fxaa_active() const noexcept {
         // ONE definition of "the FXAA pass is this frame's last writer": the resolver picks the composite's target

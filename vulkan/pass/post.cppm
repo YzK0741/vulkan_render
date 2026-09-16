@@ -151,6 +151,9 @@ export namespace vulkan::pass {
      */
     class post_composite_pass final : public frame_pass {
     public:
+        /// @brief the NAME the bloom levels declare to record with this pass's R16F variant (see named_pipeline)
+        static constexpr std::string_view bloom_pipeline_name = "post_hdr";
+
         post_composite_pass() = default;
         ~post_composite_pass() override;
 
@@ -185,6 +188,14 @@ export namespace vulkan::pass {
         /// @brief the pipeline the runner binds by default: the SWAPCHAIN variant, which `resolve` replaces on
         ///        the frames FXAA finishes (the declaration names ONE pipeline, and this pass owns both variants)
         [[nodiscard]] VkPipeline pipeline() const noexcept override;
+        /**
+         * @brief the R16F variant, which the BLOOM LEVELS record with
+         *
+         * The four bloom passes declare `post_hdr` in their behaviour and own nothing: this is the pass that owns the
+         * object, and answering by NAME is what lets the chain share it without the renderer knowing whose it is
+         * (see `frame_pass::named_pipeline`).
+         */
+        [[nodiscard]] owned_pipeline named_pipeline(std::string_view name) const noexcept override;
         /// @brief the post SET LAYOUT, which is the post chain's: five passes share it and the host writes their
         ///        descriptor sets with it (`ensure_post_descriptors`), so it is reachable from outside
         [[nodiscard]] VkDescriptorSetLayout set_layout() const noexcept;
@@ -262,9 +273,11 @@ export namespace vulkan::pass {
         [[nodiscard]] uint32_t level() const noexcept;
 
     private:
-        /// the pipeline the runner binds: the chain's R16F variant, which the COMPOSITE owns and the host
-        /// resolves through `resolved_io::pipelines` (this pass builds nothing - see the module's header)
-        static constexpr std::array<std::string_view, 1> pipeline_names = {"post_bloom"};
+        /// the pipeline the runner binds: the chain's R16F variant, which the COMPOSITE owns. The NAME is the
+        /// composite's (`post_composite_pass::bloom_pipeline_name`) because the owner resolves it by asking ITS
+        /// passes (`frame_pass::named_pipeline`) - and one shared object is the point: a copy per level would be
+        /// five identical pipelines.
+        static constexpr std::array<std::string_view, 1> pipeline_names = {post_composite_pass::bloom_pipeline_name};
 
         uint32_t level_ = 0;
         render_resource::pass_io const* io_ = nullptr;

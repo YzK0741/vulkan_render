@@ -718,7 +718,14 @@ int main() {
                 return family == 2 && element == 4 ? static_cast<resolver_owner*>(o)->post : VK_NULL_HANDLE;
             },
             .extent_of = [](void* o, rr::resource_id, uint32_t) { return static_cast<resolver_owner*>(o)->resource_extent; },
-            .pipeline = [](void* o, std::string_view const name) -> VkPipeline { return name == static_cast<resolver_owner*>(o)->unknown_pipeline ? VK_NULL_HANDLE : static_cast<resolver_owner*>(o)->pipeline; },
+            .pipeline =
+                [](void* o, std::string_view const name) -> vp::owned_pipeline {
+                // the owner answers a NAME with a pipeline AND its layout: the two travel together because a
+                // pass binds its sets and pushes its constants through the layout
+                return name == static_cast<resolver_owner*>(o)->unknown_pipeline
+                           ? vp::owned_pipeline{}
+                           : vp::owned_pipeline{.pipeline = static_cast<resolver_owner*>(o)->pipeline, .layout = fake_layout};
+            },
             .owner = &owner,
         };
         declared_pass pass;

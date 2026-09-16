@@ -1858,13 +1858,6 @@ namespace vulkan {
          */
         void record_scene_tail(VkCommandBuffer command_buffer);
         /**
-         * @brief resolve ONE bloom level's frame: the level it writes, the level it reads (nothing at level 0),
-         *        that level's variant of the post set, the chain's R16F pipeline and the level's extent
-         * @param level which level of the chain (0..3), which selects all of the above
-         * @return false when this frame cannot run it (same conditions as the composite)
-         */
-        [[nodiscard]] bool resolve_post_bloom(uint32_t level, pass::resolved_io& out);
-        /**
          * @brief whether the FXAA pass is this frame's LAST writer (the frame's own question: the composite's
          *        target and pipeline variant, the overlay's owner, set_fxaa() and the feature registry all ask it)
          */
@@ -2544,8 +2537,15 @@ namespace vulkan {
         /** @brief the extent of a declared resource element (the bloom levels, the probe grid) - the rule that
          *         used to live in `pass_extent`, now shared with the framework's resolver */
         [[nodiscard]] VkExtent2D resolve_resource_extent(render_resource::resource_id id, uint32_t element) const noexcept;
-        /** @brief the pipeline a `behaviour::pipelines` name refers to, from this renderer's registry */
-        [[nodiscard]] VkPipeline resolve_pipeline(std::string_view name) const noexcept;
+        /**
+         * @brief the pipeline (and its layout) a `behaviour::pipelines` name refers to
+         *
+         * Two places are asked, in this order: this renderer's own registry (the pipelines the APP registered), and
+         * then the CHAIN'S passes, each by name - because a chain's stages may share one pipeline (the post
+         * chain's four bloom levels record with the composite's R16F variant). Asking the passes is what keeps this
+         * chain-agnostic: no branch here names a pass.
+         */
+        [[nodiscard]] pass::owned_pipeline resolve_pipeline(std::string_view name) const noexcept;
         /** @brief this frame's blended geometry, as the transparent pass needs it */
         [[nodiscard]] pass::transparent_frame make_transparent_frame() noexcept;
 

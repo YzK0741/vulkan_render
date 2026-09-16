@@ -155,6 +155,11 @@ export namespace vulkan::pass {
         [[nodiscard]] stage as_stage() noexcept {
             return stage{.name = this->name_, .passes = std::span<frame_pass*>(this->passes_.data(), this->passes_.size()), .marks = this->marks_};
         }
+        /// @brief the same view from a CONST chain, for a caller that only reads the list - the owner resolving a
+        ///        pipeline name asks every pass in the chain, which is a read of the chain, not of a pass
+        [[nodiscard]] stage as_stage() const noexcept {
+            return stage{.name = this->name_, .passes = std::span<frame_pass*>(const_cast<frame_pass**>(this->passes_.data()), this->passes_.size()), .marks = this->marks_};
+        }
 
         /// @brief the runner's create step over every pass in the chain, in order
         [[nodiscard]] run_report init(pass_context const& context) {
