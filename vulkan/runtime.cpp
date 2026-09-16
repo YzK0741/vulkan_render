@@ -2513,7 +2513,7 @@ namespace vulkan {
         // weight at 0 - the alternative is a full-resolution frame of whatever the last image happens
         // to contain.
         return this->ssgi_on && this->pass_ready("ssgi_trace") && this->pass_ready("ssgi_temporal") &&
-               this->pass_ready("ssgi_spatial") && this->deferred_lit_active() && !this->deferred.unlit();
+               this->pass_ready("ssgi_spatial") && this->deferred_lit_active() && !this->scene_unlit_;
     }
 
     bool runtime::set_ssgi_enabled(bool const enabled) noexcept {

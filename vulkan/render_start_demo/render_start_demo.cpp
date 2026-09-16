@@ -80,6 +80,12 @@ namespace vulkan {
         // THE FRAME'S TOOLKIT, cached for the callbacks that are carried by a PASS's frame and therefore cannot be
         // handed it (the reflection's recording - see the member's own note).
         self.services_ = services;
+        // ... and the one fact the renderer's own policy reads about a pass it no longer holds: whether the lighting
+        // stage is in the flat render mode, which is what makes the GI chain pointless on such a frame. Published on
+        // every stage prepare rather than once, because it is one bool and the app can flip it between frames.
+        if (self.runtime_ != nullptr && self.deferred_ != nullptr) {
+            self.runtime_->set_scene_unlit(self.deferred_->unlit());
+        }
         // The stage names are the frame's own structure (the same names the runtime's stage structs carry), so this
         // switch is the frame ORDER written once, where the passes live.
         if (stage == "cluster") {
@@ -277,6 +283,11 @@ namespace vulkan {
     void render_start_demo::set_unlit(bool const unlit) noexcept {
         if (this->deferred_ != nullptr) {
             this->deferred_->set_unlit(unlit);
+        }
+        // ... and the renderer's own policy reads it (see set_scene_unlit): publish it here as well as per stage, so
+        // a toggle that arrives between two frames is not one frame late.
+        if (this->runtime_ != nullptr) {
+            this->runtime_->set_scene_unlit(unlit);
         }
     }
 

@@ -3016,6 +3016,26 @@ the parent, same hand-written config, 40 frames); Release, Debug and ASan clean 
 `doxygen` exits 0 with zero warnings. **Typed pass sites: 12 -> 10** - what is left is the two jobs (7 sites, and they
 are NOT passes: they are the structure phase's own machinery, which the renderer keeps) and the construction.
 
+
+## THE HANDOVER, SLICE 9: THE LAST PASS READ IN THE RENDERER'S OWN POLICY
+
+**ONE LINE STOOD BETWEEN THE RENDERER AND HOLDING NO PASS AT ALL, AND IT WAS A POLICY PREDICATE RATHER THAN A FRAME
+INPUT.** `ssgi_active()` - which the renderer needs for itself (it decides whether the acceleration structures are
+built and whether the GI chain's stage runs) - ended with `&& !this->deferred.unlit()`, because a flat frame's
+"radiance" is an albedo and the bounce traced from it is a product of two albedos rather than a transport term. The
+flag is the LIGHTING PASS's parameter, so it moved to the same one-way channel `set_gi_spec_resolved` opened:
+`runtime::set_scene_unlit`, published by the chain's owner (in `set_unlit` when the app toggles the render mode, and
+on every stage `prepare` so a toggle that arrives between frames is never one frame late).
+
+WHY IT MATTERS RATHER THAN BEING TIDINESS: it was the last typed read in the renderer's own policy, i.e. the last
+thing that would have made a handover of the chain impossible. What remains is the CONSTRUCTION (`emplace`, the two
+GI chains' `add` calls, the stage arrays' pointers) and the two jobs - which are not passes.
+
+**MEASURED**: **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, validation-clean, references unchanged (the `unlit`
+scenario is one of them, and it is the knob this slice moves); Release, Debug and ASan clean with `ctest` 8/8 in all
+three; `doxygen` exits 0 with zero warnings. **Typed pass sites: 12 -> 11** - a smaller step than the last two, and
+the honest one: what is left is construction plus the two jobs.
+
 **A MECHANICAL NOTE worth keeping, because it cost a build**: removing the `set_layout()` declaration from
 `post.cppm` with a "walk back to the nearest `/**`" script swallowed the `named_pipeline` declaration that sat between
 two doc blocks - the compiler said so immediately (`out-of-line definition ... does not match any declaration`), and

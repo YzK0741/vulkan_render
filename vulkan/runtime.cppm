@@ -791,6 +791,9 @@ namespace vulkan {
         ///        the reflection's accumulation), so the layout is its own and the passes that bind the set ask for
         ///        it through `pass_context::shared_set_layout(owner, 1)`
         VkDescriptorSetLayout gbuffer_set_layout_ = VK_NULL_HANDLE;
+        /// @brief whether the LIGHTING STAGE is in the flat render mode this frame, published by the chain's owner
+        ///        (see set_scene_unlit): the renderer's own ssgi_active gate reads it
+        bool scene_unlit_ = false;
         /**
          * @brief fill this frame's shared constants (`pass::resolved_io::constants`) from the camera/light state
          *
@@ -1668,6 +1671,21 @@ namespace vulkan {
          */
         void set_gi_spec_resolved(bool resolved) noexcept {
             this->frame_facts.gi_spec_resolved = resolved;
+        }
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief publish the LIGHTING STAGE's flat-render state, which the renderer's own policy reads
+         *
+         * The flag itself is the lighting pass's parameter (the shader returns the stored albedo), and the renderer
+         * needs it for one thing it decides on its own: whether the screen-space GI chain is worth running at all
+         * (`ssgi_active` - a flat frame's radiance is an albedo, so the bounce it would trace is a product of two
+         * albedos rather than a transport term). Since the pass left the renderer, the owner that holds it publishes
+         * this per frame - the same one-way channel `set_gi_spec_resolved` uses, and the reason the renderer can keep
+         * a policy predicate without keeping a pass.
+         */
+        void set_scene_unlit(bool unlit) noexcept {
+            this->scene_unlit_ = unlit;
         }
         /**
          * @ingroup vulkan_runtime
