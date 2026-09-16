@@ -400,6 +400,12 @@ namespace vulkan {
         // per-image descriptor family, its barrier batches - so what is left in this class is the RENDERER's:
         // the knobs, the frame counters, the push block's VALUES, and the frame state a pass cannot know.
         pass::pass_chain passes{"render"};
+        /**
+         * The chain the frame RECORDS, which is this runtime's own until `set_pass_chain` is called and the owner's
+         * after that. Every stage array and both GI halves are filled from it BY DECLARATION NAME (see
+         * `set_pass_chain`), which is what lets the passes live outside this class.
+         */
+        pass::pass_chain* chain_ = nullptr;
 
         // the order of these declarations IS the order the chain builds them in, and today it is the order the
         // renderer used to spell out in `create_passes()`.
@@ -478,20 +484,20 @@ namespace vulkan {
                                                        &this->passes.emplace<pass::post_bloom_pass>(3u)};
         /// the bloom chain's stage, in level order (the runner walks the array; a stage IS the order, which is why
         /// it is an array of pointers and never a container whose iteration order is an accident)
-        std::array<pass::frame_pass*, 4> bloom_stage = {this->bloom[0], this->bloom[1], this->bloom[2], this->bloom[3]};
+        std::array<pass::frame_pass*, 4> bloom_stage = {};
         /// the composite's own stage: one pass, the frame's display work (and the frame's LAST writer whenever
         /// FXAA is off, which is why its frame carries the overlay)
-        std::array<pass::frame_pass*, 1> post_composite_stage = {&this->post_composite};
+        std::array<pass::frame_pass*, 1> post_composite_stage = {};
         /// the shadow pass's stage: it runs BEFORE the scene pass (the maps have to exist before the surfaces that
         /// sample them are shaded), and the frame loop records it only on a frame the maps are not reused.
-        std::array<pass::frame_pass*, 1> shadow_stage = {&this->shadow};
-        std::array<pass::frame_pass*, 1> gbuffer_debug_stage = {&this->gbuffer_debug_view};
+        std::array<pass::frame_pass*, 1> shadow_stage = {};
+        std::array<pass::frame_pass*, 1> gbuffer_debug_stage = {};
         /// THE FXAA RESOLVE (vulkan.pass.fxaa): the frame's LAST writer whenever it runs. It owns its pipeline
         /// layout (built around the post set layout the composite owns) and its pipeline; it is the pass that owns
         /// the OVERLAY on the frames it runs, through its own frame callback - and the reason the composite's frame
         /// is handed a null one on exactly those frames.
         pass::fxaa_pass& fxaa_resolve = this->passes.emplace<pass::fxaa_pass>();
-        std::array<pass::frame_pass*, 1> fxaa_stage = {&this->fxaa_resolve};
+        std::array<pass::frame_pass*, 1> fxaa_stage = {};
 
         /**
          * THE GI CHAIN (vulkan.pass.chain): the four GI stages, in the order that makes them a chain - each one
@@ -513,11 +519,11 @@ namespace vulkan {
          */
         pass::pass_chain gi_trace_chain{"gi trace"};
         pass::pass_chain gi_denoise_chain{"gi denoise"};
-        std::array<pass::frame_pass*, 1> rt_shadow_stage = {&this->rt_shadow};
+        std::array<pass::frame_pass*, 1> rt_shadow_stage = {};
         /// the deferred lighting stage's own stage: it sits between the ray-traced shadow (whose output its
         /// descriptor samples) and the transparent pass (which composites over the image it shades), which is
         /// where the frame loop records it and the only fact about it the renderer still spells out.
-        std::array<pass::frame_pass*, 1> deferred_stage = {&this->deferred};
+        std::array<pass::frame_pass*, 1> deferred_stage = {};
         bool ssgi_on = false;
         // The tracer's ray sequence has to change every frame: a fixed one would feed a temporal
         // denoiser the same error in the same place every frame instead of an average. The COUNTER is the frame
@@ -652,7 +658,7 @@ namespace vulkan {
         // ... and the stage the runner is handed. One entry, and the pass is declared before this initialiser
         // so it refers to a constructed object; a pass list is pointers in DECLARATION ORDER, never a
         // container whose iteration order is an accident (the capture gate compares frames byte for byte).
-        std::array<pass::frame_pass*, 1> gi_probe_stage = {&this->gi_probe};
+        std::array<pass::frame_pass*, 1> gi_probe_stage = {};
         // The storage `resolved_io::push` points into for the frame. It is the pass's own block type, so the
         // two sides of the boundary cannot disagree about the layout; the host fills it, the pass reads it.
         std::array<std::byte, sizeof(pass::gi_probe_pass::push_constants)> gi_probe_push = {};
@@ -720,14 +726,14 @@ namespace vulkan {
         // THE SCENE PASS (vulkan.pass.scene): it owns the surface instance, the segment strategy and the draw
         // loop; the renderer hands it the leaves through a typed frame (see make_scene_frame) and keeps the
         // pipeline registry, the secondary buffers and the scheduler.
-        std::array<pass::frame_pass*, 1> scene_stage = {&this->scene};
+        std::array<pass::frame_pass*, 1> scene_stage = {};
         /// THE TRANSPARENT PASS (vulkan.pass.transparent): the same scene, its own LOAD instance, after lighting
-        std::array<pass::frame_pass*, 1> transparent_stage = {&this->transparent};
+        std::array<pass::frame_pass*, 1> transparent_stage = {};
         /// the scene frame's view of the per-slot segments (a member, so the span it hands the pass outlives it)
         std::vector<pass::segment_buffer> scene_segment_view = {};
         /// the colour formats the scene pass's secondaries inherit, in attachment order
         std::array<VkFormat, vulkan::gbuffer_pass_attachment_count> scene_color_formats = {};
-        std::array<pass::frame_pass*, 1> taa_stage = {&this->taa_resolve};
+        std::array<pass::frame_pass*, 1> taa_stage = {};
         bool taa_on = false; // [render] taa
         // The two blend weights are NOT here any more: they are the TAA pass's own parameters now, set through
         // `set_taa` (which forwards them) and clamped by the pass - see vulkan.pass.taa::set_blend. What stays
@@ -1058,7 +1064,7 @@ namespace vulkan {
         // swapchain extent) and hands the cluster count over in the pass's frame. Optional: without the shader
         // (or with clustering off) shade_surface() falls back to the brute-force loop, which is exactly what the
         // clustered path is verified against.
-        std::array<pass::frame_pass*, 1> cluster_stage = {&this->cluster};
+        std::array<pass::frame_pass*, 1> cluster_stage = {};
         // Per-cascade shadow recording pairs (one {pool, buffer} per cascade per frame slot). The
         // cascade tasks run CONCURRENTLY on the task pool, and a VkCommandPool is not thread safe, so
         // they may not share one - the same rule the main-pass workers already follow. The shared
@@ -1658,6 +1664,9 @@ namespace vulkan {
          * @note the owner must outlive this runtime's recording, which is the same contract the chain itself has
          */
         void set_chain_wiring(chain_wiring wiring) noexcept;
+        /// fill the frame loop's stage arrays and its two GI halves from a chain, BY DECLARATION NAME (see
+        /// `set_pass_chain`): the frame structure is this renderer's, the passes are the owner's
+        void bind_frame_chain(pass::pass_chain& chain) noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -1708,8 +1717,28 @@ namespace vulkan {
          * chain over instead and this accessor goes with it (see docs/pass_chain_plan.md).
          */
         [[nodiscard]] pass::pass_chain& frame_passes() noexcept {
-            return this->passes;
+            return this->chain_ != nullptr ? *this->chain_ : this->passes;
         }
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief HAND THIS RENDERER THE CHAIN OF PASSES IT RECORDS
+         *
+         * THE HANDOVER ITSELF, and it is one call because everything else moved first: the per-pass frames, the stage
+         * preambles, the result collection and the feature table are the owner's since the slices this document
+         * records. What the runtime keeps is the RECORD LOOP - the stage sequence, the marks, the renderer's own work
+         * between the stages - so this call is where the two meet:
+         *
+         *  * the renderer's STAGE ARRAYS are filled BY DECLARATION NAME out of @p chain (that is what still ties the
+         *    record loop to this application: which stage holds which pass, which IS the frame's structure);
+         *  * the two GI HALVES are assembled the same way, because their order (the trace half, the frame's rule
+         *    between them, the denoise half) is the frame loop's;
+         *  * @p chain must OUTLIVE the recording, exactly as the wiring's owner must;
+         *  * @p wiring is the per-frame knowledge the renderer does not have (see `chain_wiring`).
+         * @note a name the chain does not declare leaves that stage empty, which the runner treats as "no pass here" -
+         *       a frame that draws less rather than a crash
+         */
+        void set_pass_chain(pass::pass_chain& chain, chain_wiring wiring) noexcept;
 
         // A non-const runtime exposes a mutable filter (e.g. runtime->get_vma()); a const runtime
         // gets a read-only filter, so mutating operations are impossible through const access.

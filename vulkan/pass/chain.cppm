@@ -91,6 +91,17 @@ export namespace vulkan::pass {
             , marks_(marks) {
         }
 
+        /**
+         * @brief forget the passes, WITHOUT destroying the ones this chain owns (`emplace`)
+         *
+         * The distinction matters to the one caller that needs this: a renderer whose chain is REPLACED (a frame loop
+         * being re-pointed at another application's passes - see `runtime::set_pass_chain`) reinstates the chain it
+         * records without touching the lifetimes of the passes either chain owns.
+         */
+        void clear() noexcept {
+            this->passes_.clear();
+        }
+
         /// @brief append a pass to the end of the chain; the order of the calls IS the order of the stages
         /// @note the chain does NOT own it: see `emplace` for the owning form
         void add(frame_pass& pass) {

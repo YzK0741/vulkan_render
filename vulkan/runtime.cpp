@@ -2686,16 +2686,11 @@ namespace vulkan {
         // `resource()` from (see publish_pass_resources). It is the renderer's half of the channel; the passes'
         // half is that they ask for what their own declaration lists instead of being handed it.
         this->publish_pass_resources();
-        // THE GI CHAIN's ORDER, which is data now rather than the line order of the frame loop that records it:
-        // each stage reads what the one before it wrote (the lobe corrects the trace, the denoise accumulates it,
-        // the filter smooths the accumulation and is what the composite samples). TWO chains rather than one,
-        // because the frame has an ordering rule to run BETWEEN the lobe and the temporal resolve - it publishes
-        // the G-buffer depth and the motion-vector target that the resolve is the first sampler of (see
-        // record_main_drawcalls) - and a frame rule cannot run from outside a chain.
-        this->gi_trace_chain.add(this->ssgi_trace);
-        this->gi_trace_chain.add(this->ssgi_spec);
-        this->gi_denoise_chain.add(this->ssgi_temporal);
-        this->gi_denoise_chain.add(this->ssgi_spatial);
+        // THE FRAME'S STRUCTURE, FROM THE CHAIN BY DECLARATION NAME: the stage arrays and the two GI halves (see
+        // bind_frame_chain). This runtime owns the passes today (`passes`), so this binds its own chain; the moment an
+        // application hands one over (`set_pass_chain`), the same call binds THAT chain and this one stops being
+        // recorded.
+        this->bind_frame_chain(this->passes);
         pass::pass_context const build = this->make_pass_context();
         // ONE CREATE STEP OVER EVERY PASS, in the order the OWNING chain holds them (see the member block in the
         // header): `passes` owns the ten passes this renderer has, so its `init` IS the whole create step. A pass
@@ -3267,6 +3262,54 @@ namespace vulkan {
             .require_velocity_publish = [](void* owner, uint32_t image) { static_cast<runtime*>(owner)->require_velocity_publish(image); },
             .feature_active = [](void* owner, std::string_view name) { return static_cast<runtime const*>(owner)->feature_active(name); },
         };
+    }
+
+    void runtime::bind_frame_chain(pass::pass_chain& chain) noexcept {
+        // THE FRAME'S STRUCTURE, and the only thing in this renderer that still names individual passes: which stage
+        // holds which pass IS the frame loop's order (it is what the marks, the per-stage preambles and the
+        // renderer's own work between the stages are written against), so it is filled here BY DECLARATION NAME out
+        // of whichever chain the application handed over. A name the chain does not declare leaves that stage empty,
+        // which the runner treats as "no pass here" rather than as an error.
+        this->chain_ = &chain;
+        auto const at = [&chain](std::string_view const name) -> pass::frame_pass* { return chain.find(name); };
+        this->cluster_stage = {at("cluster")};
+        this->shadow_stage = {at("shadow")};
+        this->scene_stage = {at("scene")};
+        this->transparent_stage = {at("transparent")};
+        this->gbuffer_debug_stage = {at("gbuffer-debug")};
+        this->rt_shadow_stage = {at("rt_shadow")};
+        this->deferred_stage = {at("deferred")};
+        this->taa_stage = {at("taa")};
+        this->gi_probe_stage = {at("gi_probe")};
+        this->post_composite_stage = {at("post_composite")};
+        this->bloom_stage = {at("post_bloom_0"), at("post_bloom_1"), at("post_bloom_2"), at("post_bloom_3")};
+        this->fxaa_stage = {at("fxaa")};
+        // ... and the two GI HALVES, in the order the FRAME records them: the trace half (the tracer, then the lobe -
+        // the two writers of the raw trace) and the denoise half (the temporal resolve, then the spatial filter, whose
+        // output the composite samples). Two halves rather than one chain because the frame has an ordering rule to
+        // run BETWEEN them - it publishes the G-buffer depth and the motion-vector target that the resolve is the
+        // first sampler of - and a frame rule cannot run from inside a chain.
+        this->gi_trace_chain.clear();
+        this->gi_denoise_chain.clear();
+        if (pass::frame_pass* const trace = at("ssgi_trace")) {
+            this->gi_trace_chain.add(*trace);
+        }
+        if (pass::frame_pass* const lobe = at("ssgi_spec")) {
+            this->gi_trace_chain.add(*lobe);
+        }
+        if (pass::frame_pass* const temporal = at("ssgi_temporal")) {
+            this->gi_denoise_chain.add(*temporal);
+        }
+        if (pass::frame_pass* const spatial = at("ssgi_spatial")) {
+            this->gi_denoise_chain.add(*spatial);
+        }
+    }
+
+    void runtime::set_pass_chain(pass::pass_chain& chain, chain_wiring const wiring) noexcept {
+        // THE HANDOVER: the owner's chain, bound into the frame loop's own structure, plus the wiring that supplies
+        // everything the renderer does not know about those passes (see chain_wiring).
+        this->bind_frame_chain(chain);
+        this->set_chain_wiring(wiring);
     }
 
     void runtime::set_chain_wiring(chain_wiring const wiring) noexcept {

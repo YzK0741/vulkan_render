@@ -3036,6 +3036,38 @@ scenario is one of them, and it is the knob this slice moves); Release, Debug an
 three; `doxygen` exits 0 with zero warnings. **Typed pass sites: 12 -> 11** - a smaller step than the last two, and
 the honest one: what is left is construction plus the two jobs.
 
+
+## THE HANDOVER, SLICE 10: `set_pass_chain` EXISTS, AND THE FRAME'S STRUCTURE IS FILLED BY NAME
+
+**THE HANDOVER API IS IN, AND IT IS THE MECHANISM RATHER THAN A PROMISE.** `runtime::set_pass_chain(pass_chain&,
+chain_wiring)` binds a chain an application owns into the frame loop: the renderer's STAGE ARRAYS and its two GI HALVES
+are filled **BY DECLARATION NAME** out of that chain (`bind_frame_chain`, which now runs from `create_passes` against
+the runtime's own chain as well). That is the whole tie that is left between this record loop and this application -
+which stage holds which pass, which IS the frame's structure - and it is the same shape `pass_ready(name)` and
+`resolve_pipeline(name)` already had.
+
+Three things worth naming:
+
+* **the twelve stage arrays stopped being initialized from typed members** (`{&this->scene}` became `{}`): the
+  record loop asks the chain for a NAME, so a runtime holding no pass at all is now expressible;
+* **`pass_chain::clear()`** was added for the one caller that needs it: a frame loop re-pointed at another chain
+  reinstates its structure without touching the lifetimes of the passes either chain owns (`clear` forgets the
+  POINTERS, never the `emplace`d objects);
+* **the two GI halves are assembled here** (the trace half, then the denoise half), and the reason they are not simply
+  another chain the application hands over is the frame's own rule between them - the depth/velocity publication that
+  the temporal resolve is the first sampler of. That rule is the frame's, so the split is too.
+
+**MEASURED**: **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, validation-clean, references unchanged - which is the
+point: the structure is now filled by name and the frames are identical; Release, Debug and ASan clean with `ctest`
+8/8 in all three; `doxygen` exits 0 with zero warnings (the first run of this slice had FIVE, all from a backtick I
+typed as an apostrophe in two new comments - the same trap as the SSAO slice, and the reason the acceptance counts
+warnings instead of trusting the exit code).
+
+**WHAT IS LEFT**: the runtime still CONSTRUCTS this app's passes (`emplace` into its own `passes`, the `create` step
+and the two jobs). The final slice moves the `emplace` calls and the chain's construction into the demo, leaves the
+runtime with `passes.init(make_pass_context())` over the chain it was handed - and the two jobs, which are not passes
+and stay with the structure phase that drives them.
+
 **A MECHANICAL NOTE worth keeping, because it cost a build**: removing the `set_layout()` declaration from
 `post.cppm` with a "walk back to the nearest `/**`" script swallowed the `named_pipeline` declaration that sat between
 two doc blocks - the compiler said so immediately (`out-of-line definition ... does not match any declaration`), and
