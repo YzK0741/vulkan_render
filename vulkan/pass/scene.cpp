@@ -33,9 +33,11 @@ namespace vulkan::pass {
     }
 
     std::string_view scene_pass::feature() const noexcept {
-        // ALWAYS: the frame has a scene, and the renderer is what keeps this pass from running when there is
-        // nothing to draw into (no surface pipeline) - see runtime::resolve_scene_pass.
-        return {};
+        // THE RENDERER'S GATE, as a feature name: this pass runs when the surface pipelines exist. It used to be
+        // the first line of `runtime::resolve_scene_pass` (which returned false), and the OTHER half of that gate -
+        // whether this frame's target generation exists - needs no answer here: the pass's declared targets are
+        // resolved from the frame's resource table, so a frame without them does not resolve the pass at all.
+        return "scene";
     }
 
     void scene_pass::create(pass_context const&) {

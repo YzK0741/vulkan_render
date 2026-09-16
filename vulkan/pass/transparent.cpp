@@ -27,9 +27,10 @@ namespace vulkan::pass {
     }
 
     std::string_view transparent_pass::feature() const noexcept {
-        // ALWAYS; the renderer's resolver skips the pass on a frame whose culling left nothing blended (the
-        // early return this pass used to make inside its own body).
-        return {};
+        // THE RENDERER'S GATE, as a feature name (see the scene pass): a frame whose culling left nothing blended
+        // is a frame this pass is INACTIVE on - which is what the runner checks before it resolves anything, so
+        // the pass neither records nor resolves and costs nothing on those frames.
+        return "transparent";
     }
 
     void transparent_pass::create(pass_context const&) {

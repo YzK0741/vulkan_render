@@ -2179,4 +2179,79 @@ deleted and replaced by resolution driven by the declaration + the table, and th
 from `resolved_io::constants` and its own parameters. The check stays as the migration's net: it becomes vacuous for
 a pass whose resolver is gone, and it keeps naming the passes whose resolvers are still the oracle.
 
+## S3, FIRST SLICE: THE DECLARATION-DRIVEN RESOLVER, AND THE FIRST TWO PASSES OFF THE SWITCH
+
+**THE MECHANISM, which is what the whole migration runs on.** `resolve_pass_impl` is still the per-pass type switch,
+but its tail is no longer `return false` - it is `return pass.resolve(this->make_resolve_context(), out)`. So a pass
+leaves the switch the moment its branch is deleted, and the LAST branch to go takes the switch with it. The
+framework's default `frame_pass::resolve` is the generic resolution (`resolve_declaration`), which is what every
+pass's declaration has been asking for all along:
+
+* **an own binding** is what the table holds for its `(resource, element, instance)` - the instance from the
+  SCHEMA's `scope` (see `instance_for`), never from the declaration, because which image a per-swapchain-image
+  resource means is the schema's fact;
+* **the same** for a render target and for a barrier image/buffer, in declaration order;
+* **a shared set** is asked for by the INDEX the declaration names;
+* **a pipeline** is asked for by the NAME `behaviour::pipelines` declares;
+* **the extent** comes from the behaviour's rule - `pass::resolve_extent`, which is the code that used to live in
+  `runtime::pass_extent` (the runtime's copy is now a fifteen-line bridge to it, so a new `extent_rule` cannot be
+  implemented twice with the second copy being the wrong one);
+* **a resource the frame does not have means the pass does NOT RUN** - the rule every one of the sixteen resolvers
+  wrote by hand as `if (images.empty() || index >= count) return false;`.
+
+**WHAT A RESOLVER IS GIVEN**, and what it deliberately is not: `resolve_context` is the resource table, the frame
+identity, the command buffer and THREE lookups that all take the declaration's own keys - the set index, the extent
+of a resource element, a pipeline name. It is not `pass_host`: the host is the RUNNER's interface and a pass never
+sees it (that rule is what stops this framework from growing a context object that answers whatever the newest pass
+asks for). A pass that overrides `resolve` - because its frame decides something the declaration cannot express -
+starts from `resolve_declaration(*this, context, out)` and can reach nothing its declaration did not name.
+
+**THE FIRST TWO PASSES, chosen because their declarations say everything they need** (no own bindings, no
+pipelines, no push block): the **scene** pass (six targets, the shared scene set, a full-frame extent) and the
+**transparent** pass (two targets, the same set, the same extent). Their resolvers are DELETED - 55 lines - and the
+two halves of their old gates went to the two places that can answer them:
+
+| old gate (in the resolver) | where it is now |
+|---|---|
+| "the surface pipelines exist" (`gbuffer_pass_active`) | the pass's FEATURE: `scene` -> `feature_active` |
+| "this frame's target generation exists" (image counts) | the RESOURCE TABLE: no entry, no resolution |
+| "the culling left nothing blended" (`frame_transparent.empty`) | the pass's FEATURE: `transparent` |
+| "the shaded target exists" (`scene_color` + `gbuffer_depth`) | the RESOURCE TABLE (published per frame, so the ALIAS is the table's answer) |
+
+**MEASURED**: `runtime.cpp` loses 55 lines of resolver and gains ~40 of context/lookups; `vulkan.pass` gains ~250
+(mostly the contract's documentation); and the capture gate is still **12 scenarios x 2 runs = 0 changed / 0 flaky /
+0 unseeded**, with `transparent_blend` `26D9B28C00EA4D00` and `deferred` `2DD1D13857322C0F` among the matches. The
+headless test (`tests/test_pass.cpp`) pins the new contract directly: an empty table fails, a published one resolves
+own bindings and targets in declaration order, the instance comes from the schema's scope, all four extent rules
+answer correctly, and a pipeline name the owner cannot resolve fails the pass.
+
+**WHAT THE REMAINING FOURTEEN RESOLVERS NEED, read out of all sixteen** (this is S3's roadmap, and why one at a time
+is the only honest order):
+
+| pass | declaration mapping | pipelines | push block needs | frame | frame side effects |
+|---|---|---|---|---|---|
+| scene, transparent | generic (done) | none | none | leaves/segments | - |
+| **taa** | generic (4 own + 1 target) | own | knobs: blend_static/min + proj depth terms | - | - |
+| **fxaa** | generic (1 target + 1 barrier) | own | knobs: exposure/bloom/fxaa + sRGB | after_draw | - |
+| **rt_shadow** | generic (1 barrier) | own | constants only (`inv_view_proj`) | - | 2 x ensure_gbuffer_*_sampled |
+| **cluster** | generic (2 barrier buffers) | own | none | cluster frame (the count) | - |
+| **deferred** | target is the ALIAS | own | knobs: ssao/unlit/gi + `inv_view_proj` | ensure_inputs | ensure_gbuffer_descriptors |
+| **post_composite** | target is POLICY (LDR when FXAA) | own (2 variants) | knobs + `gi_resolved` + proj terms | after_draw | - |
+| **post_bloom x4** | generic (target element = level) | the composite's | exposure/bloom knobs | - | - |
+| **gbuffer_debug** | generic | own | the channel knob | ensure_inputs | ensure_gbuffer_descriptors |
+| **shadow** | ONE declared target, N cascades handed over | own | none | record_cascade/run_tasks | - |
+| **gi_probe** | generic (9 own) | own | knobs + the AS device address | - | - |
+| **ssgi_trace** | generic (own + 12 barriers) | own | knobs + AS address + proj/table | - | - |
+| **ssgi_spec / ssgi_spatial / ssgi_temporal** | generic (own + barriers) | own | knobs + facts | temporal: the reflection callback | ensure_denoise_descriptors |
+
+Two gaps this slice found and did NOT paper over, both recorded in the code:
+
+* **`resolve_shared_set(2)` cannot answer** - the post family's five sets are one per STAGE (four bloom levels plus
+  the composite/FXAA pair), so "the set the declaration named" is not enough to pick one. The post-chain passes keep
+  their overrides until a pass can name WHICH of its owner's sets it binds.
+* **`own_per_image` is not in the generic path yet** - the GI chain's per-image descriptor families need it, and its
+  rule (which bindings get a per-image span, and how long the span is) has to be read off the passes that use it
+  before it can be generated. It is the next slice's first item.
+
+
 

@@ -3604,38 +3604,13 @@ namespace vulkan {
         static_cast<runtime*>(owner)->run_tasks(tasks, vulkan::task_priority::recording);
     }
 
-    bool runtime::resolve_scene_pass(pass::resolved_io& out) {
-        core const& vk = this->vulkan_core;
-        std::size_t const index = this->current_image_index;
-        std::size_t const image_count = vk.gbuffer_image_views.empty() ? 0 : vk.gbuffer_image_views[0].size();
-        if (!this->gbuffer_pass_active() || image_count == 0 || index >= image_count || vk.velocity_image_views.size() != image_count ||
-            vk.gbuffer_depth_image_views.size() != image_count) {
-            return false; // no surface pipeline, or no target generation to draw into
-        }
-        out.frame = this->pass_frame();
-        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
-        out.own = {};
-        out.own_set = VK_NULL_HANDLE;
-        // the shared scene set (the pass's declaration names the SET, not its bindings: its owner decides them)
-        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
-        // the six declared targets, in declaration order: the three stored surface targets, the motion-vector
-        // target, the scene colour target (an ALIAS - see scene_io: the TAA input while the resolve runs, the
-        // HDR target otherwise) and the surface depth
-        out.target_storage[0] = {.view = vk.gbuffer_image_views[0][index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_images[0][index]};
-        out.target_storage[1] = {.view = vk.gbuffer_image_views[1][index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_images[1][index]};
-        out.target_storage[2] = {.view = vk.gbuffer_image_views[2][index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_images[2][index]};
-        out.target_storage[3] = {.view = vk.velocity_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.velocity_images[index]};
-        out.target_storage[4] = {.view = this->scene_target_view(index), .buffer = VK_NULL_HANDLE, .image = this->scene_target_image(index)};
-        out.target_storage[5] = {.view = vk.gbuffer_depth_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_depth_images[index]};
-        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), 6);
-        // NO pipelines: a leaf names the pipeline it wants and the renderer's registry resolves it through the
-        // environment the pass is handed (see scene_frame::make_environment)
-        out.pipelines = {};
-        out.pipeline_layout = VK_NULL_HANDLE;
-        out.push = {};
-        out.extent = vk.swap_chain_extent;
-        return true;
-    }
+    // THE SCENE PASS'S RESOLVER IS GONE (S3): its six targets, its shared set and its extent are resolved from
+    // its own declaration against the frame's resource table (see pass::resolve_declaration), and the gate that
+    // used to be the first line here - "there is no surface pipeline, or no target generation to draw into" - is
+    // now the pass's FEATURE ("scene", answered by `gbuffer_pass_active()` in `feature_active`). The generation
+    // half of it is what the table already says: a frame whose targets do not exist has no entry to resolve, so
+    // the pass does not run. What is NOT resolved here anymore is `out.own = {}` and `out.push = {}` either -
+    // this pass declares neither, and the generic resolver leaves both empty for exactly that case.
 
     pass::transparent_frame runtime::make_transparent_frame() noexcept {
         core const& vk = this->vulkan_core;
@@ -3651,64 +3626,77 @@ namespace vulkan {
         };
     }
 
-    bool runtime::resolve_transparent_pass(pass::resolved_io& out) {
-        core const& vk = this->vulkan_core;
-        std::size_t const index = this->current_image_index;
-        std::size_t const image_count = vk.scene_color_image_views.size();
-        if (this->frame_transparent.empty() || image_count == 0 || index >= image_count || vk.gbuffer_depth_image_views.size() != image_count) {
-            return false; // nothing blended this frame: no instance and no barriers to pay for
-        }
-        out.frame = this->pass_frame();
-        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
-        out.own = {};
-        out.own_set = VK_NULL_HANDLE;
-        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
-        // the two declared targets, in declaration order: the scene colour it composites over (an ALIAS - the
-        // same image the scene pass writes) and the surface depth it depth-tests against
-        out.target_storage[0] = {.view = this->scene_target_view(index), .buffer = VK_NULL_HANDLE, .image = this->scene_target_image(index)};
-        out.target_storage[1] = {.view = vk.gbuffer_depth_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gbuffer_depth_images[index]};
-        out.targets = std::span<pass::resolved_binding const>(out.target_storage.data(), 2);
-        out.pipelines = {}; // a leaf names its pipeline; see the scene pass
-        out.pipeline_layout = VK_NULL_HANDLE;
-        out.push = {};
-        out.extent = vk.swap_chain_extent;
-        return true;
-    }
+    // THE TRANSPARENT PASS'S RESOLVER IS GONE TOO (S3), for the same reason as the scene pass's: two declared
+    // targets, the shared scene set and a full-frame extent, all of them resolved from the declaration. Its gate
+    // - "nothing blended this frame" - is the pass's FEATURE ("transparent", answered by `frame_transparent`
+    // being empty in `feature_active`), which is the frame's content rather than the declaration's shape.
 
     VkExtent2D runtime::pass_extent(pass::frame_pass const& pass) const noexcept {
-        // The rules the framework defines, applied from the pass's own declaration. `half` is the GI chain's
-        // resolution and the SAME max(1, axis / 2) the images are created with (see
-        // core::create_render_targets), so a pass cannot disagree with the image it writes.
+        // THE RULE LIVES IN THE FRAMEWORK NOW (pass::resolve_extent): it is the same mapping the generic resolver
+        // applies, and having two copies is how a new `extent_rule` gets implemented twice and the second copy is
+        // the one that is wrong. What stays here is the bridge to the framework - the frame and the owner's
+        // resource-extent lookup - for the resolvers that are still hand-written.
+        pass::resolve_context const context{
+            .frame = this->pass_frame(),
+            .extent_of = [](void* owner, render_resource::resource_id const id, uint32_t const element) { return static_cast<runtime const*>(owner)->resolve_resource_extent(id, element); },
+            .owner = const_cast<runtime*>(static_cast<runtime const*>(this)),
+        };
+        return pass::resolve_extent(pass.behaviour(), context);
+    }
+
+    VkExtent2D runtime::resolve_resource_extent(render_resource::resource_id const id, uint32_t const element) const noexcept {
         core const& vk = this->vulkan_core;
-        switch (pass.behaviour().extent) {
-        case pass::extent_rule::full:
-            return vk.swap_chain_extent;
-        case pass::extent_rule::half:
-            return VkExtent2D{std::max(1u, vk.swap_chain_extent.width / 2u), std::max(1u, vk.swap_chain_extent.height / 2u)};
-        case pass::extent_rule::resource:
-            // The resources whose extent is not the frame's, mapped from the declaration's (resource, element)
-            // pair - the HOST's half, because only the host knows its own images.
-            if (pass.behaviour().extent_of == pass::resource_id::probe_grid) {
-                // The one resource-shaped extent this renderer had until the bloom chain: the probe cache's grid.
-                return VkExtent2D{vulkan::gi_probe_grid_extent, vulkan::gi_probe_grid_extent};
-            }
-            if (pass.behaviour().extent_of == pass::resource_id::bloom) {
-                // A bloom level is HALF the previous one - max(1, swap >> (level + 1)) - which is the SAME
-                // formula `core::create_render_targets` created the images with, for the reason `half` above
-                // exists: a pass may not disagree with the image it writes. The clamp is belt-and-braces rather
-                // than the contract: the schema's `count` (4) plus the validator's element check is what limits
-                // the level, and a shift of 32 or more would be undefined behaviour if one ever got through.
-                uint32_t const shift = std::min<uint32_t>(static_cast<uint32_t>(pass.behaviour().extent_of_element) + 1u, 31u);
-                return VkExtent2D{std::max(1u, vk.swap_chain_extent.width >> shift), std::max(1u, vk.swap_chain_extent.height >> shift)};
-            }
-            return VkExtent2D{};
-        case pass::extent_rule::none:
-            // The pass sizes its own work (the cluster sort's 1D dispatch is `tiles_x * tiles_y * slices`), so
-            // there is no extent to hand over - and handing one over "just in case" is what would make a pass
-            // that declares `none` look like one that works at the frame's size.
-            return VkExtent2D{};
+        switch (id) {
+        case pass::resource_id::probe_grid:
+            // The probe cache's grid: 32 cells on a side, not the frame's size.
+            return VkExtent2D{vulkan::gi_probe_grid_extent, vulkan::gi_probe_grid_extent};
+        case pass::resource_id::bloom: {
+            // A bloom level is HALF the previous one - max(1, swap >> (level + 1)) - which is the SAME formula
+            // `core::create_render_targets` created the images with. The clamp is belt-and-braces rather than the
+            // contract: the schema's `count` (4) plus the validator's element check is what limits the level, and
+            // a shift of 32 or more would be undefined behaviour if one ever got through.
+            uint32_t const shift = std::min<uint32_t>(element + 1u, 31u);
+            return VkExtent2D{std::max(1u, vk.swap_chain_extent.width >> shift), std::max(1u, vk.swap_chain_extent.height >> shift)};
         }
-        return {};
+        default:
+            return VkExtent2D{}; // an element of a resource whose extent IS the frame's: nothing to answer
+        }
+    }
+
+    VkPipeline runtime::resolve_pipeline(std::string_view const name) const noexcept {
+        vk_pipeline const* const pipeline = this->get_pipeline(name);
+        return pipeline == nullptr ? VK_NULL_HANDLE : pipeline->get_pipeline();
+    }
+
+    VkDescriptorSet runtime::resolve_shared_set(uint32_t const set, uint32_t const image_index) {
+        core const& vk = this->vulkan_core;
+        switch (set) {
+        case 0: // the scene set: one per frame SLOT (the camera and light UBOs live there)
+            return this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
+        case 1: // the G-buffer set: one per swapchain IMAGE, written on demand by the accessor its users share
+            this->ensure_gbuffer_descriptors();
+            return this->gbuffer_family.set(image_index, 0);
+        case 2:
+            // THE POST SET IS NOT ANSWERED HERE, and that is a measured statement rather than an omission: the
+            // post family's five sets are one per STAGE (four bloom levels and the composite/FXAA pair), so "the
+            // set the declaration named" is not enough to pick one - the composite and FXAA take set 4 and a bloom
+            // level takes its own. The passes that need one keep their override until that vocabulary exists.
+            return VK_NULL_HANDLE;
+        default:
+            return VK_NULL_HANDLE;
+        }
+    }
+
+    pass::resolve_context runtime::make_resolve_context() noexcept {
+        return pass::resolve_context{
+            .resources = &this->frame_resources,
+            .frame = this->pass_frame(),
+            .cmd = *this->command_buffers[static_cast<uint32_t>(this->vulkan_core.current_frame)],
+            .descriptor_set = [](void* owner, uint32_t const set, uint32_t const image_index) { return static_cast<runtime*>(owner)->resolve_shared_set(set, image_index); },
+            .extent_of = [](void* owner, render_resource::resource_id const id, uint32_t const element) { return static_cast<runtime*>(owner)->resolve_resource_extent(id, element); },
+            .pipeline = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->resolve_pipeline(name); },
+            .owner = this,
+        };
     }
 
     pass::frame_identity runtime::pass_frame() const noexcept {
@@ -3763,12 +3751,6 @@ namespace vulkan {
     // declaration itself (see pass::resource_table and docs/pass_chain_plan.md).
     bool runtime::resolve_pass_impl(pass::frame_pass const& pass, pass::resolved_io& out) {
         core const& vk = this->vulkan_core;
-        if (&pass == static_cast<pass::frame_pass const*>(&this->transparent)) {
-            return this->resolve_transparent_pass(out);
-        }
-        if (&pass == static_cast<pass::frame_pass const*>(&this->scene)) {
-            return this->resolve_scene_pass(out);
-        }
         if (&pass == static_cast<pass::frame_pass const*>(&this->ssgi_trace)) {
             return this->resolve_ssgi_trace(out);
         }
@@ -3811,7 +3793,12 @@ namespace vulkan {
             return this->resolve_shadow_pass(out);
         }
         if (&pass != static_cast<pass::frame_pass const*>(&this->gi_probe)) {
-            return false; // no other pass is wired into a stage yet
+            // NOT ONE OF THE PASSES STILL HAND-WRITTEN HERE, so the FRAMEWORK resolves its declaration: the
+            // resource table for every own binding, target and barrier entry, the shared sets the declaration
+            // names, the pipelines the behaviour names, and the extent from the behaviour's rule (see
+            // frame_pass::resolve). THIS FALLBACK IS THE MIGRATION'S MECHANISM: a pass leaves this function the
+            // moment its branch above goes, and the last branch to go takes the whole switch with it.
+            return pass.resolve(this->make_resolve_context(), out);
         }
         // A frame whose grid images are not there cannot run this pass at all: the images are created and
         // destroyed with the target generation (see core::create_render_targets).
@@ -4928,6 +4915,21 @@ namespace vulkan {
 
     bool runtime::feature_active(std::string_view const name) const noexcept {
         render_features const f = this->active_features();
+        // THE TWO GATES THAT USED TO BE THE FIRST LINE OF A RESOLVER. Both passes were "always active" before S3,
+        // with the renderer's resolver returning false to skip them; the skip is the same, but the question now
+        // has one name and one answer, and the pass does not need a resolver to be asked it.
+        //
+        // What is NOT in these answers is the OTHER half of those old gates - whether this frame's target
+        // generation exists. That is what the resource table already says: a frame whose images are not there has
+        // no entry for the pass's declared targets, so the pass resolves to false and the runner skips it. Two
+        // mechanisms, two questions: "the pass cannot run at all this session" is here, "this frame has not got
+        // the resources" is the table.
+        if (name == "scene") {
+            return this->gbuffer_pass_active();
+        }
+        if (name == "transparent") {
+            return !this->frame_transparent.empty();
+        }
         if (name == "gbuffer-debug") {
             return f.gbuffer_debug;
         }

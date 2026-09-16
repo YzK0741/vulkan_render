@@ -32,6 +32,7 @@
 
 module;
 
+#include <algorithm> // std::max in the extent rule
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -53,6 +54,8 @@ export namespace vulkan::pass {
 
     /// forward: `pass_host` names it in a callback, and the class itself names `pass_host`
     class frame_pass;
+    /// forward: `resolve_context` holds one, and it is defined with the resource table below (section 5)
+    class resource_table;
 
     // =============================================================================================
     // 1. HOW A PASS IS CALLED - one small closed vocabulary, shared by every pass of that shape
@@ -315,6 +318,49 @@ export namespace vulkan::pass {
     };
 
     // =============================================================================================
+    // 1b. WHAT A RESOLVER IS GIVEN - the resources that exist this frame, and three narrow lookups
+    // =============================================================================================
+
+    /**
+     * @brief what a pass needs to turn its OWN declaration into this frame's handles
+     *
+     * WHY THIS IS NOT `pass_host`: the host is the RUNNER's interface (frame, feature gate, the resolve call
+     * itself, the mark pair), and a pass never sees it - that rule is what stops this framework from growing a
+     * context object that answers whatever the newest pass asks for. This struct is the opposite shape: it is
+     * DATA the frame loop produced (the resources that exist, the frame identity, the command buffer) plus three
+     * lookups that all take the DECLARATION's own keys - "the set the declaration named", "the extent of the
+     * resource element the behaviour named", "the pipeline the behaviour named". A pass cannot reach a resource
+     * through it that its declaration did not name, because the table only answers for
+     * (resource, element, instance) and the keys come from the declaration.
+     *
+     * A pass that does not override `frame_pass::resolve` sees this through the default implementation; a pass
+     * that does (its frame decides something the declaration cannot say) gets exactly this and nothing else.
+     */
+    struct resolve_context {
+        /// the resources that exist this frame, keyed the way a declaration names them (see resource_table)
+        resource_table const* resources = nullptr;
+        /// the frame being recorded: which image, which slot, how many images, the frame's extent
+        frame_identity frame = {};
+        /// THE command buffer, handed out here for the same reason `resolved_io::cmd` exists: a pass records
+        /// into what it is given and stores no device state between frames
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        /**
+         * The set the declaration named, BY INDEX: `descriptor_set(owner, set, image_index)`.
+         *
+         * The same vocabulary `pass_context::shared_set_layout` uses at create time, one lifetime later: the
+         * declaration says "set 1" and the owner is the one that knows what occupies it this frame.
+         */
+        VkDescriptorSet (*descriptor_set)(void* owner, uint32_t set, uint32_t image_index) = nullptr;
+        /// the extent of a resource element the behaviour named (`extent_rule::resource`), or {0,0} for an
+        /// element the owner does not have - only the owner knows its own images' sizes
+        VkExtent2D (*extent_of)(void* owner, render_resource::resource_id id, uint32_t element) = nullptr;
+        /// the pipeline a `behaviour::pipelines` NAME refers to, or `VK_NULL_HANDLE` when the owner has none
+        VkPipeline (*pipeline)(void* owner, std::string_view name) = nullptr;
+        /// what every lookup above is called with
+        void* owner = nullptr;
+    };
+
+    // =============================================================================================
     // 2. WHAT A PASS IS GIVEN (create) AND WHAT THE RUNNER TALKS TO (record)
     //
     // TWO STRUCTS, and the split is a decision rather than bookkeeping: they have different OWNERS and
@@ -504,6 +550,29 @@ export namespace vulkan::pass {
         virtual void create(pass_context const& context) = 0;
         /// @brief the swapchain was rebuilt, so every per-image resource this pass held is stale
         virtual void on_swapchain_recreated(pass_host const& host) = 0;
+        /**
+         * @brief fill this frame's `resolved_io` FROM THIS PASS'S OWN DECLARATION
+         *
+         * THE DEFAULT IMPLEMENTATION IS THE POINT OF THE FRAMEWORK, and it is what the renderer's sixteen
+         * hand-written `resolve_*_pass` functions are being replaced by, one pass at a time: walk the
+         * declaration, ask the resource table for every own binding, target and barrier entry, take the shared
+         * sets the declaration names and the pipelines the behaviour names, and the extent from the behaviour's
+         * own rule. A pass whose declaration says everything it needs does NOT override this - there is nothing
+         * left for the owner to know.
+         *
+         * A PASS OVERRIDES IT when its FRAME decides something the DECLARATION cannot express, and the override
+         * starts by calling `resolve_declaration(*this, context, out)` so the declaration's half stays shared:
+         * the composite writing the LDR image when FXAA runs (one `render_target` names one resource), the
+         * shadow pass handing over one target per cascade (a rendering instance has exactly one depth target),
+         * the debug view's channel, a pass that owns its own descriptor family. What an override must NOT do is
+         * reach for a resource the declaration does not name - the context's lookups all take the declaration's
+         * own keys for exactly that reason.
+         *
+         * @param context the resources that exist this frame + the owner's three lookups (see resolve_context)
+         * @param out the struct to fill; the pass's `record` reads it immediately
+         * @return false when this frame cannot run the pass, which the runner treats as "skip, record nothing"
+         */
+        [[nodiscard]] virtual bool resolve(resolve_context const& context, resolved_io& out) const;
         /**
          * @brief record into the frame, with the resources the declaration asked for already resolved
          *
@@ -782,5 +851,185 @@ export namespace vulkan::pass {
         /// what the stage runner refuses to depend on).
         std::vector<entry> entries_ = {};
     };
+
+    // =============================================================================================
+    // 6. THE DECLARATION-DRIVEN RESOLVER - what `frame_pass::resolve` does unless a pass overrides it
+    // =============================================================================================
+
+    /**
+     * @ingroup vulkan_pass
+     * @brief the extent a behaviour's rule asks for, from the frame and the owner's own images
+     * @param how the pass's behaviour
+     * @param context the frame and the owner's `extent_of` lookup
+     * @note `half` is `max(1, axis / 2)` - the SAME formula the renderer creates its half-size images with, so a
+     *       pass cannot disagree with the image it writes; `resource` is the owner's answer, because only it
+     *       knows its own images' sizes; `none` means the pass sizes its own work and gets {0,0}
+     */
+    [[nodiscard]] inline VkExtent2D resolve_extent(behaviour const& how, resolve_context const& context) noexcept {
+        switch (how.extent) {
+        case extent_rule::full:
+            return context.frame.extent;
+        case extent_rule::half:
+            return VkExtent2D{std::max(1u, context.frame.extent.width / 2u), std::max(1u, context.frame.extent.height / 2u)};
+        case extent_rule::resource:
+            return context.extent_of == nullptr ? VkExtent2D{} : context.extent_of(context.owner, how.extent_of, how.extent_of_element);
+        case extent_rule::none:
+            return VkExtent2D{};
+        }
+        return VkExtent2D{};
+    }
+
+    /**
+     * @brief the pipeline half of the declaration-driven resolution (split out only to keep the function below
+     *        readable: it is one loop and one rule)
+     */
+    [[nodiscard]] inline bool declaration_pipelines_ok(frame_pass const& pass, resolve_context const& context, resolved_io& out) {
+        std::span<std::string_view const> const names = pass.behaviour().pipelines;
+        if (names.empty()) {
+            out.pipelines = {};
+            return true;
+        }
+        if (names.size() > out.pipeline_storage.size() || context.pipeline == nullptr) {
+            return false;
+        }
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            out.pipeline_storage[i] = context.pipeline(context.owner, names[i]);
+            if (out.pipeline_storage[i] == VK_NULL_HANDLE) {
+                return false; // the frame cannot bind a pipeline the pass declared: do not record it
+            }
+        }
+        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), names.size());
+        return true;
+    }
+
+    /**
+     * @ingroup vulkan_pass
+     * @brief resolve a pass's declaration into this frame's handles, entry by entry
+     *
+     * THE RULES, all of them from the declaration and the schema:
+     *  - an OWN binding is what the table holds for its (resource, element, instance), where the instance is the
+     *    schema's `scope` applied to the frame (see instance_for). A binding whose resource the owner does not
+     *    have means THIS FRAME CANNOT RUN THE PASS - returning true with a null handle would record a
+     *    descriptor pointing at nothing;
+     *  - the same rule for a render TARGET and for a BARRIER image or buffer, in declaration order;
+     *  - a SHARED set is asked for BY THE INDEX the declaration names - the pass binds it, its owner fills it;
+     *  - a PIPELINE is asked for BY THE NAME `behaviour::pipelines` declares;
+     *  - the EXTENT comes from the behaviour's rule (resolve_extent).
+     *
+     * WHAT IT DELIBERATELY LEAVES ALONE: `own_set` (a pass that owns a descriptor family fills that itself in its
+     * own override), `own_per_image` (the per-image channel the GI chain needs - its shape is the next step, see
+     * docs/pass_chain_plan.md) and `push` (a push block's values are the pass's own parameters and this frame's
+     * constants, so the pass composes it).
+     *
+     * @param pass the pass whose declaration is being resolved
+     * @param context the resources that exist this frame + the owner's lookups
+     * @param out the struct to fill
+     * @return false when the frame does not have what the declaration names
+     */
+    [[nodiscard]] inline bool resolve_declaration(frame_pass const& pass, resolve_context const& context, resolved_io& out) {
+        render_resource::pass_io const& declaration = pass.io();
+        if (context.resources == nullptr) {
+            return false;
+        }
+        out.frame = context.frame;
+        out.cmd = context.cmd;
+        out.own_set = VK_NULL_HANDLE; // a pass that owns its set fills it in its own resolve
+        out.push = {};                // ... and a push block is composed by the pass that pushes it
+
+        // ---- the pass's own bindings, indexed by their own binding number ----
+        uint32_t own_count = 0;
+        for (render_resource::pass_binding const& binding : declaration.bindings) {
+            if (binding.owner != render_resource::set_owner::own) {
+                continue;
+            }
+            render_resource::resource_info const* const info = render_resource::find(binding.resource);
+            if (info == nullptr || binding.binding >= out.own_storage.size()) {
+                return false; // not a resource the schema knows, or not the contiguous own set the validator requires
+            }
+            resolved_binding const handles = context.resources->find(binding.resource, binding.element, instance_for(info->scope, context.frame));
+            if (handles.view == VK_NULL_HANDLE && handles.buffer == VK_NULL_HANDLE && handles.image == VK_NULL_HANDLE) {
+                return false; // this frame does not have it: do not record the pass at all
+            }
+            out.own_storage[binding.binding] = handles;
+            own_count = std::max(own_count, static_cast<uint32_t>(binding.binding) + 1u);
+        }
+        out.own = std::span<resolved_binding const>(out.own_storage.data(), own_count);
+
+        // ---- the targets, in declaration order ----
+        if (declaration.targets.size() > out.target_storage.size()) {
+            return false;
+        }
+        for (std::size_t t = 0; t < declaration.targets.size(); ++t) {
+            render_resource::resource_info const* const info = render_resource::find(declaration.targets[t].resource);
+            if (info == nullptr) {
+                return false;
+            }
+            resolved_binding const handles = context.resources->find(declaration.targets[t].resource, declaration.targets[t].element, instance_for(info->scope, context.frame));
+            if (handles.view == VK_NULL_HANDLE && handles.image == VK_NULL_HANDLE) {
+                return false;
+            }
+            out.target_storage[t] = handles;
+        }
+        out.targets = std::span<resolved_binding const>(out.target_storage.data(), declaration.targets.size());
+
+        // ---- the barrier images and buffers, in declaration order ----
+        if (declaration.barrier_images.size() > out.barrier_storage.size() || declaration.barrier_buffers.size() > out.barrier_buffer_storage.size()) {
+            return false;
+        }
+        for (std::size_t i = 0; i < declaration.barrier_images.size(); ++i) {
+            render_resource::resource_info const* const info = render_resource::find(declaration.barrier_images[i].resource);
+            if (info == nullptr) {
+                return false;
+            }
+            resolved_binding const handles = context.resources->find(declaration.barrier_images[i].resource, declaration.barrier_images[i].element, instance_for(info->scope, context.frame));
+            if (handles.image == VK_NULL_HANDLE) {
+                return false;
+            }
+            out.barrier_storage[i] = handles;
+        }
+        out.barrier_images = std::span<resolved_binding const>(out.barrier_storage.data(), declaration.barrier_images.size());
+        for (std::size_t i = 0; i < declaration.barrier_buffers.size(); ++i) {
+            render_resource::resource_info const* const info = render_resource::find(declaration.barrier_buffers[i].resource);
+            if (info == nullptr) {
+                return false;
+            }
+            resolved_binding const handles = context.resources->find(declaration.barrier_buffers[i].resource, declaration.barrier_buffers[i].element, instance_for(info->scope, context.frame));
+            if (handles.buffer == VK_NULL_HANDLE) {
+                return false;
+            }
+            out.barrier_buffer_storage[i] = handles;
+        }
+        out.barrier_buffers = std::span<resolved_binding const>(out.barrier_buffer_storage.data(), declaration.barrier_buffers.size());
+
+        // ---- the shared sets, by the index the declaration names ----
+        for (uint32_t const set : declaration.shared_sets) {
+            VkDescriptorSet const descriptor_set = context.descriptor_set == nullptr ? VK_NULL_HANDLE : context.descriptor_set(context.owner, set, context.frame.image_index);
+            switch (set) {
+            case 0:
+                out.shared.scene = descriptor_set;
+                break;
+            case 1:
+                out.shared.gbuffer = descriptor_set;
+                break;
+            case 2:
+                out.shared.post = descriptor_set;
+                break;
+            default:
+                return false; // a set this framework has no field for: the declaration and the owner disagree
+            }
+        }
+
+        // ---- the pipelines the behaviour names ----
+        if (!declaration_pipelines_ok(pass, context, out)) {
+            return false;
+        }
+
+        out.extent = resolve_extent(pass.behaviour(), context);
+        return true;
+    }
+
+    inline bool frame_pass::resolve(resolve_context const& context, resolved_io& out) const {
+        return resolve_declaration(*this, context, out);
+    }
 
 } // namespace vulkan::pass

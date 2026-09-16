@@ -654,5 +654,114 @@ int main() {
         CHECK(io.constants.view == glm::mat4(1.0f)); // the identity, not the frame's camera: nothing has run yet
     }
 
+    // ---- what `frame_pass::resolve` does unless a pass overrides it: the DECLARATION-driven resolution, whose
+    //      only source of handles is the resource table. This is the piece the renderer's sixteen hand-written
+    //      `resolve_*_pass` functions are being replaced by, one pass at a time, and the rules it enforces are
+    //      the ones every one of them wrote by hand: a missing resource means the pass does not run, the frame's
+    //      instance comes from the SCHEMA's scope, and the push block is the pass's own business ----
+    {
+        /// a pass whose declaration is all it needs. The TAA resolve's declaration is reused rather than
+        /// invented: four own bindings (all per-swapchain-image), one render target, and a declared push size
+        /// that the resolver must NOT fill.
+        struct declared_pass final : vp::frame_pass {
+            vp::behaviour how = {.kind = vp::behaviour_kind::fullscreen, .extent = vp::extent_rule::full};
+            [[nodiscard]] rr::pass_io const& io() const noexcept override {
+                return rr::taa_io;
+            }
+            [[nodiscard]] vp::behaviour const& behaviour() const noexcept override {
+                return this->how;
+            }
+            [[nodiscard]] std::string_view feature() const noexcept override {
+                return {};
+            }
+            void create(vp::pass_context const&) override {
+            }
+            void on_swapchain_recreated(vp::pass_host const&) override {
+            }
+            void record(vp::resolved_io const&) override {
+            }
+        };
+        /// the owner side of a resolve_context: a table plus the three lookups the framework declares
+        struct resolver_owner {
+            vp::resource_table table;
+            VkExtent2D resource_extent = {7, 9};
+            VkDescriptorSet scene = reinterpret_cast<VkDescriptorSet>(0x5E);
+            VkPipeline pipeline = reinterpret_cast<VkPipeline>(0x77);
+            std::string_view unknown_pipeline = {};
+        };
+        resolver_owner owner;
+        vp::frame_identity const frame = {.image_index = 1, .slot = 0, .image_count = 2, .extent = {64, 32}};
+        vp::resolve_context const context = {
+            .resources = &owner.table,
+            .frame = frame,
+            .cmd = fake_cmd,
+            .descriptor_set = [](void* o, uint32_t const set, uint32_t) -> VkDescriptorSet { return set == 0 ? static_cast<resolver_owner*>(o)->scene : VK_NULL_HANDLE; },
+            .extent_of = [](void* o, rr::resource_id, uint32_t) { return static_cast<resolver_owner*>(o)->resource_extent; },
+            .pipeline = [](void* o, std::string_view const name) -> VkPipeline { return name == static_cast<resolver_owner*>(o)->unknown_pipeline ? VK_NULL_HANDLE : static_cast<resolver_owner*>(o)->pipeline; },
+            .owner = &owner,
+        };
+        declared_pass pass;
+        vp::resolved_io io = {};
+
+        // AN EMPTY TABLE: the frame does not have what the declaration names, so the pass does not run at all -
+        // the rule that replaced every resolver's `if (images.empty() || index >= count) return false;`
+        CHECK(!pass.resolve(context, io));
+
+        // ... publish this frame's four bindings and its target, and the SAME declaration resolves
+        for (rr::resource_id const id : {rr::resource_id::scene_color, rr::resource_id::taa_history, rr::resource_id::velocity, rr::resource_id::gbuffer_depth}) {
+            uint64_t const tag = static_cast<uint64_t>(id);
+            owner.table.publish(id, 0, frame.image_index, {.view = reinterpret_cast<VkImageView>(0x8000 + tag), .image = reinterpret_cast<VkImage>(0x9000 + tag)});
+        }
+        VkImageView const hdr_view = reinterpret_cast<VkImageView>(0xAA);
+        owner.table.publish(rr::resource_id::hdr, 0, frame.image_index, {.view = hdr_view, .image = reinterpret_cast<VkImage>(0xBB)});
+        CHECK(pass.resolve(context, io));
+        CHECK(io.cmd == fake_cmd);
+        CHECK(io.frame.image_index == frame.image_index);
+        CHECK(io.own.size() == 4); // the four own bindings, in their own binding order
+        CHECK(io.own[0].image == reinterpret_cast<VkImage>(0x9000 + static_cast<uint64_t>(rr::resource_id::scene_color)));
+        CHECK(io.own[3].image == reinterpret_cast<VkImage>(0x9000 + static_cast<uint64_t>(rr::resource_id::gbuffer_depth)));
+        CHECK(io.targets.size() == 1);
+        CHECK(io.targets[0].view == hdr_view);
+        CHECK(io.extent.width == 64 && io.extent.height == 32); // the declaration's rule is `full`
+        CHECK(io.own_set == VK_NULL_HANDLE);                    // a pass that owns a set fills it in its own resolve
+        CHECK(io.push.empty());                                 // ... and composes its own push block
+        CHECK(io.barrier_images.empty() && io.barrier_buffers.empty());
+
+        // A MISSING TARGET is the same statement as a missing binding: do not record the pass
+        owner.table.clear();
+        for (rr::resource_id const id : {rr::resource_id::scene_color, rr::resource_id::taa_history, rr::resource_id::velocity, rr::resource_id::gbuffer_depth}) {
+            uint64_t const tag = static_cast<uint64_t>(id);
+            owner.table.publish(id, 0, frame.image_index, {.view = reinterpret_cast<VkImageView>(0x8000 + tag), .image = reinterpret_cast<VkImage>(0x9000 + tag)});
+        }
+        CHECK(!pass.resolve(context, io));
+
+        // THE EXTENT RULES, applied by the framework from the behaviour: half is the formula the half-size images
+        // are created with, `resource` is the owner's answer, and `none` means the pass sizes its own work
+        owner.table.publish(rr::resource_id::hdr, 0, frame.image_index, {.view = hdr_view});
+        pass.how.extent = vp::extent_rule::half;
+        CHECK(pass.resolve(context, io));
+        CHECK(io.extent.width == 32 && io.extent.height == 16);
+        pass.how.extent = vp::extent_rule::resource;
+        pass.how.extent_of = rr::resource_id::bloom;
+        pass.how.extent_of_element = 2;
+        CHECK(pass.resolve(context, io));
+        CHECK(io.extent.width == 7 && io.extent.height == 9); // the owner's answer for that element
+        pass.how.extent = vp::extent_rule::none;
+        CHECK(pass.resolve(context, io));
+        CHECK(io.extent.width == 0 && io.extent.height == 0); // "I size my own work", not "the frame's size"
+
+        // THE PIPELINES the behaviour names: resolved by name through the owner, and a name the owner cannot
+        // answer means the frame cannot bind what the pass declared - so the pass does not run
+        constexpr std::array<std::string_view, 1> pipeline_names = {"taa"};
+        pass.how.extent = vp::extent_rule::full;
+        pass.how.pipelines = pipeline_names;
+        CHECK(pass.resolve(context, io));
+        CHECK(io.pipelines.size() == 1);
+        CHECK(io.pipelines[0] == owner.pipeline);
+        owner.unknown_pipeline = "taa";
+        CHECK(!pass.resolve(context, io));
+        owner.unknown_pipeline = {};
+    }
+
     return vk_test::finish("test_pass");
 }
