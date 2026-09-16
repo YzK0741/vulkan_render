@@ -1,4 +1,4 @@
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/ssgi_trace.cppm
@@ -74,6 +74,14 @@ export namespace vulkan::pass {
         bool traced_oracle = false;
         /// whether the probe cache is on AND has been written at least once, so its gain may be pushed non-zero
         bool probe_ready = false;
+        /**
+         * Whether a hit this frame is shaded from the geometry it landed on, which is HALF of what the instance
+         * table's address means to this shader: with hit shading off the address is pushed as ZERO, and that zero is
+         * how the shader is told to read the screen where its ray landed instead. The other half is the frame's
+         * table itself (`resolved_io::constants.gi_instance_table`), which the probe cache - whose hits are in
+         * world space and have no screen to fall back to - uses whether or not this is true.
+         */
+        bool shade_hits = false;
     };
 
     /**

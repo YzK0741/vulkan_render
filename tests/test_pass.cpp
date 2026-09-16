@@ -33,6 +33,10 @@ namespace {
             .name = name,
             .own_set = 1,
             .bindings = rr::gi_probe_bindings, // a declaration the schema accepts, reused rather than invented
+            // ... WITH the set those bindings come from: the validator refuses non-own bindings whose shared set is
+            // not declared, which is the rule the probe cache's missing `shared_sets` entry bought (see
+            // test_render_resources).
+            .shared_sets = rr::gi_probe_shared_sets,
             .targets = targets,
             .push = std::nullopt,
         };

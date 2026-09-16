@@ -46,6 +46,7 @@
 
 module;
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <expected>
@@ -637,7 +638,9 @@ export namespace vulkan::render_resource {
      * TARGET gets the same two checks a binding gets - the schema declares the resource, and the element is
      * inside its family - plus uniqueness, because two targets naming one image would be a pass rendering into
      * itself twice. A target that claims a RUN of elements (`render_target::count`) is checked as the run it
-     * is: the last element has to be inside the family, and two runs of one resource may not overlap.
+     * is: the last element has to be inside the family, and two runs of one resource may not overlap. And a
+     * declaration that binds a SHARED set has to NAME one, which is the rule the probe cache's missing
+     * `shared_sets` entry taught this function (a null descriptor set at bind time).
      * @ingroup vulkan_render_resource
      */
     [[nodiscard]] inline std::expected<void, std::string> validate(pass_io const& io) {
@@ -775,6 +778,18 @@ export namespace vulkan::render_resource {
         }
         // THE SHARED SETS, checked after the bindings are counted: a set cannot be both the pass's own (whose
         // layout it generates and whose bindings it describes) and one it merely binds.
+        //
+        // ... AND A DECLARATION THAT BINDS A SHARED SET HAS TO DECLARE IT. This rule was ADDED because a pass got
+        // it wrong in the one way nothing caught: the probe cache's seven scene-owned bindings give its pipeline
+        // layout a set 0, but its declaration listed no shared set at all - so the framework had nothing to
+        // resolve for set 0, the pass bound a NULL descriptor set, and the only scenario that runs the cache
+        // reported `pDBindDescriptorSets(): pDescriptorSets[0] (VkDescriptorSet 0x0) is not a valid
+        // VkDescriptorSet`. The bindings describe the LAYOUT; `shared_sets` is what tells the framework which sets
+        // the owner has to FILL, and only the declaration can say that.
+        std::size_t const non_own_bindings = static_cast<std::size_t>(std::count_if(io.bindings.begin(), io.bindings.end(), [](pass_binding const& b) { return b.owner != set_owner::own; }));
+        if (non_own_bindings > 0 && io.shared_sets.empty()) {
+            return std::unexpected(who + ": " + std::to_string(non_own_bindings) + " of its bindings belong to a SHARED set, and the declaration names none - the framework would resolve nothing for them");
+        }
         for (std::size_t i = 0; i < io.shared_sets.size(); ++i) {
             shared_set const set = io.shared_sets[i];
             if (own_count != 0 && set.family == io.own_set) {
@@ -880,12 +895,22 @@ export namespace vulkan::render_resource {
         {.set = 0, .binding = 16, .owner = set_owner::scene, .kind = binding_kind::acceleration_structure, .resource = resource_id::top_level_structure, .access = binding_access::read},
     }};
 
+    /// @brief set 0 is the shared scene set (a cell's ray needs the top level structure, the light UBO and the
+    ///        material table; the propagation's hit shading needs the textures and the environment cubes in it too)
+    inline constexpr std::array<shared_set, 1> gi_probe_shared_sets = {{{.family = 0}}};
+
     /// @brief the probe cache's declaration
     /// @ingroup vulkan_render_resource
     inline constexpr pass_io gi_probe_io = {
         .name = "gi_probe",
         .own_set = 1,
         .bindings = gi_probe_bindings,
+        // THE SHARED SET HAD TO BE DECLARED EXPLICITLY, and the gate is what found out: the seven scene-owned
+        // bindings above give the pipeline layout its set 0, but a set nothing DECLARES is a set the framework
+        // resolves nothing for - so the pass bound a null descriptor set and `sponza_gi` (the one scenario with the
+        // cache on) reported `vkCmdBindDescriptorSets(): pDescriptorSets[0] (VkDescriptorSet 0x0) is not a valid
+        // VkDescriptorSet`. The validator refuses that shape now (see `validate`).
+        .shared_sets = gi_probe_shared_sets,
         // The pass's push block, DECLARED here because it is the range its pipeline layout is built with and
         // the size its host must compose. It is the pass's own struct
         // (`vulkan.pass.gi_probe::gi_probe_pass::push_constants`), and `vulkan.pass.gi_probe` carries the

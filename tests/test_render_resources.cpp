@@ -97,6 +97,30 @@ int main() {
     CHECK(rr::gi_probe_io.bindings[0].element == 0);
     CHECK(rr::gi_probe_io.bindings[4].element == 4);
     CHECK(rr::gi_probe_io.bindings[8].resource == rr::resource_id::probe_surface);
+    // ... and THE SHARED SET IS DECLARED, which is the rule this scenario taught the validator: the seven
+    // scene-owned bindings give the pipeline layout a set 0, but a set nothing declares is a set the framework
+    // resolves nothing for - the pass bound a NULL set and `sponza_gi` caught it.
+    CHECK(rr::gi_probe_io.shared_sets.size() == 1);
+    CHECK(rr::gi_probe_io.shared_sets[0].family == 0);
+    {
+        // a declaration that BINDS a shared set and NAMES none is refused ...
+        rr::pass_io const unnamed = {.name = "probe-like",
+                                     .own_set = 1,
+                                     .bindings = rr::gi_probe_bindings,
+                                     .shared_sets = {},
+                                     .targets = {},
+                                     .push = rr::push_block{.offset = 0, .size = 56, .stages = rr::stage_flag::compute}};
+        auto const refused = rr::validate(unnamed);
+        CHECK(!refused.has_value());
+        // ... while the same declaration WITH the set is accepted
+        rr::pass_io const named = {.name = "probe-like",
+                                   .own_set = 1,
+                                   .bindings = rr::gi_probe_bindings,
+                                   .shared_sets = rr::gi_probe_shared_sets,
+                                   .targets = {},
+                                   .push = rr::push_block{.offset = 0, .size = 56, .stages = rr::stage_flag::compute}};
+        CHECK(rr::validate(named).has_value());
+    }
 
     // ---- the well-formed binding, so the failures below mean something ----
     CHECK(validate_one(good_binding).has_value());

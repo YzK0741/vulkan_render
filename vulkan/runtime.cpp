@@ -2558,6 +2558,9 @@ namespace vulkan {
             // pushes is zero otherwise, so a grid nothing has deposited into is never sampled - and the "has it
             // been written" half is the probe PASS's own state, which is why the host asks it.
             .probe_ready = this->gi_probe_active() && this->gi_probe.cache_valid(),
+            // ... and whether a hit is shaded from its own geometry, which is what makes the instance table's
+            // address meaningful to this shader (a zero address is how it is told to read the screen instead).
+            .shade_hits = this->ssgi_hit_shading,
         };
     }
 
@@ -2855,8 +2858,9 @@ namespace vulkan {
     void runtime::set_ssgi_probes(bool const enabled, float const rate, uint32_t const rounds, float const gain) noexcept {
         this->gi_probe_enabled = enabled;
         // The rate is the loop gain of the grid's own cycle (tracer -> resolve -> grid -> tracer): a rate
-        // of 1 would make the grid an immediate echo of the frame that read it, so it stops below that.
-        this->gi_probe_rate = std::clamp(rate, 0.0f, 0.5f);
+        // of 1 would make the grid an immediate echo of the frame that read it, so it stops below that. It is
+        // the PASS's value and the pass clamps it (see gi_probe_pass::set_rate).
+        this->gi_probe.set_rate(rate);
         this->gi_probe_rounds = std::clamp(rounds, 0u, 4u);
         // The dispatch count is the pass's: it owns the update sequence, so the renderer hands it the one
         // number of that sequence that is configuration rather than structure.
@@ -3382,18 +3386,11 @@ namespace vulkan {
     // - "nothing blended this frame" - is the pass's FEATURE ("transparent", answered by `frame_transparent`
     // being empty in `feature_active`), which is the frame's content rather than the declaration's shape.
 
-    VkExtent2D runtime::pass_extent(pass::frame_pass const& pass) const noexcept {
-        // THE RULE LIVES IN THE FRAMEWORK NOW (pass::resolve_extent): it is the same mapping the generic resolver
-        // applies, and having two copies is how a new `extent_rule` gets implemented twice and the second copy is
-        // the one that is wrong. What stays here is the bridge to the framework - the frame and the owner's
-        // resource-extent lookup - for the resolvers that are still hand-written.
-        pass::resolve_context const context{
-            .frame = this->pass_frame(),
-            .extent_of = [](void* owner, render_resource::resource_id const id, uint32_t const element) { return static_cast<runtime const*>(owner)->resolve_resource_extent(id, element); },
-            .owner = const_cast<runtime*>(static_cast<runtime const*>(this)),
-        };
-        return pass::resolve_extent(pass.behaviour(), context);
-    }
+    // `runtime::pass_extent` IS GONE (S3.12), and it is the payoff of the last resolver: it was the bridge from a
+    // declaration to a size the renderer owns, and it existed because a hand-written resolver had to apply the
+    // declaration's own `extent_rule` itself. The framework applies it now (`pass::resolve_extent`, over the
+    // `extent_of` callback below), so the bridge had no callers left - the rule is in ONE place, which is what the
+    // function's own comment argued for while it was the second copy.
 
     VkExtent2D runtime::resolve_resource_extent(render_resource::resource_id const id, uint32_t const element) const noexcept {
         core const& vk = this->vulkan_core;
@@ -3503,85 +3500,22 @@ namespace vulkan {
     }
 
     bool runtime::resolve_pass(pass::frame_pass const& pass, pass::resolved_io& out) {
-        // TWO THINGS WRAP THE PER-PASS DISPATCH, and neither belongs inside it: this frame's shared constants,
-        // which every pass is handed whether or not it reads them yet, and the differential check that keeps the
-        // resource table honest against the resolvers that are still here (see verify_resource_table).
+        // TWO THINGS WRAP THE FRAMEWORK'S RESOLUTION, and neither belongs there: this frame's shared constants,
+        // which every pass is handed whether or not it reads them yet, and the differential check that kept the
+        // resource table honest while the resolvers were still here (see verify_resource_table).
+        //
+        // THE PER-PASS SWITCH IS GONE (S3.12): every pass in this renderer is resolved by its own DECLARATION now
+        // (`frame_pass::resolve`), from the resource table the frame publishes - own bindings, targets, barrier
+        // entries, the shared sets it names, its own pipeline and the extent from its behaviour's rule. What is
+        // left of the renderer's knowledge is the table's CONTENTS (`publish_frame_resources`) and the frame's
+        // constants, which is exactly the split this migration was for: a pass cannot reach a resource its
+        // declaration does not name, and the renderer no longer knows which pass wants which image.
         out.constants = this->frame_facts;
-        bool const resolved = this->resolve_pass_impl(pass, out);
+        bool const resolved = pass.resolve(this->make_resolve_context(), out);
         if (resolved) {
             this->verify_resource_table(pass, out);
         }
         return resolved;
-    }
-
-    // The per-pass dispatch itself: one branch per pass in the chain, each answered by this renderer's own
-    // resolver for it. THIS IS THE LAYER THE RESOURCE TABLE REPLACES, one pass at a time: for a pass whose
-    // declaration is all it needs, the branch and its resolver disappear and the framework resolves the
-    // declaration itself (see pass::resource_table and docs/pass_chain_plan.md).
-    bool runtime::resolve_pass_impl(pass::frame_pass const& pass, pass::resolved_io& out) {
-        core const& vk = this->vulkan_core;
-        if (&pass != static_cast<pass::frame_pass const*>(&this->gi_probe)) {
-            // NOT ONE OF THE PASSES STILL HAND-WRITTEN HERE, so the FRAMEWORK resolves its declaration: the
-            // resource table for every own binding, target and barrier entry, the shared sets the declaration
-            // names, the pipelines the behaviour names, and the extent from the behaviour's rule (see
-            // frame_pass::resolve). THIS FALLBACK IS THE MIGRATION'S MECHANISM: a pass leaves this function the
-            // moment its branch above goes, and the last branch to go takes the whole switch with it.
-            return pass.resolve(this->make_resolve_context(), out);
-        }
-        // A frame whose grid images are not there cannot run this pass at all: the images are created and
-        // destroyed with the target generation (see core::create_render_targets).
-        if (vk.gi_probe_image_views.size() != 8 || vk.gi_probe_images.size() != 8 || vk.gi_probe_surface_image_views.empty() || vk.gi_probe_surface_images.empty() ||
-            !this->gi_probe.pipeline_ready()) {
-            return false;
-        }
-        out.frame = this->pass_frame();
-        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
-        // The nine own bindings, resolved BY DECLARATION ELEMENT: the declaration says binding k is element k
-        // of `probe_grid` (0..7) and binding 8 element 0 of `probe_surface`, and mapping an element onto the
-        // renderer's image is exactly what a resolver is for. Which half of the ping-pong each of the pass's
-        // two sets binds is the PASS's fact, not this function's, so nothing here decides it.
-        for (uint32_t k = 0; k < 8; ++k) {
-            out.own_storage[k] = {.view = vk.gi_probe_image_views[k], .buffer = VK_NULL_HANDLE, .image = vk.gi_probe_images[k]};
-        }
-        out.own_storage[8] = {.view = vk.gi_probe_surface_image_views[0], .buffer = VK_NULL_HANDLE, .image = vk.gi_probe_surface_images[0]};
-        out.own = std::span<pass::resolved_binding const>(out.own_storage.data(), 9);
-        // The pass owns its family, so it resolves its own sets; what the host resolves is the SHARED set the
-        // declaration uses (a cell's ray needs the top level structure, the material table, the light UBO).
-        out.own_set = VK_NULL_HANDLE;
-        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
-        // The pipeline and its layout are the PASS's objects now (it built them in its create step), and the
-        // host relays them to the runner the same way it would relay its own: the runner's guarantee - bind
-        // before record, through the layout the pass pushes and binds with - does not depend on who owns them.
-        out.pipeline_storage[0] = this->gi_probe.pipeline();
-        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
-        out.pipeline_layout = this->gi_probe.pipeline_layout();
-        // The push block, composed HERE because its values are the renderer's: the grid is anchored to the
-        // scene's bounds (the same cube the shadow fit uses, so one set of numbers means the same thing on a
-        // 1.6-unit model and on Sponza's 18.5), the rate is the config's, the table address is the tracing
-        // structures', and the light direction is what the cache's own invalidation compares against.
-        pass::gi_probe_pass::push_constants push = {};
-        float const cell_size = (2.0f * this->scene_radius) / static_cast<float>(vulkan::gi_probe_grid_extent);
-        push.grid_min_cell = glm::vec4(this->shadow_scene_center - glm::vec3(this->scene_radius), cell_size);
-        push.params = glm::vec4(this->gi_probe_rate, 0.0f, 0.0f, 0.0f);
-        uint64_t probe_table = 0;
-        if (this->rt_top_levels.has_value()) {
-            VkBuffer const table = this->rt_top_levels->instance_table(static_cast<uint32_t>(vk.current_frame));
-            if (table != VK_NULL_HANDLE) {
-                VkBufferDeviceAddressInfo const table_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};
-                probe_table = vkGetBufferDeviceAddress(vk.device, &table_info);
-            }
-        }
-        push.instance_table = glm::uvec2(static_cast<uint32_t>(probe_table & 0xFFFFFFFFu), static_cast<uint32_t>(probe_table >> 32u));
-        push.light_dir = glm::vec4(glm::normalize(glm::vec3(this->light_state.light_dir)), 0.0f);
-        static_assert(sizeof(push) <= pass::max_push_bytes, "the probe cache's push block must fit the guaranteed minimum");
-        std::memcpy(out.push_storage.data(), &push, sizeof(push));
-        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
-        // The extent, from the declaration's rule - and this block IS `pass_extent`, which is why it is now a
-        // call to it: the mapping from a declaration to a size the renderer owns belongs in exactly one place,
-        // or a new rule gets implemented twice and the second copy is the one that is wrong. (`resource` here
-        // is the probe grid: 32 cells on a side, not the frame's size.)
-        out.extent = this->pass_extent(pass);
-        return true;
     }
 
     // THE TAA RESOLVE'S RESOLVER IS GONE (S3), and it is the first pass whose PARAMETERS moved with it: its
@@ -3964,13 +3898,12 @@ namespace vulkan {
         // THE TWO FACTS THE TRACING STAGES SHARE go in here as well, and this is the earliest point they CAN be
         // this frame's: the instance table belongs to a buffer the structure phase above (re)builds, so an address
         // read in `update_frame_constants` - which runs before that phase - could be a buffer this same frame is
-        // about to replace. The gate on the address is `ssgi_hit_shading`, because that is what the address is
-        // FOR: the traced raymarch gets its top level structure from the scene set's descriptor, while a SHADED hit
-        // fetches the instance's data through this address.
+        // about to replace. The address is the table this frame HAS and nothing more: the hit-shading gate belongs
+        // to the stages that push it, and they do not agree about it (see frame_constants::gi_instance_table).
         this->frame_facts.gi_resolved = false;
         this->frame_facts.gi_spec_resolved = false;
         uint64_t instance_table = 0;
-        if (this->ssgi_hit_shading && this->rt_top_levels.has_value()) {
+        if (this->rt_top_levels.has_value()) {
             VkBuffer const table = this->rt_top_levels->instance_table(static_cast<uint32_t>(vk.current_frame));
             if (table != VK_NULL_HANDLE) {
                 VkBufferDeviceAddressInfo const table_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};

@@ -5,9 +5,9 @@
 
 module;
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
-#include <cstring>
 #include <glm/glm.hpp>
 #include <span>
 #include <string>
@@ -18,6 +18,7 @@ module vulkan.pass.gi_probe;
 import vulkan.render_resource;
 import vulkan.constant_init;
 import vulkan.pipelines;
+import vulkan.primitive; // gi_probe_grid_extent: the grid's cell size is a `vulkan.core` constant it re-exports
 import utility;
 
 namespace vulkan::pass {
@@ -74,6 +75,12 @@ namespace vulkan::pass {
 
     void gi_probe_pass::set_rounds(uint32_t const rounds) noexcept {
         this->rounds_ = rounds;
+    }
+
+    void gi_probe_pass::set_rate(float const rate) noexcept {
+        // The clamp is the renderer's old one, moved here with the value: a rate of 1 would make the grid an
+        // immediate echo of the frame that read it (the injection would carry no history at all).
+        this->rate_ = std::clamp(rate, 0.0f, 0.5f);
     }
 
     bool gi_probe_pass::cache_valid() const noexcept {
@@ -144,14 +151,15 @@ namespace vulkan::pass {
     }
 
     void gi_probe_pass::record(resolved_io const& io) {
-        if (io.own.size() < own_binding_count || io.push.size() < sizeof(push_constants) || io.pipeline_layout == VK_NULL_HANDLE || io.pipelines.empty() ||
-            this->set_layout_ == VK_NULL_HANDLE) {
+        if (io.own.size() < own_binding_count || io.pipeline_layout == VK_NULL_HANDLE || io.pipelines.empty() || this->set_layout_ == VK_NULL_HANDLE ||
+            io.shared.scene == VK_NULL_HANDLE) {
             return; // the runner resolves all of this or skips the pass; an unresolved frame records nothing
         }
         // The declaration, resolved: elements 0..3 are the side being READ and 4..7 the side being WRITTEN,
-        // element 8 the per-cell geometry. Which IMAGE each of them is came from the host (it maps the
-        // declaration's elements onto the core's images); which HALF of the ping-pong each of the family's two
-        // sets reads and writes is the one thing that differs between them, and it is this pass's own fact.
+        // element 8 the per-cell geometry. Which IMAGE each of them is came from the RESOURCE TABLE (the host
+        // publishes the grid's eight elements and the per-cell geometry, and the declaration's own element is what
+        // names them); which HALF of the ping-pong each of the family's two sets reads and writes is the one thing
+        // that differs between them, and it is this pass's own fact.
         std::array<VkImageView, 4> const read_views = {io.own[0].view, io.own[1].view, io.own[2].view, io.own[3].view};
         std::array<VkImageView, 4> const write_views = {io.own[4].view, io.own[5].view, io.own[6].view, io.own[7].view};
         std::array<VkImageView, 1> const surface_view = {io.own[8].view};
@@ -200,12 +208,23 @@ namespace vulkan::pass {
             return;
         }
 
+        // THE PUSH BLOCK, composed here from its owners: the grid is anchored to the scene's bounds (the same cube
+        // the shadow fit and the probe grid's cell formula use, so one set of numbers means the same thing on a
+        // 1.6-unit model and on Sponza's 18.5), the instance table is the frame's, the injection rate is this
+        // pass's own, and the MODE lane is written per dispatch below (the pass is what decides which of its two
+        // halves it is recording).
         push_constants push = {};
-        std::memcpy(&push, io.push.data(), sizeof(push));
+        float const cell_size = (2.0f * io.constants.scene_radius) / static_cast<float>(vulkan::gi_probe_grid_extent);
+        push.grid_min_cell = glm::vec4(io.constants.scene_center - glm::vec3(io.constants.scene_radius), cell_size);
+        push.params = glm::vec4(this->rate_, 0.0f, 0.0f, 0.0f);
+        push.instance_table = glm::uvec2(static_cast<uint32_t>(io.constants.gi_instance_table & 0xFFFFFFFFu),
+                                         static_cast<uint32_t>(io.constants.gi_instance_table >> 32u));
+        push.light_dir = io.constants.light_dir;
         // If the global lighting has changed materially since the grid was filled, the grid is worthless - it
         // holds light for a sun that is not there any more - so it is CLEARED rather than faded out over
-        // 1/rate frames. The direction arrives in the push block because the host owns it; the memory of what
-        // the grid was filled under is the pass's, because it is the pass's cache.
+        // 1/rate frames. The direction is the FRAME's (normalized once, for every pass that reads it, with a zero
+        // direction kept as zero rather than turned into a NaN); the memory of what the grid was filled under is
+        // the pass's, because it is the pass's cache.
         glm::vec3 const current_light_dir = glm::vec3(push.light_dir);
         bool const light_changed = this->light_dir_valid_ && glm::dot(this->light_dir_, current_light_dir) < light_reset_cosine;
         this->light_dir_ = current_light_dir;

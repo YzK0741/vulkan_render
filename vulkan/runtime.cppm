@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.66.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.67.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -665,13 +665,12 @@ namespace vulkan {
         // rather than a view, because the caller's buffer is a local in a startup scope.
         std::vector<std::pair<std::string, std::vector<unsigned char>>> registered_shaders = {};
         bool gi_probe_enabled = false;
-        // The grid's own blend rate ([render] ssgi_probe_rate): how much of a cell's stored value one
-        // frame's observation replaces. Small on purpose - this is the cache that is meant to survive
-        // the camera turning away, so it has to be slow, and it is also the loop gain of the
-        // tracer -> resolve -> grid -> tracer cycle (the grid feeds the tracer, which feeds the
-        // resolve, which is injected into the grid), so it is the number that decides whether that
-        // cycle settles.
-        float gi_probe_rate = 0.08f;
+        // The grid's own blend rate ([render] ssgi_probe_rate) is the PROBE PASS's now (`set_ssgi_probes`
+        // forwards to `gi_probe_pass::set_rate`): it is the injection's loop gain, and only that pass reads it.
+        // Small on purpose - this is the cache that is meant to survive the camera turning away, so it has to be
+        // slow, and it is also the loop gain of the tracer -> resolve -> grid -> tracer cycle (the grid feeds the
+        // tracer, which feeds the resolve, which is injected into the grid), so it is the number that decides
+        // whether that cycle settles.
         // How many times the grid is propagated per frame ([render] ssgi_probe_rounds): each round is
         // two ping-pong dispatches, so a round spreads trust one cell further and the trust halves each
         // time (see the shader). 0 = injection only, which is what makes the propagation measurable.
@@ -846,16 +845,12 @@ namespace vulkan {
         /**
          * @brief resolve a pass's declaration into this frame's handles (the runner's `resolve` callback)
          * @return false when this frame cannot run the pass, which skips it WITHOUT recording anything
-         * @note the mapping is the HOST's job and not the pass's (the pass must not be able to reach a
-         *       resource it did not declare): an element of `resource_id::probe_grid` becomes that element's
-         *       image and view, an element of `probe_surface` becomes the per-cell geometry, the shared scene
-         *       set comes from the frame's slot, and the pipeline handles come from the name the pass's
-         *       behaviour declares. The EXTENT is applied here too, from the declaration's rule.
+         * @note THE PER-PASS SWITCH IS GONE: this function fills the frame's shared constants and asks the pass
+         *       to resolve its own declaration (see `frame_pass::resolve`), so the table's contents and the
+         *       frame's constants are all the renderer contributes. A pass cannot reach a resource its
+         *       declaration does not name, and the renderer no longer knows which pass wants which image.
          */
         [[nodiscard]] bool resolve_pass(pass::frame_pass const& pass, pass::resolved_io& out);
-        /// the per-pass dispatch `resolve_pass` wraps: one branch per pass, answered by this renderer's resolver
-        /// for it (the layer the resource table replaces one pass at a time)
-        [[nodiscard]] bool resolve_pass_impl(pass::frame_pass const& pass, pass::resolved_io& out);
         /** @brief the behaviour's mechanical part, before the pass records: bind the pipeline(s), resync the
          *         viewport. A pass cannot forget these because it does not do them */
         void apply_pass_behaviour(pass::frame_pass const& pass, pass::resolved_io const& io);
@@ -2373,14 +2368,6 @@ namespace vulkan {
          *       loop, between the chain's two halves - see runtime::record_main_drawcalls.
          */
         [[nodiscard]] pass::ssgi_temporal_frame make_ssgi_denoise_frame(bool history_valid) noexcept;
-        /**
-         * @brief the extent a pass's declaration asks for (see `pass::behaviour::extent`)
-         * @note the rule is a MAPPING from the declaration to a number the renderer owns, so it is applied here
-         *       - in ONE place, because a pass handed the full extent where its declaration says `half` would
-         *       dispatch twice the groups it should (the shaders guard their writes with `imageSize`, which is
-         *       why that is invisible until something else, like a copy region, uses the same number)
-         */
-        [[nodiscard]] VkExtent2D pass_extent(pass::frame_pass const& pass) const noexcept;
 
         /**
          * @brief re-skin every skinned caster and REFIT its structure, for this frame

@@ -1,4 +1,4 @@
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/gi_probe.cppm
@@ -117,6 +117,17 @@ export namespace vulkan::pass {
         /// how many times the grid is propagated per frame ([render] ssgi_probe_rounds; 0 = injection only)
         void set_rounds(uint32_t rounds) noexcept;
 
+        /**
+         * @brief how much of a cell's stored value one frame's observation replaces ([render] ssgi_probe_rate)
+         *
+         * THE PASS'S OWN PARAMETER, by the rule the framework settled on: one pass reads it (it is the injection's
+         * loop gain, and a rate of 1 would make the grid an immediate echo of the frame that read it), so the pass
+         * owns the value and its clamp and the renderer's `set_ssgi_probes` forwards. The other two values in its
+         * push block are the FRAME's (the scene-locked grid and the instance table's address) and the cache's own
+         * (which half of the ping-pong, and the mode).
+         */
+        void set_rate(float rate) noexcept;
+
         /// @brief whether the pass built everything it records with (the renderer gates the feature on this)
         [[nodiscard]] bool pipeline_ready() const noexcept;
         /// @brief the pipeline the runner binds before this pass records
@@ -169,6 +180,8 @@ export namespace vulkan::pass {
         bindings::image_set_family family_ = {};
         /// what the host pushed this pass's values into, and what the pass owns
         uint32_t rounds_ = 2;
+        /// the injection's loop gain, clamped where it is set (see set_rate)
+        float rate_ = 0.08f;
         bool cache_valid_ = false;
         /// the light the cache currently holds light for, and whether it holds any
         glm::vec3 light_dir_ = glm::vec3(0.0f);

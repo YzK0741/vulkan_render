@@ -203,10 +203,11 @@ namespace vulkan::pass {
         // exactly 128 bytes, so the address is reinterpreted into two float lanes rather than widened - the same
         // trick the lobe's block uses.
         float const scene_radius = io.constants.scene_radius;
-        // The frame's answer, pushed as it is: the field is the address the frame HAS (zero when it has none), and
-        // re-deriving it here from the oracle would be a second reading of the same fact that could disagree with
-        // the lobe's - the two blocks carry the same two lanes.
-        uint64_t const instance_table = io.constants.gi_instance_table;
+        // The frame's table, ZEROED unless a hit is to be shaded from its geometry: that zero is not a detail, it is
+        // how this shader is told to read the screen at a hit instead (see ssgi_trace_frame::shade_hits). The lobe
+        // pushes the same two lanes without that gate, and the probe cache uses the table whether or not it holds -
+        // its cells' hits are in world space and have no screen to sample.
+        uint64_t const instance_table = this->frame_.shade_hits ? io.constants.gi_instance_table : 0u;
         float const table_low = std::bit_cast<float>(static_cast<uint32_t>(instance_table & 0xFFFFFFFFu));
         float const table_high = std::bit_cast<float>(static_cast<uint32_t>(instance_table >> 32u));
         push_constants push = {};

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.frame_constants
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // ONE FRAME'S SHARED CONSTANTS: the per-frame facts the frame loop produces and a
 // pass may read while it records.
@@ -130,10 +130,16 @@ namespace vulkan {
          */
         bool gi_spec_resolved = false;
         /**
-         * The instance table this frame's GI rays fetch HIT DATA from, as a device address; 0 means "this frame
-         * has none", and a shader that reads it must fall back (the marched oracle distinguishes hit faces by
-         * depth instead). The two GI stages that trace - the diffuse tracer and the glossy lobe - both push its two
-         * halves, which is why it is the frame's rather than either pass's.
+         * The instance table this frame HAS, as a device address; 0 means "this frame has none" (no acceleration
+         * structures), and a shader that reads it must fall back (the marched oracle distinguishes hit faces by
+         * depth instead). Every stage that shades a hit fetches the instance's data through it - the diffuse tracer,
+         * the glossy lobe and the world-space probe cache - which is why it is the frame's rather than any pass's.
+         *
+         * WHAT IT IS NOT: it is not gated by `ssgi_hit_shading`. That gate belongs to the CONSUMERS, because they do
+         * not agree about it: the tracer zeroes the lane when hit shading is off (a zero address is how its shader
+         * is told to sample the screen instead), the lobe only ever runs with hit shading on, and the probe cache
+         * shades its world-space hits whenever a table exists, since a cell's hit has no screen to fall back to. The
+         * frame reports what it HAS; `ssgi_trace_frame::shade_hits` is the tracer's half of the gate.
          *
          * FILLED BEFORE THE GI CHAIN, NOT IN `update_frame_constants`, and that placement is the whole reason it
          * is a field with a note: the address belongs to a buffer the frame's structure phase (re)builds, and

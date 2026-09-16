@@ -2698,6 +2698,58 @@ validation-clean. Release, Debug and ASan build clean with `ctest` 8/8 in all th
 warnings. One resolver is left.
 
 
+## S3, TWELFTH SLICE: THE PROBE CACHE - AND THE SWITCH IS GONE
+
+**SIXTEEN OF SIXTEEN.** The world-space probe cache was the last pass resolved by hand, and its resolver was the
+last piece of the layer this migration set out to delete: `runtime::resolve_pass_impl` and its `if (&pass == ...)`
+chain no longer exist, and `runtime::resolve_pass` is now two lines around the framework's own
+`frame_pass::resolve` (this frame's constants in, the differential check around it). Its nine own bindings are
+ordinary resource-table entries (`probe_grid` elements 0..7 and `probe_surface`, both already published), its
+`resource` extent rule is the framework's, its pipeline and layout were already its own, and the push block it used to
+be handed is composed by the pass from the frame's constants (the scene-locked grid, the instance table) and its own
+injection rate - which `set_ssgi_probes` now forwards, like the four setters before it. `runtime::pass_extent` went
+with it: it was the bridge from a declaration's `extent_rule` to a size the renderer owns, and the framework applies
+that rule now, so the function had no callers left.
+
+**THE GATE FOUND A REAL BUG, AND THE FIX IS IN THE DECLARATION LAYER.** The first run of this slice was
+**RED on `sponza_gi`** - the one scenario that runs the cache:
+
+```
+[ERROR] vkCmdBindDescriptorSets(): pDescriptorSets[0] (VkDescriptorSet 0x0) is not a valid VkDescriptorSet.
+```
+
+The probe's declaration listed seven SCENE-owned bindings (which is what gives its pipeline layout a set 0) and
+**declared no shared set at all**: `pass_io::shared_sets` is what tells the framework which sets the owner has to
+FILL, and the hand-written resolver had been filling set 0 by hand, so the omission was invisible until the resolver
+went away. Two fixes, both of them the honest one:
+
+* `gi_probe_io` now declares its shared set (`gi_probe_shared_sets`, family 0), and the pass's `record` refuses a
+  null scene set like every other shared-set pass;
+* **the validator refuses that shape now**: a declaration with any non-own binding and an empty `shared_sets` is
+  rejected, with the bug's own symptom in the message. A test asserts both sides (the refused declaration and the
+  accepted one), and `test_pass`'s fake declaration - which reuses `gi_probe_bindings` - had to declare the set too,
+  which is the rule doing its job on a second caller.
+
+While re-running the gate after the fix, a **false flaky** appeared (`default_gi` differing between its two runs, one
+of them reporting another scenario's reference): the previous gate run had been killed mid-scenario and its app
+instance was still writing into the SAME work directory (`<build>/render-check`), so the new run compared a
+clobbered screenshot. Killing the stray process, clearing that directory and re-running gave the clean result below.
+The lesson is the one the script's own header states for its baseline: a gate run owns that directory exclusively.
+
+**MEASURED**: **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, all twelve validation-clean - including `sponza_gi`,
+the scenario that runs the cache and that the bug broke (`58EC848DFABE654A`, byte-exact against the parent). Release,
+Debug and ASan build clean with `ctest` 8/8 in all three; `doxygen` exits 0 with zero warnings.
+
+**WHAT THE MIGRATION ENDED WITH**: sixteen resolvers and the per-pass switch deleted; `vulkan/runtime.cpp` went from
+**5929 to 5301 lines** and `vulkan/runtime.cppm` from **3008 to 2919** (measured against the parent of S3's first
+slice, `af982ad^`) - the resolve layer, the `pass_extent` bridge and the `if (&pass ==` chain gone, while the pass
+modules grew by the push blocks they now compose. The renderer still owns the frame's policy, the table's contents,
+the feature registry and the public setters, which is exactly the split the ownership model recorded at the top of
+this document. The two documented exceptions survive on purpose and are both about ONE declaration being unable to
+describe TWO signals: the composite's target alias (`write_ldr`) and the reflection's recording inside the temporal
+pass (`record_reflection`).
+
+
 
 
 
