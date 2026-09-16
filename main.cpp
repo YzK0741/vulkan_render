@@ -9,6 +9,7 @@ import vulkan.animation; // animation::controller: glTF playback / skinning / mo
 import vulkan.math;
 import vulkan.scene_tree; // scene storage + GPU primitives (was vulkan.model)
 import vulkan.runtime;
+import vulkan.render_start_demo; // the example's pass wiring: this app's chain, from outside the renderer
 
 // Route std::pmr allocations through mimalloc (utility.better_pmr) before main(): this
 // file-scope reference's dynamic initialization runs at startup, so every runtime/scene
@@ -196,6 +197,13 @@ int main(int argc, char** argv) {
     //    imported scene) and the directional shadow pass. The legacy
     //    triangle demo pipeline is no longer created - nothing draws it.
     chores::setup_pipeline(runtime, shaders_dir);
+    // THE EXAMPLE'S OWN WIRING: this application's passes are fed by `vulkan.render_start_demo`, which finds them
+    // in the chain the runtime owns and answers the frame's per-stage questions (see the module's header). The
+    // runtime holds none of these references itself any more, which is what lets a second application hand it a
+    // different chain - and the demo object outlives the frame loop because it lives here, in the app's own scope.
+    vulkan::render_start_demo start_demo;
+    static_cast<void>(start_demo.attach(runtime));
+    runtime.set_chain_wiring(start_demo.wiring());
     // Screen-space GI has to be told AFTER the passes exist: its compute pipeline and its denoiser are
     // built by the passes' own create step inside setup_pipeline above, and set_ssgi() warns when either
     // is missing.

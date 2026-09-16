@@ -1520,6 +1520,106 @@ namespace vulkan {
         material_id register_material(primitive_create_info const& info);                     // upload textures into the array, append a material_record, return its index
 
     public:
+        /**
+         * @ingroup vulkan_runtime
+         * @brief what the runtime reports back after a stage, for the passes' owner to fill
+         *
+         * The frame loop's own decisions, read from the passes that answer them: whether the GI chain produced an
+         * accumulation the composite may add (the runtime writes it into the frame's constants), whether THIS
+         * frame's temporal resolve ran (the next frame's history flag is set from it), and whether the TAA resolve
+         * wrote a history (the camera UBO's `prev_view_proj` is only advanced when it did).
+         */
+        struct frame_results {
+            bool gi_resolved = false;
+            bool gi_temporal_resolved = false;
+            bool taa_wrote_history = false;
+        };
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief THE RUNTIME'S PER-FRAME SERVICES for whoever owns the chain of passes
+         *
+         * WHY THIS EXISTS: the runtime kept one TYPED member per pass and therefore knew, in its frame loop, which
+         * pass wanted which frame - thirteen `set_frame` calls, five stage preambles and nine result reads, every
+         * one of them naming a concrete pass. Handing the chain over means the runtime must stop naming passes,
+         * and this is the boundary that replaces it: the DATA is the runtime's (the leaves the culling produced,
+         * the per-cascade secondaries, the per-image publish flags) and the PASS is the chain owner's, so the
+         * runtime builds the frame and the owner hands it to the pass it belongs to.
+         *
+         * A VALUE, rebuilt per stage call: every field is a function pointer plus the one `owner` they all take,
+         * so building it costs a handful of stores. It is passed BY VALUE to `chain_wiring::prepare`, which means a
+         * mis-wired stage is a null pointer the owner can see rather than a member it should not have touched.
+         */
+        struct frame_services {
+            void* owner = nullptr;                // this runtime: what every function pointer below casts back to
+            VkCommandBuffer cmd = VK_NULL_HANDLE; // the command buffer this frame records into
+            /// which swapchain image this frame is recording (the per-image rules below take it, and a stage
+            /// preamble that is gated on an image's own state needs it)
+            uint32_t image_index = 0;
+            // ---- the frames, each built from the runtime's own data (see make_*_frame) ----
+            pass::cluster_frame (*make_cluster_frame)(void* owner) = nullptr;
+            pass::shadow_frame (*make_shadow_frame)(void* owner) = nullptr;
+            pass::scene_frame (*make_scene_frame)(void* owner) = nullptr;
+            pass::transparent_frame (*make_transparent_frame)(void* owner) = nullptr;
+            pass::deferred_frame (*make_deferred_frame)(void* owner) = nullptr;
+            pass::composite_frame (*make_composite_frame)(void* owner) = nullptr;
+            pass::fxaa_frame (*make_fxaa_frame)(void* owner) = nullptr;
+            pass::ssgi_trace_frame (*make_ssgi_trace_frame)(void* owner) = nullptr;
+            pass::ssgi_spec_frame (*make_ssgi_spec_frame)(void* owner) = nullptr;
+            pass::ssgi_temporal_frame (*make_ssgi_denoise_frame)(void* owner) = nullptr;
+            pass::ssgi_spatial_frame (*make_ssgi_spatial_frame)(void* owner) = nullptr;
+            // ---- the frame's ORDERING RULES a stage preamble runs: the runtime's per-image bookkeeping, whose
+            //      flags belong to the passes that WROTE those images (see each accessor) ----
+            bool (*ensure_gbuffer_targets_sampled)(void* owner, VkCommandBuffer cmd, uint32_t image_index) = nullptr;
+            bool (*ensure_gbuffer_depth_sampled)(void* owner, VkCommandBuffer cmd, uint32_t image_index) = nullptr;
+            bool (*ensure_velocity_sampled)(void* owner, VkCommandBuffer cmd, uint32_t image_index) = nullptr;
+            /// clear that flag WITHOUT recording a transition: what a stage whose own pass samples the image
+            /// does when the resolve that would have published it runs LATER in the frame (the TAA resolve and the
+            /// debug view both leave the GI chain to publish the motion-vector target - see the runtime's comment)
+            void (*require_velocity_publish)(void* owner, uint32_t image_index) = nullptr;
+            /// the renderer's feature registry, for a stage preamble gated on the same predicate the runner gates
+            /// the stage on (the ray-traced shadow's and the TAA resolve's preambles are the two that ask)
+            bool (*feature_active)(void* owner, std::string_view name) = nullptr;
+        };
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief what the runtime needs from whoever owns this frame's concrete passes
+         *
+         * `prepare` runs immediately before a stage records, and it is where the owner gives its passes their
+         * frames and runs the frame's ordering rules for that stage (see `frame_services`). `collect` runs after
+         * a stage, and it is where the owner reports the results the frame loop decides on (see `frame_results`).
+         * The NAME is the stage's, which is the frame's own structure - the owner switches on it and the runtime
+         * never learns which pass is behind it.
+         */
+        struct chain_wiring {
+            void* owner = nullptr;
+            void (*prepare)(void* owner, frame_services const& services, std::string_view stage) = nullptr;
+            void (*collect)(void* owner, std::string_view stage, frame_results& out) = nullptr;
+        };
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief hand this runtime the owner of its passes' frames
+         * @param wiring the two callbacks and their context; an empty one gives every pass an empty frame, which
+         *        is a frame that records nothing (see `chain_wiring`)
+         * @note the owner must outlive this runtime's recording, which is the same contract the chain itself has
+         */
+        void set_chain_wiring(chain_wiring wiring) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the chain this runtime owns the PASSES in, so their owner can find them by declaration name
+         *
+         * TRANSITIONAL, and deliberately one accessor rather than a member per pass: the owner looks its passes up
+         * by the name their declaration carries (`pass_chain::find` + a cast) instead of being handed typed
+         * references, which is what lets the runtime hold none. The slice that moves the CONSTRUCTION hands the
+         * chain over instead and this accessor goes with it (see docs/pass_chain_plan.md).
+         */
+        [[nodiscard]] pass::pass_chain& frame_passes() noexcept {
+            return this->passes;
+        }
+
         // A non-const runtime exposes a mutable filter (e.g. runtime->get_vma()); a const runtime
         // gets a read-only filter, so mutating operations are impossible through const access.
         user_filter* operator->() noexcept {
@@ -2379,7 +2479,7 @@ namespace vulkan {
          *       per-image transitions it used to be handed are the FRAME's ordering rules now and run in the frame
          *       loop, between the chain's two halves - see runtime::record_main_drawcalls.
          */
-        [[nodiscard]] pass::ssgi_temporal_frame make_ssgi_denoise_frame(bool history_valid) noexcept;
+        [[nodiscard]] pass::ssgi_temporal_frame make_ssgi_denoise_frame() noexcept;
 
         /**
          * @brief re-skin every skinned caster and REFIT its structure, for this frame
@@ -2500,6 +2600,42 @@ namespace vulkan {
         [[nodiscard]] pass::owned_pipeline resolve_pipeline(std::string_view name) const noexcept;
         /** @brief this frame's blended geometry, as the transparent pass needs it */
         [[nodiscard]] pass::transparent_frame make_transparent_frame() noexcept;
+
+        // =============================================================================================
+        // THE CHAIN OWNER'S SEAM (see docs/pass_chain_plan.md): the frames the runtime builds from its own
+        // data, the per-image ordering rules its stages run, and the two callbacks whoever owns the passes
+        // implements. Nothing here names a pass's TYPE as a member - the point is that this renderer stops
+        // holding one reference per pass and is handed a chain instead.
+        // =============================================================================================
+        /// this frame's cluster grid, as the cluster sort's declaration wants it
+        [[nodiscard]] pass::cluster_frame make_cluster_frame() noexcept;
+        /// the shadow pass's frame: the per-cascade secondaries the structure phase recorded, the map's edge and
+        /// the two callbacks. The secondaries are copied into a member so the span the frame carries stays valid
+        /// for the whole recording (a local would dangle the moment the builder returned).
+        [[nodiscard]] pass::shadow_frame make_shadow_frame() noexcept;
+        /// the lighting stage's one frame answer (see pass::deferred_frame)
+        [[nodiscard]] pass::deferred_frame make_deferred_frame() const noexcept;
+        /// the composite's frame: which target and pipeline it writes, who draws the overlay, and whether this
+        /// frame's bloom sum exists (the renderer's decisions, from the renderer's own state)
+        [[nodiscard]] pass::composite_frame make_composite_frame() noexcept;
+        /// the FXAA pass's frame: it is the frame's last writer whenever it runs, so it carries the overlay
+        [[nodiscard]] pass::fxaa_frame make_fxaa_frame() noexcept;
+        /// the spatial filter's frame: which oracle produced this frame's accumulation (see its header)
+        [[nodiscard]] pass::ssgi_spatial_frame make_ssgi_spatial_frame() const noexcept;
+        /// every builder and ordering rule above, bound to this runtime: what `chain_wiring::prepare` is handed
+        [[nodiscard]] frame_services make_frame_services(VkCommandBuffer command_buffer) noexcept;
+        /// run the owner's `prepare` for one stage, or do nothing when no owner is wired (see `chain_wiring`)
+        void prepare_stage(std::string_view stage, VkCommandBuffer command_buffer);
+        /// run the owner's `collect` for one stage and apply what it reports (see `frame_results`)
+        void collect_stage(std::string_view stage);
+        /// clear one image's "the G-buffer instance wrote the motion-vector target" flag, so the next sampler of
+        /// that image publishes it (what a stage whose pass samples it after TAA already moved it must do)
+        void require_velocity_publish(uint32_t image_index);
+        /// the per-cascade secondaries a shadow frame's span points at (see make_shadow_frame)
+        std::array<VkCommandBuffer, vulkan::max_shadow_cascades> shadow_secondaries_scratch = {};
+        /// whoever owns this frame's passes; empty until `set_chain_wiring` is called, and a frame with no wiring
+        /// gives its passes no frames - which is what makes the seam's absence visible rather than silent
+        chain_wiring wiring_ = {};
 
         /**
          * @ingroup vulkan_runtime

@@ -1704,8 +1704,8 @@ namespace vulkan {
             vulkan::profiling::cpu_phase_timer const cluster_timer{this->cpu_timings, vulkan::profiling::cpu_phase::cluster};
             // THE CLUSTER SORT records its own dispatch and its own two buffer barriers now
             // (vulkan.pass.cluster); what is this loop's is WHERE it runs - before the passes that read the
-            // bins - and the frame data it is handed.
-            this->cluster.set_frame(pass::cluster_frame{.cluster_count = this->cluster_tiles_x * this->cluster_tiles_y * vulkan::cluster_slice_count});
+            // bins - and the frame data it is handed, which the chain's owner supplies (see prepare_stage).
+            this->prepare_stage("cluster", *command_buffer);
             pass::stage const cluster_stage = {.name = "cluster", .passes = this->cluster_stage, .marks = false};
             [[maybe_unused]] pass::run_report const cluster_report = pass::record_stage(cluster_stage, this->make_pass_host());
         }
@@ -1767,22 +1767,12 @@ namespace vulkan {
                 // primary anyway. The content is only the leaves/pipelines; the per-cascade difference
                 // is that single push.
                 // ---- THE SHADOW PASS RECORDS IT (vulkan.pass.shadow) ----
-                // Its frame carries the per-cascade secondaries, the map's edge and the two callbacks (the content
-                // and the scheduler); the pass owns the layer order - each layer's transition to a depth attachment,
-                // the depth-only instance, the pre-recorded secondary's execution and the instance's end. What stays
-                // HERE is what the pass cannot know: the reuse test above (which is why this whole block is inside
-                // it), the map's OWN image and its layer count (the hand-back below covers every allocated layer,
-                // including the spare ones), and the bookkeeping that makes the next frame's reuse test true.
-                uint32_t const cascades = std::clamp(this->shadow_cascades, 1u, vulkan::max_shadow_cascades);
-                std::array<VkCommandBuffer, vulkan::max_shadow_cascades> shadow_secondaries = {};
-                for (uint32_t cascade = 0; cascade < cascades; ++cascade) {
-                    shadow_secondaries[cascade] = *this->shadow_recording[frame_slot][cascade].second;
-                }
-                this->shadow.set_frame(pass::shadow_frame{.record_cascade = &runtime::record_shadow_cascade,
-                                                          .run_tasks = &runtime::run_shadow_tasks,
-                                                          .owner = this,
-                                                          .cascades = std::span<VkCommandBuffer const>(shadow_secondaries.data(), cascades),
-                                                          .map_size = this->shadow_map_size});
+                // What stays HERE is what the pass cannot know: the reuse test above (which is why this whole block
+                // is inside it), the map's OWN image and its layer count (the hand-back below covers every
+                // allocated layer, including the spare ones), and the bookkeeping that makes the next frame's reuse
+                // test true. The frame itself - the per-cascade secondaries, the map's edge and the two callbacks -
+                // is built HERE and handed to the pass by whoever owns it (see make_shadow_frame/prepare_stage).
+                this->prepare_stage("shadow", *command_buffer);
                 {
                     pass::stage const shadow_stage = {.name = "shadow", .passes = this->shadow_stage, .marks = false};
                     [[maybe_unused]] pass::run_report const shadow_report = pass::record_stage(shadow_stage, this->make_pass_host());
@@ -1881,7 +1871,7 @@ namespace vulkan {
         // draw of the visible leaves, and closing the instance - all inside one function now (see
         // vulkan.pass.scene for why that is the point of this extraction).
         if (this->gbuffer_pass_active()) {
-            this->scene.set_frame(this->make_scene_frame());
+            this->prepare_stage("scene", command_buffer);
             pass::stage const scene_stage = {.name = "scene", .passes = this->scene_stage, .marks = false};
             [[maybe_unused]] pass::run_report const scene_report = pass::record_stage(scene_stage, this->make_pass_host());
             return;
@@ -2252,7 +2242,7 @@ namespace vulkan {
         // its two declared targets, one secondary and the depth hand-back - all in one function now (see
         // vulkan.pass.transparent). Like the scene pass it is SKIPPED without resolving anything on a frame
         // whose culling left nothing blended, which is what keeps a frame with no blended leaves byte-exact.
-        this->transparent.set_frame(this->make_transparent_frame());
+        this->prepare_stage("transparent", command_buffer);
         pass::stage const transparent_stage = {.name = "transparent", .passes = this->transparent_stage, .marks = false};
         [[maybe_unused]] pass::run_report const transparent_report = pass::record_stage(transparent_stage, this->make_pass_host());
     }
@@ -2624,10 +2614,13 @@ namespace vulkan {
         }
     }
 
-    pass::ssgi_temporal_frame runtime::make_ssgi_denoise_frame(bool const history_valid) noexcept {
-        // ONE field and ONE callback: the flag both signals blend by, and the reflection's own recording (the
-        // documented exception - a declaration cannot describe two signals in the same seven slots). The pass
-        // calls the callback at the END of its own recording, so the chain stays contiguous.
+    pass::ssgi_temporal_frame runtime::make_ssgi_denoise_frame() noexcept {
+        // ONE field and ONE callback: the flag both signals blend by (read HERE, per image, so the owner does not
+        // need the renderer's array), and the reflection's own recording (the documented exception - a declaration
+        // cannot describe two signals in the same seven slots). The pass calls the callback at the END of its own
+        // recording, so the chain stays contiguous.
+        std::size_t const index = this->current_image_index;
+        bool const history_valid = index < this->gi_history_valid.size() && this->gi_history_valid[index];
         return pass::ssgi_temporal_frame{.history_valid = history_valid,
                                          .record_reflection = &runtime::record_reflection,
                                          .owner = this};
@@ -3386,6 +3379,126 @@ namespace vulkan {
     // - "nothing blended this frame" - is the pass's FEATURE ("transparent", answered by `frame_transparent`
     // being empty in `feature_active`), which is the frame's content rather than the declaration's shape.
 
+    // =============================================================================================
+    // THE CHAIN OWNER'S SEAM (see runtime::frame_services and docs/pass_chain_plan.md)
+    // =============================================================================================
+    //
+    // Every builder below reads the RUNTIME's data (the culling's leaves, the structure phase's secondaries, this
+    // frame's decisions) and returns a frame the OWNER of the pass hands over. That is the whole split: the
+    // runtime knows what a frame IS, the owner knows which pass wants it.
+
+    pass::cluster_frame runtime::make_cluster_frame() noexcept {
+        // The sort's only input beyond its own dispatch: the grid the light culling produced this frame, which is
+        // the same number the light UBO's cluster_grid carries.
+        return pass::cluster_frame{.cluster_count = this->cluster_tiles_x * this->cluster_tiles_y * vulkan::cluster_slice_count};
+    }
+
+    pass::shadow_frame runtime::make_shadow_frame() noexcept {
+        // The per-cascade secondaries live in per-slot pairs (a command pool is not thread safe), so they are NOT
+        // contiguous: they are gathered into the scratch array the returned span points at, and that array is a
+        // member because a span over a local would dangle the moment this function returned.
+        uint32_t const slot = static_cast<uint32_t>(this->vulkan_core.current_frame);
+        uint32_t const cascades = std::clamp(this->shadow_cascades, 1u, vulkan::max_shadow_cascades);
+        for (uint32_t cascade = 0; cascade < cascades; ++cascade) {
+            this->shadow_secondaries_scratch[cascade] = *this->shadow_recording[slot][cascade].second;
+        }
+        return pass::shadow_frame{.record_cascade = &runtime::record_shadow_cascade,
+                                  .run_tasks = &runtime::run_shadow_tasks,
+                                  .owner = this,
+                                  .cascades = std::span<VkCommandBuffer const>(this->shadow_secondaries_scratch.data(), cascades),
+                                  .map_size = this->shadow_map_size};
+    }
+
+    pass::deferred_frame runtime::make_deferred_frame() const noexcept {
+        return pass::deferred_frame{.gi_replaces_ambient = this->ssgi_traced_active()};
+    }
+
+    pass::composite_frame runtime::make_composite_frame() noexcept {
+        return pass::composite_frame{
+            // The overlay has no load op of its own, so it is drawn inside whichever instance is the frame's LAST
+            // writer: the composite when FXAA is off, the FXAA pass when it runs.
+            .after_draw = this->post_fxaa_active() ? nullptr : &runtime::draw_overlay_after,
+            .owner = this,
+            .write_ldr = this->post_fxaa_active(),
+            // ... and the same "what runs this frame" answer the bloom chain's own gate uses, so the weight the
+            // pass adds and the gate cannot disagree about whether there is a bloom sum.
+            .suppress_bloom = this->active_features().gbuffer_debug,
+        };
+    }
+
+    pass::fxaa_frame runtime::make_fxaa_frame() noexcept {
+        return pass::fxaa_frame{.after_draw = &runtime::draw_overlay_after, .owner = this};
+    }
+
+    pass::ssgi_spatial_frame runtime::make_ssgi_spatial_frame() const noexcept {
+        return pass::ssgi_spatial_frame{.traced_oracle = this->ssgi_traced_active()};
+    }
+
+    runtime::frame_services runtime::make_frame_services(VkCommandBuffer const command_buffer) noexcept {
+        // Capture-less lambdas: each one casts the owner back and calls the builder it names, so the owner never
+        // sees a member function of this class - it sees the frame.
+        return frame_services{
+            .owner = this,
+            .cmd = command_buffer,
+            .image_index = static_cast<uint32_t>(this->current_image_index),
+            .make_cluster_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_cluster_frame(); },
+            .make_shadow_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_shadow_frame(); },
+            .make_scene_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_scene_frame(); },
+            .make_transparent_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_transparent_frame(); },
+            .make_deferred_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_deferred_frame(); },
+            .make_composite_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_composite_frame(); },
+            .make_fxaa_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_fxaa_frame(); },
+            .make_ssgi_trace_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_ssgi_trace_frame(); },
+            .make_ssgi_spec_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_ssgi_spec_frame(); },
+            .make_ssgi_denoise_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_ssgi_denoise_frame(); },
+            .make_ssgi_spatial_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_ssgi_spatial_frame(); },
+            .ensure_gbuffer_targets_sampled =
+                [](void* owner, VkCommandBuffer cmd, uint32_t image) { return static_cast<runtime*>(owner)->ensure_gbuffer_targets_sampled(cmd, image); },
+            .ensure_gbuffer_depth_sampled =
+                [](void* owner, VkCommandBuffer cmd, uint32_t image) { return static_cast<runtime*>(owner)->ensure_gbuffer_depth_sampled(cmd, image); },
+            .ensure_velocity_sampled = [](void* owner, VkCommandBuffer cmd, uint32_t image) { return static_cast<runtime*>(owner)->ensure_velocity_sampled(cmd, image); },
+            .require_velocity_publish = [](void* owner, uint32_t image) { static_cast<runtime*>(owner)->require_velocity_publish(image); },
+            .feature_active = [](void* owner, std::string_view name) { return static_cast<runtime const*>(owner)->feature_active(name); },
+        };
+    }
+
+    void runtime::set_chain_wiring(chain_wiring const wiring) noexcept {
+        this->wiring_ = wiring;
+    }
+
+    void runtime::prepare_stage(std::string_view const stage, VkCommandBuffer const command_buffer) {
+        if (this->wiring_.prepare == nullptr) {
+            return; // no owner: every pass is handed an empty frame, and a pass with one records nothing
+        }
+        this->wiring_.prepare(this->wiring_.owner, this->make_frame_services(command_buffer), stage);
+    }
+
+    void runtime::collect_stage(std::string_view const stage) {
+        if (this->wiring_.collect == nullptr) {
+            return;
+        }
+        frame_results results = {};
+        this->wiring_.collect(this->wiring_.owner, stage, results);
+        // WHAT THE FRAME LOOP DECIDES ON, once per stage that reports: the composite's GI weight is a frame
+        // CONSTANT (the composite reads it while recording), and the two flags are the renderer's per-image
+        // bookkeeping.
+        if (results.gi_resolved) {
+            this->frame_facts.gi_resolved = true;
+        }
+        if (results.gi_temporal_resolved && this->current_image_index < this->gi_history_valid.size()) {
+            this->gi_history_valid[this->current_image_index] = true;
+        }
+        if (results.taa_wrote_history && this->current_image_index < this->image_view_proj.size()) {
+            this->image_view_proj[this->current_image_index] = this->current_ubo.view_proj_unjittered;
+        }
+    }
+
+    void runtime::require_velocity_publish(uint32_t const image_index) {
+        if (image_index < this->velocity_written.size()) {
+            this->velocity_written[image_index] = false;
+        }
+    }
+
     // `runtime::pass_extent` IS GONE (S3.12), and it is the payoff of the last resolver: it was the bridge from a
     // declaration to a size the renderer owns, and it existed because a hand-written resolver had to apply the
     // declaration's own `extent_rule` itself. The framework applies it now (`pass::resolve_extent`, over the
@@ -3648,16 +3761,13 @@ namespace vulkan {
             // surface, so the position is not a detail - it is the ordering constraint. The PASS owns the
             // recording (vulkan.pass.rt_shadow); what is this loop's is the position and the off path below.
             pass::stage const rt_shadow_stage = {.name = "rt_shadow", .passes = this->rt_shadow_stage, .marks = false};
-            // THIS STAGE'S ONE FRAME-ORDER DUTY, done here because it is the FRAME's rule rather than any pass's:
-            // this stage may be the first sampler of the stored surface this frame, and whoever samples it FIRST
-            // publishes the G-buffer instance's attachment writes (the flags are the renderer's, and the idempotent
-            // `ensure_*` pair is what makes "first" a fact rather than a promise). It used to be the ray-traced
-            // shadow pass's resolver that made these two calls; nothing is emitted between here and `record_stage`,
-            // so the command stream is the same - the stages carry no marks of their own.
-            if (this->feature_active("rt_shadow")) {
-                static_cast<void>(this->ensure_gbuffer_targets_sampled(command_buffer, this->current_image_index));
-                static_cast<void>(this->ensure_gbuffer_depth_sampled(command_buffer, this->current_image_index));
-            }
+            // THIS STAGE'S ONE FRAME-ORDER DUTY, done by the chain's OWNER now that the passes are its: this stage
+            // may be the first sampler of the stored surface this frame, and whoever samples it FIRST publishes the
+            // G-buffer instance's attachment writes (the flags are the renderer's, and the idempotent `ensure_*`
+            // pair is what makes "first" a fact rather than a promise) - so the owner's `prepare` asks for exactly
+            // that, gated on the same feature the runner gates the stage on. Nothing is emitted between here and
+            // `record_stage` (the stages carry no marks), so the command stream is unchanged.
+            this->prepare_stage("rt_shadow", command_buffer);
             pass::run_report const rt_shadow_report = pass::record_stage(rt_shadow_stage, this->make_pass_host());
             if (rt_shadow_report.recorded == 0 && static_cast<std::size_t>(vk.current_frame) < vk.rt_shadow_images.size() &&
                 vk.rt_shadow_images[vk.current_frame] != VK_NULL_HANDLE) {
@@ -3677,17 +3787,13 @@ namespace vulkan {
             // lighting interval look four times more expensive with rays on (measured 0.32 -> 1.18 ms
             // while the rays themselves were ~0.85 of that).
             this->gpu_mark(command_buffer, gpu_mark_id::rt_shadow_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-            // THE LIGHTING STAGE IS A PASS (vulkan.pass.deferred), and what the frame still owes it is one answer:
-            // whether the traced chain is replacing the ambient (the pass composes its own push from that and from
-            // its own SSAO parameters - see deferred_frame).
-            this->deferred.set_frame(pass::deferred_frame{.gi_replaces_ambient = this->ssgi_traced_active()});
-            // ... and THE STAGE'S ONE FRAME-ORDER DUTY, done here because it is the FRAME's rule rather than any
-            // pass's: this stage is a sampler of the stored surface, and whoever samples it FIRST publishes the
-            // G-buffer instance's attachment writes (the flags are the renderer's, and the idempotent `ensure_*`
-            // pair is what makes "first" a fact). It used to be the pass's frame callback; nothing is emitted
-            // between here and `record_stage` (the stages carry no marks), so the command stream is the same.
-            static_cast<void>(this->ensure_gbuffer_targets_sampled(command_buffer, this->current_image_index));
-            static_cast<void>(this->ensure_gbuffer_depth_sampled(command_buffer, this->current_image_index));
+            // THE LIGHTING STAGE IS A PASS (vulkan.pass.deferred), and what the frame still owes it is one answer
+            // (whether the traced chain is replacing the ambient) plus the stage's own frame-order duty: it is a
+            // sampler of the stored surface, and whoever samples it FIRST publishes the G-buffer instance's
+            // attachment writes. Both are the chain OWNER's now (see prepare_stage) - the runtime's `prepare` call
+            // sits exactly where the pass's frame used to be set, and nothing is emitted between it and
+            // `record_stage` (the stages carry no marks), so the command stream is unchanged.
+            this->prepare_stage("deferred", command_buffer);
             pass::stage const deferred_stage = {.name = "deferred", .passes = this->deferred_stage, .marks = false};
             pass::run_report const deferred_report = pass::record_stage(deferred_stage, this->make_pass_host());
             if (deferred_report.recorded == 0) {
@@ -3708,7 +3814,7 @@ namespace vulkan {
 
         // TAA resolve: blend the scene color with the reprojected history into the HDR target the post
         // chain reads, then copy the result into the history image for the next frame that renders this
-        // swapchain image. The PASS owns all of that now (vulkan.pass.taa), and the two lines below are the
+        // swapchain image. The PASS owns all of that now (vulkan.pass.taa), and the two things below are the
         // part it cannot own yet:
         //
         //  * the G-buffer depth's transition to a sampled layout, whose "was it written this frame" flag
@@ -3716,27 +3822,20 @@ namespace vulkan {
         //  * clearing the motion-vector flag, which is what stops the GI chain (later in the same frame) from
         //    transitioning the velocity image a second time.
         //
-        // Both are shared per-image bookkeeping - the barrier/order stage's job in the long run - and both are
-        // gated on THE SAME predicate the runner gates the stage on, so the host never touches them on a frame
-        // the pass does not run (clearing the velocity flag for a frame with no resolve would make the GI
-        // tracer sample an image still in ATTACHMENT layout).
-        if (this->active_features().taa) {
-            if (this->current_image_index < this->velocity_written.size()) {
-                this->velocity_written[this->current_image_index] = false;
-            }
-            static_cast<void>(this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(this->current_image_index)));
-        }
+        // BOTH ARE THE CHAIN OWNER'S NOW, run from its `prepare` for this stage and gated on the same predicate the
+        // runner gates the stage on - so the frame never touches them on a frame the pass does not run (clearing the
+        // velocity flag for a frame with no resolve would make the GI tracer sample an image still in ATTACHMENT
+        // layout). The runtime's call sits exactly where those two lines were.
+        this->prepare_stage("taa", command_buffer);
         {
             pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
             [[maybe_unused]] pass::run_report const taa_report = pass::record_stage(taa_stage, this->make_pass_host());
         }
         // The matrix the NEXT frame's motion vectors are computed against is this frame's, and it is only
-        // recorded when the resolve actually wrote a history: a resolve that bailed out (no descriptor set)
-        // must not claim one. `image_view_proj` stays the renderer's because the camera UBO - not TAA - reads
-        // it as `prev_view_proj`.
-        if (this->taa_resolve.wrote_history() && this->current_image_index < this->image_view_proj.size()) {
-            this->image_view_proj[this->current_image_index] = this->current_ubo.view_proj_unjittered;
-        }
+        // recorded when the resolve actually wrote a history: a resolve that bailed out (no descriptor set) must
+        // not claim one. The pass answers that (`wrote_history`) and the owner reports it through `collect`; the
+        // array stays the renderer's because the camera UBO - not TAA - reads it as `prev_view_proj`.
+        this->collect_stage("taa");
         this->gpu_mark(command_buffer, gpu_mark_id::taa_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         // G-buffer debug mode (an inspection of the stored data, never combined with the lighting
@@ -3753,14 +3852,9 @@ namespace vulkan {
             vkCmdPipelineBarrier2(command_buffer, &hdr_dependency);
             // THIS STAGE'S FRAME-ORDER DUTY, the same shape as the lighting stage's above and for the same reason:
             // the debug view runs INSTEAD of the lighting stage, so it is the stage that hands the stored surface
-            // and the motion vectors to samplers this frame. The depth uses the flag-based accessor (the G-buffer
-            // instance rendered it earlier in this command buffer, so its old layout depends on that), and the
-            // motion-vector flag is CLEARED here so the GI chain later in the frame does not transition that image
-            // a second time and claim a layout it is not in. Both used to be the pass's frame callback.
-            if (this->current_image_index < this->velocity_written.size()) {
-                this->velocity_written[this->current_image_index] = false;
-            }
-            static_cast<void>(this->ensure_gbuffer_depth_sampled(command_buffer, this->current_image_index));
+            // and the motion vectors to samplers this frame - and both halves are the chain OWNER's now (the
+            // depth's flag-based accessor and the velocity flag's clear, see prepare_stage).
+            this->prepare_stage("gbuffer_debug", command_buffer);
             pass::stage const debug_stage = {.name = "gbuffer_debug", .passes = this->gbuffer_debug_stage, .marks = false};
             pass::run_report const debug_report = pass::record_stage(debug_stage, this->make_pass_host());
             if (debug_report.recorded == 0) {
@@ -3925,46 +4019,35 @@ namespace vulkan {
             // resolve is the first sampler of two shared per-image images (the G-buffer's depth, which its depth
             // guard reads, and the motion-vector target its reprojection reads), and whether each of them still
             // needs its "the G-buffer pass wrote me" publication is the FRAME's per-image bookkeeping - so the
-            // frame publishes them, exactly where the old `ensure_inputs` callback did (after the lobe recorded,
-            // before the resolve's dispatch), and the command stream is unchanged.
+            // owner publishes them from its `prepare` for the denoise half, exactly where the old `ensure_inputs`
+            // callback did (after the lobe recorded, before the resolve's dispatch), and the command stream is
+            // unchanged.
             //
-            // The frames the passes need are set HERE, before either half runs, because two of them carry values
-            // that must be read BEFORE the stage: the tracer's `specular_next` (which decides who owes the
-            // denoiser the hand-off barrier) and the temporal's `history_valid`, which the reflection's callback
-            // is handed as well so the two signals agree about the frame that created the history.
-            bool const history_valid = index < this->gi_history_valid.size() && this->gi_history_valid[index];
-            // The REFLECTION's descriptor family is the RENDERER's (the diffuse one is the temporal pass's own),
-            // so it is ensured HERE - once per frame, before the chain, exactly where the old
+            // The frames the passes need are given by the owner too, and the two halves are prepared SEPARATELY
+            // because two of their values must be read BEFORE the half runs: the tracer's `specular_next` (which
+            // decides who owes the denoiser the hand-off barrier) and the temporal's `history_valid`, which the
+            // reflection's callback is handed as well so the two signals agree about the frame that created the
+            // history.
+            //
+            // The REFLECTION's descriptor family is still the RENDERER's (the diffuse one is the temporal pass's
+            // own), so it is ensured HERE - once per frame, before the chain, exactly where the old
             // `record_ssgi_denoise_pass` ensured it before running the temporal stage.
             this->ensure_ssgi_denoise_descriptors();
-            this->ssgi_trace.set_frame(this->make_ssgi_trace_frame());
-            this->ssgi_spec.set_frame(this->make_ssgi_spec_frame());
-            this->ssgi_temporal.set_frame(this->make_ssgi_denoise_frame(history_valid));
-            // The spatial filter's own frame: which ORACLE this frame's rays use, the one predicate that decides
-            // whether the filter removes the probe's ambient (the traced path replaces it) or leaves it alone (the
-            // marched path adds to it). It is the frame's answer rather than a knob - the ray-tracing knob, the
-            // device's ray queries and whether the structures exist - and the tracer is handed the same fact.
-            this->ssgi_spatial.set_frame(pass::ssgi_spatial_frame{.traced_oracle = this->ssgi_traced_active()});
             // ---- the trace half: the tracer, then the lobe (the two writers of the raw trace) ----
+            this->prepare_stage("gi_trace", command_buffer);
             pass::run_report const gi_trace_report = this->gi_trace_chain.record(this->make_pass_host());
             static_cast<void>(gi_trace_report);
-            // ---- THE FRAME's rule, between the halves ----
-            // Both calls are idempotent and consult per-image flags the frame owns, so on the frames where
-            // another stage already published them (the deferred stage's preamble publishes the depth, the TAA
-            // resolve the velocity target) they record nothing at all.
-            static_cast<void>(this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(index)));
-            static_cast<void>(this->ensure_velocity_sampled(command_buffer, static_cast<uint32_t>(index)));
-            // ---- the denoise half: the temporal resolve, then the spatial filter ----
+            // ---- the denoise half: the temporal resolve, then the spatial filter. Its `prepare` is also where the
+            //      FRAME's rule between the halves runs (both calls are idempotent and consult per-image flags the
+            //      frame owns, so on the frames where another stage already published them - the deferred stage's
+            //      preamble publishes the depth, the TAA resolve the velocity target - they record nothing at all).
+            this->prepare_stage("gi_denoise", command_buffer);
             pass::run_report const gi_denoise_report = this->gi_denoise_chain.record(this->make_pass_host());
             static_cast<void>(gi_denoise_report);
-            // The two answers the RENDERER needs from the chain, read from the passes that own them: whether the
-            // spatial filter wrote the image the composite samples (that is `gi_resolved`), and whether the
-            // denoiser produced an accumulation this frame (which the NEXT frame's history flag is set from).
-            this->frame_facts.gi_resolved = this->ssgi_spatial.resolved();
-            bool const resolved = this->ssgi_temporal.resolved();
-            if (resolved && this->gi_history_valid.size() > index) {
-                this->gi_history_valid[index] = true;
-            }
+            // ... and the chain's answers, which the owner reports: whether the spatial filter wrote the image the
+            // composite samples (that is `gi_resolved`, a frame constant the composite reads while recording) and
+            // whether the denoiser produced an accumulation (which the NEXT frame's history flag is set from).
+            this->collect_stage("gi_denoise");
             ++this->ssgi_frame; // the next frame's ray sequence must differ (see ssgi_frame)
         }
         if (!this->frame_facts.gi_resolved && index < vk.gi_spatial_images.size() && vk.gi_spatial_images[index] != VK_NULL_HANDLE) {
@@ -4032,14 +4115,9 @@ namespace vulkan {
         // ---- THE COMPOSITE, as a stage of one pass ----
         // ITS FRAME CARRIES THE OVERLAY when FXAA is off: the overlay has no load op of its own, so it has to be
         // drawn inside whichever instance is the frame's LAST writer - and when FXAA runs, that is the FXAA pass.
-        this->post_composite.set_frame(pass::composite_frame{
-            .after_draw = this->post_fxaa_active() ? nullptr : &runtime::draw_overlay_after,
-            .owner = this,
-            .write_ldr = this->post_fxaa_active(),
-            // ... and the same "what runs this frame" answer the bloom chain's own gate uses, so the weight the
-            // pass adds and the gate cannot disagree about whether there is a bloom sum.
-            .suppress_bloom = this->active_features().gbuffer_debug,
-        });
+        // Which of the two that is, and whether this frame's bloom sum exists, are the RENDERER's decisions, so the
+        // frame is built here (make_composite_frame) and the owner hands it to its pass (prepare_stage).
+        this->prepare_stage("post_composite", command_buffer);
         pass::stage const composite_stage = {.name = "post_composite", .passes = this->post_composite_stage, .marks = false};
         [[maybe_unused]] pass::run_report const composite_report = pass::record_stage(composite_stage, this->make_pass_host());
         // GPU timing: the composite (and the debug overlay, when it draws here) is done.
@@ -4050,7 +4128,7 @@ namespace vulkan {
         // half of the split the composite's frame above states. The runner gates it on the feature `fxaa`, which is
         // `post_fxaa_active()`: the same predicate that decided this frame's composite TARGET, so the pass runs
         // exactly when the LDR image is what the composite wrote.
-        this->fxaa_resolve.set_frame(pass::fxaa_frame{.after_draw = &runtime::draw_overlay_after, .owner = this});
+        this->prepare_stage("fxaa", command_buffer);
         pass::stage const fxaa_stage = {.name = "fxaa", .passes = this->fxaa_stage, .marks = false};
         [[maybe_unused]] pass::run_report const fxaa_report = pass::record_stage(fxaa_stage, this->make_pass_host());
         // GPU timing: the FXAA pass (and the overlay it carries when it is the last writer) is done. Without FXAA

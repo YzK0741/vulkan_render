@@ -145,6 +145,7 @@ target_sources(vulkancorekit
         vulkan/pass/gbuffer_debug.cppm
         vulkan/pass/shadow.cppm
         vulkan/pass/chain.cppm
+        vulkan/render_start_demo/render_start_demo.cppm
         vulkan/profiling/profiling.cppm
         vulkan/shadow_fit/shadow_fit.cppm
         vulkan/readback/readback.cppm
@@ -183,6 +184,7 @@ target_sources(vulkancorekit
         vulkan/pass/fxaa.cpp
         vulkan/pass/gbuffer_debug.cpp
         vulkan/pass/shadow.cpp
+        vulkan/render_start_demo/render_start_demo.cpp
         vulkan/shadow_fit/shadow_fit.cpp
         vulkan/readback/readback.cpp
         vulkan/acceleration_structure/acceleration_structure.cpp

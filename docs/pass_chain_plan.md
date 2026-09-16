@@ -2795,6 +2795,53 @@ names a pass anywhere - and that is the slice where `vulkan.render_start_demo` a
 the handover.
 
 
+## THE HANDOVER, SLICE 2: `vulkan.render_start_demo`, AND THE FRAME'S PER-PASS WIRING LEAVES THE RUNTIME
+
+**THE SEAM.** The runtime kept one typed member per pass, so its frame loop knew which pass wanted which frame:
+eleven `set_frame` calls, five stage preambles and the result reads that follow them. That knowledge is gone from the
+runtime and lives in the new module now, and the boundary that replaced it is two nested types:
+
+* **`runtime::frame_services`** - a VALUE the runtime builds per stage call and hands over: the eleven frame builders
+  (each reading the runtime's OWN data: the culling's leaves, the structure phase's per-cascade secondaries, this
+  frame's write-LDR/bloom/oracle decisions), the three per-image publish rules (`ensure_gbuffer_targets_sampled`,
+  `ensure_gbuffer_depth_sampled`, `ensure_velocity_sampled`), `require_velocity_publish` (the flag CLEAR the TAA
+  resolve and the debug view need, whose flag is the runtime's), and the feature registry (a preamble is gated on the
+  same predicate the runner gates the stage on). Every field is a function pointer plus the one `owner`, so the owner
+  sees frames and rules - never a member of the renderer.
+* **`runtime::chain_wiring`** - `prepare(owner, services, stage)` and `collect(owner, stage, results)`, called by the
+  frame loop immediately before and after each stage. The stage NAME is the frame's own structure, so the seam needs
+  no new vocabulary, and `collect` reports the three results the frame loop decides on (`gi_resolved`,
+  `gi_temporal_resolved`, `taa_wrote_history`).
+
+**`vulkan.render_start_demo`** is the example that implements them: it looks this app's fourteen passes up BY THE
+NAME THEIR DECLARATION CARRIES (`pass_chain::find` + a cast - the only key a chain gives, and the reason the runtime
+can hold no reference), and switches on the stage name to feed each one. Its `prepare` is the frame's order written
+once, where the passes live; the runtime's frame loop now says `this->prepare_stage("deferred", command_buffer)`
+where it used to build a frame and assign it. **The typed sites drop from 50 to 37** (the eleven frames, the result
+reads, and the preambles that were never pass references at all).
+
+**THE COMMAND STREAM IS UNCHANGED, AND THAT IS THE ARGUMENT.** Every call sits exactly where the code it replaced
+sat - the frame is set first, then the stage's ordering rules run, then `record_stage`, then `collect` - and the
+gate says so: **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, all twelve validation-clean, with the references
+unchanged (`default_gi` `BF180E98ADB29E7E`, `sponza_gi` `58EC848DFABE654A`, `sponza_march` `EEFBBA2515803F46`,
+`metal_rough_glossy` `46F9851B7BC89872`, `glossy_motion` `98B06F2190B49519`). Release, Debug and ASan build clean
+with `ctest` 8/8 in all three; `doxygen` exits 0 with zero warnings.
+
+**A TOOLCHAIN FINDING, recorded because it cost an hour and will cost another reader the same**: `utility::log` with
+ONE FORMAT ARGUMENT inside this new module's `.cpp` crashes clang 22.1.8's code generation
+(`clang frontend command failed due to signal ... CodeGenFunction::EmitBuiltinNewDeleteCall`, reproducible, and
+independent of the argument's type - `std::size_t` and `unsigned` both do it). The same call shape is used by a
+dozen other modules, so it is the combination of the new module's import set with `utility`'s format machinery
+rather than the call itself; the workaround is a message with no format argument, and the second ICE this branch has
+seen (the first was a test file and did not reproduce) is now a known toolchain wart instead of a mystery.
+
+**WHAT IS LEFT**: (3) the fifteen setters and the knobs behind them, plus the two feature answers that read a pass's
+own state (`deferred.unlit()`, `ssao_enabled()`) - the demo owns the passes, so it should own their knobs; (4) the
+three descriptor families the runtime still builds from a pass's set layout, and the reflection's mode-1 recording
+that shares the temporal pass's pipeline; (5) the construction, the two chains and the two jobs, at which point
+`set_pass_chain` replaces the transitional `runtime::frame_passes()` accessor.
+
+
 
 
 
