@@ -93,6 +93,23 @@ namespace vulkan::pass {
         this->frame_ = frame;
     }
 
+    void ssgi_trace_pass::set_probe_ready(bool const ready) noexcept {
+        this->frame_.probe_ready = ready;
+    }
+
+    void ssgi_trace_pass::prepare_frame(frame_facts const& facts) noexcept {
+        // THE FOUR ANSWERS THIS PASS CANNOT DERIVE, and the fifth it CAN: `probe_grid_first_use` used to be a
+        // frame field the owner filled with `!this->probe_grid_seen()`, i.e. with the negation of this pass's own
+        // state - so it is gone, and `record` asks its own flag (see the check before the probe batch below).
+        // The probe cache's READINESS stays a setter (`set_probe_ready`): it is another pass's state.
+        ssgi_trace_frame frame = this->frame_; // ... so the two setter-filled fields survive this call
+        frame.history_valid = facts.gi_history_valid;
+        frame.specular_next = facts.gi_specular;
+        frame.traced_oracle = facts.gi_traced;
+        frame.shade_hits = facts.hit_shading;
+        this->set_frame(frame);
+    }
+
     void ssgi_trace_pass::on_swapchain_recreated(pass_host const&) {
         // The probe grid's images belong to a generation; so does the fact that this pass has seen them. The
         // runner calls this for every pass in a stage, which is what makes the reset unforgettable.
@@ -172,7 +189,10 @@ namespace vulkan::pass {
             barriers[count].image = io.barrier_images[barrier_gi_resolve].image;
             ++count;
         }
-        if (this->frame_.probe_grid_first_use && !this->probe_grid_seen_) {
+        // THE FIRST-USE BATCH, asked of this pass's OWN state: "has this generation's grid been seen" is a flag
+        // this pass keeps (reset by `on_swapchain_recreated`), so the frame no longer carries its negation - the
+        // host used to fill that field with `!probe_grid_seen()`, which made two copies of one answer.
+        if (!this->probe_grid_seen_) {
             for (uint32_t c = 0; c < 4; ++c) {
                 barriers[count] = vulkan::undefined_to_sampling_transition;
                 barriers[count].image = io.barrier_images[barrier_probe_grid_read + c].image;

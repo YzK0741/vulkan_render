@@ -1,4 +1,4 @@
-// module version: 0.13.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.14.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/pass.cppm
@@ -538,6 +538,64 @@ export namespace vulkan::pass {
         void (*mark_end)(void* context, std::string_view stage_name) = nullptr;
     };
 
+    /**
+     * @brief the host hook a frame's LAST writer draws the overlay with
+     *
+     * ONE VALUE rather than two fields (`after_draw` plus the `owner` it is called with), and that is the point:
+     * a callback and the context it must be called with are ONE fact, and the two-field form let a frame name a
+     * function without the context that made it callable - or a context with a null function. The host publishes
+     * it (see `runtime::overlay_draw`), the chain owner hands it to the passes that may be the frame's last
+     * writer, and each of those decides for itself whether it is the one that draws it.
+     */
+    struct draw_callback {
+        /// the host's function; null means "nothing to draw after this pass"
+        void (*record)(void* owner, VkCommandBuffer command_buffer) = nullptr;
+        /// what it is called with (the host's own context)
+        void* owner = nullptr;
+
+        /// @brief whether there is anything to call
+        [[nodiscard]] bool valid() const noexcept {
+            return this->record != nullptr;
+        }
+    };
+
+    /**
+     * @brief THE FRAME'S PUBLISHED FACTS: the per-frame values only the HOST can compute
+     *
+     * WHY THEY ARE PUBLISHED AT ALL, now that a pass builds its own frame (see `frame_pass::prepare_frame`): the
+     * frame belongs to the pass, and a value only one pass reads belongs IN that pass - but these are ANSWERS the
+     * host composes from things a pass cannot see (the frame's image index, the device's ray-query support,
+     * whether this frame's structures were built, the chain owner's own feature table). The rule the framework
+     * settled on is exactly this one: a per-frame decision a pass cannot derive is an explicit frame FIELD, and
+     * what the pass cannot derive is what the host publishes here. (The one PARAMETER in the struct -
+     * `hit_shading` - is published for the reason a knob with several readers is shared: the host's own composed
+     * predicate reads it, so neither the host nor the tracer could own it alone.)
+     *
+     * A FIELD IS FILLED WITH THE SAME EXPRESSION IT REPLACED, never with a similarly named one, and two names in
+     * this struct exist to make that explicit rather than to be tidy: `gi_specular` is the LOBE's COMPOSED
+     * predicate (the knob AND hit shading AND this frame's structures), which is NOT the knob a feature fact of
+     * the same name carries; `debug_view` is the composed `gbuffer-debug` answer as well. Both were composed by
+     * the renderer before this struct existed, and substituting the raw knob would be a behaviour change no gate
+     * scenario would catch (the knob is off in all of them).
+     */
+    struct frame_facts {
+        /// `ssgi_traced_active()`: the GI knob AND ray queries AND this frame's top level structure
+        bool gi_traced = false;
+        /// `ssgi_specular_active()`: the lobe's knob AND hit shading AND this frame's structure (see the note above)
+        bool gi_specular = false;
+        /// whether the accumulation the temporal resolve blends into exists FOR THIS IMAGE
+        bool gi_history_valid = false;
+        /// `post_fxaa_active()`: the FXAA knob and the pass having built its pipeline, i.e. who writes the LDR image
+        bool fxaa_resolves = false;
+        /// the composed `gbuffer-debug` answer (see the note above), which is what suppresses the bloom sum
+        bool debug_view = false;
+        /// the clustered lighting's bin count, which is the sort's only input beyond its own dispatch
+        uint32_t cluster_count = 0;
+        /// the hit-shading knob: the ONE PARAMETER here, published because the host's own composed predicates
+        /// (`ssgi_specular_active`) read it too - a value two readers compose cannot move into either pass
+        bool hit_shading = false;
+    };
+
     // =============================================================================================
     // 3. WHAT A PASS IS - the base every pass derives from, shaped like vulkan.primitive
     // =============================================================================================
@@ -597,6 +655,27 @@ export namespace vulkan::pass {
          * @return false when this frame cannot run the pass, which the runner treats as "skip, record nothing"
          */
         [[nodiscard]] virtual bool resolve(resolve_context const& context, resolved_io& out) const;
+        /**
+         * @brief build THIS pass's frame from the facts the host published for this stage
+         *
+         * WHO COMPOSES A FRAME, after this: the pass. The frame is one pass's per-frame input, so it is that
+         * pass's business and nobody else's - which is what removes the last place the RENDERER named a concrete
+         * pass's frame type (`runtime::make_*_frame`, one builder per pass, each one a struct literal reading the
+         * renderer's own members). The host publishes the few values a pass cannot derive (see `frame_facts`) and
+         * calls this before `resolve`, so the frame is in place by the time the pass's own resolver and record
+         * step read it.
+         *
+         * THE DEFAULT DOES NOTHING, and it is the correct default rather than a stub: a pass whose declaration
+         * and own state say everything it needs has no frame at all. Twelve of this renderer's passes were
+         * already in that position; the eight that were not override this.
+         *
+         * A PASS'S FRAME IS NOT A CHANNEL FOR ITS OWNER. What the chain owner must tell a pass per frame (that
+         * the probe cache may be read, that the reflection's recording is its own) is a SETTER on that pass, set
+         * where the owner holds the pass - because a frame field written from outside the pass is a second owner
+         * for the pass's own state, which is the defect this framework keeps removing.
+         */
+        virtual void prepare_frame([[maybe_unused]] frame_facts const& facts) noexcept {
+        }
         /**
          * @brief the pipeline this pass OWNS, when it built one in `create`; `VK_NULL_HANDLE` otherwise
          *

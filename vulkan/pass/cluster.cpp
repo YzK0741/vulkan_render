@@ -66,6 +66,12 @@ namespace vulkan::pass {
         this->frame_ = frame;
     }
 
+    void cluster_pass::prepare_frame(frame_facts const& facts) noexcept {
+        // ONE number, and the host is the only one that can compute it: the grid the light culling produced,
+        // which is the same `cluster_grid` the light UBO carries (see `runtime::make_frame_facts`).
+        this->set_frame(cluster_frame{.cluster_count = facts.cluster_count});
+    }
+
     void cluster_pass::create(pass_context const& context) {
         if (context.device == VK_NULL_HANDLE) {
             return;

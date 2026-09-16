@@ -1,4 +1,4 @@
-// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/ssgi_trace.cppm
@@ -63,8 +63,6 @@ export namespace vulkan::pass {
         bool history_valid = false;
         /// whether the glossy lobe runs after this pass, in which case the hand-off barrier is THAT pass's
         bool specular_next = false;
-        /// whether this is the first dispatch of the generation, so the probe grid needs its first-use batch
-        bool probe_grid_first_use = false;
         /**
          * Which ORACLE this frame's rays use: the traced one (ray queries against the scene's structures) or the
          * marched one (depth-buffer ray marching). It decides THREE lanes of the push block at once - the ray
@@ -146,7 +144,21 @@ export namespace vulkan::pass {
         void set_bounce(float gain) noexcept;
         /// @brief the probe cache's gain, which is what makes its contribution measurable (0 turns it off)
         void set_probe_gain(float gain) noexcept;
+        /**
+         * @brief whether the probe cache may be READ at all this frame (the owner's answer, not the pass's)
+         *
+         * The cache is ANOTHER pass's state, so this is the one thing about it the tracer cannot derive: the chain
+         * owner composes "the cache's feature is active" with "that pass has written it at least once" and hands
+         * the answer here. It replaces a frame field the owner used to write from outside - the frame is the
+         * pass's now (see frame_pass::prepare_frame), and a value written into it from outside was a second owner
+         * for this pass's own input.
+         */
+        void set_probe_ready(bool ready) noexcept;
 
+        /// @brief build this pass's frame from the published facts (see frame_pass::prepare_frame)
+        void prepare_frame(frame_facts const& facts) noexcept override;
+        /// @brief the frame for this stage; the pass composes it itself now (see frame_pass::prepare_frame),
+        ///        and the setter stays for a test that wants to hand one over directly
         void set_frame(ssgi_trace_frame const& frame) noexcept;
 
     private:

@@ -1,4 +1,4 @@
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/cluster.cppm
@@ -83,6 +83,10 @@ export namespace vulkan::pass {
         [[nodiscard]] VkPipeline pipeline() const noexcept override;
         [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
+        /// @brief build this pass's frame from the published facts (see frame_pass::prepare_frame)
+        void prepare_frame(frame_facts const& facts) noexcept override;
+        /// @brief the frame for this stage; the pass composes it itself now (see frame_pass::prepare_frame),
+        ///        and the setter stays for a test that wants to hand one over directly
         void set_frame(cluster_frame const& frame) noexcept;
 
     private:

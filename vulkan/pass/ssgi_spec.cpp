@@ -76,10 +76,6 @@ namespace vulkan::pass {
         this->rays_ = std::clamp(rays, 1u, 8u);
     }
 
-    void ssgi_spec_pass::set_frame(ssgi_spec_frame const& frame) noexcept {
-        this->frame_ = frame;
-    }
-
     void ssgi_spec_pass::on_swapchain_recreated(pass_host const&) {
         // The lobe's two outputs belong to the target generation: new images are in UNDEFINED, so the first-use
         // transition is owed again. The runner calls this for every pass in a stage, which is what makes the

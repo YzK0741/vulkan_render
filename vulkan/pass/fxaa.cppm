@@ -1,4 +1,4 @@
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/fxaa.cppm
@@ -48,7 +48,7 @@ import vulkan.core.handles; // vk_pipeline: the RAII owner of the pipeline this 
 
 export namespace vulkan::pass {
 
-    /// @brief what the renderer hands the FXAA pass: the overlay's draw, and nothing else
+    /// @brief what this pass's frame carries: the overlay's draw, and nothing else
     struct fxaa_frame {
         /**
          * The debug overlay's draw, recorded INSIDE this pass's rendering instance between its draw and
@@ -57,10 +57,10 @@ export namespace vulkan::pass {
          * WHY A CALLBACK AND NOT A PASS (the same decision the composite's frame records, from the other side):
          * the overlay has no load op, so a pass of its own would CLEAR the image it is supposed to draw over. It
          * belongs to whichever instance is the frame's LAST writer, and this pass is that instance whenever it
-         * runs - so the host sets this callback here and leaves the composite's null on exactly those frames.
+         * runs - so the pass installs the host's hook (see `set_overlay`) and always draws it, while the
+         * composite's own frame decides per frame that the overlay is THIS pass's.
          */
-        void (*after_draw)(void* owner, VkCommandBuffer command_buffer) = nullptr;
-        void* owner = nullptr;
+        draw_callback after_draw = {};
     };
 
     /**
@@ -93,6 +93,12 @@ export namespace vulkan::pass {
         ///        around the post set layout its owner hands it)
         [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
+        /// @brief install the host's overlay hook (this pass is the frame's last writer whenever it runs)
+        void set_overlay(draw_callback overlay) noexcept;
+        /// @brief build this pass's frame from the published facts (see frame_pass::prepare_frame)
+        void prepare_frame(frame_facts const& facts) noexcept override;
+        /// @brief the frame for this stage; the pass composes it itself now (see frame_pass::prepare_frame),
+        ///        and the setter stays for a test that wants to hand one over directly
         void set_frame(fxaa_frame const& frame) noexcept;
 
     private:
@@ -116,6 +122,8 @@ export namespace vulkan::pass {
         /// session-stable device fact is exactly what a create step may keep (see the composite, which does the
         /// same for its own frame's target choice)
         VkFormat swap_chain_format_ = VK_FORMAT_UNDEFINED;
+        /// the host's overlay hook, installed once (see set_overlay): this pass draws it whenever it runs
+        draw_callback overlay_ = {};
         fxaa_frame frame_ = {};
     };
 

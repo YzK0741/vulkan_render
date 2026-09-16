@@ -63,6 +63,12 @@ namespace vulkan::pass {
         this->frame_ = frame;
     }
 
+    void deferred_pass::prepare_frame(frame_facts const& facts) noexcept {
+        // ONE flag, and it is the composed predicate (the knob AND ray queries AND this frame's structures), not
+        // the similarly named feature fact - see frame_facts' own note.
+        this->set_frame(deferred_frame{.gi_replaces_ambient = facts.gi_traced});
+    }
+
     void deferred_pass::create(pass_context const& context) {
         if (context.device == VK_NULL_HANDLE) {
             return;

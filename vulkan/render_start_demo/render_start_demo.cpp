@@ -103,6 +103,21 @@ namespace vulkan {
         // the renderer's work between the stages) and takes this demo's wiring for everything the runtime does not
         // know about those passes: their frames, the stage preambles, the results, the feature table.
         self.set_pass_chain(this->chain_, this->wiring());
+        // ---- THE TWO HOOKS THE PASSES CARRY, INSTALLED ONCE ----
+        // NEITHER IS A PER-FRAME VALUE, which is why neither belongs in a frame any more: the overlay's draw is a
+        // property of this renderer and of WHICH pass is the frame's last writer (the composite and the FXAA pass
+        // both hold it, and each frame's own decision says which of them uses it), and the reflection's recording
+        // is this application's second signal through the temporal pass's one pipeline. `attach` is where both are
+        // known, so they are set here and the frame loop never writes into a pass's frame again.
+        if (this->composite_ != nullptr) {
+            this->composite_->set_overlay(self.overlay_draw());
+        }
+        if (this->fxaa_ != nullptr) {
+            this->fxaa_->set_overlay(self.overlay_draw());
+        }
+        if (this->ssgi_temporal_ != nullptr) {
+            this->ssgi_temporal_->set_reflection_recorder(&render_start_demo::record_reflection, this);
+        }
         return found;
     }
 
@@ -118,12 +133,15 @@ namespace vulkan {
             self.runtime_->set_scene_unlit(self.deferred_->unlit());
         }
         // The stage names are the frame's own structure (the same names the runtime's stage structs carry), so this
-        // switch is the frame ORDER written once, where the passes live.
-        if (stage == "cluster") {
-            if (self.cluster_ != nullptr) {
-                self.cluster_->set_frame(services.make_cluster_frame(services.owner));
-            }
-        } else if (stage == "shadow") {
+        // switch is the frame ORDER written once, where the passes live. WHAT IS NOT HERE ANY MORE: the frames.
+        // Every pass builds its own before this runs (see frame_pass::prepare_frame), so what is left per stage is
+        // only what is genuinely this owner's - the frame-ORDER duties (whose first sample publishes an image) and
+        // the one answer no one else can give the tracer (whether the probe cache may be read).
+        // THE THREE FRAMES THIS DEMO STILL HANDS OVER, and they are the three the runtime still builds (see
+        // `frame_services`): each carries the renderer's own recording machinery - the per-slot secondary buffers
+        // for the scene and the transparent pass, the per-cascade secondaries for the shadow - so the frame cannot
+        // be composed by the pass alone yet. Every other frame is the pass's own.
+        if (stage == "shadow") {
             if (self.shadow_ != nullptr) {
                 self.shadow_->set_frame(services.make_shadow_frame(services.owner));
             }
@@ -144,10 +162,8 @@ namespace vulkan {
                 static_cast<void>(services.ensure_gbuffer_depth_sampled(services.owner, services.cmd, services.image_index));
             }
         } else if (stage == "deferred") {
-            if (self.deferred_ != nullptr) {
-                self.deferred_->set_frame(services.make_deferred_frame(services.owner));
-            }
-            // ... and the same frame-order duty as the ray-traced shadow's above, for the same reason.
+            // ... and the same frame-order duty as the ray-traced shadow's above, for the same reason. Its frame is
+            // the pass's own now (see pass::deferred_frame / frame_pass::prepare_frame).
             static_cast<void>(services.ensure_gbuffer_targets_sampled(services.owner, services.cmd, services.image_index));
             static_cast<void>(services.ensure_gbuffer_depth_sampled(services.owner, services.cmd, services.image_index));
         } else if (stage == "taa" || stage == "gbuffer_debug") {
@@ -160,39 +176,23 @@ namespace vulkan {
                 static_cast<void>(services.ensure_gbuffer_depth_sampled(services.owner, services.cmd, services.image_index));
             }
         } else if (stage == "gi_trace") {
-            // The two writers of the raw trace. Their frames carry values that must be read BEFORE the half runs
-            // (the tracer's `specular_next` decides who owes the denoiser the hand-off barrier), which is why the
-            // two halves are prepared separately.
+            // THE ONE ANSWER THE TRACER CANNOT GET ANYWHERE ELSE, and it is about ANOTHER pass's state: whether the
+            // probe cache may be read at all (its feature is active AND that pass has written it at least once, so a
+            // grid nothing has deposited into is never sampled). The tracer's own half of the "first use" question
+            // needs no telling: the pass tracks "have I seen this generation's grid" itself, and the frame field the
+            // renderer used to fill with its negation is gone with it.
             if (self.ssgi_trace_ != nullptr) {
-                pass::ssgi_trace_frame frame = services.make_ssgi_trace_frame(services.owner);
-                // THE TWO ANSWERS ABOUT THE TRACER'S AND THE PROBE'S OWN STATE, which are this demo's to give now
-                // that it holds both passes: whether this generation's probe grid still needs its first-use batch
-                // (the tracer tracks "have I seen it" itself - the batch has to happen exactly once per generation,
-                // and two copies of that fact can disagree after a resize), and whether the cache may be READ at all
-                // (active AND written at least once, so a grid nothing has deposited into is never sampled).
-                frame.probe_grid_first_use = !self.ssgi_trace_->probe_grid_seen();
-                frame.probe_ready = self.runtime_ != nullptr && self.runtime_->feature_active("ssgi_probes") && self.gi_probe_ != nullptr && self.gi_probe_->cache_valid();
-                self.ssgi_trace_->set_frame(frame);
+                self.ssgi_trace_->set_probe_ready(self.runtime_ != nullptr && self.runtime_->feature_active("ssgi_probes") && self.gi_probe_ != nullptr && self.gi_probe_->cache_valid());
             }
-            if (self.ssgi_spec_ != nullptr) {
-                self.ssgi_spec_->set_frame(services.make_ssgi_spec_frame(services.owner));
-            }
+            // THE LOBE HAS NO FRAME AT ALL (see ssgi_spec_frame's removal): its one input used to be the target
+            // generation's image count, which the pass reads from the frame identity while recording.
         } else if (stage == "gi_denoise") {
             // THE REFLECTION's family, on the temporal pass's own set layout: ensured here because this is the half
             // whose recording (the pass's `record_reflection` callback, below) is what binds it.
             self.ensure_reflection_descriptors(services);
-            if (self.ssgi_temporal_ != nullptr) {
-                // ... and its frame, with the callback THIS demo records: two signals through one pipeline is this
-                // application's choice, so the second one's recording is the application's code (see the file's
-                // header and `record_reflection`).
-                pass::ssgi_temporal_frame frame = services.make_ssgi_denoise_frame(services.owner);
-                frame.record_reflection = &render_start_demo::record_reflection;
-                frame.owner = &self;
-                self.ssgi_temporal_->set_frame(frame);
-            }
-            if (self.ssgi_spatial_ != nullptr) {
-                self.ssgi_spatial_->set_frame(services.make_ssgi_spatial_frame(services.owner));
-            }
+            // ... and the temporal resolve's frame is its own (history_valid is a published fact); the reflection's
+            // recording is installed on the pass ONCE, in `attach`, because it does not change between frames. The
+            // spatial filter's frame is its own too (one published fact: which oracle produced the accumulation).
             // ---- THE FRAME'S RULE, BETWEEN THE CHAIN'S TWO HALVES ----
             // The temporal resolve is the first sampler of the G-buffer's depth (its depth guard) and of the
             // motion-vector target (its reprojection), and whether each still needs its "the G-buffer pass wrote me"
@@ -201,16 +201,14 @@ namespace vulkan {
             static_cast<void>(services.ensure_gbuffer_depth_sampled(services.owner, services.cmd, services.image_index));
             static_cast<void>(services.ensure_velocity_sampled(services.owner, services.cmd, services.image_index));
         } else if (stage == "post_composite") {
-            if (self.composite_ != nullptr) {
-                self.composite_->set_frame(services.make_composite_frame(services.owner));
-            }
+            // No frame work left: the composite composes its own (which target it writes, who draws the overlay,
+            // whether this frame's bloom sum exists), and the overlay hook was installed once in `attach`.
         } else if (stage == "fxaa") {
-            if (self.fxaa_ != nullptr) {
-                self.fxaa_->set_frame(services.make_fxaa_frame(services.owner));
-            }
+            // ... and neither has the FXAA pass, whose frame is the overlay hook it was given in `attach`.
         }
-        // A stage with no entry above is a stage whose pass wants no frame (the world-space probe cache, whose
-        // declaration resolves every value it needs), which is why this is not an error.
+        // A stage with no entry above is a stage whose pass wants nothing from this owner: the world-space probe
+        // cache's declaration resolves every value it needs, and the frames of every other stage are the passes'
+        // own (see frame_pass::prepare_frame).
     }
 
     void render_start_demo::collect(void* const owner, std::string_view const stage, runtime::frame_results& out) {

@@ -1,4 +1,4 @@
-// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/ssgi_temporal.cppm
@@ -151,6 +151,21 @@ export namespace vulkan::pass {
          */
         static constexpr uint32_t group_size = 8;
 
+        /**
+         * @brief hand this pass the SECOND signal's recording, once (the owner's, not this pass's)
+         *
+         * The reflection is resolved through this pass's pipeline and layout but its images belong to the
+         * application (`vulkan.render_start_demo` builds that family), so the recording is a callback the owner
+         * installs - ONE SETTER rather than a frame field the owner rewrote every frame, because the callback
+         * does not change from frame to frame: what changes per frame is `history_valid`, which the pass now
+         * composes itself (see frame_pass::prepare_frame).
+         */
+        void set_reflection_recorder(void (*recorder)(void* owner, VkCommandBuffer command_buffer, bool history_valid), void* owner) noexcept;
+
+        /// @brief build this pass's frame from the published facts (see frame_pass::prepare_frame)
+        void prepare_frame(frame_facts const& facts) noexcept override;
+        /// @brief the frame for this stage; the pass composes it itself now (see frame_pass::prepare_frame),
+        ///        and the setter stays for a test that wants to hand one over directly
         void set_frame(ssgi_temporal_frame const& frame) noexcept;
 
     private:

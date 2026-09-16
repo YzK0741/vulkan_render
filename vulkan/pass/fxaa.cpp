@@ -110,6 +110,16 @@ namespace vulkan::pass {
         this->frame_ = frame;
     }
 
+    void fxaa_pass::set_overlay(draw_callback const overlay) noexcept {
+        // The host's hook, installed once. This pass needs no fact to decide whether to use it: whenever FXAA
+        // resolves, THIS is the frame's last writer (the composite's frame is what needs the answer).
+        this->overlay_ = overlay;
+    }
+
+    void fxaa_pass::prepare_frame([[maybe_unused]] frame_facts const& facts) noexcept {
+        this->set_frame(fxaa_frame{.after_draw = this->overlay_});
+    }
+
     void fxaa_pass::record(resolved_io const& io) {
         if (!this->pipeline_ready() || io.targets.empty() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE ||
             io.shared.post == VK_NULL_HANDLE || io.extent.width == 0 || io.extent.height == 0) {
@@ -167,8 +177,8 @@ namespace vulkan::pass {
         // INSIDE the instance, between the draw and its end: this pass is the frame's LAST writer whenever it runs,
         // so the overlay belongs here - drawing it in the composite's instance instead would let the edge filter
         // blur the UI text into mush (see fxaa_frame::after_draw, and the composite's frame for the other case).
-        if (this->frame_.after_draw != nullptr) {
-            this->frame_.after_draw(this->frame_.owner, io.cmd);
+        if (this->frame_.after_draw.valid()) {
+            this->frame_.after_draw.record(this->frame_.after_draw.owner, io.cmd);
         }
         vkCmdEndRendering(io.cmd);
     }

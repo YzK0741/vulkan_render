@@ -130,6 +130,20 @@ namespace vulkan::pass {
         this->resolved_ = false;
     }
 
+    void ssgi_temporal_pass::set_reflection_recorder(void (*const recorder)(void* owner, VkCommandBuffer command_buffer, bool history_valid), void* const owner) noexcept {
+        // The owner's callback and its context are ONE fact (see the frame's own note), and they do not change
+        // between frames, so they are installed once rather than rewritten into the frame every frame.
+        this->frame_.record_reflection = recorder;
+        this->frame_.owner = owner;
+    }
+
+    void ssgi_temporal_pass::prepare_frame(frame_facts const& facts) noexcept {
+        // ONE field, and the callback the owner installed above survives it: the frame is copied, not replaced.
+        ssgi_temporal_frame frame = this->frame_;
+        frame.history_valid = facts.gi_history_valid;
+        this->set_frame(frame);
+    }
+
     void ssgi_temporal_pass::record(resolved_io const& io) {
         this->resolved_ = false;
         // NOT `io.own`: this pass does not read the CURRENT frame's binding handles (it writes its sets from the

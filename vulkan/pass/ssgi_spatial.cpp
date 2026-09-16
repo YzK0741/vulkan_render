@@ -125,6 +125,12 @@ namespace vulkan::pass {
         this->frame_ = frame;
     }
 
+    void ssgi_spatial_pass::prepare_frame(frame_facts const& facts) noexcept {
+        // The filter must know which oracle produced the accumulation it is filtering (the marched one has no
+        // instance table behind it), and that is the host's composed predicate - see frame_facts.
+        this->set_frame(ssgi_spatial_frame{.traced_oracle = facts.gi_traced});
+    }
+
     void ssgi_spatial_pass::record(resolved_io const& io) {
         this->resolved_ = false;
         if (io.barrier_images.size() < render_resource::ssgi_spatial_barriers.size() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE ||

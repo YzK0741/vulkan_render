@@ -146,6 +146,23 @@ namespace vulkan::pass {
         this->frame_ = frame;
     }
 
+    void post_composite_pass::set_overlay(draw_callback const overlay) noexcept {
+        // The host's hook, installed once by whoever owns the passes. It is STORED, not put in the frame: what the
+        // frame decides per frame is whether THIS pass is the frame's last writer (see prepare_frame).
+        this->overlay_ = overlay;
+    }
+
+    void post_composite_pass::prepare_frame(frame_facts const& facts) noexcept {
+        // WHO WRITES THE LDR IMAGE is the fact that decides both lanes at once: when FXAA resolves, this pass is
+        // not the frame's last writer, so it writes the intermediate and FXAA carries the overlay; when it does
+        // not, this pass is the last writer and draws the overlay itself.
+        composite_frame frame = {};
+        frame.after_draw = facts.fxaa_resolves ? draw_callback{} : this->overlay_;
+        frame.write_ldr = facts.fxaa_resolves;
+        frame.suppress_bloom = facts.debug_view;
+        this->set_frame(frame);
+    }
+
     void post_composite_pass::set_gi_upsample(bool const enabled) noexcept {
         this->gi_upsample_ = enabled;
     }
@@ -240,10 +257,10 @@ namespace vulkan::pass {
         vkCmdDraw(io.cmd, 3, 1, 0, 0);
         // INSIDE the instance, between the draw and its end: the debug overlay composites a UI over the image
         // this draw just wrote and has no load op of its own, so it can be neither a pass nor outside the
-        // instance (see composite_frame::after_draw - the host leaves this null when the FXAA pass is the frame's
-        // last writer instead).
-        if (this->frame_.after_draw != nullptr) {
-            this->frame_.after_draw(this->frame_.owner, io.cmd);
+        // instance (see composite_frame::after_draw - the pass leaves this empty when FXAA is the frame's last
+        // writer instead, which its own frame decided in prepare_frame).
+        if (this->frame_.after_draw.valid()) {
+            this->frame_.after_draw.record(this->frame_.after_draw.owner, io.cmd);
         }
         vkCmdEndRendering(io.cmd);
     }

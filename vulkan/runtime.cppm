@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.70.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.71.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -31,17 +31,9 @@ import vulkan.pass.gi_probe;          // the first real pass (its member is decl
 import vulkan.pass.taa;               // the second, and the first GRAPHICS one
 import vulkan.pass.scene;             // the third: the scene itself, whose work is DATA rather than a declaration
 import vulkan.pass.transparent;       // the fourth: the blended geometry, over the shaded frame
-import vulkan.pass.ssgi_trace;        // the fifth, and the GI chain's first stage: the half-resolution tracer
-import vulkan.pass.ssgi_spec;         // the sixth: the glossy lobe, which corrects the tracer's own image
-import vulkan.pass.ssgi_temporal;     // the seventh: the diffuse temporal resolve's recording (see its header)
-import vulkan.pass.ssgi_spatial;      // the eighth, and the GI chain's last stage: the spatial filter
 import vulkan.pass.rt_shadow;         // the ninth, and the first one OUTSIDE the GI chain: the ray-traced shadow
 import vulkan.pass.mask_bake;         // ... and the one-shot MASK bake, which is a JOB rather than a frame pass
 import vulkan.pass.compute_skin;      // ... and the compute-skinning job, which is a job for the same reason
-import vulkan.pass.cluster;           // the tenth: the clustered-light sort, the first pass with BUFFER barriers
-import vulkan.pass.deferred;          // the eleventh: the deferred lighting stage, the deferred path's shading work
-import vulkan.pass.post;              // the twelfth and thirteenth: the post chain (the composite + the bloom levels)
-import vulkan.pass.fxaa;              // the fourteenth: the FXAA resolve, the frame's last writer when it runs
 import vulkan.pass.gbuffer_debug;     // the fifteenth: the G-buffer debug view (and the G-buffer set layout's owner)
 import vulkan.pass.shadow;            // the sixteenth: the directional shadow map, one depth-only cascade per layer
 import vulkan.pass.chain;             // the chain container: what holds a run of passes and its ORDER
@@ -443,9 +435,16 @@ namespace vulkan {
          * that must land in the middle of a chain cannot be run from outside it. So the trace half and the denoise
          * half are two chains, recorded one after the other with that rule between them (see
          * `runtime::record_main_drawcalls`), and each half is still an ordered value whose order is data.
+         *
+         * THE CHAIN'S NAME IS THE STAGE NAME, spelled the same way: the names below are what
+         * `chain_wiring::prepare` is handed for that half (see `prepare_stage`, which passes the stage the chain
+         * builds), so "gi trace" with a space was a name the owner had to know in TWO spellings - the mismatch
+         * this rename removes, and it was measured rather than noticed: with `prepare_stage` handing the chain's
+         * own name, the owner's `gi_trace` branch stopped running and the GI chain lost the frame-order rule that
+         * publishes the motion-vector target.
          */
-        pass::pass_chain gi_trace_chain{"gi trace"};
-        pass::pass_chain gi_denoise_chain{"gi denoise"};
+        pass::pass_chain gi_trace_chain{"gi_trace"};
+        pass::pass_chain gi_denoise_chain{"gi_denoise"};
         std::array<pass::frame_pass*, 1> rt_shadow_stage = {};
         /// the deferred lighting stage's own stage: it sits between the ray-traced shadow (whose output its
         /// descriptor samples) and the transparent pass (which composites over the image it shades), which is
@@ -1506,18 +1505,13 @@ namespace vulkan {
             pass::frame_identity frame = {};
             /// the frame's constants, for a push block an owner composes itself
             frame_constants const* constants = nullptr;
-            // ---- the frames, each built from the runtime's own data (see make_*_frame) ----
-            pass::cluster_frame (*make_cluster_frame)(void* owner) = nullptr;
+            // ---- the frames ONLY the runtime can build, because they carry its own recording machinery (the
+            //      per-slot secondary buffers, the per-cascade secondaries, the draw-state factory and the task
+            //      scheduling those run through). Every other frame is the PASS's own now: see
+            //      `frame_pass::prepare_frame`, which the host calls for every pass in a stage before this ----
             pass::shadow_frame (*make_shadow_frame)(void* owner) = nullptr;
             pass::scene_frame (*make_scene_frame)(void* owner) = nullptr;
             pass::transparent_frame (*make_transparent_frame)(void* owner) = nullptr;
-            pass::deferred_frame (*make_deferred_frame)(void* owner) = nullptr;
-            pass::composite_frame (*make_composite_frame)(void* owner) = nullptr;
-            pass::fxaa_frame (*make_fxaa_frame)(void* owner) = nullptr;
-            pass::ssgi_trace_frame (*make_ssgi_trace_frame)(void* owner) = nullptr;
-            pass::ssgi_spec_frame (*make_ssgi_spec_frame)(void* owner) = nullptr;
-            pass::ssgi_temporal_frame (*make_ssgi_denoise_frame)(void* owner) = nullptr;
-            pass::ssgi_spatial_frame (*make_ssgi_spatial_frame)(void* owner) = nullptr;
             // ---- the frame's ORDERING RULES a stage preamble runs: the runtime's per-image bookkeeping, whose
             //      flags belong to the passes that WROTE those images (see each accessor) ----
             bool (*ensure_gbuffer_targets_sampled)(void* owner, VkCommandBuffer cmd, uint32_t image_index) = nullptr;
@@ -1612,6 +1606,18 @@ namespace vulkan {
          * the runtime's, so the log stays one line per feature whatever calls it.
          */
         void warn_missing_feature(std::string_view key, std::string const& message);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the host hook the frame's LAST WRITER draws the debug overlay with (see `pass::draw_callback`)
+         *
+         * WHY IT IS PUBLIC, and it is the same shape as `warn_missing_feature`: the overlay is this renderer's
+         * (it owns the ImGui renderer and the flag that turns it off), but WHICH pass records it is the chain
+         * owner's to know - the overlay has no load op, so it has to be recorded inside whichever pass writes the
+         * frame last, and that is a property of the chain. The owner installs this hook on the passes that may be
+         * last (`vulkan.render_start_demo` does it in `attach`), and each pass decides for itself whether it is.
+         */
+        [[nodiscard]] pass::draw_callback overlay_draw() const noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -2289,19 +2295,6 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief this frame's input for the SSGI tracer: the facts the pass cannot derive
-         * @note `history_valid` is the DENOISER's per-image state, read off the runtime's flag because the
-         *       temporal resolve still lives there; `specular_next` is the same predicate the lobe's own pass
-         *       decides on, evaluated once so the two passes cannot disagree about who owes the hand-off
-         *       barrier; `probe_grid_first_use` is the per-generation flag the tracer's own barrier batch needs;
-         *       `traced_oracle` is which of the two ray oracles this frame uses (the same predicate the lobe's
-         *       feature is granted on, and it decides three push lanes at once), and `probe_ready` says whether
-         *       the cache may be READ at all - active AND written, the second half being the probe pass's state
-         */
-        [[nodiscard]] pass::ssgi_trace_frame make_ssgi_trace_frame() const noexcept;
-
-        /**
-         * @ingroup vulkan_runtime
          * @brief turn screen-space GI on or off - the FLAG only
          *
          * THE SPLIT the handover forces, and it is a real one rather than a convenience: the renderer needs this
@@ -2450,26 +2443,6 @@ namespace vulkan {
         [[nodiscard]] bool ssgi_traced_active() const noexcept;
 
         /**
-         * @ingroup vulkan_runtime
-         * @brief this frame's input for the glossy lobe: the image count its per-image state is sized from
-         * @note the pass needs almost nothing from the frame - its push block is the PASS's now (it composes it
-         *       from the frame constants and its own reach), its images arrive through the declaration - so this
-         *       is one number, and the struct exists to keep the boundary named rather than to carry data
-         */
-        [[nodiscard]] pass::ssgi_spec_frame make_ssgi_spec_frame() const noexcept;
-        /**
-         * @brief this frame's input for the diffuse temporal resolve
-         * @param history_valid the flag AS READ BEFORE the stage, so the reflection's resolve (which the pass
-         *        calls back for at the end of its own recording, in the same frame) blends exactly as this one did
-         * @note what is left here is ONE field and one callback, and both are the documented exception: the
-         *       reflection is recorded by the renderer (a declaration cannot describe two signals in the same seven
-         *       slots) but the pass decides WHEN, which is what keeps the chain contiguous. The two shared
-         *       per-image transitions it used to be handed are the FRAME's ordering rules now and run in the frame
-         *       loop, between the chain's two halves - see runtime::record_main_drawcalls.
-         */
-        [[nodiscard]] pass::ssgi_temporal_frame make_ssgi_denoise_frame() noexcept;
-
-        /**
          * @brief re-skin every skinned caster and REFIT its structure, for this frame
          * @param command_buffer where to record (the frame's structure phase, before the top level build)
          * @return whether anything was recorded
@@ -2563,33 +2536,38 @@ namespace vulkan {
         [[nodiscard]] pass::transparent_frame make_transparent_frame() noexcept;
 
         // =============================================================================================
-        // THE CHAIN OWNER'S SEAM (see docs/pass_chain_plan.md): the frames the runtime builds from its own
-        // data, the per-image ordering rules its stages run, and the two callbacks whoever owns the passes
-        // implements. Nothing here names a pass's TYPE as a member - the point is that this renderer stops
-        // holding one reference per pass and is handed a chain instead.
+        // THE CHAIN OWNER'S SEAM (see docs/pass_chain_plan.md): the frames ONLY this renderer can build (they
+        // carry its own recording machinery), the per-image ordering rules its stages run, and the two callbacks
+        // whoever owns the passes implements. Nothing here names a pass's TYPE as a member - the point is that
+        // this renderer stops holding one reference per pass and is handed a chain instead - and since the frame
+        // composition moved into the passes (`frame_pass::prepare_frame`) the builders below are down to the
+        // three whose frames carry the parallel-recording policy.
         // =============================================================================================
-        /// this frame's cluster grid, as the cluster sort's declaration wants it
-        [[nodiscard]] pass::cluster_frame make_cluster_frame() noexcept;
         /// the shadow pass's frame: the per-cascade secondaries the structure phase recorded, the map's edge and
         /// the two callbacks. The secondaries are copied into a member so the span the frame carries stays valid
         /// for the whole recording (a local would dangle the moment the builder returned).
         [[nodiscard]] pass::shadow_frame make_shadow_frame() noexcept;
-        /// the lighting stage's one frame answer (see pass::deferred_frame)
-        [[nodiscard]] pass::deferred_frame make_deferred_frame() const noexcept;
-        /// the composite's frame: which target and pipeline it writes, who draws the overlay, and whether this
-        /// frame's bloom sum exists (the renderer's decisions, from the renderer's own state)
-        [[nodiscard]] pass::composite_frame make_composite_frame() noexcept;
-        /// the FXAA pass's frame: it is the frame's last writer whenever it runs, so it carries the overlay
-        [[nodiscard]] pass::fxaa_frame make_fxaa_frame() noexcept;
-        /// the spatial filter's frame: which oracle produced this frame's accumulation (see its header)
-        [[nodiscard]] pass::ssgi_spatial_frame make_ssgi_spatial_frame() const noexcept;
         /// every builder and ordering rule above, bound to this runtime: what `chain_wiring::prepare` is handed
         [[nodiscard]] frame_services make_frame_services(VkCommandBuffer command_buffer) noexcept;
         /// this frame's half of the feature table (see `feature_facts`), which is what the owner's answers are
         /// composed from
         [[nodiscard]] feature_facts make_feature_facts() const noexcept;
+        /**
+         * @brief the per-frame values only this renderer can compute, for the passes that build their own frames
+         *
+         * EVERY FIELD IS FILLED WITH THE EXPRESSION THE BUILDER IT REPLACED USED, which is a correctness rule
+         * rather than tidiness: `gi_specular` and `debug_view` are COMPOSED answers (the knob AND this frame's
+         * structures, the chain owner's own feature table), and the feature facts carry knobs of the same names.
+         * @note evaluated PER STAGE, not once per frame, and it has to be: `gi_traced` depends on this frame's
+         *       top level structure, which the structure phase REBUILDS during the frame - a value computed at
+         *       `pace_and_acquire` would be the previous frame's answer. This is the same timing trap
+         *       `frame_constants::gi_instance_table` is filled late for.
+         */
+        [[nodiscard]] pass::frame_facts make_frame_facts() const noexcept;
         /// run the owner's `prepare` for one stage, or do nothing when no owner is wired (see `chain_wiring`)
-        void prepare_stage(std::string_view stage, VkCommandBuffer command_buffer);
+        /// @note this is also where every pass in @p stage builds ITS OWN frame (see frame_pass::prepare_frame),
+        ///       BEFORE the owner's `prepare` - so an owner that still wants to override a frame can
+        void prepare_stage(pass::stage const& stage, VkCommandBuffer command_buffer);
         /// run the owner's `collect` for one stage and apply what it reports (see `frame_results`)
         void collect_stage(std::string_view stage);
         /// clear one image's "the G-buffer instance wrote the motion-vector target" flag, so the next sampler of
@@ -2600,6 +2578,15 @@ namespace vulkan {
         /// whoever owns this frame's passes; empty until `set_chain_wiring` is called, and a frame with no wiring
         /// gives its passes no frames - which is what makes the seam's absence visible rather than silent
         chain_wiring wiring_ = {};
+        /**
+         * THE FACTS PUBLISHED TO THE PASSES FOR THE STAGE ABOUT TO RECORD (see make_frame_facts and
+         * `frame_pass::prepare_frame`).
+         *
+         * NOT named `frame_facts`, although that is its type: this class already has a `frame_facts` member and
+         * it is the frame CONSTANTS (see `frame_constants frame_facts` above) - one underscore apart from the
+         * published facts would be a trap for whoever reads either name next.
+         */
+        pass::frame_facts stage_facts_ = {};
 
         /**
          * @ingroup vulkan_runtime

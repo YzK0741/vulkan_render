@@ -1,4 +1,4 @@
-// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/ssgi_spatial.cppm
@@ -102,6 +102,8 @@ export namespace vulkan::pass {
 
         /// @brief this frame's answer about which oracle produced the accumulation (see ssgi_spatial_frame)
         void set_frame(ssgi_spatial_frame const& frame) noexcept;
+        /// @brief build this pass's frame from the published facts (see frame_pass::prepare_frame)
+        void prepare_frame(frame_facts const& facts) noexcept override;
 
         /// @brief whether the pass built what it records with (the renderer gates the GI chain on this)
         [[nodiscard]] bool pipeline_ready() const noexcept;

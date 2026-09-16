@@ -3232,6 +3232,92 @@ defect would take, and it was the measurement's fault rather than the change's. 
 Pinning it (`animation_time = 1.5`) made every side stable and identical. This is the gate's own rule stated once more:
 a capture of an ANIMATED scene means nothing until its pose is pinned.
 
+## THE THIRD BATCH: THE FRAMES MOVE INTO THEIR PASSES, AND THE RUNTIME STOPS NAMING EIGHT OF THEM
+
+**WHAT MOVED is the composition of EIGHT of the eleven per-pass frames** - cluster, deferred, the four GI stages, the
+post composite and FXAA - and the measurement that says so is four counts, taken before and after:
+
+| | before | after |
+|---|---|---|
+| `frame_services` frame builders | 11 | **3** |
+| `runtime::make_*_frame` definitions | 11 | **3** |
+| `set_frame` calls in the demo's `prepare` | 11 | **3** |
+| `vulkan.pass.*` imports in `vulkan.runtime` | 18 | **10** |
+
+The three that stayed are the three whose frames carry this renderer's RECORDING MACHINERY rather than data: the
+scene's and the transparent's carry the per-slot secondary buffers, the draw-state factory and the task-pool
+scheduling those record through, and the shadow's carry the per-cascade secondaries the structure phase recorded -
+five callbacks into 94 lines of this file's own algorithms, plus three scratch members whose LIFETIME the returned
+spans depend on. Moving those is the parallel-recording-policy question, not a frame question, and it stays out.
+
+**THE LINE COUNT BARELY MOVES, and saying so is the point**: `runtime.cppm` 3147 -> 3126, `runtime.cpp` 5450 -> 5421,
+the demo 648 -> 645, and `pass.cppm` 1228 -> **1306** because the seam is documented where it lives. What moved is the
+COUPLING - the runtime no longer names a frame type for those eight passes, and it no longer imports their modules.
+
+**THE SEAM, and why it is a virtual rather than a bigger services struct.** `frame_pass` gained
+`virtual void prepare_frame(frame_facts const& facts) noexcept {}` - a no-op by default, so the twelve passes with no
+frame of their own (and the three machinery ones) are untouched - and `runtime::prepare_stage` now takes the
+`pass::stage` it is about to record, publishes the facts and calls `prepare_frame` on every pass in it before the
+owner's `prepare`. Three things about that are load-bearing:
+
+* **PER STAGE, not once per frame**, and it has to be: `gi_traced` is `ssgi_traced_active()`, which depends on this
+  frame's top level structure - the structure phase REBUILDS it during the frame, so a value computed at
+  `pace_and_acquire` would be the previous frame's answer. (This is the same timing trap
+  `frame_constants::gi_instance_table` is filled late for, met a second time.)
+* **BEFORE the owner's `prepare`**, which is the order the seam always had, so an owner that still wants to add to or
+  override a frame keeps the last word.
+* **`frame_facts` is seven fields, and EVERY ONE IS FILLED WITH THE EXPRESSION THE BUILDER IT REPLACED USED.** Two of
+  them exist to make that rule explicit, because a similarly named feature fact would be a DIFFERENT value:
+  `gi_specular` is `ssgi_specular_active()` (the knob AND hit shading AND this frame's structures) while
+  `feature_facts::ssgi_specular` is the raw knob, and `debug_view` is the composed `gbuffer-debug` answer while the
+  feature fact of that name is the knob. Substituting either would be a behaviour change NO gate scenario catches
+  (both knobs are off in all twelve).
+
+**TWO SITES OF "FRAME SURGERY" BECAME SETTERS, which is what the seam demands**: a frame field written from outside
+the pass is a second owner for that pass's own input. The tracer's probe-cache readiness is now
+`set_probe_ready(bool)` (the owner's answer about ANOTHER pass's state), and the reflection's recording is now
+`set_reflection_recorder(callback, owner)` installed once in `attach` - it does not change between frames, so
+rewriting it into a frame every frame was the same fact stored per frame. The overlay hook went the same way:
+`composite_frame`'s `after_draw` PLUS its `owner` collapsed into ONE `pass::draw_callback` value (a function and the
+context it must be called with are one fact, and the two-field form allowed a function with no context), published as
+`runtime::overlay_draw()` and installed on both passes that may be the frame's last writer.
+
+**AND THE SLICE FOUND TWO MORE DEAD THINGS, both by asking "who reads this?"**:
+
+* **`ssgi_spec_frame` was dead**: its one field (`image_count`, "how long the per-image first-use state is") was
+  written by the renderer and never read - the state it describes is sized in `ssgi_spec_pass::record` from
+  `io.frame.image_count`, the frame IDENTITY's own answer, which cannot disagree with it. The struct, its `set_frame`
+  and the pass's `frame_` member are gone, and that pass now has no frame at all.
+* **`ssgi_trace_frame::probe_grid_first_use` was a second copy of an answer the pass already had**: the renderer filled
+  it with `!ssgi_trace_pass::probe_grid_seen()`, which is literally the negation of the pass's own flag - so the field
+  is gone and `record` asks its own state.
+
+**THE DEFECT THE GATE CAUGHT, and it is the reason the acceptance run is worth its twenty minutes.** Handing
+`prepare_stage` the stage instead of a stage NAME exposed a mismatch that had been invisible: the two GI sub-chains
+were named `"gi trace"` and `"gi denoise"` (with spaces) while the runtime passed the literals `"gi_trace"` and
+`"gi_denoise"` to the owner - so the owner switched on the runtime's spelling and the chain carried its own. The
+moment `prepare_stage` passed the CHAIN's name, the owner's two GI branches stopped running, the frame-order rule
+they hold stopped too (the temporal resolve is the first sampler of the motion-vector target, so the GI chain is what
+publishes it), and the gate failed four scenarios with `vkCmdDispatch(): ... layout SHADER_READ_ONLY_OPTIMAL ...
+doesn't match the previous known layout VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL` on the velocity image. The frames
+were all correct; only an ORDERING rule was missing - which is exactly the failure shape the twelve scenarios exist
+to catch, and no A/B of frames would have shown it. The fix makes ONE name do both jobs: the chains are named
+`"gi_trace"` and `"gi_denoise"`, because `prepare_stage` hands the chain's own name, and the marks are off for both
+chains so nothing else depended on the old spelling.
+
+**MEASURED**: the gate is **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, all twelve validation-clean and every
+reference unchanged (`deferred` `2DD1D13857322C0F`, `default_gi` `BF180E98ADB29E7E`, `sponza_gi` `58EC848DFABE654A`,
+`sponza_march` `EEFBBA2515803F46`, `metal_rough_glossy` `46F9851B7BC89872`, `glossy_motion` `98B06F2190B49519`);
+Release, Debug and ASan build clean with `ctest` 8/8 in all three; `doxygen` exits 0 with zero warnings. No A/B was
+needed: all eight migrated frames belong to passes the twelve scenarios RUN (unlike `rt_mask_bake`/`rt_skin_bake`),
+and the two knobs whose facts are composed (`ssgi_specular`, `gbuffer-debug`) are off in all of them - which is
+precisely why the struct's own note, rather than the gate, is what keeps those two honest.
+
+**WHAT IS LEFT, stated with its measurement**: the three machinery frames (72 lines + 5 callbacks + 3 lifetime
+scratch members), and the `frame_facts` struct's shape itself - seven values published per stage where a stricter
+reading of "the pass owns its frame" would move two of them (the hit-shading knob and the cluster grid, both read by
+the renderer's own policy as well) into `frame_constants::render_settings` where the shared-knob rule puts them.
+
 
 
 

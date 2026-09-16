@@ -1,4 +1,4 @@
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/post.cppm
@@ -114,29 +114,30 @@ export namespace vulkan::pass {
          * WHY IT IS A CALLBACK AND NOT A PASS OF ITS OWN, which is the decision this step had to make: the
          * overlay has no load op - it composites a UI on top of the image the composite just wrote - so a pass
          * of its own would CLEAR the frame it is supposed to draw over. It has to be inside whichever instance
-         * is the frame's LAST writer, and which one that is depends on FXAA: the host sets this callback on the
-         * frames FXAA is off and leaves it null when the FXAA pass (vulkan.pass.fxaa, its own step) carries the
-         * overlay instead.
+         * is the frame's LAST writer, and which one that is depends on FXAA: the pass installs this hook (see
+         * `set_overlay`) and then decides from `write_ldr` whether it or the FXAA pass is the one that draws it
+         * (vulkan.pass.fxaa holds the same hook for the other case).
          */
-        void (*after_draw)(void* owner, VkCommandBuffer command_buffer) = nullptr;
-        void* owner = nullptr;
+        draw_callback after_draw = {};
         /**
          * Whether the FXAA pass finishes this frame, i.e. whether the composite must write the LDR image instead
          * of the swapchain (see the target deviation in `render_resource::post_composite_io`).
          *
-         * THE HOST'S ANSWER, and it is the SAME predicate that decides `after_draw`'s owner above: the frame's
-         * last writer carries the overlay and the other one writes the intermediate. It arrives as data rather
-         * than being derived from `after_draw != nullptr`, because a pass inferring one decision from another
-         * decision's nullness is exactly the kind of coupling a frame struct exists to prevent.
+         * IT ARRIVES AS DATA RATHER THAN BEING DERIVED from the overlay hook's presence, because a pass inferring
+         * one decision from another decision's nullness is exactly the kind of coupling a frame struct exists to
+         * prevent - and it is the same predicate that decides WHICH pass carries the overlay. It is also the value
+         * that tells THIS pass whether it is the frame's last writer, which is why it is the composite that asks
+         * it rather than the host handing over "you are last".
          */
         bool write_ldr = false;
         /**
          * Whether this frame must NOT add the bloom sum - true while the G-buffer debug view is up.
          *
          * Bloom is a display effect, and a glow smeared over the channel being inspected is the opposite of a debug
-         * view (it would also invent colours that are not in the G-buffer at all). The host owns the answer
-         * because it is the same "what runs this frame" struct that gates the bloom CHAIN (`feature_active("bloom")`),
-         * so the weight this pass adds and the chain's own gate cannot disagree about whether there is a sum.
+         * view (it would also invent colours that are not in the G-buffer at all). The host composes the answer
+         * because it is the same "what runs this frame" question that gates the bloom CHAIN
+         * (`feature_active("bloom")`), so the weight this pass adds and the chain's own gate cannot disagree about
+         * whether there is a sum.
          */
         bool suppress_bloom = false;
     };
@@ -211,6 +212,12 @@ export namespace vulkan::pass {
          */
         void set_gi_upsample(bool enabled) noexcept;
 
+        /// @brief install the host's overlay hook (recorded inside this pass's instance when it is the last writer)
+        void set_overlay(draw_callback overlay) noexcept;
+        /// @brief build this pass's frame from the published facts (see frame_pass::prepare_frame)
+        void prepare_frame(frame_facts const& facts) noexcept override;
+        /// @brief the frame for this stage; the pass composes it itself now (see frame_pass::prepare_frame),
+        ///        and the setter stays for a test that wants to hand one over directly
         void set_frame(composite_frame const& frame) noexcept;
 
     private:
@@ -242,6 +249,8 @@ export namespace vulkan::pass {
         VkFormat swap_chain_format_ = VK_FORMAT_UNDEFINED;
         /// the GI upsample's lane (see set_gi_upsample)
         bool gi_upsample_ = true;
+        /// the host's overlay hook, installed once (see set_overlay); the frame decides whether this pass uses it
+        draw_callback overlay_ = {};
         composite_frame frame_ = {};
     };
 

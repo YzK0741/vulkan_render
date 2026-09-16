@@ -1,4 +1,4 @@
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/ssgi_spec.cppm
@@ -49,14 +49,12 @@ import vulkan.core.handles; // vk_pipeline: the RAII owner of the compute pipeli
 
 export namespace vulkan::pass {
 
-    /// @brief what the renderer hands the lobe: how long its per-image state is
-    /// @note the values it pushes come from `resolved_io::constants` (the camera, the scene radius, the address of
-    ///       the instance table the hits are shaded from, the ray sequence) and from its OWN reach, so this struct
-    ///       carries no push data - only the size of the state that is per target generation
-    struct ssgi_spec_frame {
-        /// how many images the target generation holds, which is how long the per-image first-use state is
-        uint32_t image_count = 0;
-    };
+    // THIS PASS HAS NO FRAME, and the struct that used to be here was DEAD before it was removed: its one field
+    // (`image_count`, "how long the per-image first-use state is") was written by the renderer's builder and never
+    // read - the state it describes is sized in `record` from `io.frame.image_count`, which is the frame
+    // IDENTITY's own answer and cannot disagree with it. What this pass pushes comes from `resolved_io::constants`
+    // (the camera, the scene radius, the instance table's address, the ray sequence) and from its own reach, so
+    // there was nothing left for a frame to carry.
 
     /**
      * @brief the glossy lobe: one traced reflection ray per pixel, added to the raw diffuse trace
@@ -115,8 +113,6 @@ export namespace vulkan::pass {
          */
         void set_reach(float radius, uint32_t rays) noexcept;
 
-        void set_frame(ssgi_spec_frame const& frame) noexcept;
-
     private:
         static constexpr std::string_view shader_name = "ssgi_spec.comp.spv";
         static constexpr uint32_t group_size = 8; // `ssgi_spec.comp`'s local_size_x/y
@@ -149,7 +145,6 @@ export namespace vulkan::pass {
         /// the lobe's own reach, clamped where it is set (a fraction of the scene radius, and its ray count)
         float radius_ = 0.5f;
         uint32_t rays_ = 1;
-        ssgi_spec_frame frame_ = {};
     };
 
     static_assert(sizeof(ssgi_spec_pass::push_constants) == render_resource::ssgi_spec_io.push->size,
