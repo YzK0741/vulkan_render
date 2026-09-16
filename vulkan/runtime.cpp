@@ -1344,7 +1344,7 @@ namespace vulkan {
             // after the settings are applied, which is where this flag was first lost) resets fields of
             // this struct. Recomposing it makes the flag authoritative - the lighting stage reads exactly
             // what the passes below will do this frame.
-            this->light_state.rt_shadows = (this->rt_shadows && this->rt_shadow.pipeline_ready() && this->vulkan_core.ray_query_available) ? 1.0f : 0.0f;
+            this->light_state.rt_shadows = (this->rt_shadows && this->pass_ready("rt_shadow") && this->vulkan_core.ray_query_available) ? 1.0f : 0.0f;
             this->light_state.sun_intensity = this->furnace ? 0.0f : 1.0f;
             this->light_state.furnace_level = this->furnace ? 1.0f : 0.0f;
 
@@ -1369,7 +1369,7 @@ namespace vulkan {
                     cluster_near = std::max(camera_near, 0.05f);
                     cluster_far = std::max(std::min(camera_far, scene_far), cluster_near * 2.0f);
                 }
-                bool const clustered = this->clustered_lights && this->cluster.pipeline_ready() && !degenerate && this->cluster_tiles_x > 0 && this->cluster_tiles_y > 0;
+                bool const clustered = this->clustered_lights && this->pass_ready("cluster") && !degenerate && this->cluster_tiles_x > 0 && this->cluster_tiles_y > 0;
                 this->light_state.cluster_grid = glm::vec4(static_cast<float>(this->cluster_tiles_x),
                                                            static_cast<float>(this->cluster_tiles_y),
                                                            static_cast<float>(vulkan::cluster_slice_count),
@@ -1804,7 +1804,7 @@ namespace vulkan {
             // Reuse: the maps were rendered into this slot by an earlier frame and nothing that feeds
             // them has changed since, so the sampling layout they are already in is the one the
             // lighting pass needs. Deliberately does nothing.
-        } else if (this->shadow.pipeline_ready() && this->shadow_images.size() > static_cast<std::size_t>(frame_slot)) {
+        } else if (this->pass_ready("shadow") && this->shadow_images.size() > static_cast<std::size_t>(frame_slot)) {
             // The pass does not run this frame (shadows toggled off, or no light setup yet), but the
             // scene set still binds the shadow map to binding 8 - pbr.frag uses it statically and only
             // decides at runtime whether to sample it - and a sampled descriptor must point at an
@@ -2101,7 +2101,7 @@ namespace vulkan {
     // format, which it cached at create.
     void runtime::ensure_post_descriptors() {
         core& vk = this->vulkan_core;
-        if (!this->post_composite.pipeline_ready()) {
+        if (!this->pass_ready("post_composite")) {
             return;
         }
         std::size_t const image_count = vk.hdr_image_views.size();
@@ -2279,7 +2279,7 @@ namespace vulkan {
     bool runtime::taa_active() const noexcept {
         // The forward path has no motion vectors (its fragment stage does not write them), so TAA is
         // the engine's answer to aliasing, now that there is no MSAA to fall back on.
-        return this->taa_on && this->taa_resolve.pipeline_ready() && this->deferred_lit_active();
+        return this->taa_on && this->pass_ready("taa") && this->deferred_lit_active();
     }
 
     VkImage runtime::scene_target_image(uint32_t const image_index) const noexcept {
@@ -2296,7 +2296,7 @@ namespace vulkan {
         bool const was_on = this->taa_on;
         this->taa_on = enabled;
         if (enabled) {
-            if (!this->taa_resolve.pipeline_ready()) {
+            if (!this->pass_ready("taa")) {
                 this->warn_missing_feature("taa", "TAA has no effect: the taa pipeline was not created (see the startup log)");
             } else if (!this->deferred_lit_active()) {
                 this->warn_missing_feature("taa", "TAA has no effect: the G-buffer pass or its lighting stage was not created (see the startup log)");
@@ -2376,9 +2376,9 @@ namespace vulkan {
             return false;
         }
         if (this->gbuffer_debug) {
-            return this->gbuffer_debug_view.pipeline_ready();
+            return this->pass_ready("gbuffer-debug");
         }
-        return this->deferred.pipeline_ready();
+        return this->pass_ready("deferred");
     }
 
     bool runtime::deferred_lit_active() const noexcept {
@@ -2395,7 +2395,7 @@ namespace vulkan {
 
     void runtime::ensure_gbuffer_descriptors() {
         core& vk = this->vulkan_core;
-        if (!this->gbuffer_debug_view.pipeline_ready()) {
+        if (!this->pass_ready("gbuffer-debug")) {
             return;
         }
         std::size_t const image_count = vk.gbuffer_image_views[0].size();
@@ -2505,8 +2505,8 @@ namespace vulkan {
         // passes missing has nothing to composite. Treating that as "GI off" keeps the composite's
         // weight at 0 - the alternative is a full-resolution frame of whatever the last image happens
         // to contain.
-        return this->ssgi_on && this->ssgi_trace.pipeline_ready() && this->ssgi_temporal.pipeline_ready() &&
-               this->ssgi_spatial.pipeline_ready() && this->deferred_lit_active() && !this->deferred.unlit();
+        return this->ssgi_on && this->pass_ready("ssgi_trace") && this->pass_ready("ssgi_temporal") &&
+               this->pass_ready("ssgi_spatial") && this->deferred_lit_active() && !this->deferred.unlit();
     }
 
     void runtime::set_ssgi(bool const enabled, float const intensity, float const radius, uint32_t const rays, uint32_t const steps) noexcept {
@@ -2516,11 +2516,11 @@ namespace vulkan {
         // as a fraction of the scene radius, the rays and the steps), because it is the only reader - the same rule
         // the TAA resolve's blend weights and the spatial filter's width follow.
         this->ssgi_trace.set_reach(intensity, radius, rays, steps);
-        if (enabled && !this->ssgi_trace.pipeline_ready()) {
+        if (enabled && !this->pass_ready("ssgi_trace")) {
             this->warn_missing_feature("ssgi", "screen-space GI has no effect: its compute pipeline was not created (see the startup log)");
-        } else if (enabled && !this->ssgi_temporal.pipeline_ready()) {
+        } else if (enabled && !this->pass_ready("ssgi_temporal")) {
             this->warn_missing_feature("ssgi", "screen-space GI has no effect: its temporal resolve was not created (see the startup log)");
-        } else if (enabled && !this->ssgi_spatial.pipeline_ready()) {
+        } else if (enabled && !this->pass_ready("ssgi_spatial")) {
             this->warn_missing_feature("ssgi", "screen-space GI has no effect: its spatial filter was not created (see the startup log)");
         }
         if (enabled && !was_on) {
@@ -2578,7 +2578,7 @@ namespace vulkan {
         // single declaration cannot describe both lists of images, and why this one is still the renderer's.
         core& vk = this->vulkan_core;
         VkDescriptorSetLayout const set_layout = this->ssgi_temporal.set_layout();
-        if (!this->ssgi_temporal.pipeline_ready() || set_layout == VK_NULL_HANDLE) {
+        if (!this->pass_ready("ssgi_temporal") || set_layout == VK_NULL_HANDLE) {
             return;
         }
         std::size_t const image_count = vk.gi_images.size();
@@ -2787,7 +2787,7 @@ namespace vulkan {
         // add for the only samples that make it more than the lighting stage's own term. The table is the
         // same switch the tracer uses, and the pipeline is the PASS's - so this predicate and the pass's own
         // feature are the same answer to "does the lobe run", which is what the tracer relies on.
-        return this->ssgi_specular && this->ssgi_hit_shading && this->ssgi_traced_active() && this->ssgi_spec.pipeline_ready();
+        return this->ssgi_specular && this->ssgi_hit_shading && this->ssgi_traced_active() && this->pass_ready("ssgi_spec");
     }
 
     void runtime::set_ssgi_specular(bool const enabled, uint32_t const rays, float const radius) noexcept {
@@ -2816,7 +2816,7 @@ namespace vulkan {
         this->ssgi_ray_tracing = enabled;
         if (enabled && !this->vulkan_core.ray_query_available) {
             this->warn_missing_feature("ssgi", "GI rays are marched, not traced: this device has no ray queries");
-        } else if (enabled && !this->rt_shadow.pipeline_ready()) {
+        } else if (enabled && !this->pass_ready("rt_shadow")) {
             this->warn_missing_feature("ssgi", "GI rays are marched, not traced: the ray-traced pipelines were not created");
         }
     }
@@ -2872,7 +2872,7 @@ namespace vulkan {
         this->ssgi_trace.set_probe_gain(gain);
         if (enabled && !this->ssgi_on) {
             this->warn_missing_feature("ssgi", "the probe cache has no effect: it is injected from the screen-space GI chain, which is off");
-        } else if (enabled && !this->gi_probe.pipeline_ready()) {
+        } else if (enabled && !this->pass_ready("gi_probe")) {
             this->warn_missing_feature("ssgi", "the probe cache has no effect: it has not built its pipeline (see the startup log)");
         }
     }
@@ -2881,7 +2881,7 @@ namespace vulkan {
         // The cache is deposited from the screen-space chain's resolved image and lives on the deferred
         // path's G-buffer, so it needs both of those, plus the pass having built what it records with: a
         // build without the cache keeps the tracer's environment-probe fallback and changes nothing else.
-        return this->gi_probe_enabled && this->gi_probe.pipeline_ready() && this->ssgi_active();
+        return this->gi_probe_enabled && this->pass_ready("gi_probe") && this->ssgi_active();
     }
 
     void runtime::register_shader(std::string_view const name, std::span<unsigned char const> const bytecode) {
@@ -3552,6 +3552,14 @@ namespace vulkan {
         }
     }
 
+    bool runtime::pass_ready(std::string_view const name) const noexcept {
+        // The chain's own answer, and it is deliberately the CHAIN's: the pass whose declaration carries that name,
+        // asked whether it built what it records with (see frame_pass::ready). This is the first of the renderer's
+        // questions moved into the declaration vocabulary - the direction the handover needs, because a renderer
+        // handed a chain from outside holds no typed member to ask.
+        return this->passes.ready(name);
+    }
+
     void runtime::fill_compute_skin_requests() {
         // The job's input, built from the casters this frame's structure phase knows: one request per SKINNED
         // caster (a zero destination means "not skinned: its geometry is what the build read"). The list is a
@@ -3803,7 +3811,7 @@ namespace vulkan {
         // and pipeline variant with it, the frame loop decides the overlay's owner with it, the feature registry
         // reports it, and set_fxaa() already folds the pipeline's existence into `fxaa_on` for the same reason. The
         // pipeline is the FXAA PASS's now (vulkan.pass.fxaa), which is why this asks the pass rather than a member.
-        return this->fxaa_on && this->fxaa_resolve.pipeline_ready();
+        return this->fxaa_on && this->pass_ready("fxaa");
     }
 
     void runtime::draw_overlay_after(void* const owner, VkCommandBuffer const command_buffer) {
@@ -3852,7 +3860,7 @@ namespace vulkan {
         this->record_scene_tail(command_buffer);
 
         this->ensure_post_descriptors();
-        if (!this->post_composite.pipeline_ready() || this->post_family.set(static_cast<uint32_t>(this->current_image_index), 4) == VK_NULL_HANDLE) {
+        if (!this->pass_ready("post_composite") || this->post_family.set(static_cast<uint32_t>(this->current_image_index), 4) == VK_NULL_HANDLE) {
             return false; // no post pipeline (creation failed): the HDR frame cannot be presented correctly
         }
 
@@ -4254,7 +4262,7 @@ namespace vulkan {
         // descriptor, the depth pass rendering instance, the pipeline viewport, the light UBO texel
         // size and the fit) is built from it when the scene set is first created, so a change after
         // that cannot take effect - say so instead of pretending otherwise.
-        if (this->shadow.pipeline_ready() || !this->shadow_images.empty()) {
+        if (this->pass_ready("shadow") || !this->shadow_images.empty()) {
             utility::log("runtime: set_shadow_map_size({}) ignored - the shadow resources already exist (set it before the scene import)", size);
             return;
         }
@@ -4278,7 +4286,7 @@ namespace vulkan {
         // feature registry ASKS it - the same shape `feature_active("ssgi_spatial")` uses for the temporal pass's
         // own answer. One copy of each value, and the pass that pushes them is the one that owns them.
         f.unlit = this->deferred.unlit();
-        f.gbuffer_debug = this->gbuffer_debug && this->gbuffer_pipeline.has_value() && this->gbuffer_debug_view.pipeline_ready();
+        f.gbuffer_debug = this->gbuffer_debug && this->gbuffer_pipeline.has_value() && this->pass_ready("gbuffer-debug");
         f.ssgi = this->ssgi_active();
         // The probe cache is a pass of its own, so its activity is a feature of its own: the tracer asks
         // whether the cache is READY (probe_ready below), and the runner asks whether the pass RUNS.
@@ -4286,21 +4294,21 @@ namespace vulkan {
         // The G-buffer pass and its lighting stage are the engine's only scene path, so there is no
         // flag for them: taa/ssao below ask this instead, and the debug view stands in for the
         // lighting stage rather than running alongside it (the two write the HDR target differently).
-        bool const shaded_scene = !f.gbuffer_debug && this->deferred.pipeline_ready() && this->gbuffer_pipeline.has_value();
+        bool const shaded_scene = !f.gbuffer_debug && this->pass_ready("deferred") && this->gbuffer_pipeline.has_value();
         // The shadow map is only read by the shading stages. The flat render mode samples nothing
         // (unlit.frag has no lighting include; the lighting stage returns the albedo before any
         // shading), so recording the pass would be pure waste - it measured 0.22 ms of a 0.5 ms frame.
-        f.shadow = this->shadow_enabled && this->shadows_enabled && this->shadow.pipeline_ready() && !f.unlit;
+        f.shadow = this->shadow_enabled && this->shadows_enabled && this->pass_ready("shadow") && !f.unlit;
         // The ray-traced shadow is a pass of its own, so it is a feature of its own: the knob, a device with ray
         // queries, and its own pipeline. The frame loop gates its STAGE on this, and the light UBO's
         // `rt_shadows` lane (what the lighting stage actually reads) is composed from the same three.
-        f.rt_shadow = this->rt_shadows_active() && this->rt_shadow.pipeline_ready();
+        f.rt_shadow = this->rt_shadows_active() && this->pass_ready("rt_shadow");
         // Same argument for the cluster pass: flat shading reads no light list, and with no active
         // punctual light there is nothing to sort in the first place.
-        f.clustered = this->clustered_lights && this->cluster.pipeline_ready() && this->light_state.light_count.x > 0.5f && !f.unlit;
-        f.taa = this->taa_on && this->taa_resolve.pipeline_ready() && shaded_scene;
+        f.clustered = this->clustered_lights && this->pass_ready("cluster") && this->light_state.light_count.x > 0.5f && !f.unlit;
+        f.taa = this->taa_on && this->pass_ready("taa") && shaded_scene;
         f.ssao = this->deferred.ssao_enabled() && shaded_scene; // shader-side gate: no pass of its own to skip
-        f.bloom = this->bloom_intensity > 0.0f && this->post_composite.pipeline_ready() && !f.gbuffer_debug;
+        f.bloom = this->bloom_intensity > 0.0f && this->pass_ready("post_composite") && !f.gbuffer_debug;
         f.fxaa = this->post_fxaa_active();
         // The transparent pass composites over the shaded frame, so it needs that frame to exist -
         // and it is skipped in the debug view, which shows the G-buffer rather than a frame.
@@ -4421,7 +4429,7 @@ namespace vulkan {
 
     void runtime::set_gbuffer_debug(bool const enabled) noexcept {
         this->gbuffer_debug = enabled;
-        if (enabled && (!this->gbuffer_pipeline.has_value() || !this->gbuffer_debug_view.pipeline_ready())) {
+        if (enabled && (!this->gbuffer_pipeline.has_value() || !this->pass_ready("gbuffer-debug"))) {
             this->warn_missing_feature("gbuffer-debug", "the G-buffer debug view has no effect: its pipelines were not created (see the startup log)");
         }
     }
@@ -4430,7 +4438,7 @@ namespace vulkan {
         // The single source of truth for "can this feature run at all this session": the overlay asks
         // it to decide what to offer, log_feature_status() prints it, and both therefore agree.
         if (name == "gbuffer-debug") {
-            return this->gbuffer_pipeline.has_value() && this->gbuffer_debug_view.pipeline_ready();
+            return this->gbuffer_pipeline.has_value() && this->pass_ready("gbuffer-debug");
         }
         if (name == "deferred") {
             // AVAILABILITY, not activity: "the pass built its pipeline" (whether it RUNS this frame is
@@ -4438,30 +4446,30 @@ namespace vulkan {
             // so it answered false - and chores.cpp's SSAO group, whose visibility asks exactly this question
             // (`feature_available("deferred") && feature_active("ssao")`), was never offered. Found by the
             // extraction, recorded, and the gate is what proves the fix changes no frame.
-            return this->deferred.pipeline_ready();
+            return this->pass_ready("deferred");
         }
         if (name == "taa") {
-            return this->taa_resolve.pipeline_ready();
+            return this->pass_ready("taa");
         }
         if (name == "fxaa") {
-            return this->fxaa_resolve.pipeline_ready();
+            return this->pass_ready("fxaa");
         }
         if (name == "shadow") {
-            return this->shadow.pipeline_ready();
+            return this->pass_ready("shadow");
         }
         if (name == "clustered") {
             // AVAILABILITY, not activity: this is the one feature whose answer is "the pass built a pipeline",
             // while `feature_active` above answers "it runs THIS frame" (a live punctual light is part of that).
-            return this->cluster.pipeline_ready();
+            return this->pass_ready("cluster");
         }
         if (name == "ssgi") {
-            return this->ssgi_trace.pipeline_ready();
+            return this->pass_ready("ssgi_trace");
         }
         if (name == "ssgi_spatial") {
             // AVAILABILITY, not activity: "the chain's last stage built its pipeline", which is what the overlay
             // and the startup log ask. Whether it runs THIS frame is `feature_active`'s answer (the chain is on
             // AND this frame's temporal resolve recorded) - see the note there.
-            return this->ssgi_spatial.pipeline_ready();
+            return this->pass_ready("ssgi_spatial");
         }
         return false;
     }
@@ -4477,7 +4485,7 @@ namespace vulkan {
                      this->feature_available("fxaa") ? "on" : "UNAVAILABLE",
                      this->feature_available("shadow") ? "on" : "UNAVAILABLE",
                      this->feature_available("clustered") ? "on" : "UNAVAILABLE");
-        if (!this->gbuffer_pipeline.has_value() || !this->deferred.pipeline_ready()) {
+        if (!this->gbuffer_pipeline.has_value() || !this->pass_ready("deferred")) {
             utility::log("features: the G-buffer pass or its lighting stage was not created, so NO SCENE IS DRAWN this session (see the startup log's 'deferred lighting disabled' line)");
         }
     }
@@ -4527,7 +4535,7 @@ namespace vulkan {
         // pace_and_acquire() copies light_state into the paced slot's buffer, so the next frame's
         // cluster dispatch and shading both see it (no in-flight buffer is touched).
         this->clustered_lights = enabled;
-        if (enabled && !this->cluster.pipeline_ready()) {
+        if (enabled && !this->pass_ready("cluster")) {
             this->warn_missing_feature("clustered", "clustered light culling has no effect: the cluster compute pipeline was not created, so the shading stage loops EVERY active light instead (see the startup log)");
         }
     }
@@ -4719,7 +4727,7 @@ namespace vulkan {
         this->shadow_scene_center = scene_center;
         // a new light setup invalidates the cached fit (see update_shadow_frustum)
         this->shadow_frustum_valid = false;
-        if (!this->shadow.pipeline_ready() || this->light_mapped.empty()) {
+        if (!this->pass_ready("shadow") || this->light_mapped.empty()) {
             utility::log("shadow mapping not enabled (no shadow pipeline / light buffer)");
             return;
         }
@@ -4744,7 +4752,7 @@ namespace vulkan {
         // next frame's paced write - which is why it is set here rather than recomputed per frame. The
         // device check and the pipeline check are folded in: a request that cannot be honoured leaves the
         // cascaded shadow maps running, and the shader never even looks at the visibility image.
-        this->light_state.rt_shadows = (enabled && this->rt_shadow.pipeline_ready() && this->vulkan_core.ray_query_available) ? 1.0f : 0.0f;
+        this->light_state.rt_shadows = (enabled && this->pass_ready("rt_shadow") && this->vulkan_core.ray_query_available) ? 1.0f : 0.0f;
     }
 
     void runtime::set_rt_mask_bake(bool const enabled) noexcept {
@@ -5220,7 +5228,7 @@ namespace vulkan {
     void runtime::set_fxaa(bool const enabled, float const subpixel, float const edge_threshold) noexcept {
         // no pipeline = the shader was never loaded: keep the flag off rather than silently
         // rendering the composite into an LDR image nothing will ever read back
-        this->fxaa_on = enabled && this->fxaa_resolve.pipeline_ready();
+        this->fxaa_on = enabled && this->pass_ready("fxaa");
         if (enabled && !this->fxaa_on) {
             this->warn_missing_feature("fxaa", "FXAA has no effect: the fxaa pipeline was not created (is fxaa.frag.spv present?)");
         }

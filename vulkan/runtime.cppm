@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.67.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.68.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -854,6 +854,18 @@ namespace vulkan {
         /** @brief the behaviour's mechanical part, before the pass records: bind the pipeline(s), resync the
          *         viewport. A pass cannot forget these because it does not do them */
         void apply_pass_behaviour(pass::frame_pass const& pass, pass::resolved_io const& io);
+        /**
+         * @brief whether the pass whose DECLARATION is named @p name is ready to record (see `frame_pass::ready`)
+         *
+         * THE FIRST QUESTION THIS RENDERER ASKS IN THE CHAIN'S OWN VOCABULARY instead of through a typed member.
+         * Every feature answer used to read `deferred.pipeline_ready()`, `taa_resolve.pipeline_ready()` and ten more
+         * like them; they now ask the chain by the name the declaration carries, which is the only key a renderer
+         * handed a chain from OUTSIDE has - and "handed from outside" is where this layer is going (see
+         * docs/pass_chain_plan.md and `vulkan.render_start_demo`).
+         * @note the frame's own pipelines that no pass owns (the G-buffer's, the shadow fit's) are still the
+         *       renderer's members, so a feature that needs one of those AND a pass's still reads both
+         */
+        [[nodiscard]] bool pass_ready(std::string_view name) const noexcept;
         /**
          * @ingroup vulkan_runtime
          * @brief whether the TAA resolve runs this frame (enabled + deferred lighting + pipeline)

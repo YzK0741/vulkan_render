@@ -215,6 +215,12 @@ namespace {
         [[nodiscard]] std::string_view feature() const noexcept override {
             return feature_;
         }
+        /// the framework's generic readiness question: a fake that says it did not build anything (see the
+        /// `chain.ready(name)` checks) - the DEFAULT (a pass that builds nothing of its own) is the interface's `true`
+        [[nodiscard]] bool ready() const noexcept override {
+            return this->is_ready;
+        }
+        bool is_ready = true;
         void create(vp::pass_context const& context) override {
             state_->log.emplace_back(std::string("create:") + std::string(io_.name));
             state_->created_with_device = context.device;
@@ -567,6 +573,23 @@ int main() {
         CHECK(!has(state.log, "record:gated"));
     }
 
+    // ---- `chain.ready(name)`: the readiness question asked in the DECLARATION's vocabulary, which is the only key
+    //      an owner that holds a chain instead of typed members has. It is what the renderer's feature registry asks
+    //      now ("the knob is on AND the pass built its pipeline") ----
+    {
+        pass_chain chain{"probe"};
+        chain.add(probe);
+        chain.add(tail);
+        CHECK(chain.ready("probe")); // the fake says it is ready
+        CHECK(chain.ready("tail"));
+        CHECK(!chain.ready("absent")); // a name no pass in this chain declares is not "ready"
+        // ... and a pass that says it did not build what it records with is not ready
+        probe.is_ready = false;
+        CHECK(!chain.ready("probe"));
+        CHECK(chain.ready("tail")); // ... independently of its neighbour
+        probe.is_ready = true;
+    }
+
     // ---- the chain also KEEPS objects that are not passes (the renderer's two jobs are the users), and what
     //      `keep` promises is exactly two things: the chain OWNS and destroys them, and they are NOT stages ----
     {
@@ -734,6 +757,10 @@ int main() {
         };
         declared_pass pass;
         vp::resolved_io io = {};
+        // the framework's DEFAULT readiness answer: this pass overrides `ready()` nowhere, because it builds nothing
+        // the run has to wait for - a pass with nothing of its own has nothing to be unready ABOUT (see
+        // frame_pass::ready)
+        CHECK(pass.ready());
 
         // AN EMPTY TABLE: the frame does not have what the declaration names, so the pass does not run at all -
         // the rule that replaced every resolver's `if (images.empty() || index >= count) return false;`

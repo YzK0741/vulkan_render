@@ -1,4 +1,4 @@
-// module version: 0.12.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.13.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/pass.cppm
@@ -633,6 +633,22 @@ export namespace vulkan::pass {
          */
         [[nodiscard]] virtual owned_pipeline named_pipeline([[maybe_unused]] std::string_view name) const noexcept {
             return {};
+        }
+        /**
+         * @brief whether this pass built what it records with, i.e. whether it CAN run
+         *
+         * THE GENERIC FORM OF THE QUESTION EVERY OWNER HAS BEEN ASKING BY HAND. Fourteen of these passes have had a
+         * `pipeline_ready()` accessor since each was extracted, and every caller that holds a typed reference asks it
+         * - the renderer's feature registry above all ("the knob is on AND the pass built its pipeline"). A pass's
+         * readiness is a property of the PASS, so it belongs on this interface, where a caller that holds only a
+         * DECLARATION NAME can ask it through `pass_chain::ready(name)`.
+         *
+         * THE DEFAULT IS TRUE, deliberately: a pass that builds nothing of its own (the scene and transparent passes
+         * record with the renderer's pipeline) is not "unready", it has nothing to be unready ABOUT. A pass that
+         * builds a pipeline, a set layout or a family overrides this with its own answer.
+         */
+        [[nodiscard]] virtual bool ready() const noexcept {
+            return true;
         }
         /**
          * @brief record into the frame, with the resources the declaration asked for already resolved

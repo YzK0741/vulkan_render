@@ -2750,6 +2750,51 @@ describe TWO signals: the composite's target alias (`write_ldr`) and the reflect
 pass (`record_reflection`).
 
 
+## THE RUNTIME HANDS ITS CHAIN OVER: THE MEASUREMENT, AND SLICE 1
+
+**THE GOAL, restated because it decides everything below**: the runtime should run the frame "almost without using any
+runtime resources" - it keeps the device and the pacing, the resource table's CONTENTS (it owns the images), the
+frame's constants, the record loop and the marks, and it is HANDED the chain of passes instead of constructing this
+app's one. The app's chain (and every knob and per-frame fact that belongs to those passes) moves to
+`vulkan.render_start_demo`, which is the example this repository ships.
+
+**WHAT IS ACTUALLY IN THE WAY, measured at `a9a97d2` rather than remembered**: 89 sites in `runtime.cpp` name a
+concrete pass, and they fall into six kinds:
+
+| kind | sites | who it belongs to |
+|---|---|---|
+| `pipeline_ready()` / `ready()` gates (the feature registry, `ssgi_active`, `gi_probe_active`, ...) | 44 | the PASS's readiness, asked for by the runtime's POLICY |
+| feeding a pass its frame (`set_frame(...)` with a runtime-built struct) | 13 | the frame loop's data |
+| setter forwarding (`set_reach`, `set_blend`, `set_sigma`, `set_ssao`, `set_channel`, ...) | 15 | the app-facing knobs |
+| reading a pass's result (`resolved`, `wrote_history`, `probe_grid_seen`, `cache_valid`, `unlit`, `ssao_enabled`) | 9 | the frame loop's decisions |
+| the renderer's descriptor families built from a pass's set layout (`post_composite`, `gbuffer_debug_view`, `ssgi_temporal`) | 5 | shared resources whose LAYOUT a pass happens to own today |
+| construction and lifetime (`emplace`, the chains, the two jobs, create/recreate) | 3+ | the chain itself |
+
+**SLICE 1 (this commit): THE READINESS QUESTION MOVES INTO THE DECLARATION VOCABULARY.** Thirteen of those passes have
+had a `pipeline_ready()` since each was extracted, and the runtime asked all 44 gate sites through a typed member.
+That question is now on the framework - `frame_pass::ready()` (default `true`: a pass that builds nothing of its own
+is not "unready", it has nothing to be unready ABOUT) with the thirteen overriding it - and `pass_chain::ready(name)`
+asks it by the one key a renderer handed a chain from OUTSIDE has: the name in the pass's declaration. The runtime's
+44 sites are `this->pass_ready("deferred")` and friends (44 typed sites gone, the count above drops from 89 to 50),
+and a test asserts the three answers that matter: a ready pass, a name no pass declares, and the interface's default
+on a pass that overrides nothing.
+
+**MEASURED**: the feature registry decides which passes RECORD, so this slice is on the command stream's critical path
+and the gate is the whole argument: **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, all twelve validation-clean
+(`default_gi` `BF180E98ADB29E7E`, `sponza_gi` `58EC848DFABE654A`, `metal_rough_glossy` `46F9851B7BC89872`); Release,
+Debug and ASan build clean with `ctest` 8/8 in all three; `doxygen` exits 0 with zero warnings.
+
+**WHAT IS LEFT, in the order it can be taken**: (2) the thirteen `set_frame` sites and the two stage preambles
+(`ensure_gbuffer_*_sampled`, the GI chain's split) become a per-frame hook the chain's owner supplies - the runtime
+calls `prepare(frame)` / `before_stage(name, cmd)` / `collect(frame)` and the demo implements them; (3) the fifteen
+setter sites and the knobs behind them move to the demo, which means the app's GUI binds to the demo instead of the
+runtime; (4) the three descriptor families that are built from a pass's set layout either move with the passes or
+have their layouts re-homed to the family that owns the descriptors (the G-buffer's belongs to the G-buffer family,
+not to the debug view); (5) the construction, the two chains and the two jobs move last, when the runtime no longer
+names a pass anywhere - and that is the slice where `vulkan.render_start_demo` appears and `set_pass_chain` becomes
+the handover.
+
+
 
 
 

@@ -1,4 +1,4 @@
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/chain.cppm
@@ -147,6 +147,20 @@ export namespace vulkan::pass {
                 }
             }
             return nullptr;
+        }
+
+        /**
+         * @brief whether the pass whose declaration is called @p name is READY to record (see `frame_pass::ready`)
+         *
+         * WHY THIS IS ON THE CHAIN rather than in the caller: an owner that holds the passes as typed members asks
+         * `deferred.pipeline_ready()`; an owner that holds only the CHAIN - which is what a renderer handed a chain
+         * from outside holds - has to ask by the one key the declaration vocabulary gives, its name. The two
+         * questions are the same question, and this is the form that survives the handover.
+         * @return false when no pass in the chain declares that name, or when the one that does is not ready
+         */
+        [[nodiscard]] bool ready(std::string_view const name) const noexcept {
+            frame_pass* const pass = this->find(name);
+            return pass != nullptr && pass->ready();
         }
 
         /// @brief the stage the runner is handed: this chain's name, list and mark policy

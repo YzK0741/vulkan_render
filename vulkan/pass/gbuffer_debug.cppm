@@ -1,4 +1,4 @@
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/gbuffer_debug.cppm
@@ -90,6 +90,11 @@ export namespace vulkan::pass {
 
         /// @brief whether the pass built everything it records with (the renderer gates the feature on this)
         [[nodiscard]] bool pipeline_ready() const noexcept;
+        /// @brief the framework's generic form of the same question, so an owner holding only a chain can ask it
+        ///        (a pass with nothing of its own to build keeps the interface's 	rue; see rame_pass::ready)
+        [[nodiscard]] bool ready() const noexcept override {
+            return this->pipeline_ready();
+        }
         /// @brief the pipeline the runner binds before this pass records
         [[nodiscard]] VkPipeline pipeline() const noexcept override;
         /// @brief the layout that pipeline binds its set and takes its push block through
