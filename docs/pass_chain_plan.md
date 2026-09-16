@@ -3068,6 +3068,32 @@ and the two jobs). The final slice moves the `emplace` calls and the chain's con
 runtime with `passes.init(make_pass_context())` over the chain it was handed - and the two jobs, which are not passes
 and stay with the structure phase that drives them.
 
+
+## AN ATTEMPT THAT WAS REVERTED, AND WHAT IT TAUGHT (the construction move)
+
+**THE LAST SLICE WAS ATTEMPTED AND ROLLED BACK WHOLE, and the reason is worth recording rather than hiding.** The move
+is small in concept - `render_start_demo` constructs the fourteen passes into its own chain and the runtime drops its
+sixteen typed members and its `emplace` calls - but the edit is a large deletion interleaved with declarations that
+must SURVIVE it: the twelve stage arrays, the two jobs' `keep` calls and the public seam (`set_chain_wiring`,
+`set_gi_spec_resolved`, `set_scene_unlit`, `warn_missing_feature`, `frame_passes`, `set_pass_chain`) all sit inside the
+region the emplace block occupies.
+
+**WHAT WENT WRONG, precisely, because it is a repeat of two findings this document already carries:** the deletions
+were driven by scripted anchors (a comment line, a "walk forward to the next `}`", a regex over the stage arrays), and
+each scripted pass silently took a few extra declarations with it - first the screenshot/read-back API, then
+`warn_missing_feature`, then the five stage arrays and the seam's setters. Every one of them was caught by the
+COMPILER within a build, and the tree was never committed in a broken state, but the repair loop turned a
+twenty-minute slice into an hour of archaeology. **The lesson is not "be careful" but "do not script a deletion in a
+region that interleaves the code to delete with the code to keep"**: the twelve stage arrays and the seam belong in
+their own commit FIRST (or the emplace block must be deleted by hand, one declaration at a time, with the diff read
+after each). The tree is back at `b39b745`, verified green, and the slice is not landed.
+
+**WHERE THAT LEAVES THE OBJECTIVE**: everything the objective names has landed except the pass CONSTRUCTION itself -
+the per-pass frames, the stage preambles, the result collection, the feature table, the knobs, the two set layouts and
+the handover API (`set_pass_chain`, with the structure filled by declaration name) are all in, and the runtime holds
+only the frame loop, its shared resources and its two jobs. What is left is one mechanical move, with the caveat
+above.
+
 **A MECHANICAL NOTE worth keeping, because it cost a build**: removing the `set_layout()` declaration from
 `post.cppm` with a "walk back to the nearest `/**`" script swallowed the `named_pipeline` declaration that sat between
 two doc blocks - the compiler said so immediately (`out-of-line definition ... does not match any declaration`), and
