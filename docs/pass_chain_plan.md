@@ -2876,6 +2876,41 @@ renderer's flags plus the passes' own state, so it moves when the flags' owner d
 temporal pass's pipeline; the two jobs; and the construction, the two chains and `set_pass_chain` itself.
 
 
+## THE HANDOVER, SLICE 4: THE FEATURE TABLE MOVES - AND THE FACT/RULE SPLIT IT NEEDED
+
+**THE REGISTRY WAS ALWAYS TWO THINGS.** Every answer in `runtime::active_features()` / `feature_active` /
+`feature_available` reads two kinds of input: the RENDERER's (its pipelines, this frame's content, the device, the
+knobs its own policy acts on) and the PASSES' own (`unlit`, `ssao_enabled`, whether this frame's temporal resolve
+recorded, `ready()`). The table is a POLICY, so it belongs with the passes - and this slice makes the split explicit:
+
+* **`runtime::feature_facts`** - a flat value the runtime fills per call: its own predicates as ATOMS (`gbuffer_pass`,
+  `deferred_lit`, `ssgi`, `ssgi_traced`, `ssgi_probes`, `rt_shadow`, `fxaa` - each of which it also acts on, which is
+  why they stay its own rather than being recomposed on the other side), the knobs the table composes with
+  (`gbuffer_debug`, `shadow`, `clustered`, `taa`, `bloom`, `ssgi_specular`, `ssgi_hit_shading`, `furnace`), the
+  frame's content (`transparent_pending`, `punctual_lights`) and the session's state (`gbuffer_pipeline`,
+  `structures_ready`).
+* **`render_start_demo::feature_active` / `feature_available`** - the table itself, moved VERBATIM: each
+  `this-><member>` became a field of the facts and each `pass_ready("name")` became a question to the typed reference
+  the demo already holds. `runtime::active_features()` / `feature_active` / `feature_available` are now three thin
+  forwarders, and with no owner wired every feature is off - the same "no owner, no frames" answer `prepare_stage`
+  gives.
+
+**NO COMPOSITION IS IMPLEMENTED TWICE**, which is the property worth stating: the predicates the renderer needs for its
+OWN policy (`ssgi_active` decides whether the acceleration structures are built, `taa_active` picks the scene target
+and jitters the projection) travel as atoms, and the compositions that only the table needed (`shaded_scene`, the
+`gbuffer_debug` conjunction, `!unlit` on the shadow and cluster gates) moved with it. The eight sites that still read
+a pass in `runtime.cpp` are the ones the runtime genuinely acts on: `set_ssao`'s forward, the trace frame's
+`probe_grid_seen`/`cache_valid`, the descriptor families, the chain construction and the reflection's mode-1
+recording.
+
+**MEASURED - AND THE GATE IS THE FAITHFULNESS PROOF**: the table decides which passes RECORD, so a single wrong
+answer in the transcription changes a frame. **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, validation-clean, every
+reference unchanged (`default_gi` `BF180E98ADB29E7E`, `sponza_gi` `58EC848DFABE654A`, `sponza_march`
+`EEFBBA2515803F46`, `metal_rough_glossy` `46F9851B7BC89872`, `glossy_motion` `98B06F2190B49519`); Release, Debug and
+ASan clean with `ctest` 8/8 in all three; `doxygen` exits 0. **Typed pass sites: 24 -> 21**, and the count is now
+dominated by the CONSTRUCTION (the chains, the two jobs) rather than by anything the frame loop does.
+
+
 
 
 

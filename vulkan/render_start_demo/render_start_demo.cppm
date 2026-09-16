@@ -70,7 +70,11 @@ export namespace vulkan {
 
         /// @brief the two callbacks the runtime asks for, with this demo as their context
         [[nodiscard]] runtime::chain_wiring wiring() noexcept {
-            return runtime::chain_wiring{.owner = this, .prepare = &render_start_demo::prepare, .collect = &render_start_demo::collect};
+            return runtime::chain_wiring{.owner = this,
+                                         .prepare = &render_start_demo::prepare,
+                                         .collect = &render_start_demo::collect,
+                                         .feature_active = &render_start_demo::feature_active,
+                                         .feature_available = &render_start_demo::feature_available};
         }
 
         // =============================================================================================
@@ -110,6 +114,16 @@ export namespace vulkan {
         static void prepare(void* owner, runtime::frame_services const& services, std::string_view stage);
         /// report the stage's results back (see runtime::frame_results)
         static void collect(void* owner, std::string_view stage, runtime::frame_results& out);
+        /**
+         * @brief THE FEATURE TABLE: what runs this frame, composed from the runtime's facts and this demo's passes
+         *
+         * Moved out of `runtime::active_features` / `runtime::feature_active` UNCHANGED: the runtime reports the
+         * facts (`runtime::feature_facts`) and this answers, which is the split every one of those answers was
+         * already expressing by hand - "the knob AND the pass built its pipeline AND the frame has a surface".
+         */
+        static bool feature_active(void* owner, runtime::feature_facts const& facts, std::string_view name);
+        /// ... and the different question "could this feature ever run this SESSION" (the overlay's menu + the log)
+        static bool feature_available(void* owner, runtime::feature_facts const& facts, std::string_view name);
 
         /// the typed references, looked up once by `attach` (a pass whose declaration is missing stays null)
         template <typename PassT>

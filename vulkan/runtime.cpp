@@ -4313,132 +4313,64 @@ namespace vulkan {
         ++this->shadow_content_version; // a new map size reallocates the images: every slot must render again
     }
 
+    runtime::feature_facts runtime::make_feature_facts() const noexcept {
+        // EVERY FIELD IS THE RENDERER'S OWN (see the struct's docs): its pipelines, its frame's content, the device,
+        // the knobs that its own policy also reads. What a PASS answers about itself is deliberately absent - the
+        // owner of the passes asks them.
+        core const& vk = this->vulkan_core;
+        return feature_facts{
+            .gbuffer_pass = this->gbuffer_pass_active(),
+            .deferred_lit = this->deferred_lit_active(),
+            .ssgi = this->ssgi_active(),
+            .ssgi_traced = this->ssgi_traced_active(),
+            .ssgi_probes = this->gi_probe_active(),
+            .rt_shadow = this->rt_shadows_active(),
+            .fxaa = this->post_fxaa_active(),
+            .gbuffer_debug = this->gbuffer_debug,
+            .shadow = this->shadow_enabled && this->shadows_enabled,
+            .clustered = this->clustered_lights,
+            .taa = this->taa_on,
+            .bloom = this->bloom_intensity > 0.0f,
+            .ssgi_specular = this->ssgi_specular,
+            .ssgi_hit_shading = this->ssgi_hit_shading,
+            .transparent_pending = !this->frame_transparent.empty(),
+            .gbuffer_pipeline = this->gbuffer_pipeline.has_value(),
+            .structures_ready = this->rt_top_levels.has_value() && this->rt_top_levels->handle(static_cast<uint32_t>(vk.current_frame)) != VK_NULL_HANDLE,
+            .furnace = this->furnace,
+            .punctual_lights = this->light_state.light_count.x,
+        };
+    }
+
     runtime::render_features runtime::active_features() const noexcept {
-        // The single derivation of "what runs this frame" (see the struct's docs): pass recording,
-        // the overlay's visibility predicates and the log all read THIS, so they cannot drift apart.
+        // THE TABLE IS THE CHAIN OWNER'S NOW (see chain_wiring::feature_active): this renderer reports the facts and
+        // asks. With no owner wired every feature is off, which is the same "no owner, no frames" answer the stage
+        // hooks give - a frame that records nothing.
         render_features f;
-        // THE FLAT RENDER FLAG AND THE SSAO SWITCH LIVE IN THE LIGHTING PASS now (they are its parameters), so the
-        // feature registry ASKS it - the same shape `feature_active("ssgi_spatial")` uses for the temporal pass's
-        // own answer. One copy of each value, and the pass that pushes them is the one that owns them.
-        f.unlit = this->deferred.unlit();
-        f.gbuffer_debug = this->gbuffer_debug && this->gbuffer_pipeline.has_value() && this->pass_ready("gbuffer-debug");
-        f.ssgi = this->ssgi_active();
-        // The probe cache is a pass of its own, so its activity is a feature of its own: the tracer asks
-        // whether the cache is READY (probe_ready below), and the runner asks whether the pass RUNS.
-        f.ssgi_probes = this->gi_probe_active();
-        // The G-buffer pass and its lighting stage are the engine's only scene path, so there is no
-        // flag for them: taa/ssao below ask this instead, and the debug view stands in for the
-        // lighting stage rather than running alongside it (the two write the HDR target differently).
-        bool const shaded_scene = !f.gbuffer_debug && this->pass_ready("deferred") && this->gbuffer_pipeline.has_value();
-        // The shadow map is only read by the shading stages. The flat render mode samples nothing
-        // (unlit.frag has no lighting include; the lighting stage returns the albedo before any
-        // shading), so recording the pass would be pure waste - it measured 0.22 ms of a 0.5 ms frame.
-        f.shadow = this->shadow_enabled && this->shadows_enabled && this->pass_ready("shadow") && !f.unlit;
-        // The ray-traced shadow is a pass of its own, so it is a feature of its own: the knob, a device with ray
-        // queries, and its own pipeline. The frame loop gates its STAGE on this, and the light UBO's
-        // `rt_shadows` lane (what the lighting stage actually reads) is composed from the same three.
-        f.rt_shadow = this->rt_shadows_active() && this->pass_ready("rt_shadow");
-        // Same argument for the cluster pass: flat shading reads no light list, and with no active
-        // punctual light there is nothing to sort in the first place.
-        f.clustered = this->clustered_lights && this->pass_ready("cluster") && this->light_state.light_count.x > 0.5f && !f.unlit;
-        f.taa = this->taa_on && this->pass_ready("taa") && shaded_scene;
-        f.ssao = this->deferred.ssao_enabled() && shaded_scene; // shader-side gate: no pass of its own to skip
-        f.bloom = this->bloom_intensity > 0.0f && this->pass_ready("post_composite") && !f.gbuffer_debug;
-        f.fxaa = this->post_fxaa_active();
-        // The transparent pass composites over the shaded frame, so it needs that frame to exist -
-        // and it is skipped in the debug view, which shows the G-buffer rather than a frame.
-        f.transparent = !f.gbuffer_debug && !this->frame_transparent.empty();
+        if (this->wiring_.feature_active == nullptr) {
+            return f;
+        }
+        feature_facts const facts = this->make_feature_facts();
+        auto const ask = [this, &facts](std::string_view const name) { return this->wiring_.feature_active(this->wiring_.owner, facts, name); };
+        f.unlit = ask("unlit");
+        f.gbuffer_debug = ask("gbuffer-debug");
+        f.ssgi = ask("ssgi");
+        f.ssgi_probes = ask("ssgi_probes");
+        f.shadow = ask("shadow");
+        f.rt_shadow = ask("rt_shadow");
+        f.clustered = ask("clustered");
+        f.taa = ask("taa");
+        f.ssao = ask("ssao");
+        f.bloom = ask("bloom");
+        f.fxaa = ask("fxaa");
+        f.transparent = ask("transparent");
         return f;
     }
 
     bool runtime::feature_active(std::string_view const name) const noexcept {
-        render_features const f = this->active_features();
-        // THE TWO GATES THAT USED TO BE THE FIRST LINE OF A RESOLVER. Both passes were "always active" before S3,
-        // with the renderer's resolver returning false to skip them; the skip is the same, but the question now
-        // has one name and one answer, and the pass does not need a resolver to be asked it.
-        //
-        // What is NOT in these answers is the OTHER half of those old gates - whether this frame's target
-        // generation exists. That is what the resource table already says: a frame whose images are not there has
-        // no entry for the pass's declared targets, so the pass resolves to false and the runner skips it. Two
-        // mechanisms, two questions: "the pass cannot run at all this session" is here, "this frame has not got
-        // the resources" is the table.
-        if (name == "scene") {
-            return this->gbuffer_pass_active();
+        if (this->wiring_.feature_active == nullptr) {
+            return false;
         }
-        if (name == "transparent") {
-            return !this->frame_transparent.empty();
-        }
-        if (name == "gbuffer-debug") {
-            return f.gbuffer_debug;
-        }
-        if (name == "ssgi") {
-            return f.ssgi;
-        }
-        if (name == "ssgi_spatial") {
-            // THE CHAIN'S LAST STAGE, and the one pass whose gate is not just "the chain is on": the filter must
-            // not filter a STALE accumulation, so it runs only when THIS frame's temporal resolve recorded. The
-            // answer comes from the pass that owns it (the temporal pass clears its flag when the host sets the
-            // frame, so this cannot read an earlier frame's answer) - which is what replaced the frame loop's
-            // `if (record_ssgi_denoise_pass(...))` around the filter's stage.
-            //
-            // NOTE WHICH FUNCTION THIS IS: the runner asks `feature_active`, NOT `feature_available` (which
-            // answers "could this feature run this session" for the overlay and the startup log). The first
-            // version of this branch was added to `feature_available` by mistake, and the symptom was precise:
-            // the filter was skipped on every frame (`skipped_inactive 1`), so the composite sampled an image
-            // nothing had written - a subtly darker frame in the model's region, which is exactly what the gate
-            // reported. Two predicates with the same vocabulary and different questions is a trap this file now
-            // has a comment about.
-            return this->ssgi_active() && this->ssgi_temporal.resolved();
-        }
-        if (name == "ssgi_probes") {
-            return f.ssgi_probes;
-        }
-        if (name == "ssgi_specular") {
-            // The lobe's own feature name, and the FIRST one whose answer is a predicate rather than a struct
-            // field: "the knob is on, the frame can shade a hit, and the pass built its pipeline". It has to be
-            // this exact predicate because the tracer reads it too (specular_next) to decide who owes the
-            // denoiser the hand-off barrier - one answer, so the two passes cannot disagree.
-            return this->ssgi_specular_active();
-        }
-        if (name == "taa") {
-            return f.taa;
-        }
-        if (name == "fxaa") {
-            return f.fxaa;
-        }
-        if (name == "shadow") {
-            return f.shadow;
-        }
-        if (name == "rt_shadow") {
-            // THE PASS'S GATE, in full: the knob and the extension (`f.rt_shadow`, which is the same predicate
-            // the light UBO's flag and the startup log use) PLUS "this frame's structure is built for the slot".
-            // The second half is here rather than in the resource table because an acceleration structure is not
-            // a `resolved_binding` - it has a device address and no view, buffer or image - so the table cannot
-            // carry it. It is the same handle the scene set's binding 16 is written from, which is what keeps a
-            // dispatch from ever reading an unwritten descriptor.
-            return f.rt_shadow && this->rt_top_levels.has_value() && this->rt_top_levels->handle(static_cast<uint32_t>(this->vulkan_core.current_frame)) != VK_NULL_HANDLE;
-        }
-        if (name == "clustered") {
-            return f.clustered;
-        }
-        if (name == "ssao") {
-            return f.ssao;
-        }
-        if (name == "bloom") {
-            return f.bloom;
-        }
-        if (name == "deferred") {
-            // THE LIGHTING STAGE'S OWN GATE, and it is deliberately the SAME predicate the frame loop's branch
-            // uses (`deferred_lit_active()`): the runner asks this before resolving the pass, and the frame loop
-            // asks it before recording the stage, so one answer means the two cannot disagree about whether the
-            // lighting runs this frame. A pass's feature name with NO branch here would record nothing at all
-            // (`skipped_inactive 1` every frame) - the trap the ssgi_spatial note above records.
-            return this->deferred_lit_active();
-        }
-        if (name == "unlit") {
-            return f.unlit;
-        }
-        return false;
+        return this->wiring_.feature_active(this->wiring_.owner, this->make_feature_facts(), name);
     }
 
     void runtime::warn_missing_feature(std::string_view const key, std::string const& message) {
@@ -4470,43 +4402,13 @@ namespace vulkan {
     }
 
     bool runtime::feature_available(std::string_view const name) const noexcept {
-        // The single source of truth for "can this feature run at all this session": the overlay asks
-        // it to decide what to offer, log_feature_status() prints it, and both therefore agree.
-        if (name == "gbuffer-debug") {
-            return this->gbuffer_pipeline.has_value() && this->pass_ready("gbuffer-debug");
+        // THE CHAIN OWNER'S ANSWER, for the same reason the table above is: "can this feature run at all this
+        // session" is composed from the passes that exist and the renderer's facts, and the owner of the passes is
+        // the one that knows both. The overlay asks it to decide what to offer and `log_feature_status()` prints it.
+        if (this->wiring_.feature_available == nullptr) {
+            return false;
         }
-        if (name == "deferred") {
-            // AVAILABILITY, not activity: "the pass built its pipeline" (whether it RUNS this frame is
-            // `feature_active`'s answer above). This branch did not exist before the lighting stage was a PASS,
-            // so it answered false - and chores.cpp's SSAO group, whose visibility asks exactly this question
-            // (`feature_available("deferred") && feature_active("ssao")`), was never offered. Found by the
-            // extraction, recorded, and the gate is what proves the fix changes no frame.
-            return this->pass_ready("deferred");
-        }
-        if (name == "taa") {
-            return this->pass_ready("taa");
-        }
-        if (name == "fxaa") {
-            return this->pass_ready("fxaa");
-        }
-        if (name == "shadow") {
-            return this->pass_ready("shadow");
-        }
-        if (name == "clustered") {
-            // AVAILABILITY, not activity: this is the one feature whose answer is "the pass built a pipeline",
-            // while `feature_active` above answers "it runs THIS frame" (a live punctual light is part of that).
-            return this->pass_ready("cluster");
-        }
-        if (name == "ssgi") {
-            return this->pass_ready("ssgi_trace");
-        }
-        if (name == "ssgi_spatial") {
-            // AVAILABILITY, not activity: "the chain's last stage built its pipeline", which is what the overlay
-            // and the startup log ask. Whether it runs THIS frame is `feature_active`'s answer (the chain is on
-            // AND this frame's temporal resolve recorded) - see the note there.
-            return this->pass_ready("ssgi_spatial");
-        }
-        return false;
+        return this->wiring_.feature_available(this->wiring_.owner, this->make_feature_facts(), name);
     }
 
     void runtime::log_feature_status() const {
