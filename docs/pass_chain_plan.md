@@ -2668,6 +2668,36 @@ build clean with `ctest` 8/8 in all three; `doxygen` exits 0 with zero warnings.
 are gone**: the per-pass switch is down to `ssgi_temporal` and the probe cache's inline tail - the last slice.
 
 
+## S3, ELEVENTH SLICE: `ssgi_temporal` - AND A FRAME RULE THAT HAD TO LAND *INSIDE* THE CHAIN
+
+**FIFTEEN OF SIXTEEN RESOLVERS GONE.** The diffuse temporal resolve needed the least of all four GI passes - its
+seven own bindings (whose per-image views are the channel that was added for this pass), its two barrier images, its
+own pipeline and the declaration's `half` extent are all the framework's now, and its two blend weights turned out
+never to be set by anything, so they became the pass's CONSTANTS rather than a parameter. What was interesting was
+its frame:
+
+* `record_reflection` stays, and it is the one documented exception of the whole migration: two signals are resolved
+  through one layout and one pipeline, and a single declaration cannot describe two lists of images in the same seven
+  slots. The pass still decides WHEN the renderer's mode-1 recording happens, which is what keeps the chain
+  contiguous.
+* **`ensure_inputs` is GONE, and moving it is the reason the GI CHAIN IS NOW TWO CHAINS.** Those two calls publish
+  the G-buffer's depth and the motion-vector target - the temporal resolve is the first sampler of both, and whether
+  they still need their "the G-buffer pass wrote me" publication is the FRAME's per-image bookkeeping. A rule like
+  that is a stage preamble everywhere else in this frame loop; here it had to run BETWEEN the lobe (the last writer of
+  the raw trace) and the resolve, i.e. in the MIDDLE of a chain that was recorded as one call. So the chain became
+  `gi_trace_chain` (tracer, lobe) + `gi_denoise_chain` (temporal, spatial), recorded one after the other with the
+  frame's two accessors between them - **and the command stream is unchanged**, which is what the split was for: the
+  two calls are idempotent and consult per-image flags, so on a frame where the deferred stage's preamble already
+  published the depth they record nothing at all, and on a frame where nothing has (the TAA-off GI scenarios, where
+  the velocity target is this pass's own first use) they record the barrier at exactly the position the callback did.
+
+**MEASURED**: the gate decides it on the five GI scenarios - `sponza_gi`, `metal_rough_glossy` and `glossy_motion`
+have TAA OFF, which is the configuration where the moved publication actually emits a barrier and where a wrong
+position would show - and all twelve references came back unchanged, **12 x 2 = 0 changed / 0 flaky / 0 unseeded**,
+validation-clean. Release, Debug and ASan build clean with `ctest` 8/8 in all three; `doxygen` exits 0 with zero
+warnings. One resolver is left.
+
+
 
 
 

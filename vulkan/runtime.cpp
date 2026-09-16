@@ -1126,13 +1126,14 @@ namespace vulkan {
             [[maybe_unused]] pass::run_report const probe_recreated = pass::recreate_stage(probe_stage, this->make_pass_host());
             pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
             [[maybe_unused]] pass::run_report const taa_recreated = pass::recreate_stage(taa_stage, this->make_pass_host());
-            // THE STAGES ADDED SINCE THIS LIST WAS WRITTEN, and now ONE call for all four: the tracer's
+            // THE STAGES ADDED SINCE THIS LIST WAS WRITTEN, and now one call per chain: the tracer's
             // `probe_grid_seen_` and the lobe's per-image first-use flags describe a GENERATION, so a swapchain
             // recreation owes them another first-use batch. Leaving a pass out of this list is invisible until
             // someone resizes the window - exactly the hazard `recreate_stage` exists to remove, which is why the
-            // fix is this call and not a second hand-kept flag in the host. The chain makes "all four" the
+            // fix is this call and not a second hand-kept flag in the host. The chains make "all of them" the
             // default instead of a list someone has to remember to extend.
-            [[maybe_unused]] pass::run_report const gi_recreated = pass::recreate_stage(this->gi_chain.as_stage(), this->make_pass_host());
+            [[maybe_unused]] pass::run_report const gi_trace_recreated = pass::recreate_stage(this->gi_trace_chain.as_stage(), this->make_pass_host());
+            [[maybe_unused]] pass::run_report const gi_denoise_recreated = pass::recreate_stage(this->gi_denoise_chain.as_stage(), this->make_pass_host());
         }
         // Every swapchain image's history died with the old generation (and its size may have
         // changed): forget the matrices, so the next frame for each image starts a new accumulation
@@ -2620,82 +2621,22 @@ namespace vulkan {
         }
     }
 
-    void runtime::ensure_denoise_inputs(void* owner, VkCommandBuffer const command_buffer, uint32_t const image_index) {
-        // The two shared per-image transitions the diffuse temporal resolve needs. They are the RENDERER's
-        // because the "was it written this frame" flags behind them belong to the passes that WROTE those images,
-        // so the pass calls back for them instead of owning them (see vulkan.pass.ssgi_temporal's header). Called
-        // in the same place the moved code called the two accessors: after the resolve's own barriers, before its
-        // dispatch.
-        runtime& self = *static_cast<runtime*>(owner);
-        static_cast<void>(self.ensure_gbuffer_depth_sampled(command_buffer, image_index));
-        static_cast<void>(self.ensure_velocity_sampled(command_buffer, image_index));
-    }
-
     pass::ssgi_temporal_frame runtime::make_ssgi_denoise_frame(bool const history_valid) noexcept {
-        // TWO callbacks, and both are the renderer's because the pass cannot own either: its two shared per-image
-        // input transitions (their flags belong to the passes that WROTE those images) and the reflection's own
-        // recording (a declaration cannot describe two signals in the same seven slots). The second is what keeps
-        // the GI chain contiguous: the pass calls it at the end of its own recording, so the frame loop does not
-        // have to split the chain around a runtime call.
+        // ONE field and ONE callback: the flag both signals blend by, and the reflection's own recording (the
+        // documented exception - a declaration cannot describe two signals in the same seven slots). The pass
+        // calls the callback at the END of its own recording, so the chain stays contiguous.
         return pass::ssgi_temporal_frame{.history_valid = history_valid,
-                                         .ensure_inputs = &runtime::ensure_denoise_inputs,
                                          .record_reflection = &runtime::record_reflection,
                                          .owner = this};
     }
 
-    bool runtime::resolve_ssgi_temporal(pass::resolved_io& out) {
-        core const& vk = this->vulkan_core;
-        std::size_t const index = this->current_image_index;
-        if (index >= vk.gi_resolve_images.size() || vk.gi_history_images.size() != vk.gi_resolve_images.size() || vk.gi_resolve_images[index] == VK_NULL_HANDLE ||
-            vk.gi_history_images[index] == VK_NULL_HANDLE) {
-            return false; // no accumulation to write into: this frame has no GI (its weight stays 0)
-        }
-        // The set is the PASS's now (it writes its own family from the per-image views below), so what is left
-        // here is the pipeline check: a GI frame whose resolve has no pipeline must not record.
-        if (!this->ssgi_temporal.pipeline_ready() || this->ssgi_temporal.pipeline_layout() == VK_NULL_HANDLE ||
-            this->ssgi_temporal.set_layout() == VK_NULL_HANDLE) {
-            return false;
-        }
-        out.frame = this->pass_frame();
-        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
-        // THE PER-IMAGE VIEWS, in the order the pass's declaration names its bindings: this is what
-        // `resolved_io::own_per_image` is for, and it is the one thing the pass cannot reach for itself. The
-        // first entry doubles as the family's generation fingerprint (stable for as long as the target
-        // generation lives, unlike the current frame's handles).
-        out.own_per_image[0] = vk.gi_image_views;
-        out.own_per_image[1] = vk.gi_history_image_views;
-        out.own_per_image[2] = vk.velocity_image_views;
-        out.own_per_image[3] = vk.gbuffer_depth_image_views;
-        out.own_per_image[4] = vk.gi_resolve_image_views;
-        out.own_per_image[5] = vk.gbuffer_image_views[1];
-        out.own_per_image[6] = vk.gi_spec_reproject_image_views;
-        out.own_set = VK_NULL_HANDLE; // the pass owns its family, so it owns the set that goes in it
-        // The two images the pass transitions: the accumulation it writes and the history it reads, which are
-        // also two of its own bindings - declared separately because a barrier takes an image and a descriptor a
-        // view.
-        out.barrier_storage[0] = {.view = vk.gi_resolve_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_resolve_images[index]};
-        out.barrier_storage[1] = {.view = vk.gi_history_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_history_images[index]};
-        out.barrier_images = std::span<pass::resolved_binding const>(out.barrier_storage.data(), render_resource::ssgi_temporal_barriers.size());
-        out.pipeline_storage[0] = this->ssgi_temporal.pipeline();
-        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
-        out.pipeline_layout = this->ssgi_temporal.pipeline_layout();
-        // The push block: the two blend weights, the two projection terms and the two extents are the renderer's.
-        // The two lanes that describe the PASS's own state - `history_valid` and `mode` - are written by the pass
-        // itself (see its record), which is the split the block's own comment describes.
-        VkExtent2D const gi = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->ssgi_temporal));
-        pass::ssgi_temporal_pass::push_constants push = {};
-        push.blend_static = this->gi_blend_static;
-        push.blend_min = this->gi_blend_min;
-        push.depth_scale = this->current_ubo.proj[2][2];
-        push.depth_offset = this->current_ubo.proj[3][2];
-        push.gi_size = glm::vec4(static_cast<float>(gi.width), static_cast<float>(gi.height),
-                                 static_cast<float>(vk.swap_chain_extent.width), static_cast<float>(vk.swap_chain_extent.height));
-        static_assert(sizeof(push) <= pass::max_push_bytes, "the resolve's push block must fit the guaranteed minimum");
-        std::memcpy(out.push_storage.data(), &push, sizeof(push));
-        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
-        out.extent = gi;
-        return true;
-    }
+    // THE TEMPORAL RESOLVE'S RESOLVER IS GONE (S3.11) with the three before it: its seven own bindings (whose
+    // PER-IMAGE views are the channel that was added for this pass), its two barrier images, its own pipeline and
+    // the declaration's `half` extent are all the framework's to resolve, and the push block it used to be handed is
+    // composed by the PASS from `io.constants`, the two extents and its own two blend constants. The two shared
+    // per-image transitions it was handed as a callback are the FRAME's ordering rule and run between the chain's
+    // two halves (see record_main_drawcalls); what is left of its frame is `record_reflection`, the one documented
+    // exception.
 
     void runtime::record_reflection(void* const owner, VkCommandBuffer const command_buffer, bool const history_valid) {
         // THE REFLECTION's own accumulation, recorded for the temporal PASS: it is the renderer's because a
@@ -2775,8 +2716,11 @@ namespace vulkan {
 
         ssgi_temporal_push_constants const push = {
             .history_valid = history_valid ? 1.0f : 0.0f,
-            .blend_static = this->gi_blend_static,
-            .blend_min = this->gi_blend_min,
+            // The two weights are the temporal PASS's constants (see its header): the reflection shares that
+            // pass's pipeline and shader, so both lanes have to be the same number or the two signals would be
+            // denoised differently.
+            .blend_static = pass::ssgi_temporal_pass::blend_static,
+            .blend_min = pass::ssgi_temporal_pass::blend_min,
             .depth_scale = this->current_ubo.proj[2][2],
             .depth_offset = this->current_ubo.proj[3][2],
             // Which signal this dispatch resolves: 0.0 = the diffuse bounce, 1.0 = the reflection (see the
@@ -2970,11 +2914,14 @@ namespace vulkan {
         this->publish_pass_resources();
         // THE GI CHAIN's ORDER, which is data now rather than the line order of the frame loop that records it:
         // each stage reads what the one before it wrote (the lobe corrects the trace, the denoise accumulates it,
-        // the filter smooths the accumulation and is what the composite samples).
-        this->gi_chain.add(this->ssgi_trace);
-        this->gi_chain.add(this->ssgi_spec);
-        this->gi_chain.add(this->ssgi_temporal);
-        this->gi_chain.add(this->ssgi_spatial);
+        // the filter smooths the accumulation and is what the composite samples). TWO chains rather than one,
+        // because the frame has an ordering rule to run BETWEEN the lobe and the temporal resolve - it publishes
+        // the G-buffer depth and the motion-vector target that the resolve is the first sampler of (see
+        // record_main_drawcalls) - and a frame rule cannot run from outside a chain.
+        this->gi_trace_chain.add(this->ssgi_trace);
+        this->gi_trace_chain.add(this->ssgi_spec);
+        this->gi_denoise_chain.add(this->ssgi_temporal);
+        this->gi_denoise_chain.add(this->ssgi_spatial);
         pass::pass_context const build = this->make_pass_context();
         // ONE CREATE STEP OVER EVERY PASS, in the order the OWNING chain holds them (see the member block in the
         // header): `passes` owns the ten passes this renderer has, so its `init` IS the whole create step. A pass
@@ -3475,7 +3422,7 @@ namespace vulkan {
         // four bloom levels record with the composite's R16F variant, and a copy per level would be five identical
         // pipelines. Asking every pass by NAME is what keeps this chain-agnostic - the renderer does not know, and
         // does not need to know, which pass owns what; a pass answers for the names it publishes and nothing else.
-        for (pass::pass_chain const* const chain : {&this->passes, &this->gi_chain}) {
+        for (pass::pass_chain const* const chain : {&this->passes, &this->gi_trace_chain, &this->gi_denoise_chain}) {
             for (pass::frame_pass* const candidate : chain->as_stage().passes) {
                 if (candidate == nullptr) {
                     continue;
@@ -3573,9 +3520,6 @@ namespace vulkan {
     // declaration itself (see pass::resource_table and docs/pass_chain_plan.md).
     bool runtime::resolve_pass_impl(pass::frame_pass const& pass, pass::resolved_io& out) {
         core const& vk = this->vulkan_core;
-        if (&pass == static_cast<pass::frame_pass const*>(&this->ssgi_temporal)) {
-            return this->resolve_ssgi_temporal(out);
-        }
         if (&pass != static_cast<pass::frame_pass const*>(&this->gi_probe)) {
             // NOT ONE OF THE PASSES STILL HAND-WRITTEN HERE, so the FRAMEWORK resolves its declaration: the
             // resource table for every own binding, target and barrier entry, the shared sets the declaration
@@ -4036,12 +3980,14 @@ namespace vulkan {
         this->frame_facts.gi_instance_table = instance_table;
         this->frame_facts.gi_frame_index = this->ssgi_frame;
         if (this->ssgi_active()) {
-            // THE GI CHAIN, recorded as ONE call: its four stages and their order are the chain's (see
-            // gi_chain in the header), and each pass's own feature gate and resolver still decide whether it
-            // records - so this is the same sequence of four stages the frame loop used to spell out, with the
-            // reflection's recording now called back from inside the temporal pass (see record_reflection).
+            // THE GI CHAIN, recorded as TWO calls with the FRAME's rule between them. Why two: the temporal
+            // resolve is the first sampler of two shared per-image images (the G-buffer's depth, which its depth
+            // guard reads, and the motion-vector target its reprojection reads), and whether each of them still
+            // needs its "the G-buffer pass wrote me" publication is the FRAME's per-image bookkeeping - so the
+            // frame publishes them, exactly where the old `ensure_inputs` callback did (after the lobe recorded,
+            // before the resolve's dispatch), and the command stream is unchanged.
             //
-            // The frames the passes need are set HERE, before the chain runs, because two of them carry values
+            // The frames the passes need are set HERE, before either half runs, because two of them carry values
             // that must be read BEFORE the stage: the tracer's `specular_next` (which decides who owes the
             // denoiser the hand-off barrier) and the temporal's `history_valid`, which the reflection's callback
             // is handed as well so the two signals agree about the frame that created the history.
@@ -4058,8 +4004,18 @@ namespace vulkan {
             // marched path adds to it). It is the frame's answer rather than a knob - the ray-tracing knob, the
             // device's ray queries and whether the structures exist - and the tracer is handed the same fact.
             this->ssgi_spatial.set_frame(pass::ssgi_spatial_frame{.traced_oracle = this->ssgi_traced_active()});
-            pass::run_report const gi_report = this->gi_chain.record(this->make_pass_host());
-            static_cast<void>(gi_report);
+            // ---- the trace half: the tracer, then the lobe (the two writers of the raw trace) ----
+            pass::run_report const gi_trace_report = this->gi_trace_chain.record(this->make_pass_host());
+            static_cast<void>(gi_trace_report);
+            // ---- THE FRAME's rule, between the halves ----
+            // Both calls are idempotent and consult per-image flags the frame owns, so on the frames where
+            // another stage already published them (the deferred stage's preamble publishes the depth, the TAA
+            // resolve the velocity target) they record nothing at all.
+            static_cast<void>(this->ensure_gbuffer_depth_sampled(command_buffer, static_cast<uint32_t>(index)));
+            static_cast<void>(this->ensure_velocity_sampled(command_buffer, static_cast<uint32_t>(index)));
+            // ---- the denoise half: the temporal resolve, then the spatial filter ----
+            pass::run_report const gi_denoise_report = this->gi_denoise_chain.record(this->make_pass_host());
+            static_cast<void>(gi_denoise_report);
             // The two answers the RENDERER needs from the chain, read from the passes that own them: whether the
             // spatial filter wrote the image the composite samples (that is `gi_resolved`), and whether the
             // denoiser produced an accumulation this frame (which the NEXT frame's history flag is set from).

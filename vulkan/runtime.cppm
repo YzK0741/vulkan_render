@@ -502,7 +502,17 @@ namespace vulkan {
          * feature registry (`feature_active("ssgi_spatial")`), which is the one place that answers "does this
          * pass run this frame" - see chain.cppm's header for why a chain does not skip its own tail.
          */
-        pass::pass_chain gi_chain{"gi"};
+        /**
+         * THE GI CHAIN IS TWO VALUES, and the reason is the frame's own ordering rule rather than a taste for
+         * smaller containers: between the lobe (the last writer of the raw trace) and the temporal resolve (the
+         * first sampler of the G-buffer's depth and the motion-vector target) the FRAME has to publish those two
+         * images - their "was it written this frame" flags belong to the passes that wrote them - and a frame rule
+         * that must land in the middle of a chain cannot be run from outside it. So the trace half and the denoise
+         * half are two chains, recorded one after the other with that rule between them (see
+         * `runtime::record_main_drawcalls`), and each half is still an ordered value whose order is data.
+         */
+        pass::pass_chain gi_trace_chain{"gi trace"};
+        pass::pass_chain gi_denoise_chain{"gi denoise"};
         std::array<pass::frame_pass*, 1> rt_shadow_stage = {&this->rt_shadow};
         /// the deferred lighting stage's own stage: it sits between the ray-traced shadow (whose output its
         /// descriptor samples) and the transparent pass (which composites over the image it shades), which is
@@ -606,11 +616,9 @@ namespace vulkan {
         // Per swapchain image: whether that image has a GI history yet. First frame after startup or
         // after a resize there is none, and the resolve then uses the current trace alone.
         std::vector<bool> gi_history_valid = {};
-        // The GI history is accumulated with its OWN weights rather than TAA's: the signal is far
-        // noisier than shading aliasing, so it wants a longer memory, and it must not be tuned by
-        // whatever the AA sliders are set to. They are passed to the temporal pass through its frame.
-        float gi_blend_static = 0.9f;
-        float gi_blend_min = 0.6f;
+        // The GI history is accumulated with its OWN weights rather than TAA's, and they are the temporal PASS's
+        // constants now (`ssgi_temporal_pass::blend_static` / `blend_min`): the signal is far noisier than shading
+        // aliasing, so it wants a longer memory, and it must not be tuned by whatever the AA sliders are set to.
         // The spatial filter's two EDGE CRITERIA (see shaders/ssgi_spatial.comp): sigma_depth is a FRACTION of the
         // view distance, so one value means the same thing near and far, and both are read by the composite's
         // joint-bilateral upsample as well - which is why they are the FRAME's settings
@@ -2358,21 +2366,13 @@ namespace vulkan {
          * @brief this frame's input for the diffuse temporal resolve
          * @param history_valid the flag AS READ BEFORE the stage, so the reflection's resolve (which the pass
          *        calls back for at the end of its own recording, in the same frame) blends exactly as this one did
-         * @note `ensure_inputs` is the renderer's two shared per-image transitions: their "was it written this
-         *       frame" flags belong to the passes that wrote those images, so the pass calls back for them.
-         *       `record_reflection` is the same shape for the second signal - the recording stays the renderer's
-         *       (a declaration cannot describe two signals in the same seven slots), but the pass decides WHEN it
-         *       happens, which is what keeps the GI chain contiguous.
+         * @note what is left here is ONE field and one callback, and both are the documented exception: the
+         *       reflection is recorded by the renderer (a declaration cannot describe two signals in the same seven
+         *       slots) but the pass decides WHEN, which is what keeps the chain contiguous. The two shared
+         *       per-image transitions it used to be handed are the FRAME's ordering rules now and run in the frame
+         *       loop, between the chain's two halves - see runtime::record_main_drawcalls.
          */
         [[nodiscard]] pass::ssgi_temporal_frame make_ssgi_denoise_frame(bool history_valid) noexcept;
-        /// @brief the renderer's two shared per-image transitions, as a callback the resolve calls (see above)
-        static void ensure_denoise_inputs(void* owner, VkCommandBuffer command_buffer, uint32_t image_index);
-        /**
-         * @brief resolve the diffuse temporal resolve: the set and pipeline the renderer owns, the two images it
-         *        transitions, and the push block it composes
-         * @return false when the generation or the pipeline is not there, which skips the pass WITHOUT recording
-         */
-        [[nodiscard]] bool resolve_ssgi_temporal(pass::resolved_io& out);
         /**
          * @brief the extent a pass's declaration asks for (see `pass::behaviour::extent`)
          * @note the rule is a MAPPING from the declaration to a number the renderer owns, so it is applied here

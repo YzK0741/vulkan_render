@@ -9,7 +9,7 @@ module;
 
 #include <array>
 #include <cstdint>
-#include <cstring>
+#include <glm/glm.hpp>
 #include <span>
 #include <string>
 #include <vulkan/vulkan.h>
@@ -138,8 +138,8 @@ namespace vulkan::pass {
         // the reflection's dispatch sampling a motion-vector image still in its attachment layout.
         if (io.barrier_images.size() < render_resource::ssgi_temporal_barriers.size() || io.frame.image_count == 0 ||
             io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE ||
-            io.push.size() < sizeof(push_constants) || io.extent.width == 0 || io.extent.height == 0) {
-            return; // the runner resolves all of this or skips the pass (see runtime::resolve_ssgi_temporal)
+            io.extent.width == 0 || io.extent.height == 0) {
+            return; // the runner resolves all of this or skips the pass (the declaration's own gates are the table's)
         }
         VkImage const resolve_image = io.barrier_images[barrier_resolve].image;
         VkImage const history_image = io.barrier_images[barrier_history].image;
@@ -225,21 +225,25 @@ namespace vulkan::pass {
         VkDependencyInfo const dependency = make_image_dependency_info(count, barriers.data());
         vkCmdPipelineBarrier2(io.cmd, &dependency);
 
-        // The depth guard samples the G-buffer depth and the reprojection reads the motion-vector target: two
-        // shared per-image transitions whose flags belong to the pass that WROTE those images, so the renderer
-        // does them (see the header). Called here - after this pass's own barriers, before the dispatch - which
-        // is where the moved code called the two accessors.
-        if (this->frame_.ensure_inputs != nullptr) {
-            this->frame_.ensure_inputs(this->frame_.owner, io.cmd, io.frame.image_index);
-        }
+        // (The depth guard's and the reprojection's shared per-image transitions are the FRAME's ordering rules
+        // and have already run: the frame loop records the chain's first half, publishes those two images, and
+        // then records this pass. See runtime::record_main_drawcalls.)
 
         vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, io.pipeline_layout, 0, 1, &set, 0, nullptr);
-        // The two lanes that describe THIS pass's state are written here rather than by the renderer: whether the
-        // history may be trusted, and which signal this dispatch resolves (always the diffuse bounce).
+        // THE PUSH BLOCK, from its owners: the two projection terms and the two extents are the FRAME's
+        // (`io.constants` and `io.extent`/`io.frame.extent`), the two blend weights are this PASS's constants, and
+        // the two lanes that describe this pass's own state - whether the history may be trusted, and which signal
+        // this dispatch resolves (always the diffuse bounce) - are this frame's answer.
         push_constants push = {};
-        std::memcpy(&push, io.push.data(), sizeof(push));
         push.history_valid = this->frame_.history_valid ? 1.0f : 0.0f;
+        push.blend_static = blend_static;
+        push.blend_min = blend_min;
+        push.depth_scale = io.constants.proj[2][2];
+        push.depth_offset = io.constants.proj[3][2];
         push.mode = 0.0f;
+        push.gi_size = glm::vec4(static_cast<float>(io.extent.width), static_cast<float>(io.extent.height),
+                                 static_cast<float>(io.frame.extent.width), static_cast<float>(io.frame.extent.height));
+        static_assert(sizeof(push) <= pass::max_push_bytes, "the resolve's push block must fit the guaranteed minimum");
         vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
         vkCmdDispatch(io.cmd, (io.extent.width + group_size - 1u) / group_size, (io.extent.height + group_size - 1u) / group_size, 1);
 

@@ -21,6 +21,11 @@
  * its own list of images in the same seven slots, which a single declaration cannot describe. The renderer builds
  * that second family on this pass's layout, taken through `set_layout()`; see docs/pass_chain_plan.md.
  *
+ * ... AND ITS FRAME'S `record_reflection` IS THE SAME GAP (the reflection is called back from inside this pass's
+ * recording, so the two stay contiguous), while the two shared per-image transitions it used to be handed are NOT:
+ * those are the FRAME's ordering rules and run in the frame loop, between the chain's two halves - see
+ * `runtime::record_main_drawcalls` and docs/pass_chain_plan.md.
+ *
  * WHY THE SPLIT IS WORTH TAKING ANYWAY: the recording is where the ORDER lives - the resolve must run after the
  * tracer and the lobe (both write the raw trace it reads) and before the spatial filter (which consumes its
  * output) - and that order is now a property of a pass rather than of a 170-line function in the frame loop.
@@ -59,12 +64,6 @@ export namespace vulkan::pass {
          */
         bool history_valid = false;
         /**
-         * The renderer's two shared per-image transitions (the G-buffer depth and the motion-vector target),
-         * written for this dispatch only: their "was it written this frame" flags belong to the passes that WROTE
-         * those images, so the pass cannot own them - the same shape as the scene pass's `make_environment`.
-         */
-        void (*ensure_inputs)(void* owner, VkCommandBuffer command_buffer, uint32_t image_index) = nullptr;
-        /**
          * The REFLECTION's recording, which is the renderer's because a declaration cannot describe two signals
          * in the same seven slots (see the file's header): the pass calls this at the END of its own recording -
          * after mode 0's hand-backs, before the spatial filter that reads both accumulations - so that the GI
@@ -99,6 +98,17 @@ export namespace vulkan::pass {
             float unused2 = 0.0f;
             glm::vec4 gi_size = glm::vec4(0.0f); // xy = GI extent, zw = full-res extent
         };
+
+        /**
+         * The two blend weights are CONSTANTS rather than a parameter, and that is the measured answer rather
+         * than a shortcut: the GI signal is far noisier than shading aliasing, so it wants a much longer memory,
+         * and it must not be tuned by whatever the AA sliders happen to be set to. Nothing has ever set them.
+         *
+         * PUBLIC because a second recording shares this pipeline: the renderer's mode-1 (the reflection) composes
+         * the same block, and both lanes have to be the same number or the two signals are denoised differently.
+         */
+        static constexpr float blend_static = 0.9f;
+        static constexpr float blend_min = 0.6f;
 
         ssgi_temporal_pass() = default;
         ~ssgi_temporal_pass() override;
