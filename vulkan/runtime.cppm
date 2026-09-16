@@ -1479,7 +1479,6 @@ namespace vulkan {
         // toggle whose prerequisites are missing would otherwise do nothing at all - the user clicks,
         // nothing changes, and the log has no trace to explain it. Each message is emitted at most
         // once per session, keyed by the feature name.
-        void warn_missing_feature(std::string_view key, std::string const& message);
         std::vector<std::string> warned_features = {};
         void ensure_scene_set();                                                              // lazily create one scene set per frame slot and write all bindings
         void write_ibl_bindings() const;                                                      // (re)write bindings 2-4 on every scene set with the current IBL views / placeholders
@@ -1655,6 +1654,16 @@ namespace vulkan {
         void set_gi_spec_resolved(bool resolved) noexcept {
             this->frame_facts.gi_spec_resolved = resolved;
         }
+        /**
+         * @ingroup vulkan_runtime
+         * @brief report a feature that cannot do what it was asked, at most once per session
+         *
+         * PUBLIC because the chain owner is the one that now knows both halves of the question: the renderer
+         * answers "this feature cannot run" (`feature_active` / `feature_available`) and the owner is what asked
+         * the feature to do something. The deduplication and the "not before the startup is complete" rule are
+         * the runtime's, so the log stays one line per feature whatever calls it.
+         */
+        void warn_missing_feature(std::string_view key, std::string const& message);
 
         /**
          * @ingroup vulkan_runtime
@@ -2662,22 +2671,6 @@ namespace vulkan {
          *       deformed (skinned/morphed) object can ghost slightly - see gbuffer.frag.
          */
         bool set_taa_enabled(bool enabled) noexcept;
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief screen-space ambient occlusion of the deferred lighting stage (M6)
-         * @param enabled master switch (false pushes an intensity of 0, which the shader returns as
-         *        an exact 1.0 - an SSAO-off frame is bit for bit the pre-M6 frame)
-         * @param radius world-space sample radius (typical: 0.3..1.5, i.e. a fraction of the scene
-         *        scale; the ground-truth mismatch of a screen-space AO is that its apparent strength
-         *        depends on the view distance)
-         * @param intensity how much of the computed occlusion is applied (0..1, 1 = full)
-         * @param samples samples per pixel, clamped to the shader's MAX_SSAO_SAMPLES (16)
-         * @note deferred-path only: the trace needs the G-buffer depth and normals, which the forward
-         *       path does not store. The occlusion scales the IBL ambient (diffuse and specular), not
-         *       the direct sun - see shade_surface().
-         */
-        void set_ssao(bool enabled, float radius = 0.5f, float intensity = 1.0f, uint32_t samples = 8) noexcept;
 
         /**
          * @ingroup vulkan_runtime

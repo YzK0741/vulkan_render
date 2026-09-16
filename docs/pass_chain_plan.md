@@ -2946,6 +2946,30 @@ own bindings (`post_family`, `gbuffer_family` - whose LAYOUT still nominally bel
 `set_ssao`'s forward.
 
 
+## THE HANDOVER, SLICE 6: THE FRAME BUILDERS STOP ASKING PASSES, AND SSAO GOES WITH THEM
+
+**THREE MORE TYPED SITES, AND ALL THREE WERE THE SAME SHAPE: the runtime was asking a PASS a question whose answer
+belongs to the pass's owner.**
+
+* the tracer's frame carried `probe_grid_first_use` (the tracer's per-generation "have I seen this grid" flag) and
+  `probe_ready` (the probe cache's "may I be read": active AND written at least once). Both are now the DEMO's to
+  fill, because it holds both passes - `make_ssgi_trace_frame` composes what the renderer knows (the accumulation,
+  the hand-off, the oracle, the hit shading) and leaves those two fields at their defaults for the owner to answer;
+* `set_ssao` moved WHOLE (the switch and its three shaping values are all the lighting pass's), including its
+  session-level diagnostic - which is why `runtime::warn_missing_feature` became PUBLIC: the demo asks the runtime
+  whether the feature can run at all (`feature_active("deferred")`) and reports through the runtime's
+  once-per-session logger, so the log stays one line per feature whatever calls it.
+
+**MEASURED**: **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, validation-clean, every reference unchanged; Release,
+Debug and ASan clean with `ctest` 8/8 in all three; `doxygen` exits 0 **with zero warnings** - which is worth a note
+of its own, because this slice's first version had one: a doc comment I wrote used a BACKTICK ("the runtime`s"), and
+doxygen's markdown turns a backtick into a verbatim block, so the rest of the header was swallowed and three warnings
+appeared while the exit code stayed 0. **The acceptance has to grep for the warnings, not just read the exit code**;
+that is now part of how this document's checks are run. **Typed pass sites: 17 -> 14**: the two descriptor families
+the runtime writes from its own bindings, the two jobs, the two chain constructions and the `ssgi_active` composition's
+last pass read.
+
+
 
 
 

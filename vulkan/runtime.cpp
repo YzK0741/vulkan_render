@@ -2536,18 +2536,12 @@ namespace vulkan {
             // barrier. THE SAME PREDICATE the lobe's own call site uses, evaluated here so the two cannot
             // disagree about which of them hands the raw trace over.
             .specular_next = this->ssgi_specular_active(),
-            // Whether this generation's probe grid still needs its first-use batch. The tracer's pass tracks "have
-            // I seen it" itself and the HOST asks it (`probe_grid_seen`), which is why there is no second flag
-            // here: the batch has to happen exactly once per generation, and two copies of "has it happened" can
-            // disagree after a resize.
-            .probe_grid_first_use = !this->ssgi_trace.probe_grid_seen() && this->vulkan_core.gi_probe_images.size() == 8,
+            // `probe_grid_first_use` and `probe_ready` are the OWNER's to fill (both are answers about the tracer
+            // and the probe cache - passes it holds), so they keep the frame's defaults here: this builder composes
+            // what the RENDERER knows (the accumulation, the hand-off, the oracle, the hit shading) and nothing else.
             // WHICH ORACLE this frame's rays use - the same predicate the lobe's feature is gated on, so the two
             // stages cannot disagree about the path (it decides three lanes of the tracer's push at once).
             .traced_oracle = this->ssgi_traced_active(),
-            // ... and whether the probe cache may be READ: active AND written at least once. The gain the pass
-            // pushes is zero otherwise, so a grid nothing has deposited into is never sampled - and the "has it
-            // been written" half is the probe PASS's own state, which is why the host asks it.
-            .probe_ready = this->gi_probe_active() && this->gi_probe.cache_valid(),
             // ... and whether a hit is shaded from its own geometry, which is what makes the instance table's
             // address meaningful to this shader (a zero address is how it is told to read the screen instead).
             .shade_hits = this->ssgi_hit_shading,
@@ -4240,17 +4234,6 @@ namespace vulkan {
                      this->feature_available("clustered") ? "on" : "UNAVAILABLE");
         if (!this->gbuffer_pipeline.has_value() || !this->pass_ready("deferred")) {
             utility::log("features: the G-buffer pass or its lighting stage was not created, so NO SCENE IS DRAWN this session (see the startup log's 'deferred lighting disabled' line)");
-        }
-    }
-
-    void runtime::set_ssao(bool const enabled, float const radius, float const intensity, uint32_t const samples) noexcept {
-        // CPU-side only (the same rule as set_brdf_model / set_clustered_lights): the values are pushed with the
-        // deferred lighting stage each frame, so they are safe to change mid-run. THE VALUES AND THEIR CLAMPS ARE
-        // THE PASS'S now (see deferred_pass::set_ssao); this setter forwards and keeps the diagnostic, because
-        // "why does this switch do nothing?" is a question about the SESSION rather than about the pass.
-        this->deferred.set_ssao(enabled, radius, intensity, samples);
-        if (enabled && !this->deferred_lit_active()) {
-            this->warn_missing_feature("ssao", "screen-space AO has no effect: the G-buffer pass or its lighting stage was not created (see the startup log)");
         }
     }
 

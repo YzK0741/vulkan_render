@@ -111,6 +111,11 @@ export namespace vulkan {
         /// is a property of the LIGHTING STAGE (the shader returns the stored albedo), and the renderer's other
         /// features ask that pass for it - so there was never a second copy in the runtime to keep.
         void set_unlit(bool unlit) noexcept;
+        /// @brief screen-space AO: the switch and its three shaping values, all of them the lighting pass's
+        ///
+        /// The SESSION-level diagnostic travels with it ("why does this switch do nothing?"), asked through the
+        /// runtime's own answers rather than by reaching into it.
+        void set_ssao(bool enabled, float radius, float intensity, uint32_t samples) noexcept;
 
     private:
         /// give every pass of the named stage its frame, and run the frame's ordering rules for that stage

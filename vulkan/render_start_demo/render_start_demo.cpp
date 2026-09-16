@@ -127,7 +127,15 @@ namespace vulkan {
             // (the tracer's `specular_next` decides who owes the denoiser the hand-off barrier), which is why the
             // two halves are prepared separately.
             if (self.ssgi_trace_ != nullptr) {
-                self.ssgi_trace_->set_frame(services.make_ssgi_trace_frame(services.owner));
+                pass::ssgi_trace_frame frame = services.make_ssgi_trace_frame(services.owner);
+                // THE TWO ANSWERS ABOUT THE TRACER'S AND THE PROBE'S OWN STATE, which are this demo's to give now
+                // that it holds both passes: whether this generation's probe grid still needs its first-use batch
+                // (the tracer tracks "have I seen it" itself - the batch has to happen exactly once per generation,
+                // and two copies of that fact can disagree after a resize), and whether the cache may be READ at all
+                // (active AND written at least once, so a grid nothing has deposited into is never sampled).
+                frame.probe_grid_first_use = !self.ssgi_trace_->probe_grid_seen();
+                frame.probe_ready = self.runtime_ != nullptr && self.runtime_->feature_active("ssgi_probes") && self.gi_probe_ != nullptr && self.gi_probe_->cache_valid();
+                self.ssgi_trace_->set_frame(frame);
             }
             if (self.ssgi_spec_ != nullptr) {
                 self.ssgi_spec_->set_frame(services.make_ssgi_spec_frame(services.owner));
@@ -269,6 +277,19 @@ namespace vulkan {
     void render_start_demo::set_unlit(bool const unlit) noexcept {
         if (this->deferred_ != nullptr) {
             this->deferred_->set_unlit(unlit);
+        }
+    }
+
+    void render_start_demo::set_ssao(bool const enabled, float const radius, float const intensity, uint32_t const samples) noexcept {
+        // CPU-side only (the same rule as the other render-mode knobs): the values are pushed with the lighting stage
+        // each frame, so they are safe to change mid-run. THE VALUES AND THEIR CLAMPS ARE THE PASS'S (see
+        // deferred_pass::set_ssao); the diagnostic below is about the SESSION rather than about the pass, which is
+        // why it asks the runtime's registry and reports through the runtime's once-per-session logger.
+        if (this->deferred_ != nullptr) {
+            this->deferred_->set_ssao(enabled, radius, intensity, samples);
+        }
+        if (enabled && this->runtime_ != nullptr && !this->runtime_->feature_active("deferred")) {
+            this->runtime_->warn_missing_feature("ssao", "screen-space AO has no effect: the G-buffer pass or its lighting stage was not created (see the startup log)");
         }
     }
 
