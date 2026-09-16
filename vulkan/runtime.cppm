@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.69.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.70.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -387,23 +387,25 @@ namespace vulkan {
         };
         // ---- THE PASSES: OWNED BY THE CHAIN, HELD HERE AS VIEWS --------------------------------------
         //
-        // THE OWNERSHIP RULE, and it is the reason these are references rather than objects: a renderer that
-        // declares one member per pass decides when every pass is built and destroyed. That question - who owns
-        // whom - is answered in exactly one place in this branch: the device root is the `shared_ptr<core>`, and
-        // every other holder holds a VIEW (`pass_filter`, `core::user_filter`, a chain's pass list). The passes
-        // were the last exception, and `passes` below is what removes it: the chain OWNS them (`emplace`), it
-        // decides the order they are built and destroyed in, and the runtime keeps non-owning references to
-        // configure each one per frame. Nothing here destroys a pass, and nothing here outlives the chain (the
-        // references are declared AFTER it, so they are destroyed first and are never dangling).
+        // THE OWNERSHIP RULE, and it is the reason this class holds no pass at all: a renderer that declares one
+        // member per pass decides when every pass is built and destroyed. That question - who owns whom - is
+        // answered in exactly one place in this branch: the device root is the `shared_ptr<core>`, and every other
+        // holder holds a VIEW (`pass_filter`, `core::user_filter`, a chain's pass list). The passes were the last
+        // exception, and the chain the APPLICATION builds is what removes it: that chain OWNS them (`emplace`), it
+        // decides the order they are built and destroyed in, and this class keeps no reference to any of them - its
+        // twelve stage arrays hold `frame_pass*` found BY DECLARATION NAME, which is the whole tie.
         //
         // WHAT EACH PASS OWNS is its own GPU objects - its pipeline layout, its pipeline, its set layout, its
         // per-image descriptor family, its barrier batches - so what is left in this class is the RENDERER's:
-        // the knobs, the frame counters, the push block's VALUES, and the frame state a pass cannot know.
-        pass::pass_chain passes{"render"};
+        // the knobs, the frame counters, the push block's VALUES, the two jobs, and the frame state a pass cannot
+        // know.
         /**
-         * The chain the frame RECORDS, which is this runtime's own until `set_pass_chain` is called and the owner's
-         * after that. Every stage array and both GI halves are filled from it BY DECLARATION NAME (see
-         * `set_pass_chain`), which is what lets the passes live outside this class.
+         * The chain the frame CREATES and RECORDS, handed over by `set_pass_chain` and owned by whoever built it
+         * (in this application, `vulkan.render_start_demo`). Every stage array and both GI halves are filled from it
+         * BY DECLARATION NAME, which is what lets the passes live outside this class. It is REQUIRED before the
+         * frame work: `create_passes` refuses to run without one and says so, and every other question this class
+         * asks a chain asks it through a null check rather than falling back to a chain of its own - there is no
+         * longer such a thing.
          */
         pass::pass_chain* chain_ = nullptr;
 
@@ -1215,14 +1217,16 @@ namespace vulkan {
         // stays unwritten, which is legal because this job's shader does not statically use them.
         // THE TWO JOBS ARE THE EXCEPTION THIS FILE STILL HAS, and the reason is a TYPE, not a policy: neither is
         // a `frame_pass` (see their headers - one runs once inside the structure-build command buffer, the other
-        // per frame from a caster list), so the owning chain above cannot hold them. Everything else follows the
-        // same rule they do: they are built from the pass context, they own their pipelines and sets, and they
-        // release them in their own destructors. A `job_chain` of the same shape (owning, with typed references
-        // out) is what would remove these two members as well.
-        // ... and the two jobs are kept alive by the SAME chain (its keep), for the same reason the passes are:
-        // who constructs and destroys a GPU-owning object is the chain's business, and what the renderer holds is a
-        // view it configures. They are not `frame_pass`, so `emplace` cannot take them - see pass_chain::keep.
-        pass::mask_bake_job& mask_bake = this->passes.keep<pass::mask_bake_job>();
+        // per frame from a caster list), so a chain cannot hold them. Everything else follows the same rule they
+        // do: they are built from the pass context, they own their pipelines and sets, and they release them in
+        // their own destructors. THEY ARE ORDINARY MEMBERS rather than objects a chain keeps alive, and what
+        // decided that is the reference count rather than a preference: with `pass_chain::keep` gone these two are
+        // the only non-pass GPU-owning objects in the renderer, so one member each is less machinery than a
+        // container that exists to hold exactly two objects of two known types. The DECLARATION ORDER is what keeps
+        // the device alive underneath them: `core_owner` is declared at the top of this class and is therefore
+        // destroyed LAST, so both jobs release their pipelines while the device still exists - the same order the
+        // chain's `kept_alive_` used to give them. A `job_chain` is the shape to reach for if a THIRD job appears.
+        pass::mask_bake_job mask_bake = {};
         // Whether that bake runs at all ([render] rt_mask_bake). Off by default: the per-triangle rule
         // measured WORSE than the raster path (see the member comment above and docs/gi_hit_shading.md).
         bool rt_mask_bake = false;
@@ -1237,8 +1241,8 @@ namespace vulkan {
         // The job owns the pipeline layout, the pipeline and the per-slot sets (vulkan.pass.compute_skin_job);
         // what stays here is the POLICY - the knob, the skinned caster list, the buffers each caster is skinned
         // into, and the refit bookkeeping - plus the request list it hands over, kept as a member so a frame
-        // does not allocate while recording.
-        pass::compute_skin_job& compute_skin = this->passes.keep<pass::compute_skin_job>();
+        // does not allocate while recording. A member for the same measured reason as the MASK bake above.
+        pass::compute_skin_job compute_skin = {};
         std::vector<pass::compute_skin_request> compute_skin_requests = {};
         // The skinned vertex buffers (one per skinned caster, owned here for as long as the structures are)
         // and the geometry indices that have to be refitted every frame.
@@ -1608,24 +1612,6 @@ namespace vulkan {
          * the runtime's, so the log stays one line per feature whatever calls it.
          */
         void warn_missing_feature(std::string_view key, std::string const& message);
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief the chain this runtime owns the PASSES in, so their owner can find them by declaration name
-         *
-         * TRANSITIONAL, and deliberately one accessor rather than a member per pass: the owner looks its passes up
-         * by the name their declaration carries (`pass_chain::find` + a cast) instead of being handed typed
-         * references, which is what lets the runtime hold none. The slice that moves the CONSTRUCTION hands the
-         * chain over instead and this accessor goes with it (see docs/pass_chain_plan.md).
-         */
-        [[nodiscard]] pass::pass_chain& frame_passes() noexcept {
-            return this->chain_ != nullptr ? *this->chain_ : this->passes;
-        }
-        /// the same view from a CONST runtime, for the two questions a `const` method asks the chain: whether a pass
-        /// is ready, and which pass owns a pipeline name (both are reads of the chain, not of a pass)
-        [[nodiscard]] pass::pass_chain const& frame_passes() const noexcept {
-            return this->chain_ != nullptr ? *this->chain_ : this->passes;
-        }
 
         /**
          * @ingroup vulkan_runtime

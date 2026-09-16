@@ -590,32 +590,11 @@ int main() {
         probe.is_ready = true;
     }
 
-    // ---- the chain also KEEPS objects that are not passes (the renderer's two jobs are the users), and what
-    //      `keep` promises is exactly two things: the chain OWNS and destroys them, and they are NOT stages ----
-    {
-        struct kept_job {
-            int* destroyed = nullptr;
-            ~kept_job() {
-                if (this->destroyed != nullptr) {
-                    *this->destroyed += 1;
-                }
-            }
-        };
-        int destroyed = 0;
-        {
-            pass_chain chain{"render"};
-            chain.add(probe);
-            kept_job& job = chain.keep<kept_job>();
-            job.destroyed = &destroyed;
-            // NOT a stage: the chain's list and the stage it hands the runner are unchanged by `keep`
-            CHECK(chain.size() == 1);
-            CHECK(chain.as_stage().passes.size() == 1);
-            state.log.clear();
-            CHECK(chain.record(host).recorded == 1);
-            CHECK(!has(state.log, "record:kept_job"));
-        }
-        CHECK(destroyed == 1); // ... and the CHAIN is what destroys it, at its own scope's end
-    }
+    // ---- the chain also KEPT objects that are not passes (`keep`, whose only users were the renderer's two jobs).
+    //      THE PROMISE WENT WITH THE FUNCTION: those two jobs are ordinary members of the renderer now, because they
+    //      are the only non-pass GPU-owning objects left, and a container that exists to hold exactly two objects of
+    //      two known types is more machinery than two members. Nothing tests it any more; `emplace`, the owning form
+    //      for a PASS, is covered by the stage and list assertions above ----
 
     // ---- the resource table: what EXISTS, keyed the way a DECLARATION names it (resource + element + instance).
     //      The instance rule is the schema's own SCOPE, and it is one function so the publisher and the reader

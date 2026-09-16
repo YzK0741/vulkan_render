@@ -1,4 +1,4 @@
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/chain.cppm
@@ -11,12 +11,14 @@
  * written in the frame loop's statement sequence. A chain makes that a VALUE instead of a convention: the passes
  * are added once, in order, and the two calls take the chain.
  *
- * WHAT IT IS NOT: not a scheduler and not an ownership container. It holds NON-OWNING pointers, because a pass
- * in this renderer is a member of whatever built it (the runtime) and the chain must not extend or shorten
- * anyone's lifetime - the framework's own rule for everything a pass is handed (see `pass_context`). Nor does it
- * decide ANYTHING per pass: each pass's `feature()` gate, its resolver and its behaviour still belong to the
- * runner, so a chain of four passes runs exactly like the four separate stages it replaced, down to the
- * per-pass `resolved_io` the runner builds for each of them.
+ * WHAT IT IS NOT: not a scheduler, and not a second runner. The OWNERSHIP it has is the `emplace` form's: a pass
+ * built INTO the chain is allocated, destroyed and ordered by the chain, and the renderer that built it keeps a
+ * non-owning view - while `add` still takes a pass the chain does NOT own (a test's, or one that lives elsewhere),
+ * so the two forms say which of them owns whom. Nothing else about a pass's lifetime is a chain's business: the
+ * framework's own rule for everything a pass is handed is that a holder of a pass holds a VIEW (see
+ * `pass_context`). Nor does a chain decide ANYTHING per pass: each pass's `feature()` gate, its resolver and its
+ * behaviour still belong to the runner, so a chain of four passes runs exactly like the four separate stages it
+ * replaced, down to the per-pass `resolved_io` the runner builds for each of them.
  *
  * THE ORDER IS THE DATA, and that is the point of the container: `trace -> lobe -> denoise -> filter` is what
  * makes the GI chain work (each stage reads what the one before it wrote), and in this class that order is a
@@ -68,18 +70,6 @@ export namespace vulkan::pass {
          * over; `add` still takes a pass it does NOT own, for a test or for a pass that lives elsewhere.
          */
         std::vector<std::unique_ptr<frame_pass>> owned_ = {};
-        /**
-         * THE NON-PASS OBJECTS THE CHAIN KEEPS ALIVE, and the reason it can keep them: a chain owns the passes, so
-         * it is also the honest place for the GPU-owning objects that are NOT passes - this renderer's two jobs
-         * (the one-shot MASK bake and the compute-skinning job), which are built from the same create-time context
-         * and own their pipelines and sets, but do not implement `frame_pass` (one runs once inside the
-         * structure-build command buffer, the other per frame from a caster list).
-         *
-         * Type-erased because the chain has no business knowing their types: the caller that creates one keeps the
-         * typed reference, which is exactly the split `emplace` uses for a pass. A `shared_ptr<void>` with the
-         * default deleter is the smallest thing that destroys the RIGHT destructor for the object it holds.
-         */
-        std::vector<std::shared_ptr<void>> kept_alive_ = {};
         /// whether the runner writes a mark pair around the chain (false for every chain in this renderer: the
         /// frame loop owns the marks and their positions are the timing report's contract)
         bool marks_ = false;
@@ -122,20 +112,6 @@ export namespace vulkan::pass {
             PassT& reference = *pass;
             this->owned_.push_back(std::move(pass));
             this->passes_.push_back(&reference);
-            return reference;
-        }
-
-        /**
-         * @brief keep a NON-PASS GPU-owning object alive in the chain, and return the reference the caller keeps
-         *
-         * The same split as `emplace`, for the objects that are not passes (see `kept_alive_`): the chain owns and
-         * destroys them, the creator holds a typed view. It does NOT add anything to the recorded stages.
-         */
-        template <typename T, typename... Args>
-        T& keep(Args&&... args) {
-            std::shared_ptr<T> object = std::make_shared<T>(std::forward<Args>(args)...);
-            T& reference = *object;
-            this->kept_alive_.push_back(std::move(object));
             return reference;
         }
 

@@ -3176,6 +3176,62 @@ warnings** (counted rather than inferred from the exit code, which stays 0 when 
 (`deferred` `2DD1D13857322C0F`, `default_gi` `BF180E98ADB29E7E`, `sponza_gi` `58EC848DFABE654A`, `sponza_march`
 `EEFBBA2515803F46`, `glossy_motion` `98B06F2190B49519`).
 
+## THE AUDIT'S SECOND BATCH: THE CHAIN KEEPS NOTHING BUT PASSES, AND `frame_passes()` IS GONE
+
+**WHAT MOVED is the whole of what was left of "the runtime owns GPU objects it did not build into a chain".** The
+two jobs (`mask_bake` and `compute_skin`) are ORDINARY MEMBERS of the renderer again; `pass_chain::keep` and its
+`kept_alive_` vector are deleted; the runtime's own `passes` chain is deleted; and the transitional `frame_passes()`
+accessor - both overloads - is deleted with it. `vulkan.pass.chain` goes **0.2.0 -> 0.3.0** and `vulkan.runtime`
+**0.69.0 -> 0.70.0**, because a public template and a public member function left.
+
+**WHY THE JOBS ARE MEMBERS AND NOT SOMETHING CLEVERER: the reference count, not a preference.** `keep` existed to make
+"who constructs and destroys a GPU-owning object" the CHAIN's business, which was worth a type-erased container while
+the chain also owned nineteen pass objects. Once the passes moved to the application's chain, that container held
+exactly two
+objects whose types are known at the one call site that creates them - a container whose entire content is two members
+is more machinery than two members. The lifetime argument is the part that had to be CHECKED rather than assumed, and it
+is a declaration-order argument: members are destroyed in reverse declaration order, `core_owner` is declared at the top
+of the class, so both jobs still release their pipelines while the device exists - exactly the order `kept_alive_` gave
+them (the chain member was declared before them, so it outlived them). A `job_chain` remains the shape to reach for if a
+THIRD job ever appears, and the comment at the members says so.
+
+**`frame_passes()` WAS THE TRANSITIONAL ACCESSOR, and its own doc said it would go with the slice that moved the
+CONSTRUCTION.** That slice landed (slice 11 above), so this one deletes it - and deleting it is what forces the two
+remaining questions to be answered EXPLICITLY instead of falling back to a chain of the runtime's own:
+
+* `create_passes` now RETURNS with a log line when no chain was handed over, because with the passes built outside this
+  class "no chain" means there is nothing to create and nothing to record - the honest answer rather than a frame of an
+  empty stage sequence;
+* the pipeline lookup skips a null chain (only the two GI sub-chains can answer before the handover), and
+  `pass_ready(name)` answers `false`.
+
+That is the honest shape of "the runtime holds no pass": there is no longer anything for it to fall back TO.
+
+**TWO THINGS IN THIS BATCH ARE CORRECTIONS RATHER THAN DELETIONS.** `chain.cppm`'s module header still described the
+pre-`emplace` chain - "it holds NON-OWNING pointers, because a pass in this renderer is a member of whatever built it
+(the runtime)" - which the ownership slice and then the handover had both made false; it now says which of the two forms
+owns whom. And `tests/test_pass.cpp`'s `keep` case is gone with the function it tested.
+
+**MEASURED**: the gate is **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, all twelve validation-clean and every reference
+unchanged; Release, Debug and ASan build clean with `ctest` 8/8 in all three; `doxygen` exits 0 with zero warnings. AND
+THE KNOB-ON A/B, because NEITHER job path runs in any of the twelve scenarios (`rt_mask_bake` and `rt_skin_bake` are
+false in every one): parent `7c6817c` against this change, two runs per side per path, both with `rt_shadows = true`:
+
+| path | pre-change | this change | the work ran |
+|---|---|---|---|
+| alphaMode MASK bake (`AlphaBlendModeTest`, `rt_mask_bake`) | `19F4B40CCEFE3421` x2 | `19F4B40CCEFE3421` x2 | `3 MASK casters baked into their structures` |
+| compute skinning (`CesiumMan`, `rt_skin_bake`) | `D256C360D45F1C92` x2 | `D256C360D45F1C92` x2 | `1 skinned casters re-skinned and REFITTED … every frame` |
+
+Eight runs, one hash per path across BOTH sides, validation-clean everywhere, and each log line is the proof that the
+job RAN rather than that the frame merely looks the same.
+
+**AND A MEASUREMENT NOTE WORTH KEEPING, because the first attempt at that A/B looked like a finding**: the two paths
+came back FLAKY - the MASK run varied on one side, the skinning run on both - which is exactly the shape a lifetime
+defect would take, and it was the measurement's fault rather than the change's. `[render] animation_time` defaults to
+`-1`, which PLAYS the animation from the wall clock, so the pose at frame 40 was a function of how long the run took.
+Pinning it (`animation_time = 1.5`) made every side stable and identical. This is the gate's own rule stated once more:
+a capture of an ANIMATED scene means nothing until its pose is pinned.
+
 
 
 

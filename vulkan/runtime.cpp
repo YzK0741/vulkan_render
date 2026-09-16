@@ -2682,21 +2682,28 @@ namespace vulkan {
         // builders that first needed them - `make_gbuffer_debug_pipeline` makes the G-buffer pair's and the
         // probe grid's - which is the naming accident `docs/runtime_split.md` records; the TAA resolve's is
         // made here because the pass that declares it is what needs it now.
+        // THE CHAIN IS AN INPUT, and there is deliberately no fallback: with the passes constructed outside this
+        // class, "no chain was handed over" means there is nothing to create or record, so the one honest answer is
+        // to say so and return rather than to record a frame of this class's own empty stage sequence.
+        if (this->chain_ == nullptr) {
+            utility::log("no pass chain was handed over (see set_pass_chain): nothing to create or record");
+            return;
+        }
         // ... and what the passes may NAME, before any of them is created: the registry the pass filter answers
         // `resource()` from (see publish_pass_resources). It is the renderer's half of the channel; the passes'
         // half is that they ask for what their own declaration lists instead of being handed it.
         this->publish_pass_resources();
         // THE FRAME'S STRUCTURE, FROM THE CHAIN BY DECLARATION NAME: the stage arrays and the two GI halves (see
-        // bind_frame_chain). This runtime owns the passes today (`passes`), so this binds its own chain; the moment an
-        // application hands one over (`set_pass_chain`), the same call binds THAT chain and this one stops being
-        // recorded.
-        this->bind_frame_chain(this->frame_passes());
+        // bind_frame_chain). The chain is the application's (see set_pass_chain) - this class owns no passes, so
+        // there is no chain of its own for this to bind.
+        this->bind_frame_chain(*this->chain_);
         pass::pass_context const build = this->make_pass_context();
         // ONE CREATE STEP OVER EVERY PASS, in the order the OWNING chain holds them (see the member block in the
-        // header): `passes` owns the ten passes this renderer has, so its `init` IS the whole create step. A pass
-        // that could not build itself reports its own name in `rejected` and stays INACTIVE (its feature predicate
-        // is false), which is what makes a startup failure a log line rather than a broken frame.
-        pass::pass_chain& recorded = this->frame_passes(); // the chain the application handed over (see set_pass_chain)
+        // header): the chain owns the passes and its `init` IS the whole create step, in the order the application
+        // emplaced them. A pass that could not build itself reports its own name in `rejected` and stays INACTIVE
+        // (its feature predicate is false), which is what makes a startup failure a log line rather than a broken
+        // frame.
+        pass::pass_chain& recorded = *this->chain_; // the chain the application handed over (see set_pass_chain)
         pass::run_report const created = recorded.init(build);
         if (!created.rejected.empty()) {
             utility::log("pass '{}': its declaration was refused by the validator, so it does not run", created.rejected);
@@ -3383,7 +3390,11 @@ namespace vulkan {
         // four bloom levels record with the composite's R16F variant, and a copy per level would be five identical
         // pipelines. Asking every pass by NAME is what keeps this chain-agnostic - the renderer does not know, and
         // does not need to know, which pass owns what; a pass answers for the names it publishes and nothing else.
-        for (pass::pass_chain const* const chain : {&this->frame_passes(), &this->gi_trace_chain, &this->gi_denoise_chain}) {
+        pass::pass_chain const* const handover = this->chain_; // CONST because the other two in the list are
+        for (pass::pass_chain const* const chain : {handover, &this->gi_trace_chain, &this->gi_denoise_chain}) {
+            if (chain == nullptr) {
+                continue; // no chain handed over yet (see set_pass_chain): the two GI sub-chains are all there is
+            }
             for (pass::frame_pass* const candidate : chain->as_stage().passes) {
                 if (candidate == nullptr) {
                     continue;
@@ -3521,7 +3532,7 @@ namespace vulkan {
         // asked whether it built what it records with (see frame_pass::ready). This is the first of the renderer's
         // questions moved into the declaration vocabulary - the direction the handover needs, because a renderer
         // handed a chain from outside holds no typed member to ask.
-        return this->frame_passes().ready(name);
+        return this->chain_ != nullptr && this->chain_->ready(name);
     }
 
     void runtime::fill_compute_skin_requests() {
