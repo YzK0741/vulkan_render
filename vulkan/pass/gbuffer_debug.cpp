@@ -105,14 +105,20 @@ namespace vulkan::pass {
         return this->set_layout_;
     }
 
-    void gbuffer_debug_pass::set_frame(gbuffer_debug_frame const& frame) noexcept {
-        this->frame_ = frame;
+    void gbuffer_debug_pass::set_channel(int const channel) noexcept {
+        // The clamp came with the parameter: the count is the declaration's own `gbuffer_channel_count`, and a
+        // channel outside it would index the shader's switch by a value it does not know.
+        this->channel_ = std::clamp(channel, 0, channel_count - 1);
+    }
+
+    int gbuffer_debug_pass::channel() const noexcept {
+        return this->channel_;
     }
 
     void gbuffer_debug_pass::record(resolved_io const& io) {
         if (!this->pipeline_ready() || io.targets.empty() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE ||
-            io.shared.gbuffer == VK_NULL_HANDLE || io.push.size() < sizeof(push_constants) || io.extent.width == 0 || io.extent.height == 0) {
-            return; // the runner resolves all of this or skips the pass (see runtime::resolve_gbuffer_debug)
+            io.shared.gbuffer == VK_NULL_HANDLE || io.extent.width == 0 || io.extent.height == 0) {
+            return; // the runner resolves all of this or skips the pass (see frame_pass::resolve)
         }
         VkImageView const target_view = io.targets[0].view;
         if (target_view == VK_NULL_HANDLE) {
@@ -128,12 +134,9 @@ namespace vulkan::pass {
         }
         VkDependencyInfo const dependency = make_image_dependency_info(static_cast<uint32_t>(barriers.size()), barriers.data());
         vkCmdPipelineBarrier2(io.cmd, &dependency);
-        // ... and the two pieces of per-image bookkeeping the frame carries: the depth's hand-back (its old layout
-        // depends on whether the G-buffer instance rendered this frame) and clearing the flag that says the
-        // motion-vector target has been handed to a sampler this frame.
-        if (this->frame_.ensure_inputs != nullptr) {
-            this->frame_.ensure_inputs(this->frame_.owner, io.cmd, io.frame.image_index);
-        }
+        // ... and the two pieces of per-image bookkeeping the frame USED to carry are now the renderer's stage
+        // preamble (see gbuffer_debug_frame's replacement note): the depth's hand-back and the motion-vector flag's
+        // clearing are the frame's ordering rules about images the G-buffer pass wrote.
         VkClearValue clear = {};
         VkRenderingAttachmentInfo const attachment = make_color_attachment_info(target_view, clear, VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE);
         VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, io.extent}, true, &attachment, nullptr);
@@ -141,8 +144,15 @@ namespace vulkan::pass {
         vkCmdSetCullMode(io.cmd, VK_CULL_MODE_NONE);   // the synthetic triangle has no facing to cull
         VkDescriptorSet const set = io.shared.gbuffer; // the G-buffer family's set 0, written by the host
         vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, io.pipeline_layout, 0, 1, &set, 0, nullptr);
-        push_constants push = {};
-        std::memcpy(&push, io.push.data(), sizeof(push));
+        // The push block is the pass's own now: the channel it owns, the frame's two projection terms (from
+        // `resolved_io::constants`) and the motion gain, which scales itself across resolutions by using the frame's
+        // own width (four pixels saturate the motion channel).
+        push_constants const push = {
+            .channel = static_cast<float>(this->channel_),
+            .proj_22 = io.constants.proj[2][2],
+            .proj_32 = io.constants.proj[3][2],
+            .motion_gain = static_cast<float>(io.frame.extent.width) * 0.25f,
+        };
         vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
         vkCmdDraw(io.cmd, 3, 1, 0, 0);
         vkCmdEndRendering(io.cmd);

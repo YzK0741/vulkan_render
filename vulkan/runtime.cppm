@@ -363,7 +363,6 @@ namespace vulkan {
         // takes effect once the needed pipelines exist, so the flags can be set before setup ends.
         bool gbuffer_debug = false;
         // which channel the debug view shows (see gbuffer_debug.frag / set_gbuffer_channel)
-        int gbuffer_channel_index = 1;
         // The world-space probe cache's sampler (G-buffer set binding 9): LINEAR rather than the
         // G-buffer sampler's NEAREST, because a 3D fetch's whole purpose here is interpolating between
         // cells - a nearest fetch would turn the cache into 32^3 blocks - and CLAMP_TO_EDGE, because the
@@ -565,21 +564,10 @@ namespace vulkan {
         // THE PUSH BLOCK ITSELF IS THE PASS'S NOW (pass::ssgi_spec_pass::push_constants): its shape belongs to
         // the pass that pushes it, and the host only fills the values in.
 
-        // THE DEFERRED LIGHTING STAGE'S PUSH BLOCK IS THE PASS'S NOW (pass::deferred_pass::push_constants): its
-        // shape belongs to the pass that pushes it (and the pass's own static_assert checks it against the 88
-        // bytes its declaration promises), so what is left here is the VALUES - the SSAO state below, the
-        // unlit and GI-replaces-ambient flags and the frame's inverse view-projection.
-        // SSAO state (runtime::set_ssao / [render] ssao*): the deferred lighting stage computes the
-        // occlusion from the G-buffer depth + normal and folds it into the shade_input's ao, which
-        // scales the IBL ambient only. Deferred-only: the forward path has no G-buffer to trace.
-        bool ssao_enabled = true;    // master switch (an intensity of 0 is pushed when false)
-        float ssao_radius = 0.5f;    // world-space sample radius
-        float ssao_intensity = 1.0f; // how much occlusion is applied (1 = full)
-        uint32_t ssao_samples = 8;   // samples per pixel, clamped to the shader's MAX_SSAO_SAMPLES
-        float ssao_bias = 0.02f;     // view-depth bias that keeps a surface from occluding itself
-        // Render mode on the deferred path: the app's default pipeline is the flat "unlit" one, so
-        // the lighting stage writes the albedo instead of shading (runtime::set_unlit).
-        bool unlit_active = false;
+        // THE DEFERRED LIGHTING STAGE'S SSAO PARAMETERS, ITS FLAT-RENDER FLAG AND ITS PUSH BLOCK ARE THE PASS'S
+        // NOW (see vulkan.pass.deferred::set_ssao / set_unlit / push_constants): the shape belongs to the pass that
+        // pushes it, the values belong to the pass that reads them, and `set_ssao` / `set_unlit` forward. What is
+        // left here is the frame's own half - the inverse view-projection below, refreshed with the camera UBO.
         // the inverse of this frame's view-projection, refreshed with the camera UBO in
         // pace_and_acquire() (the deferred lighting stage reconstructs world positions from depth)
         glm::mat4 current_inv_view_proj = glm::mat4(1.0f);
@@ -591,21 +579,17 @@ namespace vulkan {
         /// @brief resolve the G-buffer debug view's frame: the HDR target it writes, the four images it moves to a
         ///        sampled layout, the G-buffer family's set and the push block's values
         /// @return false when this frame cannot run it (no pipeline, or no G-buffer descriptor set)
-        [[nodiscard]] bool resolve_gbuffer_debug(pass::resolved_io& out);
         /// @brief the two per-image pieces of bookkeeping the debug view's frame carries (the depth's hand-back and
         ///        the motion-vector flag's clearing): the pass's header says why they are not the pass's
-        static void ensure_gbuffer_debug_inputs(void* owner, VkCommandBuffer command_buffer, uint32_t image_index);
         /// @brief the frame's answer when the debug view did NOT record: clear the HDR target, so the frame the post
         ///        chain samples is defined (a black frame) instead of half-written
         void clear_hdr_for_missing_gbuffer_set(VkCommandBuffer command_buffer);
         /// @brief resolve the deferred lighting pass's frame: the two shared sets, the frame's scene target,
         ///        the pass's own 88-byte push block and the extent its declaration's rule produces
         /// @return false when this frame cannot run it (no target generation, no G-buffer set, no pipeline)
-        [[nodiscard]] bool resolve_deferred_pass(pass::resolved_io& out);
         /// @brief the two per-image input transitions the lighting stage's descriptor declares (the three
         ///        stored targets and the G-buffer depth): their "was it written this frame" flags belong to the
         ///        pass that WROTE those images, so the pass cannot own them and the frame carries the callback
-        static void ensure_deferred_inputs(void* owner, VkCommandBuffer command_buffer, uint32_t image_index);
         /// @brief the frame's answer when the lighting pass did NOT record: clear the scene colour target, so
         ///        the frame the post chain samples is defined instead of half-written
         /// @note this is the renderer's and not the pass's because its cause - the G-buffer DESCRIPTOR FAMILY
@@ -2469,8 +2453,12 @@ namespace vulkan {
         /** @brief whether the tracer runs this frame (see set_ssgi) */
         [[nodiscard]] bool ssgi_active() const noexcept;
 
-        /** @brief how many channels the G-buffer debug view offers (see set_gbuffer_channel) */
-        static constexpr int gbuffer_channel_count = 9;
+        /**
+         * @brief how many channels the G-buffer debug view offers (see set_gbuffer_channel)
+         * @note the count is the PASS's (`vulkan.pass.gbuffer_debug::gbuffer_debug_pass::channel_count`), because it
+         *       is the shader's own switch; this alias keeps the app-facing name while leaving one source of truth
+         */
+        static constexpr int gbuffer_channel_count = pass::gbuffer_debug_pass::channel_count;
 
         /**
          * @ingroup vulkan_runtime
@@ -2726,9 +2714,9 @@ namespace vulkan {
          */
         void set_gbuffer_channel(int channel) noexcept;
 
-        /** @brief the channel the G-buffer debug view shows (see set_gbuffer_channel) */
+        /** @brief the channel the G-buffer debug view shows (the PASS's own parameter - see set_gbuffer_channel) */
         [[nodiscard]] int gbuffer_channel() const noexcept {
-            return this->gbuffer_channel_index;
+            return this->gbuffer_debug_view.channel();
         }
 
         /**

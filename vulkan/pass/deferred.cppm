@@ -39,13 +39,19 @@ import vulkan.core.handles; // vk_pipeline: the RAII owner of the pipeline this 
 
 export namespace vulkan::pass {
 
-    /// @brief what the renderer hands the lighting stage: the two per-image transitions its inputs need
+    /// @brief what the renderer hands the lighting stage: the frame's answer to what the traced chain is doing
     struct deferred_frame {
-        /// the renderer's two shared per-image transitions (the three G-buffer targets and the G-buffer depth):
-        /// their "was it written this frame" flags belong to the pass that WROTE those images, so this pass cannot
-        /// own them - the same shape as the temporal resolve's `ensure_inputs`
-        void (*ensure_inputs)(void* owner, VkCommandBuffer command_buffer, uint32_t image_index) = nullptr;
-        void* owner = nullptr;
+        /**
+         * Whether the TRACED chain is replacing the ambient this frame, which the lighting stage needs so that it
+         * does not scale a term that is about to be taken back out - the spatial filter subtracts the same ambient
+         * with the SAME predicate (see the push block's `gi_replaces_ambient`).
+         *
+         * THE HOST'S ANSWER, like the composite's `write_ldr`: it is the renderer's feature state rather than this
+         * pass's parameter, and it is decided per frame. The two per-image transitions this frame used to carry
+         * (`ensure_inputs`) are gone: they are the frame's ORDERING rule about images the G-buffer pass wrote, and
+         * they now run in the stage's preamble in the renderer, like the ray-traced shadow stage's identical pair.
+         */
+        bool gi_replaces_ambient = false;
     };
 
     /**
@@ -87,6 +93,27 @@ export namespace vulkan::pass {
         [[nodiscard]] VkPipeline pipeline() const noexcept override;
         [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
+        /**
+         * @brief the SSAO parameters, which are THIS pass's: the values only it reads
+         *
+         * The knobs used to live in the renderer, which clamped them and copied them into the push block. They are
+         * the pass's now, with the clamps (they are the same fact as the values), and the renderer's public setter
+         * forwards - the rule `vulkan.frame_constants::render_settings` states for a setting ONE pass reads. The
+         * FEATURE still needs the on/off half (`active_features().ssao` and the `ssao` gate), which is why this
+         * pass answers `ssao_enabled()`.
+         * @param enabled false pushes an intensity of 0, which makes the shader's occlusion exactly 1.0
+         * @param radius the world-space sample radius
+         * @param intensity how much occlusion is applied (1 = full)
+         * @param samples samples per pixel, clamped to the shader's MAX_SSAO_SAMPLES (16)
+         */
+        void set_ssao(bool enabled, float radius, float intensity, uint32_t samples) noexcept;
+        /// @brief whether SSAO is switched on (what the renderer's feature registry reports)
+        [[nodiscard]] bool ssao_enabled() const noexcept;
+        /// @brief the flat render mode: 1 in the push block makes the shader write the stored albedo
+        void set_unlit(bool unlit) noexcept;
+        /// @brief whether the flat render mode is on (the renderer's other features gate on it: shadow, clustered, bloom)
+        [[nodiscard]] bool unlit() const noexcept;
+
         void set_frame(deferred_frame const& frame) noexcept;
 
     private:
@@ -106,6 +133,15 @@ export namespace vulkan::pass {
         VkDevice device_ = VK_NULL_HANDLE;
         VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
+        /// the SSAO parameters (see set_ssao): the defaults are the renderer's own historical ones
+        bool ssao_enabled_ = true;
+        float ssao_radius_ = 0.5f;
+        float ssao_intensity_ = 1.0f;
+        uint32_t ssao_samples_ = 8;
+        /// view-depth bias that keeps a surface from occluding itself - a shader constant, never a knob
+        float ssao_bias_ = 0.02f;
+        /// the flat render mode (see set_unlit)
+        bool unlit_ = false;
         deferred_frame frame_ = {};
     };
 

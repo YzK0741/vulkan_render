@@ -2487,6 +2487,42 @@ from the other side. So bloom was never an uncovered path; `rt_shadows` (off by 
 0 flaky / 0 unseeded**, the knob-on A/B above matches the parent, Release/Debug/ASan build clean with `ctest` 8/8 in
 all three, and `doxygen` exits 0 with zero warnings.
 
+## S3, SEVENTH SLICE: deferred AND gbuffer_debug - THE FRAME'S ORDERING RULES GO TO THE STAGE PREAMBLES
+
+**TWO MORE RESOLVERS GONE, AND WITH THEM THE LAST TWO `ensure_inputs` CALLBACKS.** Both passes are declaration-driven
+now: the lighting stage's declaration resolves generically (shared scene set 0, shared G-buffer set 1, its own
+pipeline, a full-frame extent, and the ALIAS `scene_color` target the per-frame resource table answers), and so does
+the debug view's (the HDR display target, the four per-image families it moves to a sampled layout, the shared
+G-buffer set, its own pipeline). What each still needed was its own PARAMETERS and the frame's facts:
+
+* the deferred stage's **SSAO parameters** and its **flat-render flag** moved into the pass (with their clamps, which
+  are the same fact as the values): `set_ssao`/`set_unlit` forward, and the renderer's feature registry ASKS the pass
+  (`f.ssao = deferred.ssao_enabled() && shaded_scene`, `f.unlit = deferred.unlit()`) - the shape
+  `feature_active("ssgi_spatial")` already used for the temporal pass's own answer. One copy of each value, in the
+  pass that pushes it;
+* the debug view's **channel** moved into the pass the same way, and with the SHADER's own channel count
+  (`gbuffer_debug_pass::channel_count = 9`; the renderer's public `gbuffer_channel_count` is now an alias of it,
+  because the count is the shader's switch and the slider's range is derived from it). That pass has NO frame any
+  more - after the push block moved into `record`, the struct was deleted rather than emptied;
+* the frame's one remaining answer for the lighting stage - whether the TRACED chain replaces the ambient this
+  frame - became a `deferred_frame` FIELD (`gi_replaces_ambient`), like the composite's `write_ldr`: the renderer's
+  feature state, decided per frame, not a pass parameter.
+
+**AND THE FRAME'S ORDERING RULES NOW LIVE WHERE THE FRAME IS.** Both passes used to carry an `ensure_inputs`
+callback: `deferred`'s published the G-buffer instance's attachment writes (the three stored targets, then the depth),
+and the debug view's did the depth's hand-back plus CLEARED the motion-vector flag so the GI chain later in the frame
+would not transition that image a second time. Both are the frame's rules about images the G-buffer pass wrote, so
+they now run in their STAGE's preamble in `record_main_drawcalls`, next to the identical pair the ray-traced shadow
+stage already had - and the command stream is unchanged, because the stages carry no marks of their own.
+
+**MEASURED**: the capture gate decides the lighting stage (all twelve scenarios run it) and the knob-on A/B decides
+the debug view (which no scenario enables): parent `a8f2743` and this slice both render
+`864928524924AC86` with `gbuffer_debug = true, gbuffer_channel = 6`. The gate is **12 x 2 = 0 changed / 0 flaky /
+0 unseeded**, Release/Debug/ASan build clean with `ctest` 8/8 in all three, and `doxygen` exits 0 with zero
+warnings. Ten of the sixteen resolvers are gone; the per-pass switch is down to `shadow`, the four GI-chain passes,
+and the probe cache's inline tail.
+
+
 
 
 

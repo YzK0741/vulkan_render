@@ -6,9 +6,11 @@
 
 module;
 
+#include <algorithm> // std::clamp / std::max in set_ssao's clamps
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <glm/glm.hpp> // the push block's ssao lane and the frame's inverse view-projection
 #include <span>
 #include <string>
 #include <vulkan/vulkan.h>
@@ -105,11 +107,31 @@ namespace vulkan::pass {
         // the target arrives per frame (the host picks it - see the header).
     }
 
+    void deferred_pass::set_ssao(bool const enabled, float const radius, float const intensity, uint32_t const samples) noexcept {
+        // The clamps came with the parameters, because they are the same fact: an intensity above 1 darkens past
+        // black, a negative radius is meaningless, and the sample count is bounded by the SHADER's own array (16).
+        this->ssao_enabled_ = enabled;
+        this->ssao_radius_ = std::max(radius, 0.0f);
+        this->ssao_intensity_ = std::clamp(intensity, 0.0f, 1.0f);
+        this->ssao_samples_ = std::clamp(samples, 0u, 16u);
+    }
+
+    bool deferred_pass::ssao_enabled() const noexcept {
+        return this->ssao_enabled_;
+    }
+
+    void deferred_pass::set_unlit(bool const unlit) noexcept {
+        this->unlit_ = unlit;
+    }
+
+    bool deferred_pass::unlit() const noexcept {
+        return this->unlit_;
+    }
+
     void deferred_pass::record(resolved_io const& io) {
         if (!this->pipeline_.has_value() || io.targets.empty() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE ||
-            io.pipeline_layout == VK_NULL_HANDLE || io.shared.scene == VK_NULL_HANDLE || io.push.size() < sizeof(push_constants) ||
-            io.extent.width == 0 || io.extent.height == 0) {
-            return; // the runner resolves all of this or skips the pass (see runtime::resolve_deferred_pass)
+            io.pipeline_layout == VK_NULL_HANDLE || io.shared.scene == VK_NULL_HANDLE || io.extent.width == 0 || io.extent.height == 0) {
+            return; // the runner resolves all of this or skips the pass (see frame_pass::resolve)
         }
         VkImage const target = io.targets[0].image;
         VkImageView const target_view = io.targets[0].view;
@@ -124,19 +146,23 @@ namespace vulkan::pass {
         dependency_barrier.image = target;
         VkDependencyInfo const dependency = make_image_dependency_info(1, &dependency_barrier);
         vkCmdPipelineBarrier2(io.cmd, &dependency);
-        // The three stored targets and the G-buffer depth become samples HERE - unless an earlier stage (the
-        // raytraced shadow pass runs between the G-buffer instance and this one) already published them.
-        if (this->frame_.ensure_inputs != nullptr) {
-            this->frame_.ensure_inputs(this->frame_.owner, io.cmd, io.frame.image_index);
-        }
+        // The three stored targets and the G-buffer depth became samples in this STAGE's preamble, in the
+        // renderer - the frame's ordering rule about images the G-buffer pass wrote (see deferred_frame's note).
         VkRenderingAttachmentInfo const color_attachment = make_load_color_attachment_info(target_view);
         VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, io.extent}, true, &color_attachment, nullptr);
         vkCmdBeginRendering(io.cmd, &rendering_info);
         vkCmdSetCullMode(io.cmd, VK_CULL_MODE_NONE); // the synthetic triangle has no facing to cull
         std::array<VkDescriptorSet, 2> const sets = {io.shared.scene, io.shared.gbuffer};
         vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, io.pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+        // THE PUSH BLOCK IS THE PASS'S OWN (S3): its shape was always the pass's (`push_constants`, `static_assert`ed
+        // against the declaration), and its VALUES are now the pass's too - the SSAO parameters and the flat-render
+        // flag it owns, the frame's inverse view-projection from `resolved_io::constants`, and the frame's answer to
+        // what the traced chain is doing. The renderer used to compose all of it and hand it over as raw bytes.
         push_constants push = {};
-        std::memcpy(&push, io.push.data(), sizeof(push));
+        push.inv_view_proj = io.constants.inv_view_proj;
+        push.ssao = glm::vec4(this->ssao_radius_, this->ssao_enabled_ ? this->ssao_intensity_ : 0.0f, static_cast<float>(this->ssao_samples_), this->ssao_bias_);
+        push.unlit = this->unlit_ ? 1.0f : 0.0f;
+        push.gi_replaces_ambient = this->frame_.gi_replaces_ambient ? 1.0f : 0.0f;
         vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
         vkCmdDraw(io.cmd, 3, 1, 0, 0);
         vkCmdEndRendering(io.cmd);

@@ -45,16 +45,15 @@ import vulkan.core.handles; // vk_pipeline: the RAII owner of the pipeline this 
 export namespace vulkan::pass {
 
     /// @brief what the renderer hands the view: the two per-image pieces of bookkeeping it cannot own
-    struct gbuffer_debug_frame {
-        /**
-         * The renderer's two shared per-image transitions: the G-buffer depth's hand-back (whose "was it written
-         * this frame" flag belongs to the pass that wrote it) and the motion-vector flag's clearing (which stops
-         * the GI chain from transitioning that image a second time in the same frame). Both are the same shape as
-         * the deferred lighting stage's `ensure_inputs`, and for the same reason.
-         */
-        void (*ensure_inputs)(void* owner, VkCommandBuffer command_buffer, uint32_t image_index) = nullptr;
-        void* owner = nullptr;
-    };
+    /**
+     * @brief what the renderer hands the G-buffer debug view: NOTHING, and that is the endpoint
+     *
+     * The two per-image transitions this frame used to carry (`ensure_inputs`: the depth's hand-back and clearing
+     * the motion-vector flag) are the frame's ORDERING rules about images the G-buffer pass wrote, so they run in
+     * the debug stage's preamble in the renderer - the same move the ray-traced shadow pass's identical pair made.
+     * What is left for this pass to know is its own channel (its parameter) and the frame's facts, so the struct
+     * is gone rather than emptied.
+     */
 
     /**
      * @brief the G-buffer debug view: one stored channel, displayed in the HDR target
@@ -64,6 +63,9 @@ export namespace vulkan::pass {
      */
     class gbuffer_debug_pass final : public frame_pass {
     public:
+        /// @brief how many stored channels the view can show: the SHADER's own switch (`gbuffer_debug.frag`), which
+        ///        is why the count lives with the pass rather than with the renderer that offers a slider for it
+        static constexpr int channel_count = 9;
         /// @brief the push block, which is also `gbuffer_debug.frag`'s
         struct push_constants {
             float channel = 1.0f; // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags, 8 motion
@@ -96,7 +98,17 @@ export namespace vulkan::pass {
         ///        index 1): one layout, built here, because this is the pass whose builder creates it
         [[nodiscard]] VkDescriptorSetLayout set_layout() const noexcept;
 
-        void set_frame(gbuffer_debug_frame const& frame) noexcept;
+        /**
+         * @brief which stored channel the view shows, which is THIS pass's parameter
+         *
+         * The knob used to live in the renderer, which clamped it and copied it into the push block; the pass owns
+         * it now (with the clamp) and `runtime::set_gbuffer_channel` forwards. There is no frame any more: after the
+         * push block moved here the pass needs nothing per-frame except the frame's own facts.
+         * @param channel 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags, 8 motion
+         */
+        void set_channel(int channel) noexcept;
+        /// @brief the channel the view shows (0..gbuffer_channel_count-1)
+        [[nodiscard]] int channel() const noexcept;
 
     private:
         static constexpr std::string_view vertex_shader_name = "post.vert.spv"; // the synthetic fullscreen triangle
@@ -116,7 +128,8 @@ export namespace vulkan::pass {
         VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
         VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
-        gbuffer_debug_frame frame_ = {};
+        /// the channel the view shows (see set_channel); the default is the renderer's historical normal channel
+        int channel_ = 1;
     };
 
     static_assert(sizeof(gbuffer_debug_pass::push_constants) == render_resource::gbuffer_debug_io.push->size,
