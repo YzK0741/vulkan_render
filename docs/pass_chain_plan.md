@@ -2617,6 +2617,57 @@ directions: `sponza_march` is the marched oracle (`subtract_ambient` 0) while `d
 the probe cache's inline tail.
 
 
+## S3, TENTH SLICE: `ssgi_trace` AND `ssgi_spec` - ONE SHARED ADDRESS, AND THE KNOBS GO HOME
+
+**THE TWO TRACING STAGES LEFT TOGETHER, because what they had in common was the whole reason their resolvers existed:
+they push the SAME frame facts.** The camera, the projection's two depth terms and the scene bounds were already the
+frame's; what was not:
+
+* **the instance table's device address**, computed identically in both resolvers (`rt_top_levels->instance_table(slot)`
+  → `vkGetBufferDeviceAddress`). It is now `frame_constants::gi_instance_table`, and WHERE it is filled is a
+  measurement rather than a preference: `update_frame_constants` runs in `pace_and_acquire`, BEFORE the frame's
+  structure phase (re)builds the acceleration structures, so an address read there could belong to a buffer the same
+  frame is about to replace. It is therefore filled with the other chain-scoped facts, immediately before the chain
+  starts - the earliest point at which it is this frame's answer.
+* **the gate on that address is `ssgi_hit_shading`, and it was preserved exactly.** The temptation while moving it was
+  to "simplify" it to the oracle predicate (`traced`), and that would have been a behaviour change: the traced
+  RAYMARCH gets its top level structure from the scene set's descriptor, while a SHADED HIT is what fetches the
+  instance's data through this address - so `sponza_march` (marched, hit shading on by default) pushes a non-zero
+  address in the parent AND in this slice. The gate's own reason is now written down next to the fill.
+* **the ray sequence** (`ssgi_frame`), which both stages seed their sampling with. The COUNTER stays the frame loop's
+  (it paces the chain), and the frame gets a copy: `frame_constants::gi_frame_index`. Two passes reading one sequence
+  is the "several readers" rule in its simplest form.
+* **their ray budgets**: the tracer's intensity / reach / rays / steps, its multi-bounce gain and the probe cache's
+  gain, and the lobe's own reach and ray count. Each has exactly one reader, so each is the PASS's parameter with its
+  clamps (`set_reach` / `set_bounce` / `set_probe_gain` and the lobe's `set_reach`), and the renderer's four public
+  setters forward - the rule the TAA resolve's blend weights and the spatial filter's width already follow. Eight
+  runtime members are gone with them.
+
+**AND THE TWO PUSH BLOCKS ARE THE PASSES'.** Each composes its own in `record` from `io.constants` (camera, depth
+terms, scene bounds, address, sequence), its own values and its frame's two answers - `traced_oracle` (which decides
+three lanes at once: the bias-vs-steps lane, the shader's own branch, and the sequence's divisor) and `probe_ready`
+(active AND written, the second half being the probe pass's state). The lobe's "no instance table, no reflection"
+guard moved from its resolver to its `record`, where it checks the frame constant - the feature registry already
+refuses such a frame, so it is the pass being unable to proceed rather than a path the gate depends on.
+
+**MEASURED - NO A/B, AND THE COVERAGE IS THE INTERESTING PART.** The five GI scenarios between them exercise every
+combination the two stages have:
+
+| scenario | oracle | instance table | lobe | probe cache |
+|---|---|---|---|---|
+| `default_gi` | traced | non-zero (hit shading on) | off | off |
+| `sponza_gi` | traced | **zero** (hit shading pinned off) | off | **on** |
+| `sponza_march` | **marched** | non-zero (hit shading on, tracing off) | off | off |
+| `metal_rough_glossy` | traced | non-zero | **on** (reach 0.5, own ray count) | off |
+| `glossy_motion` | traced | non-zero | on | off |
+
+All twelve references came back unchanged (`default_gi` `BF180E98ADB29E7E`, `sponza_gi` `58EC848DFABE654A`,
+`sponza_march` `EEFBBA2515803F46`, `metal_rough_glossy` `46F9851B7BC89872`, `glossy_motion` `98B06F2190B49519`),
+with the gate at **12 x 2 = 0 changed / 0 flaky / 0 unseeded**, all twelve validation-clean; Release, Debug and ASan
+build clean with `ctest` 8/8 in all three; `doxygen` exits 0 with zero warnings. **Fourteen of the sixteen resolvers
+are gone**: the per-pass switch is down to `ssgi_temporal` and the probe cache's inline tail - the last slice.
+
+
 
 
 

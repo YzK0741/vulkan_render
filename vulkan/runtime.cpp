@@ -2511,10 +2511,10 @@ namespace vulkan {
     void runtime::set_ssgi(bool const enabled, float const intensity, float const radius, uint32_t const rays, uint32_t const steps) noexcept {
         bool const was_on = this->ssgi_on;
         this->ssgi_on = enabled;
-        this->ssgi_intensity = intensity;
-        this->ssgi_radius = radius;
-        this->ssgi_rays = std::clamp(rays, 0u, 16u);
-        this->ssgi_steps = std::clamp(steps, 0u, 64u);
+        // The ray budget is the PASS's from here on: it owns the values and their clamps (the intensity, the reach
+        // as a fraction of the scene radius, the rays and the steps), because it is the only reader - the same rule
+        // the TAA resolve's blend weights and the spatial filter's width follow.
+        this->ssgi_trace.set_reach(intensity, radius, rays, steps);
         if (enabled && !this->ssgi_trace.pipeline_ready()) {
             this->warn_missing_feature("ssgi", "screen-space GI has no effect: its compute pipeline was not created (see the startup log)");
         } else if (enabled && !this->ssgi_temporal.pipeline_ready()) {
@@ -2550,98 +2550,22 @@ namespace vulkan {
             // here: the batch has to happen exactly once per generation, and two copies of "has it happened" can
             // disagree after a resize.
             .probe_grid_first_use = !this->ssgi_trace.probe_grid_seen() && this->vulkan_core.gi_probe_images.size() == 8,
+            // WHICH ORACLE this frame's rays use - the same predicate the lobe's feature is gated on, so the two
+            // stages cannot disagree about the path (it decides three lanes of the tracer's push at once).
+            .traced_oracle = this->ssgi_traced_active(),
+            // ... and whether the probe cache may be READ: active AND written at least once. The gain the pass
+            // pushes is zero otherwise, so a grid nothing has deposited into is never sampled - and the "has it
+            // been written" half is the probe PASS's own state, which is why the host asks it.
+            .probe_ready = this->gi_probe_active() && this->gi_probe.cache_valid(),
         };
     }
 
-    bool runtime::resolve_ssgi_trace(pass::resolved_io& out) {
-        core const& vk = this->vulkan_core;
-        std::size_t const index = this->current_image_index;
-        // THE TWO EARLY RETURNS THE MOVED CODE OPENED WITH, and they are the reason this resolver exists at all:
-        // a frame with no GI trace image, or with no G-buffer set to bind, is skipped WITHOUT recording - which
-        // is what makes such a frame bit for bit what it was before this pass existed.
-        if (vk.gi_images.size() != vk.gi_resolve_images.size() || index >= vk.gi_images.size() || vk.gi_images[index] == VK_NULL_HANDLE ||
-            vk.gi_probe_images.size() != 8 || vk.gi_probe_surface_images.empty() || vk.gi_spec_resolve_images.size() != vk.gi_images.size()) {
-            return false;
-        }
-        // The G-buffer family is the renderer's (the sets are per image and rewritten when the generation's
-        // views change), so it is ensured HERE - exactly where the moved code ensured it, so that a frame which
-        // would have built the family still does and the pass sees the same set.
-        this->ensure_gbuffer_descriptors();
-        VkDescriptorSet const gbuffer_set = this->gbuffer_family.set(static_cast<uint32_t>(index), 0);
-        if (gbuffer_set == VK_NULL_HANDLE) {
-            return false;
-        }
-        out.frame = this->pass_frame();
-        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
-        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
-        out.shared.gbuffer = gbuffer_set;
-        // The twelve declared barrier images, resolved BY DECLARATION ELEMENT: the per-swapchain-image families
-        // take the FRAME's image, the probe grid takes the element the declaration names. Both the view and the
-        // image are filled, because the pass's barriers take the image and a future descriptor use would take
-        // the view - the same reason `own` carries both.
-        out.barrier_storage[0] = {.view = vk.gi_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_images[index]};
-        out.barrier_storage[1] = {.view = vk.gi_spec_resolve_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_spec_resolve_images[index]};
-        out.barrier_storage[2] = {.view = vk.gi_resolve_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_resolve_images[index]};
-        for (uint32_t c = 0; c < 8; ++c) {
-            out.barrier_storage[3 + c] = {.view = vk.gi_probe_image_views[c], .buffer = VK_NULL_HANDLE, .image = vk.gi_probe_images[c]};
-        }
-        out.barrier_storage[11] = {.view = vk.gi_probe_surface_image_views[0], .buffer = VK_NULL_HANDLE, .image = vk.gi_probe_surface_images[0]};
-        out.barrier_images = std::span<pass::resolved_binding const>(out.barrier_storage.data(), 12);
-        out.pipeline_storage[0] = this->ssgi_trace.pipeline();
-        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
-        out.pipeline_layout = this->ssgi_trace.pipeline_layout();
-        // The push block, composed HERE because every value in it is the renderer's. The one lane that is not a
-        // plain knob is `proj_terms.zw`, the instance table's device address split across two float lanes (the
-        // block is exactly 128 bytes, so the address is reinterpreted rather than widened).
-        bool const probe_ready = this->gi_probe_active() && this->gi_probe.cache_valid();
-        float const probe_cell_size = (2.0f * this->scene_radius) / static_cast<float>(vulkan::gi_probe_grid_extent);
-        uint64_t instance_table = 0;
-        if (this->ssgi_hit_shading && this->rt_top_levels.has_value()) {
-            VkBuffer const table = this->rt_top_levels->instance_table(static_cast<uint32_t>(vk.current_frame));
-            if (table != VK_NULL_HANDLE) {
-                VkBufferDeviceAddressInfo const table_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};
-                instance_table = vkGetBufferDeviceAddress(vk.device, &table_info);
-            }
-        }
-        float const table_low = std::bit_cast<float>(static_cast<uint32_t>(instance_table & 0xFFFFFFFFu));
-        float const table_high = std::bit_cast<float>(static_cast<uint32_t>(instance_table >> 32u));
-        // Which of the two oracles this frame uses, evaluated ONCE and pushed in one lane (frame_info.y): it
-        // also decides what params.w means, and two readings of the same predicate in the same push would be
-        // two places to drift apart.
-        bool const traced = this->ssgi_ray_tracing && this->vulkan_core.ray_query_available && this->rt_top_levels.has_value();
-        pass::ssgi_trace_pass::push_constants push = {};
-        push.inv_view_proj = this->current_inv_view_proj;
-        // w is steps on a marched frame and the ray-origin bias on a traced one (see the shader's push comment).
-        // The bias is a WORLD distance - a fraction of the scene radius, the same meaning on a 1.6-unit model
-        // and on Sponza's 87.8 - rather than a fraction of the ray length, which would make it scale with the
-        // reach knob: at the default settings that put every traced ray's origin 0.21 world units above the
-        // surface inside Sponza.
-        push.params = glm::vec4(this->ssgi_radius * this->scene_radius, this->ssgi_intensity, static_cast<float>(this->ssgi_rays),
-                                traced ? this->scene_radius * 0.0002f : static_cast<float>(this->ssgi_steps));
-        push.proj_terms = glm::vec4(this->current_ubo.proj[2][2], this->current_ubo.proj[3][2], table_low, table_high);
-        push.frame_info = glm::vec4(static_cast<float>(this->ssgi_frame),
-                                    // y = 1.0 only when the rays are actually traced: resolved HERE rather than in
-                                    // the shader so the shader never has to know why it is marching instead.
-                                    traced ? 1.0f : 0.0f,
-                                    // z = the multi-bounce gain, pushed on both paths, and zero on the frames
-                                    // before this image has a resolve (there is no previous frame to re-emit).
-                                    make_ssgi_trace_frame().history_valid ? this->ssgi_bounce : 0.0f,
-                                    // w = the probe cache's gain: zero unless the cache is active AND has been
-                                    // written at least once, so a grid nothing has deposited into is never read.
-                                    probe_ready ? this->gi_probe_gain : 0.0f);
-        push.probe_grid = glm::vec4(this->shadow_scene_center - glm::vec3(this->scene_radius), probe_cell_size);
-        static_assert(sizeof(push) <= pass::max_push_bytes, "the tracer's push block must fit the guaranteed minimum");
-        std::memcpy(out.push_storage.data(), &push, sizeof(push));
-        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
-        // The declaration's rule is `half`, and the RESOLVER applies it: `pass_extent` is the one place that
-        // maps `behaviour::extent` to a size, and it is the same max(1, axis / 2) the images themselves are
-        // created with (see core::create_render_targets). This line used to hand the pass the FRAME's extent,
-        // which the shader survived only because it clips against `imageSize(gi_output)` - so the frames were
-        // identical while the dispatch was four times the work, which is exactly the kind of wrong that a
-        // capture gate cannot see and a reader of the declaration can.
-        out.extent = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->ssgi_trace));
-        return true;
-    }
+    // THE TRACER'S RESOLVER IS GONE (S3.10): its twelve declared images, its two shared sets, its own pipeline and
+    // the declaration's `half` extent are all the framework's to resolve now (the probe grid's eight elements and
+    // the surface image are ordinary table entries), and the push block it used to be handed is composed by the
+    // PASS from `io.constants` (the camera, the projection terms, the scene bounds, the instance table's address,
+    // the ray sequence), its own ray budget and the two answers its frame carries (which oracle, and whether the
+    // probe cache has been written).
 
     void runtime::ensure_ssgi_denoise_descriptors() {
         // ONE FAMILY IS LEFT HERE: the REFLECTION's. The diffuse one is the pass's now
@@ -2921,10 +2845,11 @@ namespace vulkan {
 
     void runtime::set_ssgi_specular(bool const enabled, uint32_t const rays, float const radius) noexcept {
         this->ssgi_specular = enabled;
+        // The two values are the PASS's (one reader each), so they are forwarded with their clamps - and the
+        // argument for those clamps stays here, where the measurements that chose them are recorded:
         // One is the feature's definition and the low end of the noise/cost trade; the upper bound is a
         // cost guard, not a quality claim - the pass shades every hit it finds, which is the expensive
         // part of this chain.
-        this->ssgi_specular_rays = std::clamp(rays, 1u, 8u);
         // A reach, not a quality knob: below it the reflection falls back to the sky, and past the knee the
         // curve is flat in BOTH effect and cost (measured: -0.907 / -2.126 / -2.350 at 0.12 / 0.5 / 2.0, and
         // the `gi` interval 1.28 / 2.22 / 2.21 ms). The FLOOR is deliberately low enough to be useless: a
@@ -2932,7 +2857,7 @@ namespace vulkan {
         // every sample answer with the environment - the identity configuration the L2.3 acceptance is read
         // in - and a floor above that would not be expressible on a small scene (0.01 scene radii of the
         // helmet's 1.64 is 0.0164 units, i.e. just past tmin, which is why the floor is 0.001 and not 0.01).
-        this->ssgi_specular_radius = std::clamp(radius, 0.001f, 8.0f);
+        this->ssgi_spec.set_reach(radius, rays);
         if (enabled && !this->ssgi_hit_shading) {
             this->warn_missing_feature("ssgi", "glossy reflections have no effect: without hit shading a reflection ray cannot be shaded where it lands");
         } else if (enabled && !this->ssgi_ray_tracing) {
@@ -2952,8 +2877,9 @@ namespace vulkan {
     void runtime::set_ssgi_bounce(float const gain) noexcept {
         // The knob stops at one: above it the geometric series a diffuse loop forms is not guaranteed to
         // converge (the surfaces' albedos approach one), and the failure mode is a frame that gets
-        // brighter every frame rather than a visibly wrong one.
-        this->ssgi_bounce = std::clamp(gain, 0.0f, 1.0f);
+        // brighter every frame rather than a visibly wrong one. The clamp lives with the value now (the
+        // TRACER's, which is the pass that pushes the gain).
+        this->ssgi_trace.set_bounce(gain);
     }
 
     void runtime::set_furnace(bool const enabled) noexcept {
@@ -2993,8 +2919,9 @@ namespace vulkan {
         this->gi_probe.set_rounds(this->gi_probe_rounds);
         // The sign is the cache's DIRECTION A/B rather than a mistake: |gain| is the gain, and a negative
         // value looks the cache up along the opposite direction of the ray - the same cell, the other side.
-        // It is clamped rather than rejected because it is a documented measurement setting.
-        this->gi_probe_gain = std::clamp(gain, -4.0f, 4.0f);
+        // It is clamped rather than rejected because it is a documented measurement setting. The value is the
+        // TRACER's (it is the lane that weighs the cache against the environment fallback), so it is forwarded.
+        this->ssgi_trace.set_probe_gain(gain);
         if (enabled && !this->ssgi_on) {
             this->warn_missing_feature("ssgi", "the probe cache has no effect: it is injected from the screen-space GI chain, which is off");
         } else if (enabled && !this->gi_probe.pipeline_ready()) {
@@ -3646,12 +3573,6 @@ namespace vulkan {
     // declaration itself (see pass::resource_table and docs/pass_chain_plan.md).
     bool runtime::resolve_pass_impl(pass::frame_pass const& pass, pass::resolved_io& out) {
         core const& vk = this->vulkan_core;
-        if (&pass == static_cast<pass::frame_pass const*>(&this->ssgi_trace)) {
-            return this->resolve_ssgi_trace(out);
-        }
-        if (&pass == static_cast<pass::frame_pass const*>(&this->ssgi_spec)) {
-            return this->resolve_ssgi_spec(out);
-        }
         if (&pass == static_cast<pass::frame_pass const*>(&this->ssgi_temporal)) {
             return this->resolve_ssgi_temporal(out);
         }
@@ -3816,72 +3737,11 @@ namespace vulkan {
         return pass::ssgi_spec_frame{.image_count = static_cast<uint32_t>(this->vulkan_core.gi_spec_images.size())};
     }
 
-    bool runtime::resolve_ssgi_spec(pass::resolved_io& out) {
-        core const& vk = this->vulkan_core;
-        std::size_t const index = this->current_image_index;
-        // THE MOVED BODY'S EARLY RETURNS, in the same order: no GI trace image, no G-buffer set, or no instance
-        // table (a hit that cannot be shaded is nothing to add - see ssgi_specular_active, which is the same
-        // predicate one level up). Each one skips the pass WITHOUT recording anything.
-        if (index >= vk.gi_images.size() || vk.gi_images[index] == VK_NULL_HANDLE || vk.gi_spec_images.size() != vk.gi_images.size() ||
-            vk.gi_spec_reproject_images.size() != vk.gi_images.size()) {
-            return false;
-        }
-        this->ensure_gbuffer_descriptors();
-        VkDescriptorSet const gbuffer_set = this->gbuffer_family.set(static_cast<uint32_t>(index), 0);
-        if (gbuffer_set == VK_NULL_HANDLE) {
-            return false;
-        }
-        // The instance table's address, exactly as the tracer's push carries it, and the switch with it: a zero
-        // would leave the pass with nothing to shade a hit from, which ssgi_specular_active() already refused -
-        // so a table that turns out to be missing here is a frame whose structures went away between the two
-        // calls, and not recording is the right answer rather than replacing the lighting stage's specular
-        // ambient with the environment alone (which would be a no-op anyway).
-        uint64_t instance_table = 0;
-        if (this->ssgi_hit_shading && this->rt_top_levels.has_value()) {
-            VkBuffer const table = this->rt_top_levels->instance_table(static_cast<uint32_t>(vk.current_frame));
-            if (table != VK_NULL_HANDLE) {
-                VkBufferDeviceAddressInfo const table_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};
-                instance_table = vkGetBufferDeviceAddress(vk.device, &table_info);
-            }
-        }
-        if (instance_table == 0) {
-            return false;
-        }
-        out.frame = this->pass_frame();
-        out.cmd = *this->command_buffers[static_cast<uint32_t>(vk.current_frame)];
-        out.shared.scene = this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
-        out.shared.gbuffer = gbuffer_set;
-        // The three declared barrier images, in the declaration's order.
-        out.barrier_storage[0] = {.view = vk.gi_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_images[index]};
-        out.barrier_storage[1] = {.view = vk.gi_spec_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_spec_images[index]};
-        out.barrier_storage[2] = {.view = vk.gi_spec_reproject_image_views[index], .buffer = VK_NULL_HANDLE, .image = vk.gi_spec_reproject_images[index]};
-        out.barrier_images = std::span<pass::resolved_binding const>(out.barrier_storage.data(), 3);
-        out.pipeline_storage[0] = this->ssgi_spec.pipeline();
-        out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
-        out.pipeline_layout = this->ssgi_spec.pipeline_layout();
-        // The two halves of the instance table's address, bit-cast into float lanes - a push constant is raw
-        // bytes, so half an address survives the trip exactly (the same trick the tracer's proj_terms uses).
-        float const table_low = std::bit_cast<float>(static_cast<uint32_t>(instance_table & 0xFFFFFFFFu));
-        float const table_high = std::bit_cast<float>(static_cast<uint32_t>(instance_table >> 32u));
-        pass::ssgi_spec_pass::push_constants push = {};
-        push.inv_view_proj = this->current_inv_view_proj;
-        // The ray length is the lobe's OWN reach (`ssgi_specular_radius`), not the diffuse bounce's
-        // `ssgi_radius` - see the setter for why the two are different questions and what the curve between
-        // them costs. z is the self-intersection bias as an explicit WORLD length rather than a fraction of x,
-        // so that raising the reach does not also lift every ray's origin further off its surface.
-        push.params = glm::vec4(this->ssgi_specular_radius * this->scene_radius,
-                                static_cast<float>(this->ssgi_specular_rays),
-                                this->scene_radius * 0.0002f,
-                                static_cast<float>(this->ssgi_frame));
-        push.table = glm::vec4(0.0f, 0.0f, table_low, table_high);
-        static_assert(sizeof(push) <= pass::max_push_bytes, "the lobe's push block must fit the guaranteed minimum");
-        std::memcpy(out.push_storage.data(), &push, sizeof(push));
-        out.push = std::span<std::byte const>(out.push_storage.data(), sizeof(push));
-        // The declaration's rule is `half` - see the tracer's line for why the frame's extent looked harmless
-        // here (the shader's `imageSize` clip) and why it was still wrong.
-        out.extent = this->pass_extent(*static_cast<pass::frame_pass const*>(&this->ssgi_spec));
-        return true;
-    }
+    // THE GLOSSY LOBE'S RESOLVER IS GONE (S3.10) with the tracer's, and the two went together because they push the
+    // same frame facts: three declared images, the same two shared sets, its own pipeline, the declaration's `half`
+    // extent - and a push block the PASS composes from `io.constants` and its own reach. Its "no instance table" gate
+    // is the frame constant `gi_instance_table`, which the pass checks before recording (the feature registry already
+    // refuses such a frame, so the check is the pass being unable to proceed rather than a path the gate depends on).
 
     void runtime::record_scene_tail(VkCommandBuffer const command_buffer) {
         // NO vkCmdEndRendering HERE ANY MORE: the scene PASS owns its instance and closes it at the end of its
@@ -4156,8 +4016,25 @@ namespace vulkan {
         // `gi_spec_resolved` is cleared in the same place and for the same reason: the reflection writes it
         // through the temporal pass's callback, and a frame whose reflection did not run must not leave the
         // previous frame's answer for the filter's `spec_weight` lane to read.
+        //
+        // THE TWO FACTS THE TRACING STAGES SHARE go in here as well, and this is the earliest point they CAN be
+        // this frame's: the instance table belongs to a buffer the structure phase above (re)builds, so an address
+        // read in `update_frame_constants` - which runs before that phase - could be a buffer this same frame is
+        // about to replace. The gate on the address is `ssgi_hit_shading`, because that is what the address is
+        // FOR: the traced raymarch gets its top level structure from the scene set's descriptor, while a SHADED hit
+        // fetches the instance's data through this address.
         this->frame_facts.gi_resolved = false;
         this->frame_facts.gi_spec_resolved = false;
+        uint64_t instance_table = 0;
+        if (this->ssgi_hit_shading && this->rt_top_levels.has_value()) {
+            VkBuffer const table = this->rt_top_levels->instance_table(static_cast<uint32_t>(vk.current_frame));
+            if (table != VK_NULL_HANDLE) {
+                VkBufferDeviceAddressInfo const table_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};
+                instance_table = vkGetBufferDeviceAddress(vk.device, &table_info);
+            }
+        }
+        this->frame_facts.gi_instance_table = instance_table;
+        this->frame_facts.gi_frame_index = this->ssgi_frame;
         if (this->ssgi_active()) {
             // THE GI CHAIN, recorded as ONE call: its four stages and their order are the chain's (see
             // gi_chain in the header), and each pass's own feature gate and resolver still decide whether it

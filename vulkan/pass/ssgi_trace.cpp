@@ -6,9 +6,11 @@
 
 module;
 
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
-#include <cstring>
+#include <glm/glm.hpp>
 #include <span>
 #include <string>
 #include <vulkan/vulkan.h>
@@ -18,6 +20,7 @@ module vulkan.pass.ssgi_trace;
 import vulkan.render_resource;
 import vulkan.constant_init;
 import vulkan.pipelines; // build_ssgi: the compute pipeline this pass owns
+import vulkan.primitive; // gi_probe_grid_extent: the grid's cell size is a `vulkan.core` constant it re-exports
 import utility;
 
 namespace vulkan::pass {
@@ -63,6 +66,27 @@ namespace vulkan::pass {
 
     bool ssgi_trace_pass::probe_grid_seen() const noexcept {
         return this->probe_grid_seen_;
+    }
+
+    void ssgi_trace_pass::set_reach(float const intensity, float const radius, uint32_t const rays, uint32_t const steps) noexcept {
+        // The clamps are the renderer's old ones, moved here with the values (they are the same fact): the
+        // intensity scales a radiance term, the radius is a fraction of the scene radius, and the two counts are
+        // the per-pixel ray budget the config documents as [0, 16] x [0, 64].
+        this->intensity_ = intensity;
+        this->radius_ = radius;
+        this->rays_ = std::clamp(rays, 0u, 16u);
+        this->steps_ = std::clamp(steps, 0u, 64u);
+    }
+
+    void ssgi_trace_pass::set_bounce(float const gain) noexcept {
+        // Above one the diffuse loop this closes is not guaranteed to converge (see the renderer's setter, which
+        // is where that argument is written out).
+        this->bounce_ = std::clamp(gain, 0.0f, 1.0f);
+    }
+
+    void ssgi_trace_pass::set_probe_gain(float const gain) noexcept {
+        // Negative is legal: it is how the cache's contribution is measured against the fallback.
+        this->probe_gain_ = std::clamp(gain, -4.0f, 4.0f);
     }
 
     void ssgi_trace_pass::set_frame(ssgi_trace_frame const& frame) noexcept {
@@ -112,9 +136,9 @@ namespace vulkan::pass {
     }
 
     void ssgi_trace_pass::record(resolved_io const& io) {
-        if (!this->pipeline_.has_value() || io.barrier_images.size() < render_resource::ssgi_trace_barriers.size() || io.push.size() < sizeof(push_constants) ||
-            io.extent.width == 0 || io.extent.height == 0) {
-            return; // the runner resolves all of this or skips the pass (see runtime::resolve_ssgi_trace)
+        if (!this->pipeline_.has_value() || io.barrier_images.size() < render_resource::ssgi_trace_barriers.size() || io.extent.width == 0 || io.extent.height == 0 ||
+            io.pipeline_layout == VK_NULL_HANDLE || io.shared.scene == VK_NULL_HANDLE || io.shared.gbuffer == VK_NULL_HANDLE) {
+            return; // the runner resolves all of this or skips the pass (the declaration's own gates are the table's)
         }
 
         // ---- the first-use transitions ----
@@ -170,13 +194,45 @@ namespace vulkan::pass {
         // Two sets, then the pipeline - the order the moved code used. A compute dispatch has no viewport, so
         // the runner's mechanical half is only the pipeline bind (behaviour::resync_viewport is false).
         std::array<VkDescriptorSet, 2> const sets = {io.shared.scene, io.shared.gbuffer};
-        if (io.pipeline_layout == VK_NULL_HANDLE || sets[0] == VK_NULL_HANDLE || sets[1] == VK_NULL_HANDLE) {
-            return; // nothing to dispatch into: the sets are the host's, and an unbound one is not a frame
-        }
         vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, io.pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
 
+        // ---- the push block: every lane from its owner ----
+        // The camera, the projection terms, the scene bounds, the instance table's address and the ray sequence are
+        // the FRAME's (`io.constants`); the ray budget, the bounce gain and the probe gain are this PASS's; the two
+        // flags are this frame's answers (which oracle, and whether the cache has been written). The block is
+        // exactly 128 bytes, so the address is reinterpreted into two float lanes rather than widened - the same
+        // trick the lobe's block uses.
+        float const scene_radius = io.constants.scene_radius;
+        // The frame's answer, pushed as it is: the field is the address the frame HAS (zero when it has none), and
+        // re-deriving it here from the oracle would be a second reading of the same fact that could disagree with
+        // the lobe's - the two blocks carry the same two lanes.
+        uint64_t const instance_table = io.constants.gi_instance_table;
+        float const table_low = std::bit_cast<float>(static_cast<uint32_t>(instance_table & 0xFFFFFFFFu));
+        float const table_high = std::bit_cast<float>(static_cast<uint32_t>(instance_table >> 32u));
         push_constants push = {};
-        std::memcpy(&push, io.push.data(), sizeof(push));
+        push.inv_view_proj = io.constants.inv_view_proj;
+        // w is steps on a marched frame and the ray-origin bias on a traced one (see the shader's push comment).
+        // The bias is a WORLD distance - a fraction of the scene radius, the same meaning on a 1.6-unit model and
+        // on Sponza's 87.8 - rather than a fraction of the ray length, which would make it scale with the reach
+        // knob: at the default settings that put every traced ray's origin 0.21 world units above the surface
+        // inside Sponza.
+        push.params = glm::vec4(this->radius_ * scene_radius, this->intensity_, static_cast<float>(this->rays_),
+                                this->frame_.traced_oracle ? scene_radius * 0.0002f : static_cast<float>(this->steps_));
+        push.proj_terms = glm::vec4(io.constants.proj[2][2], io.constants.proj[3][2], table_low, table_high);
+        push.frame_info = glm::vec4(static_cast<float>(io.constants.gi_frame_index),
+                                    // y = 1.0 only when the rays are actually traced: resolved by the frame rather
+                                    // than in the shader so the shader never has to know why it is marching instead
+                                    this->frame_.traced_oracle ? 1.0f : 0.0f,
+                                    // z = the multi-bounce gain, pushed on both paths, and zero on the frames
+                                    // before this image has a resolve (there is no previous frame to re-emit)
+                                    this->frame_.history_valid ? this->bounce_ : 0.0f,
+                                    // w = the probe cache's gain: zero unless the cache is active AND has been
+                                    // written at least once, so a grid nothing has deposited into is never read
+                                    this->frame_.probe_ready ? this->probe_gain_ : 0.0f);
+        // The grid's cell size: the cube the shadow fit anchored to, divided into `gi_probe_grid_extent` cells -
+        // the SAME corner and the same formula the probe cache's own push and the shadow fit use.
+        push.probe_grid = glm::vec4(io.constants.scene_center - glm::vec3(scene_radius), (2.0f * scene_radius) / static_cast<float>(vulkan::gi_probe_grid_extent));
+        static_assert(sizeof(push) <= pass::max_push_bytes, "the tracer's push block must fit the guaranteed minimum");
         vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
         vkCmdDispatch(io.cmd, (io.extent.width + group_size - 1u) / group_size, (io.extent.height + group_size - 1u) / group_size, 1);
 

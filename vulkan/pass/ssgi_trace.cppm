@@ -1,4 +1,4 @@
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/ssgi_trace.cppm
@@ -27,8 +27,10 @@
  *    and the host reads it off that pass and hands it over;
  *  * whether the glossy lobe runs next, because that decides whether the tracer owes the denoiser its hand-off
  *    barrier NOW or after the lobe has added to the same image (both passes write `gi_trace`);
- *  * every value in the push block, which is the renderer's (the camera, the knobs, the scene radius, the
- *    instance table's device address).
+ *  * the frame's own facts - the camera (`inv_view_proj`), the projection's two depth terms, the scene bounds the
+ *    probe grid is anchored to, the instance table's device address, the ray sequence, and which oracle this frame
+ *    uses - which arrive through `resolved_io::constants` and this pass's frame. The push block is composed by
+ *    THIS pass, from those facts and its own ray budget.
  */
 
 module;
@@ -50,12 +52,11 @@ import vulkan.core.handles; // vk_pipeline: the RAII owner of the compute pipeli
 export namespace vulkan::pass {
 
     /**
-     * @brief what the renderer hands the tracer: the three frame facts it cannot derive, and nothing else
+     * @brief what the renderer hands the tracer: the frame facts it cannot derive, and nothing else
      *
-     * The push block arrives through `resolved_io::push` (the host composes it, because every value in it is
-     * the renderer's), the images through `resolved_io::barrier_images` (declared by the pass, resolved by the
-     * host), and the two shared sets through `resolved_io::shared`. What is left is exactly the frame's
-     * knowledge, which is why there are three booleans here and no more.
+     * The images arrive through `resolved_io::barrier_images` (declared by the pass, resolved by the host) and the
+     * two shared sets through `resolved_io::shared`; the camera, the knobs and the extents are the pass's own
+     * parameters and the frame's constants, so this struct is exactly the frame's knowledge.
      */
     struct ssgi_trace_frame {
         /// whether the previous frame's diffuse accumulation may be trusted (the denoiser's per-image state)
@@ -64,6 +65,15 @@ export namespace vulkan::pass {
         bool specular_next = false;
         /// whether this is the first dispatch of the generation, so the probe grid needs its first-use batch
         bool probe_grid_first_use = false;
+        /**
+         * Which ORACLE this frame's rays use: the traced one (ray queries against the scene's structures) or the
+         * marched one (depth-buffer ray marching). It decides THREE lanes of the push block at once - the ray
+         * origin bias against the step count, the shader's own branch, and whether the ray sequence's divisor is
+         * one or two - so the renderer resolves it once and hands over the answer.
+         */
+        bool traced_oracle = false;
+        /// whether the probe cache is on AND has been written at least once, so its gain may be pushed non-zero
+        bool probe_ready = false;
     };
 
     /**
@@ -109,6 +119,21 @@ export namespace vulkan::pass {
         [[nodiscard]] VkPipeline pipeline() const noexcept override;
         [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
+        /**
+         * @brief the tracer's own ray budget: how much indirect it adds and how far its rays reach
+         *
+         * THE PASS'S PARAMETERS, by the rule the framework settled on: one pass reads each of them, so the pass
+         * owns them and the renderer's `set_ssgi` forwards. `radius` is a FRACTION of the scene radius (so one
+         * setting means the same thing on a 1.6-unit model and on Sponza), the intensity REPLACES the ambient the
+         * lighting stage would otherwise use on the traced path, and `rays` x `steps` is the cost per half-res
+         * pixel - the clamps live here with the values.
+         */
+        void set_reach(float intensity, float radius, uint32_t rays, uint32_t steps) noexcept;
+        /// @brief how much of the previous frame's accumulated indirect a hit re-emits (the multi-bounce gain)
+        void set_bounce(float gain) noexcept;
+        /// @brief the probe cache's gain, which is what makes its contribution measurable (0 turns it off)
+        void set_probe_gain(float gain) noexcept;
+
         void set_frame(ssgi_trace_frame const& frame) noexcept;
 
     private:
@@ -147,6 +172,13 @@ export namespace vulkan::pass {
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
         /// whether this generation's probe grid has had its first-use batch (see on_swapchain_recreated)
         bool probe_grid_seen_ = false;
+        /// the tracer's own ray budget, clamped where it is set (see set_reach / set_bounce / set_probe_gain)
+        float intensity_ = 0.7f;
+        float radius_ = 3.0f;
+        uint32_t rays_ = 2;
+        uint32_t steps_ = 6;
+        float bounce_ = 0.0f;
+        float probe_gain_ = 1.0f;
         ssgi_trace_frame frame_ = {};
     };
 

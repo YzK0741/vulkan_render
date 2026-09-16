@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.frame_constants
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // ONE FRAME'S SHARED CONSTANTS: the per-frame facts the frame loop produces and a
 // pass may read while it records.
@@ -129,6 +129,27 @@ namespace vulkan {
          * a member is a second copy of a frame fact the moment the pass that reads it can read this one.)
          */
         bool gi_spec_resolved = false;
+        /**
+         * The instance table this frame's GI rays fetch HIT DATA from, as a device address; 0 means "this frame
+         * has none", and a shader that reads it must fall back (the marched oracle distinguishes hit faces by
+         * depth instead). The two GI stages that trace - the diffuse tracer and the glossy lobe - both push its two
+         * halves, which is why it is the frame's rather than either pass's.
+         *
+         * FILLED BEFORE THE GI CHAIN, NOT IN `update_frame_constants`, and that placement is the whole reason it
+         * is a field with a note: the address belongs to a buffer the frame's structure phase (re)builds, and
+         * `update_frame_constants` runs before that phase - so an address read there could be a buffer that the
+         * same frame is about to replace. The value is this frame's the moment the structures exist, which is the
+         * point the chain starts at.
+         */
+        uint64_t gi_instance_table = 0;
+        /**
+         * The ray sequence this frame's GI dispatches seed themselves with, so that two frames do not trace the
+         * SAME rays (an estimator that repeated its samples would only average its own noise).
+         *
+         * The frame loop owns the counter (it is the chain's pacing state, not a pass's) and copies it here before
+         * the chain; both tracing stages read this copy, which is what keeps them on one sequence.
+         */
+        uint32_t gi_frame_index = 0;
     };
 
 } // namespace vulkan

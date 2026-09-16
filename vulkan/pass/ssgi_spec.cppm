@@ -1,4 +1,4 @@
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/ssgi_spec.cppm
@@ -22,9 +22,10 @@
  * own and binds no descriptor at all - the same shape as the tracer, reached through the same
  * `pass_io::barrier_images` channel.
  *
- * WHAT IT DELIBERATELY DOES NOT OWN: the instance table's address (the renderer's, and its absence is what makes
- * the pass skip entirely), the frame counter that seeds its ray sequence, its reach and its ray count - all
- * values in the push block the host composes.
+ * WHAT IT DELIBERATELY DOES NOT OWN: the instance table's address (the FRAME's, because the tracer pushes it too -
+ * and its absence is what makes the pass skip entirely), the frame counter that seeds its ray sequence (the
+ * frame's, for the same reason), and the camera and the scene radius (`resolved_io::constants`). Its reach and its
+ * ray count ARE its own, and it composes its own push block from all of those.
  */
 
 module;
@@ -48,9 +49,10 @@ import vulkan.core.handles; // vk_pipeline: the RAII owner of the compute pipeli
 
 export namespace vulkan::pass {
 
-    /// @brief what the renderer hands the lobe: nothing but the push block and the images it declared
-    /// @note the struct exists so the boundary has a name, not because the pass needs a value from the frame:
-    ///       every decision this pass makes is either in `resolved_io` or its own per-image state
+    /// @brief what the renderer hands the lobe: how long its per-image state is
+    /// @note the values it pushes come from `resolved_io::constants` (the camera, the scene radius, the address of
+    ///       the instance table the hits are shaded from, the ray sequence) and from its OWN reach, so this struct
+    ///       carries no push data - only the size of the state that is per target generation
     struct ssgi_spec_frame {
         /// how many images the target generation holds, which is how long the per-image first-use state is
         uint32_t image_count = 0;
@@ -98,6 +100,16 @@ export namespace vulkan::pass {
          */
         void reset_first_use() noexcept;
 
+        /**
+         * @brief the lobe's own reach: how far its reflection ray goes and how many it traces
+         *
+         * THE PASS'S PARAMETERS (one reader each, with their clamps), and `radius` is deliberately NOT the shared
+         * diffuse reach: the marched path pins that one low (its resolution is radius / steps), so a reflection's
+         * reach would make the marched steps too coarse. It is a fraction of the scene radius, so one value means
+         * the same thing on any model.
+         */
+        void set_reach(float radius, uint32_t rays) noexcept;
+
         void set_frame(ssgi_spec_frame const& frame) noexcept;
 
     private:
@@ -129,6 +141,9 @@ export namespace vulkan::pass {
         /// one flag per swapchain image: whether that image's two lobe outputs have had their first-use
         /// transition for this target generation
         std::vector<bool> seen_ = {};
+        /// the lobe's own reach, clamped where it is set (a fraction of the scene radius, and its ray count)
+        float radius_ = 0.5f;
+        uint32_t rays_ = 1;
         ssgi_spec_frame frame_ = {};
     };
 

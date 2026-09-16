@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.65.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.66.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -509,31 +509,23 @@ namespace vulkan {
         /// where the frame loop records it and the only fact about it the renderer still spells out.
         std::array<pass::frame_pass*, 1> deferred_stage = {&this->deferred};
         bool ssgi_on = false;
-        float ssgi_intensity = 0.7f; // scales the traced indirect against the IBL probe it overlaps
-        float ssgi_radius = 3.0f;    // ray length, view units
-        uint32_t ssgi_rays = 2;      // rays per pixel, per frame
-        uint32_t ssgi_steps = 6;     // depth samples per ray
         // The tracer's ray sequence has to change every frame: a fixed one would feed a temporal
-        // denoiser the same error in the same place every frame instead of an average.
+        // denoiser the same error in the same place every frame instead of an average. The COUNTER is the frame
+        // loop's (it paces the chain), and both tracing stages read the frame's copy of it
+        // (`frame_constants::gi_frame_index`) - one sequence, so the two cannot trace the same rays twice.
         uint32_t ssgi_frame = 0;
         // Trace the GI rays against the scene's acceleration structures instead of marching the depth
         // buffer ([render] ssgi_ray_tracing). Only meaningful with the tracer enabled and a device that
         // has ray queries AND a built top level structure - the push block's frame_info.y carries the
         // resolved answer, so the shader never has to know why it is marching instead.
         bool ssgi_ray_tracing = false;
-        // How much of the previous frame's accumulated indirect a GI ray re-emits at a hit: the loop
-        // gain of the multi-bounce approximation ([render] ssgi_bounce, see shaders/ssgi.comp's header).
-        // 0 (the default) leaves the estimator single-bounce, which is what every earlier measurement was
-        // taken with. The image that is fed back already carries ssgi_intensity, so the loop's gain is
-        // this value times that one, and the runtime refuses a gain above one for exactly that reason.
-        float ssgi_bounce = 0.0f;
         // Shade the surface a GI ray lands on from the geometry it hit, instead of sampling the screen's
         // direct-radiance image there ([render] ssgi_hit_shading). Off by default: on, a hit's answer
         // stops depending on what the frame happens to show - which is what lets a hit the camera cannot
         // see (off screen, or hidden) be answered correctly rather than approximated - at the price of the
-        // material and vertex fetches a shaded hit costs. The runtime publishes the acceleration
-        // structures' instance table into the tracer's push block to switch it on (see record_ssgi_pass):
-        // a zero address means "sample the screen", so the knob is also the A/B.
+        // material and vertex fetches a shaded hit costs. What switches it on is the instance table's address
+        // (`frame_constants::gi_instance_table`, which the frame loop publishes when this is true): a zero
+        // address means "sample the screen", so the knob is also the A/B.
         bool ssgi_hit_shading = false;
         // The glossy lobe ([render] ssgi_specular): a GGX-sampled reflection ray per pixel whose hit is
         // shaded from its geometry, so a reflection shows the room instead of the sky. It is a REPLACEMENT
@@ -542,17 +534,10 @@ namespace vulkan {
         // (see shaders/ssgi_spec.comp and shaders/ssgi_spatial.comp's ambient_removed_at). ON by default:
         // the objection that kept it off was its denoiser item, and the reflection now has an accumulation
         // of its own, reprojected from the point it found (see the L2.3 motion sections).
+        // Its REACH and its RAY COUNT are the pass's own parameters (`set_ssgi_specular` forwards), and they are
+        // deliberately not the shared diffuse reach: the marched path pins that one low (its resolution is
+        // radius / steps), so a reflection's reach would make its steps too coarse to find anything between them.
         bool ssgi_specular = true;
-        // ... and how far those rays reach ([render] ssgi_specular_radius), as a fraction of the scene
-        // radius. Its own reach rather than the shared `ssgi_radius`, which the MARCHED path pins low: that
-        // path's resolution is radius / ssgi_steps, so a reflection's reach would make its steps too coarse
-        // to find anything between them. Measured on Sponza, the lobe's effect is 39% of its potential at
-        // the marched path's 0.12 and 90% at 0.5, with the curve flat past it.
-        float ssgi_specular_radius = 0.5f;
-        // ... and how many of those rays per pixel ([render] ssgi_specular_rays). One is the feature's
-        // definition ("a glossy ray per pixel") and is what the cost was measured at; more is what buys a
-        // wide lobe's variance down, which is the denoiser problem this feature brings with it.
-        uint32_t ssgi_specular_rays = 1;
         // The furnace verification mode ([render] furnace, not wired to the config yet): the sun is turned
         // off and the environment becomes a constant level, so the correct frame is computable by hand.
         bool furnace = false;
@@ -694,7 +679,8 @@ namespace vulkan {
         // cell that holds a single RGB makes them byte-identical BY CONSTRUCTION. That is the L2.1
         // acceptance test: it has to fail before the SH-2 change and pass after (see
         // shaders/ssgi.comp's probe_radiance and docs/gi_hit_shading.md).
-        float gi_probe_gain = 1.0f;
+        // THE VALUE LIVES IN THE TRACER (`set_ssgi_probes` forwards to `ssgi_trace_pass::set_probe_gain`):
+        // the lane it lands in is the tracer's, and the cache's own validity is the probe pass's state.
         // Whether the grid holds anything at all, and the light it holds it for, are the PASS's own state now
         // (see gi_probe_pass::cache_valid): it is the pass's cache, so its invalidation is the pass's - and
         // the pass owns the light-change trigger, which is why the current direction rides in the push block.
@@ -2188,20 +2174,16 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief this frame's input for the SSGI tracer: the three facts the pass cannot derive
+         * @brief this frame's input for the SSGI tracer: the facts the pass cannot derive
          * @note `history_valid` is the DENOISER's per-image state, read off the runtime's flag because the
          *       temporal resolve still lives there; `specular_next` is the same predicate the lobe's own pass
          *       decides on, evaluated once so the two passes cannot disagree about who owes the hand-off
-         *       barrier; `probe_grid_first_use` is the per-generation flag the tracer's own barrier batch needs
+         *       barrier; `probe_grid_first_use` is the per-generation flag the tracer's own barrier batch needs;
+         *       `traced_oracle` is which of the two ray oracles this frame uses (the same predicate the lobe's
+         *       feature is granted on, and it decides three push lanes at once), and `probe_ready` says whether
+         *       the cache may be READ at all - active AND written, the second half being the probe pass's state
          */
         [[nodiscard]] pass::ssgi_trace_frame make_ssgi_trace_frame() const noexcept;
-        /**
-         * @brief resolve the SSGI tracer: its twelve declared barrier images, the two shared sets, its pipeline
-         *        and the push block the renderer composes
-         * @return false when the frame has no GI target, which skips the pass WITHOUT recording anything - the
-         *         early return this function's body used to make for itself
-         */
-        [[nodiscard]] bool resolve_ssgi_trace(pass::resolved_io& out);
 
         /**
          * @ingroup vulkan_runtime
@@ -2310,7 +2292,8 @@ namespace vulkan {
          * @param rate how much of a cell one frame's observation replaces, clamped to [0, 1]
          * @param rounds propagation rounds per frame, clamped to [0, 4]
          * @param gain how much of the grid's answer is added on top of the environment probe, clamped
-         *        to [0, 4]
+         *        to [-4, 4]: a NEGATIVE value is the direction A/B (the same cell, looked up along the
+         *        opposite side of the ray), which is why the clamp is symmetric
          * @note a CACHE, not a lighting model: it exists so that a ray which leaves the frame, or hits
          *       something hidden behind a nearer surface, can be answered from a grid anchored to the
          *       scene - the environment probe it replaces there is the sky at infinity, and it is the
@@ -2366,18 +2349,11 @@ namespace vulkan {
         /**
          * @ingroup vulkan_runtime
          * @brief this frame's input for the glossy lobe: the image count its per-image state is sized from
-         * @note the pass needs almost nothing from the frame - its push block is the renderer's and arrives
-         *       through `resolved_io::push`, its images through the declaration - so this is one number, and the
-         *       struct exists to keep the boundary named rather than to carry data
+         * @note the pass needs almost nothing from the frame - its push block is the PASS's now (it composes it
+         *       from the frame constants and its own reach), its images arrive through the declaration - so this
+         *       is one number, and the struct exists to keep the boundary named rather than to carry data
          */
         [[nodiscard]] pass::ssgi_spec_frame make_ssgi_spec_frame() const noexcept;
-        /**
-         * @brief resolve the glossy lobe: its three declared images, the two shared sets, its pipeline and the
-         *        push block the renderer composes
-         * @return false when the frame cannot shade a hit (no instance table) or has no GI trace image, which
-         *         skips the pass WITHOUT recording anything - the same early returns the moved body made
-         */
-        [[nodiscard]] bool resolve_ssgi_spec(pass::resolved_io& out);
         /**
          * @brief this frame's input for the diffuse temporal resolve
          * @param history_valid the flag AS READ BEFORE the stage, so the reflection's resolve (which the pass

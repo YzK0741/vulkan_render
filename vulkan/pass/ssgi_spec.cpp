@@ -6,9 +6,11 @@
 
 module;
 
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
-#include <cstring>
+#include <glm/glm.hpp>
 #include <span>
 #include <string>
 #include <vector>
@@ -66,6 +68,14 @@ namespace vulkan::pass {
         this->seen_.assign(this->seen_.size(), false);
     }
 
+    void ssgi_spec_pass::set_reach(float const radius, uint32_t const rays) noexcept {
+        // The clamps are the renderer's old ones, moved here with the values: the reach is a fraction of the scene
+        // radius (0.001 rather than 0 so a rounded-away value still traces), and one to eight rays per pixel is
+        // what the shader's loop and the feature's own definition allow.
+        this->radius_ = std::clamp(radius, 0.001f, 8.0f);
+        this->rays_ = std::clamp(rays, 1u, 8u);
+    }
+
     void ssgi_spec_pass::set_frame(ssgi_spec_frame const& frame) noexcept {
         this->frame_ = frame;
     }
@@ -111,16 +121,15 @@ namespace vulkan::pass {
     }
 
     void ssgi_spec_pass::record(resolved_io const& io) {
-        if (!this->pipeline_.has_value() || io.barrier_images.size() < render_resource::ssgi_spec_barriers.size() || io.push.size() < sizeof(push_constants) ||
-            io.extent.width == 0 || io.extent.height == 0 || io.pipeline_layout == VK_NULL_HANDLE || io.shared.scene == VK_NULL_HANDLE || io.shared.gbuffer == VK_NULL_HANDLE) {
-            return; // the runner resolves all of this or skips the pass (see runtime::resolve_ssgi_spec)
+        if (!this->pipeline_.has_value() || io.barrier_images.size() < render_resource::ssgi_spec_barriers.size() || io.extent.width == 0 || io.extent.height == 0 ||
+            io.pipeline_layout == VK_NULL_HANDLE || io.shared.scene == VK_NULL_HANDLE || io.shared.gbuffer == VK_NULL_HANDLE) {
+            return; // the runner resolves all of this or skips the pass (the declaration's own gates are the table's)
         }
-        // The push's `table` lane is the switch: a zero means a hit cannot be shaded, and the pass does nothing
-        // rather than replacing the environment's answer with a worse one. The host's resolver already refuses
-        // such a frame; this is the pass being unable to proceed without it even if it is handed one.
-        push_constants push = {};
-        std::memcpy(&push, io.push.data(), sizeof(push));
-        if (push.table.z == 0.0f && push.table.w == 0.0f) {
+        // THE INSTANCE TABLE IS THE SWITCH: with none, a hit cannot be shaded, and the pass does nothing rather
+        // than replacing the environment's answer with a worse one. The renderer's feature registry already
+        // refuses such a frame (`ssgi_specular`); this is the pass being unable to proceed without it even if it
+        // is handed one - the same defensive pair the tracer's frame carries.
+        if (io.constants.gi_instance_table == 0u) {
             return;
         }
 
@@ -161,6 +170,23 @@ namespace vulkan::pass {
         // set, whose binding 6 is the raw trace).
         std::array<VkDescriptorSet, 2> const sets = {io.shared.scene, io.shared.gbuffer};
         vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, io.pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+
+        // THE PUSH BLOCK, from its owners: the camera, the scene radius (the reach is a fraction of it), the
+        // instance table's address and the ray sequence are the FRAME's (`io.constants`); the reach and the ray
+        // count are this PASS's. The address goes into two float lanes because a push constant is raw bytes and
+        // half an address survives that trip exactly - the same trick the tracer's `proj_terms` uses.
+        float const scene_radius = io.constants.scene_radius;
+        float const table_low = std::bit_cast<float>(static_cast<uint32_t>(io.constants.gi_instance_table & 0xFFFFFFFFu));
+        float const table_high = std::bit_cast<float>(static_cast<uint32_t>(io.constants.gi_instance_table >> 32u));
+        push_constants push = {};
+        push.inv_view_proj = io.constants.inv_view_proj;
+        // The ray length is the lobe's OWN reach, and z is the self-intersection bias as an explicit WORLD length
+        // rather than a fraction of x, so that raising the reach does not also lift every ray's origin further off
+        // its surface. w is the ray sequence the shader seeds its sampling with.
+        push.params = glm::vec4(this->radius_ * scene_radius, static_cast<float>(this->rays_), scene_radius * 0.0002f,
+                                static_cast<float>(io.constants.gi_frame_index));
+        push.table = glm::vec4(0.0f, 0.0f, table_low, table_high);
+        static_assert(sizeof(push) <= pass::max_push_bytes, "the lobe's push block must fit the guaranteed minimum");
         vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
         vkCmdDispatch(io.cmd, (io.extent.width + group_size - 1u) / group_size, (io.extent.height + group_size - 1u) / group_size, 1);
 
