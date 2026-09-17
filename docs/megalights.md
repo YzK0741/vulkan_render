@@ -37,9 +37,9 @@ anywhere in the translation unit - even in a function compute never calls - fail
 
 | pass | what it does | the shape it copies |
 |---|---|---|
-| `megalights_trace` (compute, half res) | the estimator above; writes radiance + `a` = the fraction of samples whose ray was unblocked | `ssgi_trace` (two shared sets, own outputs, `barrier_images`, 128-byte push ceiling) |
-| `megalights_temporal` (compute, half res) | reproject with the velocity target, reject on depth (0.03 relative, widened at grazing), accumulate a RUNNING MEAN with a per-pixel frame count capped at 12, clamp into a neighbourhood stats box | `ssgi_temporal` (its own set with per-image views) |
-| `megalights_spatial` (compute, half res) | variance-gated filter (weight `exp2(-|dLum| / max(stdDev, eps))`), the gate UE applies before it filters at all | `ssgi_spatial` |
+| `megalights_trace` (compute, half res) | the estimator above; writes radiance + `a` = the fraction of samples whose ray was unblocked | the two-shared-sets + own-outputs + `barrier_images` compute shape (128-byte push ceiling) |
+| `megalights_temporal` (compute, half res) | reproject with the velocity target, reject on depth (0.03 relative, widened at grazing), accumulate a RUNNING MEAN with a per-pixel frame count capped at 12, clamp into a neighbourhood stats box | a temporal resolve with its own set, written per swapchain image |
+| `megalights_spatial` (compute, half res) | variance-gated filter (weight `exp2(-|dLum| / max(stdDev, eps))`), the gate UE applies before it filters at all | the 5x5 edge-stopped filter shape, gated on variance here |
 | the final add | `deferred.frag` samples the half-resolution result with its own bilateral upsample and adds it to the same term it already adds | `deferred.frag`'s existing additive write into `scene_color` (no new pipeline, no new pass) |
 
 **Resources** (all half resolution, per swapchain image, `RGBA16F`): `ml_trace` (raw estimate),
@@ -259,10 +259,10 @@ filter, so it needs the same signal/noise measurement this document has been usi
 declares a SHARED set and its own bindings at index 1 (`shared_sets = {{family 1}}` with `own_set = 1`) makes
 the frame loop never complete - the log fills with `GPU timing marks recorded out of order (mark 13 at index
 8)` and no frame is ever presented, while the same pass recorded nothing at all (its `record` was never
-entered). The fix is `ssgi_temporal_io`'s proven arrangement - **no shared set at all, five own bindings with
-the depth and the velocity among them, `own_set = 0`** - after which the renderer runs, the pass's pipeline is
-created and its declaration resolves (`resource table: verified 9 declaration handle(s) for pass
-'megalights_temporal'`).
+entered). The fix is the **no-shared-set arrangement - no shared set at all, five own bindings with the depth
+and the velocity among them, `own_set = 0`** - which the removed GI chain's temporal resolve had also used.
+After it the renderer runs, the pass's pipeline is created and its declaration resolves (`resource table:
+verified 9 declaration handle(s) for pass 'megalights_temporal'`).
 
 ONE MORE DEFECT FOUND ON THE WAY, worth recording because it is invisible until it is looked for: the shader
 had BOTH `velocity` and `ml_resolved` at set 0 binding 4, so `vkCreateComputePipelines` failed with a
@@ -335,9 +335,9 @@ accumulation being live, and the motion measurement that would show its value.
   `test_render_resources`' schema-size and declaration checks, whose hand-synced counts moved with it),
   and a gate scenario is validation clean with the same hash as before the change.
 
-**Next.** The pass class itself (`vulkan/pass/megalights_trace`, the shape of `ssgi_trace` with the
-`ml_trace` image declared in the shared G-buffer set rather than an own set - two new bindings there, one
-to write and one to sample), its construction and gate in `vulkan.render_start_demo`, the
+**Next.** The pass class itself (`vulkan/pass/megalights_trace`, the shape a traced compute pass has here -
+two shared sets, its own output at the shared G-buffer set rather than an own set, so two new bindings there,
+one to write and one to sample), its construction and gate in `vulkan.render_start_demo`, the
 `punctual_replaced` lane that stops `deferred.frag` adding the lights raster-style, and the composite that
 adds the half-resolution result. Then `[render] megalights*` keys and the first measurement - the raw
 estimate's noise against the unshadowed baseline, which is stage 2's acceptance.

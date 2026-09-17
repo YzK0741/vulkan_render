@@ -1,5 +1,9 @@
 # Splitting `vulkan.runtime`: the map, the boundaries, and the acceptance
 
+> **HISTORICAL (2026-09).** Written before the split, and the map's extractions 1 and 7 (the world-space
+> probe cache and the traced-GI chain) were removed afterwards - see the `gi:` commits. The extraction
+> discipline it describes is what the surviving passes follow.
+
 This is the plan for cutting the renderer's monolith into submodules so that the dependencies between its parts
 become declared rather than positional. It is written before any code moves, because the object being cut is
 3187 lines of interface and 6523 lines of implementation, and the interesting part of that is not its size.

@@ -1,5 +1,10 @@
 # Level 2 handoff: state, plan, traps
 
+> **HISTORICAL (2026-09).** The work this note hands over - the traced SSGI chain and the world-space
+> probe cache, with their passes, shaders, images, config keys and GUI - was later REMOVED (see the
+> `gi:` commits). The note is kept because the working discipline it records (measure before judging,
+> state the trap, one change per commit, re-baseline deliberately) is still how this repository works.
+
 This is a handover note for an agent continuing the GI work in this repository. It assumes no memory of the
 session that produced it. Everything here is either a verified number from that session or a pointer into the
 repository; where something is unverified it says so.

@@ -135,264 +135,20 @@ clustered_lights = true
 # 1..2 to read (that distance dependence is inherent to screen-space AO, not a tuning mistake), and
 # `ssao_samples` trades cost for smoothness (1..16, the shader maximum). `ssao = false` (or an
 # intensity of 0) makes the term return exactly 1.0, so the frame is bit for bit the pre-M6 frame.
-# ON A TRACED GI FRAME THIS KNOB DOES NOTHING, and that is a fix rather than an accident: the traced chain
-# answers for the whole of that ambient (its rays fall back to the same probe off screen) and the lighting
-# stage does not add it at all there, so scaling it here only left `ambient * (ssao - 1)` in the frame - the
-# ambient darkened twice. It measured -1.90 of mean green with 13.7% of its pixels off by more than 4/255 on
-# the reference scene, and the lighting stage now skips the term entirely whenever the traced path is
-# answering for the ambient, which makes an SSAO-on and an SSAO-off traced frame BIT-IDENTICAL. Where the
-# marched chain runs nothing is replaced, so SSAO keeps working there, and the GI-off frame is untouched
-# either way. The one thing it costs: a traced frame WITHOUT the glossy lobe keeps no SSAO on its specular
-# ambient either (that term is only replaced when the lobe runs) - which is the alternative to leaving an
-# SSAO-darkened term in a frame
-# the chain cannot subtract back. See docs/gi_hit_shading.md's L2.3 SSAO section.
+# It scales the IBL ambient (diffuse and specular) and never the direct sun, and it is applied to the
+# material's baked AO rather than replacing it.
 ssao = true
 ssao_radius = 0.5
 ssao_intensity = 1.0
 ssao_samples = 8
-
-# global illumination (the `ssgi*` keys - it began as a screen-space chain and still is one whenever
-# `ssgi_ray_tracing` is off), ON BY DEFAULT: with `ssgi_ray_tracing` (also on) this IS the engine's
-# global illumination - one bounce of diffuse indirect, shaded at the hit, denoised over frames and then
-# over the neighbourhood. `ssgi.comp` traces that bounce at HALF resolution - each pixel shoots a few
-# cosine-weighted rays and averages the direct radiance they hit, marching the G-buffer depth or, with
-# `ssgi_ray_tracing`, querying the scene's acceleration structures -
-# `ssgi_temporal.comp` then accumulates that trace over frames (reprojected
-# with the motion vectors, depth-guarded and neighbourhood-clamped), because two rays per pixel is white
-# noise with the right average, and `ssgi_spatial.comp` finally runs a joint-bilateral filter (5x5,
-# stopped at depth and normal edges) over the accumulation to remove the grain that does not move, which
-# is the part averaging frames cannot touch. The composite then upsamples that half-resolution result to
-# the screen, and it does so with a joint-bilateral gather when `ssgi_upsample = true`: a plain bilinear
-# fetch mixes in the neighbouring texels by position alone, which at a silhouette means mixing two
-# surfaces (or a surface with the background) and shows up as a dark rim on the geometry side and a halo
-# on the sky. Setting it to false restores that bilinear fetch, which is what makes the upsample
-# measurable - it is not a state to ship.
-# WHERE THE RESULT GOES DEPENDS ON THE HIT ORACLE, and `ssgi_intensity` moves with it - read both before
-# changing either. On the MARCHED path the result is ADDED to the environment probe: a ray that leaves the
-# frame hits nothing, so the probe stays the off-screen fallback and the intensity reconciles two
-# overlapping terms (0.7 there is a starting point, not a physical value). On the TRACED path the lighting
-# stage stops adding its own diffuse ambient altogether and the traced estimate REPLACES it - which is why
-# the default intensity is 1.0, the value that means "use the traced estimate"; 0.7 would leave the ambient
-# 30% short, a systematic darkening of every frame rather than a dial. (SSAO stops scaling the diffuse
-# ambient on that path too, because the rays answer the occlusion question with real geometry.)
-# `ssgi_radius` is a FRACTION of the scene radius, so one value means the
-# same thing on a 1.6-unit model and on Sponza's 18.5; it stays at 0.12 rather than following the traced
-# path's reach because the MARCHED fallback's resolution is radius / `ssgi_steps`, so a ray length that
-# suits the traced oracle would make the fallback step over the detail between two samples.
-# `ssgi_rays` x `ssgi_steps` is the per-frame cost;
-# the temporal resolve is what turns a small number of rays into a smooth image, so raising `ssgi_rays`
-# before the ray budget is spent is usually the wrong lever. `ssgi_spatial_sigma` is the filter's width
-# in GI texels (0 = the filter is a pass-through, i.e. the temporal-only result). `ssgi = false` makes
-# the frame bit for bit the pre-GI frame (the composite's GI weight is 0 and no GI pass is recorded) -
-# the gate's non-GI scenarios pin exactly that.
-# THE OVERLAY HAS TWO OF THESE LIVE, and only two: an `ssgi` checkbox (the chain on/off) and an `ssgi
-# rays` slider (1..16), both mirrored into the runtime every frame, so a noisy interior can be dealt with
-# without editing this file and restarting. `ssgi_intensity` deliberately has NO widget: on the traced path
-# it is not a strength dial - the lighting stage does not add the ambient the estimate stands in for, so
-# 1.0 means "use the estimate" and a lower value darkens the frame rather than fading the noise. Everything
-# else here (intensity, radius, steps, sigma, upsample, the traced keys) is read once at startup.
-# scene's acceleration structures. Same estimator and same rays - only the hit oracle changes - but it
-# also sees surfaces the depth buffer cannot resolve, its hits are exact, and (this is the part that
-# makes it the default rather than a variant) it is what turns the chain from an ADDITION to the probe
-# into a REPLACEMENT of the lighting stage's ambient, i.e. it is what makes `ssgi_intensity = 1.0` mean a
-# complete answer. On Sponza it roughly doubles the GI pass (0.33 ms marched -> 0.70 ms traced at
-# 1080x960) plus the per-frame top level structure work (0.09-0.14 ms). Granted only on a device
-# with ray queries and a built acceleration structure, so the key is safe in a shared config file: where it
-# cannot be granted the frame falls back to the marched path, which is why the marched path is still
-# maintained - and why a machine that ends up on it wants `ssgi_intensity` around 0.7 (see the note above).
-# hit - the multi-bounce (Lumen-style) approximation. At 0 a ray carries direct light only, so a corner
-# that no light reaches directly stays black; 0.6 picks up the second and third bounce, and the rest
-# decays geometrically. It is a feedback loop, so the effective gain is this value TIMES ssgi_intensity,
-# because the image that is fed back already carries the intensity: the stable region is a gain at or
-# below 1 with an intensity at or below 1, and the runtime clamps the gain there. Raising either one
-# inside that region fills an interior in; crossing it makes the frame brighter every frame, which is
-# why the knob is measurable (a static camera whose mean luminance must settle) rather than trusted.
-# so a cell is scene-relative), each holding the SH-2 radiance of its surroundings: four coefficients per
-# channel, so a cell answers for a DIRECTION - a bright window to its left and a dark wall to its right no
-# longer average away. A cell fills itself by TRACING ITS OWN RAYS (four per frame, uniform over the sphere
-# because a cell in empty space has no normal, shaded from the geometry they hit through the same hit
-# shading the tracer uses, the sky when they hit nothing), so what it holds is a fact about the scene and
-# not about the frame the camera happened to show - the pass declares no camera at all. Six axis neighbours
-# then blend into it, each gated by a BIDIRECTIONAL test against the surface nearest each cell: a pair that
-# cannot see each other drops out of the average instead of being redistributed, which is what keeps the
-# blend from having unity DC gain (the version that did add the same fraction of every region's brightness -
-# 0.81% of the darkest third, 0.75% of the middle, 0.06% of the brightest - is why that gate exists).
-# It exists for the one thing a screen-space chain cannot do: a GI ray that leaves the frame, or that
-# hits a surface hidden behind a nearer one, has no cached radiance to read - and the environment probe
-# it falls back to is the SKY at infinity, the same value in the middle of a room as on the roof. The
-# cache is anchored to the world, so it knows where that ray landed, and it survives the camera turning
-# away instead of forgetting what left the frame. It is a cache and not a lighting model: a cell is
-# coarse (~1.2 units on Sponza), its visibility test has one surface per cell (a wall neither cell
-# recorded can still leak), a cell straddling two surfaces mixes them, and a moving object's light
-# stays behind in the grid after it moves. Off is a no-op: the tracer does not even fetch it.
-# cache that has to survive the camera turning away - and it is also the loop gain of the grid's own
-# cycle (tracer -> resolve -> grid -> tracer), so it is the number that decides whether that settles.
-# the frame could see; that is also how the propagation's contribution is measured).
-# still runs and is simply never sampled (the A/B that measures what the grid actually adds).
-# The SIGN of this value is a second A/B, and it asks a different question: is the cache DIRECTIONAL? A
-# negative value means the same gain with the cell looked up along the OPPOSITE direction of the ray - the
-# same cell, the other side - and nothing else changes, because the far-field environment term is still
-# sampled along the ray itself. So the two captures differ ONLY through the cache, and while a cell holds
-# one RGB they are byte-identical BY CONSTRUCTION (measured: same SHA256 at +1 and at -1). That is what
-# makes this the acceptance test for the directional-probe step: it fails today and has to pass once a
-# cell carries a direction.
-#
-# WHAT THE CACHE'S CONTRIBUTION IS MADE OF, MEASURED (Sponza interior, traced GI, gain 1 against gain 0,
-# rate 0.08, rounds 2, frames 180, in a 4x4 spatial table of the difference as a percentage of each tile's
-# own brightness): -0.03% to -0.22% in the sky-facing tiles and -1.5% to -7.5% in the interior ones. The
-# effect is ORDERED BY THE SCENE, not by the frame's brightness, which is what a correct cache looks like:
-# it replaces the sky estimate where the surface faces interior geometry and leaves it alone where the
-# surface really does see the sky.
-# (The tertile tables this file used to carry said "ambient-shaped" about an earlier version that ADDED to
-# the far-field probe instead of replacing it. A brightness third mixes sky pixels with interior ones, so it
-# cannot show a replacement's structure; a spatial table can, which is why the instrument changed. Those
-# numbers were right and the lens was wrong.)
-# WHAT THE DIRECTIONAL PART IS WORTH, measured with the gain's sign (below): the two captures isolate the
-# cache's directional content exactly, and they were byte-identical (same SHA256) before the SH-2 change and
-# differ on 22.7% of pixels after it, by up to 14 of 255, in the same 180-frame capture.
-# and textures, instead of reading the screen's direct-radiance image at the pixel it reprojects to. The
-# screen path has
-# two structural limits that both come from that reprojection: a hit the camera does not show (off screen,
-# or hidden behind a nearer surface) has no pixel to read and falls back to a probe - which approximates
-# the light where the RAY STARTED, not radiance arriving from where it landed - and every sample moves with
-# the camera, so a surface's indirect light changes when the view does. Shading the hit removes both: the
-# answer depends on the hit surface and the lights alone, which is what makes the indirect a fact about the
-# scene rather than about the frame. It costs the vertex, index and texture fetches a
-# shaded hit makes (and a shadow ray per hit for the sun, which replaces the cascade lookup) - that cost is
-# why the whole-chain frame time roughly doubles on the reference scene, measured and recorded in
-# docs/gi_hit_shading.md - and it needs the acceleration structures and the traced GI path: with the marched
-# path, or on a device without ray queries, it does nothing. Off is the previous behaviour exactly: hits are
-# read from the screen.
-# ambient, instead of the lighting stage's split-sum lookup of the prefiltered environment. Until this
-# existed every indirect term in the engine was diffuse, and the specular one knew nothing but the sky: a
-# metal panel inside a room reflected the sky, and so did a polished floor. `shaders/ssgi_spec.comp` samples
-# a half-vector from the GGX lobe the environment chain is prefiltered with, traces along the reflection,
-# and shades what it lands on from that hit's own geometry (so this needs `ssgi_hit_shading`), exactly as
-# the diffuse tracer does for its own hits.
-# IT REPLACES THE LIGHTING STAGE'S TERM, IT DOES NOT ADD TO IT: wherever a ray finds no geometry the
-# correction this pass writes is EXACTLY zero - `(ibl_specular * F) * ao` minus itself, the same expression
-# twice - and it is taken off at the pass's own texel, before the joint-bilateral filter sees either side.
-# Measured, on an isolated model with a ray length short enough that nothing is reachable: the feature on and
-# off produce the SAME SHA256, 0 pixels differing, with the filter in the loop and with it bypassed. That is a
-# bit-exact invariant, not a tolerance. The first version of this step subtracted the lighting stage's term in
-# the spatial filter instead - the half-resolution pass, which removes a centre-pixel value from a filtered
-# one, and which is also where the DIFFUSE ambient used to be removed before that moved to the lighting stage
-# (see the ssgi note above): the same control read mean +0.0255 with 4.4% of pixels beyond 4/255 and a worst
-# pixel of 103,
-# and on Sponza's short-ray test it read 12.45% of pixels against 4.78% now - the old number was partly the
-# artifact and partly it CANCELLING the residual from rays that found touching geometry.
-# MEASURED EFFECT, Sponza interior, 120 frames, the traced-hit-shading config, A/B on this key alone:
-# -1.3264 of mean green (-2.4%), and the 4x4 table is ordered by the SCENE rather than flat - the interior
-# tiles lose 7.1% to 16.0% while the sky-facing ones move 0.1-0.3%, in the same shape the L2.1 probe-cache
-# tables have. Isolated to the specular channel alone (the diffuse estimate zeroed, so nothing else can
-# move): -1.1266, -20% to -33% in the interior tiles against -0.4% where the view is sky. That is what a
-# correct local reflection looks like: the sky's contribution to a dark interior is a large share of that
-# interior's brightness, and the interior's own reflection is darker than the sky.
-# AND THE SAME A/B ON THE MATERIAL SWEEP, which is where the effect is visible at all (Sponza's roughness
-# channel averages 217/255 - roughened stone from end to end - so it can only show a 2% correction):
-# smooth metal +10.33, rough metal +7.61, smooth dielectric +1.23, rough dielectric +0.13, i.e. the ordering
-# the BRDF predicts rather than a scene average. Watch the units of `ssgi_radius` on a compact scene: it is a
-# fraction of the SCENE radius, and the material sweep's own radius is 6.99 world units, so the default 0.12
-# reaches 0.84 there (measured effect +0.47) against 3.50 at 0.5 (+0.89) and 6.99 at 1.0 (+1.06).
-# THE ONE THING THIS COSTS, measured: the trace image stops being a pure radiance (it is a radiance plus this
-# correction), so the multi-bounce feedback would re-emit the correction at a hit. That is safe HERE and only
-# here, for a structural reason: the lobe requires `ssgi_hit_shading`, and with hit shading on every hit is
-# answered by the hit's own shading before the feedback is reached - measured, `ssgi_bounce` 0 against 0.5 is a
-# byte-exact no-op on the material sweep. The diffuse term cannot use THIS mechanism (its bounce is live
-# whenever hit shading is off) and does not need one: it is removed where it is ADDED - the lighting stage
-# simply does not add it on a frame the traced chain answers for (shaders/shading.glsl's
-# `diffuse_ambient_scale`) - which is exact rather than approximate, and it is what the measured dark-region
-# flicker forced: removing it one pass later at half resolution left a full-resolution residual that the TAA
-# jitter moved every frame (0.81/255 per frame over the dark smooth surfaces on Sponza's interior, against
-# 0.07 with GI off - and two thirds of it survived with the chain's radiance estimate forced to exactly zero,
-# so it was never ray noise; 0.56 and 0.03 now).
-# THE RAY ORIGIN AND THE SHADOW RAY'S BIAS ARE BOTH EXPLICIT WORLD LENGTHS NOW, in every traced lobe this
-# file's keys can reach, and the reason is a measurement rather than tidiness: both used to be a fraction of
-# the RAY LENGTH, which made them scale with a knob that means REACH - so the same config meant a different
-# distance on every scene (0.017 world units on the metal/roughness sweep and 0.045 inside Sponza at the same
-# `ssgi_radius = 0.12`, whose scene radius is 18.548). Removing it moved 35.57% of the traced reference
-# scenario's pixels and made the traced GI 0.27 of mean green DARKER - it had been over-bright by falling back
-# to the environment probe whenever a ray started past the geometry beside it, and that a sub-decimetre change
-# in where rays START is a frame-level change is itself worth knowing. The MARCHED path keeps the fraction of
-# the ray length deliberately, where it is the step size's own scale rather than a scene's. (See `rt_shadows`'
-# two mechanisms below for the limits that are still there, and docs/gi_hit_shading.md's L2.3 origin section.)
-# ITS HISTORY IS ITS OWN NOW, and it is CAPPED BY ROUGHNESS. The reflection gets a second temporal resolve of
-# its own (`shaders/ssgi_temporal.comp`'s mode 1), reprojected from the point the ray FOUND rather than from the
-# surface it is painted on - which is the mechanism that matters, because a reflecting surface is usually static
-# while the reflected image slides across it. A smooth pixel may keep only about two frames of that history,
-# loosening with roughness in Lumen's shape (`lerp(2, Max, saturate(roughness / 0.05))`,
-# LumenReflectionDenoiserTemporal.usf:413), and the cap is a no-op above the knee by a BRANCH rather than by
-# arithmetic, so a rough surface's frame stays bit-identical. Measured on the material sweep's 20-degree camera
-# orbit against the same procedure run on the build before any of it (a difference of differences,
-# `scripts/measure/motion_dd.py`): the reflection's own motion loss went 0.4029 -> 0.3068 and its worst 4x4 tile
-# 1.942 -> 0.848, with the change confined to the SMOOTH columns of the sweep - the rough ones came out
-# bit-identical, which is the cap being selective rather than the frame moving as a whole. The LOBE-OFF arms are
-# back to their uncapped values (0.6131), and that is the honest half of the story: the cap used to sit on the
-# shared resolve and shorten the DIFFUSE signal on those same pixels, and now it does not. See
-# docs/gi_hit_shading.md's L2.3 section for the three builds side by side, the traps, and what is still open.
-# REQUIREMENTS: the traced GI path, `ssgi_hit_shading` and the acceleration structures' instance table (a
-# hit cannot be shaded without it). Where any is missing the pass is not even RECORDED, which is what makes
-# `ssgi_specular = false` byte-identical by construction rather than by arithmetic (verified: the capture
-# harness's 11 scenarios x 2, 0 changed, `metal_rough_glossy` among them since L2.3; 12 scenarios since
-# `default_gi` was added for the default flip).
-# ON BY DEFAULT since the reflection got an accumulation of its own: L2.3's motion work closed the denoiser
-# item that had kept the lobe off, and its default-on case was then measured on the stock path (the effect is
-# +1.50 of mean green over 8.67% of the material sweep, and the shipped single ray's per-pixel estimate
-# differs from an eight-ray convergence on 7.37% of pixels - a BIAS, not flicker, since TAA does not move
-# either number). The scenarios that need the frame from before the lobe existed pin it false.
-# the shared `ssgi_radius`, and the reason is that the two are different questions: a diffuse bounce's reach
-# is "how far indirect light travels before it is absorbed", while a mirror shows the whole room, and
-# `ssgi_radius` is pinned low by the MARCHED path, whose resolution is radius / ssgi_steps (at 0.5 on Sponza
-# a 6-step march would step 1.55 world units and miss the detail between them).
-# MEASURED on the reference scene, the lobe's effect against its own reach, everything else identical:
-#   reach 0.12 -> -0.907   (the marched path's default, i.e. the lobe realized 39% of the signal there)
-#   reach 0.50 -> -2.126   (2.3x, for +0.94 ms on the GPU timings' `gi` interval: 1.28 -> 2.22 ms)
-#   reach 2.00 -> -2.350   (and NO further cost: 2.21 ms - a ray that reaches the geometry it can reach
-#                           stops traversing, which is why the curve is flat in cost as well as in effect)
-# 0.5 is that knee, so it is the default. Below the knee the reflection falls back to the sky instead of the
-# room; above it there is nothing left to find. The value is a fraction of the scene radius, so it means the
-# same thing on a compact model (0.5 of 6.995 = 3.5 world units) as on Sponza (0.5 of 18.548 = 9.3).
-# cost was measured at. The hit is a POINT sample of a cone whose width is the material's roughness, so this
-# is the knob that buys a wide lobe's variance down - and the measurement says one ray is already enough
-# after the denoiser, which is the useful half of the answer: on Sponza, 1 ray against 4 differs by +0.0028
-# of mean green (0.60% of pixels beyond 1/255, 0.05% beyond 4) while the feature's own effect is -1.39, i.e.
-# four times the cost buys 0.2% of the signal. Cost, same scene, the GPU timings' `gi` interval (which
-# carries the tracer, this pass and both denoisers): 1.27 ms with the feature off, 1.40 ms at one ray and
-# 2.08 ms at four, so roughly +0.13 ms for the first and +0.23 ms for each further ray at 1080x960.
-# furnace: a VERIFICATION mode, not a look. The sun is turned off and the environment becomes a constant
-# level, which makes the correct frame computable by hand: a diffuse surface''s outgoing radiance is exactly
-# albedo * L, and a bounce has nothing to add because the environment already is the light. So the frame must
-# not change when the GI chain is switched on - and if it does, the excess is an energy error rather than a
-# matter of taste between two of this project''s own estimators. It exists because every other reference
-# available here shares a bias with the model it would be judging. Off by default, and off is byte-exact.
-# MEASURED, and its premise is narrower than it first looks: the identity holds when the incident
-# radiance is L from EVERY direction, which is true of a convex object and false inside a building - a
-# ray that lands on a wall comes back with the wall's radiance, albedo_wall * L, not L. So on a convex
-# scene the mode is an exact acceptance test (measured: GI-on and GI-off agree to -0.0001 of mean
-# brightness, 122 of 1036800 pixels off by one 8-bit step), while in the Sponza interior the traced
-# frame is legitimately darker by the hit population (measured GI-on 125.9436 against GI-off 134.7686,
-# -6.5%) - that is the occlusion-corrected ambient the traced chain exists to produce, not an energy
-# error. `ssgi_radius = 0` isolates the chain's own arithmetic from the scene: every ray then misses, so
-# the chain must be the identity (measured: 2.68% of pixels off by one 8-bit step, max 1).
-# The mode's first real finding was a bug it caught, now fixed: the traced diffuse estimate was missing
-# the (1 - metallic) the lighting stage's ambient carries, so a metallic surface was granted a diffuse
-# indirect the lighting stage never adds (measured +1.75 of mean brightness at ssgi_radius 0, and
-# +1.4005 on a convex metallic scene, which now reads -0.0001).
+# furnace: VERIFICATION mode, not a look. The sun is turned off and the environment becomes a constant
+# level L, which makes the correct frame computable by hand: a diffuse surface's outgoing radiance is
+# then exactly albedo * L. On a convex object that identity is an exact acceptance test (measured: 122
+# of 1036800 pixels off by one 8-bit step). Its premise is narrower than it looks - the incident
+# radiance has to be L from EVERY direction, which is false inside a building (a ray that lands on a
+# wall comes back with the wall's radiance, not L) - so its acceptance is an exactness test on a scene
+# whose premise holds, rather than a general reference. Off by default, and off is byte-exact.
 furnace = false
-# MEASURED, against a CONVERGED SHADED ESTIMATOR (16 rays per pixel, the knob's limit, over 600 frames of
-# a static camera, accumulated by the temporal resolve - the same instrument as the tertile tables, now
-# per pixel instead of per region): a 2-ray frame of the shaded path differs from it by MAE 0.42 / RMSE 0.76
-# (green channel, 8-bit), while a 2-ray frame of the SCREEN path differs from it by MAE 1.55 / RMSE 3.04 -
-# four times the RMSE, and its worst pixel is off by 46 against the shaded path's 14.
-# READ THAT CAREFULLY, because it is not the ground-truth comparison it looks like: the reference is the
-# shaded estimator itself, so "the shaded path is closer to the shaded estimator" is close to a tautology.
-# What the numbers do establish is a split. The shaded path's 0.42 is its own NOISE (how far a 2-ray frame
-# is from its own converged limit - small, so the shading is stable and the denoiser handles it), and the
-# screen path's 1.55 is a MODEL difference (sampling the screen's direct radiance and falling back to a
-# probe is answering a different question, not a noisier version of the same one). Which of the two models
-# is closer to the TRUTH still needs a reference that is neither of them - a brute-force or path-traced
-# answer - and that is the open half of this step rather than something these numbers settle.
-
 # rt_shadows: ray-traced sun shadows. One ray per pixel against the scene's acceleration structures,
 # which is what makes contact shadows, cascade seams and the resolution limit of a shadow map go away -
 # and what removes the "all or nothing" bias tuning a depth map needs. It is granted only on a device
@@ -417,12 +173,6 @@ furnace = false
 # ray (an inline ray query has no any-hit shader to run the material's discard) unless `rt_mask_bake` is on,
 # and a skinned or morphed mesh casts its BIND POSE (the deformation happens in the vertex shader and never
 # reaches the memory a build reads) unless `rt_skin_bake` is on.
-# NOTE on ssgi_intensity with ssgi_ray_tracing = true: the traced pass is no longer an ADDITION to the
-# probe - its rays fall back to the probe off screen, and the lighting stage stops adding its own
-# diffuse ambient so the two are not counted twice. The intensity therefore multiplies the WHOLE
-# diffuse ambient on such a frame, and 1.0 is the value that means 'use the traced estimate'. 0.7
-# dims the ambient to 70%, and 4.0 over-brightens it four times. SSAO also stops scaling the diffuse
-# ambient then, because the traced rays answer the occlusion question with real geometry instead.
 rt_shadows = false
 # rt_mask_bake: bake alphaMode MASK into the acceleration structures, so a masked surface is not SOLID to a
 # ray. A compute pass (`shaders/mask_bake.comp`) samples the material's alpha over each triangle of masked
@@ -440,7 +190,7 @@ rt_shadows = false
 # it cannot walk, so it does not remove geometry it has not looked at - what it cannot do is reproduce a
 # PER-PIXEL mask, which is exactly the limitation the mechanism has and the reason a better answer needs a
 # different mechanism (subdividing along the mask boundary, or the opacity-micromap extension).
-# A no-op without `rt_shadows` and without a traced GI frame: no structures, no bake, byte-identical.
+# A no-op without `rt_shadows`: no structures, no bake, byte-identical.
 rt_mask_bake = false
 # rt_skin_bake: re-skin the animated casters and REFIT their acceleration structures every frame, so a
 # ray-traced shadow is cast by the mesh where it actually is and not by its bind pose. What it costs: one
@@ -461,7 +211,7 @@ rt_mask_bake = false
 # of GPU on the sample asset, which has ONE skinned caster of 576 triangles and 24 joints - so that is a floor,
 # not a budget, and a scene with many or heavy skinned casters is unmeasured. Morph targets are NOT covered:
 # they are the step before skinning, and this pass does not read their deltas.
-# See docs/gi_hit_shading.md's L2.2b section for the tables, the cost, and the traps.
+# Off by default, so the pass's cost and its effect stay separately measurable.
 rt_skin_bake = false
 
 # fxaa: anti-alias the final image (one extra fullscreen pass over the tonemapped LDR image).

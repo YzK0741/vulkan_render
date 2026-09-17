@@ -1,5 +1,10 @@
 # The pass chain, rebuilt on the pre-GI state
 
+> **HISTORICAL (2026-09).** Written while the traced-GI chain existed. That chain - every `ssgi*` and
+> `gi_probe` pass, shader, image, declaration, config key and GUI control it names - has since been
+> removed entirely (see the `gi:` commits and `docs/shaders.md` for what the chain is now). The document
+> is kept as the record of WHY the pass framework has the shape it has.
+
 ## THE OWNERSHIP MODEL (decided after the pass work, and it is what "small runtime" is built on)
 
 The device root is `std::shared_ptr<core>`, and everything else holds a VIEW of it, not a share of it:
