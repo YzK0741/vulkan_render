@@ -886,53 +886,8 @@ export namespace vulkan::render_resource {
      * shade what it finds. Those bindings reference the SAME schema the pass's own do - which is the point of
      * keeping the schema in one place and the usage with the pass.
      */
-    inline constexpr std::array<pass_binding, 16> gi_probe_bindings = {{
-        // ALL NINE OF THE PASS'S OWN BINDINGS DECLARE `GENERAL`, and that is not tidiness: the two ping-pong
-        // sides stay in GENERAL for the whole update (which is what makes the propagation's barriers
-        // same-layout ones), and the per-cell geometry is written by the injection and read by the propagation
-        // in the same dispatch sequence. A descriptor claiming SHADER_READ for a sampled one of them would be a
-        // lie validation rejects at submit.
-        {.set = 1, .binding = 0, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 0, .access = binding_access::read, .sampler = sampler_hint::probe_grid, .layout = image_layout::general},
-        {.set = 1, .binding = 1, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 1, .access = binding_access::read, .sampler = sampler_hint::probe_grid, .layout = image_layout::general},
-        {.set = 1, .binding = 2, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 2, .access = binding_access::read, .sampler = sampler_hint::probe_grid, .layout = image_layout::general},
-        {.set = 1, .binding = 3, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::probe_grid, .element = 3, .access = binding_access::read, .sampler = sampler_hint::probe_grid, .layout = image_layout::general},
-        {.set = 1, .binding = 4, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 4, .access = binding_access::write, .layout = image_layout::general},
-        {.set = 1, .binding = 5, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 5, .access = binding_access::write, .layout = image_layout::general},
-        {.set = 1, .binding = 6, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 6, .access = binding_access::write, .layout = image_layout::general},
-        {.set = 1, .binding = 7, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_grid, .element = 7, .access = binding_access::write, .layout = image_layout::general},
-        {.set = 1, .binding = 8, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::probe_surface, .element = 0, .access = binding_access::write, .layout = image_layout::general},
-        {.set = 0, .binding = 1, .owner = set_owner::scene, .kind = binding_kind::sampled_image, .resource = resource_id::scene_textures, .access = binding_access::read, .sampler = sampler_hint::post},
-        {.set = 0, .binding = 2, .owner = set_owner::scene, .kind = binding_kind::sampled_image, .resource = resource_id::ibl_env, .access = binding_access::read, .sampler = sampler_hint::post},
-        {.set = 0, .binding = 3, .owner = set_owner::scene, .kind = binding_kind::sampled_image, .resource = resource_id::ibl_irradiance, .access = binding_access::read, .sampler = sampler_hint::post},
-        {.set = 0, .binding = 4, .owner = set_owner::scene, .kind = binding_kind::sampled_image, .resource = resource_id::brdf_lut, .access = binding_access::read, .sampler = sampler_hint::post},
-        {.set = 0, .binding = 5, .owner = set_owner::scene, .kind = binding_kind::storage_buffer, .resource = resource_id::material_table, .access = binding_access::read},
-        {.set = 0, .binding = 7, .owner = set_owner::scene, .kind = binding_kind::uniform_buffer, .resource = resource_id::light_ubo, .access = binding_access::read},
-        {.set = 0, .binding = 16, .owner = set_owner::scene, .kind = binding_kind::acceleration_structure, .resource = resource_id::top_level_structure, .access = binding_access::read},
-    }};
-
-    /// @brief set 0 is the shared scene set (a cell's ray needs the top level structure, the light UBO and the
-    ///        material table; the propagation's hit shading needs the textures and the environment cubes in it too)
-    inline constexpr std::array<shared_set, 1> gi_probe_shared_sets = {{{.family = 0}}};
-
-    /// @brief the probe cache's declaration
-    /// @ingroup vulkan_render_resource
-    inline constexpr pass_io gi_probe_io = {
-        .name = "gi_probe",
-        .own_set = 1,
-        .bindings = gi_probe_bindings,
-        // THE SHARED SET HAD TO BE DECLARED EXPLICITLY, and the gate is what found out: the seven scene-owned
-        // bindings above give the pipeline layout its set 0, but a set nothing DECLARES is a set the framework
-        // resolves nothing for - so the pass bound a null descriptor set and `sponza_gi` (the one scenario with the
-        // cache on) reported `vkCmdBindDescriptorSets(): pDescriptorSets[0] (VkDescriptorSet 0x0) is not a valid
-        // VkDescriptorSet`. The validator refuses that shape now (see `validate`).
-        .shared_sets = gi_probe_shared_sets,
-        // The pass's push block, DECLARED here because it is the range its pipeline layout is built with and
-        // the size its host must compose. It is the pass's own struct
-        // (`vulkan.pass.gi_probe::gi_probe_pass::push_constants`), and `vulkan.pass.gi_probe` carries the
-        // `static_assert` that ties this number to that struct - a fact in two units that the compiler keeps
-        // in agreement is the next best thing to a fact in one.
-        .push = push_block{.offset = 0, .size = 56, .stages = stage_flag::compute},
-    };
+    // The probe cache's declaration (gi_probe_bindings, gi_probe_shared_sets, gi_probe_io) stood here. It went
+    // with the traced GI subsystem: the pass that declared it was deleted, and nothing names it now.
 
     // =============================================================================================
     // 5. THE SECOND DECLARATION - the TAA resolve, read off shaders/taa.frag
@@ -1071,40 +1026,13 @@ export namespace vulkan::render_resource {
      *   7-10: `probe_grid` 4-7 the cache's four scratch volumes, written by the propagation
      *   11: `probe_surface`    the per-cell geometry, written by the injection
      */
-    inline constexpr std::array<barrier_image, 12> ssgi_trace_barriers = {{
-        {.resource = resource_id::gi_trace, .element = 0},
-        {.resource = resource_id::gi_spec_resolve, .element = 0},
-        {.resource = resource_id::gi_resolve, .element = 0},
-        {.resource = resource_id::probe_grid, .element = 0},
-        {.resource = resource_id::probe_grid, .element = 1},
-        {.resource = resource_id::probe_grid, .element = 2},
-        {.resource = resource_id::probe_grid, .element = 3},
-        {.resource = resource_id::probe_grid, .element = 4},
-        {.resource = resource_id::probe_grid, .element = 5},
-        {.resource = resource_id::probe_grid, .element = 6},
-        {.resource = resource_id::probe_grid, .element = 7},
-        {.resource = resource_id::probe_surface, .element = 0},
-    }};
-
-    /// @brief set 0 is the shared scene set and set 1 the shared G-buffer set: the tracer binds both
-    inline constexpr std::array<shared_set, 2> ssgi_trace_shared_sets = {{{.family = 0}, {.family = 1}}};
-
-    /**
-     * @brief the SSGI tracer's declaration: a half-resolution compute dispatch over two shared sets
-     *
-     * The first pass on this branch that binds TWO shared sets, and the first with no own binding whose
-     * resources still have to be named - which is what `barrier_images` was added for. Its push block is the
-     * full 128 bytes the specification guarantees, which the shader's comments explain lane by lane.
-     */
-    inline constexpr pass_io ssgi_trace_io = {
-        .name = "ssgi_trace",
-        .own_set = 2, // unused: the tracer has no own bindings (its images come from the shared sets)
-        .bindings = {},
-        .shared_sets = ssgi_trace_shared_sets,
-        .targets = {},
-        .barrier_images = ssgi_trace_barriers,
-        .push = push_block{.offset = 0, .size = 128, .stages = stage_flag::compute},
-    };
+    // The tracer's declaration (ssgi_trace_barriers, ssgi_trace_io) stood here, with the DOCUMENTED ORDER of its
+    // twelve barrier images. The pass - and the whole traced chain - is gone. What STAYS is the shared-set pair it
+    // introduced, because two declarations that outlived it bind exactly these two sets - the stochastic punctual
+    // lighting chain's tracer and the ray-traced shadow - so it is named for what it is rather than for the pass
+    // that first needed it.
+    /// @brief the shared scene set (0) and the shared G-buffer set (1), the pair a full-screen compute pass binds
+    inline constexpr std::array<shared_set, 2> scene_and_gbuffer_shared_sets = {{{.family = 0}, {.family = 1}}};
 
     /**
      * @brief the images the glossy lobe transitions, in the order its record() indexes them
@@ -1120,28 +1048,8 @@ export namespace vulkan::render_resource {
      *   1: `gi_spec_trace`    this frame's reflection correction
      *   2: `gi_spec_reproject` where the reflected surface was, which the resolve reprojects by
      */
-    inline constexpr std::array<barrier_image, 3> ssgi_spec_barriers = {{
-        {.resource = resource_id::gi_trace, .element = 0},
-        {.resource = resource_id::gi_spec_trace, .element = 0},
-        {.resource = resource_id::gi_spec_reproject, .element = 0},
-    }};
-
-    /**
-     * @brief the glossy lobe's declaration: the tracer's two shared sets, no binding of its own, three images
-     *
-     * The second pass to reach its resources through `barrier_images`, and the reason that channel is per-pass
-     * rather than a special case for the tracer: the lobe writes images it does not own and binds no descriptor
-     * to reach them either.
-     */
-    inline constexpr pass_io ssgi_spec_io = {
-        .name = "ssgi_spec",
-        .own_set = 2, // unused, exactly as in the tracer
-        .bindings = {},
-        .shared_sets = ssgi_trace_shared_sets,
-        .targets = {},
-        .barrier_images = ssgi_spec_barriers,
-        .push = push_block{.offset = 0, .size = 96, .stages = stage_flag::compute},
-    };
+    // The glossy lobe's declaration (ssgi_spec_barriers, ssgi_spec_io) stood here - the second pass to reach its
+    // resources through `barrier_images`. It went with the chain.
 
     /**
      * @brief the temporal resolve's own bindings: the first GI stage whose inputs are its OWN set
@@ -1211,29 +1119,9 @@ export namespace vulkan::render_resource {
      * SHADER_READ with a transition that names COMPUTE as well as FRAGMENT - which is why this list is one entry
      * where the tracer's is twelve.
      */
-    inline constexpr std::array<barrier_image, 1> ssgi_spatial_barriers = {{
-        {.resource = resource_id::gi_spatial, .element = 0},
-    }};
-
-    /**
-     * @brief the spatial filter's declaration: the joint-bilateral filter that ENDS the GI chain
-     *
-     * The third pass on the shared-sets + barrier-images shape (the tracer and the lobe are the others): it binds
-     * the shared scene set and the shared G-buffer set - which already carries every binding it uses, the normal,
-     * the depth, the accumulation it reads and the image it writes - and owns no descriptor at all. What the
-     * composite samples is ITS output, which is why the renderer's `gi_resolved` is set from whether this pass
-     * recorded: a frame whose filter did not run has nothing to add and must weigh 0 rather than show whatever
-     * that image happens to hold.
-     */
-    inline constexpr pass_io ssgi_spatial_io = {
-        .name = "ssgi_spatial",
-        .own_set = 2, // unused: no own bindings, like the tracer and the lobe
-        .bindings = {},
-        .shared_sets = ssgi_trace_shared_sets, // the same two: the scene set (0) and the G-buffer set (1)
-        .targets = {},
-        .barrier_images = ssgi_spatial_barriers,
-        .push = push_block{.offset = 0, .size = 48, .stages = stage_flag::compute},
-    };
+    // The spatial filter's declaration (ssgi_spatial_barriers, ssgi_spatial_io) stood here: the joint-bilateral
+    // filter that ended the chain, the third pass on the shared-sets + barrier-images shape. It is gone, and the
+    // shape itself is still carried by the ray-traced shadow's declaration.
 
     /**
      * @brief the image the stochastic punctual lighting pass rewrites, and the only resource it names
@@ -1262,7 +1150,7 @@ export namespace vulkan::render_resource {
         .name = "megalights_trace",
         .own_set = 2, // unused: no own bindings (everything it reads and writes is in the shared sets)
         .bindings = {},
-        .shared_sets = ssgi_trace_shared_sets, // the scene set (0) and the G-buffer set (1), like the tracer
+        .shared_sets = scene_and_gbuffer_shared_sets, // the scene set (0) and the G-buffer set (1), like the tracer
         .targets = {},
         .barrier_images = megalights_trace_barriers,
         .push = push_block{.offset = 0, .size = 96, .stages = stage_flag::compute},
@@ -1346,7 +1234,7 @@ export namespace vulkan::render_resource {
         .name = "rt_shadow",
         .own_set = 2, // unused: no own bindings (everything it reads is in the shared sets)
         .bindings = {},
-        .shared_sets = ssgi_trace_shared_sets, // the same two: the scene set (0) and the G-buffer set (1)
+        .shared_sets = scene_and_gbuffer_shared_sets, // the same two: the scene set (0) and the G-buffer set (1)
         .targets = {},
         .barrier_images = rt_shadow_barriers,
         .push = push_block{.offset = 0, .size = 80, .stages = stage_flag::compute},

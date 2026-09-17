@@ -27,16 +27,28 @@ namespace {
     namespace vp = vulkan::pass;
     namespace rr = vulkan::render_resource;
 
+    /// The own-binding + shared-set pair every fake pass carries: one sampled image of its OWN at set 1, and the
+    /// shared scene set. It was the probe cache's declaration before, reused rather than invented; that pass is
+    /// gone, so the shape - which is all a fake pass needs from the schema - is spelled out here.
+    std::array<rr::pass_binding, 1> const fake_own_bindings = {{{.set = 1,
+                                                                 .binding = 0,
+                                                                 .owner = rr::set_owner::own,
+                                                                 .kind = rr::binding_kind::sampled_image,
+                                                                 .resource = rr::resource_id::ml_trace,
+                                                                 .access = rr::binding_access::read,
+                                                                 .sampler = rr::sampler_hint::gbuffer}}};
+    std::array<rr::shared_set, 1> const fake_shared_sets = {{{.family = 0}}};
+
     /// the declaration every fake pass carries, renamed to the pass it belongs to
     rr::pass_io named_io(std::string_view const name, std::span<rr::render_target const> const targets = {}) {
         return rr::pass_io{
             .name = name,
             .own_set = 1,
-            .bindings = rr::gi_probe_bindings, // a declaration the schema accepts, reused rather than invented
+            .bindings = fake_own_bindings,
             // ... WITH the set those bindings come from: the validator refuses non-own bindings whose shared set is
             // not declared, which is the rule the probe cache's missing `shared_sets` entry bought (see
             // test_render_resources).
-            .shared_sets = rr::gi_probe_shared_sets,
+            .shared_sets = fake_shared_sets,
             .targets = targets,
             .push = std::nullopt,
         };
@@ -515,16 +527,17 @@ int main() {
         CHECK(samplers.of(rr::sampler_hint::probe_grid) == reinterpret_cast<VkSampler>(0x22));
         CHECK(samplers.of(rr::sampler_hint::gbuffer) == reinterpret_cast<VkSampler>(0x11));
         CHECK(samplers.of(rr::sampler_hint::none) == VK_NULL_HANDLE); // "no sampler", which the validator enforces
-        // the probe declaration's own set is exactly the nine bindings its shader declares, in order, and the
-        // generated layout is what `pipelines::build_gi_probe` now builds from them
+        // a declaration's own set is exactly the bindings its shader declares, in order - checked against the
+        // temporal resolve's declaration, which is the shape the pipeline builder this test covers still builds
+        // from (the probe cache's own declaration went with the traced GI chain)
         uint32_t own = 0;
-        for (rr::pass_binding const& b : rr::gi_probe_io.bindings) {
-            if (b.set == rr::gi_probe_io.own_set) {
+        for (rr::pass_binding const& b : rr::ssgi_temporal_io.bindings) {
+            if (b.set == rr::ssgi_temporal_io.own_set) {
                 CHECK(b.binding == own); // contiguous from zero: the index IS the binding number
                 ++own;
             }
         }
-        CHECK(own == 9);
+        CHECK(own == 7);
     }
 
     // ---- THE CHAIN: a value that holds a run of passes and its ORDER, and nothing else - it must behave

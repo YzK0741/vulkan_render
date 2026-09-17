@@ -77,46 +77,34 @@ int main() {
     CHECK(rr::find(rr::resource_id::gi_history)->scope == rr::resource_scope::per_swapchain_image);
     CHECK(rr::find(rr::resource_id::probe_grid)->scope == rr::resource_scope::device_wide);
 
-    // ---- the probe cache's declaration, read off shaders/gi_probe.comp ----
-    auto const probe = rr::validate(rr::gi_probe_io);
-    CHECK_MSG(probe.has_value(), probe.has_value() ? "" : probe.error().c_str());
-    CHECK(rr::gi_probe_io.bindings.size() == 16); // 9 own (set 1) + 7 shared (set 0)
-    // the own set is 4 sampled read + 5 storage write = the nine bindings the shader declares
-    rr::descriptor_counts const own = rr::descriptor_counts_for(rr::gi_probe_io, 1);
-    CHECK(own.sampled_image == 4);
-    CHECK(own.storage_image == 5);
-    CHECK(own.total() == 9);
-    // ... and the shared scene set is what the shader uses of it, not what it owns
-    rr::descriptor_counts const scene = rr::descriptor_counts_for(rr::gi_probe_io, 0);
-    CHECK(scene.sampled_image == 4);
-    CHECK(scene.storage_buffer == 1);
-    CHECK(scene.uniform_buffer == 1);
-    CHECK(scene.acceleration_structure == 1);
-    CHECK(scene.total() == 7);
-    // the ping-pong halves are ELEMENTS of one resource, which is how core indexes the family
-    CHECK(rr::gi_probe_io.bindings[0].element == 0);
-    CHECK(rr::gi_probe_io.bindings[4].element == 4);
-    CHECK(rr::gi_probe_io.bindings[8].resource == rr::resource_id::probe_surface);
-    // ... and THE SHARED SET IS DECLARED, which is the rule this scenario taught the validator: the seven
-    // scene-owned bindings give the pipeline layout a set 0, but a set nothing declares is a set the framework
-    // resolves nothing for - the pass bound a NULL set and `sponza_gi` caught it.
-    CHECK(rr::gi_probe_io.shared_sets.size() == 1);
-    CHECK(rr::gi_probe_io.shared_sets[0].family == 0);
+    // The probe cache's declaration used to be asserted here, read off shaders/gi_probe.comp. That pass - and
+    // the whole traced GI subsystem - is gone, so the shared-set rule it taught the validator is checked below
+    // against a declaration built for the purpose.
     {
+        // One of the SCENE set's bindings: something a pass reaches through a shared set rather than owning, which
+        // is the shape the rule is about. (static: the declaration holds a span, so the array must outlive it.)
+        static constexpr std::array<rr::pass_binding, 1> scene_binding = {{{.set = 0,
+                                                                            .binding = 1,
+                                                                            .owner = rr::set_owner::scene,
+                                                                            .kind = rr::binding_kind::sampled_image,
+                                                                            .resource = rr::resource_id::scene_textures,
+                                                                            .access = rr::binding_access::read,
+                                                                            .sampler = rr::sampler_hint::post}}};
+        static constexpr std::array<rr::shared_set, 1> scene_set_list = {{{.family = 0}}};
         // a declaration that BINDS a shared set and NAMES none is refused ...
-        rr::pass_io const unnamed = {.name = "probe-like",
+        rr::pass_io const unnamed = {.name = "set-like",
                                      .own_set = 1,
-                                     .bindings = rr::gi_probe_bindings,
+                                     .bindings = scene_binding,
                                      .shared_sets = {},
                                      .targets = {},
                                      .push = rr::push_block{.offset = 0, .size = 56, .stages = rr::stage_flag::compute}};
         auto const refused = rr::validate(unnamed);
         CHECK(!refused.has_value());
         // ... while the same declaration WITH the set is accepted
-        rr::pass_io const named = {.name = "probe-like",
+        rr::pass_io const named = {.name = "set-like",
                                    .own_set = 1,
-                                   .bindings = rr::gi_probe_bindings,
-                                   .shared_sets = rr::gi_probe_shared_sets,
+                                   .bindings = scene_binding,
+                                   .shared_sets = scene_set_list,
                                    .targets = {},
                                    .push = rr::push_block{.offset = 0, .size = 56, .stages = rr::stage_flag::compute}};
         CHECK(rr::validate(named).has_value());
@@ -316,7 +304,14 @@ int main() {
     {
         // a set cannot be both the pass's own and one it only binds
         std::array<rr::shared_set, 1> const conflicting = {{{.family = 1}}};
-        rr::pass_io const io = {.name = "scene", .own_set = 1, .bindings = rr::gi_probe_bindings, .shared_sets = conflicting, .targets = {}, .push = std::nullopt};
+        std::array<rr::pass_binding, 1> const own_at_one = {{{.set = 1,
+                                                              .binding = 0,
+                                                              .owner = rr::set_owner::own,
+                                                              .kind = rr::binding_kind::sampled_image,
+                                                              .resource = rr::resource_id::ml_trace,
+                                                              .access = rr::binding_access::read,
+                                                              .sampler = rr::sampler_hint::gbuffer}}};
+        rr::pass_io const io = {.name = "scene", .own_set = 1, .bindings = own_at_one, .shared_sets = conflicting, .targets = {}, .push = std::nullopt};
         CHECK(!rr::validate(io).has_value());
     }
     {
@@ -325,61 +320,21 @@ int main() {
         CHECK(!rr::validate(io).has_value()); // the same shared set twice
     }
 
-    // ---- the FOURTH declaration: the SSGI tracer, which binds TWO shared sets and no own binding, and the
-    //      first one whose IMAGES have to be named without being descriptors (see pass_io::barrier_images) ----
-    {
-        CHECK(rr::validate(rr::ssgi_trace_io).has_value());
-        CHECK(rr::ssgi_trace_io.own_set != 0 && rr::ssgi_trace_io.own_set != 1); // it owns nothing anywhere
-        CHECK(rr::ssgi_trace_io.bindings.empty());
-        CHECK(rr::descriptor_counts_for(rr::ssgi_trace_io, rr::ssgi_trace_io.own_set).total() == 0); // nothing generated
-        CHECK(rr::ssgi_trace_io.shared_sets.size() == 2);
-        CHECK(rr::ssgi_trace_io.shared_sets[0].family == 0); // the scene set
-        CHECK(rr::ssgi_trace_io.shared_sets[1].family == 1); // the G-buffer set: the second shared set any pass declares
-        CHECK(rr::ssgi_trace_io.targets.empty());            // it dispatches; it renders into nothing
-        CHECK(rr::ssgi_trace_io.push.has_value());
-        CHECK(rr::ssgi_trace_io.push->size == 128); // the full guaranteed range, five vectors
-        CHECK(rr::ssgi_trace_io.push->stages == rr::stage_flag::compute);
-        // THE BARRIER IMAGES, in the order the pass indexes them (its record() documents what each slot is for)
-        CHECK(rr::ssgi_trace_io.barrier_images.size() == 12);
-        CHECK(rr::ssgi_trace_io.barrier_images[0].resource == rr::resource_id::gi_trace);
-        CHECK(rr::ssgi_trace_io.barrier_images[1].resource == rr::resource_id::gi_spec_resolve);
-        CHECK(rr::ssgi_trace_io.barrier_images[2].resource == rr::resource_id::gi_resolve);
-        for (std::size_t i = 3; i < 11; ++i) {
-            CHECK(rr::ssgi_trace_io.barrier_images[i].resource == rr::resource_id::probe_grid);
-            CHECK(rr::ssgi_trace_io.barrier_images[i].element == i - 3);
-        }
-        CHECK(rr::ssgi_trace_io.barrier_images[11].resource == rr::resource_id::probe_surface);
-    }
+    // The GI tracer's declaration was asserted here (two shared sets, no own binding, twelve barrier images).
+    // The pass is gone, so what remains is the validator rule it exercised.
     {
         // the barrier-image rule the validator enforces: they must be images the schema declares, and a pass
         // indexes them by POSITION, so the same one twice is a declaration that cannot be read
         std::array<rr::barrier_image, 1> const not_an_image = {rr::barrier_image{.resource = rr::resource_id::camera_ubo, .element = 0}};
-        rr::pass_io const io = {.name = "ssgi_trace", .own_set = 2, .bindings = {}, .shared_sets = {}, .targets = {}, .barrier_images = not_an_image, .push = std::nullopt};
+        rr::pass_io const io = {.name = "barrier-like", .own_set = 2, .bindings = {}, .shared_sets = {}, .targets = {}, .barrier_images = not_an_image, .push = std::nullopt};
         CHECK(!rr::validate(io).has_value());
-        std::array<rr::barrier_image, 2> const twice = {rr::barrier_image{.resource = rr::resource_id::gi_trace, .element = 0},
-                                                        rr::barrier_image{.resource = rr::resource_id::gi_trace, .element = 0}};
-        rr::pass_io const dup = {.name = "ssgi_trace", .own_set = 2, .bindings = {}, .shared_sets = {}, .targets = {}, .barrier_images = twice, .push = std::nullopt};
+        std::array<rr::barrier_image, 2> const twice = {rr::barrier_image{.resource = rr::resource_id::ml_trace, .element = 0},
+                                                        rr::barrier_image{.resource = rr::resource_id::ml_trace, .element = 0}};
+        rr::pass_io const dup = {.name = "barrier-like", .own_set = 2, .bindings = {}, .shared_sets = {}, .targets = {}, .barrier_images = twice, .push = std::nullopt};
         CHECK(!rr::validate(dup).has_value());
     }
 
-    // ---- the FIFTH declaration: the glossy lobe, which writes the tracer's OWN image and adds two of its own
-    //      to the same barrier channel - the declaration that proves the channel is per-pass rather than a
-    //      special case for one pass ----
-    {
-        CHECK(rr::validate(rr::ssgi_spec_io).has_value());
-        CHECK(rr::ssgi_spec_io.bindings.empty());
-        CHECK(rr::ssgi_spec_io.targets.empty());
-        CHECK(rr::ssgi_spec_io.shared_sets.size() == 2); // the tracer's two, because it reads that trace
-        CHECK(rr::ssgi_spec_io.shared_sets[0] == rr::ssgi_trace_io.shared_sets[0]);
-        CHECK(rr::ssgi_spec_io.shared_sets[1] == rr::ssgi_trace_io.shared_sets[1]);
-        CHECK(rr::ssgi_spec_io.barrier_images.size() == 3);
-        CHECK(rr::ssgi_spec_io.barrier_images[0].resource == rr::resource_id::gi_trace); // read AND written
-        CHECK(rr::ssgi_spec_io.barrier_images[1].resource == rr::resource_id::gi_spec_trace);
-        CHECK(rr::ssgi_spec_io.barrier_images[2].resource == rr::resource_id::gi_spec_reproject);
-        CHECK(rr::ssgi_spec_io.push.has_value());
-        CHECK(rr::ssgi_spec_io.push->size == 96); // a mat4 and two vectors: the tracer's block is the full 128
-        CHECK(rr::ssgi_spec_io.push->stages == rr::stage_flag::compute);
-    }
+    // The glossy lobe's declaration was asserted here. It went with the rest of the traced chain.
 
     // ---- the SIXTH declaration: the GI denoiser, the first GI stage with a set of its OWN - and the reason it
     //      has one is that it groups four things no other pass puts together ----
@@ -413,22 +368,8 @@ int main() {
         CHECK(rr::ssgi_temporal_io.push->stages == rr::stage_flag::compute);
     }
 
-    // ---- the SEVENTH declaration: the spatial filter, which ENDS the chain - the third pass on the shared-sets
-    //      shape, whose only handle of its own is the storage image it writes ----
-    {
-        CHECK(rr::validate(rr::ssgi_spatial_io).has_value());
-        CHECK(rr::ssgi_spatial_io.bindings.empty()); // everything it reads is in the shared G-buffer set
-        CHECK(rr::ssgi_spatial_io.targets.empty());  // a compute pass
-        CHECK(rr::ssgi_spatial_io.shared_sets.size() == 2);
-        CHECK(rr::ssgi_spatial_io.shared_sets[0].family == 0); // the scene set
-        CHECK(rr::ssgi_spatial_io.shared_sets[1].family == 1); // the G-buffer set: the image it writes lives there
-        CHECK(rr::ssgi_spatial_io.barrier_images.size() == 1);
-        CHECK(rr::ssgi_spatial_io.barrier_images[0].resource == rr::resource_id::gi_spatial); // its own output
-        CHECK(rr::ssgi_spatial_io.push.has_value());
-        CHECK(rr::ssgi_spatial_io.push->size == 48); // eight floats and the two extents
-        CHECK(rr::ssgi_spatial_io.push->stages == rr::stage_flag::compute);
-        CHECK(rr::descriptor_counts_for(rr::ssgi_spatial_io, rr::ssgi_spatial_io.own_set).total() == 0);
-    }
+    // The spatial filter's declaration was asserted here - the third pass on the shared-sets shape. It went with
+    // the chain; the shape itself is still covered by the ray-traced shadow's declaration below.
 
     // ---- the EIGHTH declaration, and the first one OUTSIDE the GI chain: the ray-traced shadow, the same
     //      shared-sets shape as the tracer and the spatial filter but at the FRAME's resolution, and its one
